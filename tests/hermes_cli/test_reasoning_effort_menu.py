@@ -29,6 +29,6 @@ def test_reasoning_menu_orders_minimal_before_low(monkeypatch):
     assert _FakeTerminalMenu.last_choices[:4] == [
         "  minimal",
         "  low",
-        "  medium  ← currently in use",
+        "  medium  ← 현재 사용 중",
         "  high",
     ]

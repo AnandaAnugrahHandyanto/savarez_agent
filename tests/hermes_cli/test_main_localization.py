@@ -7,6 +7,7 @@ from hermes_cli.commands import get_category_label
 from hermes_cli.main import (
     _argparse_korean,
     _build_web_ui,
+    _model_flow_copilot,
     _model_flow_custom,
     _model_flow_openrouter,
     _model_flow_qwen_oauth,
@@ -189,6 +190,22 @@ def test_model_flow_qwen_not_logged_in_is_localized(monkeypatch, capsys):
     assert "실행: qwen auth qwen-oauth" in out
     assert "예상 자격 증명 파일 위치: /tmp/qwen-auth.json" in out
     assert "오류: missing token" in out
+
+
+def test_model_flow_copilot_missing_token_is_localized(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_api_key_provider_credentials",
+        lambda _provider_id: {"api_key": "", "source": ""},
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt='': "3")
+
+    _model_flow_copilot({}, current_model="")
+
+    out = capsys.readouterr().out
+    assert "GitHub Copilot용 GitHub 토큰이 설정되어 있지 않아요." in out
+    assert "지원하는 토큰 종류:" in out
+    assert "취소했어요." in out
+
 
 
 def test_build_web_ui_fatal_missing_npm_is_localized(monkeypatch, capsys, tmp_path):

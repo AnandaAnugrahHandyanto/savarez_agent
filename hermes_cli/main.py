@@ -1988,7 +1988,7 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
 
     def _label(effort):
         if effort == current_effort:
-            return f"{effort}  ← currently in use"
+            return f"{effort}  ← 현재 사용 중"
         return effort
 
     disable_label = "추론 비활성화"
@@ -2086,7 +2086,7 @@ def _model_flow_copilot(config, current_model=""):
     source = creds.get("source", "")
 
     if not api_key:
-        print("No GitHub token configured for GitHub Copilot.")
+        print("GitHub Copilot용 GitHub 토큰이 설정되어 있지 않아요.")
         print()
         print("  지원하는 토큰 종류:")
         print("    → OAuth 토큰 (gho_*)              `copilot login` 또는 device code 흐름으로 발급")
@@ -3120,7 +3120,7 @@ def _update_via_zip(args):
         pass
     
     print()
-    print("✓ Update complete!")
+    print("✓ 업데이트가 완료되었어요!")
 
 
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
@@ -3145,13 +3145,13 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         text=True,
     )
     if unmerged.stdout.strip():
-        print("→ Clearing unmerged index entries from a previous conflict...")
+        print("→ 이전 충돌에서 남은 병합되지 않은 index 항목을 정리하는 중...")
         subprocess.run(git_cmd + ["reset"], cwd=cwd, capture_output=True)
 
     from datetime import datetime, timezone
 
     stash_name = datetime.now(timezone.utc).strftime("hermes-update-autostash-%Y%m%d-%H%M%S")
-    print("→ Local changes detected — stashing before update...")
+    print("→ 로컬 변경 사항을 감지했어요. 업데이트 전에 stash에 저장할게요...")
     subprocess.run(
         git_cmd + ["stash", "push", "--include-untracked", "-m", stash_name],
         cwd=cwd,
@@ -3185,12 +3185,12 @@ def _resolve_stash_selector(git_cmd: list[str], cwd: Path, stash_ref: str) -> Op
 
 
 def _print_stash_cleanup_guidance(stash_ref: str, stash_selector: Optional[str] = None) -> None:
-    print("  Check `git status` first so you don't accidentally reapply the same change twice.")
-    print("  Find the saved entry with: git stash list --format='%gd %H %s'")
+    print("  같은 변경 사항을 중복 적용하지 않도록 먼저 `git status`를 확인해 주세요.")
+    print("  저장된 항목 확인: git stash list --format='%gd %H %s'")
     if stash_selector:
-        print(f"  Remove it with: git stash drop {stash_selector}")
+        print(f"  삭제 명령: git stash drop {stash_selector}")
     else:
-        print(f"  Look for commit {stash_ref}, then drop its selector with: git stash drop stash@{{N}}")
+        print(f"  커밋 {stash_ref}에 해당하는 항목을 찾은 뒤 `git stash drop stash@{{N}}`로 삭제해 주세요")
 
 
 
@@ -3976,7 +3976,7 @@ def cmd_update(args):
             print("  ✓ Configuration is up to date")
         
         print()
-        print("✓ Update complete!")
+        print("✓ 업데이트가 완료되었어요!")
         
         # Write exit code *before* the gateway restart attempt.
         # When running as ``hermes update --gateway`` (spawned by the gateway's

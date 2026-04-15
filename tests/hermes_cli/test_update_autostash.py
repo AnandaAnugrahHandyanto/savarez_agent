@@ -148,7 +148,7 @@ def test_print_stash_cleanup_guidance_with_selector(capsys):
     hermes_main._print_stash_cleanup_guidance("abc123", "stash@{2}")
 
     out = capsys.readouterr().out
-    assert "Check `git status` first" in out
+    assert "먼저 `git status`를 확인해 주세요" in out
     assert "git stash list --format='%gd %H %s'" in out
     assert "git stash drop stash@{2}" in out
 
@@ -178,9 +178,9 @@ def test_restore_stashed_changes_keeps_going_when_stash_entry_cannot_be_resolved
     out = capsys.readouterr().out
     assert "삭제할 stash 항목을 찾지 못했어요" in out
     assert "stash는 그대로 남겨두었어요" in out
-    assert "Check `git status` first" in out
+    assert "먼저 `git status`를 확인해 주세요" in out
     assert "git stash list --format='%gd %H %s'" in out
-    assert "Look for commit abc123" in out
+    assert "커밋 abc123에 해당하는 항목을 찾은 뒤" in out
 
 
 
@@ -208,7 +208,7 @@ def test_restore_stashed_changes_keeps_going_when_drop_fails(monkeypatch, tmp_pa
     out = capsys.readouterr().out
     assert "저장된 stash 항목을 삭제하지 못했어요" in out
     assert "drop failed" in out
-    assert "Check `git status` first" in out
+    assert "먼저 `git status`를 확인해 주세요" in out
     assert "git stash list --format='%gd %H %s'" in out
     assert "git stash drop stash@{0}" in out
 
