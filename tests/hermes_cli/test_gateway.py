@@ -58,7 +58,7 @@ def test_systemd_status_warns_when_linger_disabled(monkeypatch, tmp_path, capsys
     gateway.systemd_status(deep=False)
 
     out = capsys.readouterr().out
-    assert "gateway service is running" in out
+    assert "서비스가 실행 중이어서" in out or "gateway service is running" in out
     assert "Systemd linger is disabled" in out
     assert "loginctl enable-linger" in out
 
@@ -87,7 +87,8 @@ def test_systemd_install_checks_linger_status(monkeypatch, tmp_path, capsys):
         ["systemctl", "--user", "enable", gateway.get_service_name()],
     ]
     assert helper_calls == [True]
-    assert "User service installed and enabled" in out
+    assert "user systemd 서비스를 설치하는 중" in out
+    assert "서비스를 설치하고 활성화했어요" in out
 
 
 def test_systemd_install_system_scope_skips_linger_and_uses_systemctl(monkeypatch, tmp_path, capsys):
@@ -122,7 +123,8 @@ def test_systemd_install_system_scope_skips_linger_and_uses_systemctl(monkeypatc
     ]
     assert helper_calls == []
     assert "Configured to run as: alice" not in out  # generated test unit has no User= line
-    assert "System service installed and enabled" in out
+    assert "system systemd 서비스를 설치하는 중" in out
+    assert "서비스를 설치하고 활성화했어요" in out
 
 
 def test_conflicting_systemd_units_warning(monkeypatch, tmp_path, capsys):

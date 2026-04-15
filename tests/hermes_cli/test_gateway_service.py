@@ -531,8 +531,8 @@ class TestGatewaySystemServiceRouting:
             raise AssertionError("Expected gateway_command to exit on unsupported Termux service install")
 
         out = capsys.readouterr().out
-        assert "not supported on Termux" in out
-        assert "Run manually: hermes gateway" in out
+        assert "Termux에서는 게이트웨이 서비스를 설치할 수 없어요." in out
+        assert "수동 실행: hermes gateway" in out
 
     def test_gateway_status_prefers_system_service_when_only_system_unit_exists(self, monkeypatch):
         user_unit = SimpleNamespace(exists=lambda: False)
@@ -564,9 +564,9 @@ class TestGatewaySystemServiceRouting:
         gateway_cli.gateway_command(SimpleNamespace(gateway_command="status", deep=False, system=False))
 
         out = capsys.readouterr().out
-        assert "Gateway is not running" in out
+        assert "게이트웨이가 실행 중이 아니에요" in out
         assert "nohup hermes gateway" in out
-        assert "install as user service" not in out
+        assert "사용자 서비스로 설치" not in out
 
     def test_gateway_restart_does_not_fallback_to_foreground_when_launchd_restart_fails(self, tmp_path, monkeypatch):
         plist_path = tmp_path / "ai.hermes.gateway.plist"

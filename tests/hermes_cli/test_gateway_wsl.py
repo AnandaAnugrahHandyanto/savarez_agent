@@ -130,6 +130,7 @@ class TestSupportsSystemdServicesWSL:
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr(gateway, "is_wsl", lambda: True)
         monkeypatch.setattr(gateway, "_wsl_systemd_operational", lambda: True)
+        monkeypatch.setattr(gateway.shutil, "which", lambda command: "/usr/bin/systemctl" if command == "systemctl" else None)
         assert gateway.supports_systemd_services() is True
 
     def test_wsl_without_systemd(self, monkeypatch):
@@ -138,6 +139,7 @@ class TestSupportsSystemdServicesWSL:
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr(gateway, "is_wsl", lambda: True)
         monkeypatch.setattr(gateway, "_wsl_systemd_operational", lambda: False)
+        monkeypatch.setattr(gateway.shutil, "which", lambda command: "/usr/bin/systemctl" if command == "systemctl" else None)
         assert gateway.supports_systemd_services() is False
 
     def test_native_linux(self, monkeypatch):
@@ -145,6 +147,7 @@ class TestSupportsSystemdServicesWSL:
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr(gateway, "is_wsl", lambda: False)
+        monkeypatch.setattr(gateway.shutil, "which", lambda command: "/usr/bin/systemctl" if command == "systemctl" else None)
         assert gateway.supports_systemd_services() is True
 
     def test_termux_still_excluded(self, monkeypatch):
@@ -179,8 +182,8 @@ class TestGatewayCommandWSLMessages:
         assert exc_info.value.code == 1
 
         out = capsys.readouterr().out
-        assert "WSL detected" in out
-        assert "systemd is not running" in out
+        assert "WSL이 감지되었지만" in out
+        assert "systemd가 실행 중이 아니에요" in out
         assert "hermes gateway run" in out
         assert "tmux" in out
 
@@ -198,7 +201,7 @@ class TestGatewayCommandWSLMessages:
         assert exc_info.value.code == 1
 
         out = capsys.readouterr().out
-        assert "WSL detected" in out
+        assert "WSL이 감지되었지만" in out
         assert "hermes gateway run" in out
         assert "wsl.conf" in out
 
@@ -225,8 +228,8 @@ class TestGatewayCommandWSLMessages:
         gateway.gateway_command(args)
 
         out = capsys.readouterr().out
-        assert "WSL detected" in out
-        assert "may not survive WSL restarts" in out
+        assert "WSL이 감지되었어요" in out
+        assert "유지되지 않을 수 있어요" in out
         assert len(install_called) == 1  # install still proceeded
 
     def test_status_wsl_running_manual(self, monkeypatch, capsys):
@@ -251,8 +254,8 @@ class TestGatewayCommandWSLMessages:
         gateway.gateway_command(args)
 
         out = capsys.readouterr().out
-        assert "WSL note" in out
-        assert "tmux or screen" in out
+        assert "WSL 참고:" in out
+        assert "tmux 또는 screen" in out
 
     def test_status_wsl_not_running(self, monkeypatch, capsys):
         """hermes gateway status on WSL with no process shows WSL start advice."""

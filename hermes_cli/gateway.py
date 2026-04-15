@@ -998,7 +998,7 @@ def _ensure_linger_enabled() -> None:
         _print_linger_enable_warning(username, linger_detail or "loginctl not found")
         return
 
-    print("Enabling linger so the gateway survives SSH logout...")
+    print("SSH 로그아웃 후에도 게이트웨이가 유지되도록 linger를 활성화하는 중...")
     try:
         result = subprocess.run(
             ["loginctl", "enable-linger", username],
@@ -1012,7 +1012,7 @@ def _ensure_linger_enabled() -> None:
         return
 
     if result.returncode == 0:
-        print("✓ Linger enabled — gateway will persist after logout")
+        print("✓ Linger를 활성화했어요 — 로그아웃 후에도 게이트웨이가 유지돼요")
         return
 
     detail = (result.stderr or result.stdout or f"exit {result.returncode}").strip()
@@ -1053,30 +1053,30 @@ def systemd_install(force: bool = False, system: bool = False, run_as_user: str 
             _run_systemctl(["enable", get_service_name()], system=system, check=True, timeout=30)
             print(f"✓ {_service_scope_label(system).capitalize()} service definition updated")
             return
-        print(f"Service already installed at: {unit_path}")
-        print("Use --force to reinstall")
+        print(f"서비스가 이미 설치되어 있어요: {unit_path}")
+        print("재설치하려면 --force 를 사용하세요")
         return
 
     unit_path.parent.mkdir(parents=True, exist_ok=True)
-    print(f"Installing {_service_scope_label(system)} systemd service to: {unit_path}")
+    print(f"{_service_scope_label(system)} systemd 서비스를 설치하는 중: {unit_path}")
     unit_path.write_text(generate_systemd_unit(system=system, run_as_user=run_as_user), encoding="utf-8")
 
     _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
     _run_systemctl(["enable", get_service_name()], system=system, check=True, timeout=30)
 
     print()
-    print(f"✓ {_service_scope_label(system).capitalize()} service installed and enabled!")
+    print(f"✓ {_service_scope_label(system).capitalize()} 서비스를 설치하고 활성화했어요!")
     print()
-    print("Next steps:")
-    print(f"  {'sudo ' if system else ''}hermes gateway start{scope_flag}              # Start the service")
-    print(f"  {'sudo ' if system else ''}hermes gateway status{scope_flag}             # Check status")
-    print(f"  {'journalctl' if system else 'journalctl --user'} -u {get_service_name()} -f  # View logs")
+    print("다음 단계:")
+    print(f"  {'sudo ' if system else ''}hermes gateway start{scope_flag}              # 서비스 시작")
+    print(f"  {'sudo ' if system else ''}hermes gateway status{scope_flag}             # 상태 확인")
+    print(f"  {'journalctl' if system else 'journalctl --user'} -u {get_service_name()} -f  # 로그 보기")
     print()
 
     if system:
         configured_user = _read_systemd_user_from_unit(unit_path)
         if configured_user:
-            print(f"Configured to run as: {configured_user}")
+            print(f"실행 사용자: {configured_user}")
     else:
         _ensure_linger_enabled()
 
@@ -1094,10 +1094,10 @@ def systemd_uninstall(system: bool = False):
     unit_path = get_systemd_unit_path(system=system)
     if unit_path.exists():
         unit_path.unlink()
-        print(f"✓ Removed {unit_path}")
+        print(f"✓ 제거했어요: {unit_path}")
 
     _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
-    print(f"✓ {_service_scope_label(system).capitalize()} service uninstalled")
+    print(f"✓ {_service_scope_label(system).capitalize()} 서비스를 제거했어요")
 
 
 def systemd_start(system: bool = False):
@@ -1106,7 +1106,7 @@ def systemd_start(system: bool = False):
         _require_root_for_system_service("start")
     refresh_systemd_unit_if_needed(system=system)
     _run_systemctl(["start", get_service_name()], system=system, check=True, timeout=30)
-    print(f"✓ {_service_scope_label(system).capitalize()} service started")
+    print(f"✓ {_service_scope_label(system).capitalize()} 서비스를 시작했어요")
 
 
 
@@ -1115,7 +1115,7 @@ def systemd_stop(system: bool = False):
     if system:
         _require_root_for_system_service("stop")
     _run_systemctl(["stop", get_service_name()], system=system, check=True, timeout=90)
-    print(f"✓ {_service_scope_label(system).capitalize()} service stopped")
+    print(f"✓ {_service_scope_label(system).capitalize()} 서비스를 중지했어요")
 
 
 
@@ -2824,7 +2824,7 @@ def gateway_setup():
                     print_info("  Run in foreground: hermes gateway run")
     else:
         print()
-        print_info("No platforms configured. Run 'hermes gateway setup' when ready.")
+        print_info("설정된 플랫폼이 없어요. 준비되면 'hermes gateway setup'를 실행하세요.")
 
     print()
 
@@ -2858,39 +2858,39 @@ def gateway_command(args):
         system = getattr(args, 'system', False)
         run_as_user = getattr(args, 'run_as_user', None)
         if is_termux():
-            print("Gateway service installation is not supported on Termux.")
-            print("Run manually: hermes gateway")
+            print("Termux에서는 게이트웨이 서비스를 설치할 수 없어요.")
+            print("수동 실행: hermes gateway")
             sys.exit(1)
         if supports_systemd_services():
             if is_wsl():
-                print_warning("WSL detected — systemd services may not survive WSL restarts.")
-                print_info("  Consider running in foreground instead: hermes gateway run")
-                print_info("  Or use tmux/screen for persistence: tmux new -s hermes 'hermes gateway run'")
+                print_warning("WSL이 감지되었어요 — systemd 서비스가 WSL 재시작 후 유지되지 않을 수 있어요.")
+                print_info("  대신 포그라운드 실행을 고려해 보세요: hermes gateway run")
+                print_info("  또는 tmux/screen으로 유지하세요: tmux new -s hermes 'hermes gateway run'")
                 print()
             systemd_install(force=force, system=system, run_as_user=run_as_user)
         elif is_macos():
             launchd_install(force)
         elif is_wsl():
-            print("WSL detected but systemd is not running.")
-            print("Either enable systemd (add systemd=true to /etc/wsl.conf and restart WSL)")
-            print("or run the gateway in foreground mode:")
+            print("WSL이 감지되었지만 systemd가 실행 중이 아니에요.")
+            print("systemd를 활성화(add systemd=true to /etc/wsl.conf 후 WSL 재시작)하거나")
+            print("게이트웨이를 포그라운드 모드로 실행하세요:")
             print()
-            print("  hermes gateway run                              # direct foreground")
-            print("  tmux new -s hermes 'hermes gateway run'         # persistent via tmux")
-            print("  nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &  # background")
+            print("  hermes gateway run                              # 직접 포그라운드 실행")
+            print("  tmux new -s hermes 'hermes gateway run'         # tmux로 유지")
+            print("  nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &  # 백그라운드")
             sys.exit(1)
         elif is_container():
-            print("Service installation is not needed inside a Docker container.")
-            print("The container runtime is your service manager — use Docker restart policies instead:")
+            print("Docker 컨테이너 안에서는 서비스 설치가 필요하지 않아요.")
+            print("컨테이너 런타임이 서비스 관리자를 대신하므로 Docker 재시작 정책을 사용하세요:")
             print()
-            print("  docker run --restart unless-stopped ...   # auto-restart on crash/reboot")
-            print("  docker restart <container>                # manual restart")
+            print("  docker run --restart unless-stopped ...   # 크래시/재부팅 시 자동 재시작")
+            print("  docker restart <container>                # 수동 재시작")
             print()
-            print("To run the gateway: hermes gateway run")
+            print("게이트웨이 실행: hermes gateway run")
             sys.exit(0)
         else:
-            print("Service installation not supported on this platform.")
-            print("Run manually: hermes gateway run")
+            print("이 플랫폼에서는 서비스 설치를 지원하지 않아요.")
+            print("수동 실행: hermes gateway run")
             sys.exit(1)
     
     elif subcmd == "uninstall":
@@ -2899,55 +2899,55 @@ def gateway_command(args):
             return
         system = getattr(args, 'system', False)
         if is_termux():
-            print("Gateway service uninstall is not supported on Termux because there is no managed service to remove.")
-            print("Stop manual runs with: hermes gateway stop")
+            print("Termux에는 제거할 관리형 서비스가 없어서 게이트웨이 서비스 제거를 지원하지 않아요.")
+            print("수동 실행 중지: hermes gateway stop")
             sys.exit(1)
         if supports_systemd_services():
             systemd_uninstall(system=system)
         elif is_macos():
             launchd_uninstall()
         elif is_container():
-            print("Service uninstall is not applicable inside a Docker container.")
-            print("To stop the gateway, stop or remove the container:")
+            print("Docker 컨테이너 안에서는 서비스 제거가 해당되지 않아요.")
+            print("게이트웨이를 중지하려면 컨테이너를 중지하거나 제거하세요:")
             print()
             print("  docker stop <container>")
             print("  docker rm <container>")
             sys.exit(0)
         else:
-            print("Not supported on this platform.")
+            print("이 플랫폼에서는 지원하지 않아요.")
             sys.exit(1)
 
     elif subcmd == "start":
         system = getattr(args, 'system', False)
         if is_termux():
-            print("Gateway service start is not supported on Termux because there is no system service manager.")
-            print("Run manually: hermes gateway")
+            print("Termux에는 시스템 서비스 관리자가 없어서 게이트웨이 서비스 시작을 지원하지 않아요.")
+            print("수동 실행: hermes gateway")
             sys.exit(1)
         if supports_systemd_services():
             systemd_start(system=system)
         elif is_macos():
             launchd_start()
         elif is_wsl():
-            print("WSL detected but systemd is not available.")
-            print("Run the gateway in foreground mode instead:")
+            print("WSL이 감지되었지만 systemd를 사용할 수 없어요.")
+            print("대신 게이트웨이를 포그라운드 모드로 실행하세요:")
             print()
-            print("  hermes gateway run                              # direct foreground")
-            print("  tmux new -s hermes 'hermes gateway run'         # persistent via tmux")
-            print("  nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &  # background")
+            print("  hermes gateway run                              # 직접 포그라운드 실행")
+            print("  tmux new -s hermes 'hermes gateway run'         # tmux로 유지")
+            print("  nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &  # 백그라운드")
             print()
-            print("To enable systemd: add systemd=true to /etc/wsl.conf and run 'wsl --shutdown' from PowerShell.")
+            print("systemd를 활성화하려면 /etc/wsl.conf 에 systemd=true 를 추가하고 PowerShell에서 'wsl --shutdown'을 실행하세요.")
             sys.exit(1)
         elif is_container():
-            print("Service start is not applicable inside a Docker container.")
-            print("The gateway runs as the container's main process.")
+            print("Docker 컨테이너 안에서는 서비스 시작이 해당되지 않아요.")
+            print("게이트웨이는 컨테이너의 메인 프로세스로 실행돼요.")
             print()
-            print("  docker start <container>     # start a stopped container")
-            print("  docker restart <container>   # restart a running container")
+            print("  docker start <container>     # 중지된 컨테이너 시작")
+            print("  docker restart <container>   # 실행 중인 컨테이너 재시작")
             print()
-            print("Or run the gateway directly: hermes gateway run")
+            print("또는 게이트웨이를 직접 실행하세요: hermes gateway run")
             sys.exit(0)
         else:
-            print("Not supported on this platform.")
+            print("이 플랫폼에서는 지원하지 않아요.")
             sys.exit(1)
 
     elif subcmd == "stop":
@@ -2972,9 +2972,9 @@ def gateway_command(args):
             killed = kill_gateway_processes(all_profiles=True)
             total = killed + (1 if service_available else 0)
             if total:
-                print(f"✓ Stopped {total} gateway process(es) across all profiles")
+                print(f"✓ 모든 프로필에서 게이트웨이 프로세스 {total}개를 중지했어요")
             else:
-                print("✗ No gateway processes found")
+                print("✗ 게이트웨이 프로세스를 찾지 못했어요")
         else:
             # Default: stop only the current profile's gateway
             service_available = False
@@ -2994,11 +2994,11 @@ def gateway_command(args):
             if not service_available:
                 # No systemd/launchd — use profile-scoped PID file
                 if stop_profile_gateway():
-                    print("✓ Stopped gateway for this profile")
+                    print("✓ 현재 프로필의 게이트웨이를 중지했어요")
                 else:
-                    print("✗ No gateway running for this profile")
+                    print("✗ 현재 프로필에서 실행 중인 게이트웨이가 없어요")
             else:
-                print(f"✓ Stopped {get_service_name()} service")
+                print(f"✓ {get_service_name()} 서비스를 중지했어요")
     
     elif subcmd == "restart":
         # Try service first, fall back to killing and restarting
@@ -3029,30 +3029,30 @@ def gateway_command(args):
                     import getpass
                     _username = getpass.getuser()
                     print()
-                    print("⚠ Cannot restart gateway as a service — linger is not enabled.")
-                    print("  The gateway user service requires linger to function on headless servers.")
+                    print("⚠ 서비스를 통해 게이트웨이를 재시작할 수 없어요 — linger가 활성화되어 있지 않아요.")
+                    print("  헤드리스 서버에서 게이트웨이 사용자 서비스가 동작하려면 linger가 필요해요.")
                     print()
-                    print(f"  Run:  sudo loginctl enable-linger {_username}")
+                    print(f"  실행:  sudo loginctl enable-linger {_username}")
                     print()
-                    print("  Then restart the gateway:")
+                    print("  그다음 게이트웨이를 다시 시작하세요:")
                     print("    hermes gateway restart")
                     return
 
             if service_configured:
                 print()
-                print("✗ Gateway service restart failed.")
-                print("  The service definition exists, but the service manager did not recover it.")
-                print("  Fix the service, then retry: hermes gateway start")
+                print("✗ 게이트웨이 서비스 재시작에 실패했어요.")
+                print("  서비스 정의는 존재하지만 서비스 관리자가 복구하지 못했어요.")
+                print("  서비스를 고친 뒤 다시 시도하세요: hermes gateway start")
                 sys.exit(1)
 
             # Manual restart: stop only this profile's gateway
             if stop_profile_gateway():
-                print("✓ Stopped gateway for this profile")
+                print("✓ 현재 프로필의 게이트웨이를 중지했어요")
 
             _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
 
             # Start fresh
-            print("Starting gateway...")
+            print("게이트웨이를 시작하는 중...")
             run_gateway(verbose=0)
     
     elif subcmd == "status":
@@ -3068,42 +3068,42 @@ def gateway_command(args):
             # Check for manually running processes
             pids = find_gateway_pids()
             if pids:
-                print(f"✓ Gateway is running (PID: {', '.join(map(str, pids))})")
-                print("  (Running manually, not as a system service)")
+                print(f"✓ 게이트웨이가 실행 중이에요 (PID: {', '.join(map(str, pids))})")
+                print("  (시스템 서비스가 아니라 수동으로 실행 중이에요)")
                 runtime_lines = _runtime_health_lines()
                 if runtime_lines:
                     print()
-                    print("Recent gateway health:")
+                    print("최근 게이트웨이 상태:")
                     for line in runtime_lines:
                         print(f"  {line}")
                 print()
                 if is_termux():
-                    print("Termux note:")
-                    print("  Android may stop background jobs when Termux is suspended")
+                    print("Termux 참고:")
+                    print("  Termux가 일시중지되면 Android가 백그라운드 작업을 멈출 수 있어요")
                 elif is_wsl():
-                    print("WSL note:")
-                    print("  The gateway is running in foreground/manual mode (recommended for WSL).")
-                    print("  Use tmux or screen for persistence across terminal closes.")
+                    print("WSL 참고:")
+                    print("  게이트웨이는 포그라운드/수동 모드로 실행 중이에요 (WSL 권장).")
+                    print("  터미널을 닫아도 유지하려면 tmux 또는 screen을 사용하세요.")
                 else:
-                    print("To install as a service:")
+                    print("서비스로 설치하려면:")
                     print("  hermes gateway install")
                     print("  sudo hermes gateway install --system")
             else:
-                print("✗ Gateway is not running")
+                print("✗ 게이트웨이가 실행 중이 아니에요")
                 runtime_lines = _runtime_health_lines()
                 if runtime_lines:
                     print()
-                    print("Recent gateway health:")
+                    print("최근 게이트웨이 상태:")
                     for line in runtime_lines:
                         print(f"  {line}")
                 print()
-                print("To start:")
-                print("  hermes gateway run      # Run in foreground")
+                print("시작하려면:")
+                print("  hermes gateway run      # 포그라운드 실행")
                 if is_termux():
-                    print("  nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &  # Best-effort background start")
+                    print("  nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &  # 최선의 백그라운드 시작")
                 elif is_wsl():
-                    print("  tmux new -s hermes 'hermes gateway run'         # persistent via tmux")
-                    print("  nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &  # background")
+                    print("  tmux new -s hermes 'hermes gateway run'         # tmux로 유지")
+                    print("  nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &  # 백그라운드")
                 else:
-                    print("  hermes gateway install  # Install as user service")
-                    print("  sudo hermes gateway install --system  # Install as boot-time system service")
+                    print("  hermes gateway install  # 사용자 서비스로 설치")
+                    print("  sudo hermes gateway install --system  # 부팅 시 시작되는 시스템 서비스로 설치")
