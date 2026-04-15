@@ -22,10 +22,11 @@ logger = logging.getLogger(__name__)
 from hermes_time import now as _hermes_now
 
 try:
-    from croniter import croniter
+    from croniter import croniter as _croniter_ref
     HAS_CRONITER = True
 except ImportError:
     HAS_CRONITER = False
+    _croniter_ref = None
 
 # =============================================================================
 # Configuration
@@ -304,11 +305,23 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         return next_run.isoformat()
 
     elif schedule["kind"] == "cron":
-        if not HAS_CRONITER:
+        global _croniter_ref, HAS_CRONITER
+        if not HAS_CRONITER and _croniter_ref is None:
+            try:
+                from croniter import croniter as _croniter_ref
+                HAS_CRONITER = True
+            except ImportError:
+                logger.warning("compute_next_run: croniter not available, cannot compute next run for cron schedule")
+                return None
+        if _croniter_ref is None:
             return None
-        cron = croniter(schedule["expr"], now)
-        next_run = cron.get_next(datetime)
-        return next_run.isoformat()
+        try:
+            cron = _croniter_ref(schedule["expr"], now)
+            next_run = cron.get_next(datetime)
+            return next_run.isoformat()
+        except Exception as e:
+            logger.error("compute_next_run: failed to compute next run for cron schedule %s: %s", schedule["expr"], e)
+            return None
 
     return None
 
