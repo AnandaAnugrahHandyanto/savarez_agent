@@ -111,6 +111,7 @@ class TestFeishuExecApproval:
         # Verify card payload contains the command and buttons
         card = json.loads(kwargs["payload"])
         assert card["header"]["template"] == "orange"
+        assert card["config"]["update_multi"] is True
         assert "rm -rf /important" in card["elements"][0]["content"]
         assert "dangerous deletion" in card["elements"][0]["content"]
 
@@ -293,6 +294,34 @@ class TestFeishuApprovalCallback:
         mock_update.assert_called_once_with("msg_003", "Approved for session", "Bob", "session")
 
     @pytest.mark.asyncio
+    async def test_resolves_when_action_value_is_json_string_and_id_is_string(self):
+        adapter = _make_adapter()
+        adapter._approval_state[5] = {
+            "session_key": "sess-5",
+            "message_id": "msg_005",
+            "chat_id": "oc_500",
+        }
+
+        data = _make_card_action_data(
+            action_value=json.dumps({"hermes_action": "approve_once", "approval_id": "5"}),
+            token="tok_json_string",
+        )
+
+        with (
+            patch.object(
+                adapter, "_resolve_sender_profile", new_callable=AsyncMock,
+                return_value={"user_id": "ou_u", "user_name": "Eve", "user_id_alt": None},
+            ),
+            patch.object(adapter, "_update_approval_card", new_callable=AsyncMock) as mock_update,
+            patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve,
+        ):
+            await adapter._handle_card_action_event(data)
+
+        mock_resolve.assert_called_once_with("sess-5", "once")
+        mock_update.assert_called_once_with("msg_005", "Approved once", "Eve", "once")
+        assert 5 not in adapter._approval_state
+
+    @pytest.mark.asyncio
     async def test_always_approval(self):
         adapter = _make_adapter()
         adapter._approval_state[4] = {
@@ -374,8 +403,7 @@ class TestFeishuUpdateApprovalCard:
     async def test_updates_card_on_approve(self):
         adapter = _make_adapter()
 
-        mock_update = AsyncMock()
-        adapter._client.im.v1.message.update = MagicMock()
+        adapter._client.im.v1.message.patch = MagicMock()
 
         with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
             await adapter._update_approval_card(
@@ -383,13 +411,18 @@ class TestFeishuUpdateApprovalCard:
             )
 
         mock_thread.assert_called_once()
-        # Verify the update request was built
+        # Verify the patch request was built
         call_args = mock_thread.call_args
-        assert call_args[0][0] == adapter._client.im.v1.message.update
+        assert call_args[0][0] == adapter._client.im.v1.message.patch
+        request = call_args[0][1]
+        payload = json.loads(request.request_body.content)
+        assert payload["config"]["update_multi"] is True
 
     @pytest.mark.asyncio
     async def test_updates_card_on_deny(self):
         adapter = _make_adapter()
+
+        adapter._client.im.v1.message.patch = MagicMock()
 
         with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
             await adapter._update_approval_card(
@@ -397,6 +430,8 @@ class TestFeishuUpdateApprovalCard:
             )
 
         mock_thread.assert_called_once()
+        call_args = mock_thread.call_args
+        assert call_args[0][0] == adapter._client.im.v1.message.patch
 
     @pytest.mark.asyncio
     async def test_skips_update_when_not_connected(self):

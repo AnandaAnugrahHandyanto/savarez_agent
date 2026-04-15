@@ -66,6 +66,8 @@ try:
         GetMessageRequest,
         GetMessageResourceRequest,
         P2ImMessageMessageReadV1,
+        PatchMessageRequest,
+        PatchMessageRequestBody,
         ReplyMessageRequest,
         ReplyMessageRequestBody,
         UpdateMessageRequest,
@@ -1455,7 +1457,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 }
 
             card = {
-                "config": {"wide_screen_mode": True},
+                "config": {"wide_screen_mode": True, "update_multi": True},
                 "header": {
                     "title": {"content": "⚠️ Command Approval Required", "tag": "plain_text"},
                     "template": "orange",
@@ -1506,7 +1508,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return
         icon = "❌" if choice == "deny" else "✅"
         card = {
-            "config": {"wide_screen_mode": True},
+            "config": {"wide_screen_mode": True, "update_multi": True},
             "header": {
                 "title": {"content": f"{icon} {label}", "tag": "plain_text"},
                 "template": "red" if choice == "deny" else "green",
@@ -1520,9 +1522,9 @@ class FeishuAdapter(BasePlatformAdapter):
         }
         try:
             payload = json.dumps(card, ensure_ascii=False)
-            body = self._build_update_message_body(msg_type="interactive", content=payload)
-            request = self._build_update_message_request(message_id=message_id, request_body=body)
-            await asyncio.to_thread(self._client.im.v1.message.update, request)
+            body = self._build_patch_message_body(content=payload)
+            request = self._build_patch_message_request(message_id=message_id, request_body=body)
+            await asyncio.to_thread(self._client.im.v1.message.patch, request)
         except Exception as exc:
             logger.warning("[Feishu] Failed to update approval card %s: %s", message_id, exc)
 
@@ -1957,12 +1959,35 @@ class FeishuAdapter(BasePlatformAdapter):
         action = getattr(event, "action", None)
         action_tag = str(getattr(action, "tag", "") or "button")
         action_value = getattr(action, "value", {}) or {}
+        if isinstance(action_value, str):
+            try:
+                action_value = json.loads(action_value)
+            except Exception:
+                logger.debug("[Feishu] Card action value is non-JSON string: %r", action_value)
+                action_value = {}
 
         # --- Exec approval button intercept ---
         hermes_action = action_value.get("hermes_action") if isinstance(action_value, dict) else None
         if hermes_action:
             approval_id = action_value.get("approval_id")
-            state = self._approval_state.pop(approval_id, None)
+            lookup_keys = []
+            if approval_id is not None:
+                lookup_keys.extend([approval_id, str(approval_id)])
+                try:
+                    lookup_keys.append(int(str(approval_id)))
+                except Exception:
+                    pass
+
+            state = None
+            seen_lookup = set()
+            for key in lookup_keys:
+                marker = (type(key), str(key))
+                if marker in seen_lookup:
+                    continue
+                seen_lookup.add(marker)
+                state = self._approval_state.pop(key, None)
+                if state:
+                    break
             if not state:
                 logger.debug("[Feishu] Approval %s already resolved or unknown", approval_id)
                 return
@@ -3537,6 +3562,23 @@ class FeishuAdapter(BasePlatformAdapter):
         if "UpdateMessageRequest" in globals():
             return (
                 UpdateMessageRequest.builder()
+                .message_id(message_id)
+                .request_body(request_body)
+                .build()
+            )
+        return SimpleNamespace(message_id=message_id, request_body=request_body)
+
+    @staticmethod
+    def _build_patch_message_body(*, content: str) -> Any:
+        if "PatchMessageRequestBody" in globals():
+            return PatchMessageRequestBody.builder().content(content).build()
+        return SimpleNamespace(content=content)
+
+    @staticmethod
+    def _build_patch_message_request(message_id: str, request_body: Any) -> Any:
+        if "PatchMessageRequest" in globals():
+            return (
+                PatchMessageRequest.builder()
                 .message_id(message_id)
                 .request_body(request_body)
                 .build()
