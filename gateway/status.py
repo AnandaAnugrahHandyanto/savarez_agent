@@ -95,6 +95,10 @@ def _get_process_start_time(pid: int) -> Optional[int]:
     on those platforms).  Returns None on any failure so callers degrade
     gracefully rather than crashing.
     """
+    import subprocess
+    import calendar
+    from email.utils import parsedate
+
     # Linux: read field 22 from /proc/<pid>/stat (clock ticks since boot).
     stat_path = Path(f"/proc/{pid}/stat")
     if stat_path.exists():
@@ -104,7 +108,6 @@ def _get_process_start_time(pid: int) -> Optional[int]:
             return None
 
     # macOS / BSD: use `ps` to get the epoch start time.
-    import subprocess
     try:
         result = subprocess.run(
             ["ps", "-p", str(pid), "-o", "lstart="],
@@ -113,8 +116,6 @@ def _get_process_start_time(pid: int) -> Optional[int]:
         if result.returncode != 0 or not result.stdout.strip():
             return None
         # Parse the human-readable date string from `ps -o lstart=`.
-        from email.utils import parsedate
-        import calendar
         parsed = parsedate(result.stdout.strip())
         if parsed is None:
             return None
