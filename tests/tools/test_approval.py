@@ -821,3 +821,58 @@ class TestChmodExecuteCombo:
         assert dangerous is False
 
 
+class TestShellWordSplittingBypass:
+    """Spaces between dash and flag letters must not bypass detection.
+
+    Bash treats ``rm - r /`` the same as ``rm -r /`` in many contexts.
+    The normalization step should collapse ``- r`` → ``-r`` before
+    pattern matching.
+    """
+
+    def test_rm_space_r(self):
+        dangerous, _, desc = detect_dangerous_command("rm - r /tmp/dir")
+        assert dangerous is True, "'rm - r' should be caught as recursive delete"
+
+    def test_rm_space_rf(self):
+        dangerous, _, desc = detect_dangerous_command("rm - rf /home/user")
+        assert dangerous is True, "'rm - rf' should be caught as recursive delete"
+
+    def test_bash_space_c(self):
+        dangerous, _, desc = detect_dangerous_command("bash - c 'echo pwned'")
+        assert dangerous is True, "'bash - c' should be caught as shell via -c"
+
+    def test_chmod_space_R_777(self):
+        """``chmod - R 777`` collapses to ``chmod -R 777`` which is dangerous."""
+        dangerous, _, desc = detect_dangerous_command("chmod - R 777 /var")
+        assert dangerous is True, "'chmod - R 777' should be caught after collapsing"
+
+    def test_git_push_space_force(self):
+        """``git push - -force`` — double-dash bypass doesn't collapse (correct)."""
+        # ``- -force`` has dash-space-dash, not dash-space-letter, so it
+        # doesn't collapse.  This is correct — ``- -force`` isn't valid bash.
+        # But ``git push -f`` with space does collapse:
+        dangerous, _, desc = detect_dangerous_command("git push origin main - f")
+        assert dangerous is True, "'git push - f' should be caught as force push"
+
+    def test_sh_space_c(self):
+        dangerous, _, desc = detect_dangerous_command("sh - c 'cat /etc/shadow'")
+        assert dangerous is True, "'sh - c' should be caught as shell via -c"
+
+    def test_python_space_e(self):
+        dangerous, _, desc = detect_dangerous_command("python3 - e 'import os'")
+        assert dangerous is True, "'python3 - e' should be caught as script exec"
+
+    def test_safe_command_with_dash_arg_not_flagged(self):
+        """A literal dash argument (stdin) should not be mangled into a flag."""
+        dangerous, _, _ = detect_dangerous_command("cat - < input.txt")
+        assert dangerous is False, "'cat -' should remain safe"
+
+    def test_multiple_spaces_collapsed(self):
+        dangerous, _, desc = detect_dangerous_command("rm -   r /tmp/dir")
+        assert dangerous is True, "'rm -   r' should be caught after collapsing"
+
+    def test_safe_single_file_not_affected(self):
+        """Normalization must not break safe commands."""
+        dangerous, _, _ = detect_dangerous_command("rm readme.txt")
+        assert dangerous is False
+

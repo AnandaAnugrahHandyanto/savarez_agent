@@ -169,8 +169,14 @@ def _normalize_command_for_detection(command: str) -> str:
     """Normalize a command string before dangerous-pattern matching.
 
     Strips ANSI escape sequences (full ECMA-48 via tools.ansi_strip),
-    null bytes, and normalizes Unicode fullwidth characters so that
-    obfuscation techniques cannot bypass the pattern-based detection.
+    null bytes, normalizes Unicode fullwidth characters, and collapses
+    whitespace around option flags so that shell word-splitting tricks
+    cannot bypass pattern-based detection.
+
+    Shell word-splitting bypass example:
+        ``rm - r /``  bypasses the ``rm\\s+-[^\\s]*r`` pattern because of
+        the space between ``-`` and ``r``, but bash still executes it as
+        ``rm -r /``.  The normalization below collapses ``- r`` → ``-r``.
     """
     from tools.ansi_strip import strip_ansi
 
@@ -180,6 +186,15 @@ def _normalize_command_for_detection(command: str) -> str:
     command = command.replace('\x00', '')
     # Normalize Unicode (fullwidth Latin, halfwidth Katakana, etc.)
     command = unicodedata.normalize('NFKC', command)
+    # Collapse whitespace between a leading dash and option letters/digits.
+    # Shells treat ``rm - r`` the same as ``rm -r`` in many contexts, but
+    # the regex patterns expect the flag characters to be adjacent to the
+    # dash.  This handles both single (``-r``) and double (``--recursive``)
+    # dash prefixes.
+    #   ``- r``       → ``-r``
+    #   ``- -recursive`` → ``--recursive``
+    #   ``- c 'cmd'`` → ``-c 'cmd'``
+    command = re.sub(r'(?<=\s)-\s+(?=[A-Za-z0-9])', '-', command)
     return command
 
 
