@@ -519,8 +519,9 @@ class HonchoMemoryProvider(MemoryProvider):
         if self._recall_mode == "tools":
             return ""
 
-        # B5: injection_frequency — if "first-turn" and past first turn, return empty
-        if self._injection_frequency == "first-turn" and self._turn_count > 0:
+        # B5: injection_frequency — if "first-turn" and past first turn, return empty.
+        # _turn_count is 1-indexed (first user message = 1), so > 1 means "past first".
+        if self._injection_frequency == "first-turn" and self._turn_count > 1:
             return ""
 
         parts = []
