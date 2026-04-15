@@ -9931,10 +9931,14 @@ class AIAgent:
                             self.thinking_callback("")
 
                     _use_streaming = True
+                    # ACP backends currently return final chat-completions style
+                    # response objects, not iterable stream chunks.
+                    if self.provider == "copilot-acp" or str(self.base_url or "").lower().startswith("acp://copilot"):
+                        _use_streaming = False
                     # Provider signaled "stream not supported" on a previous
                     # attempt — switch to non-streaming for the rest of this
                     # session instead of re-failing every retry.
-                    if getattr(self, "_disable_streaming", False):
+                    elif getattr(self, "_disable_streaming", False):
                         _use_streaming = False
                     elif not self._has_stream_consumers():
                         # No display/TTS consumer. Still prefer streaming for
