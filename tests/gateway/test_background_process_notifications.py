@@ -8,6 +8,7 @@ Contributed by @PeterFile (PR #593), reimplemented on current main.
 """
 
 import asyncio
+import queue
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -31,6 +32,15 @@ class _FakeRegistry:
         if self._sessions:
             return self._sessions.pop(0)
         return None
+
+
+class _FakeProcessRegistry:
+    """Minimal registry stub for watch notification drain tests."""
+
+    def __init__(self, events):
+        self.completion_queue = queue.Queue()
+        for evt in events:
+            self.completion_queue.put(evt)
 
 
 def _build_runner(monkeypatch, tmp_path, mode: str) -> GatewayRunner:
@@ -60,6 +70,10 @@ def _watcher_dict(session_id="proc_test", thread_id=""):
     if thread_id:
         d["thread_id"] = thread_id
     return d
+
+
+def _watch_source():
+    return SimpleNamespace(platform=Platform.TELEGRAM, chat_id="123")
 
 
 # ---------------------------------------------------------------------------
@@ -243,3 +257,34 @@ async def test_no_thread_id_sends_no_metadata(monkeypatch, tmp_path):
     assert adapter.send.await_count == 1
     _, kwargs = adapter.send.call_args
     assert kwargs["metadata"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode, should_inject", [("off", False), ("all", True)])
+async def test_drain_watch_notifications_respects_background_mode(monkeypatch, tmp_path, mode, should_inject):
+    import tools.process_registry as pr_module
+
+    runner = _build_runner(monkeypatch, tmp_path, mode)
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter.handle_message = AsyncMock()
+
+    events = [
+        {"type": "watch_match", "session_id": "proc_a", "pattern": "ERROR", "output": "ERROR: boom"},
+        {"type": "watch_disabled", "session_id": "proc_a", "message": "disabled"},
+        {"type": "completion", "session_id": "proc_a"},
+    ]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeProcessRegistry(events))
+
+    original_event = SimpleNamespace(source=_watch_source())
+
+    await runner._drain_watch_notifications(original_event, mode)
+
+    if should_inject:
+        assert adapter.handle_message.await_count == 2
+        first_message = adapter.handle_message.await_args_list[0].args[0]
+        assert first_message.internal is True
+        assert "Background process" in first_message.text
+    else:
+        assert adapter.handle_message.await_count == 0
+
+    assert pr_module.process_registry.completion_queue.empty()
