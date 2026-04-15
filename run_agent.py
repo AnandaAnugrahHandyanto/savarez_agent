@@ -1078,6 +1078,12 @@ class AIAgent:
         
         # Track conversation messages for session logging
         self._session_messages: List[Dict[str, Any]] = []
+
+        # Responses encrypted reasoning replay state. Some OpenAI-compatible
+        # routes accept GPT-5 Responses requests but later reject replayed
+        # encrypted reasoning blobs. When that happens we disable replay for the
+        # rest of the session and fall back to stateless continuity.
+        self._codex_reasoning_replay_enabled = True
         
         # Cached system prompt -- built once per session, only rebuilt on compression
         self._cached_system_prompt: Optional[str] = None
@@ -2746,6 +2752,23 @@ class AIAgent:
 
         return context
 
+    def _disable_codex_reasoning_replay(self, messages: Optional[List[Dict[str, Any]]] = None) -> Dict[str, int]:
+        """Disable Responses encrypted reasoning replay and strip cached replay state."""
+        stripped_messages = 0
+        stripped_items = 0
+        target_messages = messages if isinstance(messages, list) else []
+
+        for msg in target_messages:
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            items = msg.pop("codex_reasoning_items", None)
+            if isinstance(items, list) and items:
+                stripped_messages += 1
+                stripped_items += len(items)
+
+        self._codex_reasoning_replay_enabled = False
+        return {"messages": stripped_messages, "items": stripped_items}
+
     def _usage_summary_for_api_request_hook(self, response: Any) -> Optional[Dict[str, Any]]:
         """Token buckets for ``post_api_request`` plugins (no raw ``response`` object)."""
         if response is None:
@@ -3566,6 +3589,7 @@ class AIAgent:
         """Convert internal chat-style messages to Responses input items."""
         items: List[Dict[str, Any]] = []
         seen_item_ids: set = set()
+        replay_enabled = bool(getattr(self, "_codex_reasoning_replay_enabled", True))
 
         for msg in messages:
             if not isinstance(msg, dict):
@@ -3581,7 +3605,7 @@ class AIAgent:
                 if role == "assistant":
                     # Replay encrypted reasoning items from previous turns
                     # so the API can maintain coherent reasoning chains.
-                    codex_reasoning = msg.get("codex_reasoning_items")
+                    codex_reasoning = msg.get("codex_reasoning_items") if replay_enabled else None
                     has_codex_reasoning = False
                     if isinstance(codex_reasoning, list):
                         for ri in codex_reasoning:
@@ -6159,6 +6183,7 @@ class AIAgent:
                 self.provider == "openai-codex"
                 or "chatgpt.com/backend-api/codex" in self.base_url.lower()
             )
+            replay_enabled = bool(getattr(self, "_codex_reasoning_replay_enabled", True))
 
             # Resolve reasoning effort: config > default (medium)
             reasoning_effort = "medium"
@@ -6198,7 +6223,7 @@ class AIAgent:
                         kwargs["reasoning"] = github_reasoning
                 else:
                     kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
-                    kwargs["include"] = ["reasoning.encrypted_content"]
+                    kwargs["include"] = ["reasoning.encrypted_content"] if replay_enabled else []
             elif not is_github_responses:
                 kwargs["include"] = []
 
@@ -8344,6 +8369,7 @@ class AIAgent:
             anthropic_auth_retry_attempted=False
             nous_auth_retry_attempted=False
             thinking_sig_retry_attempted = False
+            invalid_encrypted_content_retry_attempted = False
             has_retried_429 = False
             restart_with_compressed_messages = False
             restart_with_length_continuation = False
@@ -9167,6 +9193,35 @@ class AIAgent:
                             "%sThinking block signature recovery: stripped "
                             "reasoning_details from %d messages",
                             self.log_prefix, len(messages),
+                        )
+                        continue
+
+                    if (
+                        classified.reason == FailoverReason.invalid_encrypted_content
+                        and not invalid_encrypted_content_retry_attempted
+                        and self.api_mode == "codex_responses"
+                        and bool(getattr(self, "_codex_reasoning_replay_enabled", True))
+                        and any(
+                            isinstance(_m, dict)
+                            and _m.get("role") == "assistant"
+                            and isinstance(_m.get("codex_reasoning_items"), list)
+                            and _m.get("codex_reasoning_items")
+                            for _m in messages
+                        )
+                    ):
+                        invalid_encrypted_content_retry_attempted = True
+                        replay_stats = self._disable_codex_reasoning_replay(messages)
+                        self._vprint(
+                            f"{self.log_prefix}⚠️  Encrypted reasoning replay was rejected by the provider — "
+                            f"disabled replay and stripped {replay_stats['items']} item(s) from "
+                            f"{replay_stats['messages']} message(s), retrying...",
+                            force=True,
+                        )
+                        logging.warning(
+                            "%sInvalid encrypted reasoning recovery: disabled replay and stripped %d items from %d messages",
+                            self.log_prefix,
+                            replay_stats["items"],
+                            replay_stats["messages"],
                         )
                         continue
 

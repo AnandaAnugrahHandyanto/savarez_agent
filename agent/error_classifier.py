@@ -48,6 +48,7 @@ class FailoverReason(enum.Enum):
 
     # Request format
     format_error = "format_error"        # 400 bad request — abort or strip + retry
+    invalid_encrypted_content = "invalid_encrypted_content"  # Responses replay blob rejected — strip replay state and retry
 
     # Provider-specific
     thinking_signature = "thinking_signature"  # Anthropic thinking block sig invalid
@@ -558,6 +559,21 @@ def _classify_400(
 ) -> ClassifiedError:
     """Classify 400 Bad Request — context overflow, format error, or generic."""
 
+    error_code_lower = (error_code or "").lower()
+    if (
+        error_code_lower == "invalid_encrypted_content"
+        or "invalid_encrypted_content" in error_msg
+        or (
+            "encrypted content for item" in error_msg
+            and "could not be verified" in error_msg
+        )
+    ):
+        return result_fn(
+            FailoverReason.invalid_encrypted_content,
+            retryable=True,
+            should_fallback=False,
+        )
+
     # Context overflow from 400
     if any(p in error_msg for p in _CONTEXT_OVERFLOW_PATTERNS):
         return result_fn(
@@ -654,6 +670,13 @@ def _classify_by_error_code(
             FailoverReason.context_overflow,
             retryable=True,
             should_compress=True,
+        )
+
+    if code_lower == "invalid_encrypted_content":
+        return result_fn(
+            FailoverReason.invalid_encrypted_content,
+            retryable=True,
+            should_fallback=False,
         )
 
     return None
@@ -792,11 +815,40 @@ def _extract_error_code(body: dict) -> str:
     """Extract an error code string from the response body."""
     if not body:
         return ""
+
+    def _code_from_payload(payload: dict) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        payload_error = payload.get("error", {})
+        if isinstance(payload_error, dict):
+            nested = payload_error.get("code") or payload_error.get("type") or ""
+            if isinstance(nested, str) and nested.strip() and nested.strip() != "400":
+                return nested.strip()
+        code = payload.get("code") or payload.get("error_code") or ""
+        if isinstance(code, (str, int)):
+            text = str(code).strip()
+            if text and text != "400":
+                return text
+        return ""
+
     error_obj = body.get("error", {})
     if isinstance(error_obj, dict):
         code = error_obj.get("code") or error_obj.get("type") or ""
-        if isinstance(code, str) and code.strip():
+        if isinstance(code, str) and code.strip() and code.strip() != "400":
             return code.strip()
+
+        message = error_obj.get("message")
+        if isinstance(message, str) and message.strip().startswith("{"):
+            try:
+                import json
+
+                inner = json.loads(message)
+            except (json.JSONDecodeError, TypeError):
+                inner = None
+            nested_code = _code_from_payload(inner)
+            if nested_code:
+                return nested_code
+
     # Top-level code
     code = body.get("code") or body.get("error_code") or ""
     if isinstance(code, (str, int)):
