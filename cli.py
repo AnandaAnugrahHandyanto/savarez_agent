@@ -401,9 +401,16 @@ def load_cli_config() -> Dict[str, Any]:
     # filesystem is directly accessible.  For ALL remote/container backends
     # (ssh, docker, modal, singularity), the host path doesn't exist on the
     # target -- remove the key so terminal_tool.py uses its per-backend default.
+    # If TERMINAL_CWD is already set (e.g. by gateway from MESSAGING_CWD),
+    # respect it and don't overwrite with os.getcwd() (#10225).
     if terminal_config.get("cwd") in (".", "auto", "cwd"):
         effective_backend = terminal_config.get("env_type", "local")
-        if effective_backend == "local":
+        existing_cwd = os.getenv("TERMINAL_CWD")
+        if existing_cwd and Path(existing_cwd).is_dir():
+            # Gateway or another process already set TERMINAL_CWD — reuse it
+            terminal_config["cwd"] = existing_cwd
+            defaults["terminal"]["cwd"] = existing_cwd
+        elif effective_backend == "local":
             terminal_config["cwd"] = os.getcwd()
             defaults["terminal"]["cwd"] = terminal_config["cwd"]
         else:
