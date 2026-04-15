@@ -56,3 +56,44 @@ async def test_web_extract_passes_pdf_parser_options_to_firecrawl(monkeypatch):
             "parsers": [{"type": "pdf", "mode": "ocr", "max_pages": 7}],
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_web_crawl_passes_pdf_parser_options_to_firecrawl(monkeypatch):
+    calls = []
+
+    class FakeCrawlResult:
+        status = "completed"
+        data = []
+
+    class FakeFirecrawlClient:
+        def crawl(self, **kwargs):
+            calls.append(kwargs)
+            return FakeCrawlResult()
+
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "fake-key")
+    monkeypatch.setattr(web_tools, "_get_firecrawl_client", lambda: FakeFirecrawlClient())
+    monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
+    monkeypatch.setattr(web_tools, "check_website_access", lambda url: None)
+    monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+
+    result = json.loads(
+        await web_tools.web_crawl_tool(
+            "https://example.com/report.pdf",
+            use_llm_processing=False,
+            pdf_mode="fast",
+            pdf_max_pages=3,
+        )
+    )
+
+    assert result["results"] == []
+    assert calls == [
+        {
+            "url": "https://example.com/report.pdf",
+            "limit": 20,
+            "scrape_options": {
+                "formats": ["markdown"],
+                "parsers": [{"type": "pdf", "mode": "fast", "max_pages": 3}],
+            },
+        }
+    ]

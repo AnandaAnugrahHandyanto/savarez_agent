@@ -1552,7 +1552,9 @@ async def web_crawl_tool(
     depth: str = "basic", 
     use_llm_processing: bool = True,
     model: Optional[str] = None,
-    min_length: int = DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION
+    min_length: int = DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION,
+    pdf_mode: Optional[str] = None,
+    pdf_max_pages: Optional[int] = None,
 ) -> str:
     """
     Crawl a website with specific instructions using available crawling API backend.
@@ -1567,6 +1569,8 @@ async def web_crawl_tool(
         use_llm_processing (bool): Whether to process content with LLM for summarization (default: True)
         model (Optional[str]): The model to use for LLM processing (defaults to current auxiliary backend model)
         min_length (int): Minimum content length to trigger LLM processing (default: 5000)
+        pdf_mode (Optional[str]): Firecrawl PDF parser mode for PDF URLs only ("auto", "fast", or "ocr")
+        pdf_max_pages (Optional[int]): Optional page cap for Firecrawl PDF parsing during crawl scrape_options
     
     Returns:
         str: JSON string containing crawled content. If LLM processing is enabled and successful,
@@ -1583,7 +1587,9 @@ async def web_crawl_tool(
             "depth": depth,
             "use_llm_processing": use_llm_processing,
             "model": model,
-            "min_length": min_length
+            "min_length": min_length,
+            "pdf_mode": pdf_mode,
+            "pdf_max_pages": pdf_max_pages,
         },
         "error": None,
         "pages_crawled": 0,
@@ -1716,11 +1722,20 @@ async def web_crawl_tool(
         # The crawl() method automatically waits for completion and returns all data
         
         # Build crawl parameters - keep it simple
+        scrape_options: Dict[str, Any] = {
+            "formats": ["markdown"]  # Just markdown for simplicity
+        }
+        parsers = _build_firecrawl_parsers(
+            url,
+            pdf_mode=pdf_mode,
+            pdf_max_pages=pdf_max_pages,
+        )
+        if parsers is not None:
+            scrape_options["parsers"] = parsers
+
         crawl_params = {
             "limit": 20,  # Limit number of pages to crawl
-            "scrape_options": {
-                "formats": ["markdown"]  # Just markdown for simplicity
-            }
+            "scrape_options": scrape_options,
         }
         
         # Note: The 'prompt' parameter is not documented for crawl
