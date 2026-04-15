@@ -49,7 +49,11 @@ class MessageDeduplicator:
             return False
         now = time.time()
         if msg_id in self._seen:
-            return True
+            # Check if entry is still within TTL
+            if self._seen[msg_id] > now - self._ttl:
+                return True
+            # Entry expired, remove it
+            del self._seen[msg_id]
         self._seen[msg_id] = now
         if len(self._seen) > self._max_size:
             cutoff = now - self._ttl
