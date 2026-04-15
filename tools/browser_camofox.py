@@ -74,7 +74,8 @@ def check_camofox_available() -> bool:
                     from urllib.parse import urlparse
                     parsed = urlparse(url)
                     host = parsed.hostname or "localhost"
-                    _vnc_url = f"http://{host}:{vnc_port}"
+                    scheme = parsed.scheme or "http"
+                    _vnc_url = f"{scheme}://{host}:{vnc_port}"
             except (ValueError, KeyError):
                 pass
             _vnc_url_checked = True

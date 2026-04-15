@@ -203,6 +203,13 @@ class TestVncUrlDiscovery:
             assert check_camofox_available() is True
         assert get_vnc_url() == "http://myhost:6080"
 
+    def test_vnc_url_preserves_https_scheme(self, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "https://secure-browser.example")
+        health_resp = _mock_response(json_data={"ok": True, "vncPort": 6080})
+        with patch("tools.browser_camofox.requests.get", return_value=health_resp):
+            assert check_camofox_available() is True
+        assert get_vnc_url() == "https://secure-browser.example:6080"
+
     def test_vnc_url_none_when_headless(self, monkeypatch):
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
         health_resp = _mock_response(json_data={"ok": True})
