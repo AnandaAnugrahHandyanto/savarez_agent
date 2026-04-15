@@ -81,7 +81,7 @@ Hermes has two entry points: start the terminal UI with `hermes`, or run the gat
 | Interrupt current work | `Ctrl+C` or send a new message | `/stop` or send a new message |
 | Platform-specific status | `/platforms` | `/status`, `/sethome` |
 
-`/sleep` is a manual memory-consolidation pass for the CLI. It analyzes prior session history to learn which conversations tend to matter for a given user, scores curated memory entries against those learned patterns, and proposes low-value entries for removal from `MEMORY.md` while leaving `USER.md` untouched. By default it runs in preview mode; add `--apply` to persist the suggested changes. `quick` uses the default threshold; `deep` is more aggressive.
+`/sleep` is a manual memory-consolidation pass for the CLI. It analyzes prior session history to learn which conversations tend to matter for a given user, scores curated memory entries against those learned patterns, and proposes low-value entries for removal from `MEMORY.md` while leaving `USER.md` untouched. By default it runs in preview mode; add `--apply` to persist the suggested changes. `quick` uses the default threshold; `deep` is more aggressive. For safety, Hermes keeps at least one top-scoring memory entry instead of deleting the entire curated memory store.
 
 For the full command lists, see the [CLI guide](https://hermes-agent.nousresearch.com/docs/user-guide/cli) and the [Messaging Gateway guide](https://hermes-agent.nousresearch.com/docs/user-guide/messaging).
 

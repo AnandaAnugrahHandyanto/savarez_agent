@@ -192,6 +192,11 @@ class SleepEngine:
         except sqlite3.Error as e:
             logger.error(f"Error extracting words from session {session_id}: {e}")
             return []
+
+    @staticmethod
+    def _tokenize_text(text: str) -> List[str]:
+        """Tokenize text into lowercase word-like units."""
+        return re.findall(r'\b\w+\b', text.lower())
     
     # -------------------------------------------------------------------------
     # Vocabulary Learning
@@ -286,21 +291,21 @@ class SleepEngine:
         Returns:
             Tuple of (total_score, word_contributions)
         """
-        text_lower = memory_text.lower()
-        words = re.findall(r'\b\w+\b', text_lower)
+        words = self._tokenize_text(memory_text)
+        word_set = set(words)
         
         score = 1.0  # Base score
         contributions = {}
         
         # Check for important words
         for word, weight in self.important_words.items():
-            if word in text_lower:
+            if word in word_set:
                 score += weight * 0.1  # Scale down contribution
                 contributions[word] = weight * 0.1
         
         # Check for unimportant words
         for word, weight in self.unimportant_words.items():
-            if word in text_lower:
+            if word in word_set:
                 score += weight * 0.15  # Slightly stronger negative impact
                 contributions[word] = weight * 0.15
         
@@ -313,6 +318,29 @@ class SleepEngine:
             contributions["length_long"] = 0.1
         
         return max(0.0, score), contributions
+
+    def _split_memories_by_threshold(
+        self,
+        scored_memories: List[Dict[str, Any]],
+        delete_threshold: float,
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], int]:
+        """Partition memories while keeping at least one top-scoring entry."""
+        deleted_memories: List[Dict[str, Any]] = []
+        kept_memories: List[Dict[str, Any]] = []
+        safety_kept = 0
+
+        for mem in scored_memories:
+            if mem["score"] < delete_threshold:
+                deleted_memories.append(mem)
+            else:
+                kept_memories.append(mem)
+
+        if scored_memories and not kept_memories:
+            kept_memories = [scored_memories[0]]
+            deleted_memories = scored_memories[1:]
+            safety_kept = 1
+
+        return deleted_memories, kept_memories, safety_kept
     
     # -------------------------------------------------------------------------
     # Main Sleep Function
@@ -392,9 +420,6 @@ class SleepEngine:
         # Score all memories
         self._update_progress("sleep", 0.7, "Scoring memories...")
         scored_memories = []
-        deleted_memories = []
-        kept_memories = []
-        
         for i, memory in enumerate(memory_entries):
             score, contributions = self._score_memory(memory)
             scored_memories.append({
@@ -415,11 +440,10 @@ class SleepEngine:
         if mode == "deep":
             delete_threshold = 0.6  # More aggressive in deep mode
         
-        for mem in scored_memories:
-            if mem["score"] < delete_threshold:
-                deleted_memories.append(mem)
-            else:
-                kept_memories.append(mem)
+        deleted_memories, kept_memories, safety_kept = self._split_memories_by_threshold(
+            scored_memories,
+            delete_threshold,
+        )
         
         applied = False
 
@@ -446,6 +470,8 @@ class SleepEngine:
             sessions, scored_memories, deleted_memories, kept_memories, 
             mode, elapsed, applied
         )
+        if safety_kept:
+            report["stats"]["safety_kept"] = safety_kept
         
         self._update_progress("sleep", 1.0, "Sleep complete!")
         return report

@@ -113,3 +113,32 @@ def test_sleep_feature_is_exposed_through_tooling():
     assert "sleep_memory" in all_tools
     assert "dream_memory" not in all_tools
     assert "sleep_memory" in resolve_toolset("memory")
+
+
+def test_score_memory_uses_exact_tokens_not_substrings():
+    engine = SleepEngine(_FakeMemoryStore([]), db_path=Path("/tmp/missing.db"))
+    engine.important_words = {"cat": 2.0}
+    engine.unimportant_words = {}
+
+    score, contributions = engine._score_memory("concatenate strings carefully")
+
+    assert score == 1.0
+    assert "cat" not in contributions
+
+
+def test_sleep_keeps_top_memory_when_all_entries_fall_below_threshold(monkeypatch):
+    store = _FakeMemoryStore(["short note", "tiny"])
+    engine = SleepEngine(store, db_path=Path("/tmp/missing.db"))
+    sessions = [_session(importance_score=0.9), _session("s2", importance_score=0.1)]
+
+    monkeypatch.setattr(engine, "_get_all_sessions", lambda: sessions)
+    monkeypatch.setattr(engine, "learn_vocabulary", lambda _sessions: ({}, {}))
+    monkeypatch.setattr(engine, "_score_memory", lambda text: (0.1, {}))
+
+    result = engine.sleep("quick", apply_changes=True)
+
+    assert result["success"] is True
+    assert result["applied"] is True
+    assert result["stats"]["safety_kept"] == 1
+    assert store.memory_entries == ["short note"]
+    assert result["stats"]["memories_after"] == 1
