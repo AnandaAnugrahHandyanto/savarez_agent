@@ -1002,10 +1002,10 @@ def list_authenticated_providers(
         for ep_name, ep_cfg in user_providers.items():
             if not isinstance(ep_cfg, dict):
                 continue
-            display_name = ep_cfg.get("name", "") or ep_name
+            display_name = str(ep_cfg.get("name", "") or ep_name)
             normalized_slug = str(ep_name).strip().lower()
             compatibility_slug = custom_provider_slug(display_name)
-            if normalized_slug in seen_slugs or compatibility_slug in seen_slugs:
+            if normalized_slug in seen_slugs:
                 continue
             api_url = ep_cfg.get("api", "") or ep_cfg.get("url", "") or ""
             default_model = ep_cfg.get("default_model", "")
@@ -1092,4 +1092,3 @@ def list_authenticated_providers(
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 
     return results
-

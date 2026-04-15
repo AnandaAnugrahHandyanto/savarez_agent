@@ -175,6 +175,36 @@ def test_list_authenticated_providers_reserves_compatibility_custom_slug(monkeyp
     assert not any(p["slug"] == "custom:local-ollama" for p in providers)
 
 
+def test_list_authenticated_providers_keeps_distinct_provider_keys_with_same_display_name(monkeypatch):
+    """Same display names should not suppress distinct providers: entries."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    user_providers = {
+        "local-a": {
+            "name": "Local Ollama",
+            "api": "http://localhost:11434/v1",
+            "default_model": "llama3",
+        },
+        "local-b": {
+            "name": "Local Ollama",
+            "api": "http://localhost:22434/v1",
+            "default_model": "mistral",
+        },
+    }
+
+    providers = list_authenticated_providers(
+        current_provider="local-a",
+        user_providers=user_providers,
+        custom_providers=[],
+        max_models=50,
+    )
+
+    slugs = [p["slug"] for p in providers if p["slug"] in {"local-a", "local-b"}]
+    assert slugs.count("local-a") == 1
+    assert slugs.count("local-b") == 1
+
+
 # =============================================================================
 # Tests for _get_named_custom_provider with providers: dict
 # =============================================================================
