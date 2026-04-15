@@ -514,6 +514,19 @@ DEFAULT_CONFIG = {
     "privacy": {
         "redact_pii": False,  # When True, hash user IDs and strip phone numbers from LLM context
     },
+
+    # Gateway service configuration
+    "gateway": {
+        # macOS launchd domain type: "gui" (default) or "user"
+        # "gui" - Uses the Aqua session (GUI login). Works best for interactive use but
+        #         requires an active GUI session. When the Mac is locked and display sleeps
+        #         for extended periods, the gui domain enters "on-demand-only" mode and
+        #         the service cannot be started until the screen is unlocked.
+        # "user" - Uses the user bootstrap domain. Survives lock/sleep but requires the
+        #          user to be logged in. Recommended for headless servers or when running
+        #          Hermes gateway via SSH without a persistent GUI session.
+        "macos_launchd_domain": "gui",
+    },
     
     # Text-to-speech configuration
     "tts": {

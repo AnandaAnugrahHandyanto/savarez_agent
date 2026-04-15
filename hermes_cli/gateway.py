@@ -1282,9 +1282,39 @@ def get_launchd_label() -> str:
     return f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
 
 
-def _launchd_domain() -> str:
+def _launchd_domain(domain_type: str = "gui") -> str:
+    """Return the launchd domain target for the current user.
+    
+    Args:
+        domain_type: Either "gui" (default, requires Aqua session) or "user" 
+                    (works in headless/SSH sessions but requires user login)
+    
+    The "gui" domain is tied to the Aqua session (GUI login). When the Mac
+    is locked and the display sleeps for extended periods, the gui domain
+    enters "on-demand-only" mode and services cannot be started.
+    
+    The "user" domain survives lock/sleep but requires the user to be logged in.
+    """
     import os
+    if domain_type == "user":
+        return f"user/{os.getuid()}"
     return f"gui/{os.getuid()}"
+
+
+def _get_launchd_domain_type() -> str:
+    """Get the configured launchd domain type from config.
+    
+    Returns "gui" or "user" based on config, defaulting to "gui".
+    """
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        domain = config.get("gateway", {}).get("macos_launchd_domain", "gui")
+        if domain in ("gui", "user"):
+            return domain
+    except Exception:
+        pass
+    return "gui"
 
 
 def generate_launchd_plist() -> str:
@@ -1447,31 +1477,54 @@ def launchd_uninstall():
 def launchd_start():
     plist_path = get_launchd_plist_path()
     label = get_launchd_label()
+    domain_type = _get_launchd_domain_type()
 
     # Self-heal if the plist is missing entirely (e.g., manual cleanup, failed upgrade)
     if not plist_path.exists():
         print("↻ launchd plist missing; regenerating service definition")
         plist_path.parent.mkdir(parents=True, exist_ok=True)
         plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
-        subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
+        _launchd_bootstrap_and_start(plist_path, label, domain_type)
         print("✓ Service started")
         return
 
     refresh_launchd_plist_if_needed()
     try:
-        subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
+        subprocess.run(["launchctl", "kickstart", f"{_launchd_domain(domain_type)}/{label}"], check=True, timeout=30)
     except subprocess.CalledProcessError as e:
-        if e.returncode not in (3, 113):
+        if e.returncode == 125:
+            # Domain does not support specified action - likely gui domain is in on-demand-only mode
+            if domain_type == "gui":
+                print("⚠ GUI domain unavailable (screen locked/sleeping). Trying user domain...")
+                print("  Tip: Set gateway.macos_launchd_domain: 'user' in config.yaml to avoid this.")
+                try:
+                    _launchd_bootstrap_and_start(plist_path, label, "user")
+                    print("✓ Service started (using user domain)")
+                    return
+                except subprocess.CalledProcessError:
+                    print("✗ Failed to start with user domain as well.")
+                    print("  The Mac may be in deep sleep. Please unlock the screen and try again.")
+                    raise
+            else:
+                print("✗ User domain also unavailable. The system may require a GUI session.")
+                raise
+        elif e.returncode not in (3, 113):
             raise
         print("↻ launchd job was unloaded; reloading service definition")
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
-        subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
+        _launchd_bootstrap_and_start(plist_path, label, domain_type)
     print("✓ Service started")
+
+
+def _launchd_bootstrap_and_start(plist_path: Path, label: str, domain_type: str):
+    """Bootstrap the plist and start the service in the specified domain."""
+    domain = _launchd_domain(domain_type)
+    subprocess.run(["launchctl", "bootstrap", domain, str(plist_path)], check=True, timeout=30)
+    subprocess.run(["launchctl", "kickstart", f"{domain}/{label}"], check=True, timeout=30)
 
 def launchd_stop():
     label = get_launchd_label()
-    target = f"{_launchd_domain()}/{label}"
+    domain_type = _get_launchd_domain_type()
+    target = f"{_launchd_domain(domain_type)}/{label}"
     # bootout unloads the service definition so KeepAlive doesn't respawn
     # the process.  A plain `kill SIGTERM` only signals the process — launchd
     # immediately restarts it because KeepAlive.SuccessfulExit = false.
@@ -1479,7 +1532,17 @@ def launchd_stop():
     try:
         subprocess.run(["launchctl", "bootout", target], check=True, timeout=90)
     except subprocess.CalledProcessError as e:
-        if e.returncode in (3, 113):
+        if e.returncode == 125 and domain_type == "gui":
+            # Try user domain if GUI domain is unavailable
+            target = f"{_launchd_domain('user')}/{label}"
+            try:
+                subprocess.run(["launchctl", "bootout", target], check=True, timeout=90)
+            except subprocess.CalledProcessError as e2:
+                if e2.returncode in (3, 113):
+                    pass
+                else:
+                    raise
+        elif e.returncode in (3, 113):
             pass  # Already unloaded — nothing to stop.
         else:
             raise
@@ -1530,7 +1593,8 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.
 
 def launchd_restart():
     label = get_launchd_label()
-    target = f"{_launchd_domain()}/{label}"
+    domain_type = _get_launchd_domain_type()
+    target = f"{_launchd_domain(domain_type)}/{label}"
     drain_timeout = _get_restart_drain_timeout()
     from gateway.status import get_running_pid
 
@@ -1551,14 +1615,28 @@ def launchd_restart():
         subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
         print("✓ Service restarted")
     except subprocess.CalledProcessError as e:
-        if e.returncode not in (3, 113):
+        if e.returncode == 125 and domain_type == "gui":
+            # Try user domain if GUI domain is unavailable
+            print("⚠ GUI domain unavailable (screen locked/sleeping). Trying user domain...")
+            target = f"{_launchd_domain('user')}/{label}"
+            try:
+                plist_path = get_launchd_plist_path()
+                subprocess.run(["launchctl", "bootstrap", _launchd_domain('user'), str(plist_path)], check=True, timeout=30)
+                subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
+                print("✓ Service restarted (using user domain)")
+            except subprocess.CalledProcessError:
+                print("✗ Failed to restart with user domain as well.")
+                print("  The Mac may be in deep sleep. Please unlock the screen and try again.")
+                raise
+        elif e.returncode not in (3, 113):
             raise
-        # Job not loaded — bootstrap and start fresh
-        print("↻ launchd job was unloaded; reloading")
-        plist_path = get_launchd_plist_path()
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
-        subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
-        print("✓ Service restarted")
+        else:
+            # Job not loaded — bootstrap and start fresh
+            print("↻ launchd job was unloaded; reloading")
+            plist_path = get_launchd_plist_path()
+            subprocess.run(["launchctl", "bootstrap", _launchd_domain(domain_type), str(plist_path)], check=True, timeout=30)
+            subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
+            print("✓ Service restarted")
 
 def launchd_status(deep: bool = False):
     plist_path = get_launchd_plist_path()
