@@ -254,19 +254,26 @@ def evaluate_execute_code(code: str, *, workdir: Optional[str]) -> Dict[str, Any
     return {"allowed": True, "status": "ok"}
 
 
-def _toolset_contains_mcp(toolset_name: str) -> bool:
+def _toolset_contains_mcp(toolset_name: str, *, _visited: Optional[set[str]] = None) -> bool:
     try:
         from toolsets import TOOLSETS
     except Exception:
         return toolset_name.startswith("mcp-")
 
+    visited = _visited or set()
+    if toolset_name in visited:
+        return False
+    visited.add(toolset_name)
+
     definition = TOOLSETS.get(toolset_name) or {}
     description = str(definition.get("description") or "")
     tools = [str(tool) for tool in definition.get("tools", [])]
+    includes = [str(name) for name in definition.get("includes", [])]
     return (
         toolset_name.startswith("mcp-")
         or description.startswith("MCP server '")
         or any(tool.startswith("mcp_") for tool in tools)
+        or any(_toolset_contains_mcp(name, _visited=visited) for name in includes)
     )
 
 
@@ -588,12 +595,26 @@ _STOP_REASON_CODE_PREFIXES = {
     "max_iterations_reached(": "max_iterations_reached",
 }
 
+_STOP_REASON_CODE_EXACT = {
+    "unknown",
+    "interrupted_by_user",
+    "budget_exhausted",
+    "interrupted_during_api_call",
+    "all_retries_exhausted_no_response",
+    "partial_stream_recovery",
+    "fallback_prior_turn_content",
+    "empty_response_exhausted",
+    "bootstrap_preflight_failed",
+}
+
 
 def normalize_stop_reason(stop_reason: Optional[str]) -> str:
     """Return a stable stop-reason code alongside the raw reason text."""
     raw = str(stop_reason or "").strip()
     if not raw:
         return "unknown"
+    if raw in _STOP_REASON_CODE_EXACT:
+        return raw
     for prefix, code in _STOP_REASON_CODE_PREFIXES.items():
         if raw.startswith(prefix):
             return code

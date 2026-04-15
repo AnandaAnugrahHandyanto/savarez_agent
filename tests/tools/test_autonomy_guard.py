@@ -139,6 +139,23 @@ def test_delegate_policy_requires_approval_for_explicit_mcp_toolset(monkeypatch)
     assert decision["status"] == "approval_required"
 
 
+def test_delegate_policy_requires_approval_for_nested_mcp_toolset(monkeypatch):
+    toolsets_mod = __import__("toolsets")
+    monkeypatch.setitem(
+        toolsets_mod.TOOLSETS,
+        "github",
+        {"description": "MCP server 'github' tools", "tools": ["mcp_github_create_pull_request"]},
+    )
+    monkeypatch.setitem(
+        toolsets_mod.TOOLSETS,
+        "release-bot",
+        {"description": "alias", "tools": [], "includes": ["github"]},
+    )
+    decision = evaluate_delegate_request(toolsets=["release-bot"], tasks=None, acp_command=None)
+    assert decision["allowed"] is False
+    assert decision["status"] == "approval_required"
+
+
 def test_mcp_policy_requires_approval_for_mutating_tool():
     decision = evaluate_mcp_tool_call("github", "create_pull_request")
     assert decision["allowed"] is False
@@ -148,6 +165,8 @@ def test_mcp_policy_requires_approval_for_mutating_tool():
 def test_normalize_stop_reason_collapses_dynamic_variants():
     assert normalize_stop_reason("text_response(finish_reason=stop)") == "text_response"
     assert normalize_stop_reason("max_iterations_reached(3/3)") == "max_iterations_reached"
+    assert normalize_stop_reason("bootstrap_preflight_failed") == "bootstrap_preflight_failed"
+    assert normalize_stop_reason("interrupted_by_user") == "interrupted_by_user"
     assert normalize_stop_reason(None) == "unknown"
 
 

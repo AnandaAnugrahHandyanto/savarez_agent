@@ -97,4 +97,5 @@ readiness:
     - tests/run_agent/test_autonomy_runtime.py
     - tests/tools/test_delegate.py::TestDelegateTask::test_explicit_mcp_toolset_requires_approval
     - tests/tools/test_delegate.py::TestDelegateTask::test_acp_command_requires_approval
+    - tests/tools/test_delegate.py::TestDelegateTask::test_per_task_acp_command_requires_approval
     - tests/tools/test_mcp_tool.py::TestToolHandler::test_mutating_mcp_tool_requires_approval
