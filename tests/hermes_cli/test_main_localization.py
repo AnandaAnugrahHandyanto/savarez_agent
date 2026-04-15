@@ -5,6 +5,7 @@ import pytest
 
 from hermes_cli.commands import get_category_label
 from hermes_cli.main import (
+    _argparse_korean,
     _build_web_ui,
     _model_flow_custom,
     _model_flow_openrouter,
@@ -34,6 +35,28 @@ def test_main_help_is_localized_to_korean(monkeypatch, capsys):
     assert "실행할 명령어" in out
     assert "버전을 표시하고 종료" in out
     assert "대화형 채팅 시작" in out
+    assert "사용법:" in out
+    assert "옵션:" in out
+    assert "이 도움말을 표시하고 종료" in out
+
+
+def test_update_help_is_localized_to_korean(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["hermes", "update", "--help"])
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "사용법: hermes update" in out
+    assert "git에서 최신 변경 사항을 가져오고 의존성을 다시 설치" in out
+    assert "옵션:" in out
+    assert "이 도움말을 표시하고 종료" in out
+    assert "게이트웨이 모드: stdin 대신 파일 기반 IPC로 프롬프트를 주고받음" in out
+
+
+def test_argparse_default_labels_are_localized():
+    assert _argparse_korean("usage: ") == "사용법: "
+    assert _argparse_korean("options") == "옵션"
+    assert _argparse_korean("show this help message and exit") == "이 도움말을 표시하고 종료"
 
 
 def test_prompt_provider_choice_fallback_is_localized(monkeypatch, capsys):

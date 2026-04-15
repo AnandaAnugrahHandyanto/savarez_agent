@@ -31,6 +31,34 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+
+_ARGPARSE_KO_TRANSLATIONS = {
+    "usage: ": "사용법: ",
+    "options": "옵션",
+    "optional arguments": "옵션",
+    "positional arguments": "위치 인자",
+    "show this help message and exit": "이 도움말을 표시하고 종료",
+    "subcommands": "하위 명령어",
+}
+
+
+def _argparse_korean(text: str) -> str:
+    return _ARGPARSE_KO_TRANSLATIONS.get(text, text)
+
+
+argparse._ = _argparse_korean
+
+
+class KoreanArgumentParser(argparse.ArgumentParser):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._positionals.title = "위치 인자"
+        self._optionals.title = "옵션"
+
+    def add_subparsers(self, *args, **kwargs):
+        kwargs.setdefault("title", "하위 명령어")
+        return super().add_subparsers(*args, **kwargs)
+
 def _require_tty(command_name: str) -> None:
     """Exit with a clear error if stdin is not a terminal.
 
@@ -4474,7 +4502,7 @@ def cmd_logs(args):
 
 def main():
     """Main entry point for hermes CLI."""
-    parser = argparse.ArgumentParser(
+    parser = KoreanArgumentParser(
         prog="hermes",
         description="Hermes Agent - 도구 호출 기능을 갖춘 AI 어시스턴트",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -4665,8 +4693,8 @@ def main():
     # =========================================================================
     model_parser = subparsers.add_parser(
         "model",
-        help="Select default model and provider",
-        description="Interactively select your inference provider and default model"
+        help="기본 모델과 provider 선택",
+        description="추론 provider와 기본 모델을 대화형으로 선택"
     )
     model_parser.add_argument(
         "--portal-url",
@@ -4713,8 +4741,8 @@ def main():
     # =========================================================================
     gateway_parser = subparsers.add_parser(
         "gateway",
-        help="Messaging gateway management",
-        description="Manage the messaging gateway (Telegram, Discord, WhatsApp)"
+        help="메시징 게이트웨이 관리",
+        description="메시징 게이트웨이(Telegram, Discord, WhatsApp) 관리"
     )
     gateway_subparsers = gateway_parser.add_subparsers(dest="gateway_command")
     
@@ -4765,9 +4793,9 @@ def main():
     # =========================================================================
     setup_parser = subparsers.add_parser(
         "setup",
-        help="Interactive setup wizard",
-        description="Configure Hermes Agent with an interactive wizard. "
-                    "Run a specific section: hermes setup model|tts|terminal|gateway|tools|agent"
+        help="대화형 설정 마법사",
+        description="대화형 마법사로 Hermes Agent를 설정. "
+                    "특정 섹션만 실행하려면: hermes setup model|tts|terminal|gateway|tools|agent"
     )
     setup_parser.add_argument(
         "section",
@@ -4793,8 +4821,8 @@ def main():
     # =========================================================================
     whatsapp_parser = subparsers.add_parser(
         "whatsapp",
-        help="Set up WhatsApp integration",
-        description="Configure WhatsApp and pair via QR code"
+        help="WhatsApp 연동 설정",
+        description="WhatsApp을 설정하고 QR 코드로 페어링"
     )
     whatsapp_parser.set_defaults(func=cmd_whatsapp)
 
@@ -4803,8 +4831,8 @@ def main():
     # =========================================================================
     login_parser = subparsers.add_parser(
         "login",
-        help="Authenticate with an inference provider",
-        description="Run OAuth device authorization flow for Hermes CLI"
+        help="추론 provider 인증",
+        description="Hermes CLI용 OAuth 디바이스 인증 흐름 실행"
     )
     login_parser.add_argument(
         "--provider",
@@ -4857,8 +4885,8 @@ def main():
     # =========================================================================
     logout_parser = subparsers.add_parser(
         "logout",
-        help="Clear authentication for an inference provider",
-        description="Remove stored credentials and reset provider config"
+        help="추론 provider 인증 해제",
+        description="저장된 자격 증명을 제거하고 provider 설정 초기화"
     )
     logout_parser.add_argument(
         "--provider",
@@ -4870,7 +4898,7 @@ def main():
 
     auth_parser = subparsers.add_parser(
         "auth",
-        help="Manage pooled provider credentials",
+        help="provider 풀 자격 증명 관리",
     )
     auth_subparsers = auth_parser.add_subparsers(dest="auth_action")
     auth_add = auth_subparsers.add_parser("add", help="Add a pooled credential")
@@ -4900,8 +4928,8 @@ def main():
     # =========================================================================
     status_parser = subparsers.add_parser(
         "status",
-        help="Show status of all components",
-        description="Display status of Hermes Agent components"
+        help="모든 구성요소 상태 표시",
+        description="Hermes Agent 구성요소 상태 표시"
     )
     status_parser.add_argument(
         "--all",
@@ -4920,8 +4948,8 @@ def main():
     # =========================================================================
     cron_parser = subparsers.add_parser(
         "cron",
-        help="Cron job management",
-        description="Manage scheduled tasks"
+        help="크론 작업 관리",
+        description="예약 작업 관리"
     )
     cron_subparsers = cron_parser.add_subparsers(dest="cron_command")
     
@@ -4979,8 +5007,8 @@ def main():
     # =========================================================================
     webhook_parser = subparsers.add_parser(
         "webhook",
-        help="Manage dynamic webhook subscriptions",
-        description="Create, list, and remove webhook subscriptions for event-driven agent activation",
+        help="동적 웹훅 구독 관리",
+        description="이벤트 기반 에이전트 활성화를 위한 웹훅 구독 생성, 조회, 제거",
     )
     webhook_subparsers = webhook_parser.add_subparsers(dest="webhook_action")
 
@@ -5010,8 +5038,8 @@ def main():
     # =========================================================================
     doctor_parser = subparsers.add_parser(
         "doctor",
-        help="Check configuration and dependencies",
-        description="Diagnose issues with Hermes Agent setup"
+        help="설정과 의존성 점검",
+        description="Hermes Agent 설정 문제 진단"
     )
     doctor_parser.add_argument(
         "--fix",
@@ -5025,9 +5053,9 @@ def main():
     # =========================================================================
     dump_parser = subparsers.add_parser(
         "dump",
-        help="Dump setup summary for support/debugging",
-        description="Output a compact, plain-text summary of your Hermes setup "
-                    "that can be copy-pasted into Discord/GitHub for support context"
+        help="지원/디버깅용 설정 요약 출력",
+        description="지원 맥락 공유를 위해 Discord/GitHub에 복사해 붙여넣을 수 있는 "
+                    "간단한 일반 텍스트 Hermes 설정 요약 출력"
     )
     dump_parser.add_argument(
         "--show-keys",
@@ -5041,10 +5069,10 @@ def main():
     # =========================================================================
     debug_parser = subparsers.add_parser(
         "debug",
-        help="Debug tools — upload logs and system info for support",
-        description="Debug utilities for Hermes Agent. Use 'hermes debug share' to "
-                    "upload a debug report (system info + recent logs) to a paste "
-                    "service and get a shareable URL.",
+        help="디버그 도구 — 지원용 로그와 시스템 정보 업로드",
+        description="Hermes Agent용 디버그 유틸리티. 'hermes debug share'를 사용해 "
+                    "디버그 리포트(시스템 정보 + 최근 로그)를 paste 서비스에 업로드하고 "
+                    "공유 가능한 URL을 받을 수 있습니다.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Examples:
@@ -5078,10 +5106,10 @@ Examples:
     # =========================================================================
     backup_parser = subparsers.add_parser(
         "backup",
-        help="Back up Hermes home directory to a zip file",
-        description="Create a zip archive of your entire Hermes configuration, "
-                    "skills, sessions, and data (excludes the hermes-agent codebase). "
-                    "Use --quick for a fast snapshot of just critical state files."
+        help="Hermes 홈 디렉터리를 zip 파일로 백업",
+        description="Hermes 설정, 스킬, 세션, 데이터를 모두 포함한 zip 아카이브 생성 "
+                    "(hermes-agent 코드베이스는 제외). "
+                    "중요 상태 파일만 빠르게 백업하려면 --quick 사용."
     )
     backup_parser.add_argument(
         "-o", "--output",
@@ -5103,10 +5131,8 @@ Examples:
     # =========================================================================
     import_parser = subparsers.add_parser(
         "import",
-        help="Restore a Hermes backup from a zip file",
-        description="Extract a previously created Hermes backup into your "
-                    "Hermes home directory, restoring configuration, skills, "
-                    "sessions, and data"
+        help="zip 파일에서 Hermes 백업 복원",
+        description="이전에 만든 Hermes 백업을 Hermes 홈 디렉터리에 풀어 설정, 스킬, 세션, 데이터를 복원"
     )
     import_parser.add_argument(
         "zipfile",
@@ -5124,8 +5150,8 @@ Examples:
     # =========================================================================
     config_parser = subparsers.add_parser(
         "config",
-        help="View and edit configuration",
-        description="Manage Hermes Agent configuration"
+        help="설정 조회 및 편집",
+        description="Hermes Agent 설정 관리"
     )
     config_subparsers = config_parser.add_subparsers(dest="config_command")
     
@@ -5159,8 +5185,8 @@ Examples:
     # =========================================================================
     pairing_parser = subparsers.add_parser(
         "pairing",
-        help="Manage DM pairing codes for user authorization",
-        description="Approve or revoke user access via pairing codes"
+        help="사용자 인증용 DM 페어링 코드 관리",
+        description="페어링 코드로 사용자 접근 승인 또는 철회"
     )
     pairing_sub = pairing_parser.add_subparsers(dest="pairing_action")
 
@@ -5187,8 +5213,8 @@ Examples:
     # =========================================================================
     skills_parser = subparsers.add_parser(
         "skills",
-        help="Search, install, configure, and manage skills",
-        description="Search, install, inspect, audit, configure, and manage skills from skills.sh, well-known agent skill endpoints, GitHub, ClawHub, and other registries."
+        help="스킬 검색, 설치, 설정, 관리",
+        description="skills.sh, well-known agent skill 엔드포인트, GitHub, ClawHub 등 다양한 레지스트리에서 스킬을 검색, 설치, 점검, 설정, 관리"
     )
     skills_subparsers = skills_parser.add_subparsers(dest="skills_action")
 
@@ -5269,8 +5295,8 @@ Examples:
     # =========================================================================
     plugins_parser = subparsers.add_parser(
         "plugins",
-        help="Manage plugins — install, update, remove, list",
-        description="Install plugins from Git repositories, update, remove, or list them.",
+        help="플러그인 관리 — 설치, 업데이트, 제거, 목록",
+        description="Git 저장소에서 플러그인을 설치하고, 업데이트하거나, 제거하거나, 목록을 확인",
     )
     plugins_subparsers = plugins_parser.add_subparsers(dest="plugins_action")
 
@@ -5338,13 +5364,13 @@ Examples:
     # =========================================================================
     memory_parser = subparsers.add_parser(
         "memory",
-        help="Configure external memory provider",
+        help="외부 memory provider 설정",
         description=(
-            "Set up and manage external memory provider plugins.\n\n"
-            "Available providers: honcho, openviking, mem0, hindsight,\n"
+            "외부 memory provider 플러그인을 설정하고 관리합니다.\n\n"
+            "사용 가능한 provider: honcho, openviking, mem0, hindsight,\n"
             "holographic, retaindb, byterover.\n\n"
-            "Only one external provider can be active at a time.\n"
-            "Built-in memory (MEMORY.md/USER.md) is always active."
+            "외부 provider는 한 번에 하나만 활성화할 수 있습니다.\n"
+            "내장 memory(MEMORY.md/USER.md)는 항상 활성화됩니다."
         ),
     )
     memory_sub = memory_parser.add_subparsers(dest="memory_command")
@@ -5374,12 +5400,12 @@ Examples:
     # =========================================================================
     tools_parser = subparsers.add_parser(
         "tools",
-        help="Configure which tools are enabled per platform",
+        help="플랫폼별 활성 도구 설정",
         description=(
-            "Enable, disable, or list tools for CLI, Telegram, Discord, etc.\n\n"
-            "Built-in toolsets use plain names (e.g. web, memory).\n"
-            "MCP tools use server:tool notation (e.g. github:create_issue).\n\n"
-            "Run 'hermes tools' with no subcommand for the interactive configuration UI."
+            "CLI, Telegram, Discord 등 플랫폼별 도구를 활성화, 비활성화, 조회합니다.\n\n"
+            "내장 toolset은 일반 이름(예: web, memory)을 사용합니다.\n"
+            "MCP 도구는 server:tool 표기(예: github:create_issue)를 사용합니다.\n\n"
+            "대화형 설정 UI를 열려면 하위 명령 없이 'hermes tools'를 실행하세요."
         ),
     )
     tools_parser.add_argument(
@@ -5443,12 +5469,12 @@ Examples:
     # =========================================================================
     mcp_parser = subparsers.add_parser(
         "mcp",
-        help="Manage MCP servers and run Hermes as an MCP server",
+        help="MCP 서버 관리 및 Hermes를 MCP 서버로 실행",
         description=(
-            "Manage MCP server connections and run Hermes as an MCP server.\n\n"
-            "MCP servers provide additional tools via the Model Context Protocol.\n"
-            "Use 'hermes mcp add' to connect to a new server, or\n"
-            "'hermes mcp serve' to expose Hermes conversations over MCP."
+            "MCP 서버 연결을 관리하고 Hermes를 MCP 서버로 실행합니다.\n\n"
+            "MCP 서버는 Model Context Protocol을 통해 추가 도구를 제공합니다.\n"
+            "새 서버에 연결하려면 'hermes mcp add'를,\n"
+            "Hermes 대화를 MCP로 노출하려면 'hermes mcp serve'를 사용하세요."
         ),
     )
     mcp_sub = mcp_parser.add_subparsers(dest="mcp_action")
@@ -5493,8 +5519,8 @@ Examples:
     # =========================================================================
     sessions_parser = subparsers.add_parser(
         "sessions",
-        help="Manage session history (list, rename, export, prune, delete)",
-        description="View and manage the SQLite session store"
+        help="세션 기록 관리(목록, 이름 변경, 내보내기, 정리, 삭제)",
+        description="SQLite 세션 저장소 조회 및 관리"
     )
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
 
@@ -5697,8 +5723,8 @@ Examples:
     # =========================================================================
     insights_parser = subparsers.add_parser(
         "insights",
-        help="Show usage insights and analytics",
-        description="Analyze session history to show token usage, costs, tool patterns, and activity trends"
+        help="사용량 인사이트와 분석 표시",
+        description="세션 기록을 분석해 토큰 사용량, 비용, 도구 패턴, 활동 추세를 표시"
     )
     insights_parser.add_argument("--days", type=int, default=30, help="Number of days to analyze (default: 30)")
     insights_parser.add_argument("--source", help="Filter by platform (cli, telegram, discord, etc.)")
@@ -5723,8 +5749,8 @@ Examples:
     # =========================================================================
     claw_parser = subparsers.add_parser(
         "claw",
-        help="OpenClaw migration tools",
-        description="Migrate settings, memories, skills, and API keys from OpenClaw to Hermes"
+        help="OpenClaw 마이그레이션 도구",
+        description="OpenClaw의 설정, memory, 스킬, API key를 Hermes로 마이그레이션"
     )
     claw_subparsers = claw_parser.add_subparsers(dest="claw_action")
 
@@ -5809,7 +5835,7 @@ Examples:
     # =========================================================================
     version_parser = subparsers.add_parser(
         "version",
-        help="Show version information"
+        help="버전 정보 표시"
     )
     version_parser.set_defaults(func=cmd_version)
     
@@ -5818,12 +5844,12 @@ Examples:
     # =========================================================================
     update_parser = subparsers.add_parser(
         "update",
-        help="Update Hermes Agent to the latest version",
-        description="Pull the latest changes from git and reinstall dependencies"
+        help="Hermes Agent를 최신 버전으로 업데이트",
+        description="git에서 최신 변경 사항을 가져오고 의존성을 다시 설치"
     )
     update_parser.add_argument(
         "--gateway", action="store_true", default=False,
-        help="Gateway mode: use file-based IPC for prompts instead of stdin (used internally by /update)"
+        help="게이트웨이 모드: stdin 대신 파일 기반 IPC로 프롬프트를 주고받음(/update 내부 사용)"
     )
     update_parser.set_defaults(func=cmd_update)
     
@@ -5832,8 +5858,8 @@ Examples:
     # =========================================================================
     uninstall_parser = subparsers.add_parser(
         "uninstall",
-        help="Uninstall Hermes Agent",
-        description="Remove Hermes Agent from your system. Can keep configs/data for reinstall."
+        help="Hermes Agent 제거",
+        description="시스템에서 Hermes Agent를 제거합니다. 재설치를 위해 설정/데이터는 유지할 수 있습니다."
     )
     uninstall_parser.add_argument(
         "--full",
@@ -5852,8 +5878,8 @@ Examples:
     # =========================================================================
     acp_parser = subparsers.add_parser(
         "acp",
-        help="Run Hermes Agent as an ACP (Agent Client Protocol) server",
-        description="Start Hermes Agent in ACP mode for editor integration (VS Code, Zed, JetBrains)",
+        help="Hermes Agent를 ACP(Agent Client Protocol) 서버로 실행",
+        description="에디터 연동(VS Code, Zed, JetBrains)을 위해 Hermes Agent를 ACP 모드로 시작",
     )
 
     def cmd_acp(args):
@@ -5873,7 +5899,7 @@ Examples:
     # =========================================================================
     profile_parser = subparsers.add_parser(
         "profile",
-        help="Manage profiles — multiple isolated Hermes instances",
+        help="프로필 관리 — 여러 격리된 Hermes 인스턴스",
     )
     profile_subparsers = profile_parser.add_subparsers(dest="profile_action")
 
@@ -5928,7 +5954,7 @@ Examples:
     # =========================================================================
     completion_parser = subparsers.add_parser(
         "completion",
-        help="Print shell completion script (bash, zsh, or fish)",
+        help="셸 자동완성 스크립트 출력(bash, zsh, fish)",
     )
     completion_parser.add_argument(
         "shell", nargs="?", default="bash", choices=["bash", "zsh", "fish"],
@@ -5941,8 +5967,8 @@ Examples:
     # =========================================================================
     dashboard_parser = subparsers.add_parser(
         "dashboard",
-        help="Start the web UI dashboard",
-        description="Launch the Hermes Agent web dashboard for managing config, API keys, and sessions",
+        help="웹 UI 대시보드 시작",
+        description="설정, API key, 세션 관리를 위한 Hermes Agent 웹 대시보드 실행",
     )
     dashboard_parser.add_argument("--port", type=int, default=9119, help="Port (default 9119)")
     dashboard_parser.add_argument("--host", default="127.0.0.1", help="Host (default 127.0.0.1)")
@@ -5958,8 +5984,8 @@ Examples:
     # =========================================================================
     logs_parser = subparsers.add_parser(
         "logs",
-        help="View and filter Hermes log files",
-        description="View, tail, and filter agent.log / errors.log / gateway.log",
+        help="Hermes 로그 파일 조회 및 필터링",
+        description="agent.log / errors.log / gateway.log 조회, tail, 필터링",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Examples:
