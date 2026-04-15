@@ -626,10 +626,11 @@ class HonchoSessionManager:
         """
         Pre-fetch user and AI peer context from Honcho.
 
-        Fetches peer_representation and peer_card for both peers. search_query
-        is intentionally omitted — it would only affect additional excerpts
-        that this code does not consume, and passing the raw message exposes
-        conversation content in server access logs.
+        Fetches peer_representation and peer_card for both peers, plus the
+        session summary when available. search_query is intentionally omitted
+        — it would only affect additional excerpts that this code does not
+        consume, and passing the raw message exposes conversation content in
+        server access logs.
 
         Args:
             session_key: The session key to get context for.
@@ -637,13 +638,24 @@ class HonchoSessionManager:
 
         Returns:
             Dictionary with 'representation', 'card', 'ai_representation',
-            and 'ai_card' keys.
+            'ai_card', and optionally 'summary' keys.
         """
         session = self._cache.get(session_key)
         if not session:
             return {}
 
         result: dict[str, str] = {}
+
+        # Session summary — provides session-scoped context
+        try:
+            honcho_session = self._sessions_cache.get(session.honcho_session_id)
+            if honcho_session:
+                ctx = honcho_session.context(summary=True)
+                if ctx.summary and getattr(ctx.summary, "content", None):
+                    result["summary"] = ctx.summary.content
+        except Exception as e:
+            logger.debug("Failed to fetch session summary from Honcho: %s", e)
+
         try:
             user_ctx = self._fetch_peer_context(session.user_peer_id, target=session.user_peer_id)
             result["representation"] = user_ctx["representation"]

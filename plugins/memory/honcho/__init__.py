@@ -428,6 +428,11 @@ class HonchoMemoryProvider(MemoryProvider):
         """Format the prefetch context dict into a readable system prompt block."""
         parts = []
 
+        # Session summary — session-scoped context, placed first for relevance
+        summary = ctx.get("summary", "")
+        if summary:
+            parts.append(f"## Session Summary\n{summary}")
+
         rep = ctx.get("representation", "")
         if rep:
             parts.append(f"## User Representation\n{rep}")

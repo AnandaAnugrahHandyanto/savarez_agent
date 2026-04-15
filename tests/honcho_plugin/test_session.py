@@ -787,6 +787,37 @@ class TestDialecticCadenceDefaults:
         assert provider._dialectic_cadence == 5
 
 
+class TestBaseContextSummary:
+    """Base context injection should include session summary when available."""
+
+    def test_format_includes_summary(self):
+        """Session summary should appear first in the formatted context."""
+        provider = HonchoMemoryProvider()
+        ctx = {
+            "summary": "Testing Honcho tools and dialectic depth.",
+            "representation": "Eri is a developer.",
+            "card": "Name: Eri Barrett",
+        }
+        formatted = provider._format_first_turn_context(ctx)
+        assert "## Session Summary" in formatted
+        assert formatted.index("Session Summary") < formatted.index("User Representation")
+
+    def test_format_without_summary(self):
+        """No summary key means no summary section."""
+        provider = HonchoMemoryProvider()
+        ctx = {"representation": "Eri is a developer.", "card": "Name: Eri"}
+        formatted = provider._format_first_turn_context(ctx)
+        assert "Session Summary" not in formatted
+        assert "User Representation" in formatted
+
+    def test_format_empty_summary_skipped(self):
+        """Empty summary string should not produce a section."""
+        provider = HonchoMemoryProvider()
+        ctx = {"summary": "", "representation": "rep", "card": "card"}
+        formatted = provider._format_first_turn_context(ctx)
+        assert "Session Summary" not in formatted
+
+
 class TestDialecticDepth:
     """Tests for the dialecticDepth multi-pass system."""
 
