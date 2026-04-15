@@ -142,6 +142,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("connect", "disconnect", "status")),
     CommandDef("plugins", "List installed plugins and their status",
                "Tools & Skills", cli_only=True),
+    CommandDef("ada", "알잘딱깔센 개발 에이전트 - 규모 기반 자동 라우팅 (Quick/Full Pipeline)",
+               "Tools & Skills", args_hint="<goal>"),
 
     # Info
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",
