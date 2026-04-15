@@ -4108,7 +4108,11 @@ class HermesCLI:
             except (Exception, KeyboardInterrupt):
                 pass
             # Trigger memory extraction on the old session before session_id rotates.
-            self.agent.commit_memory_session(self.conversation_history)
+            if hasattr(self.agent, "commit_memory_session"):
+                try:
+                    self.agent.commit_memory_session(self.conversation_history)
+                except (Exception, KeyboardInterrupt):
+                    pass
             self._notify_session_boundary(
                 "on_session_finalize",
                 old_session_id=_boundary_old_session_id,
