@@ -721,6 +721,7 @@ class SessionDB:
         limit: int = 20,
         offset: int = 0,
         include_children: bool = False,
+        titled_only: bool = False,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -732,12 +733,20 @@ class SessionDB:
 
         By default, child sessions (subagent runs, compression continuations)
         are excluded.  Pass ``include_children=True`` to include them.
+
+        When ``titled_only`` is True, only sessions with a non-NULL title are
+        returned.  This ensures the LIMIT applies to titled sessions directly
+        rather than fetching N recent sessions and filtering in Python (which
+        can miss older titled sessions when many untitled sessions exist).
         """
         where_clauses = []
         params = []
 
         if not include_children:
             where_clauses.append("s.parent_session_id IS NULL")
+
+        if titled_only:
+            where_clauses.append("s.title IS NOT NULL")
 
         if source:
             where_clauses.append("s.source = ?")

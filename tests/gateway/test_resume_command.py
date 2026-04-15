@@ -224,3 +224,27 @@ class TestHandleResumeCommand:
             "agent:main:telegram:dm:67890",
         )
         db.close()
+
+    @pytest.mark.asyncio
+    async def test_list_finds_titled_sessions_beyond_recent_limit(self, tmp_path):
+        """Titled sessions should appear in /resume list even when many
+        untitled sessions have been created more recently (#resume-limit-bug)."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+
+        db.create_session("old_titled_1", "telegram")
+        db.set_session_title("old_titled_1", "Research Project")
+        db.create_session("old_titled_2", "telegram")
+        db.set_session_title("old_titled_2", "Coding Session")
+
+        for i in range(15):
+            db.create_session(f"untitled_{i:03d}", "telegram")
+
+        event = _make_event(text="/resume")
+        runner = _make_runner(session_db=db, event=event)
+        result = await runner._handle_resume_command(event)
+
+        assert "Research Project" in result
+        assert "Coding Session" in result
+        assert "Named Sessions" in result
+        db.close()
