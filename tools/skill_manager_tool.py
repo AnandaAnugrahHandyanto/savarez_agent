@@ -616,7 +616,16 @@ def _check_taint_approval(action: str) -> Optional[str]:
                 "taint": taint.summary(),
             })
     except Exception:
-        pass
+        # Fail closed: if taint checking itself fails, block the write.
+        # Silent pass here would allow writes when the safety system is broken.
+        logger.warning("Taint check failed for skill write; blocking as precaution")
+        return json.dumps({
+            "success": False,
+            "error": (
+                "Skill write blocked: taint safety check could not complete. "
+                "Start a new session (/new) or ask the user to confirm this write."
+            ),
+        })
     return None
 
 

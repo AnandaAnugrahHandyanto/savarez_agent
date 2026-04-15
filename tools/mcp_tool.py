@@ -1407,7 +1407,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 from tools.approval import get_current_session_key
                 mark_tainted(get_current_session_key(), TaintSource.MCP_RESULT, tool_name)
             except Exception:
-                pass
+                logger.warning("Failed to mark session tainted after MCP tool %s/%s", server_name, tool_name)
             return result
         except InterruptedError:
             return _interrupted_call_result()

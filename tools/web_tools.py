@@ -1087,7 +1087,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             from tools.approval import get_current_session_key
             mark_tainted(get_current_session_key(), TaintSource.WEB_SEARCH, "web_search")
         except Exception:
-            pass
+            logger.warning("Failed to mark session tainted after web_search")
 
         # Dispatch to the configured backend
         backend = _get_backend()
@@ -1236,7 +1236,7 @@ async def web_extract_tool(
             from tools.approval import get_current_session_key
             mark_tainted(get_current_session_key(), TaintSource.WEB_FETCH, "web_extract")
         except Exception:
-            pass
+            logger.warning("Failed to mark session tainted after web_extract")
 
         # ── SSRF protection — filter out private/internal URLs before any backend ──
         safe_urls = []
