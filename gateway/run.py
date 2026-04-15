@@ -5869,6 +5869,7 @@ class GatewayRunner:
             return "❌ /yolo is restricted to users on the platform allowlist."
 
         session_key = self._session_key_for_source(event.source)
+        current = is_session_yolo_enabled(session_key)
         if current:
             disable_session_yolo(session_key)
             return "⚠️ YOLO mode **OFF** for this session — dangerous commands will require approval."
