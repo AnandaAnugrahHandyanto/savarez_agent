@@ -1098,3 +1098,135 @@ class TestBedrockContextLength:
         from agent.bedrock_adapter import get_bedrock_context_length
         # "anthropic.claude-3-5-sonnet" should match before "anthropic.claude-3"
         assert get_bedrock_context_length("anthropic.claude-3-5-sonnet-20240620-v1:0") == 200_000
+
+
+# ---------------------------------------------------------------------------
+# Tool-calling capability detection
+# ---------------------------------------------------------------------------
+
+class TestModelSupportsToolUse:
+    """Test non-tool-calling model detection."""
+
+    def test_claude_supports_tools(self):
+        from agent.bedrock_adapter import _model_supports_tool_use
+        assert _model_supports_tool_use("us.anthropic.claude-sonnet-4-6") is True
+
+    def test_nova_supports_tools(self):
+        from agent.bedrock_adapter import _model_supports_tool_use
+        assert _model_supports_tool_use("us.amazon.nova-pro-v1:0") is True
+
+    def test_deepseek_v3_supports_tools(self):
+        from agent.bedrock_adapter import _model_supports_tool_use
+        assert _model_supports_tool_use("deepseek.v3.2") is True
+
+    def test_llama_supports_tools(self):
+        from agent.bedrock_adapter import _model_supports_tool_use
+        assert _model_supports_tool_use("us.meta.llama4-scout-17b-instruct-v1:0") is True
+
+    def test_deepseek_r1_no_tools(self):
+        from agent.bedrock_adapter import _model_supports_tool_use
+        assert _model_supports_tool_use("us.deepseek.r1-v1:0") is False
+
+    def test_deepseek_r1_alt_format_no_tools(self):
+        from agent.bedrock_adapter import _model_supports_tool_use
+        assert _model_supports_tool_use("deepseek-r1") is False
+
+    def test_stability_no_tools(self):
+        from agent.bedrock_adapter import _model_supports_tool_use
+        assert _model_supports_tool_use("stability.stable-diffusion-xl") is False
+
+    def test_embedding_no_tools(self):
+        from agent.bedrock_adapter import _model_supports_tool_use
+        assert _model_supports_tool_use("cohere.embed-v4") is False
+
+    def test_unknown_model_defaults_to_true(self):
+        from agent.bedrock_adapter import _model_supports_tool_use
+        assert _model_supports_tool_use("some-future-model-v1") is True
+
+
+class TestBuildConverseKwargsToolStripping:
+    """Test that tools are stripped for non-tool-calling models."""
+
+    def test_tools_included_for_claude(self):
+        from agent.bedrock_adapter import build_converse_kwargs
+        tools = [{"type": "function", "function": {"name": "test", "description": "t", "parameters": {}}}]
+        kwargs = build_converse_kwargs(
+            model="us.anthropic.claude-sonnet-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=tools,
+        )
+        assert "toolConfig" in kwargs
+
+    def test_tools_stripped_for_deepseek_r1(self):
+        from agent.bedrock_adapter import build_converse_kwargs
+        tools = [{"type": "function", "function": {"name": "test", "description": "t", "parameters": {}}}]
+        kwargs = build_converse_kwargs(
+            model="us.deepseek.r1-v1:0",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=tools,
+        )
+        assert "toolConfig" not in kwargs
+
+
+# ---------------------------------------------------------------------------
+# Dual-path model routing
+# ---------------------------------------------------------------------------
+
+class TestIsAnthropicBedrockModel:
+    """Test Claude model detection for dual-path routing."""
+
+    def test_us_claude_sonnet(self):
+        from agent.bedrock_adapter import is_anthropic_bedrock_model
+        assert is_anthropic_bedrock_model("us.anthropic.claude-sonnet-4-6") is True
+
+    def test_global_claude_opus(self):
+        from agent.bedrock_adapter import is_anthropic_bedrock_model
+        assert is_anthropic_bedrock_model("global.anthropic.claude-opus-4-6-v1") is True
+
+    def test_bare_claude(self):
+        from agent.bedrock_adapter import is_anthropic_bedrock_model
+        assert is_anthropic_bedrock_model("anthropic.claude-haiku-4-5-20251001-v1:0") is True
+
+    def test_nova_is_not_anthropic(self):
+        from agent.bedrock_adapter import is_anthropic_bedrock_model
+        assert is_anthropic_bedrock_model("us.amazon.nova-pro-v1:0") is False
+
+    def test_deepseek_is_not_anthropic(self):
+        from agent.bedrock_adapter import is_anthropic_bedrock_model
+        assert is_anthropic_bedrock_model("deepseek.v3.2") is False
+
+    def test_llama_is_not_anthropic(self):
+        from agent.bedrock_adapter import is_anthropic_bedrock_model
+        assert is_anthropic_bedrock_model("us.meta.llama4-scout-17b-instruct-v1:0") is False
+
+    def test_mistral_is_not_anthropic(self):
+        from agent.bedrock_adapter import is_anthropic_bedrock_model
+        assert is_anthropic_bedrock_model("mistral.mistral-large-3-675b-instruct") is False
+
+    def test_eu_claude(self):
+        from agent.bedrock_adapter import is_anthropic_bedrock_model
+        assert is_anthropic_bedrock_model("eu.anthropic.claude-sonnet-4-6") is True
+
+
+class TestEmptyTextBlockFix:
+    """Test that empty text blocks are replaced with space placeholders."""
+
+    def test_none_content_gets_space(self):
+        from agent.bedrock_adapter import _convert_content_to_converse
+        blocks = _convert_content_to_converse(None)
+        assert blocks[0]["text"] == " "
+
+    def test_empty_string_gets_space(self):
+        from agent.bedrock_adapter import _convert_content_to_converse
+        blocks = _convert_content_to_converse("")
+        assert blocks[0]["text"] == " "
+
+    def test_whitespace_only_gets_space(self):
+        from agent.bedrock_adapter import _convert_content_to_converse
+        blocks = _convert_content_to_converse("   ")
+        assert blocks[0]["text"] == " "
+
+    def test_real_text_preserved(self):
+        from agent.bedrock_adapter import _convert_content_to_converse
+        blocks = _convert_content_to_converse("Hello")
+        assert blocks[0]["text"] == "Hello"

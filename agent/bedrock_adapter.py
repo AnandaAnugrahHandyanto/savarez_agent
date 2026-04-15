@@ -194,6 +194,57 @@ def resolve_bedrock_region(env: Optional[Dict[str, str]] = None) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Tool-calling capability detection
+# ---------------------------------------------------------------------------
+# Some Bedrock models don't support tool/function calling. Sending toolConfig
+# to these models causes ValidationException. We maintain a denylist of known
+# non-tool-calling model patterns and strip tools for them.
+#
+# This is a conservative approach: unknown models are assumed to support tools.
+# If a model fails with a tool-related ValidationException, add it here.
+
+_NON_TOOL_CALLING_PATTERNS = [
+    "deepseek.r1",          # DeepSeek R1 — reasoning only, no tool support
+    "deepseek-r1",          # Alternate ID format
+    "stability.",           # Image generation models
+    "cohere.embed",         # Embedding models
+    "amazon.titan-embed",   # Embedding models
+]
+
+
+def _model_supports_tool_use(model_id: str) -> bool:
+    """Return True if the model is expected to support tool/function calling.
+
+    Models in the denylist are known to reject toolConfig in the Converse API.
+    Unknown models default to True (assume tool support).
+    """
+    model_lower = model_id.lower()
+    return not any(pattern in model_lower for pattern in _NON_TOOL_CALLING_PATTERNS)
+
+
+def is_anthropic_bedrock_model(model_id: str) -> bool:
+    """Return True if the model is an Anthropic Claude model on Bedrock.
+
+    These models should use the AnthropicBedrock SDK path for full feature
+    parity (prompt caching, thinking budgets, adaptive thinking).
+    Non-Claude models use the Converse API path.
+
+    Matches:
+      - ``anthropic.claude-*`` (foundation model IDs)
+      - ``us.anthropic.claude-*`` (US inference profiles)
+      - ``global.anthropic.claude-*`` (global inference profiles)
+      - ``eu.anthropic.claude-*`` (EU inference profiles)
+    """
+    model_lower = model_id.lower()
+    # Strip regional prefix if present
+    for prefix in ("us.", "global.", "eu.", "ap.", "jp."):
+        if model_lower.startswith(prefix):
+            model_lower = model_lower[len(prefix):]
+            break
+    return model_lower.startswith("anthropic.claude")
+
+
+# ---------------------------------------------------------------------------
 # Message format conversion: OpenAI → Bedrock Converse
 # ---------------------------------------------------------------------------
 
@@ -234,11 +285,15 @@ def _convert_content_to_converse(content) -> List[Dict]:
     Handles:
       - Plain text strings → [{"text": "..."}]
       - Content arrays with text/image_url parts → mixed text/image blocks
+
+    Filters out empty text blocks — Bedrock's Converse API rejects messages
+    where a text content block has an empty ``text`` field (ValidationException:
+    "text content blocks must be non-empty"). Ref: issue #9486.
     """
     if content is None:
-        return [{"text": ""}]
+        return [{"text": " "}]
     if isinstance(content, str):
-        return [{"text": content}] if content else [{"text": " "}]
+        return [{"text": content}] if content.strip() else [{"text": " "}]
     if isinstance(content, list):
         blocks = []
         for part in content:
@@ -686,7 +741,18 @@ def build_converse_kwargs(
     if tools:
         converse_tools = convert_tools_to_converse(tools)
         if converse_tools:
-            kwargs["toolConfig"] = {"tools": converse_tools}
+            # Some Bedrock models don't support tool/function calling (e.g.
+            # DeepSeek R1, reasoning-only models).  Sending toolConfig to
+            # these models causes a ValidationException → retry loop → failure.
+            # Strip tools for known non-tool-calling models and warn the user.
+            # Ref: PR #7920 feedback from @ptlally, pattern from PR #4346.
+            if _model_supports_tool_use(model):
+                kwargs["toolConfig"] = {"tools": converse_tools}
+            else:
+                logger.warning(
+                    "Model %s does not support tool calling — tools stripped. "
+                    "The agent will operate in text-only mode.", model
+                )
 
     if guardrail_config:
         kwargs["guardrailConfig"] = guardrail_config

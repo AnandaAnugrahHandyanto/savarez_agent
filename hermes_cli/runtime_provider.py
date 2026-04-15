@@ -304,9 +304,6 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         api_mode = _parse_api_mode(entry.get("api_mode"))
         if api_mode:
             result["api_mode"] = api_mode
-        model_name = str(entry.get("model", "") or "").strip()
-        if model_name:
-            result["model"] = model_name
         return result
 
     return None
@@ -332,11 +329,6 @@ def _resolve_named_custom_runtime(
     # Check if a credential pool exists for this custom endpoint
     pool_result = _try_resolve_from_custom_pool(base_url, "custom", custom_provider.get("api_mode"))
     if pool_result:
-        # Propagate the model name even when using pooled credentials —
-        # the pool doesn't know about the custom_providers model field.
-        model_name = custom_provider.get("model")
-        if model_name:
-            pool_result["model"] = model_name
         return pool_result
 
     api_key_candidates = [
@@ -347,7 +339,7 @@ def _resolve_named_custom_runtime(
     ]
     api_key = next((candidate for candidate in api_key_candidates if has_usable_secret(candidate)), "")
 
-    result = {
+    return {
         "provider": "custom",
         "api_mode": custom_provider.get("api_mode")
         or _detect_api_mode_for_url(base_url)
@@ -356,11 +348,6 @@ def _resolve_named_custom_runtime(
         "api_key": api_key or "no-key-required",
         "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",
     }
-    # Propagate the model name so callers can override self.model when the
-    # provider name differs from the actual model string the API expects.
-    if custom_provider.get("model"):
-        result["model"] = custom_provider["model"]
-    return result
 
 
 def _resolve_openrouter_runtime(
@@ -824,15 +811,34 @@ def resolve_runtime_provider(
                 guardrail_config["streamProcessingMode"] = _gr["stream_processing_mode"]
             if _gr.get("trace"):
                 guardrail_config["trace"] = _gr["trace"]
-        runtime = {
-            "provider": "bedrock",
-            "api_mode": "bedrock_converse",
-            "base_url": f"https://bedrock-runtime.{region}.amazonaws.com",
-            "api_key": "aws-sdk",  # Placeholder — boto3 handles real auth
-            "source": auth_source,
-            "region": region,
-            "requested_provider": requested_provider,
-        }
+        # Dual-path routing: Claude models use AnthropicBedrock SDK for full
+        # feature parity (prompt caching, thinking budgets, adaptive thinking).
+        # Non-Claude models use the Converse API for multi-model support.
+        from agent.bedrock_adapter import is_anthropic_bedrock_model
+        _current_model = str(model_cfg.get("default") or "").strip()
+        if is_anthropic_bedrock_model(_current_model):
+            # Claude on Bedrock → AnthropicBedrock SDK → anthropic_messages path
+            runtime = {
+                "provider": "bedrock",
+                "api_mode": "anthropic_messages",
+                "base_url": f"https://bedrock-runtime.{region}.amazonaws.com",
+                "api_key": "aws-sdk",
+                "source": auth_source,
+                "region": region,
+                "bedrock_anthropic": True,  # Signal to use AnthropicBedrock client
+                "requested_provider": requested_provider,
+            }
+        else:
+            # Non-Claude (Nova, DeepSeek, Llama, etc.) → Converse API
+            runtime = {
+                "provider": "bedrock",
+                "api_mode": "bedrock_converse",
+                "base_url": f"https://bedrock-runtime.{region}.amazonaws.com",
+                "api_key": "aws-sdk",
+                "source": auth_source,
+                "region": region,
+                "requested_provider": requested_provider,
+            }
         if guardrail_config:
             runtime["guardrail_config"] = guardrail_config
         return runtime
