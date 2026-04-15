@@ -170,6 +170,16 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
+DELEGATION_GUIDANCE = (
+    "Prefer delegate_task when a request clearly breaks into multiple independent subtasks "
+    "or will require 3 or more independent tool calls.\n"
+    "Use it proactively at task intake for reasoning-heavy work, parallel workstreams, or "
+    "multi-step investigations that should be isolated.\n"
+    "Do not delegate simple, single-step, or purely mechanical tasks.\n"
+    "When delegating, pass enough context for the subagent to act without your conversation history.\n"
+    "Prefer delegation when it will reduce context pressure or let you work on other parts in parallel."
+)
+
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do "
@@ -180,6 +190,8 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "Keep working until the task is actually complete. Do not stop with a summary of "
     "what you plan to do next time. If you have tools available that can accomplish "
     "the task, use them instead of telling the user what you would do.\n"
+    "Delegating work with delegate_task counts as tool use, so use it when it is the "
+    "best way to proceed.\n"
     "Every response should either (a) contain tool calls that make progress, or "
     "(b) deliver a final result to the user. Responses that only describe intentions "
     "without acting are not acceptable."
