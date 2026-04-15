@@ -1072,11 +1072,11 @@ def select_provider_and_model(args=None):
         ("qwen-oauth", "Qwen OAuth (reuses local Qwen CLI login)"),
         ("copilot", "GitHub Copilot (uses GITHUB_TOKEN or gh auth token)"),
         ("huggingface", "Hugging Face Inference Providers (20+ open models)"),
+        ("gemini", "Google AI Studio (Gemini — OAuth or API key)"),
     ]
 
     extended_providers = [
         ("copilot-acp", "GitHub Copilot ACP (spawns `copilot --acp --stdio`)"),
-        ("gemini", "Google AI Studio (Gemini models — OpenAI-compatible endpoint)"),
         ("zai", "Z.AI / GLM (Zhipu AI direct API)"),
         ("kimi-coding", "Kimi / Moonshot (Moonshot AI direct API)"),
         ("minimax", "MiniMax (global direct API)"),
@@ -1197,9 +1197,11 @@ def select_provider_and_model(args=None):
         _remove_custom_provider(config)
     elif selected_provider == "anthropic":
         _model_flow_anthropic(config, current_model)
+    elif selected_provider == "gemini":
+        _model_flow_gemini(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "xiaomi"):
+    elif selected_provider in ("zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "xiaomi"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
     # ── Post-switch cleanup: clear stale OPENAI_BASE_URL ──────────────
@@ -2662,6 +2664,141 @@ def _run_anthropic_oauth_flow(save_env_value):
             return True
         print("  Cancelled — install Claude Code and try again.")
         return False
+
+
+def _model_flow_gemini(config, current_model=""):
+    """Flow for Gemini provider — OAuth (Google account) or API key."""
+    import os
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY, _prompt_model_selection, _save_model_choice,
+        deactivate_provider,
+    )
+    from hermes_cli.config import get_env_value, save_env_value, load_config, save_config
+    from hermes_cli.models import _PROVIDER_MODELS
+
+    pconfig = PROVIDER_REGISTRY["gemini"]
+
+    # Check existing credentials — OAuth file or API key env vars
+    oauth_available = False
+    try:
+        from agent.google_oauth import load_credentials as _load_gemini_creds, get_valid_access_token
+        stored = _load_gemini_creds()
+        if stored and stored.get("access_token"):
+            # Verify it's still refreshable
+            token = get_valid_access_token()
+            if token:
+                oauth_available = True
+    except Exception:
+        pass
+
+    existing_key = ""
+    for ev in pconfig.api_key_env_vars:
+        existing_key = get_env_value(ev) or os.getenv(ev, "")
+        if existing_key:
+            break
+
+    has_creds = oauth_available or bool(existing_key)
+    needs_auth = not has_creds
+
+    if has_creds:
+        if oauth_available:
+            email = ""
+            try:
+                email = stored.get("email", "") if stored else ""
+            except Exception:
+                pass
+            print(f"  Google OAuth credentials: ✓{f' ({email})' if email else ''}")
+        elif existing_key:
+            print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓")
+        print()
+        print("    1. Use existing credentials")
+        print("    2. Reauthenticate (new login)")
+        print("    3. Cancel")
+        print()
+        try:
+            choice = input("  Choice [1/2/3]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            choice = "1"
+
+        if choice == "2":
+            needs_auth = True
+        elif choice == "3":
+            return
+        # choice == "1" or default: use existing, proceed to model selection
+
+    if needs_auth:
+        print()
+        print("  Choose authentication method:")
+        print()
+        print("    1. Google account (OAuth login)")
+        print("    2. Google AI Studio API key")
+        print("    3. Cancel")
+        print()
+        try:
+            choice = input("  Choice [1/2/3]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+
+        if choice == "1":
+            try:
+                from agent.google_oauth import run_gemini_oauth_login_and_save
+                creds = run_gemini_oauth_login_and_save()
+                if not creds:
+                    print("  OAuth login cancelled or failed.")
+                    return
+            except Exception as exc:
+                print(f"  OAuth login failed: {exc}")
+                return
+
+        elif choice == "2":
+            print()
+            print("  Get an API key at: https://aistudio.google.com/apikey")
+            print()
+            try:
+                import getpass
+                api_key = getpass.getpass("  API key: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return
+            if not api_key:
+                print("  Cancelled.")
+                return
+            key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else "GOOGLE_API_KEY"
+            save_env_value(key_env, api_key)
+            print("  ✓ API key saved.")
+
+        else:
+            print("  No change.")
+            return
+    print()
+
+    # Model selection
+    model_list = _PROVIDER_MODELS.get("gemini", [])
+    if model_list:
+        selected = _prompt_model_selection(model_list, current_model=current_model)
+    else:
+        try:
+            selected = input("Model name (e.g., gemini-2.5-flash): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            selected = None
+
+    if selected:
+        _save_model_choice(selected)
+
+        cfg = load_config()
+        model = cfg.get("model")
+        if not isinstance(model, dict):
+            model = {"default": model} if model else {}
+            cfg["model"] = model
+        model["provider"] = "gemini"
+        model.pop("base_url", None)
+        save_config(cfg)
+        deactivate_provider()
+
+        print(f"Default model set to: {selected} (via Google AI Studio)")
+    else:
+        print("No change.")
 
 
 def _model_flow_anthropic(config, current_model=""):
@@ -4744,7 +4881,7 @@ For more help on a command:
     )
     login_parser.add_argument(
         "--provider",
-        choices=["nous", "openai-codex"],
+        choices=["nous", "openai-codex", "gemini"],
         default=None,
         help="Provider to authenticate with (default: nous)"
     )
@@ -4798,7 +4935,7 @@ For more help on a command:
     )
     logout_parser.add_argument(
         "--provider",
-        choices=["nous", "openai-codex"],
+        choices=["nous", "openai-codex", "gemini"],
         default=None,
         help="Provider to log out from (default: active provider)"
     )

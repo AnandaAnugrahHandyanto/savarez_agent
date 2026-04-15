@@ -154,6 +154,13 @@ def _resolve_runtime_from_pool_entry(
     elif provider == "qwen-oauth":
         api_mode = "chat_completions"
         base_url = base_url or DEFAULT_QWEN_BASE_URL
+    elif provider == "gemini":
+        api_mode = "chat_completions"
+        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        cfg_base_url = ""
+        if cfg_provider == "gemini":
+            cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+        base_url = cfg_base_url or base_url or "https://generativelanguage.googleapis.com/v1beta/openai"
     elif provider == "anthropic":
         api_mode = "anthropic_messages"
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
@@ -781,6 +788,29 @@ def resolve_runtime_provider(
             "source": "env",
             "requested_provider": requested_provider,
         }
+
+    # Gemini — try OAuth credentials first, fall back to API key
+    if provider == "gemini":
+        try:
+            from agent.google_oauth import get_valid_access_token as _gemini_oauth_token
+            oauth_token = _gemini_oauth_token()
+        except Exception:
+            oauth_token = None
+        if oauth_token:
+            cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+            cfg_base_url = ""
+            if cfg_provider == "gemini":
+                cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
+            base_url = cfg_base_url or "https://generativelanguage.googleapis.com/v1beta/openai"
+            return {
+                "provider": "gemini",
+                "api_mode": "chat_completions",
+                "base_url": base_url,
+                "api_key": oauth_token,
+                "source": "google_oauth",
+                "requested_provider": requested_provider,
+            }
+        # No OAuth token — fall through to API-key resolution below
 
     # API-key providers (z.ai/GLM, Kimi, MiniMax, MiniMax-CN)
     pconfig = PROVIDER_REGISTRY.get(provider)

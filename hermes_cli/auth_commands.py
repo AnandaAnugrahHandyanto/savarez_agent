@@ -32,7 +32,7 @@ from hermes_constants import OPENROUTER_BASE_URL
 
 
 # Providers that support OAuth login in addition to API keys.
-_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "qwen-oauth"}
+_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "gemini", "nous", "openai-codex", "qwen-oauth"}
 
 
 def _get_custom_provider_names() -> list:
@@ -147,7 +147,7 @@ def auth_add_command(args) -> None:
         if provider.startswith(CUSTOM_POOL_PREFIX):
             requested_type = AUTH_TYPE_API_KEY
         else:
-            requested_type = AUTH_TYPE_OAUTH if provider in {"anthropic", "nous", "openai-codex", "qwen-oauth"} else AUTH_TYPE_API_KEY
+            requested_type = AUTH_TYPE_OAUTH if provider in {"anthropic", "gemini", "nous", "openai-codex", "qwen-oauth"} else AUTH_TYPE_API_KEY
 
     pool = load_pool(provider)
 
@@ -192,6 +192,32 @@ def auth_add_command(args) -> None:
             auth_type=AUTH_TYPE_OAUTH,
             priority=0,
             source=f"{SOURCE_MANUAL}:hermes_pkce",
+            access_token=creds["access_token"],
+            refresh_token=creds.get("refresh_token"),
+            expires_at_ms=creds.get("expires_at_ms"),
+            base_url=_provider_base_url(provider),
+        )
+        pool.add_entry(entry)
+        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        return
+
+    if provider == "gemini":
+        from agent import google_oauth as google_oauth_mod
+
+        creds = google_oauth_mod.run_gemini_oauth_login_pure()
+        if not creds:
+            raise SystemExit("Gemini OAuth login did not return credentials.")
+        label = (getattr(args, "label", None) or "").strip() or label_from_token(
+            creds["access_token"],
+            _oauth_default_label(provider, len(pool.entries()) + 1),
+        )
+        entry = PooledCredential(
+            provider=provider,
+            id=uuid.uuid4().hex[:6],
+            label=label,
+            auth_type=AUTH_TYPE_OAUTH,
+            priority=0,
+            source=f"{SOURCE_MANUAL}:google_pkce",
             access_token=creds["access_token"],
             refresh_token=creds.get("refresh_token"),
             expires_at_ms=creds.get("expires_at_ms"),

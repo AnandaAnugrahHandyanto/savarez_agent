@@ -271,3 +271,72 @@ class TestGeminiModelsDev:
         assert "gemini-2.5-flash-preview-tts" not in result  # no tool_call
         assert "gemini-live-2.5-flash" not in result     # noise: live-
         assert "gemini-2.5-flash-preview-04-17" not in result  # noise: dated preview
+
+
+# ── OAuth Integration ──
+
+class TestGeminiOAuth:
+    """Tests for Gemini OAuth integration with existing provider infrastructure."""
+
+    def test_gemini_in_oauth_capable_providers(self):
+        from hermes_cli.auth_commands import _OAUTH_CAPABLE_PROVIDERS
+        assert "gemini" in _OAUTH_CAPABLE_PROVIDERS
+
+    def test_gemini_runtime_uses_oauth_when_available(self, monkeypatch, tmp_path):
+        """When OAuth credentials exist, runtime_provider prefers them over API key."""
+        import json, time
+
+        # Set up OAuth credentials file
+        cred_file = tmp_path / "gemini_oauth.json"
+        cred_file.write_text(json.dumps({
+            "access_token": "ya29.oauth-token",
+            "refresh_token": "1//refresh",
+            "expires_at": time.time() + 7200,
+        }))
+        monkeypatch.setattr("agent.google_oauth._OAUTH_FILE", cred_file)
+
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="gemini")
+        assert result["provider"] == "gemini"
+        assert result["api_key"] == "ya29.oauth-token"
+        assert result["source"] == "google_oauth"
+        assert result["api_mode"] == "chat_completions"
+
+    def test_gemini_runtime_falls_back_to_api_key(self, monkeypatch, tmp_path):
+        """When no OAuth credentials exist, fall back to API key."""
+        # No OAuth file
+        cred_file = tmp_path / "nonexistent_gemini_oauth.json"
+        monkeypatch.setattr("agent.google_oauth._OAUTH_FILE", cred_file)
+
+        monkeypatch.setenv("GOOGLE_API_KEY", "api-key-fallback")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="gemini")
+        assert result["provider"] == "gemini"
+        assert result["api_key"] == "api-key-fallback"
+        assert result["source"] != "google_oauth"
+
+    def test_gemini_auth_status_with_oauth(self, monkeypatch, tmp_path):
+        """get_auth_status reports OAuth status when credentials exist."""
+        import json, time
+
+        cred_file = tmp_path / "gemini_oauth.json"
+        cred_file.write_text(json.dumps({
+            "access_token": "ya29.status-test",
+            "refresh_token": "1//refresh",
+            "expires_at": time.time() + 7200,
+            "email": "test@example.com",
+        }))
+        monkeypatch.setattr("agent.google_oauth._OAUTH_FILE", cred_file)
+
+        from hermes_cli.auth import get_auth_status
+        status = get_auth_status("gemini")
+        assert status["logged_in"] is True
+        assert status.get("auth_type") == "google_oauth"
+        assert status.get("email") == "test@example.com"
+
+    def test_providers_py_aliases(self):
+        """providers.py ALIASES includes Google → gemini mappings."""
+        from hermes_cli.providers import ALIASES
+        assert ALIASES.get("google") == "gemini"
+        assert ALIASES.get("google-gemini") == "gemini"
+        assert ALIASES.get("google-ai-studio") == "gemini"

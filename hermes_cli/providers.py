@@ -189,6 +189,11 @@ ALIASES: Dict[str, str] = {
     "claude": "anthropic",
     "claude-code": "anthropic",
 
+    # gemini / google
+    "google": "gemini",
+    "google-gemini": "gemini",
+    "google-ai-studio": "gemini",
+
     # github-copilot (models.dev ID)
     "copilot": "github-copilot",
     "github": "github-copilot",

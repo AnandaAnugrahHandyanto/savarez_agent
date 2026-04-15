@@ -2424,6 +2424,16 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_qwen_auth_status()
     if target == "copilot-acp":
         return get_external_process_provider_status(target)
+    # Gemini — check OAuth credentials first, then fall through to API-key
+    if target == "gemini":
+        try:
+            from agent.google_oauth import load_credentials as _load_gemini_oauth
+            oauth_creds = _load_gemini_oauth()
+            if oauth_creds and oauth_creds.get("access_token"):
+                return {"logged_in": True, "auth_type": "google_oauth", "email": oauth_creds.get("email", "")}
+        except Exception:
+            pass
+        # Fall through to API-key check
     # API-key providers
     pconfig = PROVIDER_REGISTRY.get(target)
     if pconfig and pconfig.auth_type == "api_key":
