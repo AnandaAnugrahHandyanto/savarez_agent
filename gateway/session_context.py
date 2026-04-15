@@ -38,17 +38,20 @@ needs to replace the import + call site:
 
 from contextvars import ContextVar
 
+_UNSET = object()
+_CLEARED = object()
+
 # ---------------------------------------------------------------------------
 # Per-task session variables
 # ---------------------------------------------------------------------------
 
-_SESSION_PLATFORM: ContextVar[str] = ContextVar("HERMES_SESSION_PLATFORM", default="")
-_SESSION_CHAT_ID: ContextVar[str] = ContextVar("HERMES_SESSION_CHAT_ID", default="")
-_SESSION_CHAT_NAME: ContextVar[str] = ContextVar("HERMES_SESSION_CHAT_NAME", default="")
-_SESSION_THREAD_ID: ContextVar[str] = ContextVar("HERMES_SESSION_THREAD_ID", default="")
-_SESSION_USER_ID: ContextVar[str] = ContextVar("HERMES_SESSION_USER_ID", default="")
-_SESSION_USER_NAME: ContextVar[str] = ContextVar("HERMES_SESSION_USER_NAME", default="")
-_SESSION_KEY: ContextVar[str] = ContextVar("HERMES_SESSION_KEY", default="")
+_SESSION_PLATFORM: ContextVar[str] = ContextVar("HERMES_SESSION_PLATFORM", default=_UNSET)
+_SESSION_CHAT_ID: ContextVar[str] = ContextVar("HERMES_SESSION_CHAT_ID", default=_UNSET)
+_SESSION_CHAT_NAME: ContextVar[str] = ContextVar("HERMES_SESSION_CHAT_NAME", default=_UNSET)
+_SESSION_THREAD_ID: ContextVar[str] = ContextVar("HERMES_SESSION_THREAD_ID", default=_UNSET)
+_SESSION_USER_ID: ContextVar[str] = ContextVar("HERMES_SESSION_USER_ID", default=_UNSET)
+_SESSION_USER_NAME: ContextVar[str] = ContextVar("HERMES_SESSION_USER_NAME", default=_UNSET)
+_SESSION_KEY: ContextVar[str] = ContextVar("HERMES_SESSION_KEY", default=_UNSET)
 
 _VAR_MAP = {
     "HERMES_SESSION_PLATFORM": _SESSION_PLATFORM,
@@ -91,7 +94,7 @@ def set_session_vars(
 
 
 def clear_session_vars(tokens: list) -> None:
-    """Restore session context variables to their pre-handler values."""
+    """Clear session context variables so stale env values stay hidden."""
     if not tokens:
         return
     vars_in_order = [
@@ -103,8 +106,8 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_USER_NAME,
         _SESSION_KEY,
     ]
-    for var, token in zip(vars_in_order, tokens):
-        var.reset(token)
+    for var in vars_in_order:
+        var.set(_CLEARED)
 
 
 def get_session_env(name: str, default: str = "") -> str:
@@ -122,7 +125,11 @@ def get_session_env(name: str, default: str = "") -> str:
     var = _VAR_MAP.get(name)
     if var is not None:
         value = var.get()
-        if value:
+        if value is _UNSET:
+            pass
+        elif value is _CLEARED:
+            return default
+        else:
             return value
     # Fall back to os.environ for CLI, cron, and test compatibility
     return os.getenv(name, default)

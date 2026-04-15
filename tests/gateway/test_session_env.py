@@ -9,6 +9,7 @@ from gateway.session_context import (
     set_session_vars,
     clear_session_vars,
 )
+import gateway.session_context as session_context
 
 
 def test_set_session_env_sets_contextvars(monkeypatch):
@@ -88,8 +89,10 @@ def test_clear_session_env_restores_previous_state(monkeypatch):
 
 
 def test_get_session_env_falls_back_to_os_environ(monkeypatch):
-    """get_session_env should fall back to os.environ when contextvar is unset."""
+    """get_session_env should fall back to os.environ when contextvar is truly unset."""
     monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
+    session_context._SESSION_PLATFORM.set(session_context._UNSET)
+    session_context._SESSION_ACTIVE.set(False)
 
     # No contextvar set — should read from os.environ
     assert get_session_env("HERMES_SESSION_PLATFORM") == "discord"
@@ -98,9 +101,49 @@ def test_get_session_env_falls_back_to_os_environ(monkeypatch):
     tokens = set_session_vars(platform="telegram")
     assert get_session_env("HERMES_SESSION_PLATFORM") == "telegram"
 
-    # Restore — should fall back to os.environ again
+    # Clear — should hide the value again instead of leaking stale env state
     clear_session_vars(tokens)
+    assert get_session_env("HERMES_SESSION_PLATFORM") == ""
+
+
+def test_get_session_env_uses_os_environ_when_never_initialized(monkeypatch):
+    """A never-initialized variable should still fall back to os.environ."""
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
+    session_context._SESSION_PLATFORM.set(session_context._UNSET)
+    session_context._SESSION_ACTIVE.set(False)
+
     assert get_session_env("HERMES_SESSION_PLATFORM") == "discord"
+
+
+def test_session_context_nested_clear_preserves_outer_state(monkeypatch):
+    """Inner clear must not erase the outer session context."""
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    outer = set_session_vars(session_key="outer-session")
+    try:
+        assert get_session_env("HERMES_SESSION_KEY") == "outer-session"
+        inner = set_session_vars(session_key="inner-session")
+        try:
+            assert get_session_env("HERMES_SESSION_KEY") == "inner-session"
+        finally:
+            clear_session_vars(inner)
+        assert get_session_env("HERMES_SESSION_KEY") == "outer-session"
+    finally:
+        clear_session_vars(outer)
+
+
+def test_session_context_multiple_set_clear_cycles(monkeypatch):
+    """Repeated set/clear cycles in the same task should remain safe."""
+    monkeypatch.delenv("HERMES_SESSION_THREAD_ID", raising=False)
+
+    first = set_session_vars(thread_id="thread-1")
+    assert get_session_env("HERMES_SESSION_THREAD_ID") == "thread-1"
+    clear_session_vars(first)
+    assert get_session_env("HERMES_SESSION_THREAD_ID") == ""
+
+    second = set_session_vars(thread_id="thread-2")
+    assert get_session_env("HERMES_SESSION_THREAD_ID") == "thread-2"
+    clear_session_vars(second)
+    assert get_session_env("HERMES_SESSION_THREAD_ID") == ""
 
 
 def test_get_session_env_default_when_nothing_set(monkeypatch):
@@ -109,6 +152,53 @@ def test_get_session_env_default_when_nothing_set(monkeypatch):
 
     assert get_session_env("HERMES_SESSION_PLATFORM") == ""
     assert get_session_env("HERMES_SESSION_PLATFORM", "fallback") == "fallback"
+
+
+def test_session_env_multiple_set_clear_cycles(monkeypatch):
+    """Multiple set -> clear cycles should not leak stale values."""
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+
+    first = set_session_vars(session_key="s1")
+    assert get_session_env("HERMES_SESSION_KEY") == "s1"
+    clear_session_vars(first)
+    assert get_session_env("HERMES_SESSION_KEY") == ""
+    assert get_session_env("HERMES_SESSION_KEY", "default") == "default"
+
+    second = set_session_vars(session_key="s2")
+    assert get_session_env("HERMES_SESSION_KEY") == "s2"
+    clear_session_vars(second)
+    assert get_session_env("HERMES_SESSION_KEY") == ""
+    assert get_session_env("HERMES_SESSION_KEY", "default") == "default"
+
+
+def test_session_env_falls_back_to_os_environ_when_never_initialized(monkeypatch):
+    """A never-initialized session var should still fall back to os.environ.
+
+    This test must run in a fresh context where the ContextVar has never been
+    set (still holds _UNSET). We achieve this by running inside a new
+    contextvars.copy_context() so prior test state is invisible.
+    """
+    import contextvars
+
+    monkeypatch.setenv("HERMES_SESSION_KEY", "env-val")
+
+    result = {}
+
+    def _run():
+        # Inside a copied context the vars still carry whatever the current
+        # context has. We need a truly virgin context, so reset them manually.
+        from gateway.session_context import _SESSION_KEY, _UNSET  # type: ignore
+
+        tok = _SESSION_KEY.set(_UNSET)
+        try:
+            result["value"] = get_session_env("HERMES_SESSION_KEY")
+        finally:
+            _SESSION_KEY.reset(tok)
+
+    ctx = contextvars.copy_context()
+    ctx.run(_run)
+
+    assert result["value"] == "env-val"
 
 
 def test_set_session_env_handles_missing_optional_fields():
@@ -154,8 +244,10 @@ def test_session_key_set_via_contextvars(monkeypatch):
 
 
 def test_session_key_falls_back_to_os_environ(monkeypatch):
-    """get_session_env for SESSION_KEY should fall back to os.environ."""
+    """get_session_env for SESSION_KEY should fall back to os.environ when unset."""
     monkeypatch.setenv("HERMES_SESSION_KEY", "env-session-123")
+    session_context._SESSION_KEY.set(session_context._UNSET)
+    session_context._SESSION_ACTIVE.set(False)
 
     # No contextvar set — should read from os.environ
     assert get_session_env("HERMES_SESSION_KEY") == "env-session-123"
@@ -164,9 +256,9 @@ def test_session_key_falls_back_to_os_environ(monkeypatch):
     tokens = set_session_vars(session_key="ctx-session-456")
     assert get_session_env("HERMES_SESSION_KEY") == "ctx-session-456"
 
-    # Restore — should fall back to os.environ
+    # Clear — should not fall back to os.environ
     clear_session_vars(tokens)
-    assert get_session_env("HERMES_SESSION_KEY") == "env-session-123"
+    assert get_session_env("HERMES_SESSION_KEY") == ""
 
 
 def test_set_session_env_includes_session_key():
@@ -193,6 +285,7 @@ def test_set_session_env_includes_session_key():
     assert get_session_env("HERMES_SESSION_KEY") == "tg:-1001:17585"
     runner._clear_session_env(tokens)
     assert get_session_env("HERMES_SESSION_KEY") == baseline
+
 
 
 def test_session_key_no_race_condition_with_contextvars(monkeypatch):
@@ -230,3 +323,16 @@ def test_session_key_no_race_condition_with_contextvars(monkeypatch):
     assert results["session-B"] == "session-B", (
         f"Session B got '{results['session-B']}' instead of 'session-B' — race condition!"
     )
+
+
+def test_clear_session_vars_does_not_fall_back_to_stale_os_environ(monkeypatch):
+    monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "leaked-value")
+
+    tokens = set_session_vars(thread_id="real-session")
+    try:
+        assert get_session_env("HERMES_SESSION_THREAD_ID") == "real-session"
+    finally:
+        clear_session_vars(tokens)
+
+    assert get_session_env("HERMES_SESSION_THREAD_ID") != "leaked-value"
+    assert get_session_env("HERMES_SESSION_THREAD_ID") == ""
