@@ -191,6 +191,25 @@ def _install_safe_stdio() -> None:
 
 
 
+class SessionCostCapExceeded(RuntimeError):
+    """Raised when the per-session estimated LLM cost has reached its cap.
+
+    F-H1: ``HERMES_SESSION_COST_CAP_USD`` (or the ``session_cost_cap_usd``
+    kwarg on :class:`AIAgent`) sets a ceiling. Before each LLM call, the
+    accumulated ``session_estimated_cost_usd`` is checked; if it has reached
+    the cap, this exception is raised instead of making another call. The
+    main loop catches it, breaks, and returns the partial result with a
+    clear final message.
+    """
+
+    def __init__(self, spent_usd: float, cap_usd: float):
+        self.spent_usd = spent_usd
+        self.cap_usd = cap_usd
+        super().__init__(
+            f"session cost cap reached: ${spent_usd:.4f} spent of ${cap_usd:.2f} cap"
+        )
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -271,6 +290,7 @@ class AIAgent:
         pass_session_id: bool = False,
         persist_session: bool = True,
         council_enabled: Optional[bool] = None,
+        session_cost_cap_usd: Optional[float] = None,
     ):
         """
         Initialize the AI Agent.
@@ -1062,7 +1082,27 @@ class AIAgent:
         self.session_estimated_cost_usd = 0.0
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
-        
+
+        # F-H1 session cost ceiling. Precedence: explicit kwarg > env var > None.
+        # A cap of None or <=0 means unlimited (preserves current behavior).
+        # When set, the loop raises SessionCostCapExceeded before the next LLM
+        # call if the accumulated estimated cost has reached the cap.
+        _env_cap_raw = os.environ.get("HERMES_SESSION_COST_CAP_USD", "").strip()
+        _env_cap_val: Optional[float] = None
+        if _env_cap_raw:
+            try:
+                _parsed = float(_env_cap_raw)
+                if _parsed > 0:
+                    _env_cap_val = _parsed
+            except ValueError:
+                logger.warning(
+                    "HERMES_SESSION_COST_CAP_USD=%r is not a number; ignoring", _env_cap_raw,
+                )
+        self.session_cost_cap_usd: Optional[float] = (
+            session_cost_cap_usd if session_cost_cap_usd and session_cost_cap_usd > 0
+            else _env_cap_val
+        )
+
         if not self.quiet_mode:
             if compression_enabled:
                 print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (compress at {int(compression_threshold*100)}% = {self.context_compressor.threshold_tokens:,})")
@@ -7098,6 +7138,27 @@ class AIAgent:
             if not self.iteration_budget.consume():
                 if not self.quiet_mode:
                     self._safe_print(f"\n⚠️  Iteration budget exhausted ({self.iteration_budget.used}/{self.iteration_budget.max_total} iterations used)")
+                break
+
+            # F-H1 session cost ceiling. Check BEFORE the API call so we never
+            # issue the call that would push spend past the cap. The
+            # accumulator reflects cost of prior calls in this session only,
+            # so the first call is always permitted regardless of cap.
+            if self.session_cost_cap_usd and self.session_estimated_cost_usd >= self.session_cost_cap_usd:
+                if not self.quiet_mode:
+                    self._safe_print(
+                        f"\n⛔ Session cost cap reached: "
+                        f"${self.session_estimated_cost_usd:.4f} of ${self.session_cost_cap_usd:.2f} cap. "
+                        "Set HERMES_SESSION_COST_CAP_USD higher or unset to continue."
+                    )
+                logger.warning(
+                    "F-H1 cost cap reached on session %s: spent=$%.4f cap=$%.2f api_call=%d",
+                    self.session_id, self.session_estimated_cost_usd,
+                    self.session_cost_cap_usd, api_call_count,
+                )
+                # Refund the iteration we just consumed — we didn't actually use it.
+                self.iteration_budget.refund()
+                api_call_count -= 1
                 break
 
             # Fire step_callback for gateway hooks (agent:step event)
