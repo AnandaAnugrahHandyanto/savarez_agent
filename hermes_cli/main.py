@@ -778,92 +778,92 @@ def cmd_whatsapp(args):
     from hermes_cli.config import get_env_value, save_env_value
 
     print()
-    print("⚕ WhatsApp Setup")
+    print("⚕ WhatsApp 설정")
     print("=" * 50)
 
     # ── Step 1: Choose mode ──────────────────────────────────────────────
     current_mode = get_env_value("WHATSAPP_MODE") or ""
     if not current_mode:
         print()
-        print("How will you use WhatsApp with Hermes?")
+        print("Hermes에서 WhatsApp을 어떻게 사용할까요?")
         print()
-        print("  1. Separate bot number (recommended)")
-        print("     People message the bot's number directly — cleanest experience.")
-        print("     Requires a second phone number with WhatsApp installed on a device.")
+        print("  1. 별도 봇 번호 사용 (권장)")
+        print("     사람들이 봇 번호로 직접 메시지를 보내는 방식이라 가장 깔끔해요.")
+        print("     WhatsApp이 설치된 기기와 두 번째 전화번호가 필요해요.")
         print()
-        print("  2. Personal number (self-chat)")
-        print("     You message yourself to talk to the agent.")
-        print("     Quick to set up, but the UX is less intuitive.")
+        print("  2. 개인 번호 사용 (self-chat)")
+        print("     자기 자신에게 메시지를 보내는 방식으로 에이전트와 대화해요.")
+        print("     설정은 빠르지만 사용 경험은 덜 직관적일 수 있어요.")
         print()
         try:
-            choice = input("  Choose [1/2]: ").strip()
+            choice = input("  선택 [1/2]: ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\nSetup cancelled.")
+            print("\n설정을 취소했어요.")
             return
 
         if choice == "1":
             save_env_value("WHATSAPP_MODE", "bot")
             wa_mode = "bot"
-            print("  ✓ Mode: separate bot number")
+            print("  ✓ 모드: 별도 봇 번호")
             print()
             print("  ┌─────────────────────────────────────────────────┐")
-            print("  │  Getting a second number for the bot:           │")
+            print("  │  봇용 두 번째 번호 준비 방법:                    │")
             print("  │                                                 │")
-            print("  │  Easiest: Install WhatsApp Business (free app)  │")
-            print("  │  on your phone with a second number:            │")
-            print("  │    • Dual-SIM: use your 2nd SIM slot            │")
-            print("  │    • Google Voice: free US number (voice.google) │")
-            print("  │    • Prepaid SIM: $3-10, verify once            │")
+            print("  │  가장 쉬운 방법: WhatsApp Business(무료 앱)를   │")
+            print("  │  두 번째 번호로 휴대폰에 설치하세요:            │")
+            print("  │    • 듀얼 SIM: 두 번째 SIM 슬롯 사용            │")
+            print("  │    • Google Voice: 무료 미국 번호(voice.google) │")
+            print("  │    • 선불 SIM: 1회 인증용으로 저렴하게 구매      │")
             print("  │                                                 │")
-            print("  │  WhatsApp Business runs alongside your personal │")
-            print("  │  WhatsApp — no second phone needed.             │")
+            print("  │  WhatsApp Business는 개인 WhatsApp과 함께       │")
+            print("  │  같은 휴대폰에서 사용할 수 있어요.              │")
             print("  └─────────────────────────────────────────────────┘")
         else:
             save_env_value("WHATSAPP_MODE", "self-chat")
             wa_mode = "self-chat"
-            print("  ✓ Mode: personal number (self-chat)")
+            print("  ✓ 모드: 개인 번호 (self-chat)")
     else:
         wa_mode = current_mode
-        mode_label = "separate bot number" if wa_mode == "bot" else "personal number (self-chat)"
-        print(f"\n✓ Mode: {mode_label}")
+        mode_label = "별도 봇 번호" if wa_mode == "bot" else "개인 번호 (self-chat)"
+        print(f"\n✓ 모드: {mode_label}")
 
     # ── Step 2: Enable WhatsApp ──────────────────────────────────────────
     print()
     current = get_env_value("WHATSAPP_ENABLED")
     if current and current.lower() == "true":
-        print("✓ WhatsApp is already enabled")
+        print("✓ WhatsApp이 이미 활성화되어 있어요")
     else:
         save_env_value("WHATSAPP_ENABLED", "true")
-        print("✓ WhatsApp enabled")
+        print("✓ WhatsApp을 활성화했어요")
 
     # ── Step 3: Allowed users ────────────────────────────────────────────
     current_users = get_env_value("WHATSAPP_ALLOWED_USERS") or ""
     if current_users:
-        print(f"✓ Allowed users: {current_users}")
+        print(f"✓ 허용된 사용자: {current_users}")
         try:
-            response = input("\n  Update allowed users? [y/N] ").strip()
+            response = input("\n  허용된 사용자를 수정할까요? [y/N] ").strip()
         except (EOFError, KeyboardInterrupt):
             response = "n"
         if response.lower() in ("y", "yes"):
             if wa_mode == "bot":
-                phone = input("  Phone numbers that can message the bot (comma-separated): ").strip()
+                phone = input("  봇에 메시지를 보낼 수 있는 전화번호(쉼표 구분): ").strip()
             else:
-                phone = input("  Your phone number (e.g. 15551234567): ").strip()
+                phone = input("  내 전화번호 (예: 15551234567): ").strip()
             if phone:
                 save_env_value("WHATSAPP_ALLOWED_USERS", phone.replace(" ", ""))
-                print(f"  ✓ Updated to: {phone}")
+                print(f"  ✓ 다음 값으로 업데이트했어요: {phone}")
     else:
         print()
         if wa_mode == "bot":
-            print("  Who should be allowed to message the bot?")
-            phone = input("  Phone numbers (comma-separated, or * for anyone): ").strip()
+            print("  누가 봇에게 메시지를 보낼 수 있도록 할까요?")
+            phone = input("  전화번호 입력(쉼표 구분, 모두 허용은 *): ").strip()
         else:
-            phone = input("  Your phone number (e.g. 15551234567): ").strip()
+            phone = input("  내 전화번호 (예: 15551234567): ").strip()
         if phone:
             save_env_value("WHATSAPP_ALLOWED_USERS", phone.replace(" ", ""))
-            print(f"  ✓ Allowed users set: {phone}")
+            print(f"  ✓ 허용된 사용자를 설정했어요: {phone}")
         else:
-            print("  ⚠ No allowlist — the agent will respond to ALL incoming messages")
+            print("  ⚠ allowlist가 없어요 — 에이전트가 모든 수신 메시지에 응답할 수 있어요")
 
     # ── Step 4: Install bridge dependencies ──────────────────────────────
     project_root = Path(__file__).resolve().parents[1]
@@ -871,11 +871,11 @@ def cmd_whatsapp(args):
     bridge_script = bridge_dir / "bridge.js"
 
     if not bridge_script.exists():
-        print(f"\n✗ Bridge script not found at {bridge_script}")
+        print(f"\n✗ bridge 스크립트를 찾지 못했어요: {bridge_script}")
         return
 
     if not (bridge_dir / "node_modules").exists():
-        print("\n→ Installing WhatsApp bridge dependencies...")
+        print("\n→ WhatsApp bridge 의존성을 설치하는 중...")
         result = subprocess.run(
             ["npm", "install"],
             cwd=str(bridge_dir),
@@ -884,40 +884,40 @@ def cmd_whatsapp(args):
             timeout=120,
         )
         if result.returncode != 0:
-            print(f"  ✗ npm install failed: {result.stderr}")
+            print(f"  ✗ npm install에 실패했어요: {result.stderr}")
             return
-        print("  ✓ Dependencies installed")
+        print("  ✓ 의존성 설치 완료")
     else:
-        print("✓ Bridge dependencies already installed")
+        print("✓ Bridge 의존성이 이미 설치되어 있어요")
 
     # ── Step 5: Check for existing session ───────────────────────────────
     session_dir = get_hermes_home() / "whatsapp" / "session"
     session_dir.mkdir(parents=True, exist_ok=True)
 
     if (session_dir / "creds.json").exists():
-        print("✓ Existing WhatsApp session found")
+        print("✓ 기존 WhatsApp 세션을 찾았어요")
         try:
-            response = input("\n  Re-pair? This will clear the existing session. [y/N] ").strip()
+            response = input("\n  다시 페어링할까요? 기존 세션이 초기화돼요. [y/N] ").strip()
         except (EOFError, KeyboardInterrupt):
             response = "n"
         if response.lower() in ("y", "yes"):
             import shutil
             shutil.rmtree(session_dir, ignore_errors=True)
             session_dir.mkdir(parents=True, exist_ok=True)
-            print("  ✓ Session cleared")
+            print("  ✓ 세션을 초기화했어요")
         else:
-            print("\n✓ WhatsApp is configured and paired!")
-            print("  Start the gateway with: hermes gateway")
+            print("\n✓ WhatsApp 설정과 페어링이 완료되어 있어요!")
+            print("  gateway 시작 명령: hermes gateway")
             return
 
     # ── Step 6: QR code pairing ──────────────────────────────────────────
     print()
     print("─" * 50)
     if wa_mode == "bot":
-        print("📱 Open WhatsApp (or WhatsApp Business) on the")
-        print("   phone with the BOT's number, then scan:")
+        print("📱 봇 번호가 연결된 휴대폰에서 WhatsApp(또는 WhatsApp Business)을 열고")
+        print("   아래 절차로 스캔해 주세요:")
     else:
-        print("📱 Open WhatsApp on your phone, then scan:")
+        print("📱 휴대폰에서 WhatsApp을 열고 아래 절차로 스캔해 주세요:")
     print()
     print("   Settings → Linked Devices → Link a Device")
     print("─" * 50)
@@ -934,27 +934,27 @@ def cmd_whatsapp(args):
     # ── Step 7: Post-pairing ─────────────────────────────────────────────
     print()
     if (session_dir / "creds.json").exists():
-        print("✓ WhatsApp paired successfully!")
+        print("✓ WhatsApp 페어링이 완료됐어요!")
         print()
         if wa_mode == "bot":
-            print("  Next steps:")
-            print("    1. Start the gateway:  hermes gateway")
-            print("    2. Send a message to the bot's WhatsApp number")
-            print("    3. The agent will reply automatically")
+            print("  다음 단계:")
+            print("    1. gateway 시작: hermes gateway")
+            print("    2. 봇의 WhatsApp 번호로 메시지 보내기")
+            print("    3. 에이전트가 자동으로 응답해요")
             print()
-            print("  Tip: Agent responses are prefixed with '⚕ Hermes Agent'")
+            print("  팁: 에이전트 응답은 '⚕ Hermes Agent' 접두사로 표시돼요")
         else:
-            print("  Next steps:")
-            print("    1. Start the gateway:  hermes gateway")
-            print("    2. Open WhatsApp → Message Yourself")
-            print("    3. Type a message — the agent will reply")
+            print("  다음 단계:")
+            print("    1. gateway 시작: hermes gateway")
+            print("    2. WhatsApp에서 'Message Yourself' 열기")
+            print("    3. 메시지를 입력하면 에이전트가 응답해요")
             print()
-            print("  Tip: Agent responses are prefixed with '⚕ Hermes Agent'")
-            print("  so you can tell them apart from your own messages.")
+            print("  팁: 에이전트 응답은 '⚕ Hermes Agent' 접두사로 표시돼요")
+            print("  그래서 내 메시지와 쉽게 구분할 수 있어요.")
         print()
-        print("  Or install as a service: hermes gateway install")
+        print("  또는 서비스로 설치: hermes gateway install")
     else:
-        print("⚠ Pairing may not have completed. Run 'hermes whatsapp' to try again.")
+        print("⚠ 페어링이 완료되지 않았을 수 있어요. 다시 시도하려면 'hermes whatsapp'을 실행해 주세요.")
 
 
 def cmd_setup(args):
