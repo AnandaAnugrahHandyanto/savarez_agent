@@ -1412,3 +1412,42 @@ def test_named_custom_runtime_no_model_when_absent(monkeypatch):
 
     resolved = rp.resolve_runtime_provider(requested="my-server")
     assert "model" not in resolved
+
+
+# ---------------------------------------------------------------------------
+# Regression: #9506 — provider error message must use actual env var name
+# ---------------------------------------------------------------------------
+
+def test_alibaba_provider_config_env_var_is_dashscope_not_alibaba():
+    """PROVIDER_REGISTRY for 'alibaba' must list DASHSCOPE_API_KEY, not ALIBABA_API_KEY.
+
+    The no-API-key error message is built from api_key_env_vars, so if the
+    mapping is wrong users are told to set a variable that Hermes never reads.
+    Regression test for #9506.
+    """
+    from hermes_cli.auth import PROVIDER_REGISTRY
+
+    pconfig = PROVIDER_REGISTRY.get("alibaba")
+    assert pconfig is not None, "alibaba must be present in PROVIDER_REGISTRY"
+    assert "DASHSCOPE_API_KEY" in pconfig.api_key_env_vars, (
+        "alibaba provider must list DASHSCOPE_API_KEY as its env var"
+    )
+    assert "ALIBABA_API_KEY" not in pconfig.api_key_env_vars, (
+        "ALIBABA_API_KEY is not read by Hermes — listing it would mislead users"
+    )
+
+
+def test_provider_error_message_uses_actual_env_var(monkeypatch):
+    """The no-API-key RuntimeError must mention the real env var, not PROVIDER_API_KEY.
+
+    For 'alibaba' the correct var is DASHSCOPE_API_KEY.  Before the fix the
+    message said ALIBABA_API_KEY, which Hermes never reads.
+    """
+    from hermes_cli.auth import PROVIDER_REGISTRY
+
+    provider = "alibaba"
+    pconfig = PROVIDER_REGISTRY.get(provider)
+    env_hint = " or ".join(pconfig.api_key_env_vars) if pconfig else f"{provider.upper()}_API_KEY"
+
+    assert "DASHSCOPE_API_KEY" in env_hint
+    assert "ALIBABA_API_KEY" not in env_hint
