@@ -26,6 +26,8 @@ model:
   #   "huggingface"  - Hugging Face Inference (requires: HF_TOKEN)
   #   "xiaomi"       - Xiaomi MiMo (requires: XIAOMI_API_KEY)
   #   "arcee"        - Arcee AI Trinity models (requires: ARCEEAI_API_KEY)
+  #   "cloudflare-workers-ai" - Cloudflare Workers AI, Gemma 4 / Kimi K2.5
+  #                             (requires: CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID)
   #   "kilocode"     - KiloCode gateway (requires: KILOCODE_API_KEY)
   #   "ai-gateway"   - Vercel AI Gateway (requires: AI_GATEWAY_API_KEY)
   #

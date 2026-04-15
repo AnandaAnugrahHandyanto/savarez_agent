@@ -28,6 +28,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "qwen-oauth",
     "xiaomi",
     "arcee",
+    "cloudflare-workers-ai",
     "custom", "local",
     # Common aliases
     "google", "google-gemini", "google-ai-studio",
@@ -37,6 +38,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "mimo", "xiaomi-mimo",
     "arcee-ai", "arceeai",
     "xai", "x-ai", "x.ai", "grok",
+    "cf-workers-ai", "workers-ai",
     "qwen-portal",
 })
 
@@ -239,6 +241,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.x.ai": "xai",
     "api.xiaomimimo.com": "xiaomi",
     "xiaomimimo.com": "xiaomi",
+    "api.cloudflare.com": "cloudflare-workers-ai",
 }
 
 

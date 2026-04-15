@@ -70,6 +70,12 @@ DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
+# Cloudflare Workers AI exposes an OpenAI-compatible endpoint under each
+# account; the account ID is embedded in the URL path and substituted
+# at runtime by _resolve_cloudflare_workers_ai_base_url().
+CLOUDFLARE_WORKERS_AI_BASE_URL_TEMPLATE = (
+    "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1"
+)
 CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
 CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
@@ -274,6 +280,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("XIAOMI_API_KEY",),
         base_url_env_var="XIAOMI_BASE_URL",
     ),
+    "cloudflare-workers-ai": ProviderConfig(
+        id="cloudflare-workers-ai",
+        name="Cloudflare Workers AI",
+        auth_type="api_key",
+        inference_base_url=CLOUDFLARE_WORKERS_AI_BASE_URL_TEMPLATE,
+        api_key_env_vars=("CLOUDFLARE_API_TOKEN",),
+        base_url_env_var="CLOUDFLARE_WORKERS_AI_BASE_URL",
+    ),
 }
 
 
@@ -322,6 +336,28 @@ def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) ->
         return KIMI_CODE_BASE_URL
     return default_url
 
+
+# =============================================================================
+# Cloudflare Workers AI Base URL Resolution
+# =============================================================================
+
+
+def _resolve_cloudflare_workers_ai_base_url(
+    api_key: str, default_url: str, env_override: str
+) -> str:
+    """Return the Cloudflare Workers AI base URL with {account_id} substituted.
+
+    Priority:
+      1. CLOUDFLARE_WORKERS_AI_BASE_URL env var (full URL, manual escape hatch)
+      2. Template with CLOUDFLARE_ACCOUNT_ID substituted
+      3. Unsubstituted template (fails clearly at request time)
+    """
+    if env_override:
+        return env_override
+    account_id = os.getenv("CLOUDFLARE_ACCOUNT_ID", "").strip()
+    if account_id:
+        return default_url.format(account_id=account_id)
+    return default_url
 
 
 _PLACEHOLDER_SECRET_VALUES = {
@@ -924,6 +960,7 @@ def resolve_provider(
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
         "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
+        "cf-workers-ai": "cloudflare-workers-ai", "workers-ai": "cloudflare-workers-ai",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
         # Local server aliases — route through the generic custom provider
@@ -975,6 +1012,13 @@ def resolve_provider(
         # hijack inference auto-selection unless the user explicitly chooses
         # Copilot/GitHub Models as the provider.
         if pid == "copilot":
+            continue
+        # Cloudflare Workers AI requires BOTH a token and an account ID.
+        # Without the account ID the URL template cannot be resolved, so
+        # skip auto-detect unless both are present.
+        if pid == "cloudflare-workers-ai" and not has_usable_secret(
+            os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
+        ):
             continue
         for env_var in pconfig.api_key_env_vars:
             if has_usable_secret(os.getenv(env_var, "")):
@@ -2386,18 +2430,30 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
 
     if provider_id == "kimi-coding":
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
+    elif provider_id == "cloudflare-workers-ai":
+        base_url = _resolve_cloudflare_workers_ai_base_url(
+            api_key, pconfig.inference_base_url, env_url
+        )
     elif env_url:
         base_url = env_url
     else:
         base_url = pconfig.inference_base_url
 
+    # Cloudflare Workers AI requires both CLOUDFLARE_API_TOKEN and
+    # CLOUDFLARE_ACCOUNT_ID.  Report "not configured" when either is missing
+    # or when the template is unresolved — otherwise auto-detect would pick
+    # this provider and requests would fail with an opaque URL error.
+    configured = bool(api_key)
+    if provider_id == "cloudflare-workers-ai":
+        configured = configured and "{account_id}" not in base_url
+
     return {
-        "configured": bool(api_key),
+        "configured": configured,
         "provider": provider_id,
         "name": pconfig.name,
         "key_source": key_source,
         "base_url": base_url,
-        "logged_in": bool(api_key),  # compat with OAuth status shape
+        "logged_in": configured,  # compat with OAuth status shape
     }
 
 
@@ -2474,6 +2530,19 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     elif provider_id == "zai":
         base_url = _resolve_zai_base_url(api_key, pconfig.inference_base_url, env_url)
+    elif provider_id == "cloudflare-workers-ai":
+        base_url = _resolve_cloudflare_workers_ai_base_url(
+            api_key, pconfig.inference_base_url, env_url
+        )
+        if "{account_id}" in base_url:
+            raise AuthError(
+                "Cloudflare Workers AI requires CLOUDFLARE_ACCOUNT_ID. "
+                "Set it in ~/.hermes/.env or your shell environment. "
+                "You can find your account ID in the Cloudflare dashboard "
+                "(https://dash.cloudflare.com/) under the right sidebar.",
+                provider=provider_id,
+                code="missing_account_id",
+            )
     elif env_url:
         base_url = env_url.rstrip("/")
     else:

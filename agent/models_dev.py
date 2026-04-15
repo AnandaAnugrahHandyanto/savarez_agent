@@ -163,6 +163,7 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "google": "google",
     "xai": "xai",
     "xiaomi": "xiaomi",
+    "cloudflare-workers-ai": "cloudflare-workers-ai",
     "nvidia": "nvidia",
     "groq": "groq",
     "mistral": "mistral",

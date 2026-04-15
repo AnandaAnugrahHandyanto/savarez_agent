@@ -141,6 +141,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://api.arcee.ai/api/v1",
         base_url_env_var="ARCEE_BASE_URL",
     ),
+    "cloudflare-workers-ai": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("CLOUDFLARE_ACCOUNT_ID",),
+        base_url_env_var="CLOUDFLARE_WORKERS_AI_BASE_URL",
+    ),
 }
 
 
@@ -240,6 +245,13 @@ ALIASES: Dict[str, str] = {
     "arcee-ai": "arcee",
     "arceeai": "arcee",
 
+    # cloudflare-workers-ai
+    # NOTE: we intentionally do NOT alias bare "cloudflare" / "cf" / "cf-ai"
+    # to this provider — those names are reserved for future disambiguation
+    # between Workers AI and AI Gateway (two distinct Cloudflare products).
+    "cf-workers-ai": "cloudflare-workers-ai",
+    "workers-ai": "cloudflare-workers-ai",
+
     # Local server aliases → virtual "local" concept (resolved via user config)
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
@@ -261,6 +273,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
     "xiaomi": "Xiaomi MiMo",
+    "cloudflare-workers-ai": "Cloudflare Workers AI",
     "local": "Local endpoint",
 }
 
