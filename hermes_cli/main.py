@@ -3662,6 +3662,8 @@ def cmd_update(args):
         print(f"  {origin_url}")
         print()
 
+    check_mode = getattr(args, "check", False)
+
     if use_zip_update:
         # ZIP-based update for Windows when git is broken
         _update_via_zip(args)
@@ -3689,6 +3691,46 @@ def cmd_update(args):
                 if stderr:
                     print(f"  {stderr.splitlines()[0]}")
             sys.exit(1)
+
+        # In --check mode, show status and exit without pulling/reinstalling
+        if check_mode:
+            result = subprocess.run(
+                git_cmd + ["rev-parse", "--short", "HEAD"],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            current_sha = result.stdout.strip()
+
+            result = subprocess.run(
+                git_cmd + ["rev-parse", "--short", "origin/main"],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            remote_sha = result.stdout.strip()
+
+            result = subprocess.run(
+                git_cmd + ["rev-list", f"HEAD..origin/main", "--count"],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            commit_count = int(result.stdout.strip())
+
+            from hermes_cli import __version__
+            version = __version__
+            print(f"Current version: {version} ({current_sha})")
+            print(f"Remote (origin/main): {remote_sha}")
+            if commit_count == 0:
+                print("✓ Already up to date!")
+            else:
+                print(f"→ {commit_count} update(s) available.")
+                print(f"  Run 'hermes update' to install.")
+            return
 
         # Get current branch (returns literal "HEAD" when detached)
         result = subprocess.run(
@@ -5845,6 +5887,10 @@ Examples:
     update_parser.add_argument(
         "--gateway", action="store_true", default=False,
         help="Gateway mode: use file-based IPC for prompts instead of stdin (used internally by /update)"
+    )
+    update_parser.add_argument(
+        "--check", action="store_true", default=False,
+        help="Check for updates without installing them"
     )
     update_parser.set_defaults(func=cmd_update)
     
