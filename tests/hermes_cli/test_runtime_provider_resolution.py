@@ -171,6 +171,42 @@ def test_resolve_runtime_provider_qwen_oauth(monkeypatch):
     assert resolved["requested_provider"] == "qwen-oauth"
 
 
+def test_resolve_runtime_provider_cloudflare_pool_placeholder_falls_back(monkeypatch):
+    class _Entry:
+        access_token = "pool-token"
+        source = "env:CLOUDFLARE_API_TOKEN"
+        base_url = "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "cloudflare-workers-ai")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "cloudflare-workers-ai"})
+    monkeypatch.setattr(
+        rp,
+        "resolve_api_key_provider_credentials",
+        lambda provider: {
+            "provider": provider,
+            "api_key": "resolved-token",
+            "base_url": "https://api.cloudflare.com/client/v4/accounts/abc123/ai/v1",
+            "source": "CLOUDFLARE_API_TOKEN",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="cloudflare-workers-ai")
+
+    assert resolved["provider"] == "cloudflare-workers-ai"
+    assert resolved["base_url"] == "https://api.cloudflare.com/client/v4/accounts/abc123/ai/v1"
+    assert resolved["api_key"] == "resolved-token"
+    assert resolved["source"] == "CLOUDFLARE_API_TOKEN"
+    assert resolved.get("credential_pool") is None
+
+
 def test_resolve_runtime_provider_uses_qwen_pool_entry(monkeypatch):
     class _Entry:
         access_token = "pool-qwen-token"

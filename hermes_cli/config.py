@@ -974,6 +974,28 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "CLOUDFLARE_API_TOKEN": {
+        "description": "Cloudflare API token for Workers AI (Gemma 4, Kimi K2.5 — scoped token with 'Workers AI' permission)",
+        "prompt": "Cloudflare API Token",
+        "url": "https://dash.cloudflare.com/profile/api-tokens",
+        "password": True,
+        "category": "provider",
+    },
+    "CLOUDFLARE_ACCOUNT_ID": {
+        "description": "Cloudflare account ID (embedded in the Workers AI base URL)",
+        "prompt": "Cloudflare Account ID",
+        "url": "https://dash.cloudflare.com/",
+        "password": False,
+        "category": "provider",
+    },
+    "CLOUDFLARE_WORKERS_AI_BASE_URL": {
+        "description": "Cloudflare Workers AI base URL override (normally derived from CLOUDFLARE_ACCOUNT_ID)",
+        "prompt": "Cloudflare Workers AI base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
 
     # ── Tool API keys ──
     "EXA_API_KEY": {

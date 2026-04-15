@@ -782,7 +782,7 @@ def list_authenticated_providers(
         fetch_models_dev,
         get_provider_info as _mdev_pinfo,
     )
-    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.auth import PROVIDER_REGISTRY, get_api_key_provider_status
     from hermes_cli.models import OPENROUTER_MODELS, _PROVIDER_MODELS
 
     results: List[dict] = []
@@ -807,15 +807,14 @@ def list_authenticated_providers(
         # source of truth.  models.dev can have wrong mappings (e.g.
         # minimax-cn → MINIMAX_API_KEY instead of MINIMAX_CN_API_KEY).
         pconfig = PROVIDER_REGISTRY.get(hermes_id)
-        if pconfig and pconfig.api_key_env_vars:
-            env_vars = list(pconfig.api_key_env_vars)
+        if pconfig and pconfig.auth_type == "api_key":
+            has_creds = bool(get_api_key_provider_status(hermes_id).get("configured"))
         else:
+            env_vars: list[str] = []
             env_vars = pdata.get("env", [])
             if not isinstance(env_vars, list):
                 continue
-
-        # Check if any env var is set
-        has_creds = any(os.environ.get(ev) for ev in env_vars)
+            has_creds = any(os.environ.get(ev) for ev in env_vars)
         if not has_creds:
             continue
 
@@ -865,8 +864,8 @@ def list_authenticated_providers(
         if not has_creds and overlay.auth_type == "api_key":
             for _key in (pid, hermes_slug):
                 pcfg = _auth_registry.get(_key)
-                if pcfg and pcfg.api_key_env_vars:
-                    if any(os.environ.get(ev) for ev in pcfg.api_key_env_vars):
+                if pcfg and pcfg.auth_type == "api_key":
+                    if get_api_key_provider_status(_key).get("configured"):
                         has_creds = True
                         break
         # Check auth store and credential pool for non-env-var credentials.
@@ -954,8 +953,8 @@ def list_authenticated_providers(
         # Check credentials via PROVIDER_REGISTRY (auth.py)
         _cp_config = _auth_registry.get(_cp.slug)
         _cp_has_creds = False
-        if _cp_config and _cp_config.api_key_env_vars:
-            _cp_has_creds = any(os.environ.get(ev) for ev in _cp_config.api_key_env_vars)
+        if _cp_config and _cp_config.auth_type == "api_key":
+            _cp_has_creds = bool(get_api_key_provider_status(_cp.slug).get("configured"))
         # Also check auth store and credential pool
         if not _cp_has_creds:
             try:
@@ -1086,5 +1085,4 @@ def list_authenticated_providers(
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 
     return results
-
 

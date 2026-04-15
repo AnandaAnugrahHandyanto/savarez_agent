@@ -25,6 +25,7 @@ from hermes_cli.auth import (
     _import_codex_cli_tokens,
     _write_codex_cli_tokens,
     _load_auth_store,
+    _resolve_cloudflare_workers_ai_base_url,
     _load_provider_state,
     _resolve_kimi_base_url,
     _resolve_zai_base_url,
@@ -1295,6 +1296,16 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
             base_url = _resolve_kimi_base_url(token, pconfig.inference_base_url, env_url)
         elif provider == "zai":
             base_url = _resolve_zai_base_url(token, pconfig.inference_base_url, env_url)
+        elif provider == "cloudflare-workers-ai":
+            base_url = _resolve_cloudflare_workers_ai_base_url(
+                token, pconfig.inference_base_url, env_url
+            )
+            if "{account_id}" in base_url:
+                logger.debug(
+                    "Skipping Cloudflare Workers AI env credential %s: missing account ID/base URL override",
+                    env_var,
+                )
+                continue
         changed |= _upsert_entry(
             entries,
             provider,

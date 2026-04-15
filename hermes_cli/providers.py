@@ -141,6 +141,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://api.arcee.ai/api/v1",
         base_url_env_var="ARCEE_BASE_URL",
     ),
+    "cloudflare-workers-ai": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("CLOUDFLARE_ACCOUNT_ID",),
+        base_url_env_var="CLOUDFLARE_WORKERS_AI_BASE_URL",
+    ),
 }
 
 
@@ -240,6 +245,13 @@ ALIASES: Dict[str, str] = {
     "arcee-ai": "arcee",
     "arceeai": "arcee",
 
+    # cloudflare-workers-ai
+    # NOTE: we intentionally do NOT alias bare "cloudflare" / "cf" / "cf-ai"
+    # to this provider — those names are reserved for future disambiguation
+    # between Workers AI and AI Gateway (two distinct Cloudflare products).
+    "cf-workers-ai": "cloudflare-workers-ai",
+    "workers-ai": "cloudflare-workers-ai",
+
     # Local server aliases → virtual "local" concept (resolved via user config)
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
@@ -261,6 +273,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
     "xiaomi": "Xiaomi MiMo",
+    "cloudflare-workers-ai": "Cloudflare Workers AI",
     "local": "Local endpoint",
 }
 
@@ -336,16 +349,44 @@ def get_provider(name: str) -> Optional[ProviderDef]:
         )
 
     if overlay is not None:
-        # Hermes-only provider (not in models.dev)
+        # Hermes-only provider (not in models.dev). Merge auth.py registry
+        # data when available so explicit --provider flows still get the
+        # correct token env vars and default base URL.
+        auth_pconfig = None
+        try:
+            from hermes_cli.auth import PROVIDER_REGISTRY as _auth_registry
+            auth_pconfig = _auth_registry.get(canonical)
+        except Exception:
+            auth_pconfig = None
+
+        env_vars = []
+        if auth_pconfig and auth_pconfig.api_key_env_vars:
+            env_vars.extend(auth_pconfig.api_key_env_vars)
+        for ev in overlay.extra_env_vars:
+            if ev not in env_vars:
+                env_vars.append(ev)
+
+        base_url = overlay.base_url_override
+        if not base_url and auth_pconfig:
+            base_url = auth_pconfig.inference_base_url
+
+        base_url_env = overlay.base_url_env_var
+        if not base_url_env and auth_pconfig:
+            base_url_env = auth_pconfig.base_url_env_var
+
+        provider_name = _LABEL_OVERRIDES.get(canonical, canonical)
+        if auth_pconfig and getattr(auth_pconfig, "name", ""):
+            provider_name = auth_pconfig.name
+
         return ProviderDef(
             id=canonical,
-            name=_LABEL_OVERRIDES.get(canonical, canonical),
+            name=provider_name,
             transport=overlay.transport,
-            api_key_env_vars=overlay.extra_env_vars,
-            base_url=overlay.base_url_override,
-            base_url_env_var=overlay.base_url_env_var,
+            api_key_env_vars=tuple(env_vars),
+            base_url=base_url,
+            base_url_env_var=base_url_env,
             is_aggregator=overlay.is_aggregator,
-            auth_type=overlay.auth_type,
+            auth_type=auth_pconfig.auth_type if auth_pconfig else overlay.auth_type,
             source="hermes",
         )
 

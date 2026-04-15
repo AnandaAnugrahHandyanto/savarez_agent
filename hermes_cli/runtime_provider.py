@@ -727,6 +727,18 @@ def resolve_runtime_provider(
             if not _agent_key_is_usable(nous_state, min_ttl):
                 logger.debug("Nous pool entry agent_key expired/missing, falling through to runtime resolution")
                 pool_api_key = ""
+        if provider == "cloudflare-workers-ai" and entry is not None and pool_api_key:
+            pool_base_url = (
+                getattr(entry, "runtime_base_url", None)
+                or getattr(entry, "base_url", "")
+                or ""
+            ).strip()
+            if "{account_id}" in pool_base_url:
+                logger.debug(
+                    "Cloudflare Workers AI pool entry has unresolved account placeholder; "
+                    "falling through to runtime resolution"
+                )
+                pool_api_key = ""
         if entry is not None and pool_api_key:
             return _resolve_runtime_from_pool_entry(
                 provider=provider,
