@@ -6060,6 +6060,7 @@ Examples:
     import io as _io
     _known_cmds = set(subparsers.choices.keys()) if hasattr(subparsers, "choices") else set()
     _has_cmd_token = any(t in _known_cmds for t in _processed_argv if not t.startswith("-"))
+    _is_help = any(t in ("-h", "--help") for t in _processed_argv)
 
     if _has_cmd_token:
         subparsers.required = True
@@ -6068,11 +6069,13 @@ Examples:
             sys.stderr = _io.StringIO()
             args = parser.parse_args(_processed_argv)
             sys.stderr = _saved_stderr
-        except SystemExit:
+        except SystemExit as e:
             sys.stderr = _saved_stderr
             # Subcommand name was consumed as a flag value (e.g. -c model).
             # Fall back to optional subparsers so argparse handles it normally.
             subparsers.required = False
+            if e.code == 0 and _is_help:
+                sys.exit(0)
             args = parser.parse_args(_processed_argv)
     else:
         subparsers.required = False
