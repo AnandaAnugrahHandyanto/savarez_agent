@@ -1364,6 +1364,7 @@ def auxiliary_max_tokens_param(value: int) -> dict:
 # Client cache: (provider, async_mode, base_url, api_key) -> (client, default_model)
 _client_cache: Dict[tuple, tuple] = {}
 _client_cache_lock = threading.Lock()
+MAX_CLIENT_CACHE_SIZE = 32  # prevent fd exhaustion from stale async clients in long-running gateways
 
 
 def neuter_async_httpx_del() -> None:
@@ -1524,6 +1525,14 @@ def _get_cached_client(
         with _client_cache_lock:
             if cache_key not in _client_cache:
                 _client_cache[cache_key] = (client, default_model, bound_loop)
+                # Evict oldest entries if cache exceeds the size cap.
+                # Prevents fd exhaustion when ThreadPoolExecutor recycles threads,
+                # each getting a new loop_id and thus a new cache entry that never
+                # gets evicted by cleanup_stale_async_clients() (loop stays open).
+                while len(_client_cache) > MAX_CLIENT_CACHE_SIZE:
+                    oldest_key = next(iter(_client_cache))
+                    oldest_client, _, _ = _client_cache.pop(oldest_key)
+                    _force_close_async_httpx(oldest_client)
             else:
                 client, default_model, _ = _client_cache[cache_key]
     return client, model or default_model

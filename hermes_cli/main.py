@@ -2930,7 +2930,28 @@ def cmd_update(args):
     if is_managed():
         managed_error("update Hermes Agent")
         return
-    
+
+    if getattr(args, 'check', False):
+        import subprocess
+        git_dir = PROJECT_ROOT / '.git'
+        if not git_dir.exists():
+            print('Cannot check for updates: not a git repository.')
+            return
+        try:
+            subprocess.run(['git', 'fetch', 'origin'], cwd=PROJECT_ROOT,
+                           capture_output=True, check=False)
+            result = subprocess.run(
+                ['git', 'rev-list', 'HEAD..origin/main', '--count'],
+                cwd=PROJECT_ROOT, capture_output=True, text=True, check=False)
+            count = int(result.stdout.strip() or '0')
+            if count == 0:
+                print('✓ Hermes Agent is up to date.')
+            else:
+                print(f'↑ {count} update(s) available. Run `hermes update` to install.')
+        except Exception as e:
+            print(f'Update check failed: {e}')
+        return
+
     print("⚕ Updating Hermes Agent...")
     print()
     
@@ -4964,6 +4985,12 @@ For more help on a command:
         "update",
         help="Update Hermes Agent to the latest version",
         description="Pull the latest changes from git and reinstall dependencies"
+    )
+    update_parser.add_argument(
+        "--check",
+        action="store_true",
+        default=False,
+        help="Check for available updates without installing them",
     )
     update_parser.set_defaults(func=cmd_update)
     

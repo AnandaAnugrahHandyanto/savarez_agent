@@ -335,8 +335,12 @@ def load_cli_config() -> Dict[str, Any]:
     if terminal_config.get("cwd") in (".", "auto", "cwd"):
         effective_backend = terminal_config.get("env_type", "local")
         if effective_backend == "local":
-            terminal_config["cwd"] = os.getcwd()
-            defaults["terminal"]["cwd"] = terminal_config["cwd"]
+            # Respect an already-set TERMINAL_CWD (e.g. set by gateway from
+            # MESSAGING_CWD) instead of clobbering it with os.getcwd().
+            existing_cwd = os.environ.get("TERMINAL_CWD", "").strip()
+            resolved_cwd = existing_cwd if existing_cwd else os.getcwd()
+            terminal_config["cwd"] = resolved_cwd
+            defaults["terminal"]["cwd"] = resolved_cwd
         else:
             # Remove so TERMINAL_CWD stays unset → tool picks backend default
             terminal_config.pop("cwd", None)

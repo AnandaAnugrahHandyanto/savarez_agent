@@ -66,8 +66,11 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
 
     skill_name = str(loaded_skill.get("name") or normalized)
     skill_path = str(loaded_skill.get("path") or "")
+    skill_dir_str = loaded_skill.get("skill_dir") or ""
     skill_dir = None
-    if skill_path:
+    if skill_dir_str:
+        skill_dir = Path(skill_dir_str)
+    elif skill_path:
         try:
             skill_dir = SKILLS_DIR / Path(skill_path).parent
         except Exception:
