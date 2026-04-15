@@ -5,9 +5,11 @@ import pytest
 from hermes_cli.commands import get_category_label
 from hermes_cli.main import (
     _build_web_ui,
+    _model_flow_custom,
     _model_flow_openrouter,
     _model_flow_qwen_oauth,
     _prompt_provider_choice,
+    _remove_custom_provider,
     main,
 )
 
@@ -87,3 +89,25 @@ def test_build_web_ui_fatal_missing_npm_is_localized(monkeypatch, capsys, tmp_pa
     out = capsys.readouterr().out
     assert "Web UI 프런트엔드가 빌드되지 않았고 npm도 사용할 수 없어요." in out
     assert "Node.js를 설치한 뒤 다음을 실행하세요" in out
+
+
+def test_model_flow_custom_empty_url_is_localized(monkeypatch, capsys):
+    monkeypatch.setattr("hermes_cli.config.get_env_value", lambda key: "")
+    inputs = iter([""])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(inputs))
+    monkeypatch.setattr("getpass.getpass", lambda _prompt: "")
+
+    _model_flow_custom({})
+
+    out = capsys.readouterr().out
+    assert "사용자 지정 OpenAI 호환 endpoint 설정:" in out
+    assert "URL이 제공되지 않아 취소했어요." in out
+
+
+def test_remove_custom_provider_empty_state_is_localized(monkeypatch, capsys):
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"custom_providers": []})
+
+    _remove_custom_provider({})
+
+    out = capsys.readouterr().out
+    assert "설정된 custom provider가 없어요." in out

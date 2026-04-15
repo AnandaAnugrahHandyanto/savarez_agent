@@ -1085,7 +1085,7 @@ def select_provider_and_model(args=None):
         [label for _, label in ordered], default=default_idx,
     )
     if provider_idx is None or ordered[provider_idx][0] == "cancel":
-        print("No change.")
+        print("변경 사항이 없어요.")
         return
 
     selected_provider = ordered[provider_idx][0]
@@ -1109,8 +1109,8 @@ def select_provider_and_model(args=None):
         provider_info = _named_custom_provider_map(load_config()).get(selected_provider)
         if provider_info is None:
             print(
-                "Warning: the selected saved custom provider is no longer available. "
-                "It may have been removed from config.yaml. No change."
+                "경고: 선택한 저장된 custom provider를 더 이상 사용할 수 없어요. "
+                "config.yaml에서 제거되었을 수 있어요. 변경 사항은 없어요."
             )
             return
         _model_flow_named_custom(config, provider_info)
@@ -1520,29 +1520,29 @@ def _model_flow_custom(config):
     current_url = get_env_value("OPENAI_BASE_URL") or ""
     current_key = get_env_value("OPENAI_API_KEY") or ""
 
-    print("Custom OpenAI-compatible endpoint configuration:")
+    print("사용자 지정 OpenAI 호환 endpoint 설정:")
     if current_url:
-        print(f"  Current URL: {current_url}")
+        print(f"  현재 URL: {current_url}")
     if current_key:
-        print(f"  Current key: {current_key[:8]}...")
+        print(f"  현재 키: {current_key[:8]}...")
     print()
 
     try:
-        base_url = input(f"API base URL [{current_url or 'e.g. https://api.example.com/v1'}]: ").strip()
+        base_url = input(f"API base URL [{current_url or '예: https://api.example.com/v1'}]: ").strip()
         import getpass
-        api_key = getpass.getpass(f"API key [{current_key[:8] + '...' if current_key else 'optional'}]: ").strip()
+        api_key = getpass.getpass(f"API key [{current_key[:8] + '...' if current_key else '선택 사항'}]: ").strip()
     except (KeyboardInterrupt, EOFError):
-        print("\nCancelled.")
+        print("\n취소했어요.")
         return
 
     if not base_url and not current_url:
-        print("No URL provided. Cancelled.")
+        print("URL이 제공되지 않아 취소했어요.")
         return
 
     # Validate URL format
     effective_url = base_url or current_url
     if not effective_url.startswith(("http://", "https://")):
-        print(f"Invalid URL: {effective_url} (must start with http:// or https://)")
+        print(f"잘못된 URL이에요: {effective_url} (http:// 또는 https:// 로 시작해야 해요)")
         return
 
     effective_key = api_key or current_key
@@ -1552,59 +1552,59 @@ def _model_flow_custom(config):
     probe = probe_api_models(effective_key, effective_url)
     if probe.get("used_fallback") and probe.get("resolved_base_url"):
         print(
-            f"Warning: endpoint verification worked at {probe['resolved_base_url']}/models, "
-            f"not the exact URL you entered. Saving the working base URL instead."
+            f"경고: endpoint 검증은 {probe['resolved_base_url']}/models 에서 성공했어요. "
+            f"입력한 정확한 URL 대신 동작하는 base URL을 저장할게요."
         )
         effective_url = probe["resolved_base_url"]
         if base_url:
             base_url = effective_url
     elif probe.get("models") is not None:
         print(
-            f"Verified endpoint via {probe.get('probed_url')} "
-            f"({len(probe.get('models') or [])} model(s) visible)"
+            f"{probe.get('probed_url')} 경로로 endpoint 검증을 마쳤어요 "
+            f"(보이는 모델 {len(probe.get('models') or [])}개)"
         )
     else:
         print(
-            f"Warning: could not verify this endpoint via {probe.get('probed_url')}. "
-            f"Hermes will still save it."
+            f"경고: {probe.get('probed_url')} 경로로 이 endpoint를 검증하지 못했어요. "
+            f"그래도 Hermes에 저장할게요."
         )
         if probe.get("suggested_base_url"):
             suggested = probe["suggested_base_url"]
             if suggested.endswith("/v1"):
-                print(f"  If this server expects /v1 in the path, try base URL: {suggested}")
+                print(f"  이 서버가 경로에 /v1 을 기대한다면 base URL로 다음 값을 시도해 보세요: {suggested}")
             else:
-                print(f"  If /v1 should not be in the base URL, try: {suggested}")
+                print(f"  base URL에 /v1 이 없어야 한다면 다음 값을 시도해 보세요: {suggested}")
 
     # Select model — use probe results when available, fall back to manual input
     model_name = ""
     detected_models = probe.get("models") or []
     try:
         if len(detected_models) == 1:
-            print(f"  Detected model: {detected_models[0]}")
-            confirm = input("  Use this model? [Y/n]: ").strip().lower()
+            print(f"  감지된 모델: {detected_models[0]}")
+            confirm = input("  이 모델을 사용할까요? [Y/n]: ").strip().lower()
             if confirm in ("", "y", "yes"):
                 model_name = detected_models[0]
             else:
-                model_name = input("Model name (e.g. gpt-4, llama-3-70b): ").strip()
+                model_name = input("모델 이름 입력 (예: gpt-4, llama-3-70b): ").strip()
         elif len(detected_models) > 1:
-            print("  Available models:")
+            print("  사용 가능한 모델:")
             for i, m in enumerate(detected_models, 1):
                 print(f"    {i}. {m}")
-            pick = input(f"  Select model [1-{len(detected_models)}] or type name: ").strip()
+            pick = input(f"  모델 선택 [1-{len(detected_models)}] 또는 이름 직접 입력: ").strip()
             if pick.isdigit() and 1 <= int(pick) <= len(detected_models):
                 model_name = detected_models[int(pick) - 1]
             elif pick:
                 model_name = pick
         else:
-            model_name = input("Model name (e.g. gpt-4, llama-3-70b): ").strip()
+            model_name = input("모델 이름 입력 (예: gpt-4, llama-3-70b): ").strip()
 
-        context_length_str = input("Context length in tokens [leave blank for auto-detect]: ").strip()
+        context_length_str = input("컨텍스트 길이(토큰 수) [비워두면 자동 감지]: ").strip()
 
         # Prompt for a display name — shown in the provider menu on future runs
         default_name = _auto_provider_name(effective_url)
-        display_name = input(f"Display name [{default_name}]: ").strip() or default_name
+        display_name = input(f"표시 이름 [{default_name}]: ").strip() or default_name
     except (KeyboardInterrupt, EOFError):
-        print("\nCancelled.")
+        print("\n취소했어요.")
         return
 
     context_length = None
@@ -1614,7 +1614,7 @@ def _model_flow_custom(config):
             if context_length <= 0:
                 context_length = None
         except ValueError:
-            print(f"Invalid context length: {context_length_str} — will auto-detect.")
+            print(f"잘못된 컨텍스트 길이예요: {context_length_str} — 자동 감지로 진행할게요.")
             context_length = None
 
     if model_name:
@@ -1640,7 +1640,7 @@ def _model_flow_custom(config):
         # the stale values from its own config dict (#4172).
         config["model"] = dict(model)
 
-        print(f"Default model set to: {model_name} (via {effective_url})")
+        print(f"기본 모델을 설정했어요: {model_name} ({effective_url} 사용)")
     else:
         if base_url or api_key:
             deactivate_provider()
@@ -1655,7 +1655,7 @@ def _model_flow_custom(config):
             _caller_model["api_key"] = effective_key
         _caller_model.pop("api_mode", None)
         config["model"] = _caller_model
-        print("Endpoint saved. Use `/model` in chat or `hermes model` to set a model.")
+        print("Endpoint를 저장했어요. 모델은 채팅에서 `/model` 또는 `hermes model`로 설정할 수 있어요.")
 
     # Auto-save to custom_providers so it appears in the menu next time
     _save_custom_provider(effective_url, effective_key, model_name or "",
@@ -1731,7 +1731,7 @@ def _save_custom_provider(base_url, api_key="", model="", context_length=None,
     providers.append(entry)
     cfg["custom_providers"] = providers
     save_config(cfg)
-    print(f"  💾 Saved to custom providers as \"{name}\" (edit in config.yaml)")
+    print(f"  💾 custom providers에 \"{name}\" 이름으로 저장했어요 (config.yaml에서 수정 가능)")
 
 
 def _remove_custom_provider(config):
@@ -1741,10 +1741,10 @@ def _remove_custom_provider(config):
     cfg = load_config()
     providers = cfg.get("custom_providers") or []
     if not isinstance(providers, list) or not providers:
-        print("No custom providers configured.")
+        print("설정된 custom provider가 없어요.")
         return
 
-    print("Remove a custom provider:\n")
+    print("custom provider 제거:\n")
 
     choices = []
     for entry in providers:
@@ -1755,7 +1755,7 @@ def _remove_custom_provider(config):
             choices.append(f"{name} ({short_url})")
         else:
             choices.append(str(entry))
-    choices.append("Cancel")
+    choices.append("취소")
 
     try:
         from simple_term_menu import TerminalMenu
@@ -1764,7 +1764,7 @@ def _remove_custom_provider(config):
             menu_cursor="-> ", menu_cursor_style=("fg_red", "bold"),
             menu_highlight_style=("fg_red",),
             cycle_cursor=True, clear_screen=False,
-            title="Select provider to remove:",
+            title="제거할 provider 선택:",
         )
         idx = menu.show()
         from hermes_cli.curses_ui import flush_stdin
@@ -1775,20 +1775,20 @@ def _remove_custom_provider(config):
             print(f"  {i}. {c}")
         print()
         try:
-            val = input(f"Choice [1-{len(choices)}]: ").strip()
+            val = input(f"선택 [1-{len(choices)}]: ").strip()
             idx = int(val) - 1 if val else None
         except (ValueError, KeyboardInterrupt, EOFError):
             idx = None
 
     if idx is None or idx >= len(providers):
-        print("No change.")
+        print("변경 사항이 없어요.")
         return
 
     removed = providers.pop(idx)
     cfg["custom_providers"] = providers
     save_config(cfg)
     removed_name = removed.get("name", "unnamed") if isinstance(removed, dict) else str(removed)
-    print(f"✅ Removed \"{removed_name}\" from custom providers.")
+    print(f"✅ custom providers에서 \"{removed_name}\" 항목을 제거했어요.")
 
 
 def _model_flow_named_custom(config, provider_info):
@@ -1812,10 +1812,10 @@ def _model_flow_named_custom(config, provider_info):
     print(f"  Provider: {name}")
     print(f"  URL:      {base_url}")
     if saved_model:
-        print(f"  Current:  {saved_model}")
+        print(f"  현재 모델: {saved_model}")
     print()
 
-    print("Fetching available models...")
+    print("사용 가능한 모델을 불러오는 중...")
     models = fetch_api_models(api_key, base_url, timeout=8.0)
 
     if models:
@@ -1823,7 +1823,7 @@ def _model_flow_named_custom(config, provider_info):
         if saved_model and saved_model in models:
             default_idx = models.index(saved_model)
 
-        print(f"Found {len(models)} model(s):\n")
+        print(f"모델 {len(models)}개를 찾았어요:\n")
         try:
             from simple_term_menu import TerminalMenu
             menu_items = [
@@ -1835,51 +1835,51 @@ def _model_flow_named_custom(config, provider_info):
                 menu_cursor="-> ", menu_cursor_style=("fg_green", "bold"),
                 menu_highlight_style=("fg_green",),
                 cycle_cursor=True, clear_screen=False,
-                title=f"Select model from {name}:",
+                title=f"{name}에서 사용할 모델 선택:",
             )
             idx = menu.show()
             from hermes_cli.curses_ui import flush_stdin
             flush_stdin()
             print()
             if idx is None or idx >= len(models):
-                print("Cancelled.")
+                print("취소했어요.")
                 return
             model_name = models[idx]
         except (ImportError, NotImplementedError, OSError, subprocess.SubprocessError):
             for i, m in enumerate(models, 1):
                 suffix = " (current)" if m == saved_model else ""
                 print(f"  {i}. {m}{suffix}")
-            print(f"  {len(models) + 1}. Cancel")
+            print(f"  {len(models) + 1}. 취소")
             print()
             try:
-                val = input(f"Choice [1-{len(models) + 1}]: ").strip()
+                val = input(f"선택 [1-{len(models) + 1}]: ").strip()
                 if not val:
-                    print("Cancelled.")
+                    print("취소했어요.")
                     return
                 idx = int(val) - 1
                 if idx < 0 or idx >= len(models):
-                    print("Cancelled.")
+                    print("취소했어요.")
                     return
                 model_name = models[idx]
             except (ValueError, KeyboardInterrupt, EOFError):
-                print("\nCancelled.")
+                print("\n취소했어요.")
                 return
     elif saved_model:
-        print("Could not fetch models from endpoint.")
+        print("endpoint에서 모델 목록을 가져오지 못했어요.")
         try:
-            model_name = input(f"Model name [{saved_model}]: ").strip() or saved_model
+            model_name = input(f"모델 이름 [{saved_model}]: ").strip() or saved_model
         except (KeyboardInterrupt, EOFError):
-            print("\nCancelled.")
+            print("\n취소했어요.")
             return
     else:
-        print("Could not fetch models from endpoint. Enter model name manually.")
+        print("endpoint에서 모델 목록을 가져오지 못했어요. 모델 이름을 직접 입력해 주세요.")
         try:
-            model_name = input("Model name: ").strip()
+            model_name = input("모델 이름: ").strip()
         except (KeyboardInterrupt, EOFError):
-            print("\nCancelled.")
+            print("\n취소했어요.")
             return
         if not model_name:
-            print("No model specified. Cancelled.")
+            print("모델 이름이 없어 취소했어요.")
             return
 
     # Activate and save the model to the custom_providers entry
@@ -1926,7 +1926,7 @@ def _model_flow_named_custom(config, provider_info):
         # Save model name to the custom_providers entry for next time
         _save_custom_provider(base_url, api_key, model_name)
 
-    print(f"\n✅ Model set to: {model_name}")
+    print(f"\n✅ 모델을 설정했어요: {model_name}")
     print(f"   Provider: {name} ({base_url})")
 
 
