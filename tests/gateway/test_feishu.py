@@ -2855,3 +2855,27 @@ class TestSenderNameResolution(unittest.TestCase):
             result = asyncio.run(adapter._resolve_sender_name_from_api("ou_broken"))
 
         self.assertIsNone(result)
+
+
+class TestDetectReceiveIdType(unittest.TestCase):
+    """Regression tests for #9980: receive_id_type detection based on ID prefix."""
+
+    def test_open_id_prefix(self):
+        from gateway.platforms.feishu import FeishuAdapter
+        self.assertEqual(FeishuAdapter._detect_receive_id_type("ou_245ad75b"), "open_id")
+
+    def test_chat_id_prefix(self):
+        from gateway.platforms.feishu import FeishuAdapter
+        self.assertEqual(FeishuAdapter._detect_receive_id_type("oc_1234567890"), "chat_id")
+
+    def test_union_id_prefix(self):
+        from gateway.platforms.feishu import FeishuAdapter
+        self.assertEqual(FeishuAdapter._detect_receive_id_type("on_abcdef"), "union_id")
+
+    def test_unknown_prefix_defaults_to_chat_id(self):
+        from gateway.platforms.feishu import FeishuAdapter
+        self.assertEqual(FeishuAdapter._detect_receive_id_type("some_unknown_id"), "chat_id")
+
+    def test_empty_string_defaults_to_chat_id(self):
+        from gateway.platforms.feishu import FeishuAdapter
+        self.assertEqual(FeishuAdapter._detect_receive_id_type(""), "chat_id")
