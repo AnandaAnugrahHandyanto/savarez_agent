@@ -100,6 +100,30 @@ class TestProviderPersistsAfterModelSave:
         )
         assert model.get("default") == "kimi-k2.5"
 
+    def test_cloudflare_provider_prompts_for_account_id_and_saves_resolved_base_url(
+        self, config_home, monkeypatch
+    ):
+        """Cloudflare setup must not persist an unresolved {account_id} template."""
+        from hermes_cli.main import _model_flow_api_key_provider
+        from hermes_cli.config import load_config, get_env_value
+
+        with patch("getpass.getpass", return_value="tok-12345678"), \
+             patch("builtins.input", side_effect=["abc123", ""]), \
+             patch("hermes_cli.auth._prompt_model_selection", return_value="@cf/google/gemma-4-26b-a4b-it"), \
+             patch("hermes_cli.auth.deactivate_provider"):
+            _model_flow_api_key_provider(load_config(), "cloudflare-workers-ai", "old-model")
+
+        import yaml
+
+        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        model = config.get("model")
+        assert isinstance(model, dict), f"model should be dict, got {type(model)}"
+        assert model.get("provider") == "cloudflare-workers-ai"
+        assert model.get("default") == "@cf/google/gemma-4-26b-a4b-it"
+        assert model.get("base_url") == "https://api.cloudflare.com/client/v4/accounts/abc123/ai/v1"
+        assert get_env_value("CLOUDFLARE_API_TOKEN") == "tok-12345678"
+        assert get_env_value("CLOUDFLARE_ACCOUNT_ID") == "abc123"
+
     def test_copilot_provider_saved_when_selected(self, config_home):
         """_model_flow_copilot should persist provider/base_url/model together."""
         from hermes_cli.main import _model_flow_copilot

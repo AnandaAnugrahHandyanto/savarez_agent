@@ -387,6 +387,19 @@ def has_usable_secret(value: Any, *, min_length: int = 4) -> bool:
     return True
 
 
+def _cloudflare_workers_ai_has_endpoint_config(env_override: str = "") -> bool:
+    """Return True when Workers AI has enough config to build a concrete base URL."""
+    if (env_override or os.getenv("CLOUDFLARE_WORKERS_AI_BASE_URL", "")).strip():
+        return True
+    return has_usable_secret(os.getenv("CLOUDFLARE_ACCOUNT_ID", ""))
+
+
+def _cloudflare_workers_ai_base_url_is_resolved(base_url: str) -> bool:
+    """Return True when the Workers AI URL no longer contains the account placeholder."""
+    normalized = (base_url or "").strip()
+    return bool(normalized) and "{account_id}" not in normalized
+
+
 def _resolve_api_key_provider_secret(
     provider_id: str, pconfig: ProviderConfig
 ) -> tuple[str, str]:
@@ -1013,12 +1026,10 @@ def resolve_provider(
         # Copilot/GitHub Models as the provider.
         if pid == "copilot":
             continue
-        # Cloudflare Workers AI requires BOTH a token and an account ID.
-        # Without the account ID the URL template cannot be resolved, so
-        # skip auto-detect unless both are present.
-        if pid == "cloudflare-workers-ai" and not has_usable_secret(
-            os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
-        ):
+        # Cloudflare Workers AI needs either CLOUDFLARE_ACCOUNT_ID or an
+        # explicit CLOUDFLARE_WORKERS_AI_BASE_URL override to build a valid
+        # endpoint. Skip auto-detect unless one of those is present.
+        if pid == "cloudflare-workers-ai" and not _cloudflare_workers_ai_has_endpoint_config():
             continue
         for env_var in pconfig.api_key_env_vars:
             if has_usable_secret(os.getenv(env_var, "")):
@@ -2445,7 +2456,7 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     # this provider and requests would fail with an opaque URL error.
     configured = bool(api_key)
     if provider_id == "cloudflare-workers-ai":
-        configured = configured and "{account_id}" not in base_url
+        configured = configured and _cloudflare_workers_ai_base_url_is_resolved(base_url)
 
     return {
         "configured": configured,

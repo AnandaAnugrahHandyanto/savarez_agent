@@ -164,6 +164,16 @@ class TestCloudflareAutoDetection:
         with pytest.raises(AuthError):
             resolve_provider("auto")
 
+    def test_auto_detect_accepts_base_url_override_without_account_id(self, monkeypatch):
+        """Explicit base URL override should be enough for auto-detect."""
+        _clear_all_provider_keys(monkeypatch)
+        monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "tok-12345678")
+        monkeypatch.setenv(
+            "CLOUDFLARE_WORKERS_AI_BASE_URL",
+            "https://api.cloudflare.com/client/v4/accounts/override/ai/v1",
+        )
+        assert resolve_provider("auto") == "cloudflare-workers-ai"
+
 
 # =============================================================================
 # Credentials
@@ -292,6 +302,80 @@ class TestCloudflareProvidersModule:
     def test_label(self):
         from hermes_cli.providers import get_label
         assert get_label("cloudflare-workers-ai") == "Cloudflare Workers AI"
+
+    def test_get_provider_uses_auth_registry_fallback_when_models_dev_missing(self, monkeypatch):
+        monkeypatch.setattr("agent.models_dev.get_provider_info", lambda provider: None)
+        from hermes_cli.providers import get_provider
+
+        pdef = get_provider("cloudflare-workers-ai")
+
+        assert pdef is not None
+        assert pdef.id == "cloudflare-workers-ai"
+        assert pdef.base_url == _CF_DEFAULT
+        assert "CLOUDFLARE_API_TOKEN" in pdef.api_key_env_vars
+        assert "CLOUDFLARE_ACCOUNT_ID" in pdef.api_key_env_vars
+
+
+# =============================================================================
+# Credential pool + /model picker
+# =============================================================================
+
+
+class TestCloudflareCredentialPool:
+    def test_pool_seeds_resolved_base_url(self, monkeypatch, tmp_path):
+        _clear_all_provider_keys(monkeypatch)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "tok-12345678")
+        monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "abc123")
+
+        from agent.credential_pool import load_pool
+
+        pool = load_pool("cloudflare-workers-ai")
+        entry = pool.select()
+
+        assert entry is not None
+        assert entry.base_url == "https://api.cloudflare.com/client/v4/accounts/abc123/ai/v1"
+
+    def test_pool_skips_unresolved_placeholder_entry(self, monkeypatch, tmp_path):
+        _clear_all_provider_keys(monkeypatch)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "tok-12345678")
+
+        from agent.credential_pool import load_pool
+
+        pool = load_pool("cloudflare-workers-ai")
+        assert not pool.has_credentials()
+
+
+class TestCloudflareModelPicker:
+    def test_list_authenticated_providers_skips_missing_account_id(self, monkeypatch):
+        _clear_all_provider_keys(monkeypatch)
+        monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "tok-12345678")
+        monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+
+        from hermes_cli.model_switch import list_authenticated_providers
+
+        providers = list_authenticated_providers()
+        assert not any(p["slug"] == "cloudflare-workers-ai" for p in providers)
+
+    def test_list_authenticated_providers_accepts_base_url_override(self, monkeypatch):
+        _clear_all_provider_keys(monkeypatch)
+        monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "tok-12345678")
+        monkeypatch.setenv(
+            "CLOUDFLARE_WORKERS_AI_BASE_URL",
+            "https://api.cloudflare.com/client/v4/accounts/override/ai/v1",
+        )
+        monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+
+        from hermes_cli.model_switch import list_authenticated_providers
+
+        providers = list_authenticated_providers()
+        cf_provider = next((p for p in providers if p["slug"] == "cloudflare-workers-ai"), None)
+        assert cf_provider is not None
+        assert cf_provider["models"] == [
+            "@cf/google/gemma-4-26b-a4b-it",
+            "@cf/moonshotai/kimi-k2.5",
+        ]
 
 
 # =============================================================================

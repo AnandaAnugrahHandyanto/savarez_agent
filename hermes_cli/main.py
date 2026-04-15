@@ -2429,6 +2429,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     """Generic flow for API-key providers (z.ai, MiniMax, OpenCode, etc.)."""
     from hermes_cli.auth import (
         PROVIDER_REGISTRY, _prompt_model_selection, _save_model_choice,
+        _resolve_cloudflare_workers_ai_base_url,
         deactivate_provider,
     )
     from hermes_cli.config import get_env_value, save_env_value, load_config, save_config
@@ -2458,6 +2459,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
                 print("Cancelled.")
                 return
             save_env_value(key_env, new_key)
+            existing_key = new_key
             print("API key saved.")
             print()
     else:
@@ -2468,7 +2470,32 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     current_base = ""
     if base_url_env:
         current_base = get_env_value(base_url_env) or os.getenv(base_url_env, "")
-    effective_base = current_base or pconfig.inference_base_url
+    if provider_id == "cloudflare-workers-ai":
+        account_id_env = "CLOUDFLARE_ACCOUNT_ID"
+        current_account_id = get_env_value(account_id_env) or os.getenv(account_id_env, "")
+        if current_account_id:
+            print(f"  Cloudflare account ID: {current_account_id} ✓")
+            print()
+        elif not current_base:
+            try:
+                new_account_id = input(f"{account_id_env} (or Enter to cancel): ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return
+            if not new_account_id:
+                print("Cancelled.")
+                return
+            save_env_value(account_id_env, new_account_id)
+            current_account_id = new_account_id
+            print("Account ID saved.")
+            print()
+        effective_base = _resolve_cloudflare_workers_ai_base_url(
+            existing_key or (get_env_value(key_env) if key_env else ""),
+            pconfig.inference_base_url,
+            current_base,
+        )
+    else:
+        effective_base = current_base or pconfig.inference_base_url
 
     try:
         override = input(f"Base URL [{effective_base}]: ").strip()
