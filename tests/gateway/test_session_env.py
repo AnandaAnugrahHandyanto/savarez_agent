@@ -14,6 +14,7 @@ from gateway.session_context import (
 def test_set_session_env_sets_contextvars(monkeypatch):
     """_set_session_env should populate contextvars, not os.environ."""
     runner = object.__new__(GatewayRunner)
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
     source = SessionSource(
         platform=Platform.TELEGRAM,
         chat_id="-1001",
@@ -31,6 +32,7 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     monkeypatch.delenv("HERMES_SESSION_USER_ID", raising=False)
     monkeypatch.delenv("HERMES_SESSION_USER_NAME", raising=False)
     monkeypatch.delenv("HERMES_SESSION_THREAD_ID", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
 
     tokens = runner._set_session_env(context)
 
@@ -38,6 +40,7 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     assert get_session_env("HERMES_SESSION_PLATFORM") == "telegram"
     assert get_session_env("HERMES_SESSION_CHAT_ID") == "-1001"
     assert get_session_env("HERMES_SESSION_CHAT_NAME") == "Group"
+    assert get_session_env("HERMES_SESSION_CHAT_TYPE") == "group"
     assert get_session_env("HERMES_SESSION_USER_ID") == "123456"
     assert get_session_env("HERMES_SESSION_USER_NAME") == "alice"
     assert get_session_env("HERMES_SESSION_THREAD_ID") == "17585"
@@ -60,6 +63,7 @@ def test_clear_session_env_restores_previous_state(monkeypatch):
     monkeypatch.delenv("HERMES_SESSION_USER_ID", raising=False)
     monkeypatch.delenv("HERMES_SESSION_USER_NAME", raising=False)
     monkeypatch.delenv("HERMES_SESSION_THREAD_ID", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
 
     source = SessionSource(
         platform=Platform.TELEGRAM,
@@ -82,6 +86,7 @@ def test_clear_session_env_restores_previous_state(monkeypatch):
     assert get_session_env("HERMES_SESSION_PLATFORM") == ""
     assert get_session_env("HERMES_SESSION_CHAT_ID") == ""
     assert get_session_env("HERMES_SESSION_CHAT_NAME") == ""
+    assert get_session_env("HERMES_SESSION_CHAT_TYPE") == ""
     assert get_session_env("HERMES_SESSION_USER_ID") == ""
     assert get_session_env("HERMES_SESSION_USER_NAME") == ""
     assert get_session_env("HERMES_SESSION_THREAD_ID") == ""
@@ -111,9 +116,10 @@ def test_get_session_env_default_when_nothing_set(monkeypatch):
     assert get_session_env("HERMES_SESSION_PLATFORM", "fallback") == "fallback"
 
 
-def test_set_session_env_handles_missing_optional_fields():
+def test_set_session_env_handles_missing_optional_fields(monkeypatch):
     """_set_session_env should handle None chat_name and thread_id gracefully."""
     runner = object.__new__(GatewayRunner)
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
     source = SessionSource(
         platform=Platform.TELEGRAM,
         chat_id="-1001",
@@ -128,6 +134,7 @@ def test_set_session_env_handles_missing_optional_fields():
     assert get_session_env("HERMES_SESSION_PLATFORM") == "telegram"
     assert get_session_env("HERMES_SESSION_CHAT_ID") == "-1001"
     assert get_session_env("HERMES_SESSION_CHAT_NAME") == ""
+    assert get_session_env("HERMES_SESSION_CHAT_TYPE") == "private"
     assert get_session_env("HERMES_SESSION_THREAD_ID") == ""
 
     runner._clear_session_env(tokens)
@@ -169,9 +176,10 @@ def test_session_key_falls_back_to_os_environ(monkeypatch):
     assert get_session_env("HERMES_SESSION_KEY") == "env-session-123"
 
 
-def test_set_session_env_includes_session_key():
+def test_set_session_env_includes_session_key(monkeypatch):
     """_set_session_env should propagate session_key from SessionContext."""
     runner = object.__new__(GatewayRunner)
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
     source = SessionSource(
         platform=Platform.TELEGRAM,
         chat_id="-1001",
