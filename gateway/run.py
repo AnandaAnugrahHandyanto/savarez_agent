@@ -2556,7 +2556,8 @@ class GatewayRunner:
             return True
 
         user_id = source.user_id
-        if not user_id:
+        user_id_alt = getattr(source, "user_id_alt", None)
+        if not user_id and not user_id_alt:
             return False
 
         platform_env_map = {
@@ -2603,7 +2604,9 @@ class GatewayRunner:
 
         # Check pairing store (always checked, regardless of allowlists)
         platform_name = source.platform.value if source.platform else ""
-        if self.pairing_store.is_approved(platform_name, user_id):
+        if user_id and self.pairing_store.is_approved(platform_name, user_id):
+            return True
+        if user_id_alt and self.pairing_store.is_approved(platform_name, user_id_alt):
             return True
 
         # Check platform-specific and global allowlists
@@ -2626,9 +2629,14 @@ class GatewayRunner:
         if "*" in allowed_ids:
             return True
 
-        check_ids = {user_id}
-        if "@" in user_id:
-            check_ids.add(user_id.split("@")[0])
+        check_ids = set()
+        if user_id:
+            check_ids.add(user_id)
+        if user_id_alt:
+            check_ids.add(user_id_alt)
+        for candidate in list(check_ids):
+            if "@" in candidate:
+                check_ids.add(candidate.split("@")[0])
 
         # WhatsApp: resolve phone↔LID aliases from bridge session mapping files
         if source.platform == Platform.WHATSAPP:
@@ -7824,6 +7832,9 @@ class GatewayRunner:
             _thread_metadata: Optional[Dict[str, Any]] = {"thread_id": source.thread_id}
         else:
             _thread_metadata = None
+        _event_metadata = getattr(event, "metadata", None)
+        if _event_metadata:
+            _thread_metadata = {**(_thread_metadata or {}), **_event_metadata}
 
         if _streaming_enabled:
             try:

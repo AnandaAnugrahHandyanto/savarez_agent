@@ -130,6 +130,48 @@ def test_star_wildcard_works_for_any_platform(monkeypatch):
     assert runner._is_user_authorized(source) is True
 
 
+def test_dingtalk_alt_user_id_matches_allowlist(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("DINGTALK_ALLOWED_USERS", "03341631400920119088")
+
+    runner, _adapter = _make_runner(
+        Platform.DINGTALK,
+        GatewayConfig(platforms={Platform.DINGTALK: PlatformConfig(enabled=True)}),
+    )
+
+    source = SessionSource(
+        platform=Platform.DINGTALK,
+        user_id="$:LWCP_v1:$abc123openuserid",
+        user_id_alt="03341631400920119088",
+        chat_id="conversation-1",
+        user_name="tester",
+        chat_type="dm",
+    )
+
+    assert runner._is_user_authorized(source) is True
+
+
+def test_alt_user_id_can_match_pairing_approval(monkeypatch):
+    _clear_auth_env(monkeypatch)
+
+    runner, _adapter = _make_runner(
+        Platform.DINGTALK,
+        GatewayConfig(platforms={Platform.DINGTALK: PlatformConfig(enabled=True)}),
+    )
+    runner.pairing_store.is_approved.side_effect = lambda platform, user_id: user_id == "03341631400920119088"
+
+    source = SessionSource(
+        platform=Platform.DINGTALK,
+        user_id="$:LWCP_v1:$abc123openuserid",
+        user_id_alt="03341631400920119088",
+        chat_id="conversation-1",
+        user_name="tester",
+        chat_type="dm",
+    )
+
+    assert runner._is_user_authorized(source) is True
+
+
 @pytest.mark.asyncio
 async def test_unauthorized_dm_pairs_by_default(monkeypatch):
     _clear_auth_env(monkeypatch)
