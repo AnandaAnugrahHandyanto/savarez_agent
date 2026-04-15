@@ -5849,21 +5849,63 @@ class GatewayRunner:
         return f"⚡ ✓ Priority Processing: **{label}** (this session only)"
 
     async def _handle_yolo_command(self, event: MessageEvent) -> str:
-        """Handle /yolo — toggle dangerous command approval bypass for this session only."""
+        """Handle /yolo — toggle dangerous command approval bypass for this session only.
+
+        Gated by the platform allowlist: only users explicitly listed in
+        the per-platform ALLOWED_USERS env var may toggle YOLO.  When
+        ALLOW_ALL_USERS is the sole authorization source (no explicit
+        allowlist), /yolo is denied — open-access deployments should not
+        allow any user to bypass dangerous command approvals.
+        """
         from tools.approval import (
             disable_session_yolo,
             enable_session_yolo,
             is_session_yolo_enabled,
         )
 
+        # Gate: only users on the explicit platform allowlist may toggle YOLO.
+        # Users authorized solely via ALLOW_ALL_USERS or DM pairing are denied.
+        if not self._is_yolo_permitted(event.source):
+            return "❌ /yolo is restricted to users on the platform allowlist."
+
         session_key = self._session_key_for_source(event.source)
-        current = is_session_yolo_enabled(session_key)
         if current:
             disable_session_yolo(session_key)
             return "⚠️ YOLO mode **OFF** for this session — dangerous commands will require approval."
         else:
             enable_session_yolo(session_key)
             return "⚡ YOLO mode **ON** for this session — all commands auto-approved. Use with caution."
+
+    def _is_yolo_permitted(self, source: "SessionSource") -> bool:
+        """Return True only if the user appears on the explicit platform allowlist.
+
+        Users authorized solely via ``*_ALLOW_ALL_USERS`` or DM pairing are
+        NOT permitted to toggle YOLO — the explicit allowlist is the only
+        authorization source for this privilege-escalation command.
+        """
+        platform_env_map = {
+            "telegram": "TELEGRAM_ALLOWED_USERS",
+            "discord": "DISCORD_ALLOWED_USERS",
+            "whatsapp": "WHATSAPP_ALLOWED_USERS",
+            "slack": "SLACK_ALLOWED_USERS",
+            "signal": "SIGNAL_ALLOWED_USERS",
+            "email": "EMAIL_ALLOWED_USERS",
+            "sms": "SMS_ALLOWED_USERS",
+            "mattermost": "MATTERMOST_ALLOWED_USERS",
+            "matrix": "MATRIX_ALLOWED_USERS",
+        }
+        user_id = source.user_id
+        if not user_id:
+            return False
+        platform_key = source.platform.value if source.platform else ""
+        env_var = platform_env_map.get(platform_key, "")
+        allowlist_raw = os.getenv(env_var, "").strip() if env_var else ""
+        global_raw = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
+        combined = f"{allowlist_raw},{global_raw}".strip(",")
+        if not combined:
+            return False  # No explicit allowlist — deny
+        allowed_ids = {uid.strip() for uid in combined.split(",") if uid.strip()}
+        return user_id in allowed_ids
 
     async def _handle_verbose_command(self, event: MessageEvent) -> str:
         """Handle /verbose command — cycle tool progress display mode.
