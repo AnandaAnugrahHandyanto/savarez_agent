@@ -442,6 +442,107 @@ class TestSendTelegramMediaDelivery:
         bot.send_message.assert_not_awaited()
 
 
+class TestSendFeishuMediaDelivery:
+    def test_send_to_platform_routes_text_and_media_to_feishu_helper(self):
+        send = AsyncMock(return_value={"success": True, "platform": "feishu", "message_id": "42"})
+        cfg = SimpleNamespace(enabled=True, token="***", extra={})
+
+        with patch("tools.send_message_tool._send_feishu", send):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.FEISHU,
+                    cfg,
+                    "oc_testchat",
+                    "hello",
+                    media_files=[("/tmp/example.png", False)],
+                    thread_id="om_testthread",
+                )
+            )
+
+        assert result["success"] is True
+        send.assert_awaited_once_with(
+            cfg,
+            "oc_testchat",
+            "hello",
+            media_files=[("/tmp/example.png", False)],
+            thread_id="om_testthread",
+        )
+        assert result.get("warnings") is None
+
+    def test_send_to_platform_allows_media_only_for_feishu(self):
+        send = AsyncMock(return_value={"success": True, "platform": "feishu", "message_id": "43"})
+        cfg = SimpleNamespace(enabled=True, token="***", extra={})
+
+        with patch("tools.send_message_tool._send_feishu", send):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.FEISHU,
+                    cfg,
+                    "oc_testchat",
+                    "",
+                    media_files=[("/tmp/example.png", False)],
+                )
+            )
+
+        assert result["success"] is True
+        send.assert_awaited_once_with(
+            cfg,
+            "oc_testchat",
+            "",
+            media_files=[("/tmp/example.png", False)],
+            thread_id=None,
+        )
+
+    def test_long_feishu_message_without_media_is_chunked(self):
+        send = AsyncMock(return_value={"success": True, "platform": "feishu", "message_id": "44"})
+        cfg = SimpleNamespace(enabled=True, token="***", extra={})
+        long_msg = "word " * 2000
+
+        with patch("tools.send_message_tool._send_feishu", send):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.FEISHU,
+                    cfg,
+                    "oc_testchat",
+                    long_msg,
+                    media_files=[],
+                )
+            )
+
+        assert result["success"] is True
+        assert send.await_count >= 2
+        for call in send.await_args_list:
+            assert len(call.args[2]) <= 8100
+            assert call.kwargs["media_files"] == []
+
+    def test_long_feishu_message_with_media_only_attaches_on_last_chunk(self):
+        send = AsyncMock(return_value={"success": True, "platform": "feishu", "message_id": "45"})
+        cfg = SimpleNamespace(enabled=True, token="***", extra={})
+        long_msg = "word " * 2000
+        media = [("/tmp/example.png", False)]
+
+        with patch("tools.send_message_tool._send_feishu", send):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.FEISHU,
+                    cfg,
+                    "oc_testchat",
+                    long_msg,
+                    media_files=media,
+                    thread_id="om_testthread",
+                )
+            )
+
+        assert result["success"] is True
+        assert send.await_count >= 2
+        for call in send.await_args_list[:-1]:
+            assert call.kwargs["media_files"] == []
+            assert call.kwargs["thread_id"] == "om_testthread"
+        last = send.await_args_list[-1]
+        assert last.kwargs["media_files"] == media
+        assert last.kwargs["thread_id"] == "om_testthread"
+
+
 # ---------------------------------------------------------------------------
 # Regression: long messages are chunked before platform dispatch
 # ---------------------------------------------------------------------------
