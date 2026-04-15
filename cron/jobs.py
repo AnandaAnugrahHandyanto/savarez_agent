@@ -5,6 +5,7 @@ Jobs are stored in ~/.hermes/cron/jobs.json
 Output is saved to ~/.hermes/cron/output/{job_id}/{timestamp}.md
 """
 
+import contextlib
 import copy
 import json
 import logging
@@ -16,6 +17,11 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Optional, Dict, List, Any
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +40,25 @@ except ImportError:
 HERMES_DIR = get_hermes_home().resolve()
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
+JOBS_WRITE_LOCK = CRON_DIR / ".jobs.wlock"
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
+
+# Retention for state="completed" one-shots before GC reaps them.
+# Lets users verify "did it fire, did delivery succeed" days later.
+COMPLETED_RETENTION_DAYS = 7
+
+# Fields added by cron-fixes patch (2026-04-15). load_jobs() migrates old rows
+# that predate these. Keep this list in sync with _migrate_job().
+_MIGRATED_FIELDS: Dict[str, Any] = {
+    "idle_timeout_seconds": None,   # per-job override; None → use HERMES_CRON_TIMEOUT env var
+    "retry_policy": None,           # {"max_attempts": int, "backoff_seconds": int} | None
+    "retry_count": 0,               # current attempt count within the active failure streak
+    "started_at": None,             # set when a runner claims the job (future: state=running)
+    "runner_id": None,              # PID/uuid of the runner that holds it (future)
+    "last_delivery_at": None,       # ISO timestamp of last delivery attempt
+    "last_delivery_success": None,  # True|False|None — None when no delivery attempted
+}
 
 
 def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
@@ -87,6 +110,98 @@ def ensure_dirs():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     _secure_dir(CRON_DIR)
     _secure_dir(OUTPUT_DIR)
+
+
+@contextlib.contextmanager
+def _jobs_write_lock():
+    """
+    Serialize all writes to jobs.json across processes.
+
+    Any code path that does load-modify-save on jobs.json (create_job,
+    update_job, mark_job_run, pause/resume/remove, GC, reconciliation) MUST
+    hold this lock for the duration of the load → save sequence. The lock is
+    exclusive and blocking — contention is expected to be brief because
+    save_jobs is a single tempfile+rename.
+
+    No-op fallback on platforms without fcntl (Windows), where the atomic
+    tempfile+rename in save_jobs is the only ordering guarantee.
+    """
+    ensure_dirs()
+    if fcntl is None:
+        yield
+        return
+    lock_fd = open(JOBS_WRITE_LOCK, "w")
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        except (OSError, IOError):
+            pass
+        lock_fd.close()
+
+
+def _migrate_job(job: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize missing fields on jobs that predate the cron-fixes patch.
+
+    Called by load_jobs() on every read so downstream code can assume the
+    full schema. Does not persist — the next save_jobs() call will write the
+    normalized form.
+    """
+    for field, default in _MIGRATED_FIELDS.items():
+        if field not in job:
+            job[field] = default
+    return job
+
+
+def gc_completed_jobs(jobs: List[Dict[str, Any]], retention_days: int = COMPLETED_RETENTION_DAYS) -> int:
+    """Remove state='completed' jobs whose last_run_at is older than the retention window.
+
+    Mutates the list in place. Returns the number of jobs removed. Caller is
+    responsible for save_jobs() under a write lock.
+    """
+    cutoff = _hermes_now() - timedelta(days=retention_days)
+    removed = 0
+    i = 0
+    while i < len(jobs):
+        job = jobs[i]
+        if job.get("state") == "completed":
+            last_run = job.get("last_run_at")
+            if last_run:
+                try:
+                    last_run_dt = _ensure_aware(datetime.fromisoformat(last_run))
+                    if last_run_dt < cutoff:
+                        jobs.pop(i)
+                        removed += 1
+                        continue
+                except (ValueError, TypeError):
+                    pass
+        i += 1
+    return removed
+
+
+def _is_stale_oneshot(job: Dict[str, Any], now: datetime) -> bool:
+    """A one-shot is stale if it's past the grace window without having run.
+
+    Used by the stale-detector alert path — these jobs will be silently
+    dropped by get_due_jobs() on the next tick if we don't surface them.
+    """
+    schedule = job.get("schedule", {})
+    if schedule.get("kind") != "once":
+        return False
+    if not job.get("enabled", True):
+        return False
+    if job.get("last_run_at"):
+        return False
+    next_run = job.get("next_run_at") or schedule.get("run_at")
+    if not next_run:
+        return False
+    try:
+        next_run_dt = _ensure_aware(datetime.fromisoformat(next_run))
+    except (ValueError, TypeError):
+        return False
+    return (now - next_run_dt).total_seconds() > ONESHOT_GRACE_SECONDS
 
 
 # =============================================================================
@@ -318,15 +433,18 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
 # =============================================================================
 
 def load_jobs() -> List[Dict[str, Any]]:
-    """Load all jobs from storage."""
+    """Load all jobs from storage, migrating missing fields on each row."""
     ensure_dirs()
     if not JOBS_FILE.exists():
         return []
-    
+
+    def _finalize(jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return [_migrate_job(j) for j in jobs]
+
     try:
         with open(JOBS_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
-            return data.get("jobs", [])
+            return _finalize(data.get("jobs", []))
     except json.JSONDecodeError:
         # Retry with strict=False to handle bare control chars in string values
         try:
@@ -334,10 +452,11 @@ def load_jobs() -> List[Dict[str, Any]]:
                 data = json.loads(f.read(), strict=False)
                 jobs = data.get("jobs", [])
                 if jobs:
-                    # Auto-repair: rewrite with proper escaping
-                    save_jobs(jobs)
+                    # Auto-repair: rewrite with proper escaping (holds write lock)
+                    with _jobs_write_lock():
+                        save_jobs(jobs)
                     logger.warning("Auto-repaired jobs.json (had invalid control characters)")
-                return jobs
+                return _finalize(jobs)
         except Exception as e:
             logger.error("Failed to auto-repair jobs.json: %s", e)
             raise RuntimeError(f"Cron database corrupted and unrepairable: {e}") from e
@@ -458,11 +577,20 @@ def create_job(
         # Delivery configuration
         "deliver": deliver,
         "origin": origin,  # Tracks where job was created for "origin" delivery
+        # Fields added by cron-fixes patch (2026-04-15). See _MIGRATED_FIELDS.
+        "idle_timeout_seconds": None,
+        "retry_policy": None,
+        "retry_count": 0,
+        "started_at": None,
+        "runner_id": None,
+        "last_delivery_at": None,
+        "last_delivery_success": None,
     }
 
-    jobs = load_jobs()
-    jobs.append(job)
-    save_jobs(jobs)
+    with _jobs_write_lock():
+        jobs = load_jobs()
+        jobs.append(job)
+        save_jobs(jobs)
 
     return job
 
@@ -476,45 +604,82 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
-    """List all jobs, optionally including disabled ones."""
+def list_jobs(
+    include_disabled: bool = False,
+    include_completed_days: int = COMPLETED_RETENTION_DAYS,
+    state: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """List jobs with sensible defaults that keep completed one-shots visible.
+
+    - include_disabled=False (default) filters out permanently-disabled jobs,
+      BUT keeps state='completed' rows whose last_run_at is within the
+      include_completed_days window. This makes audit trails visible by default.
+    - state=<name> filters to that single state (e.g. 'scheduled', 'completed',
+      'paused', 'running'). Overrides include_disabled.
+    - include_completed_days=0 disables the completed-visibility override.
+    """
     jobs = [_apply_skill_fields(j) for j in load_jobs()]
-    if not include_disabled:
-        jobs = [j for j in jobs if j.get("enabled", True)]
-    return jobs
+
+    if state is not None:
+        return [j for j in jobs if j.get("state") == state]
+
+    if include_disabled:
+        return jobs
+
+    now = _hermes_now()
+    cutoff = now - timedelta(days=max(0, include_completed_days))
+
+    def _keep(j: Dict[str, Any]) -> bool:
+        if j.get("enabled", True):
+            return True
+        if include_completed_days <= 0:
+            return False
+        if j.get("state") != "completed":
+            return False
+        last_run = j.get("last_run_at")
+        if not last_run:
+            return False
+        try:
+            last_run_dt = _ensure_aware(datetime.fromisoformat(last_run))
+        except (ValueError, TypeError):
+            return False
+        return last_run_dt >= cutoff
+
+    return [j for j in jobs if _keep(j)]
 
 
 def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Update a job by ID, refreshing derived schedule fields when needed."""
-    jobs = load_jobs()
-    for i, job in enumerate(jobs):
-        if job["id"] != job_id:
-            continue
+    with _jobs_write_lock():
+        jobs = load_jobs()
+        for i, job in enumerate(jobs):
+            if job["id"] != job_id:
+                continue
 
-        updated = _apply_skill_fields({**job, **updates})
-        schedule_changed = "schedule" in updates
+            updated = _apply_skill_fields({**job, **updates})
+            schedule_changed = "schedule" in updates
 
-        if "skills" in updates or "skill" in updates:
-            normalized_skills = _normalize_skill_list(updated.get("skill"), updated.get("skills"))
-            updated["skills"] = normalized_skills
-            updated["skill"] = normalized_skills[0] if normalized_skills else None
+            if "skills" in updates or "skill" in updates:
+                normalized_skills = _normalize_skill_list(updated.get("skill"), updated.get("skills"))
+                updated["skills"] = normalized_skills
+                updated["skill"] = normalized_skills[0] if normalized_skills else None
 
-        if schedule_changed:
-            updated_schedule = updated["schedule"]
-            updated["schedule_display"] = updates.get(
-                "schedule_display",
-                updated_schedule.get("display", updated.get("schedule_display")),
-            )
-            if updated.get("state") != "paused":
-                updated["next_run_at"] = compute_next_run(updated_schedule)
+            if schedule_changed:
+                updated_schedule = updated["schedule"]
+                updated["schedule_display"] = updates.get(
+                    "schedule_display",
+                    updated_schedule.get("display", updated.get("schedule_display")),
+                )
+                if updated.get("state") != "paused":
+                    updated["next_run_at"] = compute_next_run(updated_schedule)
 
-        if updated.get("enabled", True) and updated.get("state") != "paused" and not updated.get("next_run_at"):
-            updated["next_run_at"] = compute_next_run(updated["schedule"])
+            if updated.get("enabled", True) and updated.get("state") != "paused" and not updated.get("next_run_at"):
+                updated["next_run_at"] = compute_next_run(updated["schedule"])
 
-        jobs[i] = updated
-        save_jobs(jobs)
-        return _apply_skill_fields(jobs[i])
-    return None
+            jobs[i] = updated
+            save_jobs(jobs)
+            return _apply_skill_fields(jobs[i])
+        return None
 
 
 def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -568,53 +733,95 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
 
 def remove_job(job_id: str) -> bool:
     """Remove a job by ID."""
-    jobs = load_jobs()
-    original_len = len(jobs)
-    jobs = [j for j in jobs if j["id"] != job_id]
-    if len(jobs) < original_len:
-        save_jobs(jobs)
-        return True
+    with _jobs_write_lock():
+        jobs = load_jobs()
+        original_len = len(jobs)
+        jobs = [j for j in jobs if j["id"] != job_id]
+        if len(jobs) < original_len:
+            save_jobs(jobs)
+            return True
     return False
 
 
 def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
-                 delivery_error: Optional[str] = None):
+                 delivery_error: Optional[str] = None,
+                 delivery_attempted: bool = False):
     """
     Mark a job as having been run.
-    
-    Updates last_run_at, last_status, increments completed count,
-    computes next_run_at, and auto-deletes if repeat limit reached.
 
-    ``delivery_error`` is tracked separately from the agent error — a job
-    can succeed (agent produced output) but fail delivery (platform down).
+    Updates last_run_at, last_status, and transitions state based on:
+      1. retry_policy (if set): on failure, schedule a retry at now+backoff
+         until max_attempts is exhausted, then advance as normal.
+      2. repeat: if finite times is reached, mark state="completed" and
+         enabled=False (previously: deleted). Retention GC handles deletion
+         after COMPLETED_RETENTION_DAYS.
+
+    delivery_error is tracked separately from agent error — a job can
+    succeed (agent produced output) but fail delivery (platform down).
+    delivery_attempted controls whether last_delivery_at is updated.
     """
-    jobs = load_jobs()
-    for i, job in enumerate(jobs):
-        if job["id"] == job_id:
-            now = _hermes_now().isoformat()
+    with _jobs_write_lock():
+        jobs = load_jobs()
+        for i, job in enumerate(jobs):
+            if job["id"] != job_id:
+                continue
+
+            now_dt = _hermes_now()
+            now = now_dt.isoformat()
             job["last_run_at"] = now
             job["last_status"] = "ok" if success else "error"
             job["last_error"] = error if not success else None
-            # Track delivery failures separately — cleared on successful delivery
             job["last_delivery_error"] = delivery_error
-            
-            # Increment completed count
+            if delivery_attempted:
+                job["last_delivery_at"] = now
+                job["last_delivery_success"] = (delivery_error is None) and success
+            # Clear the per-run claim fields (set by future mark_job_running)
+            job["started_at"] = None
+            job["runner_id"] = None
+
+            retry_policy = job.get("retry_policy")
+            retry_count = int(job.get("retry_count", 0) or 0)
+
+            # --- Retry path ------------------------------------------------
+            if not success and retry_policy:
+                max_attempts = int(retry_policy.get("max_attempts", 0) or 0)
+                backoff_seconds = int(retry_policy.get("backoff_seconds", 0) or 0)
+                if max_attempts > 0 and retry_count + 1 < max_attempts:
+                    job["retry_count"] = retry_count + 1
+                    job["next_run_at"] = (now_dt + timedelta(seconds=backoff_seconds)).isoformat()
+                    if job.get("state") != "paused":
+                        job["state"] = "scheduled"
+                    save_jobs(jobs)
+                    logger.info(
+                        "Job '%s' failed, retry %d/%d scheduled at %s",
+                        job.get("name", job_id),
+                        job["retry_count"], max_attempts, job["next_run_at"],
+                    )
+                    return
+                # Exhausted retries — fall through to normal advance path.
+                job["retry_count"] = 0
+            else:
+                # Success OR no retry_policy — reset retry_count.
+                job["retry_count"] = 0
+
+            # --- Normal advance path --------------------------------------
             if job.get("repeat"):
                 job["repeat"]["completed"] = job["repeat"].get("completed", 0) + 1
-                
-                # Check if we've hit the repeat limit
+
                 times = job["repeat"].get("times")
                 completed = job["repeat"]["completed"]
                 if times is not None and times > 0 and completed >= times:
-                    # Remove the job (limit reached)
-                    jobs.pop(i)
+                    # Repeat limit reached — keep the row for audit, mark completed.
+                    # GC in scheduler.tick() reaps rows older than COMPLETED_RETENTION_DAYS.
+                    job["enabled"] = False
+                    job["state"] = "completed"
+                    job["next_run_at"] = None
                     save_jobs(jobs)
                     return
-            
-            # Compute next run
+
+            # Compute next run slot (recurring) or None (one-shot with no repeat cap).
             job["next_run_at"] = compute_next_run(job["schedule"], now)
 
-            # If no next run (one-shot completed), disable
             if job["next_run_at"] is None:
                 job["enabled"] = False
                 job["state"] = "completed"
@@ -639,19 +846,20 @@ def advance_next_run(job_id: str) -> bool:
 
     Returns True if next_run_at was advanced, False otherwise.
     """
-    jobs = load_jobs()
-    for job in jobs:
-        if job["id"] == job_id:
-            kind = job.get("schedule", {}).get("kind")
-            if kind not in ("cron", "interval"):
+    with _jobs_write_lock():
+        jobs = load_jobs()
+        for job in jobs:
+            if job["id"] == job_id:
+                kind = job.get("schedule", {}).get("kind")
+                if kind not in ("cron", "interval"):
+                    return False
+                now = _hermes_now().isoformat()
+                new_next = compute_next_run(job["schedule"], now)
+                if new_next and new_next != job.get("next_run_at"):
+                    job["next_run_at"] = new_next
+                    save_jobs(jobs)
+                    return True
                 return False
-            now = _hermes_now().isoformat()
-            new_next = compute_next_run(job["schedule"], now)
-            if new_next and new_next != job.get("next_run_at"):
-                job["next_run_at"] = new_next
-                save_jobs(jobs)
-                return True
-            return False
     return False
 
 
@@ -729,7 +937,8 @@ def get_due_jobs() -> List[Dict[str, Any]]:
             due.append(job)
 
     if needs_save:
-        save_jobs(raw_jobs)
+        with _jobs_write_lock():
+            save_jobs(raw_jobs)
 
     return due
 
