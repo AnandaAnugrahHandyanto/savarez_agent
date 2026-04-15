@@ -54,6 +54,7 @@ CONFIGURABLE_TOOLSETS = [
     ("code_execution",  "⚡ Code Execution",            "execute_code"),
     ("vision",          "👁️  Vision / Image Analysis",  "vision_analyze"),
     ("image_gen",       "🎨 Image Generation",          "image_generate"),
+    ("lumenfall",       "✨ Lumenfall Image & Video",    "generate, edit, list models (200+ models)"),
     ("moa",             "🧠 Mixture of Agents",         "mixture_of_agents"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
     ("skills",          "📚 Skills",                    "list, view, manage"),
@@ -248,6 +249,19 @@ TOOL_CATEGORIES = {
                 "tag": "FLUX 2 Pro with auto-upscaling",
                 "env_vars": [
                     {"key": "FAL_KEY", "prompt": "FAL API key", "url": "https://fal.ai/dashboard/keys"},
+                ],
+            },
+        ],
+    },
+    "lumenfall": {
+        "name": "Lumenfall (Image & Video Generation)",
+        "icon": "✨",
+        "providers": [
+            {
+                "name": "Lumenfall",
+                "tag": "Unified API for 200+ image & video models, $1 free credit",
+                "env_vars": [
+                    {"key": "LUMENFALL_API_KEY", "prompt": "Lumenfall API key", "url": "https://lumenfall.ai"},
                 ],
             },
         ],
