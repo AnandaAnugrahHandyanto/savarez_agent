@@ -11,7 +11,10 @@ from hermes_cli.main import (
     _model_flow_openrouter,
     _model_flow_qwen_oauth,
     _prompt_provider_choice,
+    _prompt_reasoning_effort_selection,
     _remove_custom_provider,
+    cmd_dashboard,
+    cmd_profile,
     main,
 )
 
@@ -57,6 +60,56 @@ def test_argparse_default_labels_are_localized():
     assert _argparse_korean("usage: ") == "사용법: "
     assert _argparse_korean("options") == "옵션"
     assert _argparse_korean("show this help message and exit") == "이 도움말을 표시하고 종료"
+
+
+def test_reasoning_effort_prompt_fallback_is_localized(monkeypatch, capsys):
+    responses = iter(["abc"])
+
+    def fake_input(_prompt):
+        try:
+            return next(responses)
+        except StopIteration:
+            raise EOFError
+
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    selected = _prompt_reasoning_effort_selection(["low", "high"], current_effort="low")
+
+    out = capsys.readouterr().out
+    assert selected is None
+    assert "추론 강도 선택:" in out
+    assert "추론 비활성화" in out
+    assert "건너뛰기(현재 설정 유지)" in out
+    assert "숫자를 입력해 주세요" in out
+
+
+def test_profile_list_empty_is_localized(monkeypatch, capsys):
+    monkeypatch.setattr("hermes_cli.profiles.list_profiles", lambda: [])
+    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "default")
+
+    cmd_profile(type("Args", (), {"profile_action": "list"})())
+
+    out = capsys.readouterr().out
+    assert "프로필이 없어요." in out
+
+
+def test_dashboard_missing_dependencies_is_localized(monkeypatch, capsys):
+    original_import = __import__
+
+    def fake_import(name, *args, **kwargs):
+        if name in {"fastapi", "uvicorn"}:
+            raise ImportError("missing")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", fake_import)
+
+    with pytest.raises(SystemExit) as exc:
+        cmd_dashboard(type("Args", (), {"host": "127.0.0.1", "port": 9119, "no_open": True, "insecure": False})())
+
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert "Web UI 의존성이 설치되지 않았어요." in out
+    assert "설치 명령: pip install hermes-agent[web]" in out
 
 
 @pytest.mark.parametrize(

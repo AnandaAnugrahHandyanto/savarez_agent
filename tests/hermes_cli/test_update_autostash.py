@@ -90,8 +90,8 @@ def test_restore_stashed_changes_prompts_before_applying(monkeypatch, tmp_path, 
     assert calls[2][0] == ["git", "stash", "list", "--format=%gd %H"]
     assert calls[3][0] == ["git", "stash", "drop", "stash@{1}"]
     out = capsys.readouterr().out
-    assert "Restore local changes now? [Y/n]" in out
-    assert "restored on top of the updated codebase" in out
+    assert "지금 로컬 변경 사항을 복원할까요? [Y/n]" in out
+    assert "업데이트된 코드베이스 위에 로컬 변경 사항을 복원했어요" in out
     assert "git diff" in out
     assert "git status" in out
 
@@ -111,8 +111,8 @@ def test_restore_stashed_changes_can_skip_restore_and_keep_stash(monkeypatch, tm
     assert restored is False
     assert calls == []
     out = capsys.readouterr().out
-    assert "Restore local changes now? [Y/n]" in out
-    assert "Your changes are still preserved in git stash." in out
+    assert "지금 로컬 변경 사항을 복원할까요? [Y/n]" in out
+    assert "변경 사항은 아직 git stash에 안전하게 보관되어 있어요." in out
     assert "git stash apply abc123" in out
 
 
@@ -140,7 +140,7 @@ def test_restore_stashed_changes_applies_without_prompt_when_disabled(monkeypatc
     assert calls[1][0] == ["git", "diff", "--name-only", "--diff-filter=U"]
     assert calls[2][0] == ["git", "stash", "list", "--format=%gd %H"]
     assert calls[3][0] == ["git", "stash", "drop", "stash@{0}"]
-    assert "Restore local changes now?" not in capsys.readouterr().out
+    assert "지금 로컬 변경 사항을 복원할까요?" not in capsys.readouterr().out
 
 
 
@@ -176,8 +176,8 @@ def test_restore_stashed_changes_keeps_going_when_stash_entry_cannot_be_resolved
     assert calls[1] == (["git", "diff", "--name-only", "--diff-filter=U"], {"cwd": tmp_path, "capture_output": True, "text": True})
     assert calls[2] == (["git", "stash", "list", "--format=%gd %H"], {"cwd": tmp_path, "capture_output": True, "text": True, "check": True})
     out = capsys.readouterr().out
-    assert "couldn't find the stash entry to drop" in out
-    assert "stash was left in place" in out
+    assert "삭제할 stash 항목을 찾지 못했어요" in out
+    assert "stash는 그대로 남겨두었어요" in out
     assert "Check `git status` first" in out
     assert "git stash list --format='%gd %H %s'" in out
     assert "Look for commit abc123" in out
@@ -206,7 +206,7 @@ def test_restore_stashed_changes_keeps_going_when_drop_fails(monkeypatch, tmp_pa
     assert restored is True
     assert calls[3][0] == ["git", "stash", "drop", "stash@{0}"]
     out = capsys.readouterr().out
-    assert "couldn't drop the saved stash entry" in out
+    assert "저장된 stash 항목을 삭제하지 못했어요" in out
     assert "drop failed" in out
     assert "Check `git status` first" in out
     assert "git stash list --format='%gd %H %s'" in out
@@ -238,10 +238,10 @@ def test_restore_stashed_changes_always_resets_on_conflict(monkeypatch, tmp_path
 
     assert result is False
     out = capsys.readouterr().out
-    assert "Conflicted files:" in out
+    assert "충돌한 파일:" in out
     assert "hermes_cli/main.py" in out
-    assert "stashed changes are preserved" in out
-    assert "Working tree reset to clean state" in out
+    assert "stash에 저장된 변경 사항은 그대로 보존되어 있으니 잃어버린 내용은 없어요." in out
+    assert "작업 트리를 깨끗한 상태로 초기화했어요." in out
     assert "git stash apply abc123" in out
     reset_calls = [c for c, _ in calls if c[1:3] == ["reset", "--hard"]]
     assert len(reset_calls) == 1
@@ -268,7 +268,7 @@ def test_restore_stashed_changes_auto_resets_non_interactive(monkeypatch, tmp_pa
 
     assert result is False
     out = capsys.readouterr().out
-    assert "Working tree reset to clean state" in out
+    assert "작업 트리를 깨끗한 상태로 초기화했어요." in out
     reset_calls = [c for c, _ in calls if c[1:3] == ["reset", "--hard"]]
     assert len(reset_calls) == 1
 

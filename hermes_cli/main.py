@@ -1991,8 +1991,8 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
             return f"{effort}  ← currently in use"
         return effort
 
-    disable_label = "Disable reasoning"
-    skip_label = "Skip (keep current)"
+    disable_label = "추론 비활성화"
+    skip_label = "건너뛰기(현재 설정 유지)"
 
     if current_effort == "none":
         default_idx = len(ordered)
@@ -2017,7 +2017,7 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
             menu_highlight_style=("fg_green",),
             cycle_cursor=True,
             clear_screen=False,
-            title="Select reasoning effort:",
+            title="추론 강도 선택:",
         )
         idx = menu.show()
         from hermes_cli.curses_ui import flush_stdin
@@ -2033,7 +2033,7 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
     except (ImportError, NotImplementedError, OSError, subprocess.SubprocessError):
         pass
 
-    print("Select reasoning effort:")
+    print("추론 강도 선택:")
     for i, effort in enumerate(ordered, 1):
         print(f"  {i}. {_label(effort)}")
     n = len(ordered)
@@ -2043,7 +2043,7 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
 
     while True:
         try:
-            choice = input(f"Choice [1-{n + 2}] (default: keep current): ").strip()
+            choice = input(f"선택 [1-{n + 2}] (기본값: 현재 설정 유지): ").strip()
             if not choice:
                 return None
             idx = int(choice)
@@ -2053,9 +2053,9 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
                 return "none"
             if idx == n + 2:
                 return None
-            print(f"Please enter 1-{n + 2}")
+            print(f"1-{n + 2} 사이의 번호를 입력해 주세요")
         except ValueError:
-            print("Please enter a number")
+            print("숫자를 입력해 주세요")
         except (KeyboardInterrupt, EOFError):
             return None
 
@@ -3203,21 +3203,21 @@ def _restore_stashed_changes(
 ) -> bool:
     if prompt_user:
         print()
-        print("⚠ Local changes were stashed before updating.")
-        print("  Restoring them may reapply local customizations onto the updated codebase.")
-        print("  Review the result afterward if Hermes behaves unexpectedly.")
-        print("Restore local changes now? [Y/n]")
+        print("⚠ 업데이트 전에 로컬 변경 사항을 git stash에 저장했어요.")
+        print("  지금 복원하면 업데이트된 코드베이스 위에 로컬 커스터마이징이 다시 적용될 수 있어요.")
+        print("  Hermes가 이상하게 동작하면 복원 후 결과를 꼭 확인해 주세요.")
+        print("지금 로컬 변경 사항을 복원할까요? [Y/n]")
         if input_fn is not None:
-            response = input_fn("Restore local changes now? [Y/n]", "y")
+            response = input_fn("지금 로컬 변경 사항을 복원할까요? [Y/n]", "y")
         else:
             response = input().strip().lower()
         if response not in ("", "y", "yes"):
-            print("Skipped restoring local changes.")
-            print("Your changes are still preserved in git stash.")
-            print(f"Restore manually with: git stash apply {stash_ref}")
+            print("로컬 변경 사항 복원을 건너뛰었어요.")
+            print("변경 사항은 아직 git stash에 안전하게 보관되어 있어요.")
+            print(f"수동 복원: git stash apply {stash_ref}")
             return False
 
-    print("→ Restoring local changes...")
+    print("→ 로컬 변경 사항을 복원하는 중...")
     restore = subprocess.run(
         git_cmd + ["stash", "apply", stash_ref],
         cwd=cwd,
@@ -3235,7 +3235,7 @@ def _restore_stashed_changes(
     has_conflicts = bool(unmerged.stdout.strip())
 
     if restore.returncode != 0 or has_conflicts:
-        print("✗ Update pulled new code, but restoring local changes hit conflicts.")
+        print("✗ 업데이트로 새 코드를 가져왔지만 로컬 변경 사항 복원 중 충돌이 발생했어요.")
         if restore.stdout.strip():
             print(restore.stdout.strip())
         if restore.stderr.strip():
@@ -3244,11 +3244,11 @@ def _restore_stashed_changes(
         # Show which files conflicted
         conflicted_files = unmerged.stdout.strip()
         if conflicted_files:
-            print("\nConflicted files:")
+            print("\n충돌한 파일:")
             for f in conflicted_files.splitlines():
                 print(f"  • {f}")
 
-        print("\nYour stashed changes are preserved — nothing is lost.")
+        print("\nstash에 저장된 변경 사항은 그대로 보존되어 있으니 잃어버린 내용은 없어요.")
         print(f"  Stash ref: {stash_ref}")
 
         # Always reset to clean state — leaving conflict markers in source
@@ -3259,8 +3259,8 @@ def _restore_stashed_changes(
             cwd=cwd,
             capture_output=True,
         )
-        print("Working tree reset to clean state.")
-        print(f"Restore your changes later with: git stash apply {stash_ref}")
+        print("작업 트리를 깨끗한 상태로 초기화했어요.")
+        print(f"나중에 변경 사항 복원: git stash apply {stash_ref}")
         # Don't sys.exit — the code update itself succeeded, only the stash
         # restore had conflicts.  Let cmd_update continue with pip install,
         # skill sync, and gateway restart.
@@ -3268,8 +3268,8 @@ def _restore_stashed_changes(
 
     stash_selector = _resolve_stash_selector(git_cmd, cwd, stash_ref)
     if stash_selector is None:
-        print("⚠ Local changes were restored, but Hermes couldn't find the stash entry to drop.")
-        print("  The stash was left in place. You can remove it manually after checking the result.")
+        print("⚠ 로컬 변경 사항은 복원됐지만 Hermes가 삭제할 stash 항목을 찾지 못했어요.")
+        print("  stash는 그대로 남겨두었어요. 결과를 확인한 뒤 수동으로 지울 수 있어요.")
         _print_stash_cleanup_guidance(stash_ref)
     else:
         drop = subprocess.run(
@@ -3279,16 +3279,16 @@ def _restore_stashed_changes(
             text=True,
         )
         if drop.returncode != 0:
-            print("⚠ Local changes were restored, but Hermes couldn't drop the saved stash entry.")
+            print("⚠ 로컬 변경 사항은 복원됐지만 Hermes가 저장된 stash 항목을 삭제하지 못했어요.")
             if drop.stdout.strip():
                 print(drop.stdout.strip())
             if drop.stderr.strip():
                 print(drop.stderr.strip())
-            print("  The stash was left in place. You can remove it manually after checking the result.")
+            print("  stash는 그대로 남겨두었어요. 결과를 확인한 뒤 수동으로 지울 수 있어요.")
             _print_stash_cleanup_guidance(stash_ref, stash_selector)
 
-    print("⚠ Local changes were restored on top of the updated codebase.")
-    print("  Review `git diff` / `git status` if Hermes behaves unexpectedly.")
+    print("⚠ 업데이트된 코드베이스 위에 로컬 변경 사항을 복원했어요.")
+    print("  Hermes가 이상하게 동작하면 `git diff` / `git status`를 확인해 주세요.")
     return True
 
 # =========================================================================
@@ -3436,7 +3436,7 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
         print("  This means you may miss updates from NousResearch/hermes-agent.")
         print()
         try:
-            response = input("Add official repo as 'upstream' remote? [Y/n]: ").strip().lower()
+            response = input("공식 repo를 'upstream' remote로 추가할까요? [Y/n]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             print()
             response = "n"
@@ -3946,7 +3946,7 @@ def cmd_update(args):
             print()
             if gateway_mode:
                 response = _gateway_prompt(
-                    "Would you like to configure new options now? [Y/n]", "n"
+                    "지금 새 옵션을 설정할까요? [Y/n]", "n"
                 ).strip().lower()
             elif not (sys.stdin.isatty() and sys.stdout.isatty()):
                 print("  ℹ Non-interactive session — skipping config migration prompt.")
@@ -3954,7 +3954,7 @@ def cmd_update(args):
                 response = "n"
             else:
                 try:
-                    response = input("Would you like to configure them now? [Y/n]: ").strip().lower()
+                    response = input("지금 새 옵션을 설정할까요? [Y/n]: ").strip().lower()
                 except EOFError:
                     response = "n"
             
@@ -3971,7 +3971,7 @@ def cmd_update(args):
                     print("  ℹ API keys require manual entry: hermes config migrate")
             else:
                 print()
-                print("Skipped. Run 'hermes config migrate' later to configure.")
+                print("건너뛰었어요. 나중에 설정하려면 'hermes config migrate'를 실행하세요.")
         else:
             print("  ✓ Configuration is up to date")
         
@@ -4136,8 +4136,8 @@ def cmd_update(args):
             logger.debug("Gateway restart during update failed: %s", e)
         
         print()
-        print("Tip: You can now select a provider and model:")
-        print("  hermes model              # Select provider and model")
+        print("팁: 이제 provider와 모델을 선택할 수 있어요:")
+        print("  hermes model              # provider와 모델 선택")
         
     except subprocess.CalledProcessError as e:
         if sys.platform == "win32":
@@ -4228,7 +4228,7 @@ def cmd_profile(args):
         active = get_active_profile_name()
 
         if not profiles:
-            print("No profiles found.")
+            print("프로필이 없어요.")
             return
 
         # Header
@@ -4451,8 +4451,8 @@ def cmd_dashboard(args):
         import fastapi  # noqa: F401
         import uvicorn  # noqa: F401
     except ImportError:
-        print("Web UI dependencies not installed.")
-        print("Install them with:  pip install hermes-agent[web]")
+        print("Web UI 의존성이 설치되지 않았어요.")
+        print("설치 명령: pip install hermes-agent[web]")
         sys.exit(1)
 
     if not _build_web_ui(PROJECT_ROOT / "web", fatal=True):
@@ -5888,8 +5888,8 @@ def main():
             from acp_adapter.entry import main as acp_main
             acp_main()
         except ImportError:
-            print("ACP dependencies not installed.")
-            print("Install them with:  pip install -e '.[acp]'")
+            print("ACP 의존성이 설치되지 않았어요.")
+            print("설치 명령: pip install -e '.[acp]'")
             sys.exit(1)
 
     acp_parser.set_defaults(func=cmd_acp)
