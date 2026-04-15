@@ -2641,6 +2641,35 @@ class TestMaxTokensParam:
         result = agent._max_tokens_param(4096)
         assert result == {"max_tokens": 4096}
 
+    def test_returns_max_completion_tokens_for_azure(self, agent):
+        agent.base_url = "https://my-resource.openai.azure.com/openai/v1"
+        result = agent._max_tokens_param(4096)
+        assert result == {"max_completion_tokens": 4096}
+
+    def test_azure_gpt5_stays_on_chat_completions(self, agent):
+        """Azure serves gpt-5.x on /chat/completions — must not upgrade to codex_responses."""
+        from unittest.mock import patch
+        agent.base_url = "https://my-resource.openai.azure.com/openai/v1"
+        agent.api_mode = "chat_completions"
+        agent.model = "gpt-5.4-mini"
+        # Simulate the api_mode routing logic from __init__
+        if agent.api_mode == "chat_completions" and not agent._is_azure_openai_url() and (
+            agent._is_direct_openai_url() or agent._model_requires_responses_api(agent.model)
+        ):
+            agent.api_mode = "codex_responses"
+        assert agent.api_mode == "chat_completions"
+
+    def test_non_azure_gpt5_upgrades_to_codex_responses(self, agent):
+        """On api.openai.com, gpt-5.x must still upgrade to codex_responses."""
+        agent.base_url = "https://api.openai.com/v1"
+        agent.api_mode = "chat_completions"
+        agent.model = "gpt-5.4-mini"
+        if agent.api_mode == "chat_completions" and not agent._is_azure_openai_url() and (
+            agent._is_direct_openai_url() or agent._model_requires_responses_api(agent.model)
+        ):
+            agent.api_mode = "codex_responses"
+        assert agent.api_mode == "codex_responses"
+
 
 # ---------------------------------------------------------------------------
 # System prompt stability for prompt caching

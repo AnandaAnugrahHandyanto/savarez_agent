@@ -675,7 +675,9 @@ class AIAgent:
         # on /v1/chat/completions by both OpenAI and OpenRouter.  Also
         # auto-upgrade for direct OpenAI URLs (api.openai.com) since all
         # newer tool-calling models prefer Responses there.
-        if self.api_mode == "chat_completions" and (
+        # Exception: Azure OpenAI serves gpt-5.x on /chat/completions and
+        # does NOT support the Responses API — skip the upgrade for Azure.
+        if self.api_mode == "chat_completions" and not self._is_azure_openai_url() and (
             self._is_direct_openai_url()
             or self._model_requires_responses_api(self.model)
         ):
@@ -1814,6 +1816,19 @@ class AIAgent:
         url = (base_url or self._base_url_lower).lower()
         return "api.openai.com" in url and "openrouter" not in url
 
+    def _is_azure_openai_url(self, base_url: str = None) -> bool:
+        """Return True when a base URL targets Azure OpenAI.
+
+        Azure OpenAI exposes an OpenAI-compatible endpoint at
+        ``{resource}.openai.azure.com/openai/v1`` that accepts the
+        standard ``openai`` Python client.  Unlike api.openai.com it
+        does NOT support the Responses API — gpt-5.x models are served
+        on the regular ``/chat/completions`` path — so routing decisions
+        must treat Azure separately from direct OpenAI.
+        """
+        url = (base_url or self._base_url_lower).lower()
+        return "openai.azure.com" in url
+
     def _is_openrouter_url(self) -> bool:
         """Return True when the base URL targets OpenRouter."""
         return "openrouter" in self._base_url_lower
@@ -1835,12 +1850,14 @@ class AIAgent:
 
     def _max_tokens_param(self, value: int) -> dict:
         """Return the correct max tokens kwarg for the current provider.
-        
+
         OpenAI's newer models (gpt-4o, o-series, gpt-5+) require
-        'max_completion_tokens'. OpenRouter, local models, and older
+        'max_completion_tokens'. Azure OpenAI also requires
+        'max_completion_tokens' for gpt-5.x models served via the
+        OpenAI-compatible endpoint. OpenRouter, local models, and older
         OpenAI models use 'max_tokens'.
         """
-        if self._is_direct_openai_url():
+        if self._is_direct_openai_url() or self._is_azure_openai_url():
             return {"max_completion_tokens": value}
         return {"max_tokens": value}
 
