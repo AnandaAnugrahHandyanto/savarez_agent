@@ -646,7 +646,10 @@ class HonchoSessionManager:
 
         result: dict[str, str] = {}
 
-        # Session summary — provides session-scoped context
+        # Session summary — provides session-scoped context.
+        # Fresh sessions (per-session cold start, or first-ever per-directory)
+        # return null summary — the guard below handles that gracefully.
+        # Per-directory returning sessions get their accumulated summary.
         try:
             honcho_session = self._sessions_cache.get(session.honcho_session_id)
             if honcho_session:
