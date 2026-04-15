@@ -119,11 +119,7 @@ class TestAppendToTranscript:
             _append_to_transcript("sess_1", {"role": "assistant", "content": "Hello"})
 
         transcript = sessions_dir / "sess_1.jsonl"
-        lines = transcript.read_text().strip().splitlines()
-        assert len(lines) == 1
-        msg = json.loads(lines[0])
-        assert msg["role"] == "assistant"
-        assert msg["content"] == "Hello"
+        assert not transcript.exists()
         mock_db.append_message.assert_called_once()
 
     def test_appends_multiple_messages(self, tmp_path):
@@ -137,8 +133,8 @@ class TestAppendToTranscript:
             _append_to_transcript("sess_1", {"role": "assistant", "content": "msg2"})
 
         transcript = sessions_dir / "sess_1.jsonl"
-        lines = transcript.read_text().strip().splitlines()
-        assert len(lines) == 2
+        assert not transcript.exists()
+        assert mock_db.append_message.call_count == 2
 
 
 class TestMirrorToSession:
@@ -157,14 +153,8 @@ class TestMirrorToSession:
 
         assert result is True
 
-        # Check JSONL was written
         transcript = sessions_dir / "sess_abc.jsonl"
-        assert transcript.exists()
-        msg = json.loads(transcript.read_text().strip())
-        assert msg["content"] == "Hello!"
-        assert msg["role"] == "assistant"
-        assert msg["mirror"] is True
-        assert msg["mirror_source"] == "cli"
+        assert not transcript.exists()
 
     def test_successful_mirror_uses_thread_id(self, tmp_path):
         sessions_dir, _ = _setup_sessions(tmp_path, {
@@ -185,7 +175,7 @@ class TestMirrorToSession:
             result = mirror_to_session("telegram", "-1001", "Hello topic!", source_label="cron", thread_id="10")
 
         assert result is True
-        assert (sessions_dir / "sess_topic_a.jsonl").exists()
+        assert not (sessions_dir / "sess_topic_a.jsonl").exists()
         assert not (sessions_dir / "sess_topic_b.jsonl").exists()
 
     def test_no_matching_session(self, tmp_path):

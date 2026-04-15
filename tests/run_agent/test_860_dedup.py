@@ -3,7 +3,7 @@
 Verifies that:
 1. _flush_messages_to_session_db uses _last_flushed_db_idx to avoid re-writing
 2. Multiple _persist_session calls don't duplicate messages
-3. append_to_transcript(skip_db=True) skips SQLite but writes JSONL
+3. append_to_transcript(skip_db=True) avoids duplicate SQLite writes
 4. The gateway doesn't double-write messages the agent already persisted
 """
 
@@ -168,7 +168,7 @@ class TestFlushDeduplication:
 # ---------------------------------------------------------------------------
 
 class TestAppendToTranscriptSkipDb:
-    """Verify skip_db=True writes JSONL but not SQLite."""
+    """Verify skip_db=True avoids duplicate SQLite writes."""
 
     @pytest.fixture()
     def store(self, tmp_path):
@@ -177,17 +177,16 @@ class TestAppendToTranscriptSkipDb:
         config = GatewayConfig()
         with patch("gateway.session.SessionStore._ensure_loaded"):
             s = SessionStore(sessions_dir=tmp_path, config=config)
-        s._db = None  # no SQLite for these JSONL-focused tests
+        s._db = None  # force legacy fallback mode
         s._loaded = True
         return s
 
-    def test_skip_db_writes_jsonl_only(self, store, tmp_path):
-        """With skip_db=True, message appears in JSONL but not SQLite."""
+    def test_skip_db_uses_jsonl_fallback_without_sqlite(self, store, tmp_path):
+        """Without SQLite, JSONL remains the fallback transcript backend."""
         session_id = "test-skip-db"
         msg = {"role": "assistant", "content": "hello world"}
         store.append_to_transcript(session_id, msg, skip_db=True)
 
-        # JSONL should have the message
         jsonl_path = store.get_transcript_path(session_id)
         assert jsonl_path.exists()
         with open(jsonl_path) as f:
@@ -197,7 +196,7 @@ class TestAppendToTranscriptSkipDb:
         assert parsed["content"] == "hello world"
 
     def test_skip_db_prevents_sqlite_write(self, tmp_path):
-        """With skip_db=True and a real DB, message does NOT appear in SQLite."""
+        """With skip_db=True and a real DB, SessionStore writes nowhere."""
         from gateway.config import GatewayConfig
         from gateway.session import SessionStore
         from hermes_state import SessionDB
@@ -217,18 +216,14 @@ class TestAppendToTranscriptSkipDb:
         msg = {"role": "assistant", "content": "hello world"}
         store.append_to_transcript(session_id, msg, skip_db=True)
 
-        # SQLite should NOT have the message
         rows = db.get_messages(session_id)
         assert len(rows) == 0, f"Expected 0 DB rows with skip_db=True, got {len(rows)}"
 
-        # But JSONL should have it
         jsonl_path = store.get_transcript_path(session_id)
-        with open(jsonl_path) as f:
-            lines = f.readlines()
-        assert len(lines) == 1
+        assert not jsonl_path.exists()
 
-    def test_default_writes_both(self, tmp_path):
-        """Without skip_db, message appears in both JSONL and SQLite."""
+    def test_default_writes_sqlite_only_when_db_available(self, tmp_path):
+        """Without skip_db, SQLite is canonical and JSONL stays untouched."""
         from gateway.config import GatewayConfig
         from gateway.session import SessionStore
         from hermes_state import SessionDB
@@ -248,13 +243,9 @@ class TestAppendToTranscriptSkipDb:
         msg = {"role": "user", "content": "test message"}
         store.append_to_transcript(session_id, msg)
 
-        # JSONL should have the message
         jsonl_path = store.get_transcript_path(session_id)
-        with open(jsonl_path) as f:
-            lines = f.readlines()
-        assert len(lines) == 1
+        assert not jsonl_path.exists()
 
-        # SQLite should also have the message
         rows = db.get_messages(session_id)
         assert len(rows) == 1
 

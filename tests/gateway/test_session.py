@@ -458,13 +458,12 @@ class TestLoadTranscriptCorruptLines:
         assert messages[1]["content"] == "b"
 
 
-class TestLoadTranscriptPreferLongerSource:
-    """Regression: load_transcript must return whichever source (SQLite or JSONL)
-    has more messages to prevent silent truncation.  GH-3212."""
+class TestLoadTranscriptLegacyMigration:
+    """Regression: legacy JSONL transcripts should migrate into SQLite once."""
 
     @pytest.fixture()
     def store_with_db(self, tmp_path):
-        """SessionStore with both SQLite and JSONL active."""
+        """SessionStore with SQLite active and legacy JSONL available."""
         from hermes_state import SessionDB
 
         config = GatewayConfig()
@@ -474,36 +473,40 @@ class TestLoadTranscriptPreferLongerSource:
         s._loaded = True
         return s
 
-    def test_jsonl_longer_than_sqlite_returns_jsonl(self, store_with_db):
-        """Legacy session: JSONL has full history, SQLite has only recent turn."""
+    def _write_legacy_transcript(self, store_with_db, sid, messages):
+        transcript_path = store_with_db.get_transcript_path(sid)
+        transcript_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(transcript_path, "w", encoding="utf-8") as f:
+            for msg in messages:
+                f.write(json.dumps(msg) + "\n")
+        return transcript_path
+
+    def test_jsonl_longer_than_sqlite_migrates_into_sqlite(self, store_with_db):
+        """Legacy JSONL should overwrite a partial SQLite transcript once."""
         sid = "legacy_session"
         store_with_db._db.create_session(session_id=sid, source="gateway", model="m")
-        # JSONL has 10 messages (legacy history — written before SQLite existed)
-        for i in range(10):
-            role = "user" if i % 2 == 0 else "assistant"
-            store_with_db.append_to_transcript(
-                sid, {"role": role, "content": f"msg-{i}"}, skip_db=True,
-            )
-        # SQLite has only 2 messages (recent turn after migration)
+        legacy_messages = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg-{i}"}
+            for i in range(10)
+        ]
+        transcript_path = self._write_legacy_transcript(store_with_db, sid, legacy_messages)
         store_with_db._db.append_message(session_id=sid, role="user", content="new-q")
         store_with_db._db.append_message(session_id=sid, role="assistant", content="new-a")
 
         result = store_with_db.load_transcript(sid)
         assert len(result) == 10
         assert result[0]["content"] == "msg-0"
+        assert not transcript_path.exists()
+        assert len(store_with_db._db.get_messages_as_conversation(sid)) == 10
 
-    def test_sqlite_longer_than_jsonl_returns_sqlite(self, store_with_db):
-        """Fully migrated session: SQLite has more (JSONL stopped growing)."""
+    def test_sqlite_longer_than_jsonl_keeps_sqlite_and_removes_legacy_file(self, store_with_db):
+        """If SQLite already has the fuller transcript, keep it and retire JSONL."""
         sid = "migrated_session"
         store_with_db._db.create_session(session_id=sid, source="gateway", model="m")
-        # JSONL has 2 old messages
-        store_with_db.append_to_transcript(
-            sid, {"role": "user", "content": "old-q"}, skip_db=True,
-        )
-        store_with_db.append_to_transcript(
-            sid, {"role": "assistant", "content": "old-a"}, skip_db=True,
-        )
-        # SQLite has 4 messages (superset after migration)
+        transcript_path = self._write_legacy_transcript(store_with_db, sid, [
+            {"role": "user", "content": "old-q"},
+            {"role": "assistant", "content": "old-a"},
+        ])
         for i in range(4):
             role = "user" if i % 2 == 0 else "assistant"
             store_with_db._db.append_message(session_id=sid, role=role, content=f"db-{i}")
@@ -511,45 +514,42 @@ class TestLoadTranscriptPreferLongerSource:
         result = store_with_db.load_transcript(sid)
         assert len(result) == 4
         assert result[0]["content"] == "db-0"
+        assert not transcript_path.exists()
 
-    def test_sqlite_empty_falls_back_to_jsonl(self, store_with_db):
-        """No SQLite rows — falls back to JSONL (original behavior preserved)."""
+    def test_sqlite_empty_imports_jsonl_once(self, store_with_db):
+        """If SQLite has no rows, import legacy JSONL and retire the file."""
         sid = "no_db_rows"
-        store_with_db.append_to_transcript(
-            sid, {"role": "user", "content": "hello"}, skip_db=True,
-        )
-        store_with_db.append_to_transcript(
-            sid, {"role": "assistant", "content": "hi"}, skip_db=True,
-        )
+        transcript_path = self._write_legacy_transcript(store_with_db, sid, [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ])
 
         result = store_with_db.load_transcript(sid)
         assert len(result) == 2
         assert result[0]["content"] == "hello"
+        assert not transcript_path.exists()
+        assert len(store_with_db._db.get_messages_as_conversation(sid)) == 2
 
     def test_both_empty_returns_empty(self, store_with_db):
         """Neither source has data — returns empty list."""
         result = store_with_db.load_transcript("nonexistent")
         assert result == []
 
-    def test_equal_length_prefers_sqlite(self, store_with_db):
-        """When both have same count, SQLite wins (has richer fields like reasoning)."""
+    def test_equal_length_prefers_sqlite_and_removes_legacy_file(self, store_with_db):
+        """Equal-length legacy files should not survive once SQLite is canonical."""
         sid = "equal_session"
         store_with_db._db.create_session(session_id=sid, source="gateway", model="m")
-        # Write 2 messages to JSONL only
-        store_with_db.append_to_transcript(
-            sid, {"role": "user", "content": "jsonl-q"}, skip_db=True,
-        )
-        store_with_db.append_to_transcript(
-            sid, {"role": "assistant", "content": "jsonl-a"}, skip_db=True,
-        )
-        # Write 2 different messages to SQLite only
+        transcript_path = self._write_legacy_transcript(store_with_db, sid, [
+            {"role": "user", "content": "jsonl-q"},
+            {"role": "assistant", "content": "jsonl-a"},
+        ])
         store_with_db._db.append_message(session_id=sid, role="user", content="db-q")
         store_with_db._db.append_message(session_id=sid, role="assistant", content="db-a")
 
         result = store_with_db.load_transcript(sid)
         assert len(result) == 2
-        # Should be the SQLite version (equal count → prefers SQLite)
         assert result[0]["content"] == "db-q"
+        assert not transcript_path.exists()
 
 
 class TestSessionStoreSwitchSession:

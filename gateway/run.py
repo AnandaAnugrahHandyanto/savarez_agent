@@ -4085,8 +4085,9 @@ class GatewayRunner:
                 else:
                     # The agent already persisted these messages to SQLite via
                     # _flush_messages_to_session_db(), so skip the DB write here
-                    # to prevent the duplicate-write bug (#860).  We still write
-                    # to JSONL for backward compatibility and as a backup.
+                    # to prevent the duplicate-write bug (#860). SessionStore
+                    # now treats SQLite as canonical, so skip_db=True means
+                    # "do not persist this message again here."
                     agent_persisted = self._session_db is not None
                     for msg in new_messages:
                         # Skip system messages (they're rebuilt each run)

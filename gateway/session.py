@@ -566,6 +566,17 @@ def _append_message_to_session_db(
     session_db.append_message(**kwargs)
 
 
+def _remove_legacy_transcript(sessions_dir: Path, session_id: str) -> None:
+    """Delete a legacy JSONL transcript after SQLite becomes canonical."""
+    transcript_path = get_transcript_path(sessions_dir, session_id)
+    try:
+        transcript_path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        logger.debug("Could not remove legacy transcript %s: %s", transcript_path, e)
+
+
 def _append_message_to_jsonl(
     sessions_dir: Path,
     session_id: str,
@@ -600,6 +611,45 @@ def _read_jsonl_transcript(sessions_dir: Path, session_id: str) -> List[Dict[str
     return jsonl_messages
 
 
+def _migrate_legacy_jsonl_to_db(
+    sessions_dir: Path,
+    session_db: Any,
+    session_id: str,
+    *,
+    db_messages: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """Import a legacy JSONL transcript into SQLite and retire the file.
+
+    This is a one-way migration path, not a second live backend. After a
+    successful migration (or when SQLite already has at least as much history),
+    the legacy JSONL file is removed so future loads only consult SQLite.
+    """
+    jsonl_messages = _read_jsonl_transcript(sessions_dir, session_id)
+    if not jsonl_messages:
+        return db_messages or []
+
+    if db_messages and len(db_messages) >= len(jsonl_messages):
+        _remove_legacy_transcript(sessions_dir, session_id)
+        return db_messages
+
+    try:
+        session_db.ensure_session(session_id, source="gateway")
+        session_db.clear_messages(session_id)
+        for msg in jsonl_messages:
+            _append_message_to_session_db(
+                session_db,
+                session_id,
+                msg,
+                include_reasoning=True,
+            )
+        _remove_legacy_transcript(sessions_dir, session_id)
+        migrated = session_db.get_messages_as_conversation(session_id)
+        return migrated or jsonl_messages
+    except Exception as e:
+        logger.debug("Failed to migrate legacy transcript %s: %s", session_id, e)
+        return db_messages or jsonl_messages
+
+
 def append_transcript_message(
     sessions_dir: Path,
     session_db: Any,
@@ -609,11 +659,14 @@ def append_transcript_message(
     skip_db: bool = False,
 ) -> None:
     """Persist one transcript message via the canonical gateway storage path."""
-    if session_db and not skip_db:
+    if session_db:
+        if skip_db:
+            return
         try:
             _append_message_to_session_db(session_db, session_id, message)
+            return
         except Exception as e:
-            logger.debug("Session DB operation failed: %s", e)
+            logger.debug("Session DB operation failed, falling back to JSONL: %s", e)
 
     _append_message_to_jsonl(sessions_dir, session_id, message)
 
@@ -624,7 +677,11 @@ def rewrite_transcript_messages(
     session_id: str,
     messages: List[Dict[str, Any]],
 ) -> None:
-    """Replace a session transcript in both SQLite and legacy JSONL stores."""
+    """Replace a session transcript in the canonical store.
+
+    SQLite is the primary store when available. JSONL remains only as a
+    fallback when SQLite is unavailable or write failures force a downgrade.
+    """
     if session_db:
         try:
             session_db.clear_messages(session_id)
@@ -635,8 +692,10 @@ def rewrite_transcript_messages(
                     msg,
                     include_reasoning=True,
                 )
+            _remove_legacy_transcript(sessions_dir, session_id)
+            return
         except Exception as e:
-            logger.debug("Failed to rewrite transcript in DB: %s", e)
+            logger.debug("Failed to rewrite transcript in DB, falling back to JSONL: %s", e)
 
     sessions_dir.mkdir(parents=True, exist_ok=True)
     transcript_path = get_transcript_path(sessions_dir, session_id)
@@ -650,26 +709,25 @@ def load_transcript_messages(
     session_db: Any,
     session_id: str,
 ) -> List[Dict[str, Any]]:
-    """Load transcript messages, preferring the longer of SQLite and JSONL."""
-    db_messages: List[Dict[str, Any]] = []
+    """Load transcript messages from SQLite, migrating legacy JSONL once."""
     if session_db:
         try:
             db_messages = session_db.get_messages_as_conversation(session_id)
         except Exception as e:
-            logger.debug("Could not load messages from DB: %s", e)
+            logger.debug("Could not load messages from DB, falling back to JSONL: %s", e)
+            return _read_jsonl_transcript(sessions_dir, session_id)
 
-    jsonl_messages = _read_jsonl_transcript(sessions_dir, session_id)
-
-    if len(jsonl_messages) > len(db_messages):
-        if db_messages:
-            logger.debug(
-                "Session %s: JSONL has %d messages vs SQLite %d — "
-                "using JSONL (legacy session not yet fully migrated)",
-                session_id, len(jsonl_messages), len(db_messages),
+        transcript_path = get_transcript_path(sessions_dir, session_id)
+        if transcript_path.exists():
+            return _migrate_legacy_jsonl_to_db(
+                sessions_dir,
+                session_db,
+                session_id,
+                db_messages=db_messages,
             )
-        return jsonl_messages
+        return db_messages
 
-    return db_messages
+    return _read_jsonl_transcript(sessions_dir, session_id)
 
 
 class SessionStore:
@@ -1126,13 +1184,14 @@ class SessionStore:
         return get_transcript_path(self.sessions_dir, session_id)
     
     def append_to_transcript(self, session_id: str, message: Dict[str, Any], skip_db: bool = False) -> None:
-        """Append a message to a session's transcript (SQLite + legacy JSONL).
+        """Append a message to a session transcript.
 
         Args:
-            skip_db: When True, only write to JSONL and skip the SQLite write.
-                     Used when the agent already persisted messages to SQLite
-                     via its own _flush_messages_to_session_db(), preventing
-                     the duplicate-write bug (#860).
+            skip_db: When True and SQLite is available, skip persistence here
+                     because the agent already wrote the message to SQLite via
+                     its own _flush_messages_to_session_db() path, preventing
+                     the duplicate-write bug (#860). When SQLite is unavailable,
+                     JSONL remains the fallback backend.
         """
         append_transcript_message(
             self.sessions_dir,
@@ -1146,22 +1205,15 @@ class SessionStore:
         """Replace the entire transcript for a session with new messages.
         
         Used by /retry, /undo, and /compress to persist modified conversation history.
-        Rewrites both SQLite and legacy JSONL storage.
+        SQLite is canonical when available; JSONL is only a fallback backend.
         """
         rewrite_transcript_messages(self.sessions_dir, self._db, session_id, messages)
 
     def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
-        """Load all messages from a session's transcript."""
-        # Prefer whichever source has more messages.
-        #
-        # Background: when a session pre-dates SQLite storage (or when the DB
-        # layer was added while a long-lived session was already active), the
-        # first post-migration turn writes only the *new* messages to SQLite
-        # (because _flush_messages_to_session_db skips messages already in
-        # conversation_history, assuming they're persisted).  On the *next*
-        # turn load_transcript returns those few SQLite rows and ignores the
-        # full JSONL history — the model sees a context of 1-4 messages instead
-        # of hundreds.  Using the longer source prevents this silent truncation.
+        """Load all messages from a session transcript.
+
+        Legacy JSONL files are imported into SQLite once and then retired.
+        """
         return load_transcript_messages(self.sessions_dir, self._db, session_id)
 
 
