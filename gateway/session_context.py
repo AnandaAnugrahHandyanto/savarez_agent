@@ -48,6 +48,10 @@ _SESSION_CHAT_NAME: ContextVar[str] = ContextVar("HERMES_SESSION_CHAT_NAME", def
 _SESSION_THREAD_ID: ContextVar[str] = ContextVar("HERMES_SESSION_THREAD_ID", default="")
 _SESSION_USER_ID: ContextVar[str] = ContextVar("HERMES_SESSION_USER_ID", default="")
 _SESSION_USER_NAME: ContextVar[str] = ContextVar("HERMES_SESSION_USER_NAME", default="")
+# Tracks whether a gateway session context is active. When True,
+# get_session_env() returns the contextvar value directly (even if empty)
+# instead of falling back to os.environ.
+_SESSION_ACTIVE: ContextVar[bool] = ContextVar("_SESSION_ACTIVE", default=False)
 _SESSION_KEY: ContextVar[str] = ContextVar("HERMES_SESSION_KEY", default="")
 
 _VAR_MAP = {
@@ -86,6 +90,7 @@ def set_session_vars(
         _SESSION_USER_ID.set(user_id),
         _SESSION_USER_NAME.set(user_name),
         _SESSION_KEY.set(session_key),
+        _SESSION_ACTIVE.set(True),
     ]
     return tokens
 
@@ -102,6 +107,7 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_USER_ID,
         _SESSION_USER_NAME,
         _SESSION_KEY,
+        _SESSION_ACTIVE,
     ]
     for var, token in zip(vars_in_order, tokens):
         var.reset(token)
@@ -114,10 +120,20 @@ def get_session_env(name: str, default: str = "") -> str:
 
     Resolution order:
     1. Context variable (set by the gateway for concurrency-safe access)
-    2. ``os.environ`` (used by CLI, cron scheduler, and tests)
+    2. ``os.environ`` (used by CLI, cron scheduler, and tests — only when
+       no gateway session context is active)
     3. *default*
     """
     import os
+
+    # When a gateway session context is active, return the contextvar
+    # value directly — even if empty — to avoid resurrecting stale
+    # os.environ values after clear_session_vars().
+    if _SESSION_ACTIVE.get():
+        var = _VAR_MAP.get(name)
+        if var is not None:
+            return var.get()
+        return default
 
     var = _VAR_MAP.get(name)
     if var is not None:
