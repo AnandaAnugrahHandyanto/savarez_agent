@@ -191,6 +191,11 @@ class PlatformConfig:
         raw_extra = data.get("extra", {})
         if isinstance(raw_extra, dict):
             extra.update(raw_extra)
+        elif "extra" in data:
+            logger.warning(
+                "Ignoring invalid platform config 'extra' value of type %s; expected a mapping",
+                type(raw_extra).__name__,
+            )
         
         return cls(
             enabled=data.get("enabled", False),

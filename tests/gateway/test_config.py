@@ -1,6 +1,7 @@
 """Tests for gateway configuration management."""
 
 import os
+import logging
 from unittest.mock import patch
 
 from gateway.config import (
@@ -68,6 +69,19 @@ class TestPlatformConfigRoundtrip:
             "host": "0.0.0.0",
             "secret": "top-secret",
         }
+
+    def test_from_dict_warns_when_extra_is_not_a_mapping(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            restored = PlatformConfig.from_dict(
+                {
+                    "enabled": True,
+                    "port": 9100,
+                    "extra": "not-a-mapping",
+                }
+            )
+
+        assert restored.extra == {"port": 9100}
+        assert "Ignoring invalid platform config 'extra' value of type str" in caplog.text
 
 
 class TestGetConnectedPlatforms:
