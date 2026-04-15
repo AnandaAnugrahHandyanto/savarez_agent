@@ -7,6 +7,7 @@ from hermes_cli.auth_commands import (
     _interactive_auth,
     _interactive_remove,
     _interactive_strategy,
+    auth_add_command,
     auth_reset_command,
 )
 
@@ -100,6 +101,40 @@ def test_auth_reset_command_is_localized(monkeypatch, capsys):
 
     out = capsys.readouterr().out
     assert "anthropic 자격 증명 2개의 상태를 초기화했어요" in out
+
+
+def test_auth_add_command_api_key_prompts_are_localized(monkeypatch, capsys):
+    class _AddPool:
+        def __init__(self):
+            self._entries = []
+
+        def entries(self):
+            return self._entries
+
+        def add_entry(self, entry):
+            self._entries.append(entry)
+
+    pool = _AddPool()
+    monkeypatch.setattr("hermes_cli.auth_commands.PROVIDER_REGISTRY", {"openrouter": object()})
+    monkeypatch.setattr("hermes_cli.auth_commands.load_pool", lambda _provider: pool)
+    monkeypatch.setattr("hermes_cli.auth_commands._provider_base_url", lambda _provider: "https://openrouter.ai/api/v1")
+    monkeypatch.setattr("hermes_cli.auth_commands.getpass", lambda prompt: (print(prompt, end=""), "sk-test")[1])
+
+    responses = iter(["개인 키"])
+
+    def fake_input(prompt):
+        print(prompt, end="")
+        return next(responses)
+
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    auth_add_command(SimpleNamespace(provider="openrouter", auth_type="api-key", api_key=None, label=None))
+
+    out = capsys.readouterr().out
+    assert "API key를 붙여 넣어 주세요:" in out
+    assert "라벨(선택, 기본값:" in out
+    assert "openrouter 자격 증명 #1을(를) 추가했어요: \"개인 키\"" in out
+
 
 
 def test_interactive_strategy_invalid_choice_is_localized(monkeypatch, capsys):

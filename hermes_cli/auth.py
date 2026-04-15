@@ -2672,14 +2672,14 @@ def _prompt_model_selection(
         else:
             base = mid
         if mid == current_model:
-            base += "  ← currently in use"
+            base += "  ← 현재 사용 중"
         return base
 
     # Default cursor on the current model (index 0 if it was reordered to top)
     default_idx = 0
 
     # Build a pricing header hint for the menu title
-    menu_title = "Select default model:"
+    menu_title = "기본 모델 선택:"
     if has_pricing:
         # Align the header with the model column.
         # Each choice is "  {label}" (2 spaces) and simple_term_menu prepends
@@ -2699,8 +2699,8 @@ def _prompt_model_selection(
         from simple_term_menu import TerminalMenu
 
         choices = [f"  {_label(mid)}" for mid in ordered]
-        choices.append("  Enter custom model name")
-        choices.append("  Skip (keep current)")
+        choices.append("  사용자 지정 모델 이름 입력")
+        choices.append("  건너뛰기(현재 설정 유지)")
 
         # Print the unavailable block BEFORE the menu via regular print().
         # simple_term_menu pads title lines to terminal width (causes wrapping),
@@ -2713,9 +2713,9 @@ def _prompt_model_selection(
             for mid in _unavailable:
                 print(f"{_DIM}     {_label(mid)}{_RESET}")
             print()
-            print(f"{_DIM}  ── Upgrade at {_upgrade_url} for paid models ──{_RESET}")
+            print(f"{_DIM}  ── 유료 모델을 사용하려면 업그레이드: {_upgrade_url} ──{_RESET}")
             print()
-            effective_title = "Available free models:"
+            effective_title = "사용 가능한 무료 모델:"
         else:
             effective_title = menu_title
 
@@ -2943,12 +2943,12 @@ def _codex_device_code_login() -> Dict[str, Any]:
                         provider="openai-codex", code="device_code_poll_error",
                     )
     except KeyboardInterrupt:
-        print("\nLogin cancelled.")
+        print("\n로그인을 취소했어요.")
         raise SystemExit(130)
 
     if code_resp is None:
         raise AuthError(
-            "Login timed out after 15 minutes.",
+            "15분 동안 로그인을 완료하지 못해 시간이 초과되었어요.",
             provider="openai-codex", code="device_code_timeout",
         )
 
@@ -3049,8 +3049,8 @@ def _nous_device_code_login(
     if _is_remote_session():
         open_browser = False
 
-    print(f"Starting Hermes login via {pconfig.name}...")
-    print(f"Portal: {portal_base_url}")
+    print(f"{pconfig.name}을(를) 통해 Hermes 로그인을 시작할게요...")
+    print(f"포털: {portal_base_url}")
     if insecure:
         print("TLS 검증: 비활성화됨 (--insecure)")
     elif ca_bundle:
@@ -3101,7 +3101,7 @@ def _nous_device_code_login(
         or requested_inference_url
     )
     if resolved_inference_url != requested_inference_url:
-        print(f"Using portal-provided inference URL: {resolved_inference_url}")
+        print(f"포털에서 제공한 inference URL을 사용할게요: {resolved_inference_url}")
 
     auth_state = {
         "portal_base_url": portal_base_url,
@@ -3252,7 +3252,7 @@ def logout_command(args) -> None:
     provider_id = getattr(args, "provider", None)
 
     if provider_id and provider_id not in PROVIDER_REGISTRY:
-        print(f"Unknown provider: {provider_id}")
+        print(f"알 수 없는 provider예요: {provider_id}")
         raise SystemExit(1)
 
     active = get_active_provider()

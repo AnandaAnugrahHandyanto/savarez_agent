@@ -138,7 +138,7 @@ def _format_exhausted_status(entry) -> str:
 def auth_add_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", ""))
     if provider not in PROVIDER_REGISTRY and provider != "openrouter" and not provider.startswith(CUSTOM_POOL_PREFIX):
-        raise SystemExit(f"Unknown provider: {provider}")
+        raise SystemExit(f"알 수 없는 provider예요: {provider}")
 
     requested_type = str(getattr(args, "auth_type", "") or "").strip().lower()
     if requested_type in {AUTH_TYPE_API_KEY, "api-key"}:
@@ -154,13 +154,13 @@ def auth_add_command(args) -> None:
     if requested_type == AUTH_TYPE_API_KEY:
         token = (getattr(args, "api_key", None) or "").strip()
         if not token:
-            token = getpass("Paste your API key: ").strip()
+            token = getpass("API key를 붙여 넣어 주세요: ").strip()
         if not token:
             raise SystemExit("API key가 제공되지 않았어요.")
         default_label = _api_key_default_label(len(pool.entries()) + 1)
         label = (getattr(args, "label", None) or "").strip()
         if not label:
-            label = input(f"Label (optional, default: {default_label}): ").strip() or default_label
+            label = input(f"라벨(선택, 기본값: {default_label}): ").strip() or default_label
         entry = PooledCredential(
             provider=provider,
             id=uuid.uuid4().hex[:6],
@@ -172,7 +172,7 @@ def auth_add_command(args) -> None:
             base_url=_provider_base_url(provider),
         )
         pool.add_entry(entry)
-        print(f'Added {provider} credential #{len(pool.entries())}: "{label}"')
+        print(f'{provider} 자격 증명 #{len(pool.entries())}을(를) 추가했어요: "{label}"')
         return
 
     if provider == "anthropic":
@@ -180,7 +180,7 @@ def auth_add_command(args) -> None:
 
         creds = anthropic_mod.run_hermes_oauth_login_pure()
         if not creds:
-            raise SystemExit("Anthropic OAuth login did not return credentials.")
+            raise SystemExit("Anthropic OAuth 로그인이 자격 증명을 반환하지 않았어요.")
         label = (getattr(args, "label", None) or "").strip() or label_from_token(
             creds["access_token"],
             _oauth_default_label(provider, len(pool.entries()) + 1),
@@ -198,7 +198,7 @@ def auth_add_command(args) -> None:
             base_url=_provider_base_url(provider),
         )
         pool.add_entry(entry)
-        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        print(f'{provider} OAuth 자격 증명 #{len(pool.entries())}을(를) 추가했어요: "{entry.label}"')
         return
 
     if provider == "nous":
@@ -225,7 +225,7 @@ def auth_add_command(args) -> None:
             "base_url": creds.get("inference_base_url"),
         })
         pool.add_entry(entry)
-        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        print(f'{provider} OAuth 자격 증명 #{len(pool.entries())}을(를) 추가했어요: "{entry.label}"')
         return
 
     if provider == "openai-codex":
@@ -247,7 +247,7 @@ def auth_add_command(args) -> None:
             last_refresh=creds.get("last_refresh"),
         )
         pool.add_entry(entry)
-        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        print(f'{provider} OAuth 자격 증명 #{len(pool.entries())}을(를) 추가했어요: "{entry.label}"')
         return
 
     if provider == "qwen-oauth":
@@ -267,10 +267,10 @@ def auth_add_command(args) -> None:
             base_url=creds.get("base_url"),
         )
         pool.add_entry(entry)
-        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        print(f'{provider} OAuth 자격 증명 #{len(pool.entries())}을(를) 추가했어요: "{entry.label}"')
         return
 
-    raise SystemExit(f"`hermes auth add {provider}` is not implemented for auth type {requested_type} yet.")
+    raise SystemExit(f"`hermes auth add {provider}` 명령은 auth type {requested_type}에 아직 구현되지 않았어요.")
 
 
 def auth_list_command(args) -> None:
@@ -322,7 +322,7 @@ def auth_remove_command(args) -> None:
             from hermes_cli.config import remove_env_value
             cleared = remove_env_value(env_var)
             if cleared:
-                print(f"Cleared {env_var} from .env")
+                print(f".env 에서 {env_var}를 삭제했어요")
 
     # If this was a singleton-seeded credential (OAuth device_code, hermes_pkce),
     # clear the underlying auth store / credential file so it doesn't get
@@ -420,7 +420,7 @@ def _pick_provider(prompt: str = "Provider") -> str:
 def _interactive_add() -> None:
     provider = _pick_provider("자격 증명을 추가할 provider")
     if provider not in PROVIDER_REGISTRY and provider != "openrouter" and not provider.startswith(CUSTOM_POOL_PREFIX):
-        raise SystemExit(f"Unknown provider: {provider}")
+        raise SystemExit(f"알 수 없는 provider예요: {provider}")
 
     # For OAuth-capable providers, ask which type
     if provider in _OAUTH_CAPABLE_PROVIDERS:
