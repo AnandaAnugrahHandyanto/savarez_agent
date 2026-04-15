@@ -499,6 +499,7 @@ DEFAULT_CONFIG = {
         "busy_input_mode": "interrupt",
         "bell_on_complete": False,
         "show_reasoning": False,
+        "ctrlw_word_boundary": "whitespace",  # whitespace | alphanumeric
         "streaming": False,
         "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch, skill_manage)
         "show_cost": False,       # Show $ cost in the status bar (off by default)
@@ -703,7 +704,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 17,
+    "_config_version": 18,
 }
 
 # =============================================================================
@@ -2231,6 +2232,20 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     else:
                         print("  ✓ Removed unused compression.summary_* keys")
 
+    # ── Version 17 → 18: add explicit Ctrl+W word-boundary mode ──
+    if current_ver < 18:
+        config = read_raw_config()
+        display = config.get("display", {})
+        if not isinstance(display, dict):
+            display = {}
+        if "ctrlw_word_boundary" not in display:
+            display["ctrlw_word_boundary"] = "whitespace"
+            config["display"] = display
+            results["config_added"].append("display.ctrlw_word_boundary=whitespace (default)")
+            save_config(config)
+            if not quiet:
+                print("  ✓ Added display.ctrlw_word_boundary=whitespace")
+
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
     
@@ -3044,6 +3059,7 @@ def show_config():
     display = config.get('display', {})
     print(f"  Personality:  {display.get('personality', 'kawaii')}")
     print(f"  Reasoning:    {'on' if display.get('show_reasoning', False) else 'off'}")
+    print(f"  Ctrl+W:       {display.get('ctrlw_word_boundary', 'whitespace')}")
     print(f"  Bell:         {'on' if display.get('bell_on_complete', False) else 'off'}")
 
     # Terminal

@@ -275,6 +275,7 @@ def load_cli_config() -> Dict[str, Any]:
             "show_reasoning": False,
             "streaming": True,
             "busy_input_mode": "interrupt",
+            "ctrlw_word_boundary": "whitespace",
 
             "skin": "default",
         },
@@ -1628,6 +1629,8 @@ class HermesCLI:
         # busy_input_mode: "interrupt" (Enter interrupts current run) or "queue" (Enter queues for next turn)
         _bim = CLI_CONFIG["display"].get("busy_input_mode", "interrupt")
         self.busy_input_mode = "queue" if str(_bim).strip().lower() == "queue" else "interrupt"
+        _ctrlw = CLI_CONFIG["display"].get("ctrlw_word_boundary", "whitespace")
+        self.ctrlw_word_boundary = self._normalize_ctrlw_word_boundary(_ctrlw)
 
         self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
         
@@ -4479,6 +4482,23 @@ class HermesCLI:
         else:
             _ask()
         return result[0]
+
+    @staticmethod
+    def _normalize_ctrlw_word_boundary(value: Any) -> str:
+        """Normalize Ctrl+W config to a supported mode."""
+        mode = str(value or "").strip().lower()
+        return "alphanumeric" if mode == "alphanumeric" else "whitespace"
+
+    def _ctrlw_uses_whitespace_boundary(self) -> bool:
+        """Return True when Ctrl+W should delete back to whitespace only."""
+        return self.ctrlw_word_boundary != "alphanumeric"
+
+    def _handle_ctrl_w(self, event) -> None:
+        """Dispatch Ctrl+W to prompt_toolkit's builtin kill-word implementation."""
+        from prompt_toolkit.key_binding.bindings import named_commands
+
+        binding = named_commands.get_by_name("unix-word-rubout")
+        binding.handler(event, WORD=self._ctrlw_uses_whitespace_boundary())
 
     def _open_model_picker(self, providers: list, current_model: str, current_provider: str, user_provs=None, custom_provs=None) -> None:
         """Open prompt_toolkit-native /model picker modal."""
@@ -8435,6 +8455,11 @@ class HermesCLI:
         def handle_ctrl_enter(event):
             """Ctrl+Enter (c-j) inserts a newline. Most terminals send c-j for Ctrl+Enter."""
             event.current_buffer.insert_text('\n')
+
+        @kb.add('c-w', eager=True)
+        def handle_ctrl_w(event):
+            """Ctrl+W deletes using configurable word boundaries."""
+            self._handle_ctrl_w(event)
 
         @kb.add('tab', eager=True)
         def handle_tab(event):
