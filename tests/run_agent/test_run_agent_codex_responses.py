@@ -70,6 +70,27 @@ def _build_copilot_agent(monkeypatch, *, model="gpt-5.4"):
     return agent
 
 
+def _build_xai_agent(monkeypatch, *, model="grok-4.20-reasoning"):
+    _patch_agent_bootstrap(monkeypatch)
+
+    agent = run_agent.AIAgent(
+        model=model,
+        provider="xai",
+        api_mode="codex_responses",
+        base_url="https://api.x.ai/v1",
+        api_key="xai-token",
+        quiet_mode=True,
+        max_iterations=4,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent._cleanup_task_resources = lambda task_id: None
+    agent._persist_session = lambda messages, history=None: None
+    agent._save_trajectory = lambda messages, user_message, completed: None
+    agent._save_session_log = lambda messages: None
+    return agent
+
+
 def _codex_message_response(text: str):
     return SimpleNamespace(
         output=[
@@ -387,6 +408,28 @@ def test_build_api_kwargs_copilot_responses_omits_reasoning_for_non_reasoning_mo
     assert "reasoning" not in kwargs
     assert "include" not in kwargs
     assert "prompt_cache_key" not in kwargs
+
+
+def test_build_api_kwargs_xai_omits_default_reasoning_parameter(monkeypatch):
+    agent = _build_xai_agent(monkeypatch)
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+    assert kwargs["model"] == "grok-4.20-reasoning"
+    assert kwargs["store"] is False
+    assert kwargs["tool_choice"] == "auto"
+    assert kwargs["parallel_tool_calls"] is True
+    assert isinstance(kwargs["prompt_cache_key"], str)
+    assert "reasoning" not in kwargs
+    assert kwargs["include"] == ["reasoning.encrypted_content"]
+
+
+def test_build_api_kwargs_xai_adds_grok_conversation_header(monkeypatch):
+    agent = _build_xai_agent(monkeypatch)
+    agent.session_id = "sess_xai_123"
+
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+    assert kwargs["extra_headers"] == {"x-grok-conv-id": "sess_xai_123"}
 
 
 def test_run_codex_stream_retries_when_completed_event_missing(monkeypatch):
@@ -757,6 +800,15 @@ def test_preflight_codex_api_kwargs_allows_service_tier(monkeypatch):
 
     result = agent._preflight_codex_api_kwargs(kwargs)
     assert result["service_tier"] == "priority"
+
+
+def test_preflight_codex_api_kwargs_allows_extra_headers(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    kwargs = _codex_request_kwargs()
+    kwargs["extra_headers"] = {"x-grok-conv-id": "sess_xai_123"}
+
+    result = agent._preflight_codex_api_kwargs(kwargs)
+    assert result["extra_headers"] == {"x-grok-conv-id": "sess_xai_123"}
 
 
 def test_run_conversation_codex_replay_payload_keeps_call_id(monkeypatch):
@@ -1188,6 +1240,28 @@ def test_chat_messages_to_responses_input_reasoning_only_has_following_item(monk
     assert ri_idx < len(items) - 1, "Reasoning item must not be the last item (missing_following_item)"
     following = items[ri_idx + 1]
     assert following.get("role") == "assistant"
+
+
+def test_chat_messages_to_responses_input_xai_replays_encrypted_reasoning(monkeypatch):
+    agent = _build_xai_agent(monkeypatch)
+    messages = [
+        {"role": "user", "content": "hello"},
+        {
+            "role": "assistant",
+            "content": "visible answer",
+            "codex_reasoning_items": [
+                {"type": "reasoning", "id": "rs_xai_1", "encrypted_content": "enc_xai", "summary": []},
+            ],
+        },
+        {"role": "user", "content": "follow up"},
+    ]
+
+    items = agent._chat_messages_to_responses_input(messages)
+    reasoning_items = [item for item in items if item.get("type") == "reasoning"]
+
+    assert len(reasoning_items) == 1
+    assert reasoning_items[0]["encrypted_content"] == "enc_xai"
+    assert {"role": "assistant", "content": "visible answer"} in items
 
 
 def test_duplicate_detection_distinguishes_different_codex_reasoning(monkeypatch):

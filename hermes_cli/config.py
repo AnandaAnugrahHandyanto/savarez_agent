@@ -399,6 +399,21 @@ DEFAULT_CONFIG = {
         },
     },
 
+    "image_generation": {
+        "provider": "auto",  # "auto" | "fal" | "xai"
+    },
+
+    "video_generation": {
+        "provider": "xai",  # xAI is currently the only native video backend
+    },
+
+    "x_search": {
+        "provider": "xai",
+        "model": "grok-4.20-reasoning",
+        "timeout_seconds": 180,
+        "retries": 2,
+    },
+
     # Filesystem checkpoints — automatic snapshots before destructive file ops.
     # When enabled, the agent takes a snapshot of the working directory once per
     # conversation turn (on first write_file/patch call).  Use /rollback to restore.
@@ -517,7 +532,7 @@ DEFAULT_CONFIG = {
     
     # Text-to-speech configuration
     "tts": {
-        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "minimax" | "mistral" | "neutts" (local)
+        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "neutts" (local)
         "edge": {
             "voice": "en-US-AriaNeural",
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
@@ -530,6 +545,12 @@ DEFAULT_CONFIG = {
             "model": "gpt-4o-mini-tts",
             "voice": "alloy",
             # Voices: alloy, echo, fable, onyx, nova, shimmer
+        },
+        "xai": {
+            "voice_id": "eve",
+            "language": "en",
+            "sample_rate": 24000,
+            "bit_rate": 128000,
         },
         "mistral": {
             "model": "voxtral-mini-tts-2603",
@@ -703,7 +724,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 17,
+    "_config_version": 18,
 }
 
 # =============================================================================
@@ -719,6 +740,7 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
     10: ["TAVILY_API_KEY"],
     11: ["TERMINAL_MODAL_MODE"],
+    18: ["XAI_API_KEY", "XAI_BASE_URL"],
 }
 
 # Required environment variables with metadata for migration prompts.
@@ -766,6 +788,22 @@ OPTIONAL_ENV_VARS = {
     "GEMINI_BASE_URL": {
         "description": "Google AI Studio base URL override",
         "prompt": "Gemini base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "XAI_API_KEY": {
+        "description": "xAI API key",
+        "prompt": "xAI API key",
+        "url": "https://console.x.ai/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "XAI_BASE_URL": {
+        "description": "xAI base URL override",
+        "prompt": "xAI base URL (leave empty for default)",
         "url": None,
         "password": False,
         "category": "provider",

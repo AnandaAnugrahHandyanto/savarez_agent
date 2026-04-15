@@ -48,12 +48,14 @@ from hermes_cli.cli_output import (  # noqa: E402 — late import block
 # These map to keys in toolsets.py TOOLSETS dict.
 CONFIGURABLE_TOOLSETS = [
     ("web",             "🔍 Web Search & Scraping",    "web_search, web_extract"),
+    ("x_search",        "🐦 X Search",                 "x_search"),
     ("browser",         "🌐 Browser Automation",       "navigate, click, type, scroll"),
     ("terminal",        "💻 Terminal & Processes",      "terminal, process"),
     ("file",            "📁 File Operations",           "read, write, patch, search"),
     ("code_execution",  "⚡ Code Execution",            "execute_code"),
     ("vision",          "👁️  Vision / Image Analysis",  "vision_analyze"),
     ("image_gen",       "🎨 Image Generation",          "image_generate"),
+    ("video_gen",       "🎬 Video Generation",          "video_generate"),
     ("moa",             "🧠 Mixture of Agents",         "mixture_of_agents"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
     ("skills",          "📚 Skills",                    "list, view, manage"),
@@ -116,6 +118,20 @@ PLATFORMS = {
 # Toolsets not in this map either need no config or use the simple fallback.
 
 TOOL_CATEGORIES = {
+    "x_search": {
+        "name": "X Search",
+        "icon": "🐦",
+        "providers": [
+            {
+                "name": "xAI X Search",
+                "tag": "Search X posts and threads via xAI",
+                "env_vars": [
+                    {"key": "XAI_API_KEY", "prompt": "xAI API key", "url": "https://console.x.ai/"},
+                ],
+                "x_search_provider": "xai",
+            },
+        ],
+    },
     "tts": {
         "name": "Text-to-Speech",
         "icon": "🔊",
@@ -145,6 +161,14 @@ TOOL_CATEGORIES = {
                     {"key": "VOICE_TOOLS_OPENAI_KEY", "prompt": "OpenAI API key", "url": "https://platform.openai.com/api-keys"},
                 ],
                 "tts_provider": "openai",
+            },
+            {
+                "name": "xAI TTS",
+                "tag": "Grok voices - requires xAI API key",
+                "env_vars": [
+                    {"key": "XAI_API_KEY", "prompt": "xAI API key", "url": "https://console.x.ai/"},
+                ],
+                "tts_provider": "xai",
             },
             {
                 "name": "ElevenLabs",
@@ -241,6 +265,7 @@ TOOL_CATEGORIES = {
                 "requires_nous_auth": True,
                 "managed_nous_feature": "image_gen",
                 "override_env_vars": ["FAL_KEY"],
+                "image_provider": "fal",
             },
             {
                 "name": "FAL.ai",
@@ -249,6 +274,29 @@ TOOL_CATEGORIES = {
                 "env_vars": [
                     {"key": "FAL_KEY", "prompt": "FAL API key", "url": "https://fal.ai/dashboard/keys"},
                 ],
+                "image_provider": "fal",
+            },
+            {
+                "name": "xAI Images",
+                "tag": "Grok Imagine image generation and editing",
+                "env_vars": [
+                    {"key": "XAI_API_KEY", "prompt": "xAI API key", "url": "https://console.x.ai/"},
+                ],
+                "image_provider": "xai",
+            },
+        ],
+    },
+    "video_gen": {
+        "name": "Video Generation",
+        "icon": "🎬",
+        "providers": [
+            {
+                "name": "xAI Videos",
+                "tag": "Grok Imagine video generation, edits, and extensions",
+                "env_vars": [
+                    {"key": "XAI_API_KEY", "prompt": "xAI API key", "url": "https://console.x.ai/"},
+                ],
+                "video_provider": "xai",
             },
         ],
     },
@@ -807,6 +855,13 @@ def _toolset_needs_configuration_prompt(ts_key: str, config: dict) -> bool:
     if ts_key == "tts":
         tts_cfg = config.get("tts", {})
         return not isinstance(tts_cfg, dict) or "provider" not in tts_cfg
+    if ts_key == "x_search":
+        x_search_cfg = config.get("x_search", {})
+        return (
+            not isinstance(x_search_cfg, dict)
+            or x_search_cfg.get("provider") != "xai"
+            or not get_env_value("XAI_API_KEY")
+        )
     if ts_key == "web":
         web_cfg = config.get("web", {})
         return not isinstance(web_cfg, dict) or "backend" not in web_cfg
@@ -814,7 +869,22 @@ def _toolset_needs_configuration_prompt(ts_key: str, config: dict) -> bool:
         browser_cfg = config.get("browser", {})
         return not isinstance(browser_cfg, dict) or "cloud_provider" not in browser_cfg
     if ts_key == "image_gen":
-        return not get_env_value("FAL_KEY")
+        image_cfg = config.get("image_generation", {})
+        if not isinstance(image_cfg, dict) or "provider" not in image_cfg:
+            return True
+        provider = str(image_cfg.get("provider") or "").strip().lower()
+        if provider == "xai":
+            return not get_env_value("XAI_API_KEY")
+        if provider == "fal":
+            return not get_env_value("FAL_KEY")
+        return True
+    if ts_key == "video_gen":
+        video_cfg = config.get("video_generation", {})
+        return (
+            not isinstance(video_cfg, dict)
+            or video_cfg.get("provider") != "xai"
+            or not get_env_value("XAI_API_KEY")
+        )
 
     return not _toolset_has_keys(ts_key, config)
 
@@ -896,7 +966,10 @@ def _is_provider_active(provider: dict, config: dict) -> bool:
         if feature is None:
             return False
         if managed_feature == "image_gen":
-            return feature.managed_by_nous
+            return (
+                feature.managed_by_nous
+                and config.get("image_generation", {}).get("provider") == provider.get("image_provider")
+            )
         if provider.get("tts_provider"):
             return (
                 feature.managed_by_nous
@@ -912,6 +985,12 @@ def _is_provider_active(provider: dict, config: dict) -> bool:
 
     if provider.get("tts_provider"):
         return config.get("tts", {}).get("provider") == provider["tts_provider"]
+    if provider.get("x_search_provider"):
+        return config.get("x_search", {}).get("provider") == provider["x_search_provider"]
+    if provider.get("image_provider"):
+        return config.get("image_generation", {}).get("provider") == provider["image_provider"]
+    if provider.get("video_provider"):
+        return config.get("video_generation", {}).get("provider") == provider["video_provider"]
     if "browser_provider" in provider:
         current = config.get("browser", {}).get("cloud_provider")
         return provider["browser_provider"] == current
@@ -947,6 +1026,12 @@ def _configure_provider(provider: dict, config: dict):
     # Set TTS provider in config if applicable
     if provider.get("tts_provider"):
         config.setdefault("tts", {})["provider"] = provider["tts_provider"]
+    if provider.get("x_search_provider"):
+        config.setdefault("x_search", {})["provider"] = provider["x_search_provider"]
+    if provider.get("image_provider"):
+        config.setdefault("image_generation", {})["provider"] = provider["image_provider"]
+    if provider.get("video_provider"):
+        config.setdefault("video_generation", {})["provider"] = provider["video_provider"]
 
     # Set browser cloud provider in config if applicable
     if "browser_provider" in provider:
@@ -1158,6 +1243,15 @@ def _reconfigure_provider(provider: dict, config: dict):
     if provider.get("tts_provider"):
         config.setdefault("tts", {})["provider"] = provider["tts_provider"]
         _print_success(f"  TTS provider set to: {provider['tts_provider']}")
+    if provider.get("x_search_provider"):
+        config.setdefault("x_search", {})["provider"] = provider["x_search_provider"]
+        _print_success(f"  X Search provider set to: {provider['x_search_provider']}")
+    if provider.get("image_provider"):
+        config.setdefault("image_generation", {})["provider"] = provider["image_provider"]
+        _print_success(f"  Image provider set to: {provider['image_provider']}")
+    if provider.get("video_provider"):
+        config.setdefault("video_generation", {})["provider"] = provider["video_provider"]
+        _print_success(f"  Video provider set to: {provider['video_provider']}")
 
     if "browser_provider" in provider:
         bp = provider["browser_provider"]

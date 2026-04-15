@@ -1086,5 +1086,3 @@ def list_authenticated_providers(
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 
     return results
-
-

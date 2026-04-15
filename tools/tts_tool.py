@@ -6,6 +6,7 @@ Supports six TTS providers:
 - Edge TTS (default, free, no API key): Microsoft Edge neural voices
 - ElevenLabs (premium): High-quality voices, needs ELEVENLABS_API_KEY
 - OpenAI TTS: Good quality, needs OPENAI_API_KEY
+- xAI TTS: Grok text-to-speech, needs XAI_API_KEY
 - MiniMax TTS: High-quality with voice cloning, needs MINIMAX_API_KEY
 - Mistral (Voxtral TTS): Multilingual, native Opus, needs MISTRAL_API_KEY
 - NeuTTS (local, free, no API key): On-device TTS via neutts_cli, needs neutts installed
@@ -45,6 +46,7 @@ from hermes_constants import display_hermes_home
 logger = logging.getLogger(__name__)
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import managed_nous_tools_enabled, resolve_openai_audio_api_key
+from tools.xai_http import hermes_xai_user_agent
 
 # ---------------------------------------------------------------------------
 # Lazy imports -- providers are imported only when actually used to avoid
@@ -88,6 +90,11 @@ DEFAULT_ELEVENLABS_STREAMING_MODEL_ID = "eleven_flash_v2_5"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
 DEFAULT_OPENAI_VOICE = "alloy"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+DEFAULT_XAI_VOICE_ID = "eve"
+DEFAULT_XAI_LANGUAGE = "en"
+DEFAULT_XAI_SAMPLE_RATE = 24000
+DEFAULT_XAI_BIT_RATE = 128000
+DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1"
 DEFAULT_MINIMAX_MODEL = "speech-2.8-hd"
 DEFAULT_MINIMAX_VOICE_ID = "English_Graceful_Lady"
 DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.io/v1/t2a_v2"
@@ -297,6 +304,71 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         close = getattr(client, "close", None)
         if callable(close):
             close()
+
+
+# ===========================================================================
+# Provider: xAI TTS
+# ===========================================================================
+def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """
+    Generate audio using xAI TTS.
+
+    xAI exposes a dedicated /v1/tts endpoint instead of the OpenAI audio.speech
+    API shape, so this is implemented as a separate backend.
+    """
+    import requests
+
+    api_key = os.getenv("XAI_API_KEY", "").strip()
+    if not api_key:
+        raise ValueError("XAI_API_KEY not set. Get one at https://console.x.ai/")
+
+    xai_config = tts_config.get("xai", {})
+    voice_id = str(xai_config.get("voice_id", DEFAULT_XAI_VOICE_ID)).strip() or DEFAULT_XAI_VOICE_ID
+    language = str(xai_config.get("language", DEFAULT_XAI_LANGUAGE)).strip() or DEFAULT_XAI_LANGUAGE
+    sample_rate = int(xai_config.get("sample_rate", DEFAULT_XAI_SAMPLE_RATE))
+    bit_rate = int(xai_config.get("bit_rate", DEFAULT_XAI_BIT_RATE))
+    base_url = str(
+        xai_config.get("base_url")
+        or os.getenv("XAI_BASE_URL")
+        or DEFAULT_XAI_BASE_URL
+    ).strip().rstrip("/")
+
+    # Match the documented minimal POST /v1/tts shape by default. Only send
+    # output_format when Hermes actually needs a non-default format/override.
+    codec = "wav" if output_path.endswith(".wav") else "mp3"
+    payload: Dict[str, Any] = {
+        "text": text,
+        "voice_id": voice_id,
+        "language": language,
+    }
+    if (
+        codec != "mp3"
+        or sample_rate != DEFAULT_XAI_SAMPLE_RATE
+        or (codec == "mp3" and bit_rate != DEFAULT_XAI_BIT_RATE)
+    ):
+        output_format: Dict[str, Any] = {"codec": codec}
+        if sample_rate:
+            output_format["sample_rate"] = sample_rate
+        if codec == "mp3" and bit_rate:
+            output_format["bit_rate"] = bit_rate
+        payload["output_format"] = output_format
+
+    response = requests.post(
+        f"{base_url}/tts",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": hermes_xai_user_agent(),
+        },
+        json=payload,
+        timeout=60,
+    )
+    response.raise_for_status()
+
+    with open(output_path, "wb") as f:
+        f.write(response.content)
+
+    return output_path
 
 
 # ===========================================================================
@@ -573,6 +645,10 @@ def text_to_speech_tool(
     file_str = str(file_path)
 
     try:
+        generated_file_str = file_str
+        if provider == "xai" and file_str.endswith(".ogg"):
+            generated_file_str = str(Path(file_str).with_suffix(".mp3"))
+
         # Generate audio with the configured provider
         if provider == "elevenlabs":
             try:
@@ -595,6 +671,10 @@ def text_to_speech_tool(
                 }, ensure_ascii=False)
             logger.info("Generating speech with OpenAI TTS...")
             _generate_openai_tts(text, file_str, tts_config)
+
+        elif provider == "xai":
+            logger.info("Generating speech with xAI TTS...")
+            _generate_xai_tts(text, generated_file_str, tts_config)
 
         elif provider == "minimax":
             logger.info("Generating speech with MiniMax TTS...")
@@ -652,7 +732,7 @@ def text_to_speech_tool(
                 }, ensure_ascii=False)
 
         # Check the file was actually created
-        if not os.path.exists(file_str) or os.path.getsize(file_str) == 0:
+        if not os.path.exists(generated_file_str) or os.path.getsize(generated_file_str) == 0:
             return json.dumps({
                 "success": False,
                 "error": f"TTS generation produced no output (provider: {provider})"
@@ -661,13 +741,19 @@ def text_to_speech_tool(
         # Try Opus conversion for Telegram compatibility
         # Edge TTS outputs MP3, NeuTTS outputs WAV — both need ffmpeg conversion
         voice_compatible = False
-        if provider in ("edge", "neutts", "minimax") and not file_str.endswith(".ogg"):
-            opus_path = _convert_to_opus(file_str)
+        if provider in ("edge", "neutts", "minimax", "xai") and not generated_file_str.endswith(".ogg"):
+            opus_path = _convert_to_opus(generated_file_str)
             if opus_path:
                 file_str = opus_path
                 voice_compatible = True
+            else:
+                file_str = generated_file_str
         elif provider in ("elevenlabs", "openai", "mistral"):
+            # These providers can output Opus natively if the path ends in .ogg
+            file_str = generated_file_str
             voice_compatible = file_str.endswith(".ogg")
+        else:
+            file_str = generated_file_str
 
         file_size = os.path.getsize(file_str)
         logger.info("TTS audio saved: %s (%s bytes, provider: %s)", file_str, f"{file_size:,}", provider)
@@ -732,6 +818,8 @@ def check_tts_requirements() -> bool:
             return True
     except ImportError:
         pass
+    if os.getenv("XAI_API_KEY"):
+        return True
     if os.getenv("MINIMAX_API_KEY"):
         return True
     try:

@@ -1,4 +1,4 @@
-"""Tests for API-key provider support (z.ai/GLM, Kimi, MiniMax, AI Gateway)."""
+"""Tests for API-key provider support (z.ai/GLM, Kimi, MiniMax, xAI, AI Gateway)."""
 
 import os
 import sys
@@ -26,6 +26,8 @@ from hermes_cli.auth import (
     _resolve_kimi_base_url,
 )
 from hermes_cli.copilot_auth import _try_gh_cli_token
+from hermes_cli.models import _PROVIDER_ALIASES, _PROVIDER_LABELS, _PROVIDER_MODELS
+from hermes_cli.runtime_provider import resolve_runtime_provider
 
 
 # =============================================================================
@@ -39,8 +41,8 @@ class TestProviderRegistry:
         ("copilot-acp", "GitHub Copilot ACP", "external_process"),
         ("copilot", "GitHub Copilot", "api_key"),
         ("huggingface", "Hugging Face", "api_key"),
-        ("zai", "Z.AI / GLM", "api_key"),
         ("xai", "xAI", "api_key"),
+        ("zai", "Z.AI / GLM", "api_key"),
         ("kimi-coding", "Kimi / Moonshot", "api_key"),
         ("minimax", "MiniMax", "api_key"),
         ("minimax-cn", "MiniMax (China)", "api_key"),
@@ -103,6 +105,7 @@ class TestProviderRegistry:
     def test_base_urls(self):
         assert PROVIDER_REGISTRY["copilot"].inference_base_url == "https://api.githubcopilot.com"
         assert PROVIDER_REGISTRY["copilot-acp"].inference_base_url == "acp://copilot"
+        assert PROVIDER_REGISTRY["xai"].inference_base_url == "https://api.x.ai/v1"
         assert PROVIDER_REGISTRY["zai"].inference_base_url == "https://api.z.ai/api/paas/v4"
         assert PROVIDER_REGISTRY["kimi-coding"].inference_base_url == "https://api.moonshot.ai/v1"
         assert PROVIDER_REGISTRY["minimax"].inference_base_url == "https://api.minimax.io/anthropic"
@@ -126,6 +129,7 @@ class TestProviderRegistry:
 PROVIDER_ENV_VARS = (
     "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
+    "XAI_API_KEY", "XAI_BASE_URL",
     "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
     "KIMI_API_KEY", "KIMI_BASE_URL", "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
     "AI_GATEWAY_API_KEY", "AI_GATEWAY_BASE_URL",
@@ -150,6 +154,9 @@ class TestResolveProvider:
     def test_explicit_zai(self):
         assert resolve_provider("zai") == "zai"
 
+    def test_explicit_xai(self):
+        assert resolve_provider("xai") == "xai"
+
     def test_explicit_kimi_coding(self):
         assert resolve_provider("kimi-coding") == "kimi-coding"
 
@@ -170,6 +177,15 @@ class TestResolveProvider:
 
     def test_alias_zhipu(self):
         assert resolve_provider("zhipu") == "zai"
+
+    def test_alias_x_ai(self):
+        assert resolve_provider("x-ai") == "xai"
+
+    def test_alias_x_dot_ai(self):
+        assert resolve_provider("x.ai") == "xai"
+
+    def test_alias_grok(self):
+        assert resolve_provider("grok") == "xai"
 
     def test_alias_kimi(self):
         assert resolve_provider("kimi") == "kimi-coding"
@@ -265,6 +281,10 @@ class TestResolveProvider:
         monkeypatch.setenv("HF_TOKEN", "hf_test_token")
         assert resolve_provider("auto") == "huggingface"
 
+    def test_auto_detects_xai_key(self, monkeypatch):
+        monkeypatch.setenv("XAI_API_KEY", "xai_test_token")
+        assert resolve_provider("auto") == "xai"
+
     def test_openrouter_takes_priority_over_glm(self, monkeypatch):
         """OpenRouter API key should win over GLM in auto-detection."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
@@ -302,6 +322,14 @@ class TestApiKeyProviderStatus:
         status = get_api_key_provider_status("zai")
         assert status["configured"] is True
         assert status["key_source"] == "ZAI_API_KEY"
+
+    def test_xai_status_with_custom_base_url(self, monkeypatch):
+        monkeypatch.setenv("XAI_API_KEY", "xai-key")
+        monkeypatch.setenv("XAI_BASE_URL", "https://proxy.x.ai/v1")
+        status = get_api_key_provider_status("xai")
+        assert status["configured"] is True
+        assert status["key_source"] == "XAI_API_KEY"
+        assert status["base_url"] == "https://proxy.x.ai/v1"
 
     def test_custom_base_url(self, monkeypatch):
         monkeypatch.setenv("KIMI_API_KEY", "kimi-key")
@@ -426,6 +454,13 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["api_key"] == "kimi-secret-key"
         assert creds["base_url"] == "https://api.moonshot.ai/v1"
 
+    def test_resolve_xai_with_key(self, monkeypatch):
+        monkeypatch.setenv("XAI_API_KEY", "xai-secret-key")
+        creds = resolve_api_key_provider_credentials("xai")
+        assert creds["provider"] == "xai"
+        assert creds["api_key"] == "xai-secret-key"
+        assert creds["base_url"] == "https://api.x.ai/v1"
+
     def test_resolve_minimax_with_key(self, monkeypatch):
         monkeypatch.setenv("MINIMAX_API_KEY", "mm-secret-key")
         creds = resolve_api_key_provider_credentials("minimax")
@@ -507,6 +542,14 @@ class TestRuntimeProviderResolution:
         assert result["api_mode"] == "chat_completions"
         assert result["api_key"] == "glm-key"
         assert "z.ai" in result["base_url"] or "api.z.ai" in result["base_url"]
+
+    def test_runtime_xai(self, monkeypatch):
+        monkeypatch.setenv("XAI_API_KEY", "xai-key")
+        result = resolve_runtime_provider(requested="xai")
+        assert result["provider"] == "xai"
+        assert result["api_mode"] == "codex_responses"
+        assert result["api_key"] == "xai-key"
+        assert result["base_url"] == "https://api.x.ai/v1"
 
     def test_runtime_kimi(self, monkeypatch):
         monkeypatch.setenv("KIMI_API_KEY", "kimi-key")
@@ -986,3 +1029,20 @@ class TestHuggingFaceModels:
         from hermes_cli.models import _PROVIDER_LABELS
         assert "huggingface" in _PROVIDER_LABELS
         assert _PROVIDER_LABELS["huggingface"] == "Hugging Face"
+
+
+class TestXaiModels:
+    def test_models_py_has_xai(self):
+        assert "xai" in _PROVIDER_MODELS
+        assert _PROVIDER_MODELS["xai"] == [
+            "grok-4.20-reasoning",
+            "grok-4-1-fast-reasoning",
+        ]
+
+    def test_provider_aliases_in_models_py(self):
+        assert _PROVIDER_ALIASES.get("x-ai") == "xai"
+        assert _PROVIDER_ALIASES.get("x.ai") == "xai"
+        assert _PROVIDER_ALIASES.get("grok") == "xai"
+
+    def test_provider_label(self):
+        assert _PROVIDER_LABELS["xai"] == "xAI"

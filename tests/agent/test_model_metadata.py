@@ -159,12 +159,11 @@ class TestDefaultContextLengths:
     def test_grok_substring_matching(self):
         # Longest-first substring matching must resolve the real xAI model
         # IDs to the correct fallback entries without 128k probe-down.
-        from agent.model_metadata import get_model_context_length
-        from unittest.mock import patch as mock_patch
-
         # Fake the provider/API/cache layers so the lookup falls through
         # to DEFAULT_CONTEXT_LENGTHS.
-        with mock_patch("agent.model_metadata.fetch_model_metadata", return_value={}),              mock_patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}),              mock_patch("agent.model_metadata.get_cached_context_length", return_value=None):
+        with patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None):
             cases = [
                 ("grok-4.20-0309-reasoning", 2000000),
                 ("grok-4.20-0309-non-reasoning", 2000000),
@@ -189,6 +188,18 @@ class TestDefaultContextLengths:
                 assert actual == expected_ctx, (
                     f"{model_id}: expected {expected_ctx}, got {actual}"
                 )
+
+    def test_xai_base_url_uses_grok_fallbacks_not_128k_probe_down(self):
+        with patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None):
+            actual = get_model_context_length(
+                "grok-4.20-reasoning",
+                base_url="https://api.x.ai/v1",
+                provider="xai",
+            )
+
+        assert actual == 2000000
 
     def test_all_values_positive(self):
         for key, value in DEFAULT_CONTEXT_LENGTHS.items():

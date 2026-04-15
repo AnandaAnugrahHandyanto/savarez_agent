@@ -91,6 +91,7 @@ AUTHOR_MAP = {
     "socrates1024@gmail.com": "socrates1024",
     "satelerd@gmail.com": "satelerd",
     "numman.ali@gmail.com": "nummanali",
+    "jankiewiczmilosz@gmail.com": "Jaaneek",
     "0xNyk@users.noreply.github.com": "0xNyk",
     "0xnykcd@googlemail.com": "0xNyk",
     "buraysandro9@gmail.com": "buray",

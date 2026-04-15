@@ -25,7 +25,7 @@ from hermes_cli.nous_subscription import (
     get_nous_subscription_features,
 )
 from tools.tool_backend_helpers import managed_nous_tools_enabled
-from hermes_constants import get_optional_skills_dir
+from hermes_constants import display_hermes_home, get_optional_skills_dir
 
 logger = logging.getLogger(__name__)
 
@@ -920,6 +920,7 @@ def _setup_tts_provider(config: dict):
         "edge": "Edge TTS",
         "elevenlabs": "ElevenLabs",
         "openai": "OpenAI TTS",
+        "xai": "xAI TTS",
         "minimax": "MiniMax TTS",
         "mistral": "Mistral Voxtral TTS",
         "neutts": "NeuTTS",
@@ -941,12 +942,13 @@ def _setup_tts_provider(config: dict):
             "Edge TTS (free, cloud-based, no setup needed)",
             "ElevenLabs (premium quality, needs API key)",
             "OpenAI TTS (good quality, needs API key)",
+            "xAI TTS (Grok voices, needs API key)",
             "MiniMax TTS (high quality with voice cloning, needs API key)",
             "Mistral Voxtral TTS (multilingual, native Opus, needs API key)",
             "NeuTTS (local on-device, free, ~300MB model download)",
         ]
     )
-    providers.extend(["edge", "elevenlabs", "openai", "minimax", "mistral", "neutts"])
+    providers.extend(["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "neutts"])
     choices.append(f"Keep current ({current_label})")
     keep_current_idx = len(choices) - 1
     idx = prompt_choice("Select TTS provider:", choices, keep_current_idx)
@@ -1010,6 +1012,22 @@ def _setup_tts_provider(config: dict):
                 print_success("OpenAI TTS API key saved")
             else:
                 print_warning("No API key provided. Falling back to Edge TTS.")
+                selected = "edge"
+
+    elif selected == "xai":
+        existing = get_env_value("XAI_API_KEY")
+        if not existing:
+            print()
+            api_key = prompt("xAI API key for TTS", password=True)
+            if api_key:
+                save_env_value("XAI_API_KEY", api_key)
+                print_success("xAI TTS API key saved")
+            else:
+                print_warning(
+                    "No xAI API key provided for TTS. Configure XAI_API_KEY via "
+                    f"hermes setup model or {display_hermes_home()}/.env to use xAI TTS. "
+                    "Falling back to Edge TTS."
+                )
                 selected = "edge"
 
     elif selected == "minimax":

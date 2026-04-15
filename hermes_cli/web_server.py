@@ -224,12 +224,14 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "approvals": "security",
     "human_delay": "display",
     "smart_model_routing": "agent",
+    "image_generation": "media",
+    "video_generation": "media",
 }
 
 # Display order for tabs — unlisted categories sort alphabetically after these.
 _CATEGORY_ORDER = [
     "general", "agent", "terminal", "display", "delegation",
-    "memory", "compression", "security", "browser", "voice",
+    "memory", "compression", "security", "browser", "media", "voice",
     "tts", "stt", "logging", "discord", "auxiliary",
 ]
 

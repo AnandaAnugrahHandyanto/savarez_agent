@@ -58,6 +58,9 @@ _PROVIDER_ALIASES = {
     "google": "gemini",
     "google-gemini": "gemini",
     "google-ai-studio": "gemini",
+    "x-ai": "xai",
+    "x.ai": "xai",
+    "grok": "xai",
     "glm": "zai",
     "z-ai": "zai",
     "z.ai": "zai",
@@ -94,6 +97,7 @@ def _normalize_aux_provider(provider: Optional[str]) -> str:
 # Default auxiliary models for direct API-key providers (cheap/fast for side tasks)
 _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "gemini": "gemini-3-flash-preview",
+    "xai": "grok-4.20-reasoning",
     "zai": "glm-4.5-flash",
     "kimi-coding": "kimi-k2-turbo-preview",
     "kimi-coding-cn": "kimi-k2-turbo-preview",

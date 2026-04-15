@@ -125,6 +125,7 @@ def test_resolve_runtime_provider_codex(monkeypatch):
         lambda provider: type("P", (), {"has_credentials": lambda self: False})(),
     )
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: None)
     monkeypatch.setattr(
         rp,
         "resolve_codex_runtime_credentials",
@@ -236,6 +237,20 @@ def test_resolve_runtime_provider_ai_gateway(monkeypatch):
     assert resolved["base_url"] == "https://ai-gateway.vercel.sh/v1"
     assert resolved["api_key"] == "test-ai-gw-key"
     assert resolved["requested_provider"] == "ai-gateway"
+
+
+def test_resolve_runtime_provider_xai(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "xai")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("XAI_API_KEY", "test-xai-key")
+
+    resolved = rp.resolve_runtime_provider(requested="xai")
+
+    assert resolved["provider"] == "xai"
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["base_url"] == "https://api.x.ai/v1"
+    assert resolved["api_key"] == "test-xai-key"
+    assert resolved["requested_provider"] == "xai"
 
 
 def test_resolve_runtime_provider_ai_gateway_explicit_override_skips_pool(monkeypatch):
@@ -803,6 +818,10 @@ def test_model_config_api_mode(monkeypatch):
 
     assert resolved["api_mode"] == "codex_responses"
     assert resolved["base_url"] == "http://127.0.0.1:9208/v1"
+
+
+def test_detect_api_mode_for_xai_url():
+    assert rp._detect_api_mode_for_url("https://api.x.ai/v1") == "codex_responses"
 
 
 def test_model_config_api_mode_ignored_when_provider_differs(monkeypatch):

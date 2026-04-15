@@ -2,6 +2,7 @@
 
 from unittest.mock import patch
 
+from hermes_cli.config import load_config
 from hermes_cli.tools_config import (
     _configure_provider,
     _get_platform_tools,
@@ -30,6 +31,51 @@ def test_get_platform_tools_default_telegram_includes_messaging():
     enabled = _get_platform_tools({}, "telegram")
 
     assert "messaging" in enabled
+
+
+def test_default_config_includes_image_and_video_generation_sections(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    config = load_config()
+
+    assert config["image_generation"]["provider"] == "auto"
+    assert config["video_generation"]["provider"] == "xai"
+    assert config["x_search"]["provider"] == "xai"
+
+
+def test_tts_tool_category_includes_xai_provider():
+    providers = TOOL_CATEGORIES["tts"]["providers"]
+    xai = next((provider for provider in providers if provider.get("tts_provider") == "xai"), None)
+
+    assert xai is not None
+    assert xai["name"] == "xAI TTS"
+    assert xai["env_vars"][0]["key"] == "XAI_API_KEY"
+
+
+def test_x_search_tool_category_includes_xai_provider():
+    providers = TOOL_CATEGORIES["x_search"]["providers"]
+
+    assert len(providers) == 1
+    assert providers[0]["name"] == "xAI X Search"
+    assert providers[0]["env_vars"][0]["key"] == "XAI_API_KEY"
+    assert providers[0]["x_search_provider"] == "xai"
+
+
+def test_image_gen_tool_category_includes_xai_provider():
+    providers = TOOL_CATEGORIES["image_gen"]["providers"]
+    xai = next((provider for provider in providers if provider.get("image_provider") == "xai"), None)
+
+    assert xai is not None
+    assert xai["name"] == "xAI Images"
+    assert xai["env_vars"][0]["key"] == "XAI_API_KEY"
+
+
+def test_video_gen_tool_category_includes_xai_provider():
+    providers = TOOL_CATEGORIES["video_gen"]["providers"]
+
+    assert len(providers) == 1
+    assert providers[0]["name"] == "xAI Videos"
+    assert providers[0]["env_vars"][0]["key"] == "XAI_API_KEY"
 
 
 def test_get_platform_tools_preserves_explicit_empty_selection():
@@ -335,6 +381,91 @@ def test_local_browser_provider_is_saved_explicitly(monkeypatch):
     _configure_provider(local_provider, config)
 
     assert config["browser"]["cloud_provider"] == "local"
+
+
+def test_image_provider_is_saved_explicitly():
+    config = {}
+    xai_provider = next(
+        provider
+        for provider in TOOL_CATEGORIES["image_gen"]["providers"]
+        if provider.get("image_provider") == "xai"
+    )
+
+    with patch("hermes_cli.tools_config.get_env_value", return_value=None), \
+         patch("hermes_cli.tools_config._prompt", return_value="xai-test-key"), \
+         patch("hermes_cli.tools_config.save_env_value"):
+        _configure_provider(xai_provider, config)
+
+    assert config["image_generation"]["provider"] == "xai"
+
+
+def test_video_provider_is_saved_explicitly():
+    config = {}
+    xai_provider = TOOL_CATEGORIES["video_gen"]["providers"][0]
+
+    with patch("hermes_cli.tools_config.get_env_value", return_value=None), \
+         patch("hermes_cli.tools_config._prompt", return_value="xai-test-key"), \
+         patch("hermes_cli.tools_config.save_env_value"):
+        _configure_provider(xai_provider, config)
+
+    assert config["video_generation"]["provider"] == "xai"
+
+
+def test_x_search_provider_is_saved_explicitly():
+    config = {}
+    xai_provider = TOOL_CATEGORIES["x_search"]["providers"][0]
+
+    with patch("hermes_cli.tools_config.get_env_value", return_value=None), \
+         patch("hermes_cli.tools_config._prompt", return_value="xai-test-key"), \
+         patch("hermes_cli.tools_config.save_env_value"):
+        _configure_provider(xai_provider, config)
+
+    assert config["x_search"]["provider"] == "xai"
+
+
+def test_x_search_provider_is_marked_active():
+    from hermes_cli.tools_config import _is_provider_active
+
+    config = {"x_search": {"provider": "xai"}}
+    xai_provider = TOOL_CATEGORIES["x_search"]["providers"][0]
+
+    assert _is_provider_active(xai_provider, config) is True
+
+
+def test_x_search_provider_is_reconfigured_explicitly():
+    from hermes_cli.tools_config import _reconfigure_provider
+
+    config = {}
+    xai_provider = TOOL_CATEGORIES["x_search"]["providers"][0]
+
+    with patch("hermes_cli.tools_config.get_env_value", return_value=None), \
+         patch("hermes_cli.tools_config._prompt", return_value="xai-test-key"), \
+         patch("hermes_cli.tools_config.save_env_value"):
+        _reconfigure_provider(xai_provider, config)
+
+    assert config["x_search"]["provider"] == "xai"
+
+
+def test_managed_image_provider_not_active_when_image_backend_is_xai(monkeypatch):
+    from types import SimpleNamespace
+    from hermes_cli.tools_config import _is_provider_active
+
+    config = {"image_generation": {"provider": "xai"}}
+    managed_provider = next(
+        provider
+        for provider in TOOL_CATEGORIES["image_gen"]["providers"]
+        if provider.get("managed_nous_feature") == "image_gen"
+    )
+
+    monkeypatch.setattr(
+        "hermes_cli.tools_config.get_nous_subscription_features",
+        lambda _cfg: SimpleNamespace(
+            features={"image_gen": SimpleNamespace(managed_by_nous=True)},
+            nous_auth_present=True,
+        ),
+    )
+
+    assert _is_provider_active(managed_provider, config) is False
 
 
 def test_first_install_nous_auto_configures_managed_defaults(monkeypatch):

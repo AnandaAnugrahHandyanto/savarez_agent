@@ -78,6 +78,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="anthropic_messages",
         extra_env_vars=("ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
     ),
+    "xai": HermesOverlay(
+        transport="codex_responses",
+        base_url_override="https://api.x.ai/v1",
+        base_url_env_var="XAI_BASE_URL",
+    ),
     "zai": HermesOverlay(
         transport="openai_chat",
         extra_env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
@@ -127,11 +132,6 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         is_aggregator=True,
         base_url_env_var="HF_BASE_URL",
     ),
-    "xai": HermesOverlay(
-        transport="openai_chat",
-        base_url_override="https://api.x.ai/v1",
-        base_url_env_var="XAI_BASE_URL",
-    ),
     "xiaomi": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="XIAOMI_BASE_URL",
@@ -177,10 +177,6 @@ ALIASES: Dict[str, str] = {
     "z.ai": "zai",
     "zhipu": "zai",
 
-    # xai
-    "x-ai": "xai",
-    "x.ai": "xai",
-
     # kimi-for-coding (models.dev ID)
     "kimi": "kimi-for-coding",
     "kimi-coding": "kimi-for-coding",
@@ -194,6 +190,11 @@ ALIASES: Dict[str, str] = {
     # anthropic
     "claude": "anthropic",
     "claude-code": "anthropic",
+
+    # xai
+    "x-ai": "xai",
+    "x.ai": "xai",
+    "grok": "xai",
 
     # github-copilot (models.dev ID)
     "copilot": "github-copilot",

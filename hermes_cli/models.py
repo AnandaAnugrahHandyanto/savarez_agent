@@ -133,6 +133,10 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemma-4-31b-it",
         "gemma-4-26b-it",
     ],
+    "xai": [
+        "grok-4.20-reasoning",
+        "grok-4-1-fast-reasoning",
+    ],
     "zai": [
         "glm-5.1",
         "glm-5",
@@ -141,19 +145,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "glm-4.7",
         "glm-4.5",
         "glm-4.5-flash",
-    ],
-    "xai": [
-        "grok-4.20-0309-reasoning",
-        "grok-4.20-0309-non-reasoning",
-        "grok-4.20-multi-agent-0309",
-        "grok-4-1-fast-reasoning",
-        "grok-4-1-fast-non-reasoning",
-        "grok-4-fast-reasoning",
-        "grok-4-fast-non-reasoning",
-        "grok-4-0709",
-        "grok-code-fast-1",
-        "grok-3",
-        "grok-3-mini",
     ],
     "kimi-coding": [
         "kimi-for-coding",
@@ -556,6 +547,9 @@ _PROVIDER_ALIASES = {
     "google": "gemini",
     "google-gemini": "gemini",
     "google-ai-studio": "gemini",
+    "x-ai": "xai",
+    "x.ai": "xai",
+    "grok": "xai",
     "kimi": "kimi-coding",
     "moonshot": "kimi-coding",
     "kimi-cn": "kimi-coding-cn",
@@ -587,9 +581,6 @@ _PROVIDER_ALIASES = {
     "huggingface-hub": "huggingface",
     "mimo": "xiaomi",
     "xiaomi-mimo": "xiaomi",
-    "grok": "xai",
-    "x-ai": "xai",
-    "x.ai": "xai",
 }
 
 
@@ -881,7 +872,6 @@ def list_available_providers() -> list[dict[str, str]]:
     """
     # Derive display order from canonical list + custom
     provider_order = [p.slug for p in CANONICAL_PROVIDERS] + ["custom"]
-
     # Build reverse alias map
     aliases_for: dict[str, list[str]] = {}
     for alias, canonical in _PROVIDER_ALIASES.items():

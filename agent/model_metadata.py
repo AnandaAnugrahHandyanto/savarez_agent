@@ -219,6 +219,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.openai.com": "openai",
     "chatgpt.com": "openai",
     "api.anthropic.com": "anthropic",
+    "api.x.ai": "xai",
     "api.z.ai": "zai",
     "api.moonshot.ai": "kimi-coding",
     "api.moonshot.cn": "kimi-coding-cn",
