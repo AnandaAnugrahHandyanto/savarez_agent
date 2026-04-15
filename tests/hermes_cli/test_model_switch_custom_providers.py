@@ -156,3 +156,62 @@ def test_list_deduplicates_same_model_in_group(monkeypatch):
     assert len(my_rows) == 1
     assert my_rows[0]["models"] == ["llama3", "mistral"]
     assert my_rows[0]["total_models"] == 2
+
+
+def test_list_models_field_as_list(monkeypatch):
+    """custom_providers entry with models as a list should expose all models."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "My Custom LLM",
+                "base_url": "https://llm.example.com/v1",
+                "models": [
+                    "my-model-v1",
+                    "my-model-v2",
+                    "my-model-v3",
+                ],
+            }
+        ],
+        max_models=50,
+    )
+
+    rows = [p for p in providers if p["name"] == "My Custom LLM"]
+    assert len(rows) == 1
+    assert rows[0]["models"] == [
+        "my-model-v1",
+        "my-model-v2",
+        "my-model-v3",
+    ]
+    assert rows[0]["total_models"] == 3
+
+
+def test_list_models_field_as_dict(monkeypatch):
+    """custom_providers entry with models as a dict should expose all keys as models."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Local vLLM",
+                "base_url": "http://localhost:8000/v1",
+                "models": {
+                    "llama-3-70b": {},
+                    "mistral-large": {},
+                },
+            }
+        ],
+        max_models=50,
+    )
+
+    rows = [p for p in providers if p["name"] == "Local vLLM"]
+    assert len(rows) == 1
+    assert rows[0]["models"] == ["llama-3-70b", "mistral-large"]
+    assert rows[0]["total_models"] == 2

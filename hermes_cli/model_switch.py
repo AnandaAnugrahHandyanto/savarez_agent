@@ -1066,6 +1066,17 @@ def list_authenticated_providers(
             default_model = (entry.get("model") or "").strip()
             if default_model and default_model not in groups[slug]["models"]:
                 groups[slug]["models"].append(default_model)
+            models_field = entry.get("models")
+            if isinstance(models_field, dict):
+                for m in models_field:
+                    m = str(m).strip()
+                    if m and m not in groups[slug]["models"]:
+                        groups[slug]["models"].append(m)
+            elif isinstance(models_field, list):
+                for m in models_field:
+                    m = str(m).strip()
+                    if m and m not in groups[slug]["models"]:
+                        groups[slug]["models"].append(m)
 
         for slug, grp in groups.items():
             if slug in seen_slugs:
