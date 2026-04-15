@@ -23,6 +23,12 @@ import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from gateway.config import (
+    DEFAULT_STREAMING_BUFFER_THRESHOLD,
+    DEFAULT_STREAMING_CURSOR,
+    DEFAULT_STREAMING_EDIT_INTERVAL,
+)
+
 logger = logging.getLogger("gateway.stream_consumer")
 
 # Sentinel to signal the stream is complete
@@ -39,11 +45,15 @@ _COMMENTARY = object()
 
 @dataclass
 class StreamConsumerConfig:
-    """Runtime config for a single stream consumer instance."""
+    """Runtime config for a single stream consumer instance.
 
-    edit_interval: float = 0.8
-    buffer_threshold: int = 24
-    cursor: str = " ▉"
+    Defaults are re-exported from ``gateway.config`` so that
+    ``StreamingConfig`` remains the single source of truth.
+    """
+
+    edit_interval: float = DEFAULT_STREAMING_EDIT_INTERVAL
+    buffer_threshold: int = DEFAULT_STREAMING_BUFFER_THRESHOLD
+    cursor: str = DEFAULT_STREAMING_CURSOR
 
 
 class GatewayStreamConsumer:

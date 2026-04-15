@@ -147,11 +147,19 @@ class TelegramAdapter(BasePlatformAdapter):
         min_value: Optional[float] = None,
         max_value: Optional[float] = None,
     ) -> float:
-        """Read a float env var with bounds and sane fallback."""
+        """Read a float env var, reject non-finite values, and clamp to bounds.
+
+        Guarantees the returned value is a finite number usable directly in
+        ``asyncio.sleep()`` and similar APIs that reject NaN / Inf.
+        """
+        import math
+
         raw = os.getenv(name)
         try:
             value = float(raw) if raw is not None else float(default)
         except (TypeError, ValueError):
+            value = float(default)
+        if not math.isfinite(value):
             value = float(default)
         if min_value is not None:
             value = max(value, min_value)
