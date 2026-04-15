@@ -46,6 +46,8 @@ import uuid
 _IS_WINDOWS = platform.system() == "Windows"
 from typing import Any, Dict, List, Optional
 
+from tools.autonomy_guard import evaluate_execute_code
+
 # Availability gate: UDS requires a POSIX OS
 logger = logging.getLogger(__name__)
 
@@ -915,6 +917,18 @@ def execute_code(
 
     if not code or not code.strip():
         return tool_error("No code provided.")
+
+    policy_decision = evaluate_execute_code(code, workdir=os.getcwd())
+    if not policy_decision.get("allowed"):
+        return json.dumps(
+            {
+                "status": policy_decision.get("status", "blocked"),
+                "error": policy_decision.get("message", "execute_code blocked by autonomy policy."),
+                "description": policy_decision.get("description"),
+                "approved": False,
+            },
+            ensure_ascii=False,
+        )
 
     # Dispatch: remote backends use file-based RPC, local uses UDS
     from tools.terminal_tool import _get_env_config

@@ -48,6 +48,13 @@ def _iter_pattern_entries(entries: Iterable[Dict[str, Any]]) -> Iterable[tuple[r
         yield re.compile(pattern, re.IGNORECASE), str(description)
 
 
+def _first_matching_description(text: str, entries: Iterable[Dict[str, Any]]) -> Optional[str]:
+    for regex, description in _iter_pattern_entries(entries):
+        if regex.search(text):
+            return description
+    return None
+
+
 def _git(args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", *args],
@@ -176,6 +183,69 @@ def evaluate_terminal_command(command: str, *, workdir: Optional[str], force: bo
                     f"Command:\n```\n{command}\n```"
                 ),
             }
+
+    return {"allowed": True, "status": "ok"}
+
+
+def evaluate_execute_code(code: str, *, workdir: Optional[str]) -> Dict[str, Any]:
+    """Apply autonomy policy to execute_code payloads."""
+    try:
+        policy = load_autonomy_policy()
+    except AutonomyPolicyError as exc:
+        return {
+            "allowed": False,
+            "status": "blocked",
+            "description": "autonomy policy unavailable",
+            "message": f"BLOCKED: {exc}",
+        }
+
+    exec_cfg = policy.get("execute_code", {})
+    approval_cfg = policy.get("approval", {})
+
+    for fragment in [
+        *approval_cfg.get("forbidden_command_fragments", []),
+        *exec_cfg.get("forbidden_code_fragments", []),
+    ]:
+        text = str(fragment).strip()
+        if text and text in code:
+            return {
+                "allowed": False,
+                "status": "blocked",
+                "description": f"forbidden autonomy bypass: {text}",
+                "message": (
+                    f"BLOCKED: autonomy policy forbids `{text}` inside execute_code payloads."
+                ),
+            }
+
+    cwd = workdir or os.getcwd()
+    block_description = _first_matching_description(
+        code,
+        exec_cfg.get("protected_branch_block_patterns", []),
+    )
+    if block_description:
+        write_decision = enforce_write_policy("execute_code", cwd)
+        if not write_decision["allowed"]:
+            write_decision["description"] = block_description
+            write_decision["message"] = (
+                f"BLOCKED: execute_code attempted {block_description} on protected branch "
+                f"'{write_decision.get('branch')}'. Use a feature branch and Hermes write tools instead."
+            )
+            return write_decision
+
+    approval_description = _first_matching_description(
+        code,
+        exec_cfg.get("approval_required_patterns", []),
+    )
+    if approval_description:
+        return {
+            "allowed": False,
+            "status": "approval_required",
+            "description": approval_description,
+            "message": (
+                f"Human approval required by autonomy policy: {approval_description}.\n\n"
+                "Use the terminal tool directly when a subprocess is actually needed."
+            ),
+        }
 
     return {"allowed": True, "status": "ok"}
 

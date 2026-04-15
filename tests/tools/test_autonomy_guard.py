@@ -8,7 +8,12 @@ from unittest.mock import patch
 import pytest
 
 from tools import autonomy_guard
-from tools.autonomy_guard import enforce_write_policy, evaluate_terminal_command, run_bootstrap_preflight
+from tools.autonomy_guard import (
+    enforce_write_policy,
+    evaluate_execute_code,
+    evaluate_terminal_command,
+    run_bootstrap_preflight,
+)
 
 
 def _init_repo(tmp_path: Path, branch: str = "main") -> Path:
@@ -86,6 +91,22 @@ def test_terminal_policy_blocks_mutating_command_on_main(tmp_path):
     assert decision["allowed"] is False
     assert decision["status"] == "blocked"
     assert "protected branch" in decision["message"]
+
+
+def test_execute_code_policy_blocks_raw_write_on_main(tmp_path):
+    repo = _init_repo(tmp_path, branch="main")
+    decision = evaluate_execute_code("from pathlib import Path\nPath('tracked.txt').write_text('x')", workdir=str(repo))
+    assert decision["allowed"] is False
+    assert decision["status"] == "blocked"
+    assert "feature branch" in decision["message"].lower()
+
+
+def test_execute_code_policy_requires_approval_for_subprocess(tmp_path):
+    repo = _init_repo(tmp_path, branch="codex/safe")
+    decision = evaluate_execute_code("import subprocess\nsubprocess.run(['git', 'push'])", workdir=str(repo))
+    assert decision["allowed"] is False
+    assert decision["status"] == "approval_required"
+    assert "subprocesses" in decision["description"]
 
 
 @patch("tools.file_tools._get_file_ops")
@@ -170,6 +191,17 @@ def test_bootstrap_preflight_fails_closed_when_policy_is_missing(tmp_path, monke
 
     assert result["ok"] is False
     assert "missing" in result["message"].lower()
+
+
+def test_execute_code_policy_fails_closed_when_policy_is_missing(tmp_path, monkeypatch):
+    missing = tmp_path / "missing-policy.yaml"
+    monkeypatch.setattr(autonomy_guard, "POLICY_PATH", missing)
+    autonomy_guard.load_autonomy_policy.cache_clear()
+
+    decision = evaluate_execute_code("print('hi')", workdir=str(tmp_path))
+    assert decision["allowed"] is False
+    assert decision["status"] == "blocked"
+    assert "missing" in decision["message"].lower()
 
 
 def test_write_file_tool_blocks_when_policy_is_malformed(tmp_path, monkeypatch):

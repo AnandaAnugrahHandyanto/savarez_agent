@@ -37,6 +37,30 @@ terminal_writes:
     - pattern: '(?<!\d)>{1,2}(?!\d)'
       description: shell redirection write
 
+execute_code:
+  forbidden_code_fragments:
+    - --dangerously-skip-permissions
+    - --yolo
+    - /yolo
+  protected_branch_block_patterns:
+    - pattern: '\bopen\s*\([^,\n]+,\s*["''][^"'']*[wax+][^"'']*["'']'
+      description: raw Python file write
+    - pattern: '\.\s*write_text\s*\('
+      description: write text directly from execute_code
+    - pattern: '\.\s*write_bytes\s*\('
+      description: write bytes directly from execute_code
+    - pattern: '\.\s*(unlink|rename|replace)\s*\('
+      description: mutate or delete files directly from execute_code
+    - pattern: '\bos\.(remove|unlink|rename|replace)\s*\('
+      description: mutate or delete files directly from execute_code
+    - pattern: '\bshutil\.rmtree\s*\('
+      description: delete directory trees directly from execute_code
+  approval_required_patterns:
+    - pattern: '\bsubprocess\.(run|Popen|call|check_call|check_output)\s*\('
+      description: spawn subprocesses from execute_code
+    - pattern: '\bos\.system\s*\('
+      description: spawn shell commands from execute_code
+
 bootstrap:
   required_commands:
     - git

@@ -6980,6 +6980,7 @@ class AIAgent:
         interrupted: bool,
         final_response: Optional[str],
         api_calls: int,
+        stop_reason: Optional[str] = None,
     ) -> Optional[str]:
         """Persist the proof-of-done artifact for this turn."""
         proof_state = getattr(self, "_proof_state", None)
@@ -6992,6 +6993,7 @@ class AIAgent:
                 interrupted=interrupted,
                 final_response=final_response,
                 api_calls=api_calls,
+                stop_reason=stop_reason,
                 repo_hint=os.getcwd(),
             )
         except Exception as exc:
@@ -7890,6 +7892,7 @@ class AIAgent:
                 interrupted=False,
                 final_response=final_response,
                 api_calls=0,
+                stop_reason="bootstrap_preflight_failed",
             )
             self._stream_callback = None
             early_result = {
@@ -10529,6 +10532,7 @@ class AIAgent:
             interrupted=interrupted,
             final_response=final_response,
             api_calls=api_call_count,
+            stop_reason=_turn_exit_reason,
         )
 
         # Save trajectory if enabled

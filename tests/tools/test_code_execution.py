@@ -17,6 +17,7 @@ import pytest
 
 import json
 import os
+import subprocess
 
 os.environ["TERMINAL_ENV"] = "local"
 
@@ -34,6 +35,7 @@ import sys
 import time
 import threading
 import unittest
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from tools.code_execution_tool import (
@@ -242,6 +244,36 @@ print(result)
         """Empty code string returns an error."""
         result = json.loads(execute_code("", task_id="test"))
         self.assertIn("error", result)
+
+    def test_execute_code_blocks_raw_write_on_main_branch(self):
+        # unittest helpers don't provide tmp_path; use a real temp repo.
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True, text=True)
+            (repo / "tracked.txt").write_text("hello\n", encoding="utf-8")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True, capture_output=True, text=True)
+            subprocess.run(
+                ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "init"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            previous = os.getcwd()
+            try:
+                os.chdir(repo)
+                result = json.loads(execute_code("from pathlib import Path\nPath('tracked.txt').write_text('mutated')", task_id="test"))
+            finally:
+                os.chdir(previous)
+        self.assertEqual(result["status"], "blocked")
+        self.assertIn("protected branch", result["error"])
+
+    def test_execute_code_requires_approval_for_subprocess_bypass(self):
+        result = json.loads(execute_code("import subprocess\nsubprocess.run(['git', 'push'])", task_id="test"))
+        self.assertEqual(result["status"], "approval_required")
+        self.assertIn("subprocess", result["description"].lower())
 
     def test_output_captured(self):
         """Multiple print statements are captured in order."""
