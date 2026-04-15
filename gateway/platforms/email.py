@@ -302,7 +302,7 @@ class EmailAdapter(BasePlatformAdapter):
 
         self._running = True
         self._poll_task = asyncio.create_task(self._poll_loop())
-        print(f"[Email] Connected as {self._address}")
+        print(f"[이메일] {self._address} 계정으로 연결했어요")
         return True
 
     async def disconnect(self) -> None:
@@ -371,7 +371,7 @@ class EmailAdapter(BasePlatformAdapter):
                     if "<" in sender_name:
                         sender_name = sender_name.split("<")[0].strip().strip('"')
 
-                    subject = _decode_header_value(msg.get("Subject", "(no subject)"))
+                    subject = _decode_header_value(msg.get("Subject", "(제목 없음)"))
                     message_id = msg.get("Message-ID", "")
                     in_reply_to = msg.get("In-Reply-To", "")
                     # Skip automated/noreply senders before any processing
@@ -422,7 +422,7 @@ class EmailAdapter(BasePlatformAdapter):
         # Build message text: include subject as context
         text = body
         if subject and not subject.startswith("Re:"):
-            text = f"[Subject: {subject}]\n\n{body}"
+            text = f"[제목: {subject}]\n\n{body}"
 
         # Determine message type and media
         media_urls = []
@@ -450,7 +450,7 @@ class EmailAdapter(BasePlatformAdapter):
         )
 
         event = MessageEvent(
-            text=text or "(empty email)",
+            text=text or "(빈 이메일)",
             message_type=msg_type,
             source=source,
             message_id=msg_data["message_id"],
@@ -535,7 +535,7 @@ class EmailAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send an image URL as part of an email body."""
         text = caption or ""
-        text += f"\n\nImage: {image_url}"
+        text += f"\n\n이미지: {image_url}"
         return await self.send(chat_id, text.strip(), reply_to)
 
     async def send_document(

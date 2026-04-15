@@ -445,7 +445,7 @@ class TestDispatchMessage(unittest.TestCase):
 
         asyncio.run(adapter._dispatch_message(msg_data))
         self.assertEqual(len(captured_events), 1)
-        self.assertIn("[Subject: Help with Python]", captured_events[0].text)
+        self.assertIn("[제목: Help with Python]", captured_events[0].text)
         self.assertIn("How do I use lists?", captured_events[0].text)
 
     def test_reply_subject_not_duplicated(self):
@@ -473,11 +473,11 @@ class TestDispatchMessage(unittest.TestCase):
 
         asyncio.run(adapter._dispatch_message(msg_data))
         self.assertEqual(len(captured_events), 1)
-        self.assertNotIn("[Subject:", captured_events[0].text)
+        self.assertNotIn("[제목:", captured_events[0].text)
         self.assertEqual(captured_events[0].text, "Thanks for the help!")
 
     def test_empty_body_handled(self):
-        """Email with no body should dispatch '(empty email)'."""
+        """Email with no body should dispatch '(빈 이메일)'."""
         import asyncio
         adapter = self._make_adapter()
         captured_events = []
@@ -501,7 +501,7 @@ class TestDispatchMessage(unittest.TestCase):
 
         asyncio.run(adapter._dispatch_message(msg_data))
         self.assertEqual(len(captured_events), 1)
-        self.assertIn("(empty email)", captured_events[0].text)
+        self.assertIn("(빈 이메일)", captured_events[0].text)
 
     def test_image_attachment_sets_photo_type(self):
         """Email with image attachment should set message type to PHOTO."""
@@ -721,7 +721,7 @@ class TestSendMethods(unittest.TestCase):
 
         call_args = adapter.send.call_args
         body = call_args[0][1]
-        self.assertIn("https://img.com/photo.jpg", body)
+        self.assertIn("이미지: https://img.com/photo.jpg", body)
         self.assertIn("My photo", body)
 
     def test_send_document_with_attachment(self):
@@ -796,6 +796,8 @@ class TestConnectDisconnect(unittest.TestCase):
     def test_connect_success(self):
         """Successful IMAP + SMTP connection returns True."""
         import asyncio
+        import io
+        from contextlib import redirect_stdout
         adapter = self._make_adapter()
 
         mock_imap = MagicMock()
@@ -806,10 +808,13 @@ class TestConnectDisconnect(unittest.TestCase):
             mock_server = MagicMock()
             mock_smtp.return_value = mock_server
 
-            result = asyncio.run(adapter.connect())
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                result = asyncio.run(adapter.connect())
 
             self.assertTrue(result)
             self.assertTrue(adapter._running)
+            self.assertIn("[이메일] hermes@test.com 계정으로 연결했어요", stdout.getvalue())
             # Should have skipped existing messages
             self.assertEqual(len(adapter._seen_uids), 3)
             # Cleanup
