@@ -200,6 +200,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "deepseek-chat",
         "deepseek-reasoner",
     ],
+    "flock": [
+        "qwen3-30b-a3b-instruct-2507",
+    ],
     "xiaomi": [
         "mimo-v2-pro",
         "mimo-v2-omni",
@@ -524,6 +527,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("huggingface",    "Hugging Face",             "Hugging Face Inference Providers (20+ open models)"),
     ProviderEntry("gemini",         "Google AI Studio",         "Google AI Studio (Gemini models — OpenAI-compatible endpoint)"),
     ProviderEntry("deepseek",       "DeepSeek",                 "DeepSeek (DeepSeek-V3, R1, coder — direct API)"),
+    ProviderEntry("flock",          "FLock API Platform",       "FLock API Platform — Privacy First AI (qwen3 and more; platform.flock.io)"),
     ProviderEntry("xai",            "xAI",                      "xAI (Grok models — direct API)"),
     ProviderEntry("zai",            "Z.AI / GLM",               "Z.AI / GLM (Zhipu AI direct API)"),
     ProviderEntry("kimi-coding",    "Kimi / Moonshot",          "Kimi / Moonshot (Moonshot AI direct API)"),
@@ -567,6 +571,8 @@ _PROVIDER_ALIASES = {
     "claude": "anthropic",
     "claude-code": "anthropic",
     "deep-seek": "deepseek",
+    "flock-io": "flock",
+    "flock.io": "flock",
     "opencode": "opencode-zen",
     "zen": "opencode-zen",
     "go": "opencode-go",

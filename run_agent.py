@@ -918,6 +918,10 @@ class AIAgent:
                     }
                 elif "portal.qwen.ai" in effective_base.lower():
                     client_kwargs["default_headers"] = _qwen_portal_headers()
+                elif "api.flock.io" in effective_base.lower():
+                    # FLock API Platform (platform.flock.io): official docs at
+                    # docs.flock.io specify x-litellm-api-key as the auth header.
+                    client_kwargs["default_headers"] = {"x-litellm-api-key": api_key}
             else:
                 # No explicit creds — use the centralized provider router
                 from agent.auxiliary_client import resolve_provider_client
@@ -4676,6 +4680,9 @@ class AIAgent:
             self._client_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
         elif "portal.qwen.ai" in normalized:
             self._client_kwargs["default_headers"] = _qwen_portal_headers()
+        elif "api.flock.io" in normalized:
+            api_key = self._client_kwargs.get("api_key", "")
+            self._client_kwargs["default_headers"] = {"x-litellm-api-key": api_key}
         else:
             self._client_kwargs.pop("default_headers", None)
 
