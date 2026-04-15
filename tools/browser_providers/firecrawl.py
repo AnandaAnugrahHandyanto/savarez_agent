@@ -2,7 +2,6 @@
 
 import logging
 import os
-import uuid
 from typing import Dict
 
 import requests
@@ -61,7 +60,7 @@ class FirecrawlProvider(CloudBrowserProvider):
             )
 
         data = response.json()
-        session_name = f"hermes_{task_id}_{uuid.uuid4().hex[:8]}"
+        session_name = self.make_session_name(task_id)
 
         logger.info("Created Firecrawl browser session %s", session_name)
 
@@ -73,35 +72,31 @@ class FirecrawlProvider(CloudBrowserProvider):
         }
 
     def close_session(self, session_id: str) -> bool:
-        try:
-            response = requests.delete(
+        def _make_request(_config=None):
+            return requests.delete(
                 f"{self._api_url()}/v2/browser/{session_id}",
                 headers=self._headers(),
                 timeout=10,
             )
-            if response.status_code in (200, 201, 204):
-                logger.debug("Successfully closed Firecrawl session %s", session_id)
-                return True
-            else:
-                logger.warning(
-                    "Failed to close Firecrawl session %s: HTTP %s - %s",
-                    session_id,
-                    response.status_code,
-                    response.text[:200],
-                )
-                return False
-        except Exception as e:
-            logger.error("Exception closing Firecrawl session %s: %s", session_id, e)
-            return False
+        # Firecrawl uses _headers() directly, so pass a dummy get_config
+        def _get_config():
+            self._headers()  # raises ValueError if missing
+            return {}  # not used by _make_request
+        return self._close_session_template(session_id, _get_config, _make_request)
 
     def emergency_cleanup(self, session_id: str) -> None:
-        try:
+        def _get_config_or_none():
+            try:
+                self._headers()
+                return {}
+            except ValueError:
+                return None
+        def _fire_and_forget(_config):
             requests.delete(
                 f"{self._api_url()}/v2/browser/{session_id}",
                 headers=self._headers(),
                 timeout=5,
             )
-        except ValueError:
-            logger.warning("Cannot emergency-cleanup Firecrawl session %s — missing credentials", session_id)
-        except Exception as e:
-            logger.debug("Emergency cleanup failed for Firecrawl session %s: %s", session_id, e)
+        self._emergency_cleanup_template(
+            session_id, _get_config_or_none, _fire_and_forget,
+        )

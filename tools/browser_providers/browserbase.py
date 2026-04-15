@@ -2,7 +2,6 @@
 
 import logging
 import os
-import uuid
 from typing import Any, Dict, Optional
 
 import requests
@@ -139,7 +138,7 @@ class BrowserbaseProvider(CloudBrowserProvider):
             )
 
         session_data = response.json()
-        session_name = f"hermes_{task_id}_{uuid.uuid4().hex[:8]}"
+        session_name = self.make_session_name(task_id)
 
         if enable_proxies and not proxies_fallback:
             features_enabled["proxies"] = True
@@ -161,14 +160,8 @@ class BrowserbaseProvider(CloudBrowserProvider):
         }
 
     def close_session(self, session_id: str) -> bool:
-        try:
-            config = self._get_config()
-        except ValueError:
-            logger.warning("Cannot close Browserbase session %s — missing credentials", session_id)
-            return False
-
-        try:
-            response = requests.post(
+        def _make_request(config):
+            return requests.post(
                 f"{config['base_url']}/v1/sessions/{session_id}",
                 headers={
                     "X-BB-API-Key": config["api_key"],
@@ -180,27 +173,10 @@ class BrowserbaseProvider(CloudBrowserProvider):
                 },
                 timeout=10,
             )
-            if response.status_code in (200, 201, 204):
-                logger.debug("Successfully closed Browserbase session %s", session_id)
-                return True
-            else:
-                logger.warning(
-                    "Failed to close session %s: HTTP %s - %s",
-                    session_id,
-                    response.status_code,
-                    response.text[:200],
-                )
-                return False
-        except Exception as e:
-            logger.error("Exception closing Browserbase session %s: %s", session_id, e)
-            return False
+        return self._close_session_template(session_id, self._get_config, _make_request)
 
     def emergency_cleanup(self, session_id: str) -> None:
-        config = self._get_config_or_none()
-        if config is None:
-            logger.warning("Cannot emergency-cleanup Browserbase session %s — missing credentials", session_id)
-            return
-        try:
+        def _fire_and_forget(config):
             requests.post(
                 f"{config['base_url']}/v1/sessions/{session_id}",
                 headers={
@@ -213,5 +189,6 @@ class BrowserbaseProvider(CloudBrowserProvider):
                 },
                 timeout=5,
             )
-        except Exception as e:
-            logger.debug("Emergency cleanup failed for Browserbase session %s: %s", session_id, e)
+        self._emergency_cleanup_template(
+            session_id, self._get_config_or_none, _fire_and_forget,
+        )
