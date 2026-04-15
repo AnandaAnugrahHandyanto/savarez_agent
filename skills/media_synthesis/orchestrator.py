@@ -1,14 +1,21 @@
 import asyncio
 import json
+import shutil
 import uuid
 import os
 import logging
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 from .schema import MasterResearchLedger, PodcastProject, DialogueLine, AudioClip
 from .tts_provider import MacNativeTTSProvider, ElevenLabsTTSProvider
 
 logger = logging.getLogger(__name__)
+
+# ~/.hermes/podcasts/ — the directory the Hermes Companion app watches
+_COMPANION_PODCASTS_DIR = os.path.join(Path.home(), ".hermes", "podcasts")
+
 
 class MediaSynthesisOrchestrator:
     def __init__(self, agent_runner_coro):
@@ -115,12 +122,85 @@ class MediaSynthesisOrchestrator:
             f.write(md_content)
         return out_file
 
+    def _publish_to_companion(
+        self,
+        bundle_id: str,
+        script: PodcastProject,
+        audio_path: str,
+        topic: str,
+    ) -> None:
+        """
+        Write a copy of the episode to ~/.hermes/podcasts/{bundle_id}/ so the
+        Hermes Companion app (Swift) can discover and play it.
+
+        Expected layout (per PodcastEpisode.swift):
+            ~/.hermes/podcasts/{id}/metadata.json
+            ~/.hermes/podcasts/{id}/podcast.mp3
+            ~/.hermes/podcasts/{id}/transcript.json  (optional)
+        """
+        companion_dir = os.path.join(_COMPANION_PODCASTS_DIR, bundle_id)
+        os.makedirs(companion_dir, exist_ok=True)
+
+        # ── Copy audio as podcast.mp3 ──
+        dest_audio = os.path.join(companion_dir, "podcast.mp3")
+        if os.path.isfile(audio_path):
+            shutil.copy2(audio_path, dest_audio)
+        else:
+            logger.warning(f"Audio file not found for companion publish: {audio_path}")
+
+        # ── Compute duration from the audio file ──
+        duration_seconds = 0.0
+        try:
+            from pydub import AudioSegment
+            seg = AudioSegment.from_file(dest_audio)
+            duration_seconds = len(seg) / 1000.0
+        except Exception:
+            # Fallback: estimate from script timeline
+            duration_seconds = float(script.target_duration_minutes * 60)
+
+        # ── Write metadata.json matching PodcastEpisode.swift ──
+        metadata = {
+            "title": script.episode_title,
+            "source": topic,
+            "style": "deep_dive",
+            "format": "mp3",
+            "duration_seconds": round(duration_seconds, 2),
+            "turn_count": len(script.timeline),
+            "created_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S.%f"),
+            "tts_provider": self.tts.__class__.__name__,
+        }
+
+        metadata_path = os.path.join(companion_dir, "metadata.json")
+        with open(metadata_path, "w") as f:
+            json.dump(metadata, f, indent=2)
+
+        # ── Write transcript.json (optional enrichment) ──
+        transcript = [
+            {"speaker": line.speaker, "text": line.text}
+            for line in script.timeline
+        ]
+        transcript_path = os.path.join(companion_dir, "transcript.json")
+        with open(transcript_path, "w") as f:
+            json.dump(transcript, f, indent=2)
+
+        logger.info(f"Published episode to Companion: {companion_dir}")
+
     async def execute_pipeline(self, topic: str, source_refs: List[str], output_dir: str) -> Dict[str, str]:
         ledger = await self._gather_research(topic, source_refs)
         script = await self._generate_script(ledger)
         audio_path = await self._synthesize_audio(script, output_dir)
         article_path = await self._generate_article(ledger, script, output_dir)
-        
+
+        # Derive the bundle_id from the output directory name
+        bundle_id = os.path.basename(output_dir)
+
+        # Publish to ~/.hermes/podcasts/ for the Companion app
+        try:
+            self._publish_to_companion(bundle_id, script, audio_path, topic)
+        except Exception as e:
+            logger.error(f"Failed to publish to Companion: {e}", exc_info=True)
+            # Non-fatal — the mission-control bundle still works
+
         return {
             "audio_url": os.path.basename(audio_path),
             "article_path": article_path,
