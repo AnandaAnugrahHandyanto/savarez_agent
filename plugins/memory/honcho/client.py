@@ -224,6 +224,18 @@ class HonchoClientConfig:
         resolved_host = host or resolve_active_host()
         api_key = os.environ.get("HONCHO_API_KEY")
         base_url = os.environ.get("HONCHO_BASE_URL", "").strip() or None
+      if base_url:
+            try:
+                from tools.url_safety import is_safe_url
+                if not is_safe_url(base_url):
+                    logger.warning(
+                        "HONCHO_BASE_URL '%s' resolves to a private/internal address "
+                        "and has been ignored.",
+                        base_url,
+                    )
+                    base_url = None
+            except ImportError:
+                pass
         return cls(
             host=resolved_host,
             workspace_id=workspace_id,
