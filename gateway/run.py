@@ -79,6 +79,18 @@ from hermes_constants import get_hermes_home
 from utils import atomic_yaml_write, is_truthy_value
 _hermes_home = get_hermes_home()
 
+
+def _clean_shutdown_marker_path() -> Path:
+    return _hermes_home / ".clean_shutdown"
+
+
+def _write_clean_shutdown_marker() -> None:
+    """Best-effort marker that tells the next startup this exit was intentional."""
+    try:
+        _clean_shutdown_marker_path().touch()
+    except Exception:
+        pass
+
 # Load environment variables from ~/.hermes/.env first.
 # User-managed env files should override stale shell exports on restart.
 from dotenv import load_dotenv  # backward-compat for tests that monkeypatch this symbol
@@ -241,6 +253,7 @@ if not _configured_cwd or _configured_cwd in (".", "auto", "cwd"):
 from gateway.config import (
     Platform,
     GatewayConfig,
+    HomeChannel,
     load_gateway_config,
 )
 from gateway.session import (
@@ -1780,7 +1793,7 @@ class GatewayRunner:
         # process already drained active agents, so sessions aren't stuck.
         # This prevents unwanted auto-resets after `hermes update`,
         # `hermes gateway restart`, or `/restart`.
-        _clean_marker = _hermes_home / ".clean_shutdown"
+        _clean_marker = _clean_shutdown_marker_path()
         if _clean_marker.exists():
             logger.info("Previous gateway exited cleanly — skipping session suspension")
             try:
@@ -2340,18 +2353,15 @@ class GatewayRunner:
             remove_pid_file()
 
             # Write a clean-shutdown marker so the next startup knows this
-            # wasn't a crash.  suspend_recently_active() only needs to run
-            # after unexpected exits.  However, if the drain timed out and
+            # wasn't a crash. suspend_recently_active() only needs to run
+            # after unexpected exits. However, if the drain timed out and
             # agents were force-interrupted, their sessions may be in an
             # incomplete state (trailing tool response, no final assistant
-            # message).  Skip the marker in that case so the next startup
+            # message). Skip the marker in that case so the next startup
             # suspends those sessions — giving users a clean slate instead
             # of resuming a half-finished tool loop.
             if not timed_out:
-                try:
-                    (_hermes_home / ".clean_shutdown").touch()
-                except Exception:
-                    pass
+                _write_clean_shutdown_marker()
             else:
                 logger.info(
                     "Skipping .clean_shutdown marker — drain timed out with "
@@ -2360,8 +2370,8 @@ class GatewayRunner:
                 )
 
             # Track sessions that were active at shutdown for stuck-loop
-            # detection (#7536).  On each restart, the counter increments
-            # for sessions that were running.  If a session hits the
+            # detection (#7536). On each restart, the counter increments
+            # for sessions that were running. If a session hits the
             # threshold (3 consecutive restarts while active), the next
             # startup auto-suspends it — breaking the loop.
             if active_agents:
@@ -3439,6 +3449,13 @@ class GatewayRunner:
                 "session_id": session_entry.session_id,
                 "session_key": session_key,
             })
+            adapter = self.adapters.get(source.platform)
+            enrich_new_session_history = getattr(adapter, "enrich_new_session_history", None) if adapter else None
+            if callable(enrich_new_session_history):
+                try:
+                    event = await enrich_new_session_history(event)
+                except Exception:
+                    logger.debug("New-session history enrichment failed", exc_info=True)
         
         # Build session context
         context = build_session_context(source, self.config, session_entry)
@@ -3819,8 +3836,7 @@ class GatewayRunner:
         # Skip for webhooks - they deliver directly to configured targets (github_comment, etc.)
         if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
             platform_name = source.platform.value
-            env_key = f"{platform_name.upper()}_HOME_CHANNEL"
-            if not os.getenv(env_key):
+            if not self._has_home_channel_configured(source.platform):
                 adapter = self.adapters.get(source.platform)
                 if adapter:
                     await adapter.send(
@@ -5123,30 +5139,71 @@ class GatewayRunner:
         preview = removed_msg[:40] + "..." if len(removed_msg) > 40 else removed_msg
         return f"↩️ Undid {removed_count} message(s).\nRemoved: \"{preview}\""
     
+    def _has_home_channel_configured(self, platform: Optional[Platform]) -> bool:
+        """Return True when a platform has a home channel via config or env override."""
+        if platform is None:
+            return False
+        if self.config.get_home_channel(platform):
+            return True
+        env_key = f"{platform.value.upper()}_HOME_CHANNEL"
+        return bool(os.getenv(env_key))
+
     async def _handle_set_home_command(self, event: MessageEvent) -> str:
         """Handle /sethome command -- set the current chat as the platform's home channel."""
         source = event.source
-        platform_name = source.platform.value if source.platform else "unknown"
+        platform = source.platform
+        platform_name = platform.value if platform else "unknown"
         chat_id = source.chat_id
         chat_name = source.chat_name or chat_id
-        
+
         env_key = f"{platform_name.upper()}_HOME_CHANNEL"
-        
-        # Save to config.yaml
+        env_name_key = f"{platform_name.upper()}_HOME_CHANNEL_NAME"
+
+        # Save to config.yaml using the GatewayConfig schema under platforms.<platform>.home_channel.
         try:
             import yaml
-            config_path = _hermes_home / 'config.yaml'
+            config_path = _hermes_home / "config.yaml"
             user_config = {}
             if config_path.exists():
                 with open(config_path, encoding="utf-8") as f:
                     user_config = yaml.safe_load(f) or {}
-            user_config[env_key] = chat_id
+
+            platforms_cfg = user_config.get("platforms")
+            if not isinstance(platforms_cfg, dict):
+                platforms_cfg = {}
+                user_config["platforms"] = platforms_cfg
+
+            platform_cfg = platforms_cfg.get(platform_name)
+            if not isinstance(platform_cfg, dict):
+                platform_cfg = {}
+                platforms_cfg[platform_name] = platform_cfg
+
+            platform_cfg["home_channel"] = {
+                "platform": platform_name,
+                "chat_id": str(chat_id),
+                "name": chat_name,
+            }
+
+            # Clean up legacy top-level keys written by older /sethome behavior.
+            user_config.pop(env_key, None)
+            user_config.pop(env_name_key, None)
+
             atomic_yaml_write(config_path, user_config)
+
             # Also set in the current environment so it takes effect immediately
             os.environ[env_key] = str(chat_id)
+            os.environ[env_name_key] = str(chat_name)
+            if platform is not None:
+                platform_cfg_obj = self.config.platforms.get(platform)
+                if platform_cfg_obj is not None:
+                    platform_cfg_obj.home_channel = HomeChannel(
+                        platform=platform,
+                        chat_id=str(chat_id),
+                        name=chat_name,
+                    )
         except Exception as e:
             return f"Failed to save home channel: {e}"
-        
+
         return (
             f"✅ Home channel set to **{chat_name}** (ID: {chat_id}).\n"
             f"Cron jobs and cross-platform messages will be delivered here."

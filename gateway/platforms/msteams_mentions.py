@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import html
 import re
 from typing import Any, Iterable
 
+from markdown_it import MarkdownIt
+
 _MENTION_TAG_RE = re.compile(r"<at[^>]*>(.*?)</at>", re.IGNORECASE | re.DOTALL)
+_LEADING_MENTION_BLOCK_RE = re.compile(r"^\s*(?:<p[^>]*>\s*)?(?:<at[^>]*>.*?</at>\s*)+", re.IGNORECASE | re.DOTALL)
 
 AI_GENERATED_ENTITY = {
     "type": "https://schema.org/Message",
@@ -12,12 +16,26 @@ AI_GENERATED_ENTITY = {
     "additionalType": ["AIGeneratedContent"],
 }
 
+_TEAMS_MARKDOWN = MarkdownIt("commonmark", {"breaks": True, "html": False})
+
+
+def strip_leading_teams_mentions(text: str) -> str:
+    if not text:
+        return ""
+    return _LEADING_MENTION_BLOCK_RE.sub("", text, count=1)
+
 
 def strip_teams_mentions(text: str) -> str:
     if not text:
         return ""
-    cleaned = _MENTION_TAG_RE.sub(lambda m: m.group(1).strip(), text)
-    return re.sub(r"\s+", " ", cleaned).strip()
+    cleaned = _MENTION_TAG_RE.sub(lambda match: f" {match.group(1)} ", text)
+    cleaned = re.sub(r'<blockquote[^>]*itemtype=["\']http://schema\.skype\.com/Reply["\'][^>]*>.*?</blockquote>', " ", cleaned, flags=re.IGNORECASE | re.DOTALL)
+    cleaned = re.sub(r"<br\s*/?>", "\n", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"</p\s*>", "\n", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+    cleaned = html.unescape(cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned.strip()
 
 
 def to_teams_html(content: str) -> str:

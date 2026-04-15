@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import html
 import json
 import logging
 import mimetypes
@@ -31,7 +32,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
     cache_document_from_bytes,
-    cache_image_from_url,
+    cache_image_from_bytes,
 )
 from gateway.platforms.msteams_graph import BOTFRAMEWORK_SCOPE, GRAPH_SCOPE, MSTeamsBotClient, MSTeamsGraphClient
 from gateway.platforms.msteams_mentions import (
@@ -39,6 +40,7 @@ from gateway.platforms.msteams_mentions import (
     build_mention_text_and_entities,
     build_poll_card,
     extract_activity_text,
+    strip_leading_teams_mentions,
 )
 from gateway.platforms.msteams_state import ConversationRef, ConversationRegistry, default_msteams_state_path
 
@@ -108,7 +110,7 @@ class BotFrameworkJWTValidator:
             algorithms=[str(header.get("alg") or "RS256")],
             audience=self._app_id,
             issuer=list(BOTFRAMEWORK_VALID_ISSUERS),
-            options={"require": ["exp", "iat", "iss", "aud"]},
+            options={"require": ["exp", "iss", "aud"]},
         )
         if service_url:
             token_service_url = str(payload.get("serviceurl") or payload.get("serviceUrl") or "").strip()
@@ -296,14 +298,18 @@ class MSTeamsAdapter(BasePlatformAdapter):
         self._teams_config = extra.get("teams") if isinstance(extra.get("teams"), dict) else {}
         self._chunk_mode = _normalize_chunk_mode(extra.get("chunk_mode"), "length")
         self._text_chunk_limit = min(self.MAX_MESSAGE_LENGTH, max(1, int(extra.get("text_chunk_limit") or self.MAX_MESSAGE_LENGTH)))
+        self._history_limit = max(0, int(extra.get("history_limit") or extra.get("historyLimit") or 50))
+        self._dm_history_limit = max(0, int(extra.get("dm_history_limit") or extra.get("dmHistoryLimit") or self._history_limit))
         self._max_body_bytes = max(1024, int(extra.get("max_body_bytes") or DEFAULT_MAX_BODY_BYTES))
         self._idempotency_ttl = max(60, int(extra.get("idempotency_ttl_seconds") or DEFAULT_IDEMPOTENCY_TTL_SECONDS))
         self._state_path = Path(extra.get("state_path") or default_msteams_state_path())
         self._auth_cache_ttl_seconds = max(300, int(extra.get("auth_cache_ttl_seconds") or DEFAULT_AUTH_CACHE_TTL_SECONDS))
         self._pending_upload_ttl_seconds = max(60, int(extra.get("pending_upload_ttl_seconds") or DEFAULT_PENDING_UPLOAD_TTL_SECONDS))
         self._sharepoint_site_id = str(extra.get("share_point_site_id") or extra.get("sharePointSiteId") or "").strip()
-        self._media_allow_hosts = _normalize_list(extra.get("media_allow_hosts")) or list(DEFAULT_MEDIA_ALLOW_HOSTS)
-        self._media_auth_allow_hosts = _normalize_list(extra.get("media_auth_allow_hosts")) or list(DEFAULT_MEDIA_AUTH_ALLOW_HOSTS)
+        configured_media_allow_hosts = _normalize_list(extra.get("media_allow_hosts"))
+        configured_media_auth_allow_hosts = _normalize_list(extra.get("media_auth_allow_hosts"))
+        self._media_allow_hosts = configured_media_allow_hosts or list(DEFAULT_MEDIA_ALLOW_HOSTS)
+        self._media_auth_allow_hosts = configured_media_auth_allow_hosts or list(DEFAULT_MEDIA_AUTH_ALLOW_HOSTS)
         self._seen_activities: dict[str, float] = {}
         self._pending_uploads: dict[str, PendingUpload] = {}
         self._runner: Optional[web.AppRunner] = None
@@ -420,6 +426,7 @@ class MSTeamsAdapter(BasePlatformAdapter):
             return invoke_response
         event = self._build_event(payload)
         if event is not None:
+            self._debug_log_inbound_attachments(payload, event)
             event = await self._enrich_event_media(event, payload)
             event = await self._enrich_event_history(event, payload)
             await self._queue.put(event)
@@ -456,6 +463,30 @@ class MSTeamsAdapter(BasePlatformAdapter):
         if not activity_id:
             return None
         return f"{conversation_id}:{activity_id}" if conversation_id else activity_id
+
+    def _debug_log_inbound_attachments(self, activity: Dict[str, Any], event: MessageEvent) -> None:
+        try:
+            attachments = activity.get("attachments") if isinstance(activity.get("attachments"), list) else []
+            if not attachments:
+                return
+            if getattr(event.source, "chat_type", "") != "dm":
+                return
+            summary = []
+            for attachment in attachments:
+                if not isinstance(attachment, dict):
+                    continue
+                content = attachment.get("content") if isinstance(attachment.get("content"), dict) else {}
+                item = {
+                    "contentType": attachment.get("contentType"),
+                    "hasContentUrl": bool(attachment.get("contentUrl")),
+                    "hasDownloadUrl": bool(content.get("downloadUrl")),
+                    "fileType": content.get("fileType"),
+                    "hasContentText": bool(content.get("text") or content.get("body") or content.get("content")),
+                }
+                summary.append(item)
+            logger.debug("[MSTeams][debug] DM inbound attachments activity_id=%s summary=%s", activity.get("id"), json.dumps(summary, ensure_ascii=False))
+        except Exception:
+            logger.debug("[MSTeams] Failed to emit inbound attachment debug summary", exc_info=True)
 
     def _is_duplicate_delivery(self, delivery_id: str) -> bool:
         now = time.time()
@@ -558,16 +589,78 @@ class MSTeamsAdapter(BasePlatformAdapter):
             return web.json_response({"status": 500, "body": {"error": str(exc)}}, status=200)
 
     @staticmethod
+    def _parse_attachment_json(value: Any) -> Any:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped.startswith("{") or stripped.startswith("["):
+                try:
+                    return json.loads(stripped)
+                except Exception:
+                    return value
+        return value
+
+    @classmethod
+    def _extract_message_reference(cls, activity: Dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
+        for attachment in activity.get("attachments") or []:
+            if not isinstance(attachment, dict):
+                continue
+            if str(attachment.get("contentType") or "").strip().lower() != "messagereference":
+                continue
+            content = cls._parse_attachment_json(attachment.get("content"))
+            if not isinstance(content, dict):
+                continue
+            reference = content.get("messageReference") if isinstance(content.get("messageReference"), dict) else content
+            message_id = str(reference.get("messageId") or content.get("messageId") or "").strip() or None
+            message_preview = str(reference.get("messagePreview") or content.get("messagePreview") or "").strip() or None
+            return message_id, message_preview
+        return None, None
+
+    @staticmethod
+    def _html_to_plain_text(value: str) -> str:
+        text = re.sub(r"<br\s*/?>", "\n", value, flags=re.IGNORECASE)
+        text = re.sub(r"</p\s*>", "\n", text, flags=re.IGNORECASE)
+        text = re.sub(r"<[^>]+>", "", text)
+        text = html.unescape(text)
+        text = re.sub(r"\s+\n", "\n", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
+    @classmethod
+    def _extract_reply_html_quote(cls, activity: Dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
+        for attachment in activity.get("attachments") or []:
+            if not isinstance(attachment, dict):
+                continue
+            content = attachment.get("content")
+            if isinstance(content, dict):
+                content = content.get("text") or content.get("body") or ""
+            if not isinstance(content, str) or "http://schema.skype.com/Reply" not in content:
+                continue
+            sender_match = re.search(r'<strong[^>]*itemprop=["\']mri["\'][^>]*>(.*?)</strong>', content, flags=re.IGNORECASE | re.DOTALL)
+            body_match = re.search(r'<p[^>]*itemprop=["\']copy["\'][^>]*>(.*?)</p>', content, flags=re.IGNORECASE | re.DOTALL)
+            sender = cls._html_to_plain_text(sender_match.group(1)) if sender_match else None
+            body = cls._html_to_plain_text(body_match.group(1)) if body_match else None
+            if body:
+                return sender, body
+        return None, None
+
+    @staticmethod
     def _extract_attachment_text(activity: Dict[str, Any]) -> Optional[str]:
+        _, reply_html_body = MSTeamsAdapter._extract_reply_html_quote(activity)
+        if reply_html_body:
+            return reply_html_body
         attachments = activity.get("attachments") or []
         for attachment in attachments:
             if not isinstance(attachment, dict):
                 continue
+            if str(attachment.get("contentType") or "").strip().lower() == "messagereference":
+                _, message_preview = MSTeamsAdapter._extract_message_reference({"attachments": [attachment]})
+                if message_preview:
+                    return message_preview
             for key in ("text", "contentText", "summary", "name"):
                 value = attachment.get(key)
                 if isinstance(value, str) and value.strip():
                     return value.strip()
-            content = attachment.get("content")
+            content = MSTeamsAdapter._parse_attachment_json(attachment.get("content"))
             if isinstance(content, dict):
                 for key in ("text", "content", "body", "subtitle", "title"):
                     value = content.get(key)
@@ -581,12 +674,44 @@ class MSTeamsAdapter(BasePlatformAdapter):
         for attachment in activity.get("attachments") or []:
             if not isinstance(attachment, dict):
                 continue
-            content_type = str(attachment.get("contentType") or "").lower()
-            if content_type.startswith("image/"):
+            if MSTeamsAdapter._attachment_is_image(attachment):
                 placeholders.append("<media:image>")
-            elif content_type:
+            elif str(attachment.get("contentType") or "").strip():
                 placeholders.append("<media:document>")
         return placeholders
+
+    @staticmethod
+    def _attachment_download_url(attachment: Dict[str, Any]) -> str:
+        content_type = str(attachment.get("contentType") or "").strip().lower()
+        if content_type == "application/vnd.microsoft.teams.file.download.info":
+            content = attachment.get("content") if isinstance(attachment.get("content"), dict) else {}
+            return str(content.get("downloadUrl") or attachment.get("contentUrl") or "").strip()
+        return str(attachment.get("contentUrl") or "").strip()
+
+    @staticmethod
+    def _attachment_file_name(attachment: Dict[str, Any]) -> str:
+        content = attachment.get("content") if isinstance(attachment.get("content"), dict) else {}
+        return str(content.get("fileName") or attachment.get("name") or "attachment").strip() or "attachment"
+
+    @staticmethod
+    def _attachment_media_type(attachment: Dict[str, Any]) -> str:
+        content_type = str(attachment.get("contentType") or "").strip().lower()
+        if content_type == "application/vnd.microsoft.teams.file.download.info":
+            content = attachment.get("content") if isinstance(attachment.get("content"), dict) else {}
+            file_type = str(content.get("fileType") or "").strip().lower()
+            file_name = str(content.get("fileName") or attachment.get("name") or "").strip().lower()
+            guessed, _ = mimetypes.guess_type(file_name or (f"file.{file_type}" if file_type else ""))
+            return (guessed or content_type or "application/octet-stream").lower()
+        return content_type or "application/octet-stream"
+
+    @classmethod
+    def _attachment_is_image(cls, attachment: Dict[str, Any]) -> bool:
+        media_type = cls._attachment_media_type(attachment)
+        if media_type.startswith("image/"):
+            return True
+        file_name = cls._attachment_file_name(attachment).lower()
+        guessed, _ = mimetypes.guess_type(file_name)
+        return bool(guessed and guessed.startswith("image/"))
 
     def _is_allowed_media_url(self, url: str) -> bool:
         parsed = urlparse(str(url or "").strip())
@@ -654,17 +779,18 @@ class MSTeamsAdapter(BasePlatformAdapter):
                         if not self._is_allowed_media_url(content_url):
                             continue
                         data = await self._graph._graph_get_bytes(graph_path)
-                        local_path = cache_document_from_bytes(data, name)
+                        if content_type.startswith("image/"):
+                            ext = mimetypes.guess_extension(content_type if content_type != "image/*" else "image/png") or ".png"
+                            local_path = cache_image_from_bytes(data, ext)
+                        else:
+                            local_path = cache_document_from_bytes(data, name)
                     else:
                         data = item.get("data")
                         if not isinstance(data, (bytes, bytearray)):
                             continue
                         if content_type.startswith("image/"):
-                            ext = mimetypes.guess_extension(content_type) or ".png"
-                            temp_path = self._state_path.parent / f"msteams-hosted-{int(time.time() * 1000)}{ext}"
-                            temp_path.parent.mkdir(parents=True, exist_ok=True)
-                            temp_path.write_bytes(bytes(data))
-                            local_path = str(temp_path)
+                            ext = mimetypes.guess_extension(content_type if content_type != "image/*" else "image/png") or ".png"
+                            local_path = cache_image_from_bytes(bytes(data), ext)
                         else:
                             local_path = cache_document_from_bytes(bytes(data), name)
                     media_urls.append(local_path)
@@ -681,19 +807,19 @@ class MSTeamsAdapter(BasePlatformAdapter):
         for attachment in activity.get("attachments") or []:
             if not isinstance(attachment, dict):
                 continue
-            content_url = str(attachment.get("contentUrl") or "").strip()
-            content_type = str(attachment.get("contentType") or "").strip().lower()
-            name = str(attachment.get("name") or "attachment")
+            content_url = self._attachment_download_url(attachment)
             if not content_url or not self._is_allowed_media_url(content_url):
                 continue
+            content_type = self._attachment_media_type(attachment)
+            name = self._attachment_file_name(attachment)
             try:
+                data = await self._download_media_bytes(content_url)
+                if data is None:
+                    continue
                 if content_type.startswith("image/"):
-                    ext = mimetypes.guess_extension(content_type) or ".png"
-                    local_path = await cache_image_from_url(content_url, ext=ext)
+                    ext = mimetypes.guess_extension(content_type if content_type != "image/*" else "image/png") or ".png"
+                    local_path = cache_image_from_bytes(data, ext)
                 else:
-                    data = await self._download_media_bytes(content_url)
-                    if data is None:
-                        continue
                     local_path = cache_document_from_bytes(data, name)
                 media_urls.append(local_path)
                 media_types.append(content_type or "application/octet-stream")
@@ -873,6 +999,79 @@ class MSTeamsAdapter(BasePlatformAdapter):
             event.text = f"{thread_context}{event.text}" if event.text else thread_context.rstrip()
         return event
 
+    def _history_allowed_sender_ids(self, activity: Dict[str, Any], policy: EffectiveConversationPolicy) -> set[str] | None:
+        channel_data = activity.get("channelData") or {}
+        team_cfg, channel_cfg, teams_present = self._resolve_team_and_channel_config(activity)
+        sender_ids: set[str] = set()
+        if self._group_allow_from:
+            if any(str(item).strip() == "*" for item in self._group_allow_from):
+                return None
+            sender_ids.update(str(item).strip() for item in self._group_allow_from if str(item).strip())
+        elif self._allow_from:
+            if any(str(item).strip() == "*" for item in self._allow_from):
+                return None
+            sender_ids.update(str(item).strip() for item in self._allow_from if str(item).strip())
+        elif teams_present and (team_cfg or channel_cfg):
+            return None
+        sender_id = str((activity.get("from") or {}).get("aadObjectId") or (activity.get("from") or {}).get("id") or "").strip()
+        if policy.sender_allowed and sender_id:
+            sender_ids.add(sender_id)
+        return sender_ids or None
+
+    async def enrich_new_session_history(self, event: MessageEvent) -> MessageEvent:
+        if not self._graph or event.is_command() or event.reply_to_message_id:
+            return event
+        raw_activity = event.raw_message if isinstance(event.raw_message, dict) else None
+        if not raw_activity:
+            return event
+        chat_type = getattr(event.source, "chat_type", "")
+        try:
+            if chat_type == "dm":
+                if self._dm_history_limit <= 0:
+                    return event
+                history_context = await self._graph.build_recent_chat_context(
+                    event.source.chat_id,
+                    current_message_id=event.message_id,
+                    limit=self._dm_history_limit,
+                    user_turns_only=True,
+                )
+            elif chat_type == "group":
+                if self._history_limit <= 0:
+                    return event
+                policy = self._resolve_policy(raw_activity, chat_type)
+                allowed_sender_ids = self._history_allowed_sender_ids(raw_activity, policy)
+                history_context = await self._graph.build_recent_chat_context(
+                    event.source.chat_id,
+                    current_message_id=event.message_id,
+                    limit=self._history_limit,
+                    allowed_sender_ids=allowed_sender_ids,
+                )
+            elif chat_type == "channel":
+                if self._history_limit <= 0:
+                    return event
+                channel_data = raw_activity.get("channelData") or {}
+                team_id = str((channel_data.get("team") or {}).get("id") or "").strip()
+                channel_id = str((channel_data.get("channel") or {}).get("id") or "").strip()
+                if not team_id or not channel_id:
+                    return event
+                policy = self._resolve_policy(raw_activity, chat_type)
+                allowed_sender_ids = self._history_allowed_sender_ids(raw_activity, policy)
+                history_context = await self._graph.build_recent_channel_context(
+                    team_id,
+                    channel_id,
+                    current_message_id=event.message_id,
+                    limit=self._history_limit,
+                    allowed_sender_ids=allowed_sender_ids,
+                )
+            else:
+                return event
+        except Exception:
+            logger.debug("[MSTeams] Failed to fetch new-session history context", exc_info=True)
+            return event
+        if history_context and history_context not in event.text:
+            event.text = f"{history_context}{event.text}" if event.text else history_context.rstrip()
+        return event
+
     def _chunk_text_for_send(self, content: str) -> list[str]:
         if not content.strip():
             return [content]
@@ -987,6 +1186,8 @@ class MSTeamsAdapter(BasePlatformAdapter):
         chat_type = self._chat_type(activity)
         chat_name = self._chat_name(activity)
         reply_to_id = str(activity.get("replyToId") or "") or None
+        if not reply_to_id:
+            reply_to_id, _ = self._extract_message_reference(activity)
         policy = self._resolve_policy(activity, chat_type)
         self._conversations.remember(
             ConversationRef(
@@ -1020,7 +1221,28 @@ class MSTeamsAdapter(BasePlatformAdapter):
             thread_id=reply_to_id,
         )
         text = extract_activity_text(activity)
+        raw_text = str(activity.get("text") or "")
+        if raw_text:
+            normalized_activity_text = re.sub(
+                r'<blockquote[^>]*itemtype=["\']http://schema\.skype\.com/Reply["\'][^>]*>.*?</blockquote>',
+                " ",
+                raw_text,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            normalized_activity_text = strip_leading_teams_mentions(normalized_activity_text)
+            if normalized_activity_text != raw_text:
+                text = extract_activity_text({**activity, "text": normalized_activity_text})
+                if re.match(r"^\s*(?:<at>.*?</at>\s*)+/", raw_text, flags=re.IGNORECASE | re.DOTALL):
+                    slash_index = text.find("/")
+                    if slash_index >= 0:
+                        text = text[slash_index:]
+        _, reply_html_body = self._extract_reply_html_quote(activity)
         reply_context = self._extract_attachment_text(activity)
+        if not reply_context:
+            reply_context = reply_html_body
+        if not reply_context:
+            _, message_preview = self._extract_message_reference(activity)
+            reply_context = message_preview
         if not reply_context and reply_to_id:
             placeholders = self._extract_attachment_placeholders(activity)
             if placeholders:
@@ -1134,6 +1356,8 @@ class MSTeamsAdapter(BasePlatformAdapter):
             normalized = str(entry).strip()
             if not normalized:
                 continue
+            if normalized == "*":
+                return True
             if sender_id and normalized == sender_id:
                 return True
             if self._dangerously_allow_name_matching and sender_name and normalized.lower() == sender_name.lower():

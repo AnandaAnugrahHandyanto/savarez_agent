@@ -6,7 +6,7 @@ import logging
 from typing import Any, Dict, Optional
 from urllib.parse import quote
 
-from gateway.platforms.msteams_mentions import strip_teams_mentions, to_teams_html
+from gateway.platforms.msteams_mentions import strip_leading_teams_mentions, strip_teams_mentions
 from gateway.platforms.msteams_state import ConversationRef
 
 logger = logging.getLogger(__name__)
@@ -19,6 +19,8 @@ GRAPH_BETA_BASE_URL = "https://graph.microsoft.com/beta"
 USER_SELECT_FIELDS = "id,displayName,mail,jobTitle,userPrincipalName,officeLocation"
 THREAD_CONTEXT_HEADER = "[Thread context — prior messages in this thread (not yet in conversation history):]"
 THREAD_CONTEXT_FOOTER = "[End of thread context]"
+RECENT_CONTEXT_HEADER = "[Recent Teams context — prior messages not yet in conversation history:]"
+RECENT_CONTEXT_FOOTER = "[End of recent Teams context]"
 
 
 class _OAuthClientCredentialsMixin:
@@ -177,8 +179,29 @@ class MSTeamsGraphClient(_OAuthClientCredentialsMixin):
         if isinstance(body, dict):
             content = str(body.get("content") or "").strip()
             if content:
-                return strip_teams_mentions(content)
+                return strip_teams_mentions(strip_leading_teams_mentions(content))
         return str(message.get("summary") or message.get("subject") or "").strip()
+
+    @staticmethod
+    def _extract_message_sender(message: Dict[str, Any]) -> tuple[str, str, bool]:
+        from_payload = message.get("from") if isinstance(message, dict) else None
+        if not isinstance(from_payload, dict):
+            return "", "unknown", False
+        user = from_payload.get("user") if isinstance(from_payload.get("user"), dict) else {}
+        app = from_payload.get("application") if isinstance(from_payload.get("application"), dict) else {}
+        sender_id = str(user.get("id") or app.get("id") or "").strip()
+        sender_name = str(user.get("displayName") or app.get("displayName") or "unknown").strip() or "unknown"
+        is_bot = bool(app) or str(message.get("messageType") or "").lower() == "systemeventmessage"
+        return sender_id, sender_name, is_bot
+
+    @staticmethod
+    def _format_recent_context(prefix: str, messages: list[tuple[str, str]]) -> str:
+        if not messages:
+            return ""
+        lines = [f"{name}: {text}" for name, text in messages if text]
+        if not lines:
+            return ""
+        return prefix + "\n" + "\n".join(lines) + "\n" + RECENT_CONTEXT_FOOTER + "\n\n"
 
     async def get_channel_message(self, team_id: str, channel_id: str, message_id: str) -> Dict[str, Any]:
         return await self._graph_get(f"/teams/{team_id}/channels/{channel_id}/messages/{message_id}")
@@ -186,6 +209,22 @@ class MSTeamsGraphClient(_OAuthClientCredentialsMixin):
     async def list_channel_thread_replies(self, team_id: str, channel_id: str, message_id: str, *, limit: int = 20) -> list[Dict[str, Any]]:
         payload = await self._graph_get(
             f"/teams/{team_id}/channels/{channel_id}/messages/{message_id}/replies",
+            params={"$top": max(1, min(int(limit or 20), 50))},
+        )
+        values = payload.get("value") if isinstance(payload, dict) else None
+        return [item for item in values if isinstance(item, dict)] if isinstance(values, list) else []
+
+    async def list_channel_messages(self, team_id: str, channel_id: str, *, limit: int = 20) -> list[Dict[str, Any]]:
+        payload = await self._graph_get(
+            f"/teams/{team_id}/channels/{channel_id}/messages",
+            params={"$top": max(1, min(int(limit or 20), 50))},
+        )
+        values = payload.get("value") if isinstance(payload, dict) else None
+        return [item for item in values if isinstance(item, dict)] if isinstance(values, list) else []
+
+    async def list_chat_messages(self, chat_id: str, *, limit: int = 20) -> list[Dict[str, Any]]:
+        payload = await self._graph_get(
+            f"/chats/{quote(chat_id, safe='')}/messages",
             params={"$top": max(1, min(int(limit or 20), 50))},
         )
         values = payload.get("value") if isinstance(payload, dict) else None
@@ -222,6 +261,60 @@ class MSTeamsGraphClient(_OAuthClientCredentialsMixin):
         if not parts:
             return ""
         return THREAD_CONTEXT_HEADER + "\n" + "\n".join(parts) + "\n" + THREAD_CONTEXT_FOOTER + "\n\n"
+
+    async def build_recent_channel_context(
+        self,
+        team_id: str,
+        channel_id: str,
+        *,
+        current_message_id: str | None = None,
+        limit: int = 20,
+        allowed_sender_ids: set[str] | None = None,
+    ) -> str:
+        messages = await self.list_channel_messages(team_id, channel_id, limit=limit)
+        normalized_current_id = str(current_message_id or "").strip()
+        items: list[tuple[str, str]] = []
+        for message in reversed(messages):
+            message_id = str(message.get("id") or "").strip()
+            if normalized_current_id and message_id == normalized_current_id:
+                continue
+            text = self._extract_message_text(message)
+            if not text:
+                continue
+            sender_id, sender_name, is_bot = self._extract_message_sender(message)
+            if is_bot:
+                continue
+            if allowed_sender_ids is not None and sender_id not in allowed_sender_ids:
+                continue
+            items.append((sender_name, text))
+        return self._format_recent_context(RECENT_CONTEXT_HEADER, items)
+
+    async def build_recent_chat_context(
+        self,
+        chat_id: str,
+        *,
+        current_message_id: str | None = None,
+        limit: int = 20,
+        allowed_sender_ids: set[str] | None = None,
+        user_turns_only: bool = False,
+    ) -> str:
+        messages = await self.list_chat_messages(chat_id, limit=limit)
+        normalized_current_id = str(current_message_id or "").strip()
+        items: list[tuple[str, str]] = []
+        for message in reversed(messages):
+            message_id = str(message.get("id") or "").strip()
+            if normalized_current_id and message_id == normalized_current_id:
+                continue
+            text = self._extract_message_text(message)
+            if not text:
+                continue
+            sender_id, sender_name, is_bot = self._extract_message_sender(message)
+            if user_turns_only and is_bot:
+                continue
+            if allowed_sender_ids is not None and sender_id not in allowed_sender_ids:
+                continue
+            items.append((sender_name, text))
+        return self._format_recent_context(RECENT_CONTEXT_HEADER, items)
 
     async def upload_file_to_sharepoint(
         self,
@@ -500,6 +593,15 @@ class MSTeamsBotClient(_OAuthClientCredentialsMixin):
     ) -> Dict[str, Any]:
         return await self._request_activity("post", ref, payload, activity_id=reply_to)
 
+    @staticmethod
+    def _apply_text_payload(payload: Dict[str, Any], content: str) -> None:
+        if not content:
+            return
+        # Follow OpenClaw's Teams send path for normal text: preserve markdown as-is
+        # and let Teams render its supported markdown subset. Mention tokens are already
+        # converted upstream into <at> tags + entities when needed.
+        payload["text"] = content
+
     async def update_message(
         self,
         ref: ConversationRef,
@@ -510,9 +612,7 @@ class MSTeamsBotClient(_OAuthClientCredentialsMixin):
         attachments: Optional[list[dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         payload: Dict[str, Any] = {"type": "message", "id": message_id}
-        if content:
-            payload["textFormat"] = "xml"
-            payload["text"] = content if ("<at>" in content or "</at>" in content or "<br>" in content) else to_teams_html(content)
+        self._apply_text_payload(payload, content)
         if entities:
             payload["entities"] = entities
         if attachments:
@@ -532,9 +632,7 @@ class MSTeamsBotClient(_OAuthClientCredentialsMixin):
         attachments: Optional[list[dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         payload: Dict[str, Any] = {"type": "message"}
-        if content:
-            payload["textFormat"] = "xml"
-            payload["text"] = content if ("<at>" in content or "</at>" in content or "<br>" in content) else to_teams_html(content)
+        self._apply_text_payload(payload, content)
         if entities:
             payload["entities"] = entities
         if attachments:

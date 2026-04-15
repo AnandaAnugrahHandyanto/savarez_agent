@@ -565,6 +565,29 @@ def load_gateway_config() -> GatewayConfig:
                         merged["extra"] = merged_extra
                     platforms_data[plat_name] = merged
                 gw_data["platforms"] = platforms_data
+
+            # Backward compatibility: older /sethome implementations persisted
+            # top-level *_HOME_CHANNEL keys in config.yaml. Bridge those values into
+            # the official GatewayConfig schema under platforms.<platform>.home_channel.
+            for plat in Platform:
+                if plat == Platform.LOCAL:
+                    continue
+                legacy_home = yaml_cfg.get(f"{plat.value.upper()}_HOME_CHANNEL")
+                if legacy_home in (None, ""):
+                    continue
+                plat_data = platforms_data.setdefault(plat.value, {})
+                if not isinstance(plat_data, dict):
+                    plat_data = {}
+                    platforms_data[plat.value] = plat_data
+                if isinstance(plat_data.get("home_channel"), dict):
+                    continue
+                plat_data["home_channel"] = {
+                    "platform": plat.value,
+                    "chat_id": str(legacy_home),
+                    "name": yaml_cfg.get(f"{plat.value.upper()}_HOME_CHANNEL_NAME", "Home"),
+                }
+            gw_data["platforms"] = platforms_data
+
             for plat in Platform:
                 if plat == Platform.LOCAL:
                     continue
@@ -911,6 +934,18 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 teams_cfg.extra["text_chunk_limit"] = int(msteams_text_chunk_limit)
             except ValueError:
                 logger.warning("Invalid MSTEAMS_TEXT_CHUNK_LIMIT=%r — expected integer", msteams_text_chunk_limit)
+        msteams_history_limit = os.getenv("MSTEAMS_HISTORY_LIMIT")
+        if msteams_history_limit:
+            try:
+                teams_cfg.extra["history_limit"] = int(msteams_history_limit)
+            except ValueError:
+                logger.warning("Invalid MSTEAMS_HISTORY_LIMIT=%r — expected integer", msteams_history_limit)
+        msteams_dm_history_limit = os.getenv("MSTEAMS_DM_HISTORY_LIMIT")
+        if msteams_dm_history_limit:
+            try:
+                teams_cfg.extra["dm_history_limit"] = int(msteams_dm_history_limit)
+            except ValueError:
+                logger.warning("Invalid MSTEAMS_DM_HISTORY_LIMIT=%r — expected integer", msteams_dm_history_limit)
         msteams_max_body_bytes = os.getenv("MSTEAMS_MAX_BODY_BYTES")
         if msteams_max_body_bytes:
             try:

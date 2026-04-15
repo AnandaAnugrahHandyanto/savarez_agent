@@ -64,6 +64,8 @@ class TestConfigEnvOverrides(unittest.TestCase):
         "MSTEAMS_DANGEROUSLY_ALLOW_NAME_MATCHING": "true",
         "MSTEAMS_TEAMS_JSON": '{"team-1": {"channels": {"channel-1": {"requireMention": false}}}}',
         "MSTEAMS_TEXT_CHUNK_LIMIT": "3500",
+        "MSTEAMS_HISTORY_LIMIT": "25",
+        "MSTEAMS_DM_HISTORY_LIMIT": "12",
         "MSTEAMS_MAX_BODY_BYTES": "2048",
         "MSTEAMS_IDEMPOTENCY_TTL_SECONDS": "7200",
         "MSTEAMS_AUTH_CACHE_TTL_SECONDS": "1800",
@@ -86,6 +88,8 @@ class TestConfigEnvOverrides(unittest.TestCase):
         self.assertEqual(extra["group_policy"], "open")
         self.assertEqual(extra["chunk_mode"], "newline")
         self.assertEqual(extra["text_chunk_limit"], 3500)
+        self.assertEqual(extra["history_limit"], 25)
+        self.assertEqual(extra["dm_history_limit"], 12)
         self.assertEqual(extra["max_body_bytes"], 2048)
         self.assertEqual(extra["idempotency_ttl_seconds"], 7200)
         self.assertEqual(extra["auth_cache_ttl_seconds"], 1800)
@@ -151,6 +155,108 @@ class TestGatewayIntegration(unittest.TestCase):
 
         self.assertIn("msteams", PLATFORMS)
         self.assertEqual(PLATFORMS["msteams"].default_toolset, "hermes-msteams")
+
+
+class TestConfigYamlHomeChannelPersistence(unittest.TestCase):
+    def test_structured_msteams_home_channel_loaded_from_config_yaml(self):
+        from gateway.config import Platform, load_gateway_config
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.yaml"
+            config_path.write_text(
+                """
+platforms:
+  msteams:
+    home_channel:
+      platform: msteams
+      chat_id: conv-123
+      name: Sean DM
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with patch("gateway.config.get_hermes_home", return_value=Path(tmpdir)), patch.dict(os.environ, {}, clear=True):
+                config = load_gateway_config()
+
+            home = config.get_home_channel(Platform.MSTEAMS)
+            self.assertIsNotNone(home)
+            self.assertEqual(home.chat_id, "conv-123")
+            self.assertEqual(home.name, "Sean DM")
+
+    def test_legacy_top_level_msteams_home_channel_in_config_yaml_is_bridged(self):
+        from gateway.config import Platform, load_gateway_config
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.yaml"
+            config_path.write_text(
+                """
+MSTEAMS_HOME_CHANNEL: conv-legacy
+MSTEAMS_HOME_CHANNEL_NAME: Legacy DM
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with patch("gateway.config.get_hermes_home", return_value=Path(tmpdir)), patch.dict(os.environ, {}, clear=True):
+                config = load_gateway_config()
+
+            home = config.get_home_channel(Platform.MSTEAMS)
+            self.assertIsNotNone(home)
+            self.assertEqual(home.chat_id, "conv-legacy")
+            self.assertEqual(home.name, "Legacy DM")
+
+
+class TestSetHomeCommandPersistence(unittest.IsolatedAsyncioTestCase):
+    async def test_sethome_writes_structured_config_and_updates_runtime_config(self):
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+        from gateway.platforms.base import MessageEvent
+        from gateway.run import GatewayRunner
+        from gateway.session import SessionSource
+
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(platforms={Platform.MSTEAMS: PlatformConfig(enabled=True)})
+
+        source = SessionSource(
+            platform=Platform.MSTEAMS,
+            chat_id="conv-42",
+            chat_name="Sean DM",
+            chat_type="dm",
+        )
+        event = MessageEvent(text="/sethome", source=source)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.yaml"
+            config_path.write_text(
+                """
+MSTEAMS_HOME_CHANNEL: old-conv
+MSTEAMS_HOME_CHANNEL_NAME: Old Name
+platforms:
+  msteams:
+    enabled: true
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with patch("gateway.run._hermes_home", Path(tmpdir)), patch.dict(os.environ, {}, clear=True):
+                result = await runner._handle_set_home_command(event)
+
+                self.assertIn("✅ Home channel set", result)
+                self.assertEqual(os.environ["MSTEAMS_HOME_CHANNEL"], "conv-42")
+                self.assertEqual(os.environ["MSTEAMS_HOME_CHANNEL_NAME"], "Sean DM")
+                self.assertTrue(runner._has_home_channel_configured(Platform.MSTEAMS))
+
+                import yaml
+                persisted = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        self.assertNotIn("MSTEAMS_HOME_CHANNEL", persisted)
+        self.assertNotIn("MSTEAMS_HOME_CHANNEL_NAME", persisted)
+        self.assertEqual(
+            persisted["platforms"]["msteams"]["home_channel"],
+            {"platform": "msteams", "chat_id": "conv-42", "name": "Sean DM"},
+        )
+        self.assertEqual(runner.config.get_home_channel(Platform.MSTEAMS).chat_id, "conv-42")
 
 
 class TestMSTeamsGatewayAuthorization(unittest.TestCase):
@@ -248,7 +354,7 @@ class TestMSTeamsAdapter(unittest.IsolatedAsyncioTestCase):
         event = adapter._build_event(activity)
 
         self.assertIsNotNone(event)
-        self.assertEqual(event.text, "Hermes hello there")
+        self.assertEqual(event.text, "hello there")
         self.assertEqual(event.source.chat_id, "conv-1")
         self.assertEqual(event.source.chat_type, "dm")
         self.assertEqual(event.source.user_id, "aad-1")
@@ -294,8 +400,34 @@ class TestMSTeamsAdapter(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(event)
         self.assertEqual(event.source.chat_type, "group")
 
+    async def test_group_open_policy_preserves_slash_command_after_bot_mention(self):
+        adapter = self._adapter(group_policy="open")
+        activity = self._activity(
+            conversation_type="groupChat",
+            text="<at>Hermes</at> /new",
+            entities=[{"type": "mention", "mentioned": {"id": "bot-1", "name": "Hermes"}}],
+        )
+
+        event = adapter._build_event(activity)
+
+        self.assertIsNotNone(event)
+        self.assertEqual(event.text, "/new")
+        self.assertEqual(event.get_command(), "new")
+
     async def test_group_allowlist_allows_known_sender(self):
         adapter = self._adapter(group_policy="allowlist", group_allow_from=["aad-1"])
+        activity = self._activity(
+            conversation_type="groupChat",
+            text="<at>Hermes</at> please help",
+            entities=[{"type": "mention", "mentioned": {"id": "bot-1", "name": "Hermes"}}],
+        )
+
+        event = adapter._build_event(activity)
+
+        self.assertIsNotNone(event)
+
+    async def test_group_allowlist_allows_wildcard_sender(self):
+        adapter = self._adapter(group_policy="allowlist", group_allow_from=["*"])
         activity = self._activity(
             conversation_type="groupChat",
             text="<at>Hermes</at> please help",
@@ -621,6 +753,73 @@ class TestMSTeamsAdapter(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(event.reply_to_text, "Quoted parent message")
 
+    async def test_build_event_extracts_reply_context_from_reply_html_attachment(self):
+        adapter = self._adapter(group_policy="open")
+        activity = self._activity(
+            conversation_type="groupChat",
+            text='<blockquote itemscope itemtype="http://schema.skype.com/Reply" itemid="1776239661790"><strong itemprop="mri" itemid="28:49858f21-9a40-4411-9891-e4c3b1c8e1fa">Display Name</strong><span itemprop="time">2026/4/15 15:54</span><p itemprop="copy">已改。 当前状态</p></blockquote><p><at id="0">Captain</at>&nbsp;同意</p>',
+            entities=[{"type": "mention", "mentioned": {"id": "bot-1", "name": "Hermes"}}],
+            activity_id="activity-reply-html",
+        )
+        activity["attachments"] = [{
+            "contentType": "text/html",
+            "content": '<blockquote itemscope itemtype="http://schema.skype.com/Reply" itemid="1776239661790"><strong itemprop="mri" itemid="28:49858f21-9a40-4411-9891-e4c3b1c8e1fa">Display Name</strong><span itemprop="time">2026/4/15 15:54</span><p itemprop="copy">已改。 当前状态</p></blockquote>',
+        }]
+
+        event = adapter._build_event(activity)
+
+        self.assertIsNotNone(event)
+        self.assertEqual(event.text, "同意")
+        self.assertEqual(event.reply_to_text, "已改。 当前状态")
+
+    async def test_build_event_uses_message_reference_preview_when_reply_to_id_missing(self):
+        adapter = self._adapter(group_policy="open")
+        activity = self._activity(
+            conversation_type="groupChat",
+            text="<at>Hermes</at> 好",
+            entities=[{"type": "mention", "mentioned": {"id": "bot-1", "name": "Hermes"}}],
+            activity_id="activity-message-reference",
+        )
+        activity["attachments"] = [{
+            "contentType": "messageReference",
+            "content": json.dumps({
+                "messageId": "parent-activity-1",
+                "messagePreview": "Quoted parent message",
+            }),
+        }]
+
+        event = adapter._build_event(activity)
+
+        self.assertIsNotNone(event)
+        self.assertEqual(event.text, "好")
+        self.assertEqual(event.reply_to_message_id, "parent-activity-1")
+        self.assertEqual(event.source.thread_id, "parent-activity-1")
+        self.assertEqual(event.reply_to_text, "Quoted parent message")
+
+    async def test_build_event_uses_nested_message_reference_preview(self):
+        adapter = self._adapter(group_policy="open")
+        activity = self._activity(
+            conversation_type="groupChat",
+            text="follow up",
+            entities=[{"type": "mention", "mentioned": {"id": "bot-1", "name": "Hermes"}}],
+            activity_id="activity-nested-message-reference",
+        )
+        activity["attachments"] = [{
+            "contentType": "messageReference",
+            "content": json.dumps({
+                "messageReference": {
+                    "messageId": "parent-activity-2",
+                    "messagePreview": "Nested quoted parent message",
+                }
+            }),
+        }]
+
+        event = adapter._build_event(activity)
+
+        self.assertIsNotNone(event)
+        self.assertEqual(event.reply_to_message_id, "parent-activity-2")
+        self.assertEqual(event.reply_to_text, "Nested quoted parent message")
+
     async def test_build_event_uses_media_placeholder_when_reply_attachment_has_no_text(self):
         adapter = self._adapter(group_policy="open")
         activity = self._activity(
@@ -806,13 +1005,59 @@ class TestMSTeamsAdapter(unittest.IsolatedAsyncioTestCase):
         activity["attachments"] = [{"contentType": "image/png", "contentUrl": "https://example.test/image.png", "name": "image.png"}]
         event = adapter._build_event(activity)
 
-        with patch("gateway.platforms.msteams.cache_image_from_url", return_value="/tmp/cached-image.png") as cache_image:
-            enriched = await adapter._enrich_event_media(event, activity)
+        png_bytes = (
+            b"\x89PNG\r\n\x1a\n"
+            b"\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+            b"\x00\x00\x00\x0bIDATx\x9cc\xf8\xcf\xc0\x00\x00\x03\x01\x01\x00\xc9\xfe\x92\xef"
+            b"\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
 
-        cache_image.assert_awaited_once()
-        self.assertEqual(enriched.media_urls, ["/tmp/cached-image.png"])
+        async def fake_download(url):
+            return png_bytes
+
+        adapter._download_media_bytes = fake_download
+        enriched = await adapter._enrich_event_media(event, activity)
+
+        self.assertEqual(len(enriched.media_urls), 1)
+        self.assertTrue(enriched.media_urls[0].endswith('.png'))
+        self.assertEqual(Path(enriched.media_urls[0]).read_bytes(), png_bytes)
         self.assertEqual(enriched.media_types, ["image/png"])
         self.assertEqual(enriched.message_type, MessageType.PHOTO)
+
+    async def test_collect_media_from_file_download_info_image_attachment(self):
+        adapter = self._adapter(group_policy="open", media_allow_hosts=["example.test"])
+        activity = self._activity(
+            conversation_type="groupChat",
+            text="<at>Hermes</at> see image",
+            entities=[{"type": "mention", "mentioned": {"id": "bot-1", "name": "Hermes"}}],
+        )
+        activity["attachments"] = [{
+            "contentType": "application/vnd.microsoft.teams.file.download.info",
+            "name": "inline-image",
+            "content": {
+                "downloadUrl": "https://example.test/download/inline-image",
+                "fileType": "png",
+                "fileName": "inline-image.png",
+            },
+        }]
+
+        png_bytes = (
+            b"\x89PNG\r\n\x1a\n"
+            b"\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+            b"\x00\x00\x00\x0bIDATx\x9cc\xf8\xcf\xc0\x00\x00\x03\x01\x01\x00\xc9\xfe\x92\xef"
+            b"\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+
+        async def fake_download(url):
+            return png_bytes
+
+        adapter._download_media_bytes = fake_download
+        media_urls, media_types = await adapter._collect_media_from_activity(activity)
+
+        self.assertEqual(len(media_urls), 1)
+        self.assertTrue(media_urls[0].endswith('.png'))
+        self.assertEqual(Path(media_urls[0]).read_bytes(), png_bytes)
+        self.assertEqual(media_types, ["image/png"])
 
     async def test_send_threads_all_chunks_and_tracks_each_chunk_id(self):
         from gateway.platforms.msteams_state import ConversationRef
@@ -976,6 +1221,86 @@ class TestMSTeamsAdapter(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(enriched.text.startswith("[Thread context — prior messages in this thread"))
         self.assertIn("current message", enriched.text)
+
+    async def test_enrich_new_session_history_prefixes_group_context(self):
+        class StubGraph:
+            async def build_recent_chat_context(self, chat_id, **kwargs):
+                return "[Recent Teams context — prior messages not yet in conversation history:]\nTaylor: earlier group message\n[End of recent Teams context]\n\n"
+
+        adapter = self._adapter(group_policy="open", history_limit=5)
+        adapter._graph = StubGraph()
+        activity = self._activity(
+            conversation_type="groupChat",
+            conversation_id="conv-group-history",
+            text="latest message",
+            entities=[{"type": "mention", "mentioned": {"id": "bot-1", "name": "Hermes"}}],
+        )
+        event = adapter._build_event(activity)
+
+        enriched = await adapter.enrich_new_session_history(event)
+
+        self.assertTrue(enriched.text.startswith("[Recent Teams context"))
+        self.assertIn("latest message", enriched.text)
+
+    async def test_enrich_new_session_history_keeps_wildcard_group_allowlist_unrestricted(self):
+        class StubGraph:
+            def __init__(self):
+                self.kwargs = None
+
+            async def build_recent_chat_context(self, chat_id, **kwargs):
+                self.kwargs = kwargs
+                return "[Recent Teams context — prior messages not yet in conversation history:]\nTaylor: earlier group message\n[End of recent Teams context]\n\n"
+
+        adapter = self._adapter(group_policy="allowlist", group_allow_from=["*"], history_limit=5)
+        adapter._graph = StubGraph()
+        activity = self._activity(
+            conversation_type="groupChat",
+            conversation_id="conv-group-history-wildcard",
+            text="latest message",
+            entities=[{"type": "mention", "mentioned": {"id": "bot-1", "name": "Hermes"}}],
+        )
+        event = adapter._build_event(activity)
+
+        enriched = await adapter.enrich_new_session_history(event)
+
+        self.assertTrue(enriched.text.startswith("[Recent Teams context"))
+        self.assertIn("latest message", enriched.text)
+        self.assertIsNotNone(adapter._graph.kwargs)
+        self.assertIsNone(adapter._graph.kwargs.get("allowed_sender_ids"))
+
+    async def test_enrich_new_session_history_prefixes_dm_context(self):
+        class StubGraph:
+            async def build_recent_chat_context(self, chat_id, **kwargs):
+                return "[Recent Teams context — prior messages not yet in conversation history:]\nSean: earlier dm message\n[End of recent Teams context]\n\n"
+
+        adapter = self._adapter(dm_policy="open", dm_history_limit=3)
+        adapter._graph = StubGraph()
+        activity = self._activity(conversation_type="personal", conversation_id="conv-dm-history", text="new dm turn")
+        event = adapter._build_event(activity)
+
+        enriched = await adapter.enrich_new_session_history(event)
+
+        self.assertTrue(enriched.text.startswith("[Recent Teams context"))
+        self.assertIn("new dm turn", enriched.text)
+
+    async def test_enrich_new_session_history_skips_commands(self):
+        class StubGraph:
+            async def build_recent_chat_context(self, chat_id, **kwargs):
+                raise AssertionError("history should not be fetched for commands")
+
+        adapter = self._adapter(group_policy="open", history_limit=5)
+        adapter._graph = StubGraph()
+        activity = self._activity(
+            conversation_type="groupChat",
+            conversation_id="conv-group-cmd",
+            text="<at>Hermes</at> /new",
+            entities=[{"type": "mention", "mentioned": {"id": "bot-1", "name": "Hermes"}}],
+        )
+        event = adapter._build_event(activity)
+
+        enriched = await adapter.enrich_new_session_history(event)
+
+        self.assertEqual(enriched.text, "/new")
 
     async def test_send_adaptive_card_uses_single_attachment_message(self):
         from gateway.platforms.msteams_state import ConversationRef
@@ -1688,6 +2013,105 @@ class TestMSTeamsBotClient(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(session.calls[-1]["json"]["type"], "message")
 
+    async def test_send_message_preserves_markdown_without_forcing_xml_text_format(self):
+        from gateway.platforms.msteams_graph import MSTeamsBotClient
+        from gateway.platforms.msteams_state import ConversationRef
+
+        class StubResponse:
+            def __init__(self, payload, status=200):
+                self._payload = payload
+                self.status = status
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def json(self, content_type=None):
+                return self._payload
+
+        class StubSession:
+            def __init__(self):
+                self.calls = []
+
+            def post(self, url, data=None, json=None, headers=None):
+                self.calls.append({"method": "post", "url": url, "data": data, "json": json, "headers": headers})
+                if data is not None:
+                    return StubResponse({"access_token": "***", "expires_in": 3600})
+                return StubResponse({"id": "sent-markdown-1"})
+
+            def put(self, url, data=None, json=None, headers=None):
+                self.calls.append({"method": "put", "url": url, "data": data, "json": json, "headers": headers})
+                return StubResponse({"id": "updated-1"})
+
+        session = StubSession()
+        client = MSTeamsBotClient("app-id", "secret", "tenant-id", session)
+        ref = ConversationRef(
+            conversation_id="conv-markdown",
+            service_url="https://smba.trafficmanager.net/amer/",
+            conversation_type="groupChat",
+            chat_type="group",
+        )
+
+        markdown_text = "**bold**\n\n`code` and [link](https://example.com)"
+        result = await client.send_message(ref, markdown_text)
+
+        self.assertEqual(result["id"], "sent-markdown-1")
+        payload = session.calls[-1]["json"]
+        self.assertEqual(payload["text"], markdown_text)
+        self.assertNotIn("textFormat", payload)
+
+    async def test_send_message_with_mentions_keeps_openclaw_style_payload(self):
+        from gateway.platforms.msteams_graph import MSTeamsBotClient
+        from gateway.platforms.msteams_state import ConversationRef
+
+        class StubResponse:
+            def __init__(self, payload, status=200):
+                self._payload = payload
+                self.status = status
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def json(self, content_type=None):
+                return self._payload
+
+        class StubSession:
+            def __init__(self):
+                self.calls = []
+
+            def post(self, url, data=None, json=None, headers=None):
+                self.calls.append({"method": "post", "url": url, "data": data, "json": json, "headers": headers})
+                if data is not None:
+                    return StubResponse({"access_token": "***", "expires_in": 3600})
+                return StubResponse({"id": "sent-mention-openclaw-1"})
+
+            def put(self, url, data=None, json=None, headers=None):
+                self.calls.append({"method": "put", "url": url, "data": data, "json": json, "headers": headers})
+                return StubResponse({"id": "updated-1"})
+
+        session = StubSession()
+        client = MSTeamsBotClient("app-id", "secret", "tenant-id", session)
+        ref = ConversationRef(
+            conversation_id="conv-mention-openclaw",
+            service_url="https://smba.trafficmanager.net/amer/",
+            conversation_type="groupChat",
+            chat_type="group",
+        )
+
+        entities = [{"type": "mention", "text": "<at>Sean</at>", "mentioned": {"id": "aad-1", "name": "Sean"}}]
+        result = await client.send_message(ref, "Hello <at>Sean</at> and **team**", entities=entities)
+
+        self.assertEqual(result["id"], "sent-mention-openclaw-1")
+        payload = session.calls[-1]["json"]
+        self.assertEqual(payload["text"], "Hello <at>Sean</at> and **team**")
+        self.assertEqual(payload["entities"], entities)
+        self.assertNotIn("textFormat", payload)
+
     async def test_update_message_uses_put_activity_endpoint(self):
         from gateway.platforms.msteams_graph import MSTeamsBotClient
         from gateway.platforms.msteams_state import ConversationRef
@@ -1735,6 +2159,55 @@ class TestMSTeamsBotClient(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.calls[-1]["method"], "put")
         self.assertEqual(session.calls[-1]["url"], "https://smba.trafficmanager.net/amer/v3/conversations/conv-2/activities/msg-1")
 
+    async def test_update_message_preserves_markdown_without_forcing_xml_text_format(self):
+        from gateway.platforms.msteams_graph import MSTeamsBotClient
+        from gateway.platforms.msteams_state import ConversationRef
+
+        class StubResponse:
+            def __init__(self, payload, status=200):
+                self._payload = payload
+                self.status = status
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def json(self, content_type=None):
+                return self._payload
+
+        class StubSession:
+            def __init__(self):
+                self.calls = []
+
+            def post(self, url, data=None, json=None, headers=None):
+                self.calls.append({"method": "post", "url": url, "data": data, "json": json, "headers": headers})
+                if data is not None:
+                    return StubResponse({"access_token": "***", "expires_in": 3600})
+                return StubResponse({"id": "sent-1"})
+
+            def put(self, url, data=None, json=None, headers=None):
+                self.calls.append({"method": "put", "url": url, "data": data, "json": json, "headers": headers})
+                return StubResponse({"id": "updated-markdown-1"})
+
+        session = StubSession()
+        client = MSTeamsBotClient("app-id", "secret", "tenant-id", session)
+        ref = ConversationRef(
+            conversation_id="conv-update-markdown",
+            service_url="https://smba.trafficmanager.net/amer/",
+            conversation_type="groupChat",
+            chat_type="group",
+        )
+
+        markdown_text = "Updated **bold**\n\n`code`"
+        result = await client.update_message(ref, "msg-markdown-1", markdown_text)
+
+        self.assertEqual(result["id"], "updated-markdown-1")
+        payload = session.calls[-1]["json"]
+        self.assertEqual(payload["text"], markdown_text)
+        self.assertNotIn("textFormat", payload)
+
 
 class TestBotFrameworkJWTValidator(unittest.IsolatedAsyncioTestCase):
     async def test_validate_accepts_valid_rs256_token(self):
@@ -1765,7 +2238,7 @@ class TestBotFrameworkJWTValidator(unittest.IsolatedAsyncioTestCase):
             {
                 "iss": "https://api.botframework.com",
                 "aud": "app-id",
-                "iat": now,
+                "nbf": now,
                 "exp": now + 3600,
                 "serviceurl": "https://smba.trafficmanager.net/amer/",
             },
@@ -2121,7 +2594,7 @@ class TestMSTeamsGraphClient(unittest.IsolatedAsyncioTestCase):
         context = await client.build_thread_context("team-1", "channel-1", "root-1")
 
         self.assertIn(THREAD_CONTEXT_HEADER, context)
-        self.assertIn("[thread parent] Parent User: Hermes parent body", context)
+        self.assertIn("[thread parent] Parent User: parent body", context)
         self.assertIn("Reply User: reply body", context)
         self.assertIn(THREAD_CONTEXT_FOOTER, context)
 
