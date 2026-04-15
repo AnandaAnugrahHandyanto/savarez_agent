@@ -128,6 +128,12 @@ class TestNonInteractiveSetup:
         assert 'Matrix: 이미 설정되어 있음' in source
         assert 'Mattermost: 이미 설정되어 있음' in source
         assert 'Webhooks: 이미 설정되어 있음' in source
+        assert '@BotFather로 Telegram 봇 만들기' in source
+        assert 'Discord 개발자 포털에서 봇 만들기' in source
+        assert 'Slack 앱 생성 단계:' in source
+        assert 'Telegram 봇 토큰' in source
+        assert 'Discord 봇 토큰' in source
+        assert '허용할 사용자 ID' in source
 
     def test_cmd_setup_allows_noninteractive_flag_without_tty(self):
         """The CLI entrypoint should not block --non-interactive before setup.py handles it."""

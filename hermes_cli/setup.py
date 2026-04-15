@@ -1603,15 +1603,15 @@ def _setup_telegram():
             if not get_env_value("TELEGRAM_ALLOWED_USERS"):
                 print_info("⚠️  Telegram has no user allowlist - anyone can use your bot!")
                 if prompt_yes_no("Add allowed users now?", True):
-                    print_info("   To find your Telegram user ID: message @userinfobot")
-                    allowed_users = prompt("Allowed user IDs (comma-separated)")
+                    print_info("   Telegram 사용자 ID 확인: @userinfobot에 메시지 보내기")
+                    allowed_users = prompt("허용할 사용자 ID (쉼표로 구분)")
                     if allowed_users:
                         save_env_value("TELEGRAM_ALLOWED_USERS", allowed_users.replace(" ", ""))
                         print_success("Telegram allowlist configured")
             return
 
-    print_info("Create a bot via @BotFather on Telegram")
-    token = prompt("Telegram bot token", password=True)
+    print_info("@BotFather로 Telegram 봇 만들기")
+    token = prompt("Telegram 봇 토큰", password=True)
     if not token:
         return
     save_env_value("TELEGRAM_BOT_TOKEN", token)
@@ -1624,7 +1624,7 @@ def _setup_telegram():
     print_info("   2. It will reply with your numeric ID (e.g., 123456789)")
     print()
     allowed_users = prompt(
-        "Allowed user IDs (comma-separated, leave empty for open access)"
+        "허용할 사용자 ID (쉼표로 구분, 비워두면 누구나 접근 가능)"
     )
     if allowed_users:
         save_env_value("TELEGRAM_ALLOWED_USERS", allowed_users.replace(" ", ""))
@@ -1633,9 +1633,8 @@ def _setup_telegram():
         print_info("⚠️  No allowlist set - anyone who finds your bot can use it!")
 
     print()
-    print_info("📬 Home Channel: where Hermes delivers cron job results,")
-    print_info("   cross-platform messages, and notifications.")
-    print_info("   For Telegram DMs, this is your user ID (same as above).")
+    print_info("📬 홈 채널: Hermes가 cron 결과, 플랫폼 간 메시지, 알림을 전달하는 곳입니다.")
+    print_info("   Telegram DM에서는 위와 같은 사용자 ID를 사용합니다.")
 
     first_user_id = allowed_users.split(",")[0].strip() if allowed_users else ""
     if first_user_id:
@@ -1643,12 +1642,12 @@ def _setup_telegram():
             save_env_value("TELEGRAM_HOME_CHANNEL", first_user_id)
             print_success(f"Telegram home channel set to {first_user_id}")
         else:
-            home_channel = prompt("Home channel ID (or leave empty to set later with /set-home in Telegram)")
+            home_channel = prompt("홈 채널 ID (또는 비워두고 나중에 Telegram에서 /set-home으로 설정)")
             if home_channel:
                 save_env_value("TELEGRAM_HOME_CHANNEL", home_channel)
     else:
-        print_info("   You can also set this later by typing /set-home in your Telegram chat.")
-        home_channel = prompt("Home channel ID (leave empty to set later)")
+        print_info("   나중에 Telegram 채팅에서 /set-home을 입력해 설정할 수도 있습니다.")
+        home_channel = prompt("홈 채널 ID (비워두면 나중에 설정)")
         if home_channel:
             save_env_value("TELEGRAM_HOME_CHANNEL", home_channel)
 
@@ -1663,31 +1662,31 @@ def _setup_discord():
             if not get_env_value("DISCORD_ALLOWED_USERS"):
                 print_info("⚠️  Discord에 사용자 허용 목록이 없습니다 - 누구나 봇을 사용할 수 있어요!")
                 if prompt_yes_no("Add allowed users now?", True):
-                    print_info("   To find Discord ID: Enable Developer Mode, right-click name → Copy ID")
-                    allowed_users = prompt("Allowed user IDs (comma-separated)")
+                    print_info("   Discord ID 확인: 개발자 모드를 켜고 이름을 우클릭 → ID 복사")
+                    allowed_users = prompt("허용할 사용자 ID (쉼표로 구분)")
                     if allowed_users:
                         cleaned_ids = _clean_discord_user_ids(allowed_users)
                         save_env_value("DISCORD_ALLOWED_USERS", ",".join(cleaned_ids))
                         print_success("Discord allowlist configured")
             return
 
-    print_info("Create a bot at https://discord.com/developers/applications")
-    token = prompt("Discord bot token", password=True)
+    print_info("Discord 개발자 포털에서 봇 만들기: https://discord.com/developers/applications")
+    token = prompt("Discord 봇 토큰", password=True)
     if not token:
         return
     save_env_value("DISCORD_BOT_TOKEN", token)
     print_success("Discord token saved")
 
     print()
-    print_info("🔒 Security: Restrict who can use your bot")
-    print_info("   To find your Discord user ID:")
-    print_info("   1. Enable Developer Mode in Discord settings")
-    print_info("   2. Right-click your name → Copy ID")
+    print_info("🔒 보안: 누가 봇을 사용할 수 있는지 제한하세요")
+    print_info("   Discord 사용자 ID 확인 방법:")
+    print_info("   1. Discord 설정에서 개발자 모드 활성화")
+    print_info("   2. 내 이름을 우클릭 → ID 복사")
     print()
     print_info("   You can also use Discord usernames (resolved on gateway start).")
     print()
     allowed_users = prompt(
-        "Allowed user IDs or usernames (comma-separated, leave empty for open access)"
+        "허용할 사용자 ID 또는 사용자명 (쉼표로 구분, 비워두면 누구나 접근 가능)"
     )
     if allowed_users:
         cleaned_ids = _clean_discord_user_ids(allowed_users)
@@ -1697,12 +1696,11 @@ def _setup_discord():
         print_info("⚠️  No allowlist set - anyone in servers with your bot can use it!")
 
     print()
-    print_info("📬 Home Channel: where Hermes delivers cron job results,")
-    print_info("   cross-platform messages, and notifications.")
-    print_info("   To get a channel ID: right-click a channel → Copy Channel ID")
-    print_info("   (requires Developer Mode in Discord settings)")
-    print_info("   You can also set this later by typing /set-home in a Discord channel.")
-    home_channel = prompt("Home channel ID (leave empty to set later with /set-home)")
+    print_info("📬 홈 채널: Hermes가 cron 결과, 플랫폼 간 메시지, 알림을 전달하는 곳입니다.")
+    print_info("   채널 ID 확인: 채널 우클릭 → 채널 ID 복사")
+    print_info("   (Discord 설정에서 개발자 모드가 필요합니다)")
+    print_info("   나중에 Discord 채널에서 /set-home을 입력해 설정할 수도 있습니다.")
+    home_channel = prompt("홈 채널 ID (비워두면 나중에 /set-home으로 설정)")
     if home_channel:
         save_env_value("DISCORD_HOME_CHANNEL", home_channel)
 
@@ -1730,18 +1728,18 @@ def _setup_slack():
         if not prompt_yes_no("Slack을 다시 설정할까요?", False):
             return
 
-    print_info("Steps to create a Slack app:")
-    print_info("   1. Go to https://api.slack.com/apps → Create New App (from scratch)")
-    print_info("   2. Enable Socket Mode: Settings → Socket Mode → Enable")
-    print_info("      • Create an App-Level Token with 'connections:write' scope")
-    print_info("   3. Add Bot Token Scopes: Features → OAuth & Permissions")
-    print_info("      Required scopes: chat:write, app_mentions:read,")
+    print_info("Slack 앱 생성 단계:")
+    print_info("   1. https://api.slack.com/apps 에서 New App 생성 (from scratch)")
+    print_info("   2. Socket Mode 활성화: Settings → Socket Mode → Enable")
+    print_info("      • 'connections:write' scope로 App-Level Token 생성")
+    print_info("   3. Bot Token Scopes 추가: Features → OAuth & Permissions")
+    print_info("      필수 scope: chat:write, app_mentions:read,")
     print_info("      channels:history, channels:read, im:history,")
     print_info("      im:read, im:write, users:read, files:read, files:write")
-    print_info("      Optional for private channels: groups:history")
-    print_info("   4. Subscribe to Events: Features → Event Subscriptions → Enable")
-    print_info("      Required events: message.im, message.channels, app_mention")
-    print_info("      Optional for private channels: message.groups")
+    print_info("      비공개 채널용 선택 scope: groups:history")
+    print_info("   4. 이벤트 구독: Features → Event Subscriptions → Enable")
+    print_info("      필수 이벤트: message.im, message.channels, app_mention")
+    print_info("      비공개 채널용 선택 이벤트: message.groups")
     print_warning("   ⚠ Without message.channels the bot will ONLY work in DMs,")
     print_warning("     not public channels.")
     print_info("   5. Install to Workspace: Settings → Install App")
