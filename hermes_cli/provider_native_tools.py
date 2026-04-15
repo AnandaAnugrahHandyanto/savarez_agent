@@ -36,8 +36,8 @@ logger = logging.getLogger(__name__)
 
 #: Canonical provider id → tool categories the provider serves natively.
 NATIVE_TOOLS_BY_PROVIDER: Dict[str, Tuple[str, ...]] = {
-    "minimax":    ("tts", "image_gen", "vision"),
-    "minimax-cn": ("tts", "image_gen", "vision"),
+    "minimax":    ("tts", "image_gen", "vision", "video_gen", "music_gen"),
+    "minimax-cn": ("tts", "image_gen", "vision", "video_gen", "music_gen"),
 }
 
 MINIMAX_PROVIDERS: Set[str] = {"minimax", "minimax-cn"}
@@ -105,6 +105,8 @@ def active_provider_api_root(config: Dict[str, Any]) -> str:
 _OVERRIDABLE_TTS    = {"", "edge"}
 _OVERRIDABLE_IMAGE  = {"", "auto", "fal"}
 _OVERRIDABLE_VISION = {"", "auto", "main"}
+_OVERRIDABLE_VIDEO  = {"", "auto"}
+_OVERRIDABLE_MUSIC  = {"", "auto"}
 
 
 def apply_provider_native_tool_defaults(config: Dict[str, Any]) -> Set[str]:
@@ -134,6 +136,18 @@ def apply_provider_native_tool_defaults(config: Dict[str, Any]) -> Set[str]:
             cfg["provider"] = provider
             changed.add("image_gen")
 
+    if "video_gen" in native:
+        cfg = config.setdefault("video_gen", {})
+        if isinstance(cfg, dict) and (str(cfg.get("provider") or "").strip().lower() in _OVERRIDABLE_VIDEO):
+            cfg["provider"] = provider
+            changed.add("video_gen")
+
+    if "music_gen" in native:
+        cfg = config.setdefault("music_gen", {})
+        if isinstance(cfg, dict) and (str(cfg.get("provider") or "").strip().lower() in _OVERRIDABLE_MUSIC):
+            cfg["provider"] = provider
+            changed.add("music_gen")
+
     if "vision" in native and changed:
         aux = config.get("auxiliary") if isinstance(config.get("auxiliary"), dict) else {}
         v = aux.get("vision") if isinstance(aux.get("vision"), dict) else {}
@@ -151,6 +165,8 @@ _SUMMARY: Dict[str, Dict[str, str]] = {
         "tts":       "TTS → speech-2.6-hd (30+ voices)",
         "image_gen": "Image generation → image-01",
         "vision":    "Vision analysis → MiniMax-VL-01",
+        "video_gen": "Video generation → MiniMax-Hailuo-2.3",
+        "music_gen": "Music generation → music-2.6",
     },
 }
 _SUMMARY["minimax-cn"] = _SUMMARY["minimax"]
@@ -241,6 +257,43 @@ def minimax_endpoint_and_key(
     return f"{root}{subpath}", key
 
 
+def generate_video(
+    *,
+    prompt: str,
+    duration: Optional[int] = None,
+    resolution: Optional[str] = None,
+    first_frame_image: Optional[str] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    """Generate via the active provider's native video backend, or `None`."""
+    cfg = config if config is not None else _safe_load_config()
+    if _active_provider_id(cfg) in MINIMAX_PROVIDERS:
+        return _minimax_video_request(
+            prompt=prompt, duration=duration, resolution=resolution,
+            first_frame_image=first_frame_image, config=cfg,
+        )
+    return None
+
+
+def generate_music(
+    *,
+    prompt: str,
+    lyrics: str,
+    output_format: str = "mp3",
+    sample_rate: int = 44100,
+    bitrate: int = 256000,
+    config: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    """Generate via the active provider's native music backend, or `None`."""
+    cfg = config if config is not None else _safe_load_config()
+    if _active_provider_id(cfg) in MINIMAX_PROVIDERS:
+        return _minimax_music_request(
+            prompt=prompt, lyrics=lyrics, output_format=output_format,
+            sample_rate=sample_rate, bitrate=bitrate, config=cfg,
+        )
+    return None
+
+
 # ─── Internal: shared helpers ────────────────────────────────────────────
 
 
@@ -267,7 +320,17 @@ def _post_json(url: str, payload: Dict[str, Any], key: str, *, timeout: int = 12
         return json.loads(resp.read().decode("utf-8", errors="replace"))
 
 
-def _download(url: str, output_path: Path, *, timeout: int = 120) -> None:
+def _get_json(url: str, key: str, *, timeout: int = 60) -> Dict[str, Any]:
+    """Bearer-auth GET → parsed JSON.  Raises urllib / json errors."""
+    req = urllib.request.Request(
+        url, method="GET", headers={"Authorization": f"Bearer {key}"},
+    )
+    ctx = ssl.create_default_context()
+    with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+        return json.loads(resp.read().decode("utf-8", errors="replace"))
+
+
+def _download(url: str, output_path: Path, *, timeout: int = 300) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     ctx = ssl.create_default_context()
     with urllib.request.urlopen(url, timeout=timeout, context=ctx) as resp:
@@ -463,4 +526,220 @@ def _minimax_vlm_request(image_source: str, user_prompt: str,
         "provider": _active_provider_id(config),
         "model": "MiniMax-VL-01",
         "endpoint": "/v1/coding_plan/vlm",
+    }, ensure_ascii=False)
+
+
+def _minimax_video_cache_dir() -> Path:
+    try:
+        from hermes_constants import get_hermes_dir
+        return Path(get_hermes_dir("cache/videos", "video_cache"))
+    except Exception:
+        return Path.home() / ".hermes" / "video_cache"
+
+
+def _minimax_music_cache_dir() -> Path:
+    try:
+        from hermes_constants import get_hermes_dir
+        return Path(get_hermes_dir("cache/music", "music_cache"))
+    except Exception:
+        return Path.home() / ".hermes" / "music_cache"
+
+
+_VIDEO_MODEL = "MiniMax-Hailuo-2.3"
+_VIDEO_VALID_RESOLUTIONS = {"768P", "1080P"}
+_VIDEO_VALID_DURATIONS = {6, 10}
+_VIDEO_POLL_SECONDS = 15
+_VIDEO_POLL_MAX = 40  # 40 × 15s = 10 min ceiling
+
+
+def _minimax_video_request(
+    *, prompt: str,
+    duration: Optional[int] = None,
+    resolution: Optional[str] = None,
+    first_frame_image: Optional[str] = None,
+    config: Dict[str, Any],
+) -> str:
+    api_root = active_provider_api_root(config).rstrip("/")
+    if not api_root:
+        return json.dumps({"success": False,
+            "error": "video_gen.provider=minimax but model.base_url is unset"})
+    key = _minimax_credential(config)
+    if not key:
+        return json.dumps({"success": False,
+            "error": "MINIMAX_API_KEY (or _CN) required"})
+
+    payload: Dict[str, Any] = {
+        "model": _VIDEO_MODEL,
+        "prompt": (prompt or "").strip(),
+    }
+    if duration in _VIDEO_VALID_DURATIONS:
+        payload["duration"] = duration
+    if resolution and resolution.upper() in _VIDEO_VALID_RESOLUTIONS:
+        payload["resolution"] = resolution.upper()
+    if first_frame_image:
+        coerced = _coerce_vlm_image_url(first_frame_image)
+        if coerced:
+            payload["first_frame_image"] = coerced
+
+    # 1. Submit task.
+    try:
+        body = _post_json(f"{api_root}/v1/video_generation", payload, key)
+    except urllib.error.HTTPError as exc:
+        return json.dumps({"success": False,
+            "error": f"video API HTTP {exc.code}", "status": exc.code})
+    except (urllib.error.URLError, json.JSONDecodeError) as exc:
+        return json.dumps({"success": False, "error": str(exc)})
+
+    base = body.get("base_resp") or {}
+    if isinstance(base, dict) and base.get("status_code") not in (0, None):
+        return json.dumps({"success": False,
+            "error": f"video API error {base.get('status_code')}: "
+                     f"{base.get('status_msg', '')}",
+            "status": base.get("status_code")})
+
+    task_id = body.get("task_id")
+    if not task_id:
+        return json.dumps({"success": False, "error": "video API returned no task_id"})
+
+    # 2. Poll until terminal status.
+    file_id: Optional[str] = None
+    last_status = ""
+    for _ in range(_VIDEO_POLL_MAX):
+        time.sleep(_VIDEO_POLL_SECONDS)
+        try:
+            status_body = _get_json(
+                f"{api_root}/v1/query/video_generation?task_id={task_id}", key,
+            )
+        except (urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError) as exc:
+            logger.debug("video poll failed: %s", exc)
+            continue
+        last_status = str(status_body.get("status") or "")
+        if last_status == "Success":
+            file_id = status_body.get("file_id")
+            break
+        if last_status == "Fail":
+            return json.dumps({"success": False,
+                "error": f"video generation failed (task {task_id})",
+                "task_id": task_id})
+
+    if not file_id:
+        return json.dumps({"success": False,
+            "error": f"video generation timed out after "
+                     f"{_VIDEO_POLL_SECONDS * _VIDEO_POLL_MAX}s "
+                     f"(last status: {last_status or 'unknown'})",
+            "task_id": task_id})
+
+    # 3. Resolve download URL.
+    try:
+        file_body = _get_json(f"{api_root}/v1/files/retrieve?file_id={file_id}", key)
+    except (urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        return json.dumps({"success": False, "error": f"file retrieve failed: {exc}"})
+    download_url = (file_body.get("file") or {}).get("download_url")
+    if not download_url:
+        return json.dumps({"success": False,
+            "error": f"no download_url for file_id {file_id}"})
+
+    # 4. Save locally.
+    out_dir = _minimax_video_cache_dir()
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    path = out_dir / f"video_{ts}.mp4"
+    try:
+        _download(download_url, path)
+    except Exception as exc:
+        return json.dumps({"success": False,
+            "error": f"video download failed: {exc}",
+            "url": download_url, "task_id": task_id})
+
+    return json.dumps({
+        "success": True,
+        "provider": _active_provider_id(config),
+        "model": _VIDEO_MODEL,
+        "task_id": task_id,
+        "path": str(path),
+        "url": download_url,
+    }, ensure_ascii=False)
+
+
+_MUSIC_VALID_FORMATS = {"mp3", "wav", "pcm"}
+
+
+def _music_model_for_key(key: str) -> str:
+    """Mirror of mmx CLI's `musicGenerateModel`: `sk-cp-` (Token Plan)
+    unlocks `music-2.6`; other key types use `music-2.6-free`.
+    """
+    return "music-2.6" if key.startswith("sk-cp-") else "music-2.6-free"
+
+
+def _minimax_music_request(
+    *, prompt: str, lyrics: str, output_format: str,
+    sample_rate: int, bitrate: int, config: Dict[str, Any],
+) -> str:
+    api_root = active_provider_api_root(config).rstrip("/")
+    if not api_root:
+        return json.dumps({"success": False,
+            "error": "music_gen.provider=minimax but model.base_url is unset"})
+    key = _minimax_credential(config)
+    if not key:
+        return json.dumps({"success": False,
+            "error": "MINIMAX_API_KEY (or _CN) required"})
+
+    fmt = (output_format or "mp3").lower()
+    if fmt not in _MUSIC_VALID_FORMATS:
+        fmt = "mp3"
+
+    model = _music_model_for_key(key)
+    payload = {
+        "model": model,
+        "prompt": (prompt or "").strip(),
+        "lyrics": (lyrics or "").strip(),
+        "audio_setting": {
+            "sample_rate": sample_rate,
+            "bitrate": bitrate,
+            "format": fmt,
+        },
+        "output_format": "hex",
+        "stream": False,
+    }
+
+    try:
+        body = _post_json(f"{api_root}/v1/music_generation", payload, key, timeout=180)
+    except urllib.error.HTTPError as exc:
+        return json.dumps({"success": False,
+            "error": f"music API HTTP {exc.code}", "status": exc.code})
+    except (urllib.error.URLError, json.JSONDecodeError) as exc:
+        return json.dumps({"success": False, "error": str(exc)})
+
+    base = body.get("base_resp") or {}
+    if isinstance(base, dict) and base.get("status_code") not in (0, None):
+        return json.dumps({"success": False,
+            "error": f"music API error {base.get('status_code')}: "
+                     f"{base.get('status_msg', '')}",
+            "status": base.get("status_code")})
+
+    data = body.get("data") or {}
+    audio_hex = data.get("audio") if isinstance(data, dict) else None
+    if not isinstance(audio_hex, str) or not audio_hex:
+        return json.dumps({"success": False, "error": "music API returned no audio"})
+
+    try:
+        audio_bytes = bytes.fromhex(audio_hex)
+    except ValueError as exc:
+        return json.dumps({"success": False, "error": f"invalid hex audio: {exc}"})
+
+    out_dir = _minimax_music_cache_dir()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    path = out_dir / f"music_{ts}.{fmt}"
+    try:
+        path.write_bytes(audio_bytes)
+    except OSError as exc:
+        return json.dumps({"success": False, "error": f"write failed: {exc}"})
+
+    return json.dumps({
+        "success": True,
+        "provider": _active_provider_id(config),
+        "model": model,
+        "path": str(path),
+        "format": fmt,
+        "bytes": len(audio_bytes),
     }, ensure_ascii=False)

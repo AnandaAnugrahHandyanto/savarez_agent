@@ -35,8 +35,8 @@ _HERMES_CORE_TOOLS = [
     "terminal", "process",
     # File manipulation
     "read_file", "write_file", "patch", "search_files",
-    # Vision + image generation
-    "vision_analyze", "image_generate",
+    # Vision + image / video / music generation
+    "vision_analyze", "image_generate", "video_generate", "music_generate",
     # Skills
     "skills_list", "skill_view", "skill_manage",
     # Browser automation
@@ -90,7 +90,19 @@ TOOLSETS = {
         "tools": ["image_generate"],
         "includes": []
     },
-    
+
+    "video_gen": {
+        "description": "Creative generation tools (short video clips)",
+        "tools": ["video_generate"],
+        "includes": []
+    },
+
+    "music_gen": {
+        "description": "Creative generation tools (songs with lyrics + style)",
+        "tools": ["music_generate"],
+        "includes": []
+    },
+
     "terminal": {
         "description": "Terminal/command execution and process management tools",
         "tools": ["terminal", "process"],
@@ -251,8 +263,8 @@ TOOLSETS = {
             "terminal", "process",
             # File manipulation
             "read_file", "write_file", "patch", "search_files",
-            # Vision + image generation
-            "vision_analyze", "image_generate",
+            # Vision + image / video / music generation
+            "vision_analyze", "image_generate", "video_generate", "music_generate",
             # Skills
             "skills_list", "skill_view", "skill_manage",
             # Browser automation

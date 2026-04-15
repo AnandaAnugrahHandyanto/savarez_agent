@@ -20,6 +20,8 @@ from hermes_cli.provider_native_tools import (
     active_provider_api_root,
     apply_provider_native_tool_defaults,
     describe_changes,
+    generate_music,
+    generate_video,
     get_native_tools,
     minimax_endpoint_and_key,
     native_credential_present,
@@ -33,11 +35,12 @@ class TestRegistryShape:
         assert "minimax-cn" in NATIVE_TOOLS_BY_PROVIDER
 
     def test_minimax_capabilities(self):
-        assert set(NATIVE_TOOLS_BY_PROVIDER["minimax"]) == {"tts", "image_gen", "vision"}
-        assert set(NATIVE_TOOLS_BY_PROVIDER["minimax-cn"]) == {"tts", "image_gen", "vision"}
+        expected = {"tts", "image_gen", "vision", "video_gen", "music_gen"}
+        assert set(NATIVE_TOOLS_BY_PROVIDER["minimax"]) == expected
+        assert set(NATIVE_TOOLS_BY_PROVIDER["minimax-cn"]) == expected
 
     def test_no_unknown_tool_categories(self):
-        valid = {"tts", "image_gen", "vision"}
+        valid = {"tts", "image_gen", "vision", "video_gen", "music_gen"}
         for provider, tools in NATIVE_TOOLS_BY_PROVIDER.items():
             unknown = set(tools) - valid
             assert not unknown, (
@@ -71,7 +74,7 @@ class TestActiveProviderId:
 class TestQueryHelpers:
     def test_get_native_tools_minimax(self):
         out = get_native_tools({"model": {"provider": "minimax"}})
-        assert set(out) == {"tts", "image_gen", "vision"}
+        assert set(out) == {"tts", "image_gen", "vision", "video_gen", "music_gen"}
 
     def test_get_native_tools_unregistered(self):
         assert get_native_tools({"model": {"provider": "anthropic"}}) == ()
@@ -79,7 +82,7 @@ class TestQueryHelpers:
     def test_get_native_tools_unset(self):
         assert get_native_tools({}) == ()
 
-    @pytest.mark.parametrize("tool", ["tts", "image_gen", "vision"])
+    @pytest.mark.parametrize("tool", ["tts", "image_gen", "vision", "video_gen", "music_gen"])
     def test_provider_has_native_tool_minimax(self, tool):
         assert provider_has_native_tool(tool, {"model": {"provider": "minimax"}}) is True
 
@@ -87,7 +90,7 @@ class TestQueryHelpers:
         assert provider_has_native_tool("tts", {"model": {"provider": "anthropic"}}) is False
 
     def test_unknown_tool(self):
-        assert provider_has_native_tool("music_gen", {"model": {"provider": "minimax"}}) is False
+        assert provider_has_native_tool("search", {"model": {"provider": "minimax"}}) is False
 
 
 class TestApiRoot:
@@ -121,14 +124,34 @@ class TestApplyDefaults:
     def test_noop_when_no_provider(self):
         assert apply_provider_native_tool_defaults({}) == set()
 
-    def test_minimax_writes_tts_image_reports_vision(self):
+    def test_minimax_writes_all_config_slots(self):
         config = {"model": {"provider": "minimax"}}
         changed = apply_provider_native_tool_defaults(config)
-        assert changed == {"tts", "image_gen", "vision"}
+        assert changed == {"tts", "image_gen", "vision", "video_gen", "music_gen"}
         assert config["tts"]["provider"] == "minimax"
         assert config["image_gen"]["provider"] == "minimax"
+        assert config["video_gen"]["provider"] == "minimax"
+        assert config["music_gen"]["provider"] == "minimax"
         # Vision is reported but no value persists — runtime dispatch handles it.
         assert config.get("auxiliary", {}).get("vision") in (None, {})
+
+    def test_explicit_video_preserved(self):
+        config = {
+            "model": {"provider": "minimax"},
+            "video_gen": {"provider": "runway"},
+        }
+        changed = apply_provider_native_tool_defaults(config)
+        assert "video_gen" not in changed
+        assert config["video_gen"]["provider"] == "runway"
+
+    def test_explicit_music_preserved(self):
+        config = {
+            "model": {"provider": "minimax"},
+            "music_gen": {"provider": "suno"},
+        }
+        changed = apply_provider_native_tool_defaults(config)
+        assert "music_gen" not in changed
+        assert config["music_gen"]["provider"] == "suno"
 
     def test_explicit_tts_preserved(self):
         config = {
@@ -173,15 +196,17 @@ class TestApplyDefaults:
     def test_idempotent(self):
         config = {"model": {"provider": "minimax"}}
         first = apply_provider_native_tool_defaults(config)
-        assert first == {"tts", "image_gen", "vision"}
+        assert first == {"tts", "image_gen", "vision", "video_gen", "music_gen"}
         second = apply_provider_native_tool_defaults(config)
         assert second == set()
 
     def test_cn_provider_same_behaviour(self):
         config = {"model": {"provider": "minimax-cn"}}
         changed = apply_provider_native_tool_defaults(config)
-        assert changed == {"tts", "image_gen", "vision"}
+        assert changed == {"tts", "image_gen", "vision", "video_gen", "music_gen"}
         assert config["tts"]["provider"] == "minimax-cn"
+        assert config["video_gen"]["provider"] == "minimax-cn"
+        assert config["music_gen"]["provider"] == "minimax-cn"
 
     def test_alias_provider_resolved(self):
         config = {"model": {"provider": "minimax-china"}}
@@ -203,14 +228,15 @@ class TestDescribeChanges:
         out = describe_changes(set(), {"model": {"provider": "minimax"}})
         assert "No changes" in out
 
-    def test_minimax_three_tools(self):
+    def test_minimax_all_five_tools(self):
         out = describe_changes(
-            {"tts", "image_gen", "vision"},
+            {"tts", "image_gen", "vision", "video_gen", "music_gen"},
             {"model": {"provider": "minimax"}},
         )
         # Provider name omitted from values (wizard's success line names it).
         assert "TTS" in out and "image-01" in out and "MiniMax-VL-01" in out
-        assert out.count("•") == 3
+        assert "MiniMax-Hailuo-2.3" in out and "music-2.6" in out
+        assert out.count("•") == 5
 
     def test_minimax_cn_shares_minimax_phrasing(self):
         out_int = describe_changes({"tts"}, {"model": {"provider": "minimax"}})
@@ -232,7 +258,7 @@ class TestNativeCredentialPresent:
         monkeypatch.setenv("MINIMAX_API_KEY", "sk-test")
         assert native_credential_present(
             "search", {"model": {"provider": "minimax"}},
-        ) is False  # minimax declares tts/image_gen/vision — not "search"
+        ) is False  # search is not in minimax's native tool set
 
     def test_true_when_provider_native_and_key_set(self, monkeypatch):
         monkeypatch.setenv("MINIMAX_API_KEY", "sk-test")
@@ -284,3 +310,26 @@ class TestMinimaxEndpointAndKey:
         assert minimax_endpoint_and_key("/v1/t2a_v2", {
             "model": {"provider": "minimax", "base_url": "https://api.minimax.io/anthropic"},
         }) == ("", "")
+
+
+class TestRuntimeDispatchers:
+    def test_generate_video_returns_none_when_provider_not_native(self):
+        assert generate_video(
+            prompt="a cat",
+            config={"model": {"provider": "anthropic"}},
+        ) is None
+
+    def test_generate_video_returns_none_when_unset(self):
+        assert generate_video(prompt="a cat", config={}) is None
+
+    def test_generate_music_returns_none_when_provider_not_native(self):
+        assert generate_music(
+            prompt="jazz",
+            lyrics="hello world",
+            config={"model": {"provider": "openai"}},
+        ) is None
+
+    def test_generate_music_returns_none_when_unset(self):
+        assert generate_music(
+            prompt="jazz", lyrics="hi", config={},
+        ) is None
