@@ -228,8 +228,9 @@ LUMENFALL_VIDEO_GENERATE_SCHEMA = {
         "Generate videos from text prompts using Lumenfall. "
         "Supports many video models across providers: Veo, Wan, Kling, "
         "and more. Optionally specify a model or let the server pick the "
-        "best default. This tool will wait for the video to complete "
-        "(may take a few minutes). Returns a video URL. "
+        "best default. Video generation takes 30 seconds to 5 minutes "
+        "depending on the model — let the user know before calling. "
+        "Returns a video URL. "
         "Display it using markdown: [Watch video](URL)"
     ),
     "parameters": {

@@ -202,7 +202,9 @@ LUMENFALL_IMAGE_GENERATE_SCHEMA = {
         "Generate high-quality images from text prompts using Lumenfall. "
         "Supports many models across providers: FLUX, DALL-E, Imagen, "
         "Stable Diffusion, and more. Optionally specify a model or let the "
-        "server pick the best default. Returns an image URL. "
+        "server pick the best default. Generation can take 5-30 seconds "
+        "depending on the model — let the user know before calling. "
+        "Returns an image URL. "
         "Display it using markdown: ![description](URL)"
     ),
     "parameters": {

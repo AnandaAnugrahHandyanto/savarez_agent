@@ -99,6 +99,15 @@ TOOLSETS = {
         "includes": []
     },
 
+    "lumenfall": {
+        "description": "Lumenfall image and video generation, editing, and model discovery",
+        "tools": [
+            "lumenfall_image_generate", "lumenfall_video_generate",
+            "lumenfall_list_models", "lumenfall_image_edit",
+        ],
+        "includes": []
+    },
+
     "terminal": {
         "description": "Terminal/command execution and process management tools",
         "tools": ["terminal", "process"],
