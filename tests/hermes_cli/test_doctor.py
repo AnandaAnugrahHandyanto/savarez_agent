@@ -33,7 +33,7 @@ class TestDoctorPlatformHints:
 
 class TestProviderEnvDetection:
     def test_detects_openai_api_key(self):
-        content = "OPENAI_BASE_URL=http://localhost:1234/v1\nOPENAI_API_KEY=***"
+        content = "OPENAI_BASE_URL=http://localhost:1234/v1\nOPENAI_API_KEY=***\n"
         assert _has_provider_env_config(content)
 
     def test_detects_custom_endpoint_without_openrouter_key(self):
@@ -41,7 +41,7 @@ class TestProviderEnvDetection:
         assert _has_provider_env_config(content)
 
     def test_detects_kimi_cn_api_key(self):
-        content = "KIMI_CN_API_KEY=sk-test\n"
+        content = "KIMI_CN_API_KEY=***\n"
         assert _has_provider_env_config(content)
 
     def test_returns_false_when_no_provider_settings(self):
@@ -205,8 +205,8 @@ class TestDoctorMemoryProviderSection:
 
     def test_no_provider_shows_builtin_ok(self, monkeypatch, tmp_path):
         out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="")
-        assert "Memory Provider" in out
-        assert "Built-in memory active" in out
+        assert "메모리 provider" in out
+        assert "내장 메모리 활성화됨" in out
         # Should NOT mention Honcho or Mem0 errors
         assert "Honcho API key" not in out
         assert "Mem0" not in out
@@ -217,16 +217,16 @@ class TestDoctorMemoryProviderSection:
             sys.modules, "plugins.memory.honcho.client", None
         )
         out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="honcho")
-        assert "Memory Provider" in out
+        assert "메모리 provider" in out
         # Should show failure since honcho is set but not importable
-        assert "Built-in memory active" not in out
+        assert "내장 메모리 활성화됨" not in out
 
     def test_mem0_provider_not_installed_shows_fail(self, monkeypatch, tmp_path):
         # Make mem0 import fail
         monkeypatch.setitem(sys.modules, "plugins.memory.mem0", None)
         out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="mem0")
-        assert "Memory Provider" in out
-        assert "Built-in memory active" not in out
+        assert "메모리 provider" in out
+        assert "내장 메모리 활성화됨" not in out
 
 
 def test_run_doctor_termux_treats_docker_and_browser_warnings_as_expected(monkeypatch, tmp_path):
@@ -245,14 +245,14 @@ def test_run_doctor_termux_treats_docker_and_browser_warnings_as_expected(monkey
 
     out = helper._run_doctor_and_capture(monkeypatch, tmp_path, provider="")
 
-    assert "Docker backend is not available inside Termux" in out
-    assert "Node.js not found (browser tools are optional in the tested Termux path)" in out
-    assert "Install Node.js on Termux with: pkg install nodejs" in out
-    assert "Termux browser setup:" in out
+    assert "Termux 내부에서는 Docker 백엔드를 사용할 수 없어요" in out
+    assert "Node.js를 찾지 못했어요" in out
+    assert "Termux에서 Node.js 설치: pkg install nodejs" in out
+    assert "Termux 브라우저 설정:" in out
     assert "1) pkg install nodejs" in out
     assert "2) npm install -g agent-browser" in out
     assert "3) agent-browser install" in out
-    assert "docker not found (optional)" not in out
+    assert "docker를 찾지 못했어요" not in out
 
 
 def test_run_doctor_termux_does_not_mark_browser_available_without_agent_browser(monkeypatch, tmp_path):
@@ -293,8 +293,8 @@ def test_run_doctor_termux_does_not_mark_browser_available_without_agent_browser
 
     assert "✓ browser" not in out
     assert "browser" in out
-    assert "system dependency not met" in out
-    assert "agent-browser is not installed (expected in the tested Termux path)" in out
+    assert "시스템 의존성을 충족하지 못함" in out
+    assert "agent-browser가 설치되지 않았어요" in out
     assert "npm install -g agent-browser && agent-browser install" in out
 
 
@@ -429,3 +429,49 @@ def test_run_doctor_localizes_auth_and_directory_sections(monkeypatch, tmp_path)
     assert "SOUL.md가 있어요" in out
     assert "MEMORY.md가 있어요" in out
     assert "USER.md가 있어요" in out
+
+
+def test_run_doctor_localizes_external_tools_and_summary(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+
+    def fake_which(cmd):
+        return {"git": "/usr/bin/git", "npm": None}.get(cmd)
+
+    monkeypatch.setattr(doctor_mod.shutil, "which", fake_which)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], [{"name": "browser", "env_vars": [], "tools": ["browser_navigate"]}]),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_anthropic_key", lambda: "")
+    except Exception:
+        pass
+
+    import io, contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    assert "◆ 외부 도구" in out
+    assert "ripgrep (rg)를 찾지 못했어요" in out
+    assert "◆ 도구 사용 가능 여부" in out
+    assert "시스템 의존성을 충족하지 못함" in out
+    assert "◆ API 연결 상태" in out
+    assert "OpenRouter API" in out
+    assert "(설정되지 않음)" in out
+    assert "해결이 필요한 문제" in out

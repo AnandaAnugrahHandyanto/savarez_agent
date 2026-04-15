@@ -519,20 +519,20 @@ def run_doctor(args):
     # Check: External tools
     # =========================================================================
     print()
-    print(color("◆ External Tools", Colors.CYAN, Colors.BOLD))
+    print(color("◆ 외부 도구", Colors.CYAN, Colors.BOLD))
     
     # Git
     if shutil.which("git"):
         check_ok("git")
     else:
-        check_warn("git not found", "(optional)")
+        check_warn("git을 찾지 못했어요", "(선택 사항)")
     
     # ripgrep (optional, for faster file search)
     if shutil.which("rg"):
-        check_ok("ripgrep (rg)", "(faster file search)")
+        check_ok("ripgrep (rg)", "(더 빠른 파일 검색)")
     else:
-        check_warn("ripgrep (rg) not found", "(file search uses grep fallback)")
-        check_info(f"Install for faster search: {_system_package_install_cmd('ripgrep')}")
+        check_warn("ripgrep (rg)를 찾지 못했어요", "(파일 검색은 grep 대체 경로를 사용해요)")
+        check_info(f"더 빠른 검색을 위해 설치하세요: {_system_package_install_cmd('ripgrep')}")
     
     # Docker (optional)
     terminal_env = os.getenv("TERMINAL_ENV", "local")
@@ -544,21 +544,22 @@ def run_doctor(args):
             except subprocess.TimeoutExpired:
                 result = None
             if result is not None and result.returncode == 0:
-                check_ok("docker", "(daemon running)")
+                check_ok("docker", "(daemon 실행 중)")
             else:
-                check_fail("docker daemon not running")
-                issues.append("Start Docker daemon")
+                check_fail("docker daemon이 실행 중이 아니에요")
+                issues.append("Docker daemon을 시작하세요")
         else:
-            check_fail("docker not found", "(required for TERMINAL_ENV=docker)")
-            issues.append("Install Docker or change TERMINAL_ENV")
+            check_fail("docker를 찾지 못했어요", "(TERMINAL_ENV=docker 에 필요)"
+            )
+            issues.append("Docker를 설치하거나 TERMINAL_ENV를 변경하세요")
     else:
         if shutil.which("docker"):
             check_ok("docker", "(optional)")
         else:
             if _is_termux():
-                check_info("Docker backend is not available inside Termux (expected on Android)")
+                check_info("Termux 내부에서는 Docker 백엔드를 사용할 수 없어요 (Android에서는 정상이에요)")
             else:
-                check_warn("docker not found", "(optional)")
+                check_warn("docker를 찾지 못했어요", "(선택 사항)")
     
     # SSH (if using ssh backend)
     if terminal_env == "ssh":
@@ -575,28 +576,30 @@ def run_doctor(args):
             except subprocess.TimeoutExpired:
                 result = None
             if result is not None and result.returncode == 0:
-                check_ok(f"SSH connection to {ssh_host}")
+                check_ok(f"{ssh_host}에 SSH 연결 가능")
             else:
-                check_fail(f"SSH connection to {ssh_host}")
-                issues.append(f"Check SSH configuration for {ssh_host}")
+                check_fail(f"{ssh_host}에 SSH 연결할 수 없어요")
+                issues.append(f"{ssh_host}의 SSH 설정을 확인하세요")
         else:
-            check_fail("TERMINAL_SSH_HOST not set", "(required for TERMINAL_ENV=ssh)")
-            issues.append("Set TERMINAL_SSH_HOST in .env")
+            check_fail("TERMINAL_SSH_HOST가 설정되지 않았어요", "(TERMINAL_ENV=ssh 에 필요)"
+            )
+            issues.append(".env에 TERMINAL_SSH_HOST를 설정하세요")
     
     # Daytona (if using daytona backend)
     if terminal_env == "daytona":
         daytona_key = os.getenv("DAYTONA_API_KEY")
         if daytona_key:
-            check_ok("Daytona API key", "(configured)")
+            check_ok("Daytona API key", "(설정됨)")
         else:
-            check_fail("DAYTONA_API_KEY not set", "(required for TERMINAL_ENV=daytona)")
-            issues.append("Set DAYTONA_API_KEY environment variable")
+            check_fail("DAYTONA_API_KEY가 설정되지 않았어요", "(TERMINAL_ENV=daytona 에 필요)"
+            )
+            issues.append("DAYTONA_API_KEY 환경 변수를 설정하세요")
         try:
             from daytona import Daytona  # noqa: F401 — SDK presence check
-            check_ok("daytona SDK", "(installed)")
+            check_ok("daytona SDK", "(설치됨)")
         except ImportError:
-            check_fail("daytona SDK not installed", "(pip install daytona)")
-            issues.append("Install daytona SDK: pip install daytona")
+            check_fail("daytona SDK가 설치되지 않았어요", "(pip install daytona)")
+            issues.append("daytona SDK를 설치하세요: pip install daytona")
 
     # Node.js + agent-browser (for browser automation tools)
     if shutil.which("node"):
@@ -604,25 +607,25 @@ def run_doctor(args):
         # Check if agent-browser is installed
         agent_browser_path = PROJECT_ROOT / "node_modules" / "agent-browser"
         if agent_browser_path.exists():
-            check_ok("agent-browser (Node.js)", "(browser automation)")
+            check_ok("agent-browser (Node.js)", "(브라우저 자동화)")
         else:
             if _is_termux():
-                check_info("agent-browser is not installed (expected in the tested Termux path)")
-                check_info("Install it manually later with: npm install -g agent-browser && agent-browser install")
-                check_info("Termux browser setup:")
+                check_info("agent-browser가 설치되지 않았어요 (테스트된 Termux 경로에서는 정상이에요)")
+                check_info("나중에 수동으로 설치하세요: npm install -g agent-browser && agent-browser install")
+                check_info("Termux 브라우저 설정:")
                 for step in _termux_browser_setup_steps(node_installed=True):
                     check_info(step)
             else:
-                check_warn("agent-browser not installed", "(run: npm install)")
+                check_warn("agent-browser가 설치되지 않았어요", "(실행: npm install)")
     else:
         if _is_termux():
-            check_info("Node.js not found (browser tools are optional in the tested Termux path)")
-            check_info("Install Node.js on Termux with: pkg install nodejs")
-            check_info("Termux browser setup:")
+            check_info("Node.js를 찾지 못했어요 (테스트된 Termux 경로에서는 브라우저 도구가 선택 사항이에요)")
+            check_info("Termux에서 Node.js 설치: pkg install nodejs")
+            check_info("Termux 브라우저 설정:")
             for step in _termux_browser_setup_steps(node_installed=False):
                 check_info(step)
         else:
-            check_warn("Node.js not found", "(optional, needed for browser tools)")
+            check_warn("Node.js를 찾지 못했어요", "(선택 사항, 브라우저 도구에 필요)")
     
     # npm audit for all Node.js packages
     if shutil.which("npm"):
@@ -647,15 +650,15 @@ def run_doctor(args):
                 moderate = vuln_count.get("moderate", 0)
                 total = critical + high + moderate
                 if total == 0:
-                    check_ok(f"{label} deps", "(no known vulnerabilities)")
+                    check_ok(f"{label} 의존성", "(알려진 취약점 없음)")
                 elif critical > 0 or high > 0:
                     check_warn(
-                        f"{label} deps",
-                        f"({critical} critical, {high} high, {moderate} moderate — run: cd {npm_dir} && npm audit fix)"
+                        f"{label} 의존성",
+                        f"(critical {critical}, high {high}, moderate {moderate} — 실행: cd {npm_dir} && npm audit fix)"
                     )
-                    issues.append(f"{label} has {total} npm vulnerability(ies)")
+                    issues.append(f"{label}에 npm 취약점 {total}개가 있어요")
                 else:
-                    check_ok(f"{label} deps", f"({moderate} moderate vulnerability(ies))")
+                    check_ok(f"{label} 의존성", f"(moderate 취약점 {moderate}개)")
             except Exception:
                 pass
 
@@ -663,11 +666,11 @@ def run_doctor(args):
     # Check: API connectivity
     # =========================================================================
     print()
-    print(color("◆ API Connectivity", Colors.CYAN, Colors.BOLD))
+    print(color("◆ API 연결 상태", Colors.CYAN, Colors.BOLD))
     
     openrouter_key = os.getenv("OPENROUTER_API_KEY")
     if openrouter_key:
-        print("  Checking OpenRouter API...", end="", flush=True)
+        print("  OpenRouter API 확인 중...", end="", flush=True)
         try:
             import httpx
             response = httpx.get(
@@ -679,19 +682,19 @@ def run_doctor(args):
                 print(f"\r  {color('✓', Colors.GREEN)} OpenRouter API                          ")
             elif response.status_code == 401:
                 print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color('(invalid API key)', Colors.DIM)}                ")
-                issues.append("Check OPENROUTER_API_KEY in .env")
+                issues.append(".env의 OPENROUTER_API_KEY를 확인하세요")
             else:
                 print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color(f'(HTTP {response.status_code})', Colors.DIM)}                ")
         except Exception as e:
             print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color(f'({e})', Colors.DIM)}                ")
-            issues.append("Check network connectivity")
+            issues.append("네트워크 연결 상태를 확인하세요")
     else:
-        check_warn("OpenRouter API", "(not configured)")
+        check_warn("OpenRouter API", "(설정되지 않음)")
     
     from hermes_cli.auth import get_anthropic_key
     anthropic_key = get_anthropic_key()
     if anthropic_key:
-        print("  Checking Anthropic API...", end="", flush=True)
+        print("  Anthropic API 확인 중...", end="", flush=True)
         try:
             import httpx
             from agent.anthropic_adapter import _is_oauth_token, _COMMON_BETAS, _OAUTH_ONLY_BETAS
@@ -746,9 +749,9 @@ def run_doctor(args):
             _label = _pname.ljust(20)
             # Some providers (like MiniMax) don't support /models endpoint
             if not _supports_health_check:
-                print(f"  {color('✓', Colors.GREEN)} {_label} {color('(key configured)', Colors.DIM)}")
+                print(f"  {color('✓', Colors.GREEN)} {_label} {color('(key 설정됨)', Colors.DIM)}")
                 continue
-            print(f"  Checking {_pname} API...", end="", flush=True)
+            print(f"  {_pname} API 확인 중...", end="", flush=True)
             try:
                 import httpx
                 _base = os.getenv(_base_env, "") if _base_env else ""
@@ -773,7 +776,7 @@ def run_doctor(args):
                     print(f"\r  {color('✓', Colors.GREEN)} {_label}                          ")
                 elif _resp.status_code == 401:
                     print(f"\r  {color('✗', Colors.RED)} {_label} {color('(invalid API key)', Colors.DIM)}           ")
-                    issues.append(f"Check {_env_vars[0]} in .env")
+                    issues.append(f".env의 {_env_vars[0]} 값을 확인하세요")
                 else:
                     print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'(HTTP {_resp.status_code})', Colors.DIM)}           ")
             except Exception as _e:
@@ -783,7 +786,7 @@ def run_doctor(args):
     # Check: Submodules
     # =========================================================================
     print()
-    print(color("◆ Submodules", Colors.CYAN, Colors.BOLD))
+    print(color("◆ 서브모듈", Colors.CYAN, Colors.BOLD))
     
     # tinker-atropos (RL training backend)
     tinker_dir = PROJECT_ROOT / "tinker-atropos"
@@ -791,21 +794,21 @@ def run_doctor(args):
         if py_version >= (3, 11):
             try:
                 __import__("tinker_atropos")
-                check_ok("tinker-atropos", "(RL training backend)")
+                check_ok("tinker-atropos", "(RL 학습 백엔드)")
             except ImportError:
                 install_cmd = f"{_python_install_cmd()} -e ./tinker-atropos"
-                check_warn("tinker-atropos found but not installed", f"(run: {install_cmd})")
-                issues.append(f"Install tinker-atropos: {install_cmd}")
+                check_warn("tinker-atropos는 있지만 설치되지 않았어요", f"(실행: {install_cmd})")
+                issues.append(f"tinker-atropos를 설치하세요: {install_cmd}")
         else:
-            check_warn("tinker-atropos requires Python 3.11+", f"(current: {py_version.major}.{py_version.minor})")
+            check_warn("tinker-atropos는 Python 3.11+가 필요해요", f"(현재: {py_version.major}.{py_version.minor})")
     else:
-        check_warn("tinker-atropos not found", "(run: git submodule update --init --recursive)")
+        check_warn("tinker-atropos를 찾지 못했어요", "(실행: git submodule update --init --recursive)")
     
     # =========================================================================
     # Check: Tool Availability
     # =========================================================================
     print()
-    print(color("◆ Tool Availability", Colors.CYAN, Colors.BOLD))
+    print(color("◆ 도구 사용 가능 여부", Colors.CYAN, Colors.BOLD))
     
     try:
         # Add project root to path for imports
@@ -823,16 +826,16 @@ def run_doctor(args):
             env_vars = item.get("missing_vars") or item.get("env_vars") or []
             if env_vars:
                 vars_str = ", ".join(env_vars)
-                check_warn(item["name"], f"(missing {vars_str})")
+                check_warn(item["name"], f"({vars_str} 누락)")
             else:
-                check_warn(item["name"], "(system dependency not met)")
+                check_warn(item["name"], "(시스템 의존성을 충족하지 못함)")
 
         # Count disabled tools with API key requirements
         api_disabled = [u for u in unavailable if (u.get("missing_vars") or u.get("env_vars"))]
         if api_disabled:
-            issues.append("Run 'hermes setup' to configure missing API keys for full tool access")
+            issues.append("전체 도구 접근을 위해 누락된 API key를 설정하려면 'hermes setup'을 실행하세요")
     except Exception as e:
-        check_warn("Could not check tool availability", f"({e})")
+        check_warn("도구 사용 가능 여부를 확인하지 못했어요", f"({e})")
     
     # =========================================================================
     # Check: Skills Hub
@@ -842,35 +845,35 @@ def run_doctor(args):
 
     hub_dir = HERMES_HOME / "skills" / ".hub"
     if hub_dir.exists():
-        check_ok("Skills Hub directory exists")
+        check_ok("Skills Hub 디렉터리가 있어요")
         lock_file = hub_dir / "lock.json"
         if lock_file.exists():
             try:
                 import json
                 lock_data = json.loads(lock_file.read_text())
                 count = len(lock_data.get("installed", {}))
-                check_ok(f"Lock file OK ({count} hub-installed skill(s))")
+                check_ok(f"Lock 파일이 정상이에요 ({count}개 hub 설치 스킬)")
             except Exception:
-                check_warn("Lock file", "(corrupted or unreadable)")
+                check_warn("Lock 파일", "(손상되었거나 읽을 수 없어요)")
         quarantine = hub_dir / "quarantine"
         q_count = sum(1 for d in quarantine.iterdir() if d.is_dir()) if quarantine.exists() else 0
         if q_count > 0:
-            check_warn(f"{q_count} skill(s) in quarantine", "(pending review)")
+            check_warn(f"격리된 스킬 {q_count}개", "(검토 대기 중)")
     else:
-        check_warn("Skills Hub directory not initialized", "(run: hermes skills list)")
+        check_warn("Skills Hub 디렉터리가 초기화되지 않았어요", "(실행: hermes skills list)")
 
     from hermes_cli.config import get_env_value
     github_token = get_env_value("GITHUB_TOKEN") or get_env_value("GH_TOKEN")
     if github_token:
-        check_ok("GitHub token configured (authenticated API access)")
+        check_ok("GitHub token이 설정되어 있어요 (인증된 API 접근 가능)")
     else:
-        check_warn("No GITHUB_TOKEN", f"(60 req/hr rate limit — set in {_DHH}/.env for better rates)")
+        check_warn("GITHUB_TOKEN이 없어요", f"(시간당 60회 제한 — 더 높은 한도를 원하면 {_DHH}/.env에 설정하세요)")
 
     # =========================================================================
     # Memory Provider (only check the active provider, if any)
     # =========================================================================
     print()
-    print(color("◆ Memory Provider", Colors.CYAN, Colors.BOLD))
+    print(color("◆ 메모리 provider", Colors.CYAN, Colors.BOLD))
 
     _active_memory_provider = ""
     try:
@@ -884,7 +887,7 @@ def run_doctor(args):
         pass
 
     if not _active_memory_provider:
-        check_ok("Built-in memory active", "(no external provider configured — this is fine)")
+        check_ok("내장 메모리 활성화됨", "(외부 provider가 설정되지 않았어도 정상이에요)")
     elif _active_memory_provider == "honcho":
         try:
             from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
@@ -892,58 +895,58 @@ def run_doctor(args):
             _honcho_cfg_path = resolve_config_path()
 
             if not _honcho_cfg_path.exists():
-                check_warn("Honcho config not found", "run: hermes memory setup")
+                check_warn("Honcho 설정을 찾지 못했어요", "실행: hermes memory setup")
             elif not hcfg.enabled:
-                check_info(f"Honcho disabled (set enabled: true in {_honcho_cfg_path} to activate)")
+                check_info(f"Honcho가 비활성화되어 있어요 ({_honcho_cfg_path}에서 enabled: true로 설정하면 활성화돼요)")
             elif not (hcfg.api_key or hcfg.base_url):
-                check_fail("Honcho API key or base URL not set", "run: hermes memory setup")
-                issues.append("No Honcho API key — run 'hermes memory setup'")
+                check_fail("Honcho API key 또는 base URL이 설정되지 않았어요", "실행: hermes memory setup")
+                issues.append("Honcho API key가 없어요 — 'hermes memory setup'을 실행하세요")
             else:
                 from plugins.memory.honcho.client import get_honcho_client, reset_honcho_client
                 reset_honcho_client()
                 try:
                     get_honcho_client(hcfg)
                     check_ok(
-                        "Honcho connected",
+                        "Honcho 연결됨",
                         f"workspace={hcfg.workspace_id} mode={hcfg.recall_mode} freq={hcfg.write_frequency}",
                     )
                 except Exception as _e:
-                    check_fail("Honcho connection failed", str(_e))
-                    issues.append(f"Honcho unreachable: {_e}")
+                    check_fail("Honcho 연결에 실패했어요", str(_e))
+                    issues.append(f"Honcho에 연결할 수 없어요: {_e}")
         except ImportError:
-            check_fail("honcho-ai not installed", "pip install honcho-ai")
-            issues.append("Honcho is set as memory provider but honcho-ai is not installed")
+            check_fail("honcho-ai가 설치되지 않았어요", "pip install honcho-ai")
+            issues.append("메모리 provider가 Honcho로 설정되어 있지만 honcho-ai가 설치되지 않았어요")
         except Exception as _e:
-            check_warn("Honcho check failed", str(_e))
+            check_warn("Honcho 점검에 실패했어요", str(_e))
     elif _active_memory_provider == "mem0":
         try:
             from plugins.memory.mem0 import _load_config as _load_mem0_config
             mem0_cfg = _load_mem0_config()
             mem0_key = mem0_cfg.get("api_key", "")
             if mem0_key:
-                check_ok("Mem0 API key configured")
+                check_ok("Mem0 API key가 설정되어 있어요")
                 check_info(f"user_id={mem0_cfg.get('user_id', '?')}  agent_id={mem0_cfg.get('agent_id', '?')}")
             else:
-                check_fail("Mem0 API key not set", "(set MEM0_API_KEY in .env or run hermes memory setup)")
-                issues.append("Mem0 is set as memory provider but API key is missing")
+                check_fail("Mem0 API key가 설정되지 않았어요", "(.env에 MEM0_API_KEY를 설정하거나 hermes memory setup 실행)")
+                issues.append("메모리 provider가 Mem0로 설정되어 있지만 API key가 없어요")
         except ImportError:
-            check_fail("Mem0 plugin not loadable", "pip install mem0ai")
-            issues.append("Mem0 is set as memory provider but mem0ai is not installed")
+            check_fail("Mem0 플러그인을 불러올 수 없어요", "pip install mem0ai")
+            issues.append("메모리 provider가 Mem0로 설정되어 있지만 mem0ai가 설치되지 않았어요")
         except Exception as _e:
-            check_warn("Mem0 check failed", str(_e))
+            check_warn("Mem0 점검에 실패했어요", str(_e))
     else:
         # Generic check for other memory providers (openviking, hindsight, etc.)
         try:
             from plugins.memory import load_memory_provider
             _provider = load_memory_provider(_active_memory_provider)
             if _provider and _provider.is_available():
-                check_ok(f"{_active_memory_provider} provider active")
+                check_ok(f"{_active_memory_provider} provider 활성화됨")
             elif _provider:
-                check_warn(f"{_active_memory_provider} configured but not available", "run: hermes memory status")
+                check_warn(f"{_active_memory_provider}가 설정되어 있지만 사용할 수 없어요", "실행: hermes memory status")
             else:
-                check_warn(f"{_active_memory_provider} plugin not found", "run: hermes memory setup")
+                check_warn(f"{_active_memory_provider} 플러그인을 찾지 못했어요", "실행: hermes memory setup")
         except Exception as _e:
-            check_warn(f"{_active_memory_provider} check failed", str(_e))
+            check_warn(f"{_active_memory_provider} 점검에 실패했어요", str(_e))
 
     # =========================================================================
     # Profiles
@@ -955,23 +958,23 @@ def run_doctor(args):
         named_profiles = [p for p in list_profiles() if not p.is_default]
         if named_profiles:
             print()
-            print(color("◆ Profiles", Colors.CYAN, Colors.BOLD))
-            check_ok(f"{len(named_profiles)} profile(s) found")
+            print(color("◆ 프로필", Colors.CYAN, Colors.BOLD))
+            check_ok(f"프로필 {len(named_profiles)}개를 찾았어요")
             wrapper_dir = _get_wrapper_dir()
             for p in named_profiles:
                 parts = []
                 if p.gateway_running:
-                    parts.append("gateway running")
+                    parts.append("gateway 실행 중")
                 if p.model:
                     parts.append(p.model[:30])
                 if not (p.path / "config.yaml").exists():
-                    parts.append("⚠ missing config")
+                    parts.append("⚠ config 없음")
                 if not (p.path / ".env").exists():
-                    parts.append("no .env")
+                    parts.append(".env 없음")
                 wrapper = wrapper_dir / p.name
                 if not wrapper.exists():
-                    parts.append("no alias")
-                status = ", ".join(parts) if parts else "configured"
+                    parts.append("별칭 없음")
+                status = ", ".join(parts) if parts else "설정됨"
                 check_ok(f"  {p.name}: {status}")
 
             # Check for orphan wrappers
@@ -984,7 +987,7 @@ def run_doctor(args):
                         if "hermes -p" in content:
                             _m = _re.search(r"hermes -p (\S+)", content)
                             if _m and not profile_exists(_m.group(1)):
-                                check_warn(f"Orphan alias: {wrapper.name} → profile '{_m.group(1)}' no longer exists")
+                                check_warn(f"고아 alias: {wrapper.name} → profile '{_m.group(1)}' 이(가) 더 이상 없어요")
                     except Exception:
                         pass
     except ImportError:
@@ -999,9 +1002,9 @@ def run_doctor(args):
     remaining_issues = issues + manual_issues
     if should_fix and fixed_count > 0:
         print(color("─" * 60, Colors.GREEN))
-        print(color(f"  Fixed {fixed_count} issue(s).", Colors.GREEN, Colors.BOLD), end="")
+        print(color(f"  문제 {fixed_count}개를 수정했어요.", Colors.GREEN, Colors.BOLD), end="")
         if remaining_issues:
-            print(color(f" {len(remaining_issues)} issue(s) require manual intervention.", Colors.YELLOW, Colors.BOLD))
+            print(color(f" 수동 조치가 필요한 문제 {len(remaining_issues)}개가 남아 있어요.", Colors.YELLOW, Colors.BOLD))
         else:
             print()
         print()
@@ -1011,15 +1014,15 @@ def run_doctor(args):
             print()
     elif remaining_issues:
         print(color("─" * 60, Colors.YELLOW))
-        print(color(f"  Found {len(remaining_issues)} issue(s) to address:", Colors.YELLOW, Colors.BOLD))
+        print(color(f"  해결이 필요한 문제 {len(remaining_issues)}개를 찾았어요:", Colors.YELLOW, Colors.BOLD))
         print()
         for i, issue in enumerate(remaining_issues, 1):
             print(f"  {i}. {issue}")
         print()
         if not should_fix:
-            print(color("  Tip: run 'hermes doctor --fix' to auto-fix what's possible.", Colors.DIM))
+            print(color("  팁: 자동으로 고칠 수 있는 항목은 'hermes doctor --fix'를 실행하세요.", Colors.DIM))
     else:
         print(color("─" * 60, Colors.GREEN))
-        print(color("  All checks passed! 🎉", Colors.GREEN, Colors.BOLD))
+        print(color("  모든 점검을 통과했어요! 🎉", Colors.GREEN, Colors.BOLD))
     
     print()
