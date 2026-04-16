@@ -787,6 +787,7 @@ def list_authenticated_providers(
 
     results: List[dict] = []
     seen_slugs: set = set()
+    reserved_compatibility_entries: set[tuple[str, str]] = set()
 
     data = fetch_models_dev()
 
@@ -1003,11 +1004,13 @@ def list_authenticated_providers(
             if not isinstance(ep_cfg, dict):
                 continue
             display_name = str(ep_cfg.get("name", "") or ep_name)
+            api_url = ep_cfg.get("api", "") or ep_cfg.get("url", "") or ""
             normalized_slug = str(ep_name).strip().lower()
             compatibility_slug = custom_provider_slug(display_name)
+            compatibility_api_url = str(api_url or "").strip().rstrip("/").lower()
+            reserved_compatibility_entries.add((compatibility_slug, compatibility_api_url))
             if normalized_slug in seen_slugs:
                 continue
-            api_url = ep_cfg.get("api", "") or ep_cfg.get("url", "") or ""
             default_model = ep_cfg.get("default_model", "")
 
             # Build models list from both default_model and full models array
@@ -1034,7 +1037,6 @@ def list_authenticated_providers(
                 "api_url": api_url,
             })
             seen_slugs.add(normalized_slug)
-            seen_slugs.add(compatibility_slug)
 
     # --- 4. Saved custom providers from config ---
     # Each ``custom_providers`` entry represents one model under a named
@@ -1063,6 +1065,12 @@ def list_authenticated_providers(
                 continue
 
             slug = custom_provider_slug(display_name)
+            provider_key = str(entry.get("provider_key", "") or "").strip().lower()
+            normalized_api_url = api_url.rstrip("/").lower()
+            if provider_key and provider_key in seen_slugs:
+                continue
+            if (slug, normalized_api_url) in reserved_compatibility_entries:
+                continue
             if slug not in groups:
                 groups[slug] = {
                     "name": display_name,

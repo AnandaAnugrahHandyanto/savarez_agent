@@ -141,6 +141,39 @@ def test_list_authenticated_providers_skips_user_provider_when_builtin_exists(mo
     assert copilot_rows[0]["source"] == "hermes"
 
 
+def test_list_authenticated_providers_builtin_slot_blocks_matching_compatibility_custom_provider(monkeypatch):
+    """Builtins should also suppress matching compatibility custom rows derived from providers:."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+
+    user_providers = {
+        "copilot": {
+            "name": "GitHub Copilot",
+            "api": "https://example.invalid/v1",
+            "default_model": "gpt-5",
+        }
+    }
+    custom_providers = [
+        {
+            "name": "GitHub Copilot",
+            "base_url": "https://example.invalid/v1",
+            "model": "gpt-5",
+        }
+    ]
+
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "fake-ghu")
+    providers = list_authenticated_providers(
+        current_provider="copilot",
+        user_providers=user_providers,
+        custom_providers=custom_providers,
+        max_models=50,
+    )
+
+    copilot_rows = [p for p in providers if p["slug"] == "copilot"]
+    assert len(copilot_rows) == 1
+    assert copilot_rows[0]["source"] == "hermes"
+    assert not any(p["slug"] == "custom:github-copilot" for p in providers)
+
+
 def test_list_authenticated_providers_reserves_compatibility_custom_slug(monkeypatch):
     """providers: entries should not reappear through the custom-provider compatibility view."""
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
