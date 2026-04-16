@@ -32,6 +32,22 @@ from hermes_cli.colors import Colors, color
 from hermes_constants import OPENROUTER_MODELS_URL
 
 
+def _doctor_enabled_cli_toolsets() -> set[str] | None:
+    """Return explicitly enabled CLI toolsets from config.yaml, or None when unavailable."""
+    config_path = HERMES_HOME / "config.yaml"
+    if not config_path.exists():
+        return None
+    try:
+        import yaml
+        with open(config_path) as f:
+            raw_config = yaml.safe_load(f) or {}
+        cli_toolsets = ((raw_config.get("platform_toolsets") or {}).get("cli") or [])
+        enabled = {str(item).strip() for item in cli_toolsets if isinstance(item, str) and str(item).strip()}
+        return enabled or None
+    except Exception:
+        return None
+
+
 _PROVIDER_ENV_HINTS = (
     "OPENROUTER_API_KEY",
     "OPENAI_API_KEY",
@@ -920,6 +936,10 @@ def run_doctor(args):
         
         available, unavailable = check_tool_availability()
         available, unavailable = _apply_doctor_tool_availability_overrides(available, unavailable)
+
+        enabled_cli_toolsets = _doctor_enabled_cli_toolsets()
+        if enabled_cli_toolsets:
+            unavailable = [item for item in unavailable if item.get("name") in enabled_cli_toolsets]
         
         for tid in available:
             info = TOOLSET_REQUIREMENTS.get(tid, {})

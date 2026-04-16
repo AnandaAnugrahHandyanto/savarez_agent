@@ -74,6 +74,59 @@ class TestDoctorToolAvailabilityOverrides:
         assert unavailable == [honcho_entry]
 
 
+def test_doctor_enabled_cli_toolsets_reads_platform_cli_config(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "platform_toolsets:\n  cli:\n    - browser\n    - terminal\n"
+    )
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+
+    assert doctor_mod._doctor_enabled_cli_toolsets() == {"browser", "terminal"}
+
+
+def test_run_doctor_filters_unavailable_tools_to_enabled_cli_toolsets(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    project_root = tmp_path / "project"
+    home.mkdir()
+    project_root.mkdir()
+    (home / "config.yaml").write_text(
+        "platform_toolsets:\n  cli:\n    - browser\n"
+    )
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: (
+            [],
+            [
+                {"name": "browser", "env_vars": [], "tools": ["browser_navigate"]},
+                {"name": "homeassistant", "env_vars": [], "tools": ["ha_list_entities"]},
+            ],
+        ),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+    monkeypatch.setattr(doctor_mod, "_honcho_is_configured_for_doctor", lambda: False)
+
+    from hermes_cli import auth as auth_mod
+
+    monkeypatch.setattr(auth_mod, "get_nous_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_codex_auth_status", lambda: {}, raising=False)
+
+    import io, contextlib
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = buf.getvalue()
+    assert "browser (system dependency not met)" in out
+    assert "homeassistant (system dependency not met)" not in out
+
+
 class TestHonchoDoctorConfigDetection:
     def test_reports_configured_when_enabled_with_api_key(self, monkeypatch):
         fake_config = SimpleNamespace(enabled=True, api_key="***")
