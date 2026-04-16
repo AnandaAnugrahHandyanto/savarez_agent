@@ -1073,6 +1073,61 @@ def _is_connection_error(exc: Exception) -> bool:
     return False
 
 
+def _is_model_not_supported_error(exc: Exception) -> bool:
+    """Detect provider errors indicating the requested model is unsupported."""
+    status = getattr(exc, "status_code", None)
+    err_lower = str(exc).lower()
+    if "model_not_supported" in err_lower:
+        return True
+    if status in (400, 404, None) and any(
+        kw in err_lower
+        for kw in (
+            "requested model is not supported",
+            "does not support vision",
+            "does not support image",
+            "not support image",
+            "multimodal",
+            "unsupported model",
+        )
+    ):
+        return True
+    return False
+
+
+def _try_vision_backend_fallback(
+    failed_provider: str,
+    *,
+    async_mode: bool = False,
+) -> Tuple[Optional[str], Optional[Any], Optional[str]]:
+    """Try strict vision backends after a model-not-supported error."""
+    failed = _normalize_vision_provider(failed_provider)
+    tried: List[str] = []
+    for candidate in _VISION_AUTO_PROVIDER_ORDER:
+        if candidate == failed:
+            continue
+        resolved_provider, client, model = resolve_vision_provider_client(
+            provider=candidate,
+            model=None,
+            async_mode=async_mode,
+        )
+        if client is not None:
+            logger.info(
+                "Auxiliary vision: model unsupported on %s — falling back to %s (%s)",
+                failed_provider,
+                resolved_provider or candidate,
+                model or "default",
+            )
+            return resolved_provider or candidate, client, model
+        tried.append(candidate)
+
+    logger.warning(
+        "Auxiliary vision: no strict fallback backend available after %s (tried: %s)",
+        failed_provider,
+        ", ".join(tried) if tried else "none",
+    )
+    return None, None, None
+
+
 def _try_payment_fallback(
     failed_provider: str,
     task: str = None,
@@ -2120,6 +2175,24 @@ def call_llm(
                     raise
                 first_err = retry_err
 
+        if task == "vision" and _is_model_not_supported_error(first_err):
+            fb_provider, fb_client, fb_model = _try_vision_backend_fallback(
+                resolved_provider,
+                async_mode=False,
+            )
+            if fb_client is not None:
+                fb_kwargs = _build_call_kwargs(
+                    fb_provider or "auto",
+                    fb_model,
+                    messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    tools=tools,
+                    timeout=effective_timeout,
+                    extra_body=extra_body,
+                )
+                return fb_client.chat.completions.create(**fb_kwargs)
+
         # ── Payment / credit exhaustion fallback ──────────────────────
         # When the resolved provider returns 402 or a credit-related error,
         # try alternative providers instead of giving up.  This handles the
@@ -2292,5 +2365,26 @@ async def async_call_llm(
         if "max_tokens" in err_str or "unsupported_parameter" in err_str:
             kwargs.pop("max_tokens", None)
             kwargs["max_completion_tokens"] = max_tokens
-            return await client.chat.completions.create(**kwargs)
+            try:
+                return await client.chat.completions.create(**kwargs)
+            except Exception as retry_err:
+                first_err = retry_err
+
+        if task == "vision" and _is_model_not_supported_error(first_err):
+            fb_provider, fb_client, fb_model = _try_vision_backend_fallback(
+                resolved_provider,
+                async_mode=True,
+            )
+            if fb_client is not None:
+                fb_kwargs = _build_call_kwargs(
+                    fb_provider or "auto",
+                    fb_model,
+                    messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    tools=tools,
+                    timeout=effective_timeout,
+                    extra_body=extra_body,
+                )
+                return await fb_client.chat.completions.create(**fb_kwargs)
         raise

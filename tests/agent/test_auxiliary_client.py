@@ -15,6 +15,7 @@ from agent.auxiliary_client import (
     resolve_provider_client,
     auxiliary_max_tokens_param,
     call_llm,
+    async_call_llm,
     _read_codex_access_token,
     _get_auxiliary_provider,
     _get_provider_chain,
@@ -1337,3 +1338,78 @@ class TestCallLlmPaymentFallback:
                     task="compression",
                     messages=[{"role": "user", "content": "hello"}],
                 )
+
+
+class TestVisionModelUnsupportedFallback:
+    """Vision calls should fall back to strict vision backends on model_not_supported."""
+
+    def _make_model_not_supported(self):
+        exc = Exception("Error code: 400 - {'error': {'message': 'The requested model is not supported.', 'code': 'model_not_supported'}}")
+        exc.status_code = 400
+        return exc
+
+    def test_call_llm_vision_falls_back_on_model_not_supported(self):
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = self._make_model_not_supported()
+
+        fallback_client = MagicMock()
+        fallback_response = MagicMock()
+        fallback_client.chat.completions.create.return_value = fallback_response
+
+        with patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("copilot", "gpt-5.4", None, None),
+        ), patch(
+            "agent.auxiliary_client.resolve_vision_provider_client",
+            side_effect=[
+                ("copilot", primary_client, "gpt-5.4"),
+                ("openrouter", fallback_client, "google/gemini-3-flash-preview"),
+            ],
+        ):
+            result = call_llm(
+                task="vision",
+                messages=[{"role": "user", "content": [{"type": "text", "text": "describe"}]}],
+            )
+
+        assert result is fallback_response
+        assert fallback_client.chat.completions.create.called
+
+    def test_async_call_llm_vision_falls_back_on_model_not_supported(self):
+        class _AsyncCreate:
+            def __init__(self, effect):
+                self._effect = effect
+
+            async def create(self, **kwargs):
+                if isinstance(self._effect, Exception):
+                    raise self._effect
+                return self._effect
+
+        class _AsyncClient:
+            def __init__(self, effect):
+                self.chat = MagicMock()
+                self.chat.completions = _AsyncCreate(effect)
+
+        primary_client = _AsyncClient(self._make_model_not_supported())
+        fallback_response = MagicMock()
+        fallback_client = _AsyncClient(fallback_response)
+
+        with patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("copilot", "gpt-5.4", None, None),
+        ), patch(
+            "agent.auxiliary_client.resolve_vision_provider_client",
+            side_effect=[
+                ("copilot", primary_client, "gpt-5.4"),
+                ("openrouter", fallback_client, "google/gemini-3-flash-preview"),
+            ],
+        ):
+            import asyncio
+
+            result = asyncio.run(
+                async_call_llm(
+                    task="vision",
+                    messages=[{"role": "user", "content": [{"type": "text", "text": "describe"}]}],
+                )
+            )
+
+        assert result is fallback_response
