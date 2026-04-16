@@ -566,7 +566,7 @@ DEFAULT_CONFIG = {
     
     # Text-to-speech configuration
     "tts": {
-        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "minimax" | "mistral" | "neutts" (local)
+        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "minimax" | "mistral" | "neutts" (local) | "gemini"
         "edge": {
             "voice": "en-US-AriaNeural",
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
@@ -589,6 +589,15 @@ DEFAULT_CONFIG = {
             "ref_text": "",   # Path to reference voice transcript (empty = bundled default)
             "model": "neuphonic/neutts-air-q4-gguf",  # HuggingFace model repo
             "device": "cpu",  # cpu, cuda, or mps
+        },
+        "gemini": {
+            "model": "gemini-2.5-flash-preview-tts",
+            "voice": "Kore",
+            # 30 prebuilt voices: Zephyr, Puck, Charon, Kore, Fenrir, Leda,
+            # Orus, Aoede, Callirrhoe, Autonoe, Enceladus, Iapetus, Umbriel,
+            # Algieba, Despina, Erinome, Algenib, Rasalgethi, Laomedeia,
+            # Achernar, Alnilam, Schedar, Gacrux, Pulcherrima, Achird,
+            # Zubenelgenubi, Vindemiatrix, Sadachbia, Sadaltager, Sulafat
         },
     },
     
