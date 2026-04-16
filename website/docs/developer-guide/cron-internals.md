@@ -59,7 +59,8 @@ Jobs are stored in `~/.hermes/cron/jobs.json` with atomic write semantics (write
   "created_at": "2025-01-01T00:00:00Z",
   "model": null,
   "provider": null,
-  "script": null
+  "script": null,
+  "precheck": null
 }
 ```
 
@@ -90,12 +91,13 @@ tick()
   4. For each due job:
      a. Set state to "running"
      b. Create fresh AIAgent session (no conversation history)
-     c. Load attached skills in order (injected as user messages)
-     d. Run the job prompt through the agent
-     e. Deliver the response to the configured target
-     f. Update run_count, compute next_run
-     g. If repeat count exhausted → state = "completed"
-     h. Otherwise → state = "scheduled"
+     c. Run precheck script (if configured) — skip LLM if precheck fails or returns empty
+     d. Load attached skills in order (injected as user messages)
+     e. Run the job prompt through the agent
+     f. Deliver the response to the configured target
+     g. Update run_count, compute next_run
+     h. If repeat count exhausted → state = "completed"
+     i. Otherwise → state = "scheduled"
   5. Write updated jobs back to jobs.json
   6. Release scheduler lock
 ```
@@ -141,7 +143,29 @@ import requests, json
 # Print summary to stdout — agent analyzes and reports
 ```
 
-The script timeout defaults to 120 seconds. `_get_script_timeout()` resolves the limit through a three-layer chain:
+### Precheck — Conditional LLM Invocation
+
+Jobs can attach a `precheck` script via the `precheck` field. The script runs *before* the LLM is invoked and decides whether to proceed:
+
+| Result | Behavior |
+|--------|----------|
+| Exit non-zero | Skip LLM, mark job failed, no delivery |
+| Exit zero + empty stdout | Skip LLM silently, no delivery |
+| Exit zero + non-empty stdout | Inject output into prompt, call LLM normally |
+
+This is useful for gating cron runs on external conditions — for example, only alerting when a service is down, or only reporting when new content exists.
+
+```json
+{
+  "id": "a1b2c3d4e5f6",
+  "name": "GitHub commit summary",
+  "prompt": "Summarize the new commits below.",
+  "schedule": { "kind": "cron", "expr": "0 9 * * *" },
+  "precheck": "check_github.py"
+}
+```
+
+Precheck shares the same timeout as scripts (120s default). `_get_script_timeout()` resolves the limit through the three-layer chain: module override → `HERMES_CRON_SCRIPT_TIMEOUT` env var → `cron.script_timeout_seconds` config → 120s default.
 
 1. **Module-level override** — `_SCRIPT_TIMEOUT` (for tests/monkeypatching). Only used when it differs from the default.
 2. **Environment variable** — `HERMES_CRON_SCRIPT_TIMEOUT`

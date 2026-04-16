@@ -254,6 +254,60 @@ cron:
 
 Or set the `HERMES_CRON_SCRIPT_TIMEOUT` environment variable. The resolution order is: env var → config.yaml → 120s default.
 
+## Precheck — conditional LLM invocation
+
+A cron job can attach a `precheck` script that runs **before** the LLM is invoked. This lets you skip the LLM entirely when conditions aren't met, avoiding unnecessary API calls and costs.
+
+### Behavior
+
+| Script result | What happens |
+|---------------|--------------|
+| Exit non-zero | Job skipped, error logged, no LLM call, no delivery |
+| Exit zero + empty stdout | Job skipped silently, no LLM call, no delivery |
+| Exit zero + non-empty stdout | Output injected into prompt, LLM is called normally |
+
+### Use case
+
+Useful for "only report when something changes" patterns:
+
+```python
+# check_github.py — exits 0 only when there are new commits
+import subprocess, sys
+result = subprocess.run(["git", "fetch", "origin"], capture_output=True)
+result = subprocess.run(["git", "log", "HEAD..origin/main", "--oneline"], capture_output=True)
+if result.stdout.strip():
+    print(result.stdout.strip())
+    sys.exit(0)
+sys.exit(1)  # no new commits — skip LLM
+```
+
+```python
+cronjob(
+    action="create",
+    prompt="Summarize the new commits below.",
+    schedule="every 1h",
+    precheck="check_github.py",
+)
+```
+
+### Example: only alert on failures
+
+```python
+# check_health.py — exits 0 with output when service is down
+import requests, sys
+try:
+    r = requests.get("https://example.com/health", timeout=5)
+    if r.status_code != 200:
+        print(f"Service unhealthy: HTTP {r.status_code}")
+        sys.exit(0)  # alert
+    sys.exit(1)  # healthy — skip LLM silently
+except Exception as e:
+    print(f"Health check error: {e}")
+    sys.exit(0)  # treat error as worth alerting on
+```
+
+Precheck shares the same timeout as scripts (120s default, configurable via `HERMES_CRON_SCRIPT_TIMEOUT`).
+
 ## Provider recovery
 
 Cron jobs inherit your configured fallback providers and credential pool rotation. If the primary API key is rate-limited or the provider returns an error, the cron agent can:
