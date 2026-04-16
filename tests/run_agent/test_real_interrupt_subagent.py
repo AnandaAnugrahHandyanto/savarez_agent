@@ -9,6 +9,7 @@ import os
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch, PropertyMock
 
 from tools.interrupt import set_interrupt, is_interrupted
@@ -20,19 +21,22 @@ def _make_slow_api_response(delay=5.0):
         # Simulate a slow API call
         time.sleep(delay)
         # Return a simple text response (no tool calls)
-        resp = MagicMock()
-        resp.choices = [MagicMock()]
-        resp.choices[0].message = MagicMock()
-        resp.choices[0].message.content = "Done"
-        resp.choices[0].message.tool_calls = None
-        resp.choices[0].message.refusal = None
-        resp.choices[0].finish_reason = "stop"
-        resp.usage = MagicMock()
-        resp.usage.prompt_tokens = 100
-        resp.usage.completion_tokens = 10
-        resp.usage.total_tokens = 110
-        resp.usage.prompt_tokens_details = None
-        return resp
+        message = SimpleNamespace(
+            content="Done",
+            tool_calls=None,
+            refusal=None,
+            reasoning=None,
+            reasoning_content=None,
+            reasoning_details=None,
+        )
+        choice = SimpleNamespace(message=message, finish_reason="stop")
+        usage = SimpleNamespace(
+            prompt_tokens=100,
+            completion_tokens=10,
+            total_tokens=110,
+            prompt_tokens_details=None,
+        )
+        return SimpleNamespace(choices=[choice], usage=usage)
     return slow_create
 
 
@@ -88,7 +92,9 @@ class TestRealSubagentInterrupt(unittest.TestCase):
         def run_delegate():
             try:
                 # Patch the OpenAI client creation inside AIAgent.__init__
-                with patch('run_agent.OpenAI') as MockOpenAI:
+                with patch('run_agent.OpenAI') as MockOpenAI, \
+                     patch('run_agent.query_ollama_num_ctx', return_value=None), \
+                     patch('agent.context_compressor.get_model_context_length', return_value=128000):
                     mock_client = MagicMock()
                     # API call takes 5 seconds — should be interrupted before that
                     mock_client.chat.completions.create = _make_slow_api_response(delay=5.0)

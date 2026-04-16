@@ -333,6 +333,13 @@ class TestExtractReasoning:
         msg = _mock_assistant_msg()
         assert agent._extract_reasoning(msg) is None
 
+    def test_ignores_truthy_non_string_reasoning_fields(self, agent):
+        msg = _mock_assistant_msg()
+        msg.reasoning = object()
+        msg.reasoning_content = object()
+        msg.reasoning_details = [{"summary": object()}]
+        assert agent._extract_reasoning(msg) is None
+
     def test_combined_reasoning(self, agent):
         msg = _mock_assistant_msg(
             reasoning="part1",

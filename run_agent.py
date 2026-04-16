@@ -2047,16 +2047,20 @@ class AIAgent:
             Combined reasoning text, or None if no reasoning found
         """
         reasoning_parts = []
+
+        def _append_reasoning_part(value) -> None:
+            if isinstance(value, str):
+                cleaned = value.strip()
+                if cleaned and cleaned not in reasoning_parts:
+                    reasoning_parts.append(cleaned)
         
         # Check direct reasoning field
         if hasattr(assistant_message, 'reasoning') and assistant_message.reasoning:
-            reasoning_parts.append(assistant_message.reasoning)
+            _append_reasoning_part(assistant_message.reasoning)
         
         # Check reasoning_content field (alternative name used by some providers)
         if hasattr(assistant_message, 'reasoning_content') and assistant_message.reasoning_content:
-            # Don't duplicate if same as reasoning
-            if assistant_message.reasoning_content not in reasoning_parts:
-                reasoning_parts.append(assistant_message.reasoning_content)
+            _append_reasoning_part(assistant_message.reasoning_content)
         
         # Check reasoning_details array (OpenRouter unified format)
         # Format: [{"type": "reasoning.summary", "summary": "...", ...}, ...]
@@ -2070,8 +2074,7 @@ class AIAgent:
                         or detail.get('content')
                         or detail.get('text')
                     )
-                    if summary and summary not in reasoning_parts:
-                        reasoning_parts.append(summary)
+                    _append_reasoning_part(summary)
 
         # Some providers embed reasoning directly inside assistant content
         # instead of returning structured reasoning fields.  Only fall back
@@ -2088,9 +2091,7 @@ class AIAgent:
             for pattern in inline_patterns:
                 flags = re.DOTALL | re.IGNORECASE
                 for block in re.findall(pattern, content, flags=flags):
-                    cleaned = block.strip()
-                    if cleaned and cleaned not in reasoning_parts:
-                        reasoning_parts.append(cleaned)
+                    _append_reasoning_part(block)
         
         # Combine all reasoning parts
         if reasoning_parts:
