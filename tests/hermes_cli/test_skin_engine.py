@@ -152,6 +152,16 @@ class TestSkinManagement:
         init_skin_from_config({})
         assert get_active_skin_name() == "default"
 
+    def test_init_skin_from_null_display(self):
+        from hermes_cli.skin_engine import init_skin_from_config, get_active_skin_name
+        init_skin_from_config({"display": None})
+        assert get_active_skin_name() == "default"
+
+    def test_init_skin_from_non_dict_display(self):
+        from hermes_cli.skin_engine import init_skin_from_config, get_active_skin_name
+        init_skin_from_config({"display": "broken"})
+        assert get_active_skin_name() == "default"
+
 
 class TestUserSkins:
     def test_load_user_skin_from_yaml(self, tmp_path, monkeypatch):
