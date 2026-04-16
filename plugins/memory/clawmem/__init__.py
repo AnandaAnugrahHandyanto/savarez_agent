@@ -1,771 +1,1175 @@
-"""ClawMem memory plugin — MemoryProvider interface.
+"""ClawMem memory plugin — GitHub-compatible issue-backed long-term memory.
 
-GitHub Issues-backed long-term memory with semantic search, conversation
-mirroring, and multi-agent collaboration via git.clawmem.ai.
+Provides 7 agent-facing tools, auto-recall (prefetch), conversation mirroring
+to ``type:conversation`` issues, session-end memory extraction via auxiliary
+LLM, and built-in memory write mirroring.
 
-Memories are stored as GitHub Issues (type:memory label, flat YAML body).
-Sessions are mirrored as GitHub Issues (type:conversation) with comments.
-Deduplication by SHA-256 of normalized detail text.
-
-Config in $HERMES_HOME/config.yaml (profile-scoped):
-  memory:
-    provider: clawmem
-  clawmem:
-    base_url: https://git.clawmem.ai/api/v3
-    token: ""
-    default_repo: ""
-    auth_scheme: token
-    auto_recall_limit: 3
+Config chain:
+  1. Environment variables (CLAWMEM_*)
+  2. $HERMES_HOME/clawmem.json
+  3. Hardcoded defaults
 """
 
 from __future__ import annotations
 
-import datetime
-import hashlib
 import json
 import logging
+import os
 import re
 import threading
-from typing import Any, Dict, List
+import unicodedata
+from datetime import datetime, date
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_BASE_URL = "https://git.clawmem.ai/api/v3"
-_MEMORY_TITLE_PREFIX = "Memory: "
-_MEMORY_LABEL = "type:memory"
-_CONVERSATION_LABEL = "type:conversation"
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
 
-# ── Tool schemas ─────────────────────────────────────────────────────────
+_DEFAULT_GIT_BASE_URL = "https://git.clawmem.ai"
+_DEFAULT_CONSOLE_BASE_URL = "https://console.clawmem.ai"
 
-MEMORY_RECALL_SCHEMA = {
-    "name": "memory_recall",
+
+def _load_config() -> dict:
+    """Load ClawMem config with env var overrides.
+
+    Priority: env var > clawmem.json > default.
+    """
+    from hermes_constants import get_hermes_home
+
+    defaults: dict[str, str] = {
+        "git_base_url": _DEFAULT_GIT_BASE_URL,
+        "console_base_url": _DEFAULT_CONSOLE_BASE_URL,
+        "login": "",
+        "default_repo": "",
+        "token": "",
+    }
+
+    config_path = get_hermes_home() / "clawmem.json"
+    if config_path.exists():
+        try:
+            file_cfg = json.loads(config_path.read_text(encoding="utf-8"))
+            defaults.update({k: v for k, v in file_cfg.items()
+                             if v is not None and v != ""})
+        except Exception:
+            pass
+
+    env_map = {
+        "CLAWMEM_GIT_BASE_URL": "git_base_url",
+        "CLAWMEM_CONSOLE_BASE_URL": "console_base_url",
+        "CLAWMEM_TOKEN": "token",
+        "CLAWMEM_LOGIN": "login",
+        "CLAWMEM_DEFAULT_REPO": "default_repo",
+    }
+    for env_var, key in env_map.items():
+        val = os.environ.get(env_var, "").strip()
+        if val:
+            defaults[key] = val
+
+    if not defaults.get("token"):
+        defaults["token"] = os.environ.get("CLAWMEM_TOKEN", "")
+
+    return defaults
+
+
+def _get_profile_name() -> str:
+    hermes_home = os.environ.get("HERMES_HOME", "")
+    if not hermes_home:
+        return "hermes"
+    p = Path(hermes_home)
+    if p.parent.name == "profiles":
+        return p.name
+    return "hermes"
+
+
+# ---------------------------------------------------------------------------
+# Tool schemas
+# ---------------------------------------------------------------------------
+
+RECALL_SCHEMA = {
+    "name": "clawmem_recall",
     "description": (
-        "Search long-term memory for relevant context. Returns matching memories "
-        "ranked by relevance. Use before answering when past decisions, preferences, "
-        "or learned patterns could help."
+        "Search ClawMem active memories for relevant prior facts, decisions, "
+        "preferences, and lessons. Use before answering questions about prior "
+        "conversations or user preferences."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "query": {"type": "string", "description": "Search query."},
-            "limit": {"type": "integer", "description": "Max results (default: 5)."},
+            "query": {
+                "type": "string",
+                "description": "What to recall from memory.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max results (default: 5, max: 20).",
+            },
         },
         "required": ["query"],
     },
 }
 
-MEMORY_STORE_SCHEMA = {
-    "name": "memory_store",
+STORE_SCHEMA = {
+    "name": "clawmem_store",
     "description": (
-        "Store a durable memory. One fact per memory, keep detail concise. "
-        "Automatically deduplicates by content hash.\n\n"
-        "Use for: user preferences, decisions, conventions, lessons learned, "
-        "recurring patterns, task context.\n"
-        "Do NOT store: session logs, temporary state, raw data dumps."
+        "Store one atomic durable memory. Keep each write to a single fact, "
+        "preference, decision, or lesson."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "detail": {"type": "string", "description": "The memory content. One clear fact."},
-            "title": {"type": "string", "description": "Optional short title."},
+            "title": {
+                "type": "string",
+                "description": "Optional human-readable title.",
+            },
+            "detail": {
+                "type": "string",
+                "description": "The durable fact to remember.",
+            },
             "kind": {
                 "type": "string",
-                "enum": ["core-fact", "convention", "lesson", "skill", "task"],
-                "description": "Memory classification.",
+                "description": "Optional kind label (e.g. core-fact, preference, lesson).",
             },
             "topics": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Topic tags (kebab-case).",
+                "description": "Optional topic labels for retrieval (max 10).",
             },
         },
         "required": ["detail"],
     },
 }
 
-MEMORY_UPDATE_SCHEMA = {
-    "name": "memory_update",
-    "description": "Update an existing memory by issue number.",
+LIST_SCHEMA = {
+    "name": "clawmem_list",
+    "description": "List ClawMem memories by status, kind, or topic.",
     "parameters": {
         "type": "object",
         "properties": {
-            "memory_id": {"type": "integer", "description": "Issue number of the memory."},
-            "detail": {"type": "string", "description": "New detail text."},
-            "title": {"type": "string", "description": "New title."},
-            "kind": {"type": "string", "description": "New kind label."},
-            "topics": {"type": "array", "items": {"type": "string"}, "description": "New topic tags."},
+            "status": {
+                "type": "string",
+                "enum": ["active", "stale", "all"],
+                "description": "Which memories to list (default: active).",
+            },
+            "kind": {
+                "type": "string",
+                "description": "Optional kind filter.",
+            },
+            "topic": {
+                "type": "string",
+                "description": "Optional topic filter.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max results (default: 20, max: 200).",
+            },
+        },
+        "required": [],
+    },
+}
+
+GET_SCHEMA = {
+    "name": "clawmem_get",
+    "description": "Fetch one ClawMem memory by ID (issue number).",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "memory_id": {
+                "type": "string",
+                "description": "The memory ID or issue number.",
+            },
         },
         "required": ["memory_id"],
     },
 }
 
-MEMORY_FORGET_SCHEMA = {
-    "name": "memory_forget",
-    "description": "Mark a memory as stale (soft-delete by closing the issue).",
+UPDATE_SCHEMA = {
+    "name": "clawmem_update",
+    "description": (
+        "Update an existing ClawMem memory in place when a canonical fact "
+        "has evolved."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
-            "memory_id": {"type": "integer", "description": "Issue number of the memory."},
+            "memory_id": {
+                "type": "string",
+                "description": "The memory ID or issue number to update.",
+            },
+            "title": {
+                "type": "string",
+                "description": "Optional replacement title.",
+            },
+            "detail": {
+                "type": "string",
+                "description": "Optional replacement detail.",
+            },
+            "kind": {
+                "type": "string",
+                "description": "Optional replacement kind.",
+            },
+            "topics": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional replacement topics.",
+            },
         },
         "required": ["memory_id"],
     },
 }
 
-MEMORY_GET_SCHEMA = {
-    "name": "memory_get",
-    "description": "Retrieve a single memory by issue number.",
+FORGET_SCHEMA = {
+    "name": "clawmem_forget",
+    "description": (
+        "Mark an active ClawMem memory as stale when it is no longer true."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
-            "memory_id": {"type": "integer", "description": "Issue number."},
+            "memory_id": {
+                "type": "string",
+                "description": "The memory ID or issue number to forget.",
+            },
         },
         "required": ["memory_id"],
     },
 }
 
-MEMORY_LIST_SCHEMA = {
-    "name": "memory_list",
-    "description": "List memories with optional filters.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "status": {"type": "string", "enum": ["active", "stale", "all"], "description": "Filter by status (default: active)."},
-            "kind": {"type": "string", "description": "Filter by kind label."},
-            "topic": {"type": "string", "description": "Filter by topic label."},
-            "limit": {"type": "integer", "description": "Max results (default: 20)."},
-        },
-    },
-}
-
-MEMORY_LABELS_SCHEMA = {
-    "name": "memory_labels",
-    "description": "List existing kind and topic labels (the memory schema).",
-    "parameters": {"type": "object", "properties": {}},
-}
-
-MEMORY_REPOS_SCHEMA = {
-    "name": "memory_repos",
-    "description": "List accessible memory repos. Shows which repo is the current default.",
-    "parameters": {"type": "object", "properties": {}},
-}
-
-MEMORY_REPO_CREATE_SCHEMA = {
-    "name": "memory_repo_create",
-    "description": "Create a new memory repo (e.g. for a separate project or team).",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "name": {"type": "string", "description": "Repo name (kebab-case)."},
-            "description": {"type": "string", "description": "Short description."},
-            "private": {"type": "boolean", "description": "Private repo (default: true)."},
-        },
-        "required": ["name"],
-    },
+CONSOLE_SCHEMA = {
+    "name": "clawmem_console",
+    "description": (
+        "Return a URL to the ClawMem Console where the user can browse, "
+        "search, and manage their memories in a web interface. "
+        "Use when the user asks to view or manage memories in a browser."
+    ),
+    "parameters": {"type": "object", "properties": {}, "required": []},
 }
 
 ALL_TOOL_SCHEMAS = [
-    MEMORY_RECALL_SCHEMA,
-    MEMORY_STORE_SCHEMA,
-    MEMORY_UPDATE_SCHEMA,
-    MEMORY_FORGET_SCHEMA,
-    MEMORY_GET_SCHEMA,
-    MEMORY_LIST_SCHEMA,
-    MEMORY_LABELS_SCHEMA,
-    MEMORY_REPOS_SCHEMA,
-    MEMORY_REPO_CREATE_SCHEMA,
+    RECALL_SCHEMA, STORE_SCHEMA, LIST_SCHEMA, GET_SCHEMA,
+    UPDATE_SCHEMA, FORGET_SCHEMA, CONSOLE_SCHEMA,
 ]
 
-# ── Helpers ──────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Extraction prompt
+# ---------------------------------------------------------------------------
+
+EXTRACTION_SYSTEM_PROMPT = """\
+You are a memory extraction assistant. Your task is to identify durable facts, \
+preferences, decisions, and lessons from the conversation transcript below.
+
+Rules:
+- Extract ONLY facts that would be useful across future sessions
+- Each memory should be ONE atomic fact (not a session summary)
+- Skip ephemeral task details, debugging steps, or transient state
+- Skip facts that are obvious from code/git (e.g. "the project uses Python")
+- Prefer the user's own words for preferences and corrections
+
+Output a JSON array. Each element:
+{
+  "title": "short human-readable title (required)",
+  "detail": "the durable fact, preference, or decision (required)",
+  "kind": "one of: core-fact, preference, decision, lesson, convention, task (optional)",
+  "topics": ["relevant", "topic", "labels"] (optional, max 5)
+}
+
+If no durable facts are found, return an empty array: []
+
+Output ONLY the JSON array, no markdown fences, no explanation."""
+
+# ---------------------------------------------------------------------------
+# Label normalization
+# ---------------------------------------------------------------------------
 
 
-def _memory_hash(detail: str) -> str:
-    normalized = re.sub(r"\s+", " ", detail.strip())
-    return hashlib.sha256(normalized.encode()).hexdigest()[:16]
+def _normalize_label_value(value: str | None, prefix: str) -> str | None:
+    if not value:
+        return None
+    raw = value.strip()
+    if raw.lower().startswith(prefix):
+        raw = raw[len(prefix):]
+    normalized = unicodedata.normalize("NFKC", raw).lower()
+    normalized = re.sub(r"[\s_]+", "-", normalized)
+    normalized = re.sub(r"[^\w-]", "-", normalized)
+    normalized = re.sub(r"-{2,}", "-", normalized)
+    normalized = normalized.strip("-")
+    return normalized or None
 
 
-def _today() -> str:
-    return datetime.date.today().isoformat()
-
-
-def _build_memory_body(detail: str, date: str | None = None) -> str:
-    h = _memory_hash(detail)
-    d = date or _today()
-    # Flat YAML matching ClawMem's format
-    lines = [f"memory_hash: {h}", f"date: {d}"]
-    if "\n" in detail:
-        lines.append("detail: |-")
-        for line in detail.split("\n"):
-            lines.append(f"  {line}")
-    else:
-        lines.append(f"detail: {detail}")
-    return "\n".join(lines)
-
-
-def _parse_memory_body(body: str) -> dict:
-    """Parse flat YAML body into dict."""
-    result: Dict[str, str] = {}
-    current_key = ""
-    multiline_lines: list[str] = []
-    in_multiline = False
-
-    for raw_line in (body or "").split("\n"):
-        if in_multiline:
-            if raw_line.startswith("  "):
-                multiline_lines.append(raw_line[2:])
-                continue
-            else:
-                result[current_key] = "\n".join(multiline_lines)
-                in_multiline = False
-                multiline_lines = []
-
-        m = re.match(r"^([A-Za-z0-9_]+):\s?(.*)", raw_line)
-        if m:
-            key, value = m.group(1), m.group(2)
-            if value == "|-":
-                current_key = key
-                in_multiline = True
-            else:
-                result[key] = value.strip()
-
-    if in_multiline:
-        result[current_key] = "\n".join(multiline_lines)
-
-    return result
-
-
-def _build_labels(kind: str | None, topics: list[str] | None) -> list[str]:
-    labels = [_MEMORY_LABEL]
+def _mem_labels(kind: str | None, topics: list[str] | None) -> list[str]:
+    labels = ["type:memory"]
     if kind:
         labels.append(f"kind:{kind}")
-    for t in topics or []:
-        labels.append(f"topic:{t}")
+    for topic in (topics or []):
+        if topic:
+            labels.append(f"topic:{topic}")
     return labels
 
 
-def _parse_issue_to_memory(issue: dict) -> dict:
-    """Convert a GitHub issue dict to a memory record."""
-    parsed = _parse_memory_body(issue.get("body", ""))
-    label_names = [l["name"] if isinstance(l, dict) else l for l in issue.get("labels", [])]
-    kind = None
-    topics = []
-    for ln in label_names:
-        if ln.startswith("kind:"):
-            kind = ln[5:]
-        elif ln.startswith("topic:"):
-            topics.append(ln[6:])
-    return {
-        "memory_id": issue.get("number"),
-        "title": (issue.get("title") or "").removeprefix(_MEMORY_TITLE_PREFIX),
-        "detail": parsed.get("detail", ""),
-        "kind": kind,
-        "topics": topics,
-        "date": parsed.get("date", ""),
-        "status": "stale" if issue.get("state") == "closed" else "active",
-    }
-
-
-def _sanitize_query(text: str) -> str:
-    """Strip platform metadata and prior recall injection from query text."""
-    text = re.sub(r"<clawmem-context>.*?</clawmem-context>", "", text, flags=re.DOTALL)
-    text = re.sub(r"^\[?(telegram|whatsapp|discord|slack)\]?\s*", "", text, flags=re.IGNORECASE)
-    return text.strip()[:1500]
-
-
-# ── Config ───────────────────────────────────────────────────────────────
-
-
-def _load_plugin_config() -> dict:
-    from hermes_constants import get_hermes_home
-    config_path = get_hermes_home() / "config.yaml"
-    if not config_path.exists():
-        return {}
-    try:
-        import yaml
-        with open(config_path) as f:
-            all_config = yaml.safe_load(f) or {}
-        return all_config.get("clawmem", {}) or {}
-    except Exception:
-        return {}
-
-
-# ── MemoryProvider ───────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# ClawMemProvider
+# ---------------------------------------------------------------------------
 
 
 class ClawMemProvider(MemoryProvider):
-    """ClawMem: GitHub Issues-backed long-term memory."""
+    """ClawMem issue-backed long-term memory with hybrid recall."""
 
-    def __init__(self, config: dict | None = None):
-        self._config = config or _load_plugin_config()
+    def __init__(self):
         self._client = None
-        self._repo = ""
+        self._login = ""
+        self._default_repo = ""
+        self._token = ""
+        self._console_base_url = _DEFAULT_CONSOLE_BASE_URL
+
+        # Prefetch
+        self._prefetch_result = ""
+        self._prefetch_lock = threading.Lock()
+        self._prefetch_thread: Optional[threading.Thread] = None
+        self._auto_recall_limit = 5
+
+        # Sync / conversation mirroring
+        self._sync_thread: Optional[threading.Thread] = None
+        self._conversation_issue_number: Optional[int] = None
+        self._mirrored_turn_count = 0
+
+        # Session
         self._session_id = ""
-        self._session_issue_number: int | None = None
-        self._session_lock = threading.Lock()
-        self._first_user_message: str = ""
-        self._is_primary = False  # only mirror conversations for primary agent
-        self._auto_recall_limit = int(self._config.get("auto_recall_limit", 3))
 
     @property
     def name(self) -> str:
         return "clawmem"
 
+    # -- Config / availability ----------------------------------------------
+
     def is_available(self) -> bool:
-        token = self._config.get("token", "")
-        base_url = self._config.get("base_url", _DEFAULT_BASE_URL)
-        # Available if we have a token, or a base_url to try auto-provision
-        return bool(token) or bool(base_url)
+        cfg = _load_config()
+        return bool(cfg.get("token") and cfg.get("default_repo"))
 
-    def get_config_schema(self) -> list:
-        return [
-            {
-                "key": "base_url",
-                "description": "ClawMem API base URL",
-                "default": _DEFAULT_BASE_URL,
-            },
-            {
-                "key": "token",
-                "description": "API token (auto-provisioned on first use if empty)",
-                "secret": True,
-                "env_var": "CLAWMEM_TOKEN",
-            },
-            {
-                "key": "default_repo",
-                "description": "Default memory repo (owner/name, auto-created if empty)",
-            },
-            {
-                "key": "auth_scheme",
-                "description": "Auth scheme",
-                "default": "token",
-                "choices": ["token", "bearer"],
-            },
-            {
-                "key": "auto_recall_limit",
-                "description": "Max memories to auto-recall per turn",
-                "default": "3",
-            },
-        ]
+    def get_config_schema(self) -> list[dict[str, Any]]:
+        return []
 
-    def save_config(self, values: dict, hermes_home: str) -> None:
-        from pathlib import Path
-        config_path = Path(hermes_home) / "config.yaml"
+    def save_config(self, values: dict[str, Any], hermes_home: str) -> None:
+        config_path = Path(hermes_home) / "clawmem.json"
+        existing = {}
+        if config_path.exists():
+            try:
+                existing = json.loads(config_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        existing.update(values)
+        config_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+
+    # -- Setup wizard -------------------------------------------------------
+
+    def post_setup(self, hermes_home: str, config: dict) -> None:
+        """Run the full ClawMem setup wizard with auto-bootstrap."""
+        from hermes_cli.config import save_config
+        from .client import ClawMemClient, run_sync
+
+        home = Path(hermes_home)
+
+        print("\n  ClawMem Setup\n")
+        mode = input("  Are you a ClawMem developer or a user? "
+                      "[1] User  [2] Developer (default: 1): ").strip()
+        if mode == "2":
+            git_url = input(
+                f"  ClawMem Git Server URL [{_DEFAULT_GIT_BASE_URL}]: ").strip()
+            git_base_url = git_url or _DEFAULT_GIT_BASE_URL
+            console_url = input(
+                f"  ClawMem Console URL [{_DEFAULT_CONSOLE_BASE_URL}]: ").strip()
+            console_base_url = console_url or _DEFAULT_CONSOLE_BASE_URL
+        else:
+            git_base_url = _DEFAULT_GIT_BASE_URL
+            console_base_url = _DEFAULT_CONSOLE_BASE_URL
+
+        default_prefix = _get_profile_name()
+        prefix_login = (
+            input(f"  Agent prefix login [{default_prefix}]: ").strip()
+            or default_prefix
+        )
+        default_repo_name = (
+            input("  Default repo name [hermes-memory]: ").strip()
+            or "hermes-memory"
+        )
+
+        # Check for existing identity
+        config_path = home / "clawmem.json"
+        existing_cfg: dict = {}
+        if config_path.exists():
+            try:
+                existing_cfg = json.loads(
+                    config_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
+        existing_token = os.environ.get("CLAWMEM_TOKEN", "").strip()
+        existing_login = existing_cfg.get("login", "")
+        existing_repo = existing_cfg.get("default_repo", "")
+
+        if existing_login and existing_repo and existing_token:
+            print(f"\n  Existing identity found: "
+                  f"{existing_login} / {existing_repo}")
+            if input("  Re-register? [y/N]: ").strip().lower() != "y":
+                file_cfg = {
+                    "git_base_url": git_base_url,
+                    "console_base_url": console_base_url,
+                    "login": existing_login,
+                    "default_repo": existing_repo,
+                }
+                config_path.write_text(
+                    json.dumps(file_cfg, indent=2), encoding="utf-8")
+                if not isinstance(config.get("memory"), dict):
+                    config["memory"] = {}
+                config["memory"]["provider"] = "clawmem"
+                save_config(config)
+                print(f"\n  \u2713 Config saved to {config_path}")
+                print("  \u2713 memory.provider: clawmem")
+                print("\n  Start a new session to activate.\n")
+                return
+
+        # Bootstrap: POST /agents
+        print("\n  Registering agent identity...")
         try:
-            import yaml
-            existing = {}
-            if config_path.exists():
-                with open(config_path) as f:
-                    existing = yaml.safe_load(f) or {}
-            existing["clawmem"] = values
-            with open(config_path, "w") as f:
-                yaml.dump(existing, f, default_flow_style=False)
+            result = run_sync(ClawMemClient.register_agent(
+                git_base_url, prefix_login, default_repo_name,
+            ))
         except Exception as e:
-            logger.warning("Failed to save clawmem config: %s", e)
+            print(f"\n  \u2717 Registration failed: {e}")
+            print("  Setup aborted.\n")
+            return
+
+        login = result.get("login", "")
+        token = result.get("token", "")
+        repo_full_name = result.get("repo_full_name", "")
+
+        if not login or not token or not repo_full_name:
+            print(f"\n  \u2717 Unexpected response: {result}")
+            print("  Setup aborted.\n")
+            return
+
+        print(f"  \u2713 Agent registered")
+        print(f"    Login: {login}")
+        print(f"    Repo:  {repo_full_name}")
+
+        file_cfg = {
+            "git_base_url": git_base_url,
+            "console_base_url": console_base_url,
+            "login": login,
+            "default_repo": repo_full_name,
+        }
+        config_path.write_text(
+            json.dumps(file_cfg, indent=2), encoding="utf-8")
+
+        _write_env_var(home / ".env", "CLAWMEM_TOKEN", token)
+
+        if not isinstance(config.get("memory"), dict):
+            config["memory"] = {}
+        config["memory"]["provider"] = "clawmem"
+        save_config(config)
+
+        print(f"\n  \u2713 Config saved to {config_path}")
+        print(f"  \u2713 Token saved to {home / '.env'}")
+        print("  \u2713 memory.provider: clawmem")
+        print("\n  Start a new session to activate.\n")
+
+    # -- Lifecycle ----------------------------------------------------------
 
     def initialize(self, session_id: str, **kwargs) -> None:
-        from .client import GitHubIssueClient
-
-        self._session_id = session_id
-        self._is_primary = kwargs.get("agent_context", "primary") == "primary"
-        base_url = self._config.get("base_url", _DEFAULT_BASE_URL)
-        token = self._config.get("token", "")
-        auth_scheme = self._config.get("auth_scheme", "token")
-        self._repo = self._config.get("default_repo", "")
-
-        # Derive agent login prefix from hermes profile identity
-        agent_identity = kwargs.get("agent_identity", "hermes")
-        prefix_login = re.sub(r"[^a-z0-9-]", "-", (agent_identity or "hermes").lower())[:32]
-
-        if not token:
-            tmp_client = GitHubIssueClient(base_url)
-            # Primary: POST /agents
-            try:
-                result = tmp_client.register_agent(
-                    prefix_login=prefix_login,
-                    default_repo_name="memory",
-                )
-                token = result.get("token", "")
-                self._repo = result.get("repo_full_name", self._repo)
-            except Exception as e:
-                err_msg = str(e)
-                # Fallback: POST /anonymous/session on 404/405/501
-                if any(f"HTTP {c}" in err_msg for c in ("404", "405", "501")):
-                    try:
-                        result = tmp_client.anonymous_session()
-                        token = result.get("token", "")
-                        self._repo = result.get("repo_full_name", self._repo)
-                    except Exception as e2:
-                        logger.warning("ClawMem anonymous fallback failed: %s", e2)
-                else:
-                    logger.warning("ClawMem auto-provision failed: %s", e)
-
-            if token:
-                self._config["token"] = token
-                self._config["default_repo"] = self._repo
-                self._config["base_url"] = base_url
-                self._config["auth_scheme"] = auth_scheme
-                # Persist to config.yaml so token survives restarts
-                hermes_home = kwargs.get("hermes_home", "")
-                if hermes_home:
-                    self.save_config(self._config, str(hermes_home))
-                logger.info("ClawMem auto-provisioned: repo=%s", self._repo)
-
-        if not token:
-            logger.warning("ClawMem: no token available, provider inactive")
-            return
-
-        self._client = GitHubIssueClient(base_url, token, auth_scheme)
-
-        # Ensure core labels exist
-        if self._repo:
-            self._ensure_labels()
-
-    def _ensure_labels(self) -> None:
-        """Create core labels if they don't exist yet."""
-        if not self._client or not self._repo:
-            return
         try:
-            core_labels = [
-                (_MEMORY_LABEL, "1d76db"),
-                (_CONVERSATION_LABEL, "1d76db"),
-                ("kind:core-fact", "5319e7"),
-                ("kind:convention", "5319e7"),
-                ("kind:lesson", "5319e7"),
-                ("kind:skill", "5319e7"),
-                ("kind:task", "5319e7"),
-            ]
-            for label_name, color in core_labels:
-                self._client.ensure_label(self._repo, label_name, color)
+            from .client import ClawMemClient, run_sync
+
+            cfg = _load_config()
+            token = cfg.get("token", "")
+            default_repo = cfg.get("default_repo", "")
+            if not token or not default_repo:
+                logger.debug("ClawMem not configured — plugin inactive")
+                return
+
+            self._token = token
+            self._default_repo = default_repo
+            self._login = cfg.get("login", "")
+            self._console_base_url = cfg.get(
+                "console_base_url", _DEFAULT_CONSOLE_BASE_URL)
+            self._session_id = session_id
+
+            self._client = ClawMemClient(
+                base_url=cfg.get("git_base_url", _DEFAULT_GIT_BASE_URL),
+                token=token,
+                default_repo=default_repo,
+            )
+
+            platform = kwargs.get("platform", "cli")
+
+            def _create_conversation():
+                try:
+                    title = f"Session: {session_id[:12]}"
+                    labels = ["type:conversation", "status:active"]
+                    if self._login:
+                        labels.append(f"agent:{self._login}")
+                    body = (
+                        f"platform: {platform}\n"
+                        f"started: {datetime.utcnow().isoformat()}Z\n"
+                        f"session_id: {session_id}\n"
+                    )
+                    run_sync(self._client.ensure_labels(labels))
+                    issue = run_sync(
+                        self._client.create_issue(title, body, labels))
+                    self._conversation_issue_number = issue.get("number")
+                except Exception as e:
+                    logger.debug(
+                        "ClawMem conversation issue creation failed: %s", e)
+
+            t = threading.Thread(
+                target=_create_conversation, daemon=True,
+                name="clawmem-conv-init")
+            t.start()
+            self._sync_thread = t
+
         except Exception as e:
-            logger.debug("ClawMem label setup: %s", e)
+            logger.warning("ClawMem init failed: %s", e)
+            self._client = None
 
     def system_prompt_block(self) -> str:
         if not self._client:
             return ""
         return (
-            "# ClawMem\n"
-            "Long-term memory active. Memories persist across sessions as structured issues.\n"
-            "Use memory_recall before answering when past context could help.\n"
-            "Use memory_store to save durable facts (one fact per memory, concise).\n"
-            "Use memory_forget to mark outdated memories as stale."
+            "# ClawMem Memory\n"
+            "Active (hybrid mode). Relevant memories are auto-injected "
+            "before each turn. Memory tools are also available:\n"
+            "- clawmem_recall: search memories by relevance\n"
+            "- clawmem_store: save a new durable fact\n"
+            "- clawmem_list: browse memories by kind/topic\n"
+            "- clawmem_get: fetch one memory by ID\n"
+            "- clawmem_update: update an existing memory in place\n"
+            "- clawmem_forget: mark a memory as stale\n"
+            "- clawmem_console: get a URL to browse memories in the web console"
         )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        if not self._client or not self._repo or not query:
+        if self._prefetch_thread and self._prefetch_thread.is_alive():
+            self._prefetch_thread.join(timeout=3.0)
+        with self._prefetch_lock:
+            result = self._prefetch_result
+            self._prefetch_result = ""
+        if not result:
             return ""
-        sanitized = _sanitize_query(query)
-        if not sanitized:
-            return ""
-        try:
-            issues = self._client.search_issues(
-                sanitized,
-                self._repo,
-                extra_qualifiers='state:open label:"type:memory"',
-            )
-            if not issues:
-                return ""
-            lines = ["ClawMem relevant memories:"]
-            for issue in issues[: self._auto_recall_limit]:
-                mem = _parse_issue_to_memory(issue)
-                mid = mem["memory_id"]
-                detail = mem["detail"][:200]
-                lines.append(f"- [{mid}] {detail}")
-            return "\n".join(lines)
-        except Exception as e:
-            logger.debug("ClawMem prefetch failed: %s", e)
-            return ""
+        return f"## ClawMem Memories\n{result}"
 
-    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
-        """Mirror turn to conversation issue in a background thread."""
-        if not self._client or not self._repo or not self._is_primary:
+    def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
+        if not self._client or not query:
             return
 
-        # Capture first user message for session title
-        if not self._first_user_message and user_content:
-            self._first_user_message = user_content[:120]
+        from .client import run_sync, parse_memory_issue, format_memory_line
 
-        def _mirror():
+        client = self._client
+        default_repo = self._default_repo
+        limit = self._auto_recall_limit
+
+        def _run():
             try:
-                # Create session issue on first turn (lock prevents duplicate creation)
-                with self._session_lock:
-                    if self._session_issue_number is None:
-                        body = "\n".join([
-                            "type: conversation",
-                            f"session_id: {self._session_id}",
-                            f"date: {_today()}",
-                        ])
-                        issue = self._client.create_issue(
-                            self._repo,
-                            title=f"Session: {self._session_id[:8]}",
-                            body=body,
-                            labels=[_CONVERSATION_LABEL, f"session:{self._session_id[:8]}"],
-                        )
-                        self._session_issue_number = issue.get("number")
+                results = run_sync(client.search_issues(
+                    f"{query} repo:{default_repo} "
+                    f"label:type:memory state:open",
+                    per_page=min(limit * 3, 60),
+                ))
+                if results:
+                    lines = []
+                    for issue in results:
+                        parsed = parse_memory_issue(issue)
+                        if parsed and parsed["status"] == "active":
+                            lines.append(f"- {format_memory_line(parsed)}")
+                            if len(lines) >= limit:
+                                break
+                    if lines:
+                        with self._prefetch_lock:
+                            self._prefetch_result = "\n".join(lines)
+            except Exception as e:
+                logger.debug("ClawMem prefetch failed: %s", e)
 
-                if self._session_issue_number:
-                    if user_content:
-                        self._client.create_comment(
-                            self._repo,
-                            self._session_issue_number,
-                            f"role: user\n\n{user_content[:4000]}",
-                        )
-                    if assistant_content:
-                        self._client.create_comment(
-                            self._repo,
-                            self._session_issue_number,
-                            f"role: assistant\n\n{assistant_content[:4000]}",
-                        )
+        self._prefetch_thread = threading.Thread(
+            target=_run, daemon=True, name="clawmem-prefetch")
+        self._prefetch_thread.start()
+
+    def sync_turn(
+        self,
+        user_content: str,
+        assistant_content: str,
+        *,
+        session_id: str = "",
+    ) -> None:
+        if not self._client or not self._conversation_issue_number:
+            return
+
+        from .client import run_sync
+
+        client = self._client
+        issue_number = self._conversation_issue_number
+        self._mirrored_turn_count += 1
+
+        def _sync():
+            try:
+                parts = []
+                if user_content:
+                    parts.append(f"**User:**\n{user_content}")
+                if assistant_content:
+                    parts.append(f"**Assistant:**\n{assistant_content}")
+                if not parts:
+                    return
+                run_sync(client.create_comment(
+                    issue_number, "\n\n".join(parts)))
             except Exception as e:
                 logger.debug("ClawMem sync_turn failed: %s", e)
 
-        t = threading.Thread(target=_mirror, daemon=True)
-        t.start()
+        if self._sync_thread and self._sync_thread.is_alive():
+            self._sync_thread.join(timeout=5.0)
+
+        self._sync_thread = threading.Thread(
+            target=_sync, daemon=True, name="clawmem-sync")
+        self._sync_thread.start()
+
+    def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
+        if not self._client:
+            return
+
+        if self._sync_thread and self._sync_thread.is_alive():
+            self._sync_thread.join(timeout=10.0)
+
+        try:
+            self._extract_memories(messages)
+        except Exception as e:
+            logger.warning("ClawMem memory extraction failed: %s", e)
+
+        if self._conversation_issue_number:
+            try:
+                from .client import run_sync
+                run_sync(self._client.update_issue(
+                    self._conversation_issue_number, state="closed"))
+                run_sync(self._client.sync_managed_labels(
+                    self._conversation_issue_number,
+                    ["type:conversation", "status:closed"]
+                    + ([f"agent:{self._login}"] if self._login else []),
+                ))
+            except Exception as e:
+                logger.debug("ClawMem conversation close failed: %s", e)
+
+    def _extract_memories(self, messages: List[Dict[str, Any]]) -> None:
+        """Extract durable memories from conversation via auxiliary LLM."""
+        filtered = []
+        for msg in messages:
+            role = msg.get("role", "")
+            if role not in ("user", "assistant"):
+                continue
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                text_parts = []
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        text_parts.append(part.get("text", ""))
+                    elif isinstance(part, str):
+                        text_parts.append(part)
+                content = "\n".join(text_parts)
+            if not content or not isinstance(content, str):
+                continue
+            filtered.append({"role": role, "content": content})
+
+        if not filtered:
+            return
+
+        if len(filtered) > 50:
+            filtered = filtered[-50:]
+
+        transcript_lines = []
+        for i, msg in enumerate(filtered, 1):
+            transcript_lines.append(f"{i}. {msg['role']}: {msg['content']}")
+        transcript_text = "\n\n".join(transcript_lines)
+
+        try:
+            from agent.auxiliary_client import call_llm
+
+            response = call_llm(
+                task="memory_extraction",
+                messages=[
+                    {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
+                    {"role": "user", "content": transcript_text},
+                ],
+                temperature=0.0,
+                max_tokens=2000,
+                timeout=30.0,
+            )
+            raw = response.choices[0].message.content
+            if not raw:
+                return
+        except Exception as e:
+            logger.warning("ClawMem extraction LLM call failed: %s", e)
+            return
+
+        candidates = _parse_extraction_response(raw)
+        if not candidates:
+            return
+
+        from .client import (
+            run_sync, sha256_hex, render_memory_body, render_memory_title,
+            parse_memory_issue,
+        )
+
+        for candidate in candidates:
+            try:
+                detail = candidate.get("detail", "").strip()
+                if not detail:
+                    continue
+
+                hash_val = sha256_hex(detail)
+                title = candidate.get("title")
+                kind = _normalize_label_value(candidate.get("kind"), "kind:")
+                topics_raw = candidate.get("topics", [])
+                topics = [
+                    _normalize_label_value(t, "topic:")
+                    for t in (topics_raw or [])
+                ]
+                topics = [t for t in topics if t][:10]
+
+                existing = run_sync(self._client.search_issues(
+                    f"{hash_val} repo:{self._default_repo} "
+                    f"label:type:memory state:open",
+                    per_page=5,
+                ))
+                is_dup = False
+                for issue in existing:
+                    parsed = parse_memory_issue(issue)
+                    if parsed and parsed.get("memory_hash") == hash_val:
+                        is_dup = True
+                        break
+                if is_dup:
+                    continue
+
+                labels = _mem_labels(kind, topics)
+                run_sync(self._client.ensure_labels(labels))
+                issue_title = render_memory_title(detail, title)
+                body = render_memory_body(detail, hash_val)
+                run_sync(self._client.create_issue(issue_title, body, labels))
+
+            except Exception as e:
+                logger.debug(
+                    "ClawMem extraction store failed for one candidate: %s", e)
+
+    def on_memory_write(
+        self, action: str, target: str, content: str,
+    ) -> None:
+        if action != "add" or not content or not self._client:
+            return
+
+        from .client import (
+            run_sync, sha256_hex, render_memory_body, render_memory_title,
+            parse_memory_issue,
+        )
+
+        client = self._client
+        default_repo = self._default_repo
+
+        def _write():
+            try:
+                detail = content.strip()
+                if not detail:
+                    return
+                hash_val = sha256_hex(detail)
+
+                existing = run_sync(client.search_issues(
+                    f"{hash_val} repo:{default_repo} "
+                    f"label:type:memory state:open",
+                    per_page=5,
+                ))
+                for issue in existing:
+                    parsed = parse_memory_issue(issue)
+                    if parsed and parsed.get("memory_hash") == hash_val:
+                        return
+
+                title = render_memory_title(detail)
+                body = render_memory_body(detail, hash_val)
+                labels = ["type:memory"]
+                if target == "user":
+                    labels.append("kind:user-profile")
+                run_sync(client.ensure_labels(labels))
+                run_sync(client.create_issue(title, body, labels))
+            except Exception as e:
+                logger.debug("ClawMem memory mirror failed: %s", e)
+
+        threading.Thread(
+            target=_write, daemon=True, name="clawmem-memwrite").start()
+
+    # -- Tools --------------------------------------------------------------
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         if not self._client:
             return []
-        return ALL_TOOL_SCHEMAS
+        return list(ALL_TOOL_SCHEMAS)
 
-    def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
+    def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if not self._client:
-            return tool_error("ClawMem not initialized")
+            return tool_error("ClawMem is not active for this session.")
         try:
             handler = {
-                "memory_recall": self._handle_recall,
-                "memory_store": self._handle_store,
-                "memory_update": self._handle_update,
-                "memory_forget": self._handle_forget,
-                "memory_get": self._handle_get,
-                "memory_list": self._handle_list,
-                "memory_labels": self._handle_labels,
-                "memory_repos": self._handle_repos,
-                "memory_repo_create": self._handle_repo_create,
+                "clawmem_recall": self._handle_recall,
+                "clawmem_store": self._handle_store,
+                "clawmem_list": self._handle_list,
+                "clawmem_get": self._handle_get,
+                "clawmem_update": self._handle_update,
+                "clawmem_forget": self._handle_forget,
+                "clawmem_console": self._handle_console,
             }.get(tool_name)
             if not handler:
                 return tool_error(f"Unknown tool: {tool_name}")
             return handler(args)
         except Exception as e:
-            return tool_error(str(e))
-
-    def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        """Update conversation issue title from first user message, then close."""
-        if not self._client or not self._repo or not self._session_issue_number or not self._is_primary:
-            return
-        try:
-            # Derive a meaningful title from the first user message
-            title = None
-            if self._first_user_message:
-                summary = self._first_user_message.split("\n")[0][:80].strip()
-                if summary:
-                    title = f"Session: {summary}"
-            self._client.update_issue(
-                self._repo,
-                self._session_issue_number,
-                title=title,
-                state="closed",
-            )
-        except Exception as e:
-            logger.debug("ClawMem session close failed: %s", e)
-
-    def shutdown(self) -> None:
-        # Close session issue if still open
-        if self._client and self._repo and self._session_issue_number:
-            try:
-                self._client.update_issue(
-                    self._repo,
-                    self._session_issue_number,
-                    state="closed",
-                )
-            except Exception:
-                pass
-        self._client = None
-
-    # ── Tool handlers ────────────────────────────────────────────────────
+            logger.error("ClawMem tool %s failed: %s", tool_name, e)
+            return tool_error(f"ClawMem {tool_name} failed: {e}")
 
     def _handle_recall(self, args: dict) -> str:
+        from .client import run_sync, parse_memory_issue, format_memory_block
+
         query = args.get("query", "")
         if not query:
-            return tool_error("'query' is required")
-        limit = int(args.get("limit", 5))
-        issues = self._client.search_issues(
-            _sanitize_query(query),
-            self._repo,
-            extra_qualifiers='state:open label:"type:memory"',
-        )
-        memories = [_parse_issue_to_memory(i) for i in issues[:limit]]
-        return json.dumps({"memories": memories, "count": len(memories)})
+            return tool_error("Missing required parameter: query")
+        limit = min(int(args.get("limit", 5)), 20)
+
+        results = run_sync(self._client.search_issues(
+            f"{query} repo:{self._default_repo} "
+            f"label:type:memory state:open",
+            per_page=min(limit * 3, 60),
+        ))
+
+        memories = []
+        for issue in results:
+            parsed = parse_memory_issue(issue)
+            if parsed and parsed["status"] == "active":
+                memories.append(parsed)
+                if len(memories) >= limit:
+                    break
+
+        if not memories:
+            return json.dumps({
+                "result": "No relevant memories found.", "count": 0})
+
+        blocks = [format_memory_block(m) for m in memories]
+        return json.dumps({
+            "result": "\n\n---\n\n".join(blocks),
+            "count": len(memories),
+        })
 
     def _handle_store(self, args: dict) -> str:
-        detail = args.get("detail", "").strip()
+        from .client import (
+            run_sync, sha256_hex, render_memory_body, render_memory_title,
+            parse_memory_issue, format_memory_block,
+        )
+
+        detail = (args.get("detail") or "").strip()
         if not detail:
-            return tool_error("'detail' is required")
+            return tool_error("Missing required parameter: detail")
+
+        title = args.get("title")
+        kind = _normalize_label_value(args.get("kind"), "kind:")
+        topics_raw = args.get("topics", [])
+        topics = [
+            _normalize_label_value(t, "topic:")
+            for t in (topics_raw or [])
+        ]
+        topics = [t for t in topics if t][:10]
+
+        hash_val = sha256_hex(detail)
 
         # Dedup check
-        h = _memory_hash(detail)
-        existing = self._client.search_issues(
-            f'"{h}"',
-            self._repo,
-            extra_qualifiers='state:open label:"type:memory"',
-        )
-        if existing:
-            mem = _parse_issue_to_memory(existing[0])
-            return json.dumps({
-                "status": "duplicate",
-                "existing_memory_id": mem["memory_id"],
-                "message": "A memory with identical content already exists.",
-            })
+        existing = run_sync(self._client.search_issues(
+            f"{hash_val} repo:{self._default_repo} "
+            f"label:type:memory state:open",
+            per_page=5,
+        ))
+        for issue in existing:
+            parsed = parse_memory_issue(issue)
+            if parsed and parsed.get("memory_hash") == hash_val:
+                # Merge labels if content matches but schema differs
+                new_labels = _mem_labels(kind, topics)
+                current_labels = _mem_labels(
+                    parsed.get("kind"), parsed.get("topics", []))
+                if set(new_labels) != set(current_labels):
+                    merged = _mem_labels(
+                        kind or parsed.get("kind"),
+                        list(dict.fromkeys(
+                            (parsed.get("topics") or []) + topics)),
+                    )
+                    run_sync(self._client.ensure_labels(merged))
+                    run_sync(self._client.sync_managed_labels(
+                        parsed["issue_number"], merged))
+                return json.dumps({
+                    "result": "Memory already exists (dedup).",
+                    "memory": format_memory_block(parsed),
+                    "created": False,
+                })
 
-        title_text = args.get("title") or detail[:80]
-        kind = args.get("kind")
-        topics = args.get("topics")
-        labels = _build_labels(kind, topics)
-        body = _build_memory_body(detail)
+        labels = _mem_labels(kind, topics)
+        run_sync(self._client.ensure_labels(labels))
+        issue_title = render_memory_title(detail, title)
+        body = render_memory_body(detail, hash_val)
+        issue = run_sync(self._client.create_issue(issue_title, body, labels))
 
-        # Ensure topic labels exist
-        for t in topics or []:
-            self._client.ensure_label(self._repo, f"topic:{t}", "fbca04")
-
-        issue = self._client.create_issue(
-            self._repo,
-            title=f"{_MEMORY_TITLE_PREFIX}{title_text}",
-            body=body,
-            labels=labels,
-        )
         return json.dumps({
-            "status": "stored",
-            "memory_id": issue.get("number"),
-            "title": title_text,
+            "result": f"Memory stored (#{issue.get('number', '?')}).",
+            "memory_id": str(issue.get("number", "")),
+            "created": True,
         })
-
-    def _handle_update(self, args: dict) -> str:
-        memory_id = int(args["memory_id"])
-        issue = self._client.get_issue(self._repo, memory_id)
-        if not issue:
-            return tool_error(f"Memory #{memory_id} not found")
-
-        current = _parse_memory_body(issue.get("body", ""))
-        new_detail = args.get("detail", current.get("detail", ""))
-        new_title = args.get("title")
-
-        # Rebuild body
-        body = _build_memory_body(new_detail, date=current.get("date"))
-
-        # Rebuild labels
-        kind = args.get("kind")
-        topics = args.get("topics")
-        if kind is not None or topics is not None:
-            # Get current labels to preserve non-managed ones
-            current_labels = [
-                (l["name"] if isinstance(l, dict) else l)
-                for l in issue.get("labels", [])
-            ]
-            # Remove old kind/topic, keep others
-            preserved = [l for l in current_labels if not l.startswith("kind:") and not l.startswith("topic:")]
-            if kind:
-                preserved.append(f"kind:{kind}")
-            else:
-                # Keep existing kind
-                for l in current_labels:
-                    if l.startswith("kind:"):
-                        preserved.append(l)
-                        break
-            for t in topics or []:
-                preserved.append(f"topic:{t}")
-                self._client.ensure_label(self._repo, f"topic:{t}", "fbca04")
-
-            self._client.update_issue(
-                self._repo, memory_id,
-                title=f"{_MEMORY_TITLE_PREFIX}{new_title}" if new_title else None,
-                body=body,
-                labels=preserved,
-            )
-        else:
-            self._client.update_issue(
-                self._repo, memory_id,
-                title=f"{_MEMORY_TITLE_PREFIX}{new_title}" if new_title else None,
-                body=body,
-            )
-
-        return json.dumps({"status": "updated", "memory_id": memory_id})
-
-    def _handle_forget(self, args: dict) -> str:
-        memory_id = int(args["memory_id"])
-        self._client.update_issue(self._repo, memory_id, state="closed")
-        return json.dumps({"status": "forgotten", "memory_id": memory_id})
-
-    def _handle_get(self, args: dict) -> str:
-        memory_id = int(args["memory_id"])
-        issue = self._client.get_issue(self._repo, memory_id)
-        if not issue:
-            return tool_error(f"Memory #{memory_id} not found")
-        return json.dumps(_parse_issue_to_memory(issue))
 
     def _handle_list(self, args: dict) -> str:
+        from .client import run_sync, parse_memory_issue, format_memory_line
+
         status = args.get("status", "active")
-        state = "open" if status == "active" else ("closed" if status == "stale" else "all")
-        limit = min(int(args.get("limit", 20)), 50)
+        kind = _normalize_label_value(args.get("kind"), "kind:")
+        topic = _normalize_label_value(args.get("topic"), "topic:")
+        limit = min(int(args.get("limit", 20)), 200)
 
-        label_parts = [_MEMORY_LABEL]
-        if args.get("kind"):
-            label_parts.append(f"kind:{args['kind']}")
-        if args.get("topic"):
-            label_parts.append(f"topic:{args['topic']}")
+        labels = ["type:memory"]
+        if kind:
+            labels.append(f"kind:{kind}")
+        if topic:
+            labels.append(f"topic:{topic}")
 
-        issues = self._client.list_issues(
-            self._repo,
-            labels=",".join(label_parts),
-            state=state,
-            per_page=limit,
-        )
-        memories = [_parse_issue_to_memory(i) for i in issues]
-        return json.dumps({"memories": memories, "count": len(memories)})
+        state = ("open" if status == "active"
+                 else ("closed" if status == "stale" else "all"))
 
-    def _handle_labels(self, args: dict) -> str:
-        labels = self._client.list_labels(self._repo)
-        kinds = []
-        topics = []
-        for l in labels:
-            name = l["name"] if isinstance(l, dict) else l
-            if name.startswith("kind:"):
-                kinds.append(name[5:])
-            elif name.startswith("topic:"):
-                topics.append(name[6:])
-        return json.dumps({"kinds": kinds, "topics": topics})
+        memories = []
+        page = 1
+        while len(memories) < limit and page <= 20:
+            batch = run_sync(self._client.list_issues(
+                labels=labels, state=state,
+                page=page, per_page=min(100, limit),
+            ))
+            for issue in batch:
+                parsed = parse_memory_issue(issue)
+                if not parsed:
+                    continue
+                if status != "all" and parsed["status"] != status:
+                    continue
+                memories.append(parsed)
+                if len(memories) >= limit:
+                    break
+            if len(batch) < min(100, limit):
+                break
+            page += 1
 
-    def _handle_repos(self, args: dict) -> str:
-        repos = self._client.list_repos()
-        result = []
-        for r in repos:
-            full_name = r.get("full_name", "")
-            result.append({
-                "full_name": full_name,
-                "description": r.get("description", ""),
-                "private": r.get("private", True),
-                "is_default": full_name == self._repo,
-            })
-        return json.dumps({"repos": result, "default_repo": self._repo})
+        if not memories:
+            return json.dumps({
+                "result": "No memories found.", "count": 0})
 
-    def _handle_repo_create(self, args: dict) -> str:
-        name = args.get("name", "").strip()
-        if not name:
-            return tool_error("'name' is required")
-        repo = self._client.create_repo(
-            name=name,
-            description=args.get("description", ""),
-            private=args.get("private", True),
-        )
+        lines = [format_memory_line(m) for m in memories]
         return json.dumps({
-            "status": "created",
-            "full_name": repo.get("full_name", ""),
+            "result": "\n".join(lines),
+            "count": len(memories),
         })
 
+    def _handle_get(self, args: dict) -> str:
+        from .client import run_sync, parse_memory_issue, format_memory_block
 
-# ── Plugin entry point ───────────────────────────────────────────────────
+        memory_id = (args.get("memory_id") or "").strip()
+        if not memory_id:
+            return tool_error("Missing required parameter: memory_id")
+        if not memory_id.isdigit():
+            return tool_error("memory_id must be a numeric issue number.")
 
+        issue = run_sync(self._client.get_issue(int(memory_id)))
+        if not issue:
+            return tool_error(f"Memory #{memory_id} not found.")
+
+        parsed = parse_memory_issue(issue)
+        if not parsed:
+            return tool_error(
+                f"Issue #{memory_id} is not a type:memory issue.")
+
+        return json.dumps({
+            "result": format_memory_block(parsed), "memory": parsed})
+
+    def _handle_update(self, args: dict) -> str:
+        from .client import (
+            run_sync, sha256_hex, render_memory_body, render_memory_title,
+            parse_memory_issue, format_memory_block,
+        )
+
+        memory_id = (args.get("memory_id") or "").strip()
+        if not memory_id or not memory_id.isdigit():
+            return tool_error("Missing or invalid memory_id.")
+
+        issue = run_sync(self._client.get_issue(int(memory_id)))
+        if not issue:
+            return tool_error(f"Memory #{memory_id} not found.")
+
+        current = parse_memory_issue(issue)
+        if not current:
+            return tool_error(
+                f"Issue #{memory_id} is not a type:memory issue.")
+
+        new_detail = (
+            (args.get("detail") or "").strip() or current["detail"])
+        new_title_raw = args.get("title")
+        new_kind = (
+            _normalize_label_value(args.get("kind"), "kind:")
+            if "kind" in args else current.get("kind"))
+        new_topics = (
+            [_normalize_label_value(t, "topic:") for t in args["topics"]]
+            if "topics" in args
+            else current.get("topics", []))
+        new_topics = [t for t in (new_topics or []) if t][:10]
+
+        new_hash = sha256_hex(new_detail)
+        if (new_hash != current.get("memory_hash")
+                and new_hash != sha256_hex(current["detail"])):
+            existing = run_sync(self._client.search_issues(
+                f"{new_hash} repo:{self._default_repo} "
+                f"label:type:memory state:open",
+                per_page=5,
+            ))
+            for iss in existing:
+                parsed = parse_memory_issue(iss)
+                if (parsed
+                        and parsed.get("memory_hash") == new_hash
+                        and parsed["issue_number"] != current["issue_number"]):
+                    return tool_error(
+                        f"Another active memory (#{parsed['memory_id']}) "
+                        f"already stores this detail.")
+
+        new_title = render_memory_title(new_detail, new_title_raw)
+        new_body = render_memory_body(new_detail, new_hash)
+        run_sync(self._client.update_issue(
+            current["issue_number"], title=new_title, body=new_body))
+
+        new_labels = _mem_labels(new_kind, new_topics)
+        run_sync(self._client.ensure_labels(new_labels))
+        run_sync(self._client.sync_managed_labels(
+            current["issue_number"], new_labels))
+
+        updated = {
+            **current,
+            "title": new_title,
+            "detail": new_detail,
+            "memory_hash": new_hash,
+            "kind": new_kind,
+            "topics": new_topics,
+        }
+        return json.dumps({
+            "result": f"Memory #{memory_id} updated.",
+            "memory": format_memory_block(updated),
+        })
+
+    def _handle_forget(self, args: dict) -> str:
+        from .client import run_sync, parse_memory_issue, format_memory_line
+
+        memory_id = (args.get("memory_id") or "").strip()
+        if not memory_id or not memory_id.isdigit():
+            return tool_error("Missing or invalid memory_id.")
+
+        issue = run_sync(self._client.get_issue(int(memory_id)))
+        if not issue:
+            return tool_error(f"Memory #{memory_id} not found.")
+
+        parsed = parse_memory_issue(issue)
+        if not parsed:
+            return tool_error(
+                f"Issue #{memory_id} is not a type:memory issue.")
+        if parsed["status"] != "active":
+            return tool_error(f"Memory #{memory_id} is already stale.")
+
+        run_sync(self._client.update_issue(int(memory_id), state="closed"))
+
+        return json.dumps({
+            "result": f"Memory #{memory_id} marked as stale.",
+            "memory": format_memory_line({**parsed, "status": "stale"}),
+        })
+
+    def _handle_console(self, args: dict = None) -> str:
+        url = (f"{self._console_base_url}/{self._default_repo}"
+               f"?token={self._token}")
+        return json.dumps({
+            "url": url,
+            "message": "Open this URL to browse your memories.",
+        })
+
+    # -- Shutdown -----------------------------------------------------------
+
+    def shutdown(self) -> None:
+        for t in (self._prefetch_thread, self._sync_thread):
+            if t and t.is_alive():
+                t.join(timeout=5.0)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _write_env_var(env_path: Path, key: str, value: str) -> None:
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    existing_lines = []
+    if env_path.exists():
+        existing_lines = env_path.read_text(encoding="utf-8").splitlines()
+
+    updated = False
+    new_lines = []
+    for line in existing_lines:
+        line_key = line.split("=", 1)[0].strip() if "=" in line else ""
+        if line_key == key:
+            new_lines.append(f"{key}={value}")
+            updated = True
+        else:
+            new_lines.append(line)
+
+    if not updated:
+        new_lines.append(f"{key}={value}")
+
+    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+
+def _parse_extraction_response(raw: str) -> list[dict]:
+    text = raw.strip()
+
+    try:
+        result = json.loads(text)
+        if isinstance(result, list):
+            return [c for c in result
+                    if isinstance(c, dict) and c.get("detail")]
+        return []
+    except json.JSONDecodeError:
+        pass
+
+    fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+    if fenced:
+        try:
+            result = json.loads(fenced.group(1).strip())
+            if isinstance(result, list):
+                return [c for c in result
+                        if isinstance(c, dict) and c.get("detail")]
+            return []
+        except json.JSONDecodeError:
+            pass
+
+    start = text.find("[")
+    end = text.rfind("]")
+    if start >= 0 and end > start:
+        try:
+            result = json.loads(text[start:end + 1])
+            if isinstance(result, list):
+                return [c for c in result
+                        if isinstance(c, dict) and c.get("detail")]
+        except json.JSONDecodeError:
+            pass
+
+    logger.warning(
+        "ClawMem extraction: could not parse LLM response as JSON")
+    return []
+
+
+# ---------------------------------------------------------------------------
+# Plugin entry point
+# ---------------------------------------------------------------------------
 
 def register(ctx) -> None:
-    """Register the ClawMem memory provider with the plugin system."""
-    config = _load_plugin_config()
-    provider = ClawMemProvider(config=config)
-    ctx.register_memory_provider(provider)
+    if hasattr(ctx, "register_memory_provider"):
+        ctx.register_memory_provider(ClawMemProvider())
