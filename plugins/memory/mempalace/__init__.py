@@ -269,6 +269,9 @@ def _episode_get_recent(speaker: str = None, topic: str = None,
 # Global working memory instance (shared across all provider instances)
 _working_memory = WorkingMemory()
 
+# Lock to serialize episodic ChromaDB writes (prevents concurrent subprocess races)
+_episodes_lock = threading.Lock()
+
 # -------------------------------------------------------------------
 # Knowledge Graph — typed entities, inverse relations, reification
 # ----------------------------------------------------------------------------
@@ -380,10 +383,11 @@ def _store_triple_with_inverse(
                         (belief_id, subject, predicate, old_obj, obj, 'corrected',
                          today, source, confidence, context, old_valid_from, today)
                     )
-                    # Also invalidate inverse of old triple
+                    # Also invalidate inverse of old triple (must match object=subject to avoid
+                    # bulk-invalidating unrelated triples with same subject+predicate)
                     cur.execute(
-                        "UPDATE triples SET valid_to=? WHERE subject=? AND predicate=? AND (valid_to IS NULL OR valid_to='')",
-                        (today, old_obj, inverse_pred or predicate)
+                        "UPDATE triples SET valid_to=? WHERE subject=? AND predicate=? AND object=? AND (valid_to IS NULL OR valid_to='')",
+                        (today, old_obj, inverse_pred or predicate, subject)
                     )
 
             sid = str(uuid.uuid4())
@@ -1297,7 +1301,7 @@ def _store_episodic_turn(speaker: str, role: str, content: str, timestamp: str, 
         "        'source': 'hermes-sync',\n"
         "        'session_id': REPLACEME_SID\n"
         "    }]\n"
-        ")\n"
+        "    )\n"
         "print('ok:' + episode_id)\n"
     ).replace("REPLACEME_PALACE", repr(_HERMES_PALACE)).replace(
         "REPLACEME_CONTENT", repr(content[:4000])
@@ -1308,7 +1312,8 @@ def _store_episodic_turn(speaker: str, role: str, content: str, timestamp: str, 
     ).replace("REPLACEME_LANG", repr(lang)).replace(
         "REPLACEME_SID", repr(session_id or "global")
     )
-    code, stdout, stderr = _run_python(script, timeout=10)
+    with _episodes_lock:
+        code, stdout, stderr = _run_python(script, timeout=10)
     if code != 0:
         logger.debug("episodic store failed: %s", stderr)
 
@@ -2112,8 +2117,8 @@ class MemPalaceMemoryProvider(MemoryProvider):
             "conn = sqlite3.connect(REPLACEME_KG)\nconn.execute('PRAGMA journal_mode=WAL')\nconn.execute('PRAGMA busy_timeout=5000')\n"
             "cur = conn.cursor()\n"
             "cur.execute(\n"
-            "    \"SELECT object, valid_from, confidence, source FROM triples WHERE subject=? AND predicate=? AND (valid_to IS NULL OR valid_to='')\",\n"
-            "    REPLACEME_SUBJ_PRED)\n"
+            "    \"SELECT object, valid_from, confidence, source FROM triples WHERE subject=? AND predicate=? AND object=? AND (valid_to IS NULL OR valid_to='')\",\n"
+            "    REPLACEME_SUBJ_PRED_OBJ)\n"
             "row = cur.fetchone()\n"
             "old_value = row[0] if row else ''\n"
             "old_valid_from = row[1] if row else ''\n"
@@ -2130,7 +2135,7 @@ class MemPalaceMemoryProvider(MemoryProvider):
             "print('ok')\n"
             "conn.close()\n"
         ).replace("REPLACEME_KG", repr(kg_path)).replace(
-            "REPLACEME_SUBJ_PRED", repr((subject, predicate))
+            "REPLACEME_SUBJ_PRED_OBJ", repr((subject, predicate, obj))
         ).replace("REPLACEME_ENDED_SUBJ_PRED_OBJ", repr((ended, subject, predicate, obj))
         ).replace("REPLACEME_SUBJECT", repr(subject)).replace(
             "REPLACEME_PREDICATE", repr(predicate)
@@ -2808,7 +2813,8 @@ class MemPalaceMemoryProvider(MemoryProvider):
                 "dangling = []\n"
                 "for s, p, o in triples:\n"
                 "    # mentioned_in <session_uuid> where session is gone = dangling provenance\n"
-                "    if p == 'mentioned_in' and uuid_pat.match(str(o)) and o not in chromadb_ids:\n"
+                "    # detected_as_entity drawer:<uuid> where drawer is gone = dangling extraction\n"
+                "    if p in ('mentioned_in', 'detected_as_entity') and uuid_pat.match(str(o).replace('drawer:', '')) and o.replace('drawer:', '') not in chromadb_ids:\n"
                 "        dangling.append((s, p, o))\n"
                 "print(json.dumps(dangling[:50]))\n"
             ).replace("REPLACEME_KG", repr(kg_path)).replace(
@@ -2867,6 +2873,8 @@ class MemPalaceMemoryProvider(MemoryProvider):
                 "dup_groups = []\n"
                 "for col_info in client.list_collections():\n"
                 "    col_name = (col_info.name if hasattr(col_info, 'name') else col_info['name'])\n"
+                "    if col_name == 'episodes':\n"
+                "        continue  # episodes often legitimately repeat (greetings, system prompts)\n"
                 "    try:\n"
                 "        col = client.get_collection(col_name)\n"
                 "        data = col.get(limit=1000, include=['documents', 'metadatas'])\n"
@@ -2927,6 +2935,8 @@ class MemPalaceMemoryProvider(MemoryProvider):
                     "dup_groups = []\n"
                     "for col_info in client.list_collections():\n"
                     "    col_name = (col_info.name if hasattr(col_info, 'name') else col_info['name'])\n"
+                    "    if col_name == 'episodes':\n"
+                    "        continue\n"
                     "    try:\n"
                     "        col = client.get_collection(col_name)\n"
                     "        data = col.get(limit=1000, include=['documents', 'metadatas'])\n"
