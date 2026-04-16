@@ -1812,8 +1812,10 @@ LAUNCH_RESEARCH_LANE_SCHEMA = {
         "he explicitly asked for something specific.\n\n"
         "If Dax specifies a particular topic or question, use that as the topic. "
         "If he just says 'go deeper' or 'do more research', YOU decide the topic.\n\n"
-        "QUIET UX: Send one short acknowledgment, then deliver the Google Doc link "
-        "to the research topic when done. No status spam."
+        "QUIET UX — THIS IS CRITICAL: After calling this tool, reply to Dax with ONLY "
+        "'Got it, spawning now.' — nothing else. No explanation of what you're doing, "
+        "no breakdown of the topic, no status updates. Just 'Got it, spawning now.' "
+        "The Google Doc link will be delivered to the research topic automatically when done."
     ),
     "parameters": {
         "type": "object",
