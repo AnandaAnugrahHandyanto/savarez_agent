@@ -814,6 +814,24 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 "Script gate returned `wakeAgent=false` — agent skipped.\n"
             )
             return True, silent_doc, SILENT_MARKER, None
+        # Opt-in skip: when ``script_skip_if_empty`` is set, treat a
+        # successful run with empty stdout the same as ``wakeAgent=false``.
+        if (
+            _ran_ok
+            and job.get("script_skip_if_empty")
+            and not _script_output.strip()
+        ):
+            logger.info(
+                "Job '%s' (ID: %s): script_skip_if_empty matched empty stdout, skipping agent run",
+                job_name, job_id,
+            )
+            silent_doc = (
+                f"# Cron Job: {job_name}\n\n"
+                f"**Job ID:** {job_id}\n"
+                f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                "Pre-run script produced no output and `script_skip_if_empty` is enabled — agent skipped.\n"
+            )
+            return True, silent_doc, SILENT_MARKER, None
 
     prompt = _build_job_prompt(job, prerun_script=prerun_script)
     origin = _resolve_origin(job)
@@ -860,6 +878,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     if _job_workdir:
         os.environ["TERMINAL_CWD"] = _job_workdir
         logger.info("Job '%s': using workdir %s", job_id, _job_workdir)
+
 
     try:
         # Re-read .env and config.yaml fresh every run so provider/key
