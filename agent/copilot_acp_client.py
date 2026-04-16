@@ -24,6 +24,45 @@ from typing import Any
 ACP_MARKER_BASE_URL = "acp://copilot"
 _DEFAULT_TIMEOUT_SECONDS = 900.0
 
+
+def _coerce_timeout_seconds(value: Any, default: float) -> float:
+    """Return a plain float-seconds timeout from any OpenAI-client timeout shape.
+
+    Hermes' chat-completions call path passes ``timeout=httpx.Timeout(...)``
+    for streaming requests (see ``run_agent.py``), but the Copilot ACP shim
+    only understands a single seconds value because it just guards a local
+    ``copilot --acp --stdio`` subprocess.  Bare ``float(httpx.Timeout(...))``
+    raises ``TypeError: float() argument must be a string or a real number,
+    not 'Timeout'``, which surfaces as a non-retryable error for every
+    user pointing Hermes at ``provider: copilot-acp``.
+
+    Accepted shapes: ``None`` (use ``default``), ``int``/``float``, any
+    object exposing a numeric ``.read`` attribute (``httpx.Timeout``), and
+    bare-string numeric timeouts.  Anything else falls back to ``default``
+    rather than aborting the request.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        # ``bool`` is a subclass of ``int`` but makes no sense as a timeout.
+        return default
+    if isinstance(value, (int, float)):
+        return float(value)
+    # ``httpx.Timeout`` exposes ``.read`` as ``float | None``; prefer it
+    # because read is what bounds the streaming response here.  Fall through
+    # to ``.connect`` when ``.read`` is ``None`` (``httpx.Timeout(None)``
+    # means no read timeout — keep default instead of passing ``inf``).
+    for attr in ("read", "connect"):
+        if hasattr(value, attr):
+            inner = getattr(value, attr)
+            if isinstance(inner, (int, float)):
+                return float(inner)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 _TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 _TOOL_CALL_JSON_RE = re.compile(r"\{\s*\"id\"\s*:\s*\"[^\"]+\"\s*,\s*\"type\"\s*:\s*\"function\"\s*,\s*\"function\"\s*:\s*\{.*?\}\s*\}", re.DOTALL)
 
@@ -315,7 +354,7 @@ class CopilotACPClient:
         )
         response_text, reasoning_text = self._run_prompt(
             prompt_text,
-            timeout_seconds=float(timeout or _DEFAULT_TIMEOUT_SECONDS),
+            timeout_seconds=_coerce_timeout_seconds(timeout, _DEFAULT_TIMEOUT_SECONDS),
         )
 
         tool_calls, cleaned_text = _extract_tool_calls_from_text(response_text)
