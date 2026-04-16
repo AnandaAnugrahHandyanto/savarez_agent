@@ -3805,7 +3805,16 @@ class GatewayRunner:
         if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
             platform_name = source.platform.value
             env_key = f"{platform_name.upper()}_HOME_CHANNEL"
-            if not os.getenv(env_key):
+            # Check both env var and config.yaml (#10581)
+            home_channel_set = os.getenv(env_key)
+            if not home_channel_set:
+                try:
+                    from hermes_cli.config import load_config
+                    cfg = load_config()
+                    home_channel_set = cfg.get(env_key)
+                except Exception:
+                    pass
+            if not home_channel_set:
                 adapter = self.adapters.get(source.platform)
                 if adapter:
                     await adapter.send(
