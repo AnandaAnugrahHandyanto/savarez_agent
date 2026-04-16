@@ -40,6 +40,40 @@ def _isolate_hermes_home(tmp_path, monkeypatch):
     monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
     # Avoid making real calls during tests if this key is set in the env files
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    # Wandb's console capture hooks can keep background logging threads alive
+    # after pytest closes stdout, producing noisy logging errors in unrelated tests.
+    monkeypatch.setenv("WANDB_CONSOLE", "off")
+    monkeypatch.setenv("WANDB_SILENT", "true")
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Stop browser cleanup background state before pytest tears down stdio.
+
+    Browser tool tests can start a daemon cleanup thread plus register atexit
+    cleanup callbacks. If those fire after pytest/wandb closes stdout, benign
+    cleanup logs become noisy `ValueError: I/O operation on closed file` errors.
+    Drain the thread and clear session bookkeeping here so shutdown stays quiet.
+    """
+    try:
+        from tools import browser_tool
+    except Exception:
+        return
+
+    try:
+        browser_tool._stop_browser_cleanup_thread()
+    except Exception:
+        pass
+
+    try:
+        with browser_tool._cleanup_lock:
+            browser_tool._active_sessions.clear()
+            browser_tool._session_last_activity.clear()
+            browser_tool._recording_sessions.clear()
+            browser_tool._cleanup_done = True
+            browser_tool._cleanup_thread = None
+            browser_tool._cleanup_running = False
+    except Exception:
+        pass
 
 
 @pytest.fixture()

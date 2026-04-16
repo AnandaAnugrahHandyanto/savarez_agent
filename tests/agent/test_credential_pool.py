@@ -8,6 +8,12 @@ import time
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _disable_real_codex_cli_import(monkeypatch):
+    monkeypatch.setattr("agent.credential_pool._import_codex_cli_tokens", lambda: None, raising=False)
+    monkeypatch.setattr("hermes_cli.auth._import_codex_cli_tokens", lambda: None, raising=False)
+
+
 def _write_auth_store(tmp_path, payload: dict) -> None:
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)

@@ -296,7 +296,8 @@ class LocalEnvironment(BaseEnvironment):
     def _update_cwd(self, result: dict):
         """Read CWD from temp file (local-only, no round-trip needed)."""
         try:
-            cwd_path = open(self._cwd_file).read().strip()
+            with open(self._cwd_file) as fh:
+                cwd_path = fh.read().strip()
             if cwd_path:
                 self.cwd = cwd_path
         except (OSError, FileNotFoundError):

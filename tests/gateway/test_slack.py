@@ -68,11 +68,11 @@ from gateway.platforms.slack import SlackAdapter  # noqa: E402
 
 @pytest.fixture()
 def adapter():
-    config = PlatformConfig(enabled=True, token="xoxb-fake-token")
+    config = PlatformConfig(enabled=True, token="***")
     a = SlackAdapter(config)
     # Mock the Slack app client
     a._app = MagicMock()
-    a._app.client = AsyncMock()
+    a._app.client = MagicMock()
     a._bot_user_id = "U_BOT"
     a._running = True
     # Capture events instead of processing them
@@ -394,6 +394,7 @@ class TestIncomingDocumentHandling:
     async def test_large_txt_not_injected(self, adapter):
         """A .txt file over 100KB should be cached but NOT injected."""
         content = b"x" * (200 * 1024)
+        adapter._app.client.users_info = AsyncMock(return_value={"user": {"profile": {}}})
 
         with patch.object(adapter, "_download_slack_file_bytes", new_callable=AsyncMock) as dl:
             dl.return_value = content
@@ -1056,7 +1057,7 @@ class TestThreadReplyHandling:
         config = PlatformConfig(enabled=True, token="***")
         a = SlackAdapter(config)
         a._app = MagicMock()
-        a._app.client = AsyncMock()
+        a._app.client = MagicMock()
         a._bot_user_id = "U_BOT"
         a._team_bot_user_ids = {"T_TEAM": "U_BOT"}
         a._running = True
@@ -1196,7 +1197,7 @@ class TestAssistantThreadLifecycle:
         config = PlatformConfig(enabled=True, token="***")
         a = SlackAdapter(config)
         a._app = MagicMock()
-        a._app.client = AsyncMock()
+        a._app.client = MagicMock()
         a._bot_user_id = "U_BOT"
         a._team_bot_user_ids = {"T_TEAM": "U_BOT"}
         a._running = True

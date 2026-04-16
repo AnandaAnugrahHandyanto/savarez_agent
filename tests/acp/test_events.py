@@ -21,7 +21,10 @@ from acp_adapter.events import (
 def mock_conn():
     """Mock ACP Client connection."""
     conn = MagicMock(spec=acp.Client)
-    conn.session_update = AsyncMock()
+    # session_update is routed through run_coroutine_threadsafe in these tests,
+    # so a plain mock avoids leaking an un-awaited coroutine when that helper
+    # itself is patched.
+    conn.session_update = MagicMock()
     return conn
 
 

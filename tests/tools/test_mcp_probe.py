@@ -165,11 +165,15 @@ class TestProbeMcpServerTools:
         with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
              patch("tools.mcp_tool._load_mcp_config", return_value=config), \
              patch("tools.mcp_tool._ensure_mcp_loop"), \
-             patch("tools.mcp_tool._run_on_mcp_loop", side_effect=RuntimeError("boom")), \
              patch("tools.mcp_tool._stop_mcp_loop") as mock_stop:
 
-            from tools.mcp_tool import probe_mcp_server_tools
-            result = probe_mcp_server_tools()
+            def _raising_run(coro, timeout=120):
+                coro.close()
+                raise RuntimeError("boom")
+
+            with patch("tools.mcp_tool._run_on_mcp_loop", side_effect=_raising_run):
+                from tools.mcp_tool import probe_mcp_server_tools
+                result = probe_mcp_server_tools()
 
         assert result == {}
         mock_stop.assert_called_once()

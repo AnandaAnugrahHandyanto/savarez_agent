@@ -192,11 +192,15 @@ class TestSIGKILLEscalation:
         t = threading.Thread(target=_run)
         t.start()
 
-        time.sleep(0.5)
-        set_interrupt(True, thread_id=t.ident)
-
-        t.join(timeout=5)
-        set_interrupt(False, thread_id=t.ident)
+        try:
+            time.sleep(0.5)
+            set_interrupt(True, thread_id=t.ident)
+            t.join(timeout=5)
+        finally:
+            set_interrupt(False, thread_id=t.ident)
+            if t.is_alive():
+                t.join(timeout=1)
+            env.cleanup()
 
         assert result_holder["value"] is not None
         assert result_holder["value"]["returncode"] == 130

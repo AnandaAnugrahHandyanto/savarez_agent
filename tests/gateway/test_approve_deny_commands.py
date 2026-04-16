@@ -77,6 +77,16 @@ def _clear_approval_state():
     mod._pending.clear()
 
 
+@pytest.fixture(autouse=True)
+def _disable_tirith_network(monkeypatch):
+    """Gateway approval tests exercise Hermes approval logic, not tirith downloads."""
+    monkeypatch.setattr(
+        "tools.tirith_security.check_command_security",
+        lambda command: {"action": "allow", "findings": [], "summary": ""},
+        raising=False,
+    )
+
+
 # ------------------------------------------------------------------
 # Blocking gateway approval infrastructure (tools/approval.py)
 # ------------------------------------------------------------------

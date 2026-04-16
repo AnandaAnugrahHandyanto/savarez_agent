@@ -129,5 +129,12 @@ include = ["agent", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "c
 testpaths = ["tests"]
 markers = [
     "integration: marks tests requiring external services (API keys, Modal, etc.)",
+    "ssh: marks tests that exercise SSH-specific file sync behavior",
+]
+filterwarnings = [
+    "ignore:websockets.InvalidStatusCode is deprecated:DeprecationWarning:lark_oapi\\.ws\\.client",
+    "ignore:websockets.legacy is deprecated.*:DeprecationWarning:websockets\\.legacy",
+    "ignore:`verify=<str>` is deprecated.*:DeprecationWarning:httpx\\._config",
+    "ignore:Bare functions are deprecated, use async ones:DeprecationWarning:aiohttp\\.web_urldispatcher",
 ]
 addopts = "-m 'not integration' -n auto"
