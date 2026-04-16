@@ -756,9 +756,12 @@ DEFAULT_CONFIG = {
     },
 
     "cron": {
-        # Wrap delivered cron responses with a header (task name) and footer
-        # ("The agent cannot see this message").  Set to false for clean output.
+        # Wrap delivered cron responses with a header (task name) and footer.
+        # Set to false for clean output.
         "wrap_response": True,
+        # Default for whether successful cron deliveries should be mirrored into
+        # the target session transcript so follow-up replies can refer to them.
+        "append_deliveries_to_session": False,
     },
 
     # Logging — controls file logging to ~/.hermes/logs/.
@@ -778,7 +781,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 18,
+    "_config_version": 19,
 }
 
 # =============================================================================

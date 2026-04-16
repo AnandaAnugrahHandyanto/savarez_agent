@@ -166,6 +166,9 @@ class TestMirrorToSession:
         assert msg["mirror"] is True
         assert msg["mirror_source"] == "cli"
 
+        refreshed_index = json.loads(index_file.read_text())
+        assert refreshed_index["s1"]["updated_at"] != "2026-01-01T00:00:00"
+
     def test_successful_mirror_uses_thread_id(self, tmp_path):
         sessions_dir, index_file = _setup_sessions(tmp_path, {
             "topic_a": {
@@ -188,6 +191,10 @@ class TestMirrorToSession:
         assert result is True
         assert (sessions_dir / "sess_topic_a.jsonl").exists()
         assert not (sessions_dir / "sess_topic_b.jsonl").exists()
+
+        refreshed_index = json.loads(index_file.read_text())
+        assert refreshed_index["topic_a"]["updated_at"] != "2026-01-01T00:00:00"
+        assert refreshed_index["topic_b"]["updated_at"] == "2026-02-01T00:00:00"
 
     def test_no_matching_session(self, tmp_path):
         sessions_dir, index_file = _setup_sessions(tmp_path, {})

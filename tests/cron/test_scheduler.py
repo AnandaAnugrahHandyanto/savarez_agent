@@ -211,7 +211,7 @@ class TestResolveDeliveryTarget:
 
 
 class TestDeliverResultWrapping:
-    """Verify that cron deliveries are wrapped with header/footer and no longer mirrored."""
+    """Verify cron delivery wrapping and optional session mirroring behavior."""
 
     def test_delivery_wraps_content_with_header_and_footer(self):
         """Delivered content should include task name header and agent-invisible note."""
@@ -496,8 +496,8 @@ class TestDeliverResultWrapping:
         assert "MEDIA:" not in text_sent
         assert "Report" in text_sent
 
-    def test_no_mirror_to_session_call(self):
-        """Cron deliveries should NOT mirror into the gateway session."""
+    def test_default_does_not_mirror_to_session(self):
+        """Cron deliveries should not mirror unless the effective setting enables it."""
         from gateway.config import Platform
 
         pconfig = MagicMock()
@@ -516,6 +516,119 @@ class TestDeliverResultWrapping:
             _deliver_result(job, "Hello!")
 
         mirror_mock.assert_not_called()
+
+    def test_job_append_to_session_mirrors_raw_content(self):
+        """Per-job append_to_session should mirror the unwrapped content."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session") as mirror_mock:
+            job = {
+                "id": "test-job",
+                "name": "daily-report",
+                "deliver": "origin",
+                "append_to_session": True,
+                "origin": {"platform": "telegram", "chat_id": "123"},
+            }
+            _deliver_result(job, "Here is today's summary.")
+
+        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        assert "Cronjob Response: daily-report" in sent_content
+        mirror_mock.assert_called_once_with(
+            "telegram",
+            "123",
+            "Here is today's summary.",
+            source_label="cron:daily-report",
+            thread_id=None,
+        )
+
+    def test_global_append_to_session_default_applies(self):
+        """Jobs inherit cron.append_deliveries_to_session when no override is set."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"append_deliveries_to_session": True, "wrap_response": False}}), \
+             patch("gateway.mirror.mirror_to_session") as mirror_mock:
+            job = {
+                "id": "test-job",
+                "name": "inbox-watch",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+            }
+            _deliver_result(job, "New email about the event.")
+
+        mirror_mock.assert_called_once_with(
+            "telegram",
+            "123",
+            "New email about the event.",
+            source_label="cron:inbox-watch",
+            thread_id=None,
+        )
+
+    def test_job_append_false_overrides_global_true(self):
+        """An explicit false override should win over the global default."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"append_deliveries_to_session": True}}), \
+             patch("gateway.mirror.mirror_to_session") as mirror_mock:
+            job = {
+                "id": "test-job",
+                "deliver": "origin",
+                "append_to_session": False,
+                "origin": {"platform": "telegram", "chat_id": "123"},
+            }
+            _deliver_result(job, "Hello!")
+
+        mirror_mock.assert_not_called()
+
+    def test_media_only_append_to_session_uses_media_summary(self):
+        """Media-only cron deliveries should mirror a readable attachment summary."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("gateway.mirror.mirror_to_session") as mirror_mock:
+            job = {
+                "id": "voice-job",
+                "name": "voice-job",
+                "deliver": "origin",
+                "append_to_session": True,
+                "origin": {"platform": "telegram", "chat_id": "123"},
+            }
+            _deliver_result(job, "[[audio_as_voice]]\nMEDIA:/tmp/test-voice.ogg")
+
+        mirror_mock.assert_called_once_with(
+            "telegram",
+            "123",
+            "[Sent voice message]",
+            source_label="cron:voice-job",
+            thread_id=None,
+        )
 
     def test_origin_delivery_preserves_thread_id(self):
         """Origin delivery should forward thread_id to the send helper."""
