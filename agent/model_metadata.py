@@ -239,6 +239,8 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.x.ai": "xai",
     "api.xiaomimimo.com": "xiaomi",
     "xiaomimimo.com": "xiaomi",
+    "bedrock-runtime": "bedrock",
+    "bedrock-mantle": "bedrock",
 }
 
 

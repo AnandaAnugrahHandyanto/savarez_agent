@@ -1549,6 +1549,17 @@ def resolve_provider_client(
         logger.warning("resolve_provider_client: unknown provider %r", provider)
         return None, None
 
+    if pconfig.auth_type == "aws_sdk":
+        # AWS Bedrock — uses boto3 / AnthropicBedrock SDK, not OpenAI client.
+        # Auxiliary tasks (vision, web extract, compression) should not run
+        # via Bedrock because there is no OpenAI-compatible interface here.
+        # Return None so callers fall back to an OpenAI-compatible provider.
+        logger.debug(
+            "resolve_provider_client: bedrock provider requested for auxiliary "
+            "task — falling back to auto-detection (Bedrock has no OpenAI-compat path)"
+        )
+        return None, None
+
     if pconfig.auth_type == "api_key":
         if provider == "anthropic":
             client, default_model = _try_anthropic()
