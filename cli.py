@@ -278,6 +278,9 @@ def load_cli_config() -> Dict[str, Any]:
 
             "skin": "default",
         },
+        "tui": {
+            "input_max_lines": 12,
+        },
         "clarify": {
             "timeout": 120,  # Seconds to wait for a clarify answer before auto-proceeding
         },
@@ -8821,12 +8824,14 @@ class HermesCLI:
             skill_commands_provider=lambda: _skill_commands,
             command_filter=cli_ref._command_available,
         )
+        _input_max_lines = int(CLI_CONFIG.get("tui", {}).get("input_max_lines", 12))
         input_area = TextArea(
-            height=Dimension(min=1, max=8, preferred=1),
+            height=Dimension(min=1, max=_input_max_lines, preferred=1),
             prompt=get_prompt,
             style='class:input-area',
             multiline=True,
             wrap_lines=True,
+            scrollbar=True,
             read_only=Condition(lambda: bool(cli_ref._command_running)),
             history=FileHistory(str(self._history_file)),
             completer=_completer,
@@ -8861,7 +8866,7 @@ class HermesCLI:
                         visual_lines += 1
                     else:
                         visual_lines += max(1, -(-line_width // available_width))  # ceil division
-                return min(max(visual_lines, 1), 8)
+                return min(max(visual_lines, 1), _input_max_lines)
             except Exception:
                 return 1
 
