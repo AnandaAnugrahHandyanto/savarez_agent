@@ -18,7 +18,7 @@ import tempfile
 import threading
 import time
 from collections import defaultdict
-from typing import Callable, Dict, Optional, Any
+from typing import Callable, Dict, Optional, Any, List
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +54,8 @@ from gateway.platforms.base import (
     cache_audio_from_url,
     cache_document_from_bytes,
     SUPPORTED_DOCUMENT_TYPES,
+    resolve_proxy_url,
+    proxy_kwargs_for_aiohttp,
 )
 from tools.url_safety import is_safe_url
 
@@ -78,6 +80,133 @@ def _clean_discord_id(entry: str) -> str:
 def check_discord_requirements() -> bool:
     """Check if Discord dependencies are available."""
     return DISCORD_AVAILABLE
+
+
+def _discord_history_content(message: Dict[str, Any]) -> str:
+    """Return a useful content string for Discord history messages."""
+    content = (message.get("content") or "").strip()
+    if content:
+        return content
+
+    parts: List[str] = []
+    attachments = message.get("attachments") or []
+    if attachments:
+        names = [a.get("filename") or "attachment" for a in attachments[:3] if isinstance(a, dict)]
+        if names:
+            parts.append("attachments: " + ", ".join(names))
+        extra = len(attachments) - len(names)
+        if extra > 0:
+            parts.append(f"+{extra} more attachment(s)")
+
+    embeds = message.get("embeds") or []
+    if embeds:
+        embed_titles = [e.get("title") for e in embeds[:2] if isinstance(e, dict) and e.get("title")]
+        if embed_titles:
+            parts.append("embeds: " + "; ".join(embed_titles))
+        elif not attachments:
+            parts.append(f"{len(embeds)} embed(s)")
+
+    stickers = message.get("sticker_items") or []
+    if stickers:
+        parts.append(f"{len(stickers)} sticker(s)")
+
+    return " | ".join(parts)
+
+
+def _normalize_discord_history_message(message: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize a Discord API message payload for Hermes tool output."""
+    author = message.get("author") or {}
+    reference = message.get("message_reference") or {}
+    attachments = message.get("attachments") or []
+    return {
+        "message_id": str(message.get("id") or ""),
+        "channel_id": str(message.get("channel_id") or ""),
+        "timestamp": message.get("timestamp") or "",
+        "author": author.get("global_name") or author.get("username") or author.get("id") or "unknown",
+        "author_id": str(author.get("id") or ""),
+        "is_bot": bool(author.get("bot", False)),
+        "content": _discord_history_content(message),
+        "raw_content": message.get("content") or "",
+        "reply_to_message_id": str(reference.get("message_id") or "") if reference.get("message_id") else None,
+        "attachment_names": [a.get("filename") or "attachment" for a in attachments if isinstance(a, dict)],
+        "type": int(message.get("type") or 0),
+    }
+
+
+async def fetch_channel_history_via_api(
+    token: str,
+    channel_id: str,
+    *,
+    limit: int = 20,
+    before_message_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Fetch recent Discord channel/thread messages via the official REST API."""
+    if not token:
+        raise ValueError("Discord bot token is missing")
+
+    channel_id = str(channel_id or "").strip()
+    if not channel_id or not channel_id.isdigit():
+        raise ValueError("Discord channel_id must be a numeric snowflake")
+
+    try:
+        limit_value = int(limit)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("limit must be an integer") from exc
+    limit_value = max(1, min(limit_value, 50))
+
+    if before_message_id:
+        before_message_id = str(before_message_id).strip()
+        if not before_message_id.isdigit():
+            raise ValueError("before_message_id must be a numeric snowflake")
+
+    try:
+        import aiohttp
+    except ImportError as exc:  # pragma: no cover - dependency guard
+        raise RuntimeError("aiohttp not installed. Run: pip install aiohttp") from exc
+
+    url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
+    headers = {
+        "Authorization": f"Bot {token}",
+        "Accept": "application/json",
+    }
+    params = {"limit": str(limit_value)}
+    if before_message_id:
+        params["before"] = before_message_id
+
+    proxy_url = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
+    session_kwargs, request_kwargs = proxy_kwargs_for_aiohttp(proxy_url)
+
+    async with aiohttp.ClientSession(
+        timeout=aiohttp.ClientTimeout(total=30),
+        **session_kwargs,
+    ) as session:
+        async with session.get(url, headers=headers, params=params, **request_kwargs) as resp:
+            if resp.status == 401:
+                raise PermissionError("Discord bot token is invalid or unauthorized")
+            if resp.status == 403:
+                raise PermissionError(
+                    "Discord denied channel history access. Check View Channel and Read Message History permissions for this bot."
+                )
+            if resp.status == 404:
+                raise LookupError(f"Discord channel {channel_id} was not found or is not visible to the bot")
+            if resp.status >= 400:
+                detail = (await resp.text()).strip()
+                if len(detail) > 200:
+                    detail = detail[:200] + "..."
+                raise RuntimeError(
+                    f"Discord API request failed with HTTP {resp.status}: {detail or 'no response body'}"
+                )
+            payload = await resp.json(content_type=None)
+
+    if not isinstance(payload, list):
+        raise RuntimeError("Discord API returned an unexpected payload while fetching history")
+
+    normalized = [
+        _normalize_discord_history_message(message)
+        for message in reversed(payload)
+        if isinstance(message, dict)
+    ]
+    return normalized
 
 
 class VoiceReceiver:
