@@ -926,6 +926,9 @@ class GatewayRunner:
             )
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
+        model_config = user_config.get("model") if isinstance(user_config, dict) else None
+        if isinstance(model_config, dict) and model_config.get("max_tokens") is not None:
+            runtime_kwargs["max_tokens"] = model_config.get("max_tokens")
         if override and resolved_session_key:
             model, runtime_kwargs = self._apply_session_model_override(
                 resolved_session_key, model, runtime_kwargs
