@@ -388,6 +388,72 @@ def test_try_refresh_current_updates_only_current_entry(tmp_path, monkeypatch):
     assert secondary["refresh_token"] == "refresh-other"
 
 
+def test_try_refresh_current_does_not_pollute_real_home(tmp_path, monkeypatch):
+    """`_write_codex_cli_tokens` must not write to ``~/.codex/`` during tests.
+
+    Regression for a cross-test leak: ``pool.try_refresh_current()`` calls
+    ``_refresh_codex_auth_tokens`` which calls ``_write_codex_cli_tokens``
+    to keep ``$CODEX_HOME/auth.json`` (the file shared with Codex CLI /
+    VS Code) in sync.  When CODEX_HOME is unset that path resolves to
+    ``Path.home() / ".codex" / "auth.json"`` — i.e. the *real* HOME of
+    the test process.  Under the project's standard
+    ``HOME=$(mktemp -d)`` test wrapper that HOME is shared by every test
+    in the run, so the file persisted for the rest of the session and
+    later ``load_pool("openai-codex")`` calls re-imported the leaked
+    tokens via ``_seed_from_singletons`` -> ``_import_codex_cli_tokens``.
+
+    The conftest autouse fixture now pins CODEX_HOME to a per-test tmp
+    dir, so the writeback lands inside ``tmp_path`` (which pytest
+    cleans up) instead of polluting ``Path.home()``.
+    """
+    from pathlib import Path
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-1",
+                        "label": "primary",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "device_code",
+                        "access_token": "access-old",
+                        "refresh_token": "refresh-old",
+                        "base_url": "https://chatgpt.com/backend-api/codex",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.refresh_codex_oauth_pure",
+        lambda access_token, refresh_token, timeout_seconds=20.0: {
+            "access_token": "access-new",
+            "refresh_token": "refresh-new",
+        },
+    )
+
+    pool = load_pool("openai-codex")
+    pool.select()
+    refreshed = pool.try_refresh_current()
+    assert refreshed is not None
+
+    # The shared real HOME must not have grown a .codex/auth.json from this
+    # refresh.  CODEX_HOME (per-conftest) absorbs the writeback into tmp_path.
+    leaked = Path.home() / ".codex" / "auth.json"
+    assert not leaked.exists(), (
+        f"Codex token writeback leaked into Path.home(): {leaked}. "
+        "The conftest CODEX_HOME isolation is missing or has been broken."
+    )
+
+
 def test_load_pool_seeds_env_api_key(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-seeded")

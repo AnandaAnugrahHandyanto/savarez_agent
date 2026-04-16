@@ -26,6 +26,21 @@ def _isolate_hermes_home(tmp_path, monkeypatch):
     (fake_home / "memories").mkdir()
     (fake_home / "skills").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(fake_home))
+    # Isolate CODEX_HOME the same way.  Production code writes refreshed
+    # OAuth tokens back to ``$CODEX_HOME/auth.json`` (defaulting to
+    # ``~/.codex/auth.json``) so the Codex CLI / VS Code stay in sync.
+    # When a test triggers a refresh without explicitly setting CODEX_HOME,
+    # the writeback lands in the *real* HOME for the test process.  Under
+    # the project's standard ``HOME=$(mktemp -d)`` test wrapper that HOME
+    # is shared by every test in the run, so the file persists for the
+    # remainder of the session and any later test that calls
+    # ``load_pool("openai-codex")`` re-imports those stale tokens via
+    # ``_seed_from_singletons`` -> ``_import_codex_cli_tokens``.  Pin
+    # CODEX_HOME to a per-test scratch dir so writebacks are always
+    # contained to ``tmp_path`` and cleaned up between tests.
+    fake_codex = tmp_path / "codex_test"
+    fake_codex.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(fake_codex))
     # Reset plugin singleton so tests don't leak plugins from ~/.hermes/plugins/
     try:
         import hermes_cli.plugins as _plugins_mod
