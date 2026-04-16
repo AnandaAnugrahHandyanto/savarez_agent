@@ -24,6 +24,7 @@ import signal
 import tempfile
 import threading
 import time
+from contextlib import suppress
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List
@@ -33,9 +34,18 @@ from typing import Dict, Optional, Any, List
 # Must run BEFORE any HTTP library (discord, aiohttp, etc.) is imported.
 # ---------------------------------------------------------------------------
 def _ensure_ssl_certs() -> None:
-    """Set SSL_CERT_FILE if the system doesn't expose CA certs to Python."""
-    if "SSL_CERT_FILE" in os.environ:
-        return  # user already configured it
+    """Set a valid CA bundle for ssl/httpx/requests before HTTP clients import."""
+
+    def _set_ca_bundle(path: str) -> None:
+        os.environ["SSL_CERT_FILE"] = path
+        os.environ["REQUESTS_CA_BUNDLE"] = path
+        os.environ["CURL_CA_BUNDLE"] = path
+
+    for env_var in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
+        candidate = str(os.environ.get(env_var, "") or "").strip()
+        if candidate and os.path.exists(candidate):
+            _set_ca_bundle(candidate)
+            return
 
     import ssl
 
@@ -43,14 +53,17 @@ def _ensure_ssl_certs() -> None:
     paths = ssl.get_default_verify_paths()
     for candidate in (paths.cafile, paths.openssl_cafile):
         if candidate and os.path.exists(candidate):
-            os.environ["SSL_CERT_FILE"] = candidate
+            _set_ca_bundle(candidate)
             return
 
     # 2. certifi (ships its own Mozilla bundle)
     try:
         import certifi
-        os.environ["SSL_CERT_FILE"] = certifi.where()
-        return
+
+        candidate = certifi.where()
+        if candidate and os.path.exists(candidate):
+            _set_ca_bundle(candidate)
+            return
     except ImportError:
         pass
 
@@ -66,7 +79,7 @@ def _ensure_ssl_certs() -> None:
         "/opt/homebrew/etc/openssl@1.1/cert.pem",            # macOS Homebrew ARM
     ):
         if os.path.exists(candidate):
-            os.environ["SSL_CERT_FILE"] = candidate
+            _set_ca_bundle(candidate)
             return
 
 _ensure_ssl_certs()
@@ -2808,6 +2821,7 @@ class GatewayRunner:
                 if qcmd.get("type") == "exec":
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
+                        proc = None
                         try:
                             proc = await asyncio.create_subprocess_shell(
                                 exec_cmd,
@@ -2818,6 +2832,11 @@ class GatewayRunner:
                             output = (stdout or stderr).decode().strip()
                             return output if output else "Command returned no output."
                         except asyncio.TimeoutError:
+                            if proc is not None:
+                                with suppress(ProcessLookupError):
+                                    proc.kill()
+                                with suppress(Exception):
+                                    await proc.wait()
                             return "Quick command timed out (30s)."
                         except Exception as e:
                             return f"Quick command error: {e}"
@@ -8379,7 +8398,7 @@ class GatewayRunner:
             )
 
             _inactivity_timeout = False
-            _POLL_INTERVAL = 5.0
+            _POLL_INTERVAL = float(os.getenv("HERMES_AGENT_POLL_INTERVAL", "5.0"))
 
             if _agent_timeout is None:
                 # Unlimited — still poll periodically for backup interrupt

@@ -1,4 +1,5 @@
 """Tests for user-defined quick commands that bypass the agent loop."""
+import asyncio
 import subprocess
 from unittest.mock import MagicMock, patch, AsyncMock
 from rich.text import Text
@@ -157,18 +158,22 @@ class TestGatewayQuickCommands:
     @pytest.mark.asyncio
     async def test_timeout_returns_error(self):
         from gateway.run import GatewayRunner
-        import asyncio
         runner = GatewayRunner.__new__(GatewayRunner)
         runner.config = {"quick_commands": {"slow": {"type": "exec", "command": "sleep 100"}}}
         runner._running_agents = {}
         runner._pending_messages = {}
         runner._is_user_authorized = MagicMock(return_value=True)
 
+        proc = MagicMock()
+        proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
+        proc.wait = AsyncMock(return_value=0)
         event = self._make_event("slow")
-        with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
+        with patch("gateway.run.asyncio.create_subprocess_shell", new=AsyncMock(return_value=proc)):
             result = await runner._handle_message(event)
         assert result is not None
         assert "timed out" in result.lower()
+        proc.kill.assert_called_once_with()
+        proc.wait.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_gateway_config_object_supports_quick_commands(self):

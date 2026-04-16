@@ -498,7 +498,10 @@ class TestCmdCleanup:
         (ws / "todo.json").write_text("{}")
 
         args = Namespace(source=None, dry_run=True, yes=False)
-        with patch.object(claw_mod, "_find_openclaw_dirs", return_value=[openclaw]):
+        with (
+            patch.object(claw_mod, "_find_openclaw_dirs", return_value=[openclaw]),
+            patch.object(claw_mod, "_detect_openclaw_processes", return_value=[]),
+        ):
             claw_mod._cmd_cleanup(args)
 
         captured = capsys.readouterr()
@@ -531,6 +534,7 @@ class TestCmdCleanup:
         args = Namespace(source=None, dry_run=False, yes=False)
         with (
             patch.object(claw_mod, "_find_openclaw_dirs", return_value=[openclaw]),
+            patch.object(claw_mod, "_detect_openclaw_processes", return_value=[]),
             patch.object(claw_mod, "prompt_yes_no", return_value=False),
             patch("sys.stdin", mock_stdin),
         ):
@@ -561,12 +565,28 @@ class TestCmdCleanup:
         (ws / "SOUL.md").write_text("# Soul")
 
         args = Namespace(source=None, dry_run=True, yes=False)
-        with patch.object(claw_mod, "_find_openclaw_dirs", return_value=[openclaw]):
+        with (
+            patch.object(claw_mod, "_find_openclaw_dirs", return_value=[openclaw]),
+            patch.object(claw_mod, "_detect_openclaw_processes", return_value=[]),
+        ):
             claw_mod._cmd_cleanup(args)
 
         captured = capsys.readouterr()
         assert "workspace/" in captured.out
         assert "todo.json" in captured.out
+
+    def test_dry_run_continues_when_openclaw_running(self, tmp_path, capsys):
+        openclaw = tmp_path / ".openclaw"
+        openclaw.mkdir()
+
+        args = Namespace(source=None, dry_run=True, yes=False)
+        with patch.object(claw_mod, "_find_openclaw_dirs", return_value=[openclaw]), \
+             patch.object(claw_mod, "_detect_openclaw_processes", return_value=["openclaw-gateway"]):
+            claw_mod._cmd_cleanup(args)
+
+        captured = capsys.readouterr()
+        assert "Dry run only" in captured.out
+        assert "Would archive" in captured.out
 
     def test_handles_multiple_dirs(self, tmp_path, capsys):
         openclaw = tmp_path / ".openclaw"
@@ -648,6 +668,24 @@ class TestDetectOpenclawProcesses:
                 result = claw_mod._detect_openclaw_processes()
                 assert len(result) == 1
                 assert "1234" in result[0]
+
+    def test_ignores_path_only_false_positive_from_pgrep(self):
+        with patch.object(claw_mod, "sys") as mock_sys:
+            mock_sys.platform = "darwin"
+            with patch.object(claw_mod, "subprocess") as mock_subprocess:
+                mock_subprocess.run.side_effect = [
+                    MagicMock(returncode=1, stdout=""),
+                    MagicMock(
+                        returncode=0,
+                        stdout=(
+                            "20772 /bin/zsh -c cd ~/.openclaw/qmt_signal_system && "
+                            'PYTHONPATH="$HOME/.openclaw/workspace" python script.py\n'
+                        ),
+                    ),
+                ]
+                mock_subprocess.TimeoutExpired = subprocess.TimeoutExpired
+                result = claw_mod._detect_openclaw_processes()
+                assert result == []
 
     def test_returns_empty_when_pgrep_finds_nothing(self):
         with patch.object(claw_mod, "sys") as mock_sys:

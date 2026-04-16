@@ -176,6 +176,8 @@ def _run_with_agent(monkeypatch, agent_cls):
         },
     )
     monkeypatch.setenv("HERMES_TOOL_PROGRESS", "false")
+    monkeypatch.setenv("HERMES_AGENT_POLL_INTERVAL", "0.05")
+    monkeypatch.setattr(run_agent.time, "sleep", lambda *_args, **_kwargs: None)
 
     runner = gateway_run.GatewayRunner.__new__(gateway_run.GatewayRunner)
     runner.adapters = {}
@@ -424,6 +426,8 @@ def test_prompt_too_long_triggers_compression(monkeypatch):
         "agent.anthropic_adapter.build_anthropic_client", _fake_build_anthropic_client
     )
     monkeypatch.setenv("HERMES_TOOL_PROGRESS", "false")
+    monkeypatch.setenv("HERMES_AGENT_POLL_INTERVAL", "0.05")
+    monkeypatch.setattr(run_agent.time, "sleep", lambda *_args, **_kwargs: None)
 
     class _PromptTooLongThenSuccessAgent(run_agent.AIAgent):
         compress_called = 0

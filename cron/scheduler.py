@@ -55,12 +55,21 @@ from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_
 # locally for audit.
 SILENT_MARKER = "[SILENT]"
 
-# Resolve Hermes home directory (respects HERMES_HOME override)
-_hermes_home = get_hermes_home()
+# File-based lock prevents concurrent ticks from gateway + daemon + systemd timer.
+# Resolve paths lazily so tests and profile switches that override HERMES_HOME
+# do not keep using a stale import-time path.  _hermes_home remains as a
+# compatibility/testing override for older tests that monkeypatch it directly.
+_hermes_home: Path | None = None
 
-# File-based lock prevents concurrent ticks from gateway + daemon + systemd timer
-_LOCK_DIR = _hermes_home / "cron"
-_LOCK_FILE = _LOCK_DIR / ".tick.lock"
+
+def _current_hermes_home() -> Path:
+    return _hermes_home if isinstance(_hermes_home, Path) else get_hermes_home()
+
+
+def _get_tick_lock_paths() -> tuple[Path, Path]:
+    hermes_home = _current_hermes_home()
+    lock_dir = hermes_home / "cron"
+    return lock_dir, lock_dir / ".tick.lock"
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
@@ -612,10 +621,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # Re-read .env and config.yaml fresh every run so provider/key
         # changes take effect without a gateway restart.
         from dotenv import load_dotenv
+        hermes_home = _current_hermes_home()
         try:
-            load_dotenv(str(_hermes_home / ".env"), override=True, encoding="utf-8")
+            load_dotenv(str(hermes_home / ".env"), override=True, encoding="utf-8")
         except UnicodeDecodeError:
-            load_dotenv(str(_hermes_home / ".env"), override=True, encoding="latin-1")
+            load_dotenv(str(hermes_home / ".env"), override=True, encoding="latin-1")
 
         delivery_target = _resolve_delivery_target(job)
         if delivery_target:
@@ -630,7 +640,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         _cfg = {}
         try:
             import yaml
-            _cfg_path = str(_hermes_home / "config.yaml")
+            _cfg_path = str(hermes_home / "config.yaml")
             if os.path.exists(_cfg_path):
                 with open(_cfg_path) as _f:
                     _cfg = yaml.safe_load(_f) or {}
@@ -664,7 +674,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             import json as _json
             pfpath = Path(prefill_file).expanduser()
             if not pfpath.is_absolute():
-                pfpath = _hermes_home / pfpath
+                pfpath = hermes_home / pfpath
             if pfpath.exists():
                 try:
                     with open(pfpath, "r", encoding="utf-8") as _pf:
@@ -911,12 +921,13 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
     Returns:
         Number of jobs executed (0 if another tick is already running)
     """
-    _LOCK_DIR.mkdir(parents=True, exist_ok=True)
+    lock_dir, lock_file = _get_tick_lock_paths()
+    lock_dir.mkdir(parents=True, exist_ok=True)
 
     # Cross-platform file locking: fcntl on Unix, msvcrt on Windows
     lock_fd = None
     try:
-        lock_fd = open(_LOCK_FILE, "w")
+        lock_fd = open(lock_file, "w")
         if fcntl:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         elif msvcrt:

@@ -10,6 +10,24 @@ import pytest
 from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
 
 
+@pytest.fixture(autouse=True)
+def _isolate_cron_home(tmp_path, monkeypatch):
+    """Keep cron tick locks/output isolated across xdist workers and tests."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+
+def test_tick_lock_path_respects_runtime_hermes_home(tmp_path, monkeypatch):
+    import cron.scheduler as scheduler
+
+    home = tmp_path / "runtime-home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    lock_dir, lock_file = scheduler._get_tick_lock_paths()
+
+    assert lock_dir == home / "cron"
+    assert lock_file == home / "cron" / ".tick.lock"
+
+
 class TestResolveOrigin:
     def test_full_origin(self):
         job = {

@@ -38,6 +38,11 @@ class _AsyncCM:
         return False
 
 
+async def _noop_poll_messages():
+    """Async stub used when connect() schedules _poll_messages via create_task."""
+    return None
+
+
 def _make_adapter():
     """Create a WhatsAppAdapter with test attributes (bypass __init__)."""
     from gateway.platforms.whatsapp import WhatsAppAdapter
@@ -47,7 +52,7 @@ def _make_adapter():
     adapter.config = MagicMock()
     adapter._bridge_port = 19876
     adapter._bridge_script = "/tmp/test-bridge.js"
-    adapter._session_path = Path("/tmp/test-wa-session")
+    adapter._session_path = Path(f"/tmp/test-wa-session-{id(adapter)}")
     adapter._bridge_log_fh = None
     adapter._bridge_log = None
     adapter._bridge_process = None
@@ -83,11 +88,21 @@ def _mock_aiohttp(status=200, json_data=None, json_side_effect=None):
 
 
 def _connect_patches(mock_proc, mock_fh, mock_client_cls=None):
-    """Return a dict of common patches needed to reach the health-check loop."""
-    patches = {
-        "gateway.platforms.whatsapp.check_whatsapp_requirements": True,
-        "gateway.platforms.whatsapp.asyncio.create_task": MagicMock(),
-    }
+    """Return common patches needed to reach the WhatsApp health-check loop.
+
+    ``connect()`` always instantiates ``self._poll_messages()`` before passing
+    it into ``asyncio.create_task``. When tests patch ``create_task`` with a
+    plain mock, that coroutine is never scheduled and leaks as an unawaited
+    coroutine warning. Close it explicitly in the fake task factory.
+    """
+
+    def _fake_create_task(coro, *args, **kwargs):
+        try:
+            coro.close()
+        except Exception:
+            pass
+        return MagicMock()
+
     base = [
         patch("gateway.platforms.whatsapp.check_whatsapp_requirements", return_value=True),
         patch.object(Path, "exists", return_value=True),
@@ -96,7 +111,7 @@ def _connect_patches(mock_proc, mock_fh, mock_client_cls=None):
         patch("subprocess.Popen", return_value=mock_proc),
         patch("builtins.open", return_value=mock_fh),
         patch("gateway.platforms.whatsapp.asyncio.sleep", new_callable=AsyncMock),
-        patch("gateway.platforms.whatsapp.asyncio.create_task"),
+        patch("gateway.platforms.whatsapp.asyncio.create_task", side_effect=_fake_create_task),
     ]
     if mock_client_cls is not None:
         base.append(patch("aiohttp.ClientSession", mock_client_cls))
@@ -174,7 +189,7 @@ class TestDataInitialized:
 
         with patches[0], patches[1], patches[2], patches[3], patches[4], \
              patches[5], patches[6], patches[7], patches[8], \
-             patch.object(type(adapter), "_poll_messages", return_value=MagicMock()):
+             patch.object(type(adapter), "_poll_messages", side_effect=_noop_poll_messages):
             # Must NOT raise NameError
             result = await adapter.connect()
 
@@ -244,7 +259,10 @@ class TestBridgeRuntimeFailure:
         fatal_handler = AsyncMock()
         adapter.set_fatal_error_handler(fatal_handler)
         adapter._running = True
-        adapter._http_session = MagicMock()  # Persistent session active
+        mock_http_session = MagicMock()
+        mock_http_session.closed = False
+        mock_http_session.get = MagicMock()
+        adapter._http_session = mock_http_session  # Persistent session active
         mock_fh = MagicMock()
         adapter._bridge_log_fh = mock_fh
 

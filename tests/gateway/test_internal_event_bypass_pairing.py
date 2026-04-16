@@ -19,6 +19,11 @@ from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
 
+@pytest.fixture(autouse=True)
+def _isolate_pairing_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

@@ -11,6 +11,7 @@ Usage:
 
 import importlib.util
 import logging
+import re
 import subprocess
 import sys
 from datetime import datetime
@@ -52,6 +53,27 @@ _OPENCLAW_SCRIPT_INSTALLED = (
 
 # Known OpenClaw directory names (current + legacy)
 _OPENCLAW_DIR_NAMES = (".openclaw", ".clawdbot", ".moltbot")
+
+
+def _matches_openclaw_command(command: str) -> bool:
+    """Return True when a process command line looks like an actual OpenClaw runtime.
+
+    Avoid false positives from unrelated commands that merely reference
+    ~/.openclaw paths (for example backup scripts or migration tooling).
+    """
+    cmd = command.strip().lower()
+    if not cmd:
+        return False
+
+    explicit_binary_patterns = (
+        r"(^|[\\/\s])(openclaw-gateway|clawd(?:\.exe)?)(?=$|[\s./_-])",
+        r"(^|[\\/\s])openclaw(?:\.exe)?(?=$|[\s./_-])",
+    )
+    if any(re.search(pattern, cmd) for pattern in explicit_binary_patterns):
+        return True
+
+    return "node" in cmd and re.search(r"(?<!\.)\bopenclaw\b", cmd) is not None
+
 
 def _detect_openclaw_processes() -> list[str]:
     """Detect running OpenClaw processes and services.
@@ -102,12 +124,23 @@ def _detect_openclaw_processes() -> list[str]:
     else:
         try:
             result = subprocess.run(
-                ["pgrep", "-f", "openclaw"],
+                ["pgrep", "-af", "openclaw|clawd"],
                 capture_output=True, text=True, timeout=3,
             )
             if result.returncode == 0:
-                pids = result.stdout.strip().split()
-                found.append(f"openclaw process(es) (PIDs: {', '.join(pids)})")
+                matched_pids: list[str] = []
+                for line in result.stdout.strip().splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    parts = line.split(None, 1)
+                    pid = parts[0]
+                    # Some pgrep variants/tests return only PIDs. Treat those
+                    # as matches, but filter command lines when available.
+                    if len(parts) == 1 or _matches_openclaw_command(parts[1]):
+                        matched_pids.append(pid)
+                if matched_pids:
+                    found.append(f"openclaw process(es) (PIDs: {', '.join(matched_pids)})")
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
 
@@ -541,7 +574,9 @@ def _cmd_cleanup(args):
         )
         print_info("Stop OpenClaw first: systemctl --user stop openclaw-gateway.service")
         print()
-        if not auto_yes:
+        if dry_run:
+            print_info("Dry run only — continuing to preview without archiving.")
+        elif not auto_yes:
             if not sys.stdin.isatty():
                 print_info("Non-interactive session — aborting. Stop OpenClaw and re-run.")
                 return
