@@ -19,6 +19,7 @@ import os
 import json
 import time
 import yaml
+import inspect as _inspect
 from pathlib import Path
 
 try:
@@ -45,13 +46,15 @@ _parseltongue_path = _SCRIPTS_DIR / "parseltongue.py"
 _race_path = _SCRIPTS_DIR / "godmode_race.py"
 
 # Use the calling frame's globals so functions are accessible everywhere
-import inspect as _inspect
 _caller_globals = _inspect.stack()[0][0].f_globals if len(_inspect.stack()) > 0 else globals()
 
 if _parseltongue_path.exists():
     exec(compile(open(_parseltongue_path).read(), str(_parseltongue_path), 'exec'), _caller_globals)
 if _race_path.exists():
     exec(compile(open(_race_path).read(), str(_race_path), 'exec'), _caller_globals)
+
+escalate_encoding = _caller_globals.get("escalate_encoding")
+score_response = _caller_globals.get("score_response")
 
 # ═══════════════════════════════════════════════════════════════════
 # Hermes config paths
@@ -440,6 +443,11 @@ def auto_jailbreak(model=None, base_url=None, api_key=None,
     """
     if OpenAI is None:
         return {"success": False, "error": "openai package not installed"}
+    if not callable(score_response) or not callable(escalate_encoding):
+        return {
+            "success": False,
+            "error": "Required jailbreak helpers failed to load",
+        }
 
     # 1. Detect model
     if not model:
@@ -609,7 +617,7 @@ def auto_jailbreak(model=None, base_url=None, api_key=None,
 
         # Try with system prompt + prefill combined
         if verbose:
-            print(f"  [RETRY] Adding prefill messages...")
+            print("  [RETRY] Adding prefill messages...")
         msgs = _build_messages(
             system_prompt=system_prompt,
             prefill=STANDARD_PREFILL,

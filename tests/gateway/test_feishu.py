@@ -6,15 +6,16 @@ import os
 import tempfile
 import time
 import unittest
+import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, Mock, patch
 
-try:
-    import lark_oapi
-    _HAS_LARK_OAPI = True
-except ImportError:
-    _HAS_LARK_OAPI = False
+if TYPE_CHECKING:
+    from gateway.platforms.feishu import FeishuAdapter
+
+_HAS_LARK_OAPI = importlib.util.find_spec("lark_oapi") is not None
 
 
 def _mock_event_dispatcher_builder(mock_handler_class):
@@ -2549,8 +2550,6 @@ class TestWebhookSecurity(unittest.TestCase):
 
     def test_signature_valid_passes(self):
         import hashlib
-        from gateway.platforms.feishu import FeishuAdapter
-        from gateway.config import PlatformConfig
 
         encrypt_key = "test_secret"
         adapter = self._make_adapter(encrypt_key)

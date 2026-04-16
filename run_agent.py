@@ -37,11 +37,14 @@ import time
 import threading
 from types import SimpleNamespace
 import uuid
-from typing import List, Dict, Any, Optional
+from typing import TYPE_CHECKING, List, Dict, Any, Optional
 from openai import OpenAI
 import fire
 from datetime import datetime
 from pathlib import Path
+
+if TYPE_CHECKING:
+    from agent.rate_limit_tracker import RateLimitState
 
 from hermes_constants import get_hermes_home
 
@@ -70,9 +73,6 @@ from tools.terminal_tool import cleanup_vm, get_active_env, is_persistent_env
 from tools.tool_result_storage import maybe_persist_tool_result, enforce_turn_budget
 from tools.interrupt import set_interrupt as _set_interrupt
 from tools.browser_tool import cleanup_browser
-
-
-from hermes_constants import OPENROUTER_BASE_URL
 
 # Agent internals extracted to agent/ package for modularity
 from agent.memory_manager import build_memory_context_block, sanitize_context
@@ -9013,7 +9013,7 @@ class AIAgent:
                         elif _resp_error_code == 504:
                             _failure_hint = f"upstream gateway timeout (504, {api_duration:.0f}s)"
                         elif _resp_error_code == 429:
-                            _failure_hint = f"rate limited by upstream provider (429)"
+                            _failure_hint = "rate limited by upstream provider (429)"
                         elif _resp_error_code in (500, 502):
                             _failure_hint = f"upstream server error ({_resp_error_code}, {api_duration:.0f}s)"
                         elif _resp_error_code in (503, 529):
