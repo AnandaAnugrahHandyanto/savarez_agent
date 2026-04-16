@@ -5471,6 +5471,8 @@ class HermesCLI:
             self._handle_reasoning_command(cmd_original)
         elif canonical == "fast":
             self._handle_fast_command(cmd_original)
+        elif canonical == "advisor":
+            self._handle_advisor_command(cmd_original)
         elif canonical == "compress":
             self._manual_compress(cmd_original)
         elif canonical == "usage":
@@ -6331,6 +6333,44 @@ class HermesCLI:
             _cprint(f"  {_ACCENT}✓ {feature_name} set to {label} (saved to config){_RST}")
         else:
             _cprint(f"  {_ACCENT}✓ {feature_name} set to {label} (session only){_RST}")
+
+    def _handle_advisor_command(self, cmd: str):
+        """Handle /advisor — toggle the Anthropic advisor tool."""
+        agent = self.agent
+        if agent is None:
+            _cprint(f"  {_DIM}  No active session. Start a conversation first.{_RST}")
+            return
+        advisor_config = getattr(agent, "advisor_config", {})
+
+        parts = cmd.strip().split(maxsplit=1)
+        arg = parts[1].strip().lower() if len(parts) > 1 else "status"
+
+        if arg in {"on", "enable"}:
+            advisor_config = dict(advisor_config)
+            advisor_config["enabled"] = True
+            agent.advisor_config = advisor_config
+            model = advisor_config.get("model", "claude-opus-4-6")
+            _cprint(f"  {_ACCENT}✓ Advisor enabled (model: {model}){_RST}")
+            _cprint(f"  {_DIM}  The executor will consult the advisor for strategic guidance.{_RST}")
+            _cprint(f"  {_DIM}  Note: Only works with Anthropic provider. Tool active immediately; /reset for system prompt update.{_RST}")
+        elif arg in {"off", "disable"}:
+            advisor_config = dict(advisor_config)
+            advisor_config["enabled"] = False
+            agent.advisor_config = advisor_config
+            _cprint(f"  {_ACCENT}✓ Advisor disabled{_RST}")
+        else:
+            enabled = advisor_config.get("enabled", False)
+            model = advisor_config.get("model", "claude-opus-4-6")
+            max_uses = advisor_config.get("max_uses", 0)
+            caching = advisor_config.get("caching", False)
+            auto_effort = advisor_config.get("auto_effort", True)
+            status = "enabled" if enabled else "disabled"
+            _cprint(f"  {_ACCENT}Advisor: {status}{_RST}")
+            _cprint(f"  {_DIM}  Model:       {model}{_RST}")
+            _cprint(f"  {_DIM}  Max uses:    {max_uses or 'unlimited'}{_RST}")
+            _cprint(f"  {_DIM}  Caching:     {caching}{_RST}")
+            _cprint(f"  {_DIM}  Auto effort: {auto_effort}{_RST}")
+            _cprint(f"  {_DIM}  Usage: /advisor [on|off|status]{_RST}")
 
     def _on_reasoning(self, reasoning_text: str):
         """Callback for intermediate reasoning display during tool-call loops."""

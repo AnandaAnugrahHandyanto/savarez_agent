@@ -110,6 +110,11 @@ _TOOL_STREAMING_BETA = "fine-grained-tool-streaming-2025-05-14"
 # See https://platform.claude.com/docs/en/build-with-claude/fast-mode
 _FAST_MODE_BETA = "fast-mode-2026-02-01"
 
+# Advisor tool beta — enables the advisor_20260301 server-side tool type
+# for pairing executor models with a higher-intelligence advisor.
+# See https://platform.claude.com/docs/en/agents-and-tools/tool-use/advisor-tool
+_ADVISOR_BETA = "advisor-tool-2026-03-01"
+
 # Additional beta headers required for OAuth/subscription auth.
 # Matches what Claude Code (and pi-ai / OpenCode) send.
 _OAUTH_ONLY_BETAS = [
@@ -865,6 +870,36 @@ def _convert_content_part_to_anthropic(part: Any) -> Optional[Dict[str, Any]]:
     return block
 
 
+def _sanitize_advisor_tool_result(block: dict) -> dict:
+    """Strip unknown extra fields from an advisor_tool_result block.
+
+    The Anthropic API returns extra fields (e.g. `citations`) in advisor result
+    blocks but rejects those same fields when they are echoed back in subsequent
+    turns.  Only the fields listed in the corresponding *Param TypedDicts are
+    valid on the wire for outgoing messages.
+    """
+    # Valid top-level keys for advisor_tool_result (from BetaAdvisorToolResultBlockParam)
+    VALID_TOP = {"type", "tool_use_id", "content", "cache_control"}
+    # Valid keys per nested content type
+    VALID_CONTENT: dict[str, set] = {
+        "advisor_result": {"type", "text"},
+        "advisor_redacted_result": {"type", "encrypted_content"},
+        "advisor_tool_result_error": {"type", "error_code"},
+    }
+
+    sanitized: dict = {k: v for k, v in block.items() if k in VALID_TOP}
+
+    raw_content = block.get("content")
+    if isinstance(raw_content, dict):
+        ctype = raw_content.get("type", "")
+        allowed = VALID_CONTENT.get(ctype, {"type"})
+        sanitized["content"] = {k: v for k, v in raw_content.items() if k in allowed}
+    elif raw_content is not None:
+        sanitized["content"] = raw_content
+
+    return sanitized
+
+
 def _to_plain_data(value: Any, *, _depth: int = 0, _path: Optional[set] = None) -> Any:
     """Recursively convert SDK objects to plain Python data structures.
 
@@ -944,6 +979,7 @@ def _convert_content_to_anthropic(content: Any) -> Any:
 def convert_messages_to_anthropic(
     messages: List[Dict],
     base_url: str | None = None,
+    include_advisor_blocks: bool = True,
 ) -> Tuple[Optional[Any], List[Dict]]:
     """Convert OpenAI-format messages to Anthropic format.
 
@@ -988,6 +1024,19 @@ def convert_messages_to_anthropic(
                         blocks.extend(converted_content)
                 else:
                     blocks.append({"type": "text", "text": str(content)})
+            # Advisor tool: restore server_tool_use + advisor_tool_result blocks
+            # BEFORE client-side tool_use blocks so the Anthropic API sees them
+            # in the original order (advisor pair → client tool_use).
+            # Placing tool_use before the advisor pair causes HTTP 400:
+            # "tool_use ids found without tool_result blocks immediately after".
+            # When include_advisor_blocks is False (advisor disabled or fallback),
+            # these are silently dropped to avoid API 400 errors.
+            if include_advisor_blocks:
+                for ab in m.get("advisor_blocks", []):
+                    if isinstance(ab, dict) and ab.get("type") in (
+                        "server_tool_use", "advisor_tool_result"
+                    ):
+                        blocks.append(ab)
             for tc in m.get("tool_calls", []):
                 if not tc or not isinstance(tc, dict):
                     continue
@@ -1223,6 +1272,7 @@ def build_anthropic_kwargs(
     context_length: Optional[int] = None,
     base_url: str | None = None,
     fast_mode: bool = False,
+    advisor_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build kwargs for anthropic.messages.create().
 
@@ -1262,7 +1312,14 @@ def build_anthropic_kwargs(
     Currently only supported on native Anthropic endpoints (not third-party
     compatible ones).
     """
-    system, anthropic_messages = convert_messages_to_anthropic(messages, base_url=base_url)
+    system, anthropic_messages = convert_messages_to_anthropic(
+        messages,
+        base_url=base_url,
+        include_advisor_blocks=bool(
+            advisor_config and advisor_config.get("enabled")
+            and not _is_third_party_anthropic_endpoint(base_url)
+        ),
+    )
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
 
     model = normalize_model_name(model, preserve_dots=preserve_dots)
@@ -1348,6 +1405,13 @@ def build_anthropic_kwargs(
     if reasoning_config and isinstance(reasoning_config, dict):
         if reasoning_config.get("enabled") is not False and "haiku" not in model.lower():
             effort = str(reasoning_config.get("effort", "medium")).lower()
+            # Auto-reduce executor effort when advisor provides strategic thinking.
+            # Only reduce high/default effort — don't override explicit low/minimal/none.
+            if (advisor_config and advisor_config.get("enabled")
+                    and advisor_config.get("auto_effort", True)
+                    and not _is_third_party_anthropic_endpoint(base_url)
+                    and effort not in ("low", "minimal", "none")):
+                effort = "medium"
             budget = THINKING_BUDGET.get(effort, 8000)
             if _supports_adaptive_thinking(model):
                 kwargs["thinking"] = {"type": "adaptive"}
@@ -1360,19 +1424,52 @@ def build_anthropic_kwargs(
                 kwargs["temperature"] = 1
                 kwargs["max_tokens"] = max(effective_max_tokens, budget + 4096)
 
-    # ── Fast mode (Opus 4.6 only) ────────────────────────────────────
-    # Adds extra_body.speed="fast" + the fast-mode beta header for ~2.5x
-    # output speed. Only for native Anthropic endpoints — third-party
-    # providers would reject the unknown beta header and speed parameter.
-    if fast_mode and not _is_third_party_anthropic_endpoint(base_url):
-        kwargs.setdefault("extra_body", {})["speed"] = "fast"
-        # Build extra_headers with ALL applicable betas (the per-request
-        # extra_headers override the client-level anthropic-beta header).
-        betas = list(_common_betas_for_base_url(base_url))
+    # ── Extra betas (fast mode + advisor) ─────────────────────────────
+    # Both fast mode and advisor require per-request extra_headers that
+    # override the client-level anthropic-beta header. Build a single
+    # unified header containing ALL applicable betas.
+    extra_betas = []
+    _is_third_party = _is_third_party_anthropic_endpoint(base_url)
+
+    if fast_mode and not _is_third_party:
+        kwargs["speed"] = "fast"
+        extra_betas.append(_FAST_MODE_BETA)
+
+    # Advisor tool injection — Anthropic-only server-side tool.
+    # The executor model decides when to call it; the API handles the
+    # sub-inference and returns the advisor's response inline.
+    if (advisor_config and advisor_config.get("enabled")
+            and not _is_third_party):
+        advisor_tool: Dict[str, Any] = {
+            "type": "advisor_20260301",
+            "name": "advisor",
+            "model": advisor_config.get("model", "claude-opus-4-6"),
+        }
+        max_uses = advisor_config.get("max_uses", 0)
+        try:
+            max_uses_int = int(max_uses) if max_uses else 0
+        except (ValueError, TypeError):
+            max_uses_int = 0
+        if max_uses_int > 0:
+            advisor_tool["max_uses"] = max_uses_int
+        if advisor_config.get("caching"):
+            advisor_tool["caching"] = {"type": "ephemeral", "ttl": "5m"}
+            # Preserve all thinking turns to maintain advisor cache stability.
+            # clear_thinking with keep != "all" shifts the advisor's transcript
+            # each turn, causing advisor-side cache misses.
+            if "thinking" in kwargs:
+                kwargs.setdefault("clear_thinking", {"keep": "all"})
+        if "tools" not in kwargs:
+            kwargs["tools"] = []
+        kwargs["tools"].append(advisor_tool)
+        extra_betas.append(_ADVISOR_BETA)
+
+    if extra_betas:
+        all_betas = list(_common_betas_for_base_url(base_url))
         if is_oauth:
-            betas.extend(_OAUTH_ONLY_BETAS)
-        betas.append(_FAST_MODE_BETA)
-        kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
+            all_betas.extend(_OAUTH_ONLY_BETAS)
+        all_betas.extend(extra_betas)
+        kwargs["extra_headers"] = {"anthropic-beta": ",".join(all_betas)}
 
     return kwargs
 
@@ -1393,6 +1490,7 @@ def normalize_anthropic_response(
     reasoning_parts = []
     reasoning_details = []
     tool_calls = []
+    advisor_blocks = []
 
     for block in response.content:
         if block.type == "text":
@@ -1416,6 +1514,22 @@ def normalize_anthropic_response(
                     ),
                 )
             )
+        elif block.type == "server_tool_use":
+            # Server-side tool (advisor) — preserve as-is for history round-tripping.
+            # Do NOT add to tool_calls — these are handled server-side.
+            block_dict = _to_plain_data(block)
+            if isinstance(block_dict, dict):
+                advisor_blocks.append(block_dict)
+        elif block.type == "advisor_tool_result":
+            # Advisor response — preserve verbatim (may contain plaintext
+            # advisor_result or opaque advisor_redacted_result with
+            # encrypted_content that the server decrypts on the next turn).
+            # Strip any extra fields (e.g. `citations`) that the API returns
+            # in the response but rejects when echoed back in subsequent turns.
+            block_dict = _to_plain_data(block)
+            if isinstance(block_dict, dict):
+                block_dict = _sanitize_advisor_tool_result(block_dict)
+                advisor_blocks.append(block_dict)
 
     # Map Anthropic stop_reason to OpenAI finish_reason
     stop_reason_map = {
@@ -1423,6 +1537,7 @@ def normalize_anthropic_response(
         "tool_use": "tool_calls",
         "max_tokens": "length",
         "stop_sequence": "stop",
+        "pause_turn": "pause_turn",
     }
     finish_reason = stop_reason_map.get(response.stop_reason, "stop")
 
@@ -1433,6 +1548,7 @@ def normalize_anthropic_response(
             reasoning="\n\n".join(reasoning_parts) if reasoning_parts else None,
             reasoning_content=None,
             reasoning_details=reasoning_details or None,
+            advisor_blocks=advisor_blocks or None,
         ),
         finish_reason,
     )

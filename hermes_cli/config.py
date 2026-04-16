@@ -669,6 +669,22 @@ DEFAULT_CONFIG = {
                                  # "low", "minimal", "none" (empty = inherit parent's level)
     },
 
+    # Advisor tool (Anthropic beta) — pairs a faster executor model with a
+    # higher-intelligence advisor model for strategic guidance mid-generation.
+    # Only works with the native Anthropic provider (not third-party endpoints).
+    # The advisor model must be at least as capable as the executor
+    # (e.g. executor=sonnet-4-6, advisor=opus-4-6).
+    # When enabled, the advisor tool is injected into the Anthropic tools array
+    # and the executor decides when to call it (typically at task start and end).
+    # Docs: https://platform.claude.com/docs/en/agents-and-tools/tool-use/advisor-tool
+    "advisor": {
+        "enabled": False,           # Set to true to enable advisor tool (Anthropic only)
+        "model": "claude-opus-4-6", # Advisor model ID (must be >= executor capability)
+        "max_uses": 0,              # Max advisor calls per request (0 = unlimited)
+        "caching": False,           # Enable advisor-side prompt caching (worth it for 3+ calls)
+        "auto_effort": True,        # Auto-reduce executor effort to medium when advisor enabled
+    },
+
     # Ephemeral prefill messages file — JSON list of {role, content} dicts
     # injected at the start of every API call for few-shot priming.
     # Never saved to sessions, logs, or trajectories.
@@ -1909,7 +1925,7 @@ def check_config_version() -> Tuple[int, int]:
 _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
-    "agent", "terminal", "display", "compression", "delegation",
+    "agent", "terminal", "display", "compression", "delegation", "advisor",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
 }
 

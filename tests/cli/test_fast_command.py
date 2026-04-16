@@ -369,8 +369,7 @@ class TestAnthropicFastModeAdapter(unittest.TestCase):
             reasoning_config=None,
             fast_mode=True,
         )
-        assert kwargs.get("extra_body", {}).get("speed") == "fast"
-        assert "speed" not in kwargs
+        assert kwargs.get("speed") == "fast"
         assert "extra_headers" in kwargs
         assert _FAST_MODE_BETA in kwargs["extra_headers"].get("anthropic-beta", "")
 
@@ -417,8 +416,7 @@ class TestAnthropicFastModeAdapter(unittest.TestCase):
             reasoning_config=None,
             fast_mode=True,
         )
-        assert "speed" not in kwargs
-        assert kwargs.get("extra_body", {}).get("speed") == "fast"
+        assert kwargs.get("speed") == "fast"
 
 
 class TestConfigDefault(unittest.TestCase):

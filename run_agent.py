@@ -94,7 +94,7 @@ from agent.model_metadata import (
 from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, DEVELOPER_ROLE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
+from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, DEVELOPER_ROLE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE, ADVISOR_GUIDANCE
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.display import (
     KawaiiSpinner, build_tool_preview as _build_tool_preview,
@@ -800,6 +800,15 @@ class AIAgent:
         self.request_overrides = dict(request_overrides or {})
         self.prefill_messages = prefill_messages or []  # Prefilled conversation turns
         self._force_ascii_payload = False
+
+        # Advisor tool config (Anthropic beta) — loaded from config.yaml.
+        # Controls whether the advisor_20260301 server-side tool is injected
+        # into Anthropic API calls.
+        try:
+            from hermes_cli.config import load_config as _load_advisor_config
+            self.advisor_config = _load_advisor_config().get("advisor", {})
+        except Exception:
+            self.advisor_config = {}
         
         # Anthropic prompt caching: auto-enabled for Claude models via OpenRouter.
         # Reduces input costs by ~75% on multi-turn conversations by caching the
@@ -1687,6 +1696,12 @@ class AIAgent:
         self.api_mode = api_mode
         if api_key:
             self.api_key = api_key
+
+        # Disable advisor on model switch — new model/provider may not support it.
+        # Users can re-enable with /advisor on if the new model is compatible.
+        if hasattr(self, "advisor_config") and self.advisor_config.get("enabled"):
+            self.advisor_config = dict(self.advisor_config)
+            self.advisor_config["enabled"] = False
 
         # ── Build new client ──
         if api_mode == "anthropic_messages":
@@ -3404,6 +3419,14 @@ class AIAgent:
                 # prerequisite checks, verification, anti-hallucination).
                 if "gpt" in _model_lower or "codex" in _model_lower:
                     prompt_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
+
+        # Advisor tool: inject guidance that tells the executor when and how
+        # to call the advisor for strategic planning.  Anthropic-only — the
+        # advisor tool is only injected by the anthropic_adapter, so adding
+        # guidance for other providers would confuse the model.
+        if (getattr(self, "advisor_config", None) and self.advisor_config.get("enabled")
+                and getattr(self, "api_mode", None) == "anthropic_messages"):
+            prompt_parts.append(ADVISOR_GUIDANCE)
 
         # so it can refer the user to them rather than reinventing answers.
 
@@ -5593,12 +5616,23 @@ class AIAgent:
 
                     if event_type == "content_block_start":
                         block = getattr(event, "content_block", None)
-                        if block and getattr(block, "type", None) == "tool_use":
-                            has_tool_use = True
-                            tool_name = getattr(block, "name", None)
-                            if tool_name:
+                        if block:
+                            block_type = getattr(block, "type", None)
+                            if block_type == "tool_use":
+                                has_tool_use = True
+                                tool_name = getattr(block, "name", None)
+                                if tool_name:
+                                    _fire_first_delta()
+                                    self._fire_tool_gen_started(tool_name)
+                            elif block_type == "server_tool_use":
+                                # Advisor call starting — show progress indicator
+                                # during the pause while the advisor sub-inference runs.
                                 _fire_first_delta()
-                                self._fire_tool_gen_started(tool_name)
+                                self._fire_tool_gen_started("advisor")
+                            elif block_type == "advisor_tool_result":
+                                # Advisor result arrived fully formed (no deltas).
+                                # The stream resumes with executor output now.
+                                pass
 
                     elif event_type == "content_block_delta":
                         delta = getattr(event, "delta", None)
@@ -5974,6 +6008,14 @@ class AIAgent:
             self.base_url = fb_base_url
             self.api_mode = fb_api_mode
             self._fallback_activated = True
+
+            # Disable advisor tool on fallback — the new model/provider may not
+            # support it, and advisor blocks in history would cause API 400 errors
+            # if the advisor tool isn't in the tools array.
+            if hasattr(self, "advisor_config") and self.advisor_config.get("enabled"):
+                self.advisor_config = dict(self.advisor_config)
+                self.advisor_config["enabled"] = False
+                logging.info("Advisor disabled due to provider fallback to %s/%s", fb_provider, fb_model)
 
             if fb_api_mode == "anthropic_messages":
                 # Build native Anthropic client instead of using OpenAI client
@@ -6444,6 +6486,7 @@ class AIAgent:
                 context_length=ctx_len,
                 base_url=getattr(self, "_anthropic_base_url", None),
                 fast_mode=(self.request_overrides or {}).get("speed") == "fast",
+                advisor_config=getattr(self, "advisor_config", None),
             )
 
         # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
@@ -6867,6 +6910,12 @@ class AIAgent:
         codex_items = getattr(assistant_message, "codex_reasoning_items", None)
         if codex_items:
             msg["codex_reasoning_items"] = codex_items
+
+        # Advisor tool: preserve server_tool_use + advisor_tool_result blocks
+        # for round-tripping in multi-turn conversations.
+        advisor_blocks = getattr(assistant_message, "advisor_blocks", None)
+        if advisor_blocks:
+            msg["advisor_blocks"] = advisor_blocks
 
         if assistant_message.tool_calls:
             tool_calls = []
@@ -10450,7 +10499,24 @@ class AIAgent:
                     }
                 elif hasattr(self, "_codex_incomplete_retries"):
                     self._codex_incomplete_retries = 0
-                
+
+                # Handle pause_turn — server-side tool (advisor) hasn't completed.
+                # The response contains a dangling server_tool_use block. Re-send
+                # the messages to resume the API call; the server picks up where
+                # it left off and runs the advisor sub-inference.
+                if finish_reason == "pause_turn":
+                    assistant_msg = self._build_assistant_message(assistant_message, finish_reason)
+                    # Mark as a pause_turn partial so the resumed response can pop
+                    # and replace it instead of appending a second consecutive assistant
+                    # message.  The merge in convert_messages_to_anthropic would
+                    # otherwise produce duplicate server_tool_use blocks (one from the
+                    # partial, one from the full resumed response), which causes HTTP 400
+                    # "thinking blocks cannot be modified" on the *next* API call.
+                    assistant_msg["_pause_turn_partial"] = True
+                    messages.append(assistant_msg)
+                    self._vprint(f"{self.log_prefix}⏳ Advisor sub-inference pending, resuming...")
+                    continue
+
                 # Check for tool calls
                 if assistant_message.tool_calls:
                     if not self.quiet_mode:
@@ -10650,6 +10716,20 @@ class AIAgent:
                     ):
                         messages.pop()
                         _had_prefill = True
+
+                    # Pop pause_turn partial (advisor resume) — the full resumed
+                    # response replaces the partial to avoid a duplicate server_tool_use
+                    # in the merged assistant content block.  Carry over reasoning_details
+                    # from the partial if the resumed response omits them (Anthropic does
+                    # not repeat thinking blocks in the resumed response).
+                    if (
+                        messages
+                        and isinstance(messages[-1], dict)
+                        and messages[-1].get("_pause_turn_partial")
+                    ):
+                        _pause_partial = messages.pop()
+                        if not assistant_msg.get("reasoning_details") and _pause_partial.get("reasoning_details"):
+                            assistant_msg["reasoning_details"] = _pause_partial["reasoning_details"]
 
                     # Reset prefill counter when tool calls follow a prefill
                     # recovery.  Without this, the counter accumulates across
@@ -11041,6 +11121,17 @@ class AIAgent:
                         and messages[-1].get("_thinking_prefill")
                     ):
                         messages.pop()
+
+                    # Pop pause_turn partial (advisor resume) — the full resumed
+                    # response (text only, no tool calls) replaces the partial.
+                    if (
+                        messages
+                        and isinstance(messages[-1], dict)
+                        and messages[-1].get("_pause_turn_partial")
+                    ):
+                        _pause_partial = messages.pop()
+                        if not final_msg.get("reasoning_details") and _pause_partial.get("reasoning_details"):
+                            final_msg["reasoning_details"] = _pause_partial["reasoning_details"]
 
                     messages.append(final_msg)
                     
