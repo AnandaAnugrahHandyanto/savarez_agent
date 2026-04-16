@@ -4466,6 +4466,21 @@ class GatewayRunner:
             except Exception:
                 title = None
 
+        # Get model info from config
+        from hermes_cli.config import load_config
+        try:
+            config = load_config()
+            model_cfg = config.get("model", {})
+            if isinstance(model_cfg, dict):
+                model_name = model_cfg.get("default") or model_cfg.get("name") or "unknown"
+                provider = model_cfg.get("provider") or "auto"
+            else:
+                model_name = str(model_cfg) if model_cfg else "unknown"
+                provider = "auto"
+        except Exception:
+            model_name = "unknown"
+            provider = "auto"
+
         lines = [
             "📊 **Hermes Gateway Status**",
             "",
@@ -4478,6 +4493,9 @@ class GatewayRunner:
             f"**Last Activity:** {session_entry.updated_at.strftime('%Y-%m-%d %H:%M')}",
             f"**Tokens:** {session_entry.total_tokens:,}",
             f"**Agent Running:** {'Yes ⚡' if is_running else 'No'}",
+            "",
+            f"**Model:** {model_name}",
+            f"**Provider:** {provider}",
             "",
             f"**Connected Platforms:** {', '.join(connected_platforms)}",
         ])
