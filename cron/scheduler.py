@@ -498,7 +498,12 @@ def _build_job_prompt(job: dict, script_output: Optional[str] = None) -> str:
         if not ok:
             script_output = f"[Script error]: {script_output}"
         elif not script_output:
-            script_output = "[Script ran successfully but produced no output.]"
+            # Don't inject "no output" notice when skip_if_empty is set —
+            # run_job will handle the skip itself.
+            if not job.get("script_skip_if_empty"):
+                script_output = "[Script ran successfully but produced no output.]"
+            else:
+                script_output = None
 
     # Inject script output / error into prompt if a script was run
     if script_output is not None:
