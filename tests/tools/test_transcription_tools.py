@@ -481,6 +481,75 @@ class TestTranscribeLocalExtended:
         assert result["success"] is False
         assert "CUDA out of memory" in result["error"]
 
+    def test_gpu_backend_init_falls_back_to_cpu(self, tmp_path):
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        mock_segment = MagicMock()
+        mock_segment.text = "hello"
+        mock_info = MagicMock()
+        mock_info.language = "en"
+        mock_info.duration = 1.0
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = ([mock_segment], mock_info)
+
+        calls = []
+
+        def fake_whisper_model(model_name, device="auto", compute_type="auto"):
+            calls.append((model_name, device, compute_type))
+            if len(calls) == 1:
+                raise RuntimeError("Library libcublas.so.12 is not found or cannot be loaded")
+            return mock_model
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", side_effect=fake_whisper_model), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is True
+        assert result["transcript"] == "hello"
+        assert calls == [
+            ("base", "auto", "auto"),
+            ("base", "cpu", "int8"),
+        ]
+
+    def test_gpu_runtime_error_falls_back_to_cpu(self, tmp_path):
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        first_model = MagicMock()
+        first_model.transcribe.side_effect = RuntimeError("Library libcublas.so.12 is not found or cannot be loaded")
+
+        mock_segment = MagicMock()
+        mock_segment.text = "hello"
+        mock_info = MagicMock()
+        mock_info.language = "en"
+        mock_info.duration = 1.0
+        second_model = MagicMock()
+        second_model.transcribe.return_value = ([mock_segment], mock_info)
+
+        calls = []
+
+        def fake_whisper_model(model_name, device="auto", compute_type="auto"):
+            calls.append((model_name, device, compute_type))
+            return first_model if len(calls) == 1 else second_model
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", side_effect=fake_whisper_model), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is True
+        assert result["transcript"] == "hello"
+        assert calls == [
+            ("base", "auto", "auto"),
+            ("base", "cpu", "int8"),
+        ]
+
     def test_multiple_segments_joined(self, tmp_path):
         audio = tmp_path / "test.ogg"
         audio.write_bytes(b"fake")

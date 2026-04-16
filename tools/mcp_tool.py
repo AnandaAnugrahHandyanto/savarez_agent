@@ -1665,10 +1665,19 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
     if not schema:
         return {"type": "object", "properties": {}}
 
-    if schema.get("type") == "object" and "properties" not in schema:
-        return {**schema, "properties": {}}
+    def _normalize_node(node):
+        if isinstance(node, dict):
+            normalized = {key: _normalize_node(value) for key, value in node.items()}
+            if normalized.get("type") == "object" and "properties" not in normalized:
+                normalized["properties"] = {}
+            if normalized.get("type") == "array" and "items" not in normalized:
+                normalized["items"] = {}
+            return normalized
+        if isinstance(node, list):
+            return [_normalize_node(item) for item in node]
+        return node
 
-    return schema
+    return _normalize_node(schema)
 
 
 def sanitize_mcp_name_component(value: str) -> str:

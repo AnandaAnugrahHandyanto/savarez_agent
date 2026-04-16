@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict
 
+from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_constants import get_hermes_home
 from utils import env_var_enabled
 
 _DEFAULT_BROWSER_PROVIDER = "local"
@@ -81,8 +83,29 @@ def resolve_modal_backend_state(
     }
 
 
+def _refresh_hermes_env_if_needed(*keys: str) -> None:
+    """Lazily load the active Hermes .env when requested keys are missing.
+
+    Some long-lived processes can call helper modules before profile-local
+    credentials are in the environment. Refreshing here keeps audio helpers
+    usable without requiring every caller to remember to load .env first.
+    """
+    if any(os.getenv(key) for key in keys):
+        return
+    try:
+        load_hermes_dotenv(
+            hermes_home=get_hermes_home(),
+            project_env=Path(__file__).resolve().parents[1] / ".env",
+        )
+    except Exception:
+        # Best-effort refresh only — callers still handle missing creds normally.
+        pass
+
+
+
 def resolve_openai_audio_api_key() -> str:
     """Prefer the voice-tools key, but fall back to the normal OpenAI key."""
+    _refresh_hermes_env_if_needed("VOICE_TOOLS_OPENAI_KEY", "OPENAI_API_KEY")
     return (
         os.getenv("VOICE_TOOLS_OPENAI_KEY", "")
         or os.getenv("OPENAI_API_KEY", "")

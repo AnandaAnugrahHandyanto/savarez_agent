@@ -4,6 +4,7 @@ All tests use mocks -- no real MCP servers or subprocesses are started.
 """
 
 import asyncio
+import copy
 import json
 import os
 import threading
@@ -127,6 +128,52 @@ class TestSchemaConversion:
         schema = _convert_mcp_schema("my_server", mcp_tool)
 
         assert schema["name"] == "mcp_my_server_list_dir"
+
+    def test_array_schema_without_items_gets_normalized_recursively(self):
+        from tools.mcp_tool import _convert_mcp_schema
+
+        input_schema = {
+            "type": "object",
+            "properties": {
+                "params": {
+                    "type": "object",
+                    "properties": {
+                        "criteria": {
+                            "type": "array",
+                        },
+                        "filters": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "values": {
+                                        "type": "array",
+                                    }
+                                },
+                            },
+                        },
+                    },
+                }
+            },
+        }
+        original = copy.deepcopy(input_schema)
+        mcp_tool = _make_mcp_tool(
+            name="search_bill_payments",
+            description="Search bill payments",
+            input_schema=input_schema,
+        )
+
+        schema = _convert_mcp_schema("quickbooks", mcp_tool)
+
+        assert schema["parameters"]["properties"]["params"]["properties"]["criteria"] == {
+            "type": "array",
+            "items": {},
+        }
+        assert schema["parameters"]["properties"]["params"]["properties"]["filters"]["items"]["properties"]["values"] == {
+            "type": "array",
+            "items": {},
+        }
+        assert input_schema == original
 
     def test_hyphens_sanitized_to_underscores(self):
         """Hyphens in tool/server names are replaced with underscores for LLM compat."""

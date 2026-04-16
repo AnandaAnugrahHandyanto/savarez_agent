@@ -86,6 +86,10 @@ GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-lar
 _local_model: Optional[object] = None
 _local_model_name: Optional[str] = None
 
+# Optional env overrides for local STT backend selection.
+LOCAL_STT_DEVICE_ENV = "HERMES_LOCAL_STT_DEVICE"
+LOCAL_STT_COMPUTE_TYPE_ENV = "HERMES_LOCAL_STT_COMPUTE_TYPE"
+
 # ---------------------------------------------------------------------------
 # Config helpers
 # ---------------------------------------------------------------------------
@@ -279,6 +283,46 @@ def _validate_audio_file(file_path: str) -> Optional[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+def _looks_like_cuda_backend_error(exc: Exception) -> bool:
+    """Return True when the exception suggests a broken/missing CUDA backend."""
+    message = str(exc).lower()
+    return any(token in message for token in (
+        "libcublas",
+        "cublas",
+        "cudnn",
+        "cuda",
+        "gpu",
+    ))
+
+
+def _load_local_whisper_model(
+    model_name: str,
+    *,
+    device: Optional[str] = None,
+    compute_type: Optional[str] = None,
+    allow_cpu_fallback: bool = True,
+):
+    """Load faster-whisper with a CPU fallback when CUDA init fails."""
+    from faster_whisper import WhisperModel
+
+    resolved_device = (device or os.getenv(LOCAL_STT_DEVICE_ENV, "auto")).strip() or "auto"
+    resolved_compute_type = (compute_type or os.getenv(LOCAL_STT_COMPUTE_TYPE_ENV, "auto")).strip() or "auto"
+
+    try:
+        return WhisperModel(model_name, device=resolved_device, compute_type=resolved_compute_type)
+    except Exception as exc:
+        if not allow_cpu_fallback or resolved_device != "auto" or not _looks_like_cuda_backend_error(exc):
+            raise
+
+        fallback_compute = resolved_compute_type if resolved_compute_type != "auto" else "int8"
+        logger.warning(
+            "faster-whisper GPU init failed (%s); retrying on CPU with compute_type=%s",
+            exc,
+            fallback_compute,
+        )
+        return WhisperModel(model_name, device="cpu", compute_type=fallback_compute)
+
+
 def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
     """Transcribe using faster-whisper (local, free)."""
     global _local_model, _local_model_name
@@ -287,11 +331,10 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
         return {"success": False, "transcript": "", "error": "faster-whisper not installed"}
 
     try:
-        from faster_whisper import WhisperModel
         # Lazy-load the model (downloads on first use, ~150 MB for 'base')
         if _local_model is None or _local_model_name != model_name:
             logger.info("Loading faster-whisper model '%s' (first load downloads the model)...", model_name)
-            _local_model = WhisperModel(model_name, device="auto", compute_type="auto")
+            _local_model = _load_local_whisper_model(model_name)
             _local_model_name = model_name
 
         # Language: config.yaml (stt.local.language) > env var > auto-detect.
@@ -304,7 +347,30 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
         if _forced_lang:
             transcribe_kwargs["language"] = _forced_lang
 
-        segments, info = _local_model.transcribe(file_path, **transcribe_kwargs)
+        try:
+            segments, info = _local_model.transcribe(file_path, **transcribe_kwargs)
+        except Exception as exc:
+            current_device = os.getenv(LOCAL_STT_DEVICE_ENV, "auto").strip() or "auto"
+            if current_device != "auto" or not _looks_like_cuda_backend_error(exc):
+                raise
+
+            fallback_compute = os.getenv(LOCAL_STT_COMPUTE_TYPE_ENV, "auto").strip() or "auto"
+            if fallback_compute == "auto":
+                fallback_compute = "int8"
+            logger.warning(
+                "faster-whisper GPU runtime failed (%s); retrying on CPU with compute_type=%s",
+                exc,
+                fallback_compute,
+            )
+            _local_model = _load_local_whisper_model(
+                model_name,
+                device="cpu",
+                compute_type=fallback_compute,
+                allow_cpu_fallback=False,
+            )
+            _local_model_name = model_name
+            segments, info = _local_model.transcribe(file_path, **transcribe_kwargs)
+
         transcript = " ".join(segment.text.strip() for segment in segments)
 
         logger.info(
