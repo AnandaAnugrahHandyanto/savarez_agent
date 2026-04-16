@@ -6134,14 +6134,18 @@ class AIAgent:
                 or "chatgpt.com/backend-api/codex" in self.base_url.lower()
             )
 
+            from agent.smart_model_routing import resolve_reasoning_config_for_turn
+
+            reasoning_config = resolve_reasoning_config_for_turn(payload_messages, self.reasoning_config)
+
             # Resolve reasoning effort: config > default (medium)
             reasoning_effort = "medium"
             reasoning_enabled = True
-            if self.reasoning_config and isinstance(self.reasoning_config, dict):
-                if self.reasoning_config.get("enabled") is False:
+            if reasoning_config and isinstance(reasoning_config, dict):
+                if reasoning_config.get("enabled") is False:
                     reasoning_enabled = False
-                elif self.reasoning_config.get("effort"):
-                    reasoning_effort = self.reasoning_config["effort"]
+                elif reasoning_config.get("effort"):
+                    reasoning_effort = reasoning_config["effort"]
 
             # Clamp effort levels not supported by the Responses API model.
             # GPT-5.4 supports none/low/medium/high/xhigh but not "minimal".
@@ -7742,6 +7746,98 @@ class AIAgent:
 
         return final_response
 
+    def _handoff_to_fallback_after_iteration_limit(
+        self,
+        messages: list,
+        user_message: str,
+        system_message: str = None,
+        conversation_history: list = None,
+        task_id: str = None,
+        stream_callback: Optional[callable] = None,
+        persist_user_message: Optional[str] = None,
+        api_call_count: int = 0,
+    ) -> Optional[Dict[str, Any]]:
+        """Switch to the configured fallback model and continue the same task.
+
+        This is used when the primary model runs out of iteration budget but a
+        fallback provider is configured.  The current turn is persisted first so
+        the continuation run can resume from the exact same conversation state
+        without losing the primary model's work.
+        """
+        if not self._fallback_chain or self._fallback_activated:
+            return None
+
+        old_model = self.model
+        old_provider = self.provider
+
+        if not self._try_activate_fallback():
+            return None
+
+        fallback_model = self.model
+        fallback_provider = self.provider
+
+        self._emit_status(
+            f"↻ Iteration budget exhausted — handing off to fallback model: "
+            f"{fallback_model} ({fallback_provider})"
+        )
+        if not self.quiet_mode:
+            self._safe_print(
+                f"\n↻ Iteration budget exhausted — continuing with fallback "
+                f"model: {fallback_model} ({fallback_provider})"
+            )
+
+        try:
+            self._persist_session(messages, conversation_history)
+        except Exception as exc:
+            logger.debug(
+                "Failed to persist primary turn before fallback handoff: %s",
+                exc,
+            )
+
+        continuation_prompt = (
+            "The previous model exhausted its iteration budget while working on "
+            "the user's request. Continue from the existing conversation and "
+            "complete the task using the available context and tool results. "
+            "Do not ask the user to repeat anything already in the chat."
+        )
+
+        try:
+            fallback_result = self.run_conversation(
+                continuation_prompt,
+                system_message=system_message,
+                conversation_history=list(messages),
+                task_id=task_id,
+                stream_callback=stream_callback,
+                persist_user_message=persist_user_message or continuation_prompt,
+                _skip_primary_restore=True,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Fallback turn failed after iteration limit handoff: %s", exc
+            )
+            return None
+        finally:
+            try:
+                self._restore_primary_runtime()
+            except Exception:
+                pass
+
+        if not isinstance(fallback_result, dict):
+            return None
+
+        fallback_api_calls = fallback_result.get("api_calls", 0) or 0
+        fallback_result["fallback_handoff"] = {
+            "reason": "max_iterations",
+            "primary_model": old_model,
+            "primary_provider": old_provider,
+            "fallback_model": fallback_model,
+            "fallback_provider": fallback_provider,
+            "primary_api_calls": api_call_count,
+            "fallback_api_calls": fallback_api_calls,
+        }
+        fallback_result["api_calls"] = api_call_count + fallback_api_calls
+        return fallback_result
+
     def run_conversation(
         self,
         user_message: str,
@@ -7750,6 +7846,7 @@ class AIAgent:
         task_id: str = None,
         stream_callback: Optional[callable] = None,
         persist_user_message: Optional[str] = None,
+        _skip_primary_restore: bool = False,
     ) -> Dict[str, Any]:
         """
         Run a complete conversation with tool calling until completion.
@@ -7782,7 +7879,8 @@ class AIAgent:
         # If the previous turn activated fallback, restore the primary
         # runtime so this turn gets a fresh attempt with the preferred model.
         # No-op when _fallback_activated is False (gateway, first turn, etc.).
-        self._restore_primary_runtime()
+        if not _skip_primary_restore:
+            self._restore_primary_runtime()
 
         # Sanitize surrogate characters from user input.  Clipboard paste from
         # rich-text editors (Google Docs, Word, etc.) can inject lone surrogates
@@ -10448,10 +10546,25 @@ class AIAgent:
             api_call_count >= self.max_iterations
             or self.iteration_budget.remaining <= 0
         ):
-            # Budget exhausted — ask the model for a summary via one extra
-            # API call with tools stripped.  _handle_max_iterations injects a
-            # user message and makes a single toolless request.
+            # Budget exhausted — first try to hand off to a fallback model if
+            # one is configured.  The fallback gets a fresh turn so it can
+            # continue the task instead of forcing a summary on the primary.
             _turn_exit_reason = f"max_iterations_reached({api_call_count}/{self.max_iterations})"
+            if self._fallback_chain and not self._fallback_activated:
+                fallback_result = self._handoff_to_fallback_after_iteration_limit(
+                    messages=messages,
+                    user_message=user_message,
+                    system_message=system_message,
+                    conversation_history=conversation_history,
+                    task_id=effective_task_id,
+                    stream_callback=stream_callback,
+                    api_call_count=api_call_count,
+                )
+                if fallback_result is not None:
+                    return fallback_result
+
+            # No fallback available (or fallback activation failed): ask the
+            # current model for a summary with tools stripped.
             self._emit_status(
                 f"⚠️ Iteration budget exhausted ({api_call_count}/{self.max_iterations}) "
                 "— asking model to summarise"

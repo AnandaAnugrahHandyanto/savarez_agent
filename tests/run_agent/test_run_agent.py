@@ -1966,6 +1966,58 @@ class TestRunConversation:
         assert result["completed"] is True
         assert result["final_response"] == "(empty)"
 
+    def test_iteration_limit_hands_off_to_fallback_model(self, agent):
+        """When the primary hits max iterations, the fallback model continues the task."""
+        self._setup_agent(agent)
+        agent.max_iterations = 2
+        agent._fallback_chain = [{"provider": "minimax", "model": "MiniMax-M2.7"}]
+        agent._fallback_model = agent._fallback_chain[0]
+        agent._fallback_index = 0
+        agent._fallback_activated = False
+
+        primary_client = MagicMock()
+        fallback_client = MagicMock()
+        agent.client = primary_client
+
+        tool_call_1 = _mock_tool_call(name="web_search", arguments="{}", call_id="call-1")
+        tool_call_2 = _mock_tool_call(name="web_search", arguments="{}", call_id="call-2")
+        primary_client.chat.completions.create.side_effect = [
+            _mock_response(content="", finish_reason="tool_calls", tool_calls=[tool_call_1]),
+            _mock_response(content="", finish_reason="tool_calls", tool_calls=[tool_call_2]),
+        ]
+        fallback_client.chat.completions.create.side_effect = [
+            _mock_response(content="Fallback answer.", finish_reason="stop"),
+        ]
+
+        fallback_called = {"value": False}
+
+        def _mock_fallback():
+            fallback_called["value"] = True
+            agent.client = fallback_client
+            agent.model = "MiniMax-M2.7"
+            agent.provider = "minimax"
+            agent._fallback_index = 1
+            agent._fallback_activated = True
+            return True
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_handle_max_iterations", side_effect=AssertionError("Should hand off to fallback instead of summarizing primary")),
+            patch.object(agent, "_try_activate_fallback", side_effect=_mock_fallback),
+            patch("run_agent.handle_function_call", return_value="search result"),
+        ):
+            result = agent.run_conversation("search something")
+
+        assert fallback_called["value"] is True, "Fallback should have been triggered"
+        assert result["completed"] is True
+        assert result["final_response"] == "Fallback answer."
+        assert result["model"] == "MiniMax-M2.7"
+        assert result["provider"] == "minimax"
+        assert result["api_calls"] == 3  # 2 primary + 1 fallback call
+        assert result.get("fallback_handoff", {}).get("reason") == "max_iterations"
+
     def test_empty_response_emits_status_for_gateway(self, agent):
         """_emit_status is called during empty retries so gateway users see feedback."""
         self._setup_agent(agent)
