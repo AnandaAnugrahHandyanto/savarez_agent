@@ -787,6 +787,7 @@ def list_authenticated_providers(
 
     results: List[dict] = []
     seen_slugs: set = set()
+    seen_display_names: dict[str, str] = {}  # display_name → first slug
 
     data = fetch_models_dev()
 
@@ -827,6 +828,18 @@ def list_authenticated_providers(
         slug = hermes_id
         pinfo = _mdev_pinfo(mdev_id)
         display_name = pinfo.name if pinfo else mdev_id
+
+        # Disambiguate duplicate display names (e.g. kimi-coding vs kimi-coding-cn)
+        if display_name in seen_display_names:
+            # Retroactively rename the first occurrence if not already renamed
+            first_slug = seen_display_names[display_name]
+            for r in results:
+                if r["slug"] == first_slug and r["name"] == display_name:
+                    r["name"] = f"{display_name} ({first_slug})"
+                    break
+            display_name = f"{display_name} ({hermes_id})"
+        else:
+            seen_display_names[display_name] = hermes_id
 
         results.append({
             "slug": slug,
