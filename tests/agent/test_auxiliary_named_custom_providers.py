@@ -252,3 +252,80 @@ class TestVisionPathApiMode:
         mock_gcc.assert_called_once()
         _, kwargs = mock_gcc.call_args
         assert kwargs.get("api_mode") == "chat_completions"
+
+
+class TestResolveTaskProviderBaseUrlPriority:
+    """Named provider should take precedence over base_url in config.
+
+    Regression tests for the bug where auxiliary.vision.base_url in config.yaml
+    would override the provider to 'custom', bypassing the named provider's
+    standard auth chain (e.g. auth.json credentials for nous).
+    """
+
+    def test_named_provider_ignores_base_url(self, tmp_path):
+        """provider: nous + base_url → should return 'nous', not 'custom'."""
+        _write_config(tmp_path, {
+            "auxiliary": {"vision": {
+                "provider": "nous",
+                "model": "xiaomi/mimo-v2-omni",
+                "base_url": "https://inference.nousresearch.com/v1",
+            }},
+        })
+        from agent.auxiliary_client import _resolve_task_provider_model
+        provider, model, base_url, api_key, api_mode = _resolve_task_provider_model("vision")
+        assert provider == "nous"
+        assert base_url is None
+
+    def test_custom_provider_uses_base_url(self, tmp_path):
+        """provider: custom + base_url → should return 'custom' with base_url."""
+        _write_config(tmp_path, {
+            "auxiliary": {"vision": {
+                "provider": "custom",
+                "base_url": "http://localhost:8080/v1",
+                "api_key": "my-key",
+            }},
+        })
+        from agent.auxiliary_client import _resolve_task_provider_model
+        provider, model, base_url, api_key, api_mode = _resolve_task_provider_model("vision")
+        assert provider == "custom"
+        assert base_url == "http://localhost:8080/v1"
+        assert api_key == "my-key"
+
+    def test_base_url_without_provider_is_custom(self, tmp_path):
+        """No provider, only base_url → should return 'custom'."""
+        _write_config(tmp_path, {
+            "auxiliary": {"vision": {
+                "base_url": "http://localhost:8080/v1",
+                "api_key": "test-key",
+            }},
+        })
+        from agent.auxiliary_client import _resolve_task_provider_model
+        provider, model, base_url, api_key, api_mode = _resolve_task_provider_model("vision")
+        assert provider == "custom"
+        assert base_url == "http://localhost:8080/v1"
+
+    def test_named_provider_without_base_url(self, tmp_path):
+        """provider: nous, no base_url → standard behavior."""
+        _write_config(tmp_path, {
+            "auxiliary": {"vision": {
+                "provider": "nous",
+                "model": "xiaomi/mimo-v2-omni",
+            }},
+        })
+        from agent.auxiliary_client import _resolve_task_provider_model
+        provider, model, base_url, api_key, api_mode = _resolve_task_provider_model("vision")
+        assert provider == "nous"
+        assert base_url is None
+
+    def test_openrouter_provider_ignores_base_url(self, tmp_path):
+        """provider: openrouter + base_url → should return 'openrouter'."""
+        _write_config(tmp_path, {
+            "auxiliary": {"vision": {
+                "provider": "openrouter",
+                "base_url": "https://some-proxy.example.com/v1",
+            }},
+        })
+        from agent.auxiliary_client import _resolve_task_provider_model
+        provider, model, base_url, api_key, api_mode = _resolve_task_provider_model("vision")
+        assert provider == "openrouter"
+        assert base_url is None

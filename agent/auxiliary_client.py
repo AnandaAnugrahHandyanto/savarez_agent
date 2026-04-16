@@ -2164,7 +2164,10 @@ def _resolve_task_provider_model(
 
     if task:
         # Config.yaml is the primary source for per-task overrides.
-        if cfg_base_url:
+        # Named providers (nous, openrouter, anthropic, etc.) have built-in
+        # auth chains and should NOT be overridden by a base_url in config.
+        # Only route to "custom" when provider is absent/auto/explicitly "custom".
+        if cfg_base_url and (not cfg_provider or cfg_provider in ("auto", "custom")):
             return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
         if cfg_provider and cfg_provider != "auto":
             return cfg_provider, resolved_model, None, None, resolved_api_mode
