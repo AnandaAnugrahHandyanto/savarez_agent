@@ -246,6 +246,90 @@ def test_confirmation_code_is_one_time_use(tmp_path):
         service.confirm_intent(created["intent_id"], confirmation)
 
 
+def test_confirm_intent_consumes_confirmation_code(tmp_path):
+    broker = FakeBroker()
+    service = _make_service(tmp_path, broker=broker)
+    created = service.create_intent(
+        account_mode="paper",
+        symbol="AAPL",
+        side="BUY",
+        quantity=10,
+        order_type="MARKET",
+        asset_class="stock",
+    )
+    code = created["confirmation_code"]
+    assert service.store.get_intent(created["intent_id"])["confirmation_code"] == code
+
+    service.confirm_intent(created["intent_id"], f"CONFIRM {code}")
+
+    # Code should be nullified after use
+    assert service.store.get_intent(created["intent_id"])["confirmation_code"] is None
+
+
+def test_transition_graph_prevents_backward_transition(tmp_path):
+    """Terminal states cannot transition to any other state."""
+    store = SQLiteBrokerageStore(tmp_path / "brokerage.db")
+    intent = TradeIntent(
+        request_id="req-t1",
+        account_mode="paper",
+        symbol="AAPL",
+        side="BUY",
+        quantity=1,
+        order_type="MARKET",
+        asset_class="stock",
+    )
+    store.create_intent(intent, confirmation_code="T-AAAA")
+    store.update_status("req-t1", "confirmed")
+    store.update_status("req-t1", "submitted")
+    store.transition_status("req-t1", "submitted", "filled")
+
+    with pytest.raises(ValueError, match="Illegal state transition"):
+        store.update_status("req-t1", "pending_confirmation")
+
+    with pytest.raises(ValueError, match="Illegal state transition"):
+        store.transition_status("req-t1", "filled", "submitted")
+
+
+def test_transition_graph_prevents_skip(tmp_path):
+    """Cannot skip the confirmed state."""
+    store = SQLiteBrokerageStore(tmp_path / "brokerage.db")
+    intent = TradeIntent(
+        request_id="req-t2",
+        account_mode="paper",
+        symbol="AAPL",
+        side="BUY",
+        quantity=1,
+        order_type="MARKET",
+        asset_class="stock",
+    )
+    store.create_intent(intent, confirmation_code="T-BBBB")
+
+    with pytest.raises(ValueError, match="Illegal state transition"):
+        store.transition_status("req-t2", "pending_confirmation", "submitted")
+
+
+def test_cas_prevents_double_confirm(tmp_path):
+    """Two concurrent confirm calls cannot both succeed — CAS wins."""
+    broker = FakeBroker()
+    service = _make_service(tmp_path, broker=broker)
+    created = service.create_intent(
+        account_mode="paper",
+        symbol="AAPL",
+        side="BUY",
+        quantity=10,
+        order_type="MARKET",
+        asset_class="stock",
+    )
+    code = created["confirmation_code"]
+
+    # First confirm succeeds
+    service.confirm_intent(created["intent_id"], f"CONFIRM {code}")
+
+    # Second confirm fails — status is no longer pending_confirmation
+    with pytest.raises(ValueError, match="pending_confirmation"):
+        service.confirm_intent(created["intent_id"], f"CONFIRM {code}")
+
+
 # --- Broker error handling ---
 
 

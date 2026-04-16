@@ -9,7 +9,7 @@ from typing import Any
 
 from hermes_constants import get_hermes_home
 
-from brokerage.models import TradeEvent, TradeIntent
+from brokerage.models import TradeEvent, TradeIntent, is_legal_transition
 
 
 class SQLiteBrokerageStore:
@@ -112,6 +112,19 @@ class SQLiteBrokerageStore:
         return dict(row) if row else None
 
     def update_status(self, intent_id: str, status: str, *, ibkr_order_id: str | None = None) -> None:
+        """Update status with transition graph enforcement.
+
+        Raises ValueError if the transition is not legal.
+        For CAS (compare-and-swap) safety, prefer transition_status() instead.
+        """
+        current = self.get_intent(intent_id)
+        if current is None:
+            raise ValueError(f"Unknown intent: {intent_id}")
+        if not is_legal_transition(current["status"], status):
+            raise ValueError(
+                f"Illegal state transition: {current['status']} -> {status} "
+                f"for intent {intent_id}"
+            )
         with self._connect() as conn:
             conn.execute(
                 "UPDATE trade_intents SET status = ?, ibkr_order_id = COALESCE(?, ibkr_order_id) WHERE intent_id = ?",
@@ -120,6 +133,15 @@ class SQLiteBrokerageStore:
             conn.commit()
 
     def transition_status(self, intent_id: str, from_status: str, to_status: str, *, ibkr_order_id: str | None = None) -> bool:
+        """CAS status transition with transition graph enforcement.
+
+        Returns True if the transition succeeded (row matched from_status).
+        Raises ValueError if the transition is not legal regardless of current state.
+        """
+        if not is_legal_transition(from_status, to_status):
+            raise ValueError(
+                f"Illegal state transition: {from_status} -> {to_status}"
+            )
         with self._connect() as conn:
             result = conn.execute(
                 """
@@ -128,6 +150,23 @@ class SQLiteBrokerageStore:
                 WHERE intent_id = ? AND status = ?
                 """,
                 (to_status, ibkr_order_id, intent_id, from_status),
+            )
+            conn.commit()
+            return result.rowcount > 0
+
+    def consume_confirmation_code(self, intent_id: str) -> bool:
+        """Null out the confirmation code after successful use.
+
+        Returns True if the code was consumed (was non-null before).
+        """
+        with self._connect() as conn:
+            result = conn.execute(
+                """
+                UPDATE trade_intents
+                SET confirmation_code = NULL
+                WHERE intent_id = ? AND confirmation_code IS NOT NULL
+                """,
+                (intent_id,),
             )
             conn.commit()
             return result.rowcount > 0

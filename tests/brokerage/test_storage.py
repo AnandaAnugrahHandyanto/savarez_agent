@@ -43,12 +43,36 @@ def test_store_updates_status_and_order_id(tmp_path):
     intent = _make_intent()
     store.create_intent(intent, confirmation_code="T-82K4")
 
+    # Must follow legal transition graph: pending_confirmation -> confirmed -> submitted
+    store.update_status("req-1", "confirmed")
     store.update_status("req-1", "submitted", ibkr_order_id="ib-123")
 
     loaded = store.get_intent("req-1")
     assert loaded is not None
     assert loaded["status"] == "submitted"
     assert loaded["ibkr_order_id"] == "ib-123"
+
+
+def test_store_rejects_illegal_transition(tmp_path):
+    store = SQLiteBrokerageStore(tmp_path / "brokerage.db")
+    intent = _make_intent()
+    store.create_intent(intent, confirmation_code="T-82K4")
+
+    import pytest
+    with pytest.raises(ValueError, match="Illegal state transition"):
+        store.update_status("req-1", "submitted")  # can't skip confirmed
+
+
+def test_store_consume_confirmation_code(tmp_path):
+    store = SQLiteBrokerageStore(tmp_path / "brokerage.db")
+    intent = _make_intent()
+    store.create_intent(intent, confirmation_code="T-82K4")
+
+    assert store.get_intent("req-1")["confirmation_code"] == "T-82K4"
+    assert store.consume_confirmation_code("req-1") is True
+    assert store.get_intent("req-1")["confirmation_code"] is None
+    # Second consume is a no-op
+    assert store.consume_confirmation_code("req-1") is False
 
 
 def test_store_appends_audit_events(tmp_path):

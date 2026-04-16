@@ -21,6 +21,26 @@ TradeStatus = Literal[
     "expired",
 ]
 
+# Legal state transitions: from_status -> set of allowed to_statuses
+LEGAL_TRANSITIONS: dict[str, set[str]] = {
+    "pending_confirmation": {"confirmed", "cancelled", "expired"},
+    "confirmed": {"submitted", "submission_error", "rejected"},
+    "submitted": {"filled", "rejected", "cancelled"},
+    "submission_error": set(),  # dead-end for now; retry path can be added later
+    "filled": set(),            # terminal
+    "rejected": set(),          # terminal
+    "cancelled": set(),         # terminal
+    "expired": set(),           # terminal
+}
+
+
+def is_legal_transition(from_status: str, to_status: str) -> bool:
+    """Check whether a state transition is allowed by the transition graph."""
+    allowed = LEGAL_TRANSITIONS.get(from_status)
+    if allowed is None:
+        return False
+    return to_status in allowed
+
 
 class TradeIntent(BaseModel):
     """A normalized request to place a trade after user confirmation."""

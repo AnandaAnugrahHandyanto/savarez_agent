@@ -96,13 +96,18 @@ class BrokerageService:
         if not decision.allowed:
             raise ValueError(decision.reason or "confirmation rejected")
 
-        self.store.update_status(intent_id, "confirmed")
+        # CAS transition: pending_confirmation -> confirmed
+        # Prevents double-submission under concurrency — if another request
+        # already transitioned this intent, the CAS will fail.
+        if not self.store.transition_status(intent_id, "pending_confirmation", "confirmed"):
+            raise ValueError("Intent is no longer in pending_confirmation status (concurrent modification)")
+        self.store.consume_confirmation_code(intent_id)
         self.store.append_event(TradeEvent(intent_id=intent_id, event_type="confirmed", detail=confirmation_text))
 
         try:
             result = self.broker.submit_order(intent)
         except Exception as exc:
-            self.store.update_status(intent_id, "submission_error")
+            self.store.transition_status(intent_id, "confirmed", "submission_error")
             self.store.append_event(
                 TradeEvent(intent_id=intent_id, event_type="submission_error", detail=str(exc))
             )
@@ -115,7 +120,7 @@ class BrokerageService:
             }
 
         if result.accepted:
-            self.store.update_status(intent_id, "submitted", ibkr_order_id=result.broker_order_id)
+            self.store.transition_status(intent_id, "confirmed", "submitted", ibkr_order_id=result.broker_order_id)
             self.store.append_event(
                 TradeEvent(intent_id=intent_id, event_type="submitted", detail=result.broker_status)
             )
@@ -127,7 +132,7 @@ class BrokerageService:
                 "detail": result.detail,
             }
 
-        self.store.update_status(intent_id, "rejected")
+        self.store.transition_status(intent_id, "confirmed", "rejected")
         self.store.append_event(
             TradeEvent(intent_id=intent_id, event_type="rejected", detail=result.detail or result.broker_status)
         )
