@@ -995,6 +995,10 @@ def _try_custom_endpoint() -> Tuple[Optional[OpenAI], Optional[str]]:
 
 
 def _try_codex() -> Tuple[Optional[Any], Optional[str]]:
+    """Try to resolve a Codex OAuth client.
+    
+    Returns (client, model) if Codex credentials are available, otherwise (None, None).
+    """
     pool_present, entry = _select_pool_entry("openai-codex")
     if pool_present:
         codex_token = _pool_runtime_api_key(entry)
