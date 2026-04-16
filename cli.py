@@ -2897,6 +2897,7 @@ class HermesCLI:
                 reasoning_config=self.reasoning_config,
                 service_tier=self.service_tier,
                 request_overrides=request_overrides,
+                max_tokens=((CLI_CONFIG.get("model") or {}).get("max_tokens") if isinstance(CLI_CONFIG.get("model"), dict) else None),
                 providers_allowed=self._providers_only,
                 providers_ignored=self._providers_ignore,
                 providers_order=self._providers_order,
