@@ -221,12 +221,47 @@ def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = Fals
                             pass
                     current_cmd = ""
         else:
-            result = subprocess.run(
-                ["ps", "-A", "eww", "-o", "pid=,command="],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
+            # No /proc available: use ps. On macOS, 'ps -A ww' is silently ignored
+            # (returns empty), so we use 'ps aux' which puts full command in column 11+.
+            # On Linux, prefer 'ps -A ww' for clean output; fall back to 'ps aux' if empty.
+            if sys.platform == "darwin":
+                result = subprocess.run(
+                    ["ps", "aux"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                lines = []
+                for line in result.stdout.splitlines():
+                    parts = line.split()
+                    if len(parts) >= 11:
+                        pid_str = parts[1]
+                        command = " ".join(parts[10:])
+                        lines.append(f"{pid_str} {command}")
+                result.stdout = "\n".join(lines)
+            else:
+                result = subprocess.run(
+                    ["ps", "-A", "ww", "-o", "pid=,command="],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if not result.stdout.strip():
+                    # Fallback for Linux distros where 'ww' is unsupported
+                    result = subprocess.run(
+                        ["ps", "aux"],
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                    lines = []
+                    for line in result.stdout.splitlines():
+                        parts = line.split()
+                        if len(parts) >= 11:
+                            pid_str = parts[1]
+                            command = " ".join(parts[10:])
+                            lines.append(f"{pid_str} {command}")
+                    result.stdout = "\n".join(lines)
             for line in result.stdout.split('\n'):
                 stripped = line.strip()
                 if not stripped or 'grep' in stripped:
