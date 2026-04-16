@@ -1001,7 +1001,7 @@ def _normalize_perplexity_search_results(data: dict) -> dict:
             "title": title,
             "description": snippet,
             "date": date,
-            "position": i + 1,
+            "position": len(web_results) + 1,
         })
 
     return {"success": True, "data": {"web": web_results}}
