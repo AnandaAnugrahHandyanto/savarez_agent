@@ -322,7 +322,7 @@ class GatewayStreamConsumer:
                         self._last_sent_text = ""
                         self._last_edit_time = time.monotonic()
                         if got_done:
-                            self._final_response_sent = self._already_sent
+                            self._final_response_sent = True  # chunks were just successfully sent
                             return
                         if got_segment_break:
                             self._message_id = None
@@ -368,12 +368,17 @@ class GatewayStreamConsumer:
                     if self._accumulated:
                         if self._fallback_final_send:
                             await self._send_fallback_final(self._accumulated)
+                            self._final_response_sent = True
                         elif current_update_visible:
                             self._final_response_sent = True
                         elif self._message_id:
                             self._final_response_sent = await self._send_or_edit(self._accumulated)
                         elif not self._already_sent:
                             self._final_response_sent = await self._send_or_edit(self._accumulated)
+                    elif self._last_sent_text.strip():
+                        # No remaining text but the user already saw the
+                        # final answer via a previous progressive edit.
+                        self._final_response_sent = True
                     return
 
                 if commentary_text is not None:
@@ -408,13 +413,12 @@ class GatewayStreamConsumer:
                     await self._send_or_edit(self._accumulated)
                 except Exception:
                     pass
-            # If we delivered any content before being cancelled, mark the
-            # final response as sent so the gateway's already_sent check
-            # doesn't trigger a duplicate message.  The 5-second
-            # stream_task timeout (gateway/run.py) can cancel us while
-            # waiting on a slow Telegram API call — without this flag the
-            # gateway falls through to the normal send path.
-            if self._already_sent:
+            # If we attempted to deliver accumulated content before being
+            # cancelled, mark the final response as sent to prevent the
+            # gateway from re-sending it.  Only set the flag when we
+            # actually had content and an active message — not merely
+            # because earlier tool-progress edits set _already_sent.
+            if self._accumulated and self._message_id:
                 self._final_response_sent = True
         except Exception as e:
             logger.error("Stream consumer error: %s", e)
