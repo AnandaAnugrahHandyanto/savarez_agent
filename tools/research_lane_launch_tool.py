@@ -1470,7 +1470,7 @@ def _run_lane_pipeline(
                 authority=authority,
                 stage_name=stage_name,
             )
-            result = _delegate_single(goal=goal, context=context, toolsets=["file"], max_iterations=15, parent_agent=parent_agent)
+            result = _delegate_single(goal=goal, context=context, toolsets=["file"], max_iterations=30, parent_agent=parent_agent)
             if result.get("error"):
                 _mark_stage_failed(state, stage_name, state_file, result["error"])
                 msg = _build_blocker_message(topic_title, result["error"], state_file)
@@ -1554,7 +1554,7 @@ def _run_lane_pipeline(
                 stage_inputs=stage_inputs,
                 google_docs_state=google_docs_state,
             )
-            result = _delegate_single(goal=goal, context=context, toolsets=stage3_toolsets, max_iterations=15, parent_agent=parent_agent)
+            result = _delegate_single(goal=goal, context=context, toolsets=stage3_toolsets, max_iterations=30, parent_agent=parent_agent)
             if result.get("error"):
                 _mark_stage_failed(state, stage_name, state_file, result["error"])
                 msg = _build_blocker_message(topic_title, result["error"], state_file)
