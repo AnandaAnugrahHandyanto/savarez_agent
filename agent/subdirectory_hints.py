@@ -138,6 +138,9 @@ class SubdirectoryHintTracker:
         except (OSError, ValueError):
             pass
 
+    # Shell navigation commands where the next token is a directory argument
+    _NAV_COMMANDS = frozenset({"cd", "pushd"})
+
     def _extract_paths_from_command(self, cmd: str, candidates: Set[Path]):
         """Extract path-like tokens from a shell command string."""
         try:
@@ -145,10 +148,23 @@ class SubdirectoryHintTracker:
         except ValueError:
             tokens = cmd.split()
 
+        prev_was_nav = False
         for token in tokens:
             # Skip flags
             if token.startswith("-"):
+                prev_was_nav = False
                 continue
+            # Handle shell navigation: cd backend, pushd src
+            if token in self._NAV_COMMANDS:
+                prev_was_nav = True
+                continue
+            # If previous token was cd/pushd, treat this as a directory even
+            # without / or . (common relative form like "cd backend")
+            if prev_was_nav:
+                self._add_path_candidate(token, candidates)
+                prev_was_nav = False
+                continue
+            prev_was_nav = False
             # Must look like a path (contains / or .)
             if "/" not in token and "." not in token:
                 continue
