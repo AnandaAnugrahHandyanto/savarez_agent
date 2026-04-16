@@ -460,6 +460,12 @@ class SessionEntry:
     # next message arrives, causing _is_new_session = False (issue #6508).
     is_fresh_reset: bool = False
 
+    # Set by reset_session() when the user explicitly sends /new.
+    # Consumed once by the message handler to trigger skill re-injection.
+    # Avoids the race where updated_at diverges from created_at before the
+    # next message arrives, causing _is_new_session = False (issue #6508).
+    is_fresh_reset: bool = False
+
     # When True the next call to get_or_create_session() will auto-reset
     # this session (create a new session_id) so the user starts fresh.
     # Set by /stop to break stuck-resume loops (#7536).
