@@ -6710,6 +6710,12 @@ class HermesCLI:
                     line = get_cute_tool_message(function_name, stored_args, duration)
                     if is_error:
                         line = f"{line} [error]"
+                    # Truncate to terminal width so long commands don't
+                    # overflow in prompt_toolkit's output proxy.
+                    _term_cols = shutil.get_terminal_size((100, 24)).columns
+                    _max_line = _term_cols - 4  # 2-char indent + small margin
+                    if _max_line > 10 and len(line) > _max_line:
+                        line = line[:_max_line - 3] + "..."
                     _cprint(f"  {line}")
                 except Exception:
                     pass
@@ -6726,6 +6732,13 @@ class HermesCLI:
             _pl = get_tool_preview_max_len()
             if _pl > 0 and len(label) > _pl:
                 label = label[:_pl - 3] + "..."
+            # Spinner widget is height=1 — truncate to terminal width so long
+            # commands don't overflow and get silently clipped.  Leave room for
+            # the leading "  " indent, the emoji, a space, and the " (Xs)" timer.
+            _term_cols = shutil.get_terminal_size((100, 24)).columns
+            _max_label = _term_cols - 20  # 2 indent + emoji ~2 + space + timer ~15
+            if _max_label > 10 and len(label) > _max_label:
+                label = label[:_max_label - 3] + "..."
             self._spinner_text = f"{emoji} {label}"
             self._tool_start_time = _time.monotonic()
             # Store args for stacked scrollback line on completion
@@ -7750,7 +7763,30 @@ class HermesCLI:
                     # Fallback for non-interactive mode (e.g., single-query)
                     agent_thread.join(0.1)
 
-            agent_thread.join()  # Ensure agent thread completes
+            # Wait for the agent thread to finish, but don't block forever.
+            # If the agent is stuck (hung API call, unkillable subprocess,
+            # deadlock), blocking indefinitely freezes the process_loop
+            # thread and makes the CLI unresponsive to further input.
+            # The agent thread is daemon, so it will be killed on process exit.
+            agent_thread.join(timeout=10)
+            if agent_thread.is_alive():
+                logger.warning(
+                    "Agent thread still alive 10s after interrupt/completion "
+                    "(thread %s). Continuing without waiting — daemon thread "
+                    "will be cleaned up on exit.",
+                    agent_thread.ident,
+                )
+                _cprint(
+                    f"  {_DIM}\u26a0 Agent thread did not stop within 10s — "
+                    f"continuing. Use /reset to start fresh.{_RST}"
+                )
+                # Fire one more interrupt in case the first was lost
+                if self.agent:
+                    try:
+                        from tools.interrupt import set_interrupt
+                        set_interrupt(True, agent_thread.ident)
+                    except Exception:
+                        pass
 
             # Proactively clean up async clients whose event loop is dead.
             # The agent thread may have created AsyncOpenAI clients bound
