@@ -38,7 +38,7 @@ if [ "$(id -u)" = "0" ]; then
     fi
 
     # Defaults — safe to re-evaluate at every boot.
-    export NEBIUS_BASE_URL="${NEBIUS_BASE_URL:-https://api.studio.nebius.com/v1}"
+    export NEBIUS_BASE_URL="${NEBIUS_BASE_URL:-https://api.tokenfactory.us-central1.nebius.com/v1/}"
     export HERMES_PRIMARY_MODEL="${HERMES_PRIMARY_MODEL:-Qwen/Qwen3-Coder-480B-A35B-Instruct}"
     export HERMES_FALLBACK_MODEL="${HERMES_FALLBACK_MODEL:-deepseek-ai/DeepSeek-V3}"
 
