@@ -847,9 +847,13 @@ def _read_main_model() -> str:
 def _read_main_provider() -> str:
     """Read the user's configured main provider from config.yaml.
 
+    Checks runtime override (set by /model) first so all auxiliary tasks
+    (title generation, compression, etc.) use the same provider as the main agent.
     Returns the lowercase provider id (e.g. "alibaba", "openrouter") or ""
     if not configured.
     """
+    if _runtime_provider_override:
+        return _runtime_provider_override
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
@@ -1234,9 +1238,10 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
         resolved_provider = main_provider
         explicit_base_url = None
         explicit_api_key = None
-        if runtime_base_url and (main_provider == "custom" or main_provider.startswith("custom:")):
+        effective_base_url = runtime_base_url or _runtime_base_url_override
+        if effective_base_url and (main_provider == "custom" or main_provider.startswith("custom:")):
             resolved_provider = "custom"
-            explicit_base_url = runtime_base_url
+            explicit_base_url = effective_base_url
             explicit_api_key = runtime_api_key or None
         client, resolved = resolve_provider_client(
             resolved_provider,

@@ -7554,13 +7554,21 @@ class HermesCLI:
         set_secret_capture_callback(self._secret_capture_callback)
 
         # Refresh provider credentials if needed (handles key rotation transparently)
-        # Preserve model if it was explicitly switched via /model — _ensure_runtime_credentials
-        # re-reads model from config.yaml and would overwrite the user's choice.
+        # Preserve model/provider/base_url if explicitly switched via /model —
+        # _ensure_runtime_credentials() re-reads from config.yaml and would overwrite
+        # the user's choice.
         _model_before_creds = self.model
+        _provider_before_creds = self.provider
+        _requested_provider_before_creds = self.requested_provider
+        _base_url_before_creds = self.base_url
         if not self._ensure_runtime_credentials():
             return None
         if _model_before_creds and _model_before_creds != self.model:
             self.model = _model_before_creds
+        if _provider_before_creds and _provider_before_creds != self.provider:
+            self.provider = _provider_before_creds
+            self.requested_provider = _requested_provider_before_creds
+            self.base_url = _base_url_before_creds
 
         turn_route = self._resolve_turn_agent_config(message)
         if turn_route["signature"] != self._active_agent_route_signature:

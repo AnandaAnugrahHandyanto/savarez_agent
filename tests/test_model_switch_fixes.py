@@ -142,3 +142,56 @@ def test_set_runtime_model_stores_provider_and_base_url():
     aux._runtime_model_override = ""
     aux._runtime_provider_override = ""
     aux._runtime_base_url_override = ""
+
+
+def test_set_runtime_model_overrides_read_main_provider():
+    """After set_runtime_model(), _read_main_provider() returns the override,
+    not the value from config.yaml."""
+    import agent.auxiliary_client as aux
+
+    aux._runtime_provider_override = ""
+
+    with patch("hermes_cli.config.load_config", return_value={
+        "model": {"provider": "openrouter"}
+    }):
+        assert aux._read_main_provider() == "openrouter"
+
+        aux.set_runtime_model("switched/model", "custom", "http://localhost:1234/v1")
+        assert aux._read_main_provider() == "custom"
+
+    aux._runtime_model_override = ""
+    aux._runtime_provider_override = ""
+    aux._runtime_base_url_override = ""
+
+
+def test_resolve_auto_routes_through_switched_provider():
+    """After set_runtime_model() with a custom provider, _resolve_auto()
+    routes auxiliary tasks through the switched provider/base_url, not config."""
+    import agent.auxiliary_client as aux
+    from unittest.mock import MagicMock
+
+    aux._runtime_model_override = ""
+    aux._runtime_provider_override = ""
+    aux._runtime_base_url_override = ""
+
+    fake_client = MagicMock()
+    fake_client.__class__.__name__ = "OpenAI"
+
+    aux.set_runtime_model("local/model-x", "custom", "http://localhost:5000/v1")
+
+    with patch("hermes_cli.config.load_config", return_value={
+        "model": {"provider": "openrouter", "default": "some/cloud-model"}
+    }):
+        with patch("agent.auxiliary_client.resolve_provider_client",
+                   return_value=(fake_client, "local/model-x")) as mock_resolve:
+            client, model = aux._resolve_auto()
+
+    assert client is fake_client
+    assert model == "local/model-x"
+    call_kwargs = mock_resolve.call_args
+    assert call_kwargs[0][0] == "custom"
+    assert call_kwargs[1].get("explicit_base_url") == "http://localhost:5000/v1"
+
+    aux._runtime_model_override = ""
+    aux._runtime_provider_override = ""
+    aux._runtime_base_url_override = ""
