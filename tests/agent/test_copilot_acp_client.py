@@ -86,14 +86,14 @@ class TestCreateChatCompletionWithHttpxTimeout:
     raise when Hermes' real streaming path hands it an ``httpx.Timeout``.
     """
 
-    def _make_client(self) -> CopilotACPClient:
-        return CopilotACPClient(base_url="acp://copilot", acp_cwd="/tmp")
+    def _make_client(self, tmp_path) -> CopilotACPClient:
+        return CopilotACPClient(base_url="acp://copilot", acp_cwd=str(tmp_path))
 
-    def test_httpx_timeout_does_not_raise_typeerror(self):
+    def test_httpx_timeout_does_not_raise_typeerror(self, tmp_path):
         """Before the fix: TypeError from ``float(httpx.Timeout(...))``
         inside ``_create_chat_completion``.  After: the shim forwards a
         plain float to ``_run_prompt``."""
-        client = self._make_client()
+        client = self._make_client(tmp_path)
 
         with patch.object(
             CopilotACPClient, "_run_prompt", return_value=("ok", "")
@@ -110,9 +110,9 @@ class TestCreateChatCompletionWithHttpxTimeout:
         assert kwargs["timeout_seconds"] == 1800.0
         assert isinstance(kwargs["timeout_seconds"], float)
 
-    def test_float_timeout_still_passes_through(self):
+    def test_float_timeout_still_passes_through(self, tmp_path):
         """Non-regression: numeric timeouts still reach ``_run_prompt`` unchanged."""
-        client = self._make_client()
+        client = self._make_client(tmp_path)
 
         with patch.object(
             CopilotACPClient, "_run_prompt", return_value=("ok", "")
@@ -125,8 +125,8 @@ class TestCreateChatCompletionWithHttpxTimeout:
 
         assert run_prompt.call_args.kwargs["timeout_seconds"] == 42.0
 
-    def test_no_timeout_uses_default(self):
-        client = self._make_client()
+    def test_no_timeout_uses_default(self, tmp_path):
+        client = self._make_client(tmp_path)
 
         with patch.object(
             CopilotACPClient, "_run_prompt", return_value=("ok", "")

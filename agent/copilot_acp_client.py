@@ -53,10 +53,12 @@ def _coerce_timeout_seconds(value: Any, default: float) -> float:
     # to ``.connect`` when ``.read`` is ``None`` (``httpx.Timeout(None)``
     # means no read timeout — keep default instead of passing ``inf``).
     for attr in ("read", "connect"):
-        if hasattr(value, attr):
+        try:
             inner = getattr(value, attr)
-            if isinstance(inner, (int, float)):
-                return float(inner)
+        except AttributeError:
+            continue
+        if isinstance(inner, (int, float)):
+            return float(inner)
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -341,7 +343,7 @@ class CopilotACPClient:
         *,
         model: str | None = None,
         messages: list[dict[str, Any]] | None = None,
-        timeout: float | None = None,
+        timeout: Any = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: Any = None,
         **_: Any,
