@@ -255,6 +255,31 @@ def _mirror_delivered_result(job: dict, *, target: dict, mirror_text: str) -> No
         logger.debug("Job '%s': delivery mirror failed: %s", job.get("id", "?"), e)
 
 
+def _build_wrapped_delivery_content(
+    *,
+    job: dict,
+    content: str,
+    append_to_session: bool,
+) -> str:
+    """Build the user-facing wrapped cron delivery."""
+    task_name = job.get("name", job["id"])
+    job_id = job.get("id", "")
+    footer_lines = []
+    if append_to_session:
+        footer_lines.append("Follow-up replies in this chat can refer to this message.")
+    footer_lines.append(
+        f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
+    )
+    footer = "\n".join(footer_lines)
+    return (
+        f"Cronjob Response: {task_name}\n"
+        f"(job_id: {job_id})\n"
+        f"-------------\n\n"
+        f"{content}\n\n"
+        f"{footer}"
+    )
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target (origin chat, specific platform, etc.).
@@ -343,14 +368,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     mirror_text = _build_delivery_mirror_text(content) if append_to_session else ""
 
     if wrap_response:
-        task_name = job.get("name", job["id"])
-        job_id = job.get("id", "")
-        delivery_content = (
-            f"Cronjob Response: {task_name}\n"
-            f"(job_id: {job_id})\n"
-            f"-------------\n\n"
-            f"{content}\n\n"
-            f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
+        delivery_content = _build_wrapped_delivery_content(
+            job=job,
+            content=content,
+            append_to_session=append_to_session,
         )
     else:
         delivery_content = content

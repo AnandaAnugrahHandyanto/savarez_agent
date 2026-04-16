@@ -244,6 +244,8 @@ Cronjob Response: Morning feeds
 <agent output here>
 ```
 
+When session mirroring is enabled for that job, the wrapped footer also says that follow-up replies in the same chat can refer to the delivered message.
+
 To deliver the raw agent output without the wrapper, set `cron.wrap_response` to `false`:
 
 ```yaml

@@ -214,7 +214,7 @@ class TestDeliverResultWrapping:
     """Verify cron delivery wrapping and optional session mirroring behavior."""
 
     def test_delivery_wraps_content_with_header_and_footer(self):
-        """Delivered content should include task name header and agent-invisible note."""
+        """Delivered content should include task name header and management footer."""
         from gateway.config import Platform
 
         pconfig = MagicMock()
@@ -239,6 +239,7 @@ class TestDeliverResultWrapping:
         assert "-------------" in sent_content
         assert "Here is today's summary." in sent_content
         assert "To stop or manage this job" in sent_content
+        assert "Follow-up replies in this chat can refer to this message." not in sent_content
 
     def test_delivery_uses_job_id_when_no_name(self):
         """When a job has no name, the wrapper should fall back to job id."""
@@ -547,6 +548,30 @@ class TestDeliverResultWrapping:
             source_label="cron:daily-report",
             thread_id=None,
         )
+
+    def test_wrapped_delivery_mentions_follow_up_when_mirrored(self):
+        """Wrapped deliveries should state that follow-up replies can refer to them."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session"):
+            job = {
+                "id": "test-job",
+                "name": "daily-report",
+                "deliver": "origin",
+                "append_to_session": True,
+                "origin": {"platform": "telegram", "chat_id": "123"},
+            }
+            _deliver_result(job, "Here is today's summary.")
+
+        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        assert "Follow-up replies in this chat can refer to this message." in sent_content
 
     def test_global_append_to_session_default_applies(self):
         """Jobs inherit cron.append_deliveries_to_session when no override is set."""
