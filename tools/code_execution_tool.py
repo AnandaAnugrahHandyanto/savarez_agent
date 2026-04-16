@@ -988,8 +988,7 @@ def execute_code(
         # (terminal.env_passthrough) are passed through.
         _SAFE_ENV_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM",
                               "TMPDIR", "TMP", "TEMP", "SHELL", "LOGNAME",
-                              "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA",
-                              "HERMES_")
+                              "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA")
         _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
                               "PASSWD", "AUTH")
         try:
@@ -1005,8 +1004,8 @@ def execute_code(
             # Block vars with secret-like names.
             if any(s in k.upper() for s in _SECRET_SUBSTRINGS):
                 continue
-            # Allow vars with known safe prefixes.
-            if any(k.startswith(p) for p in _SAFE_ENV_PREFIXES):
+            # Allow vars with known safe prefixes, but not HERMES_TIMEZONE
+            if any(k.startswith(p) for p in _SAFE_ENV_PREFIXES) and k != "HERMES_TIMEZONE":
                 child_env[k] = v
         child_env["HERMES_RPC_SOCKET"] = sock_path
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"
