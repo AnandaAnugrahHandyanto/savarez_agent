@@ -212,6 +212,13 @@ class TestCLIStatusBar:
         assert cli_obj._use_minimal_tui_chrome(width=63) is True
         assert cli_obj._use_minimal_tui_chrome(width=64) is False
 
+    def test_spinner_widget_height_counts_cjk_display_width(self):
+        cli_obj = _make_cli()
+        cli_obj._spinner_text = "穿行迷宫" * 8
+        cli_obj._tool_start_time = 0.0
+
+        assert cli_obj._spinner_widget_height(width=64) == 2
+
     def test_bottom_input_rule_hides_on_narrow_terminals(self):
         cli_obj = _make_cli()
 

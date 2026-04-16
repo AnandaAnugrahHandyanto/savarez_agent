@@ -2028,14 +2028,25 @@ class HermesCLI:
             return 0
         if self._use_minimal_tui_chrome(width=width):
             return 0
-        # Compute how many lines the spinner text needs when wrapped.
-        # The rendered text is "  {emoji} {label}  ({elapsed})" — about
-        # len(_spinner_text) + 16 chars for indent + timer suffix.
+        # Mirror the actual rendered spinner text and count display-cell width
+        # so wrapped CJK text does not under-report its visible height.
         width = width or self._get_tui_terminal_width()
         if width and width > 10:
             import math
-            text_len = len(self._spinner_text) + 16  # indent + timer
-            return max(1, math.ceil(text_len / width))
+            import time as _time
+
+            rendered = f"  {self._spinner_text}"
+            t0 = getattr(self, "_tool_start_time", 0.0)
+            if t0 > 0:
+                elapsed = _time.monotonic() - t0
+                if elapsed >= 60:
+                    _m, _s = int(elapsed // 60), int(elapsed % 60)
+                    elapsed_str = f"{_m}m {_s}s"
+                else:
+                    elapsed_str = f"{elapsed:.1f}s"
+                rendered += f"  ({elapsed_str})"
+            text_width = self._status_bar_display_width(rendered)
+            return max(1, math.ceil(text_width / width))
         return 1
 
     def _get_voice_status_fragments(self, width: Optional[int] = None):
