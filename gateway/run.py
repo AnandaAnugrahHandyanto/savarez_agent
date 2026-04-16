@@ -4481,6 +4481,14 @@ class GatewayRunner:
             model_name = "unknown"
             provider = "auto"
 
+        # Check for session override (same logic as /model command)
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        override = self._session_model_overrides.get(session_key, {})
+        if override:
+            model_name = override.get("model", model_name)
+            provider = override.get("provider", provider)
+
         lines = [
             "📊 **Hermes Gateway Status**",
             "",
