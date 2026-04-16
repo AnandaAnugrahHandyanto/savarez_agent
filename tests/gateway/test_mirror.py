@@ -122,6 +122,19 @@ class TestAppendToTranscript:
         assert not transcript.exists()
         mock_db.append_message.assert_called_once()
 
+    def test_reuses_supplied_db_without_reopening(self, tmp_path):
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        mock_db = MagicMock()
+
+        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
+             patch("hermes_state.SessionDB") as session_db_cls:
+            _append_to_transcript("sess_1", {"role": "assistant", "content": "Hello"}, db=mock_db)
+
+        session_db_cls.assert_not_called()
+        mock_db.append_message.assert_called_once()
+        mock_db.close.assert_not_called()
+
     def test_appends_multiple_messages(self, tmp_path):
         sessions_dir = tmp_path / "sessions"
         sessions_dir.mkdir()
@@ -177,6 +190,25 @@ class TestMirrorToSession:
         assert result is True
         assert not (sessions_dir / "sess_topic_a.jsonl").exists()
         assert not (sessions_dir / "sess_topic_b.jsonl").exists()
+
+    def test_successful_mirror_reuses_supplied_db(self, tmp_path):
+        sessions_dir, _ = _setup_sessions(tmp_path, {
+            "s1": {
+                "session_id": "sess_abc",
+                "origin": {"platform": "telegram", "chat_id": "12345"},
+                "updated_at": "2026-01-01T00:00:00",
+            }
+        })
+        mock_db = MagicMock()
+
+        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
+             patch("hermes_state.SessionDB") as session_db_cls:
+            result = mirror_to_session("telegram", "12345", "Hello!", source_label="cli", db=mock_db)
+
+        assert result is True
+        session_db_cls.assert_not_called()
+        mock_db.append_message.assert_called_once()
+        mock_db.close.assert_not_called()
 
     def test_no_matching_session(self, tmp_path):
         sessions_dir, _ = _setup_sessions(tmp_path, {})

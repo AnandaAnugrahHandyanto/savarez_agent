@@ -11,7 +11,7 @@ the canonical helpers in ``gateway.session``.
 
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
 
@@ -28,6 +28,7 @@ def mirror_to_session(
     message_text: str,
     source_label: str = "cli",
     thread_id: Optional[str] = None,
+    db: Any = None,
 ) -> bool:
     """
     Append a delivery-mirror message to the target session's transcript.
@@ -53,7 +54,7 @@ def mirror_to_session(
             "mirror_source": source_label,
         }
 
-        _append_to_transcript(session_id, mirror_msg)
+        _append_to_transcript(session_id, mirror_msg, db=db)
 
         logger.debug("Mirror: wrote to session %s (from %s)", session_id, source_label)
         return True
@@ -73,19 +74,20 @@ def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = Non
     )
 
 
-def _append_to_transcript(session_id: str, message: dict) -> None:
+def _append_to_transcript(session_id: str, message: dict, db: Any = None) -> None:
     """Append a mirror message through the canonical gateway transcript path."""
-    db = None
-    try:
-        from hermes_state import SessionDB
-        db = SessionDB()
-    except Exception as e:
-        logger.debug("Mirror SQLite unavailable: %s", e)
+    owns_db = db is None
+    if owns_db:
+        try:
+            from hermes_state import SessionDB
+            db = SessionDB()
+        except Exception as e:
+            logger.debug("Mirror SQLite unavailable: %s", e)
 
     try:
         append_transcript_message(_SESSIONS_DIR, db, session_id, message)
     except Exception as e:
         logger.debug("Mirror transcript write failed: %s", e)
     finally:
-        if db is not None:
+        if owns_db and db is not None:
             db.close()
