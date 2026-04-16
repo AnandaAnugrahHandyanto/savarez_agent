@@ -488,7 +488,11 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
 
 
 def _build_job_prompt(job: dict) -> str:
-    """Build the effective prompt for a cron job, optionally loading one or more skills first."""
+    """Build the effective prompt for a cron job, optionally loading one or more skills first.
+    
+    Returns:
+        The prompt string, or empty string if script_skip_if_empty is true and script produced no output.
+    """
     prompt = job.get("prompt", "")
     skills = job.get("skills")
 
@@ -506,6 +510,14 @@ def _build_job_prompt(job: dict) -> str:
                     f"{prompt}"
                 )
             else:
+                # Script ran successfully but produced no output.
+                # Check if we should skip the LLM call entirely (fixes #10656)
+                if job.get("script_skip_if_empty"):
+                    logger.info(
+                        "Job '%s': script returned empty output and script_skip_if_empty=true — skipping",
+                        job.get("name", job.get("id", "?"))
+                    )
+                    return ""  # Signal to run_job to skip
                 prompt = (
                     "[Script ran successfully but produced no output.]\n\n"
                     f"{prompt}"
@@ -598,6 +610,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     job_id = job["id"]
     job_name = job["name"]
     prompt = _build_job_prompt(job)
+    
+    # If script_skip_if_empty and script produced no output, skip LLM call
+    if not prompt:
+        logger.info("Job '%s' (ID: %s): skipping LLM call due to empty script output", job_name, job_id)
+        return True, "", "", None  # Success, no output, no error
+    
     origin = _resolve_origin(job)
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
 

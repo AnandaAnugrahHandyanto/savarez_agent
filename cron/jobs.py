@@ -378,6 +378,7 @@ def create_job(
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
     script: Optional[str] = None,
+    script_skip_if_empty: bool = False,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -397,6 +398,8 @@ def create_job(
         script: Optional path to a Python script whose stdout is injected into the
                 prompt each run.  The script runs before the agent turn, and its output
                 is prepended as context.  Useful for data collection / change detection.
+        script_skip_if_empty: If True and script exits 0 with empty stdout, skip the
+                LLM call entirely (no delivery).  Default False.  Fixes #10656.
 
     Returns:
         The created job dict
@@ -439,6 +442,7 @@ def create_job(
         "provider": normalized_provider,
         "base_url": normalized_base_url,
         "script": normalized_script,
+        "script_skip_if_empty": script_skip_if_empty,  # Skip LLM when script returns empty (fixes #10656)
         "schedule": parsed_schedule,
         "schedule_display": parsed_schedule.get("display", schedule),
         "repeat": {
