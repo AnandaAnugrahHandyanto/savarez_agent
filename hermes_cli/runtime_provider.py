@@ -284,20 +284,29 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                 continue
             # Match exact name or normalized name
             name_norm = _normalize_custom_provider_name(ep_name)
-            # Resolve the API key from the env var name stored in key_env
+            # Resolve the API key: prefer the literal "api_key" field on the
+            # providers entry; fall back to resolving from the env var name
+            # stored in "key_env".  Also surface api_mode/transport so
+            # downstream code can use the provider's preferred transport.
+            direct_api_key = str(entry.get("api_key", "") or "").strip()
             key_env = str(entry.get("key_env", "") or "").strip()
-            resolved_api_key = os.getenv(key_env, "").strip() if key_env else ""
+            env_api_key = os.getenv(key_env, "").strip() if key_env else ""
+            resolved_api_key = direct_api_key or env_api_key
+            api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
 
             if requested_norm in {ep_name, name_norm, f"custom:{name_norm}"}:
                 # Found match by provider key
                 base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
                 if base_url:
-                    return {
+                    result = {
                         "name": entry.get("name", ep_name),
                         "base_url": base_url.strip(),
                         "api_key": resolved_api_key,
                         "model": entry.get("default_model", ""),
                     }
+                    if api_mode:
+                        result["api_mode"] = api_mode
+                    return result
             # Also check the 'name' field if present
             display_name = entry.get("name", "")
             if display_name:
@@ -306,12 +315,15 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     # Found match by display name
                     base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
                     if base_url:
-                        return {
+                        result = {
                             "name": display_name,
                             "base_url": base_url.strip(),
                             "api_key": resolved_api_key,
                             "model": entry.get("default_model", ""),
                         }
+                        if api_mode:
+                            result["api_mode"] = api_mode
+                        return result
 
     # Fall back to custom_providers: list (legacy format)
     custom_providers = config.get("custom_providers")
