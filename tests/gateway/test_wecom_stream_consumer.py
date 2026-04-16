@@ -294,11 +294,14 @@ class TestWeComStreamConsumerRun:
         await consumer.run()
 
         assert consumer.final_response_sent
-        # Check the final call includes reasoning in think tags
+        # Verify the final _send_reply_stream call contains think tags in content
         final_call = consumer.adapter._send_reply_stream.call_args_list[-1]
-        content = final_call[1].get("content") or final_call[0][1] if len(final_call[0]) > 1 else ""
-        # The content should contain think tags
-        assert "<think>" in str(consumer._build_stream_content(finish=True))
+        content = final_call.kwargs.get("content") or final_call[0][1]
+        assert "<think>" in content, f"Expected think tags in final stream content, got: {content}"
+        assert "</think>" in content, "Expected closing think tag in final stream content"
+        assert "step 1" in content
+        assert "answer" in content
+        assert final_call.kwargs.get("finish") is True
 
     @pytest.mark.asyncio
     async def test_properties_before_run(self):

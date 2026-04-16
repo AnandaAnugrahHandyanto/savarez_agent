@@ -442,7 +442,8 @@ class TestRunAgentViaProxy:
         assert kwargs["stream_id"] == "stream-123"
         assert result["final_response"] == "ok"
 
-
+    @pytest.mark.asyncio
+    async def test_no_system_message_when_context_empty(self, monkeypatch):
         monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
         monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
         runner = _make_runner()
