@@ -35,6 +35,7 @@ class _FakeAgent:
         )
         self.flush_memories = MagicMock()
         self._invalidate_system_prompt = MagicMock()
+        self.commit_memory_session = MagicMock()
 
         # Token counters (non-zero to verify reset)
         self.session_total_tokens = 1000
