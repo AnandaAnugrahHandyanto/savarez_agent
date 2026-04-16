@@ -109,11 +109,18 @@ class TestMemoryManagerUserIdThreading:
         assert "user_id" not in p._init_kwargs
 
     def test_multiple_providers_all_receive_user_id(self):
-        from agent.builtin_memory_provider import BuiltinMemoryProvider
+        """Both the builtin provider and the one external provider must receive user_id.
 
+        ``MemoryManager`` identifies the builtin provider by ``provider.name ==
+        "builtin"`` and caps the registry at one non-builtin provider.  There
+        is no importable ``BuiltinMemoryProvider`` concrete class in the tree
+        — the built-in role is wired up through the manager's own bookkeeping.
+        For this test we just need *two* providers sharing the registry and
+        to assert both see the user_id on initialize, so use a second
+        RecordingProvider under the reserved "builtin" name.
+        """
         mgr = MemoryManager()
-        # Use builtin + one external (MemoryManager only allows one external)
-        builtin = BuiltinMemoryProvider()
+        builtin = RecordingProvider("builtin")
         ext = RecordingProvider("external")
         mgr.add_provider(builtin)
         mgr.add_provider(ext)
@@ -124,6 +131,8 @@ class TestMemoryManagerUserIdThreading:
             user_id="slack_U12345",
         )
 
+        assert builtin._init_kwargs.get("user_id") == "slack_U12345"
+        assert builtin._init_kwargs.get("platform") == "slack"
         assert ext._init_kwargs.get("user_id") == "slack_U12345"
         assert ext._init_kwargs.get("platform") == "slack"
 
