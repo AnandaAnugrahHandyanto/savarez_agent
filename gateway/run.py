@@ -4493,7 +4493,6 @@ class GatewayRunner:
             f"**Last Activity:** {session_entry.updated_at.strftime('%Y-%m-%d %H:%M')}",
             f"**Tokens:** {session_entry.total_tokens:,}",
             f"**Agent Running:** {'Yes ⚡' if is_running else 'No'}",
-            "",
             f"**Model:** {model_name}",
             f"**Provider:** {provider}",
             "",
