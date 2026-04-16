@@ -99,14 +99,20 @@ def _find_hermes_md(cwd: Path) -> Optional[Path]:
     stop_at = _find_git_root(cwd)
     current = cwd.resolve()
 
+    logger.debug("Searching for hermes.md files starting from %s", current)
+    
     for directory in [current, *current.parents]:
         for name in _HERMES_MD_NAMES:
             candidate = directory / name
             if candidate.is_file():
+                logger.debug("Found hermes.md file at %s", candidate)
                 return candidate
         # Stop walking at the git root (or filesystem root).
         if stop_at and directory == stop_at:
+            logger.debug("Stopping search at git root: %s", stop_at)
             break
+    
+    logger.debug("No hermes.md files found in search path")
     return None
 
 
