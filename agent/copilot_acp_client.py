@@ -325,6 +325,7 @@ class CopilotACPClient:
             response_text, reasoning_text = self._run_prompt(
                 prompt_text,
                 timeout_seconds=timeout_seconds,
+                model=model,
             )
             print(f"[DEBUG ACP] _run_prompt returned text_len={len(response_text)}, text={response_text[:200]!r}")
         except Exception as e:
@@ -430,10 +431,16 @@ class CopilotACPClient:
         print(f"[DEBUG ACP] returning response with choices count={len(result.choices)}")
         return result
 
-    def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
+    def _run_prompt(self, prompt_text: str, *, timeout_seconds: float, model: str | None = None) -> tuple[str, str]:
+        # Build args dynamically so different models can be selected via `hermes model`.
+        # If model is provided and not the default, append --model so the copilot CLI
+        # uses the selected model instead of its built-in default (gpt-5-mini).
+        args = list(self._acp_args)
+        if model:
+            args.extend(["--model", model])
         try:
             proc = subprocess.Popen(
-                [self._acp_command] + self._acp_args,
+                [self._acp_command] + args,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
