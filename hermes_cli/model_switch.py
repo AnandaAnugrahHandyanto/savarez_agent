@@ -291,13 +291,17 @@ def _resolve_custom_provider_display_context_length(
 
         models = entry.get("models")
         if not isinstance(models, dict):
-            return None
+            continue
 
         model_cfg = models.get(model_name)
         if not isinstance(model_cfg, dict):
-            return None
+            continue
 
-        return _coerce_positive_int(model_cfg.get("context_length"))
+        context_length = _coerce_positive_int(model_cfg.get("context_length"))
+        if context_length is None:
+            continue
+
+        return context_length
 
     return None
 

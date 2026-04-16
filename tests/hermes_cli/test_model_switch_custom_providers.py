@@ -142,6 +142,50 @@ def test_switch_model_sets_display_context_length_from_custom_provider_models(mo
     assert result.display_context_length == 524288
 
 
+def test_switch_model_display_context_skips_invalid_matching_entry(monkeypatch):
+    """Display context lookup should continue past invalid matching entries."""
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested: {
+            "api_key": "***",
+            "base_url": "http://127.0.0.1:4141/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr("hermes_cli.models.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+    result = switch_model(
+        raw_input="rotator-openrouter-coding",
+        current_provider="openai-codex",
+        current_model="gpt-5.4",
+        current_base_url="https://chatgpt.com/backend-api/codex",
+        current_api_key="",
+        explicit_provider="custom:local-(127.0.0.1:4141)",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Local (127.0.0.1:4141)",
+                "base_url": "http://127.0.0.1:4141/v1",
+                "models": {
+                    "rotator-openrouter-coding": {"context_length": 0}
+                },
+            },
+            {
+                "name": "Local (127.0.0.1:4141)",
+                "base_url": "http://127.0.0.1:4141/v1",
+                "models": {
+                    "rotator-openrouter-coding": {"context_length": 524288}
+                },
+            }
+        ],
+    )
+
+    assert result.success is True
+    assert result.display_context_length == 524288
+
+
 def test_list_groups_same_name_custom_providers_into_one_row(monkeypatch):
     """Multiple custom_providers entries sharing a name should produce one row
     with all models collected, not N duplicate rows."""

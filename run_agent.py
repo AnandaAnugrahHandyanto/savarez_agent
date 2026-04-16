@@ -1592,9 +1592,14 @@ class AIAgent:
                             continue
 
                         try:
-                            return int(context_length)
+                            parsed = int(context_length)
                         except (TypeError, ValueError):
                             continue
+
+                        if parsed <= 0:
+                            continue
+
+                        return parsed
         except Exception:
             pass
 

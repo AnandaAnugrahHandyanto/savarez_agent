@@ -101,3 +101,39 @@ def test_switch_model_prefers_custom_provider_model_context_length(mock_ctx_len)
     mock_ctx_len.assert_called_once()
     call_kwargs = mock_ctx_len.call_args.kwargs
     assert call_kwargs.get("config_context_length") == 524_288
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=524_288)
+def test_switch_model_runtime_context_skips_non_positive_override(mock_ctx_len):
+    """Runtime /model switches should skip non-positive overrides and continue scanning."""
+    agent = _make_agent_with_compressor(config_context_length=None)
+
+    custom_providers = [
+        {
+            "name": "YunfeiPlus",
+            "base_url": "https://api.example.com/v1",
+            "models": {
+                "gpt-5.4": {"context_length": 0}
+            },
+        },
+        {
+            "name": "YunfeiPlus",
+            "base_url": "https://api.example.com/v1",
+            "models": {
+                "gpt-5.4": {"context_length": 524288}
+            },
+        },
+    ]
+
+    with patch("hermes_cli.config.load_config", return_value={}), \
+         patch("hermes_cli.config.get_compatible_custom_providers", return_value=custom_providers):
+        agent.switch_model(
+            "gpt-5.4",
+            "custom:yunfeiplus",
+            api_key="sk-new",
+            base_url="https://api.example.com/v1",
+        )
+
+    mock_ctx_len.assert_called_once()
+    call_kwargs = mock_ctx_len.call_args.kwargs
+    assert call_kwargs.get("config_context_length") == 524_288
