@@ -1399,7 +1399,15 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             return json.dumps({"result": text_result}, ensure_ascii=False)
 
         try:
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            result = _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            # Mark session as tainted — MCP tool results are untrusted external content
+            try:
+                from tools.taint_context import mark_tainted, TaintSource
+                from tools.approval import get_current_session_key
+                mark_tainted(get_current_session_key(), TaintSource.MCP_RESULT, tool_name)
+            except Exception:
+                logger.warning("Failed to mark session tainted after MCP tool %s/%s", server_name, tool_name)
+            return result
         except InterruptedError:
             return _interrupted_call_result()
         except Exception as exc:

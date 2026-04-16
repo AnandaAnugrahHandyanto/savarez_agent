@@ -1081,6 +1081,14 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         if is_interrupted():
             return tool_error("Interrupted", success=False)
 
+        # Mark session as tainted — web search results are untrusted external content
+        try:
+            from tools.taint_context import mark_tainted, TaintSource
+            from tools.approval import get_current_session_key
+            mark_tainted(get_current_session_key(), TaintSource.WEB_SEARCH, "web_search")
+        except Exception:
+            logger.warning("Failed to mark session tainted after web_search")
+
         # Dispatch to the configured backend
         backend = _get_backend()
         if backend == "parallel":
@@ -1221,6 +1229,14 @@ async def web_extract_tool(
     
     try:
         logger.info("Extracting content from %d URL(s)", len(urls))
+
+        # Mark session as tainted — web fetch results are untrusted external content
+        try:
+            from tools.taint_context import mark_tainted, TaintSource
+            from tools.approval import get_current_session_key
+            mark_tainted(get_current_session_key(), TaintSource.WEB_FETCH, "web_extract")
+        except Exception:
+            logger.warning("Failed to mark session tainted after web_extract")
 
         # ── SSRF protection — filter out private/internal URLs before any backend ──
         safe_urls = []
