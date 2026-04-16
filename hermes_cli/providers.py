@@ -128,7 +128,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_env_var="HF_BASE_URL",
     ),
     "xai": HermesOverlay(
-        transport="openai_chat",
+        transport="codex_responses",
         base_url_override="https://api.x.ai/v1",
         base_url_env_var="XAI_BASE_URL",
     ),
@@ -145,6 +145,9 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_override="https://api.qnaigc.com/v1",
         base_url_env_var="QINIU_BASE_URL",
+    "ollama-cloud": HermesOverlay(
+        transport="openai_chat",
+        base_url_env_var="OLLAMA_BASE_URL",
     ),
 }
 
@@ -185,6 +188,7 @@ ALIASES: Dict[str, str] = {
     # xai
     "x-ai": "xai",
     "x.ai": "xai",
+    "grok": "xai",
 
     # kimi-for-coding (models.dev ID)
     "kimi": "kimi-for-coding",
@@ -255,7 +259,7 @@ ALIASES: Dict[str, str] = {
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
     "lm_studio": "lmstudio",
-    "ollama": "ollama-cloud",
+    "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
     "vllm": "local",
     "llamacpp": "local",
     "llama.cpp": "local",
@@ -275,6 +279,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "qiniu": "Qiniu",
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
+    "ollama-cloud": "Ollama Cloud",
 }
 
 
