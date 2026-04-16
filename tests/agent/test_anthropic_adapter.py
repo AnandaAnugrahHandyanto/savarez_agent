@@ -968,6 +968,24 @@ class TestBuildAnthropicKwargs:
         assert kwargs["thinking"] == {"type": "adaptive"}
         assert kwargs["output_config"] == {"effort": "max"}
 
+    def test_force_budget_thinking_env_disables_adaptive_for_4_6(self):
+        """HERMES_FORCE_BUDGET_THINKING makes 4.6 models use budget thinking, not adaptive."""
+        import os
+        os.environ["HERMES_FORCE_BUDGET_THINKING"] = "1"
+        try:
+            kwargs = build_anthropic_kwargs(
+                model="claude-opus-4-6",
+                messages=[{"role": "user", "content": "think hard"}],
+                tools=None,
+                max_tokens=None,
+                reasoning_config={"enabled": True, "effort": "high"},
+            )
+            assert kwargs["thinking"]["type"] == "enabled"
+            assert kwargs["thinking"]["budget_tokens"] == 16000
+            assert "output_config" not in kwargs
+        finally:
+            del os.environ["HERMES_FORCE_BUDGET_THINKING"]
+
     def test_reasoning_disabled(self):
         kwargs = build_anthropic_kwargs(
             model="claude-sonnet-4-20250514",

@@ -91,7 +91,16 @@ def _get_anthropic_max_output(model: str) -> int:
 
 
 def _supports_adaptive_thinking(model: str) -> bool:
-    """Return True for Claude 4.6 models that support adaptive thinking."""
+    """Return True for Claude 4.6 models that support adaptive thinking.
+
+    When the HERMES_FORCE_BUDGET_THINKING environment variable is set,
+    always returns False so that even 4.6 models use fixed budget_tokens
+    thinking instead of adaptive. Adaptive thinking can allocate zero
+    tokens on some turns, skipping reasoning entirely; budget mode
+    guarantees the model always thinks.
+    """
+    if os.environ.get("HERMES_FORCE_BUDGET_THINKING"):
+        return False
     return any(v in model for v in ("4-6", "4.6"))
 
 
