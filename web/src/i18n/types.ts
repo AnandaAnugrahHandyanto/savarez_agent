@@ -287,4 +287,14 @@ export interface Translations {
   language: {
     switchTo: string;
   };
+
+  // ── Dynamic translations (backend-driven strings) ──
+  dynamic: {
+    /** Translate a config field label (from field key like "agent.max_iterations") */
+    configLabel: Record<string, string>;
+    /** Translate a config field description (English → Chinese) */
+    configDesc: Record<string, string>;
+    /** Translate an env var description (English → Chinese) */
+    envDesc: Record<string, string>;
+  };
 }

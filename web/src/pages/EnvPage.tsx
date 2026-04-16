@@ -120,7 +120,7 @@ function EnvVarRow({
       <div className="flex items-center justify-between gap-3 py-1.5 opacity-50 hover:opacity-100 transition-opacity">
         <div className="flex items-center gap-2 min-w-0">
           <span className="font-mono-ui text-[0.7rem] text-muted-foreground">{varKey}</span>
-          <span className="text-[0.65rem] text-muted-foreground/60 truncate hidden sm:block">{info.description}</span>
+          <span className="text-[0.65rem] text-muted-foreground/60 truncate hidden sm:block">{t.dynamic.envDesc[info.description] || info.description}</span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {info.url && (
@@ -145,7 +145,7 @@ function EnvVarRow({
       <div className="flex items-center justify-between gap-3 border border-border/50 px-4 py-2.5 opacity-60 hover:opacity-100 transition-opacity">
         <div className="flex items-center gap-3 min-w-0">
           <Label className="font-mono-ui text-[0.7rem] text-muted-foreground">{varKey}</Label>
-          <span className="text-[0.65rem] text-muted-foreground/60 truncate hidden sm:block">{info.description}</span>
+          <span className="text-[0.65rem] text-muted-foreground/60 truncate hidden sm:block">{t.dynamic.envDesc[info.description] || info.description}</span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {info.url && (
@@ -182,7 +182,7 @@ function EnvVarRow({
         )}
       </div>
 
-      <p className="text-xs text-muted-foreground">{info.description}</p>
+      <p className="text-xs text-muted-foreground">{t.dynamic.envDesc[info.description] || info.description}</p>
 
       {info.tools.length > 0 && (
         <div className="flex flex-wrap gap-1">

@@ -2,10 +2,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectOption } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { useI18n } from "@/i18n";
 
 function FieldHint({ schema, schemaKey }: { schema: Record<string, unknown>; schemaKey: string }) {
   const keyPath = schemaKey.includes(".") ? schemaKey : "";
-  const description = schema.description ? String(schema.description) : "";
+  const rawDesc = schema.description ? String(schema.description) : "";
+  const { t } = useI18n();
+  const description = t.dynamic.configDesc[schemaKey] || t.dynamic.envDesc[rawDesc] || rawDesc;
 
   if (!keyPath && !description) return null;
 
@@ -23,8 +26,10 @@ export function AutoField({
   value,
   onChange,
 }: AutoFieldProps) {
+  const { t } = useI18n();
   const rawLabel = schemaKey.split(".").pop() ?? schemaKey;
-  const label = rawLabel.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  const defaultLabel = rawLabel.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  const label = t.dynamic.configLabel[schemaKey] || defaultLabel;
 
   if (schema.type === "boolean") {
     return (
