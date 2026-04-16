@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from openai import APIConnectionError
+from openai._constants import DEFAULT_TIMEOUT
 
 sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
 sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
@@ -152,6 +153,52 @@ def test_concurrent_requests_do_not_break_each_other_when_one_client_closes(monk
     assert sum(isinstance(value, APIConnectionError) for value in values) == 1
     assert values.count({"ok": "second"}) == 1
     assert len(factory.calls) == 2
+
+
+def test_keepalive_http_client_preserves_openai_default_timeout(monkeypatch):
+    factory = OpenAIFactory([FakeSharedClient(lambda **kwargs: {"ok": True})])
+    monkeypatch.setattr(run_agent, "OpenAI", factory)
+
+    agent = _build_agent()
+    _ = agent._create_openai_client(dict(agent._client_kwargs), reason="test_keepalive", shared=True)
+
+    assert len(factory.calls) == 1
+    http_client = factory.calls[0]["http_client"]
+    assert isinstance(http_client, httpx.Client)
+    assert http_client.timeout == DEFAULT_TIMEOUT
+    assert http_client.timeout != httpx.Timeout(5.0)
+    http_client.close()
+
+
+def test_keepalive_http_client_does_not_mutate_stored_client_kwargs(monkeypatch):
+    factory = OpenAIFactory([FakeSharedClient(lambda **kwargs: {"ok": True})])
+    monkeypatch.setattr(run_agent, "OpenAI", factory)
+
+    agent = _build_agent()
+    original = dict(agent._client_kwargs)
+    _ = agent._create_openai_client(agent._client_kwargs, reason="test_kwargs_immutability", shared=True)
+
+    assert agent._client_kwargs == original
+    assert "http_client" not in agent._client_kwargs
+    factory.calls[0]["http_client"].close()
+
+
+def test_request_client_gets_fresh_http_client_after_shared_client_creation(monkeypatch):
+    shared_client = FakeSharedClient(lambda **kwargs: {"shared": True})
+    request_client = FakeRequestClient(lambda **kwargs: {"ok": True})
+    factory = OpenAIFactory([shared_client, request_client])
+    monkeypatch.setattr(run_agent, "OpenAI", factory)
+
+    agent = _build_agent()
+    shared = agent._create_openai_client(agent._client_kwargs, reason="shared", shared=True)
+    agent.client = shared
+    req = agent._create_request_openai_client(reason="request")
+
+    assert len(factory.calls) == 2
+    assert factory.calls[0]["http_client"] is not factory.calls[1]["http_client"]
+    factory.calls[0]["http_client"].close()
+    factory.calls[1]["http_client"].close()
+    agent._close_request_openai_client(req, reason="test_cleanup")
 
 
 

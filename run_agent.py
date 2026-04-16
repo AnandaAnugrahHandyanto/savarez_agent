@@ -4353,6 +4353,11 @@ class AIAgent:
 
     def _create_openai_client(self, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
         from agent.auxiliary_client import _validate_base_url, _validate_proxy_env_urls
+        # Never mutate the caller's kwargs in-place. Gateway sessions keep
+        # self._client_kwargs around for future request clients; if we stash a
+        # concrete http_client object into that dict, later "fresh" request
+        # clients will silently reuse the same stale transport pool.
+        client_kwargs = dict(client_kwargs)
         _validate_proxy_env_urls()
         _validate_base_url(client_kwargs.get("base_url"))
         if self.provider == "copilot-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://copilot"):
@@ -4375,6 +4380,10 @@ class AIAgent:
             try:
                 import httpx as _httpx
                 import socket as _socket
+                from openai._constants import (
+                    DEFAULT_CONNECTION_LIMITS as _OPENAI_DEFAULT_CONNECTION_LIMITS,
+                    DEFAULT_TIMEOUT as _OPENAI_DEFAULT_TIMEOUT,
+                )
                 _sock_opts = [(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)]
                 if hasattr(_socket, "TCP_KEEPIDLE"):
                     # Linux
@@ -4386,6 +4395,8 @@ class AIAgent:
                     _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPALIVE, 30))
                 client_kwargs["http_client"] = _httpx.Client(
                     transport=_httpx.HTTPTransport(socket_options=_sock_opts),
+                    timeout=_OPENAI_DEFAULT_TIMEOUT,
+                    limits=_OPENAI_DEFAULT_CONNECTION_LIMITS,
                 )
             except Exception:
                 pass  # Fall through to default transport if socket opts fail
