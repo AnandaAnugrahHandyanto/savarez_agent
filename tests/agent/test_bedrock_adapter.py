@@ -1230,3 +1230,65 @@ class TestEmptyTextBlockFix:
         from agent.bedrock_adapter import _convert_content_to_converse
         blocks = _convert_content_to_converse("Hello")
         assert blocks[0]["text"] == "Hello"
+
+
+# ---------------------------------------------------------------------------
+# Inference profile modality inheritance
+# ---------------------------------------------------------------------------
+
+class TestInferenceProfileModalityInheritance:
+    """Test that inference profiles inherit modalities from foundation models."""
+
+    def test_profile_inherits_image_input_from_foundation(self):
+        from agent.bedrock_adapter import discover_bedrock_models, reset_discovery_cache
+        reset_discovery_cache()
+
+        mock_client = MagicMock()
+        mock_client.list_foundation_models.return_value = {
+            "modelSummaries": [{
+                "modelId": "anthropic.claude-sonnet-4-6",
+                "modelName": "Claude Sonnet 4.6",
+                "providerName": "Anthropic",
+                "inputModalities": ["TEXT", "IMAGE"],
+                "outputModalities": ["TEXT"],
+                "responseStreamingSupported": True,
+                "modelLifecycle": {"status": "ACTIVE"},
+            }],
+        }
+        mock_client.list_inference_profiles.return_value = {
+            "inferenceProfileSummaries": [{
+                "inferenceProfileId": "us.anthropic.claude-sonnet-4-6",
+                "inferenceProfileName": "US Claude Sonnet 4.6",
+                "status": "ACTIVE",
+                "models": [{"modelArn": "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-6"}],
+            }],
+        }
+
+        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=mock_client):
+            models = discover_bedrock_models("us-east-1")
+
+        profile = [m for m in models if m["id"] == "us.anthropic.claude-sonnet-4-6"]
+        assert len(profile) == 1
+        assert "IMAGE" in profile[0]["input_modalities"]
+        assert "TEXT" in profile[0]["input_modalities"]
+
+    def test_profile_defaults_to_text_when_no_foundation_match(self):
+        from agent.bedrock_adapter import discover_bedrock_models, reset_discovery_cache
+        reset_discovery_cache()
+
+        mock_client = MagicMock()
+        mock_client.list_foundation_models.return_value = {"modelSummaries": []}
+        mock_client.list_inference_profiles.return_value = {
+            "inferenceProfileSummaries": [{
+                "inferenceProfileId": "us.unknown.model-v1",
+                "inferenceProfileName": "Unknown Model",
+                "status": "ACTIVE",
+                "models": [],
+            }],
+        }
+
+        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=mock_client):
+            models = discover_bedrock_models("us-east-1")
+
+        assert len(models) == 1
+        assert models[0]["input_modalities"] == ["TEXT"]
