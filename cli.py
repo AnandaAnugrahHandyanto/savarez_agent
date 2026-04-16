@@ -5031,6 +5031,12 @@ class HermesCLI:
         elif canonical == "provider":
             self._show_model_and_providers()
 
+        elif canonical == "persona":
+            if hasattr(self, "agent") and self.agent and hasattr(self.agent, "_invalidate_system_prompt"):
+                self.agent._invalidate_system_prompt()
+                _cprint("  Persona reloaded from SOUL.md for this session.")
+            else:
+                _cprint("  Persona reloaded from SOUL.md for this session.")
         elif canonical == "personality":
             # Use original case (handler lowercases the personality name itself)
             self._handle_personality_command(cmd_original)

@@ -97,6 +97,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("provider", "Show available providers and current provider",
                "Configuration"),
 
+    CommandDef("persona", "Reload agent identity from SOUL.md across all active sessions", "Configuration",
+               subcommands=("reload",), args_hint="[reload]"),
     CommandDef("personality", "Set a predefined personality", "Configuration",
                args_hint="[name]"),
     CommandDef("statusbar", "Toggle the context/model status bar", "Configuration",

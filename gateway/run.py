@@ -2545,6 +2545,9 @@ class GatewayRunner:
         if canonical == "personality":
             return await self._handle_personality_command(event)
 
+        if canonical == "persona":
+            return await self._handle_persona_command(event)
+
         if canonical == "plan":
             try:
                 from agent.skill_commands import build_plan_path, build_skill_invocation_message
@@ -5611,6 +5614,53 @@ class GatewayRunner:
             logger.warning("Failed to save tool_progress mode: %s", e)
             return f"{descriptions[new_mode]}\n_(could not save to config: {e})_"
 
+    async def _handle_persona_command(self, event: MessageEvent) -> str:
+        """Handle /persona [reload] — invalidate all cached agent system prompts and reload from SOUL.md."""
+        # 1. Invalidate all cached agents
+        invalidated = 0
+        _cache_lock = getattr(self, "_agent_cache_lock", None)
+        if _cache_lock is not None:
+            with _cache_lock:
+                for session_key, cached in self._agent_cache.items():
+                    agent = cached[0] if isinstance(cached, tuple) else cached
+                    if agent is not None and hasattr(agent, "_invalidate_system_prompt"):
+                        agent._invalidate_system_prompt()
+                        invalidated += 1
+
+        # 2. Notify all active sessions (except this one — the return value notifies the current chat)
+        source = event.source
+        current_key = self._session_key_for_source(source)
+        notified = 0
+        try:
+            for session_key, entry in list(self.session_store._entries.items()):
+                if session_key == current_key:
+                    continue
+                try:
+                    for platform, adapter in self.adapters.items():
+                        platform_prefix = platform.value + ":"
+                        if session_key.startswith(platform_prefix):
+                            chat_id = session_key[len(platform_prefix):]
+                            # strip thread suffix if present (format: "platform:chat_id:thread_id")
+                            chat_id = chat_id.split(":")[0]
+                            try:
+                                await adapter.send(chat_id, "Persona reloaded — I've refreshed my identity from SOUL.md in all chats.")
+                                notified += 1
+                            except Exception as e:
+                                logger.debug("Failed to notify session %s: %s", session_key, e)
+                            break
+                except Exception as e:
+                    logger.debug("Error notifying session %s: %s", session_key, e)
+        except Exception as e:
+            logger.warning("Error notifying sessions during persona reload: %s", e)
+
+        soul_path = _hermes_home / "SOUL.md"
+        soul_status = "SOUL.md found" if soul_path.exists() else "⚠️ SOUL.md not found — using default identity"
+        return (
+            f"Persona reloaded. {soul_status}. "
+            f"Invalidated {invalidated} cached session(s), notified {notified} other chat(s). "
+            f"Next message in each chat will use the updated identity."
+        )
+
     async def _handle_compress_command(self, event: MessageEvent) -> str:
         """Handle /compress command -- manually compress conversation context."""
         source = event.source
@@ -7741,7 +7791,7 @@ class GatewayRunner:
                 except Exception as _e:
                     logger.debug("background_review_callback error: %s", _e)
 
-            agent.background_review_callback = _bg_review_send
+            agent.background_review_callback = _bg_review_send if tool_progress_enabled else None
 
             # Store agent reference for interrupt support
             agent_holder[0] = agent
