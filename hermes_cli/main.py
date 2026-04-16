@@ -2387,8 +2387,9 @@ def _model_flow_kimi(config, current_model=""):
 
     # Step 3: Model selection — show appropriate models for the endpoint
     if is_coding_plan:
-        # Coding Plan models (kimi-for-coding first)
+        # Coding Plan models (newest first)
         model_list = [
+            "k2.6-code-preview",
             "kimi-for-coding",
             "kimi-k2.5",
             "kimi-k2-thinking",
