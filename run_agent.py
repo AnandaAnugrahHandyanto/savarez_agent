@@ -4000,7 +4000,10 @@ class AIAgent:
                 if isinstance(encrypted, str) and encrypted:
                     raw_item = {"type": "reasoning", "encrypted_content": encrypted}
                     item_id = getattr(item, "id", None)
-                    if isinstance(item_id, str) and item_id:
+                    # OpenAI Responses API validates id <= 64 chars.
+                    # Some backends (codex) return 408-char opaque ids.
+                    # Drop long ids — server derives identity from encrypted_content.
+                    if isinstance(item_id, str) and item_id and len(item_id) <= 64:
                         raw_item["id"] = item_id
                     # Capture summary — required by the API when replaying reasoning items
                     summary = getattr(item, "summary", None)
