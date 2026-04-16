@@ -1075,9 +1075,25 @@ def list_authenticated_providers(
                     "api_url": api_url,
                     "models": [],
                 }
+
+            def _append_model(model_name: str) -> None:
+                model_name = (model_name or "").strip()
+                if model_name and model_name not in groups[slug]["models"]:
+                    groups[slug]["models"].append(model_name)
+
             default_model = (entry.get("model") or "").strip()
-            if default_model and default_model not in groups[slug]["models"]:
-                groups[slug]["models"].append(default_model)
+            _append_model(default_model)
+
+            extra_models = entry.get("models")
+            if isinstance(extra_models, dict):
+                for model_name in extra_models.keys():
+                    _append_model(str(model_name))
+            elif isinstance(extra_models, list):
+                for item in extra_models:
+                    if isinstance(item, str):
+                        _append_model(item)
+                    elif isinstance(item, dict):
+                        _append_model(str(item.get("model") or item.get("name") or ""))
 
         for slug, grp in groups.items():
             if slug.lower() in seen_slugs:
@@ -1087,7 +1103,7 @@ def list_authenticated_providers(
                 "name": grp["name"],
                 "is_current": slug == current_provider,
                 "is_user_defined": True,
-                "models": grp["models"],
+                "models": grp["models"][:max_models] if max_models > 0 else grp["models"],
                 "total_models": len(grp["models"]),
                 "source": "user-config",
                 "api_url": grp["api_url"],

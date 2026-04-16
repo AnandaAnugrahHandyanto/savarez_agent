@@ -116,6 +116,117 @@ def test_list_authenticated_providers_fallback_to_default_only(monkeypatch):
     assert user_prov["models"] == ["single-model"]
 
 
+@pytest.mark.parametrize(
+    ("extra_models", "expected_models"),
+    [
+        pytest.param(
+            {"model-a": {}, "model-b": {}, "model-c": {}},
+            ["model-a", "model-b", "model-c"],
+            id="dict-model-catalog",
+        ),
+        pytest.param(
+            ["model-a", "model-b", "model-c"],
+            ["model-a", "model-b", "model-c"],
+            id="string-list-model-catalog",
+        ),
+        pytest.param(
+            [{"name": "model-a"}, {"model": "model-b"}, {"name": "model-c"}],
+            ["model-a", "model-b", "model-c"],
+            id="object-list-model-catalog",
+        ),
+    ],
+)
+def test_list_authenticated_providers_includes_models_from_custom_providers(monkeypatch, extra_models, expected_models):
+    """custom_providers should expose full model catalogs in the /model picker."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="custom:my-gateway",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "My Gateway",
+                "base_url": "https://gateway.example/v1",
+                "model": "model-a",
+                "models": extra_models,
+            }
+        ],
+        max_models=50,
+    )
+
+    custom_provider = next(
+        (p for p in providers if p.get("is_user_defined") and p["slug"] == "custom:my-gateway"),
+        None,
+    )
+
+    assert custom_provider is not None
+    assert custom_provider["total_models"] == len(expected_models)
+    assert custom_provider["models"] == expected_models
+
+
+def test_list_authenticated_providers_truncates_displayed_custom_provider_models_without_changing_total(monkeypatch):
+    """max_models should limit picker display, not the full collected model count."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="custom:my-gateway",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "My Gateway",
+                "base_url": "https://gateway.example/v1",
+                "model": "model-a",
+                "models": {
+                    "model-a": {},
+                    "model-b": {},
+                    "model-c": {},
+                },
+            }
+        ],
+        max_models=2,
+    )
+
+    custom_provider = next(
+        (p for p in providers if p.get("is_user_defined") and p["slug"] == "custom:my-gateway"),
+        None,
+    )
+
+    assert custom_provider is not None
+    assert custom_provider["models"] == ["model-a", "model-b"]
+    assert custom_provider["total_models"] == 3
+
+
+def test_list_authenticated_providers_dedupes_default_model_from_custom_provider_catalog(monkeypatch):
+    """default model should not be duplicated when it also appears in models."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="custom:my-gateway",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "My Gateway",
+                "base_url": "https://gateway.example/v1",
+                "model": "model-a",
+                "models": ["model-a", "model-b", "model-c"],
+            }
+        ],
+        max_models=50,
+    )
+
+    custom_provider = next(
+        (p for p in providers if p.get("is_user_defined") and p["slug"] == "custom:my-gateway"),
+        None,
+    )
+
+    assert custom_provider is not None
+    assert custom_provider["models"].count("model-a") == 1
+    assert custom_provider["total_models"] == 3
+
+
 # =============================================================================
 # Tests for _get_named_custom_provider with providers: dict
 # =============================================================================
