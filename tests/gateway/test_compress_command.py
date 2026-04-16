@@ -119,3 +119,27 @@ async def test_compress_command_explains_when_token_estimate_rises():
     assert "Compressed: 4 → 3 messages" in result
     assert "Rough transcript estimate: ~100 → ~120 tokens" in result
     assert "denser summaries" in result
+    agent_instance.close.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_compress_command_closes_temp_agent_on_failure():
+    history = _make_history()
+    runner = _make_runner(history)
+    agent_instance = MagicMock()
+    agent_instance.context_compressor.protect_first_n = 0
+    agent_instance.context_compressor._align_boundary_forward.return_value = 0
+    agent_instance.context_compressor._find_tail_cut_by_tokens.return_value = 2
+    agent_instance.session_id = "sess-1"
+    agent_instance._compress_context.side_effect = RuntimeError("compress boom")
+
+    with (
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=agent_instance),
+        patch("agent.model_metadata.estimate_messages_tokens_rough", return_value=100),
+    ):
+        result = await runner._handle_compress_command(_make_event())
+
+    assert "Compression failed: compress boom" == result
+    agent_instance.close.assert_called_once()

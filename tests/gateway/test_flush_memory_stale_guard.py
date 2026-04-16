@@ -203,6 +203,23 @@ class TestFlushAgentSilenced:
         assert buf.getvalue() == "", "no-op print_fn spinner must not write to stdout"
 
 
+class TestFlushAgentCleanup:
+    """Temporary flush agents should always close after use."""
+
+    def test_flush_agent_closed_after_success(self, tmp_path, monkeypatch):
+        runner, tmp_agent, _ = _make_flush_context(monkeypatch)
+
+        with (
+            patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k"}),
+            patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+            patch.dict("sys.modules", {"tools.memory_tool": MagicMock(get_memory_dir=lambda: tmp_path)}),
+        ):
+            runner._flush_memories_for_session("session_cleanup")
+
+        tmp_agent.close.assert_called_once()
+        tmp_agent.shutdown_memory_provider.assert_not_called()
+
+
 class TestFlushPromptStructure:
     """Verify the flush prompt retains its core instructions."""
 

@@ -24,6 +24,7 @@ import signal
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
@@ -725,6 +726,49 @@ class GatewayRunner:
 
     # -----------------------------------------------------------------
 
+    @staticmethod
+    def _cleanup_agent_resources(
+        agent: Any,
+        *,
+        shutdown_memory_provider: bool = False,
+    ) -> None:
+        """Release resources for a short-lived agent instance.
+
+        Temporary agents created for one-off gateway work should always be
+        closed, and some flows also need an explicit memory-provider flush at
+        the end of the temporary session.
+        """
+        if agent is None:
+            return
+
+        if shutdown_memory_provider and hasattr(agent, "shutdown_memory_provider"):
+            try:
+                agent.shutdown_memory_provider()
+            except Exception:
+                pass
+
+        if hasattr(agent, "close"):
+            try:
+                agent.close()
+            except Exception:
+                pass
+
+    @contextmanager
+    def _temporary_agent(
+        self,
+        agent: Any,
+        *,
+        shutdown_memory_provider: bool = False,
+    ):
+        """Ensure short-lived gateway agents are always cleaned up."""
+        try:
+            yield agent
+        finally:
+            self._cleanup_agent_resources(
+                agent,
+                shutdown_memory_provider=shutdown_memory_provider,
+            )
+
     def _flush_memories_for_session(
         self,
         old_session_id: str,
@@ -753,79 +797,81 @@ class GatewayRunner:
             if not runtime_kwargs.get("api_key"):
                 return
 
-            tmp_agent = AIAgent(
-                **runtime_kwargs,
-                model=model,
-                max_iterations=8,
-                quiet_mode=True,
-                skip_memory=True,  # Flush agent — no memory provider
-                enabled_toolsets=["memory", "skills"],
-                session_id=old_session_id,
-            )
-            # Fully silence the flush agent — quiet_mode only suppresses init
-            # messages; tool call output still leaks to the terminal through
-            # _safe_print → _print_fn.  Set a no-op to prevent that.
-            tmp_agent._print_fn = lambda *a, **kw: None
+            with self._temporary_agent(
+                AIAgent(
+                    **runtime_kwargs,
+                    model=model,
+                    max_iterations=8,
+                    quiet_mode=True,
+                    skip_memory=True,  # Flush agent — no memory provider
+                    enabled_toolsets=["memory", "skills"],
+                    session_id=old_session_id,
+                )
+            ) as tmp_agent:
+                # Fully silence the flush agent — quiet_mode only suppresses init
+                # messages; tool call output still leaks to the terminal through
+                # _safe_print → _print_fn.  Set a no-op to prevent that.
+                tmp_agent._print_fn = lambda *a, **kw: None
 
-            # Build conversation history from transcript
-            msgs = [
-                {"role": m.get("role"), "content": m.get("content")}
-                for m in history
-                if m.get("role") in ("user", "assistant") and m.get("content")
-            ]
+                # Build conversation history from transcript
+                msgs = [
+                    {"role": m.get("role"), "content": m.get("content")}
+                    for m in history
+                    if m.get("role") in ("user", "assistant") and m.get("content")
+                ]
 
-            # Read live memory state from disk so the flush agent can see
-            # what's already saved and avoid overwriting newer entries.
-            _current_memory = ""
-            try:
-                from tools.memory_tool import get_memory_dir
-                _mem_dir = get_memory_dir()
-                for fname, label in [
-                    ("MEMORY.md", "MEMORY (your personal notes)"),
-                    ("USER.md", "USER PROFILE (who the user is)"),
-                ]:
-                    fpath = _mem_dir / fname
-                    if fpath.exists():
-                        content = fpath.read_text(encoding="utf-8").strip()
-                        if content:
-                            _current_memory += f"\n\n## Current {label}:\n{content}"
-            except Exception:
-                pass  # Non-fatal — flush still works, just without the guard
+                # Read live memory state from disk so the flush agent can see
+                # what's already saved and avoid overwriting newer entries.
+                _current_memory = ""
+                try:
+                    from tools.memory_tool import get_memory_dir
+                    _mem_dir = get_memory_dir()
+                    for fname, label in [
+                        ("MEMORY.md", "MEMORY (your personal notes)"),
+                        ("USER.md", "USER PROFILE (who the user is)"),
+                    ]:
+                        fpath = _mem_dir / fname
+                        if fpath.exists():
+                            content = fpath.read_text(encoding="utf-8").strip()
+                            if content:
+                                _current_memory += f"\n\n## Current {label}:\n{content}"
+                except Exception:
+                    pass  # Non-fatal — flush still works, just without the guard
 
-            # Give the agent a real turn to think about what to save
-            flush_prompt = (
-                "[System: This session is about to be automatically reset due to "
-                "inactivity or a scheduled daily reset. The conversation context "
-                "will be cleared after this turn.\n\n"
-                "Review the conversation above and:\n"
-                "1. Save any important facts, preferences, or decisions to memory "
-                "(user profile or your notes) that would be useful in future sessions.\n"
-                "2. If you discovered a reusable workflow or solved a non-trivial "
-                "problem, consider saving it as a skill.\n"
-                "3. If nothing is worth saving, that's fine — just skip.\n\n"
-            )
-
-            if _current_memory:
-                flush_prompt += (
-                    "IMPORTANT — here is the current live state of memory. Other "
-                    "sessions, cron jobs, or the user may have updated it since this "
-                    "conversation ended. Do NOT overwrite or remove entries unless "
-                    "the conversation above reveals something that genuinely "
-                    "supersedes them. Only add new information that is not already "
-                    "captured below."
-                    f"{_current_memory}\n\n"
+                # Give the agent a real turn to think about what to save
+                flush_prompt = (
+                    "[System: This session is about to be automatically reset due to "
+                    "inactivity or a scheduled daily reset. The conversation context "
+                    "will be cleared after this turn.\n\n"
+                    "Review the conversation above and:\n"
+                    "1. Save any important facts, preferences, or decisions to memory "
+                    "(user profile or your notes) that would be useful in future sessions.\n"
+                    "2. If you discovered a reusable workflow or solved a non-trivial "
+                    "problem, consider saving it as a skill.\n"
+                    "3. If nothing is worth saving, that's fine — just skip.\n\n"
                 )
 
-            flush_prompt += (
-                "Do NOT respond to the user. Just use the memory and skill_manage "
-                "tools if needed, then stop.]"
-            )
+                if _current_memory:
+                    flush_prompt += (
+                        "IMPORTANT — here is the current live state of memory. Other "
+                        "sessions, cron jobs, or the user may have updated it since this "
+                        "conversation ended. Do NOT overwrite or remove entries unless "
+                        "the conversation above reveals something that genuinely "
+                        "supersedes them. Only add new information that is not already "
+                        "captured below."
+                        f"{_current_memory}\n\n"
+                    )
 
-            tmp_agent.run_conversation(
-                user_message=flush_prompt,
-                conversation_history=msgs,
-            )
-            logger.info("Pre-reset memory flush completed for session %s", old_session_id)
+                flush_prompt += (
+                    "Do NOT respond to the user. Just use the memory and skill_manage "
+                    "tools if needed, then stop.]"
+                )
+
+                tmp_agent.run_conversation(
+                    user_message=flush_prompt,
+                    conversation_history=msgs,
+                )
+                logger.info("Pre-reset memory flush completed for session %s", old_session_id)
         except Exception as e:
             logger.debug("Pre-reset memory flush failed for session %s: %s", old_session_id, e)
 
@@ -3766,52 +3812,54 @@ class GatewayRunner:
                             ]
 
                             if len(_hyg_msgs) >= 4:
-                                _hyg_agent = AIAgent(
-                                    **_hyg_runtime,
-                                    model=_hyg_model,
-                                    max_iterations=4,
-                                    quiet_mode=True,
-                                    skip_memory=True,
-                                    enabled_toolsets=["memory"],
-                                    session_id=session_entry.session_id,
-                                )
-                                _hyg_agent._print_fn = lambda *a, **kw: None
+                                with self._temporary_agent(
+                                    AIAgent(
+                                        **_hyg_runtime,
+                                        model=_hyg_model,
+                                        max_iterations=4,
+                                        quiet_mode=True,
+                                        skip_memory=True,
+                                        enabled_toolsets=["memory"],
+                                        session_id=session_entry.session_id,
+                                    )
+                                ) as _hyg_agent:
+                                    _hyg_agent._print_fn = lambda *a, **kw: None
 
-                                loop = asyncio.get_event_loop()
-                                _compressed, _ = await loop.run_in_executor(
-                                    None,
-                                    lambda: _hyg_agent._compress_context(
-                                        _hyg_msgs, "",
-                                        approx_tokens=_approx_tokens,
-                                    ),
-                                )
+                                    loop = asyncio.get_event_loop()
+                                    _compressed, _ = await loop.run_in_executor(
+                                        None,
+                                        lambda: _hyg_agent._compress_context(
+                                            _hyg_msgs, "",
+                                            approx_tokens=_approx_tokens,
+                                        ),
+                                    )
 
-                                # _compress_context ends the old session and creates
-                                # a new session_id.  Write compressed messages into
-                                # the NEW session so the old transcript stays intact
-                                # and searchable via session_search.
-                                _hyg_new_sid = _hyg_agent.session_id
-                                if _hyg_new_sid != session_entry.session_id:
-                                    session_entry.session_id = _hyg_new_sid
-                                    self.session_store._save()
+                                    # _compress_context ends the old session and creates
+                                    # a new session_id.  Write compressed messages into
+                                    # the NEW session so the old transcript stays intact
+                                    # and searchable via session_search.
+                                    _hyg_new_sid = _hyg_agent.session_id
+                                    if _hyg_new_sid != session_entry.session_id:
+                                        session_entry.session_id = _hyg_new_sid
+                                        self.session_store._save()
 
-                                self.session_store.rewrite_transcript(
-                                    session_entry.session_id, _compressed
-                                )
-                                # Reset stored token count — transcript was rewritten
-                                session_entry.last_prompt_tokens = 0
-                                history = _compressed
-                                _new_count = len(_compressed)
-                                _new_tokens = estimate_messages_tokens_rough(
-                                    _compressed
-                                )
+                                    self.session_store.rewrite_transcript(
+                                        session_entry.session_id, _compressed
+                                    )
+                                    # Reset stored token count — transcript was rewritten
+                                    session_entry.last_prompt_tokens = 0
+                                    history = _compressed
+                                    _new_count = len(_compressed)
+                                    _new_tokens = estimate_messages_tokens_rough(
+                                        _compressed
+                                    )
 
-                                logger.info(
-                                    "Session hygiene: compressed %s → %s msgs, "
-                                    "~%s → ~%s tokens",
-                                    _msg_count, _new_count,
-                                    f"{_approx_tokens:,}", f"{_new_tokens:,}",
-                                )
+                                    logger.info(
+                                        "Session hygiene: compressed %s → %s msgs, "
+                                        "~%s → ~%s tokens",
+                                        _msg_count, _new_count,
+                                        f"{_approx_tokens:,}", f"{_new_tokens:,}",
+                                    )
 
                                 if _new_tokens >= _warn_token_threshold:
                                     logger.warning(
@@ -5719,33 +5767,35 @@ class GatewayRunner:
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
 
             def run_sync():
-                agent = AIAgent(
-                    model=turn_route["model"],
-                    **turn_route["runtime"],
-                    max_iterations=max_iterations,
-                    quiet_mode=True,
-                    verbose_logging=False,
-                    enabled_toolsets=enabled_toolsets,
-                    reasoning_config=reasoning_config,
-                    service_tier=self._service_tier,
-                    request_overrides=turn_route.get("request_overrides"),
-                    providers_allowed=pr.get("only"),
-                    providers_ignored=pr.get("ignore"),
-                    providers_order=pr.get("order"),
-                    provider_sort=pr.get("sort"),
-                    provider_require_parameters=pr.get("require_parameters", False),
-                    provider_data_collection=pr.get("data_collection"),
-                    session_id=task_id,
-                    platform=platform_key,
-                    user_id=source.user_id,
-                    session_db=self._session_db,
-                    fallback_model=self._fallback_model,
-                )
-
-                return agent.run_conversation(
-                    user_message=prompt,
-                    task_id=task_id,
-                )
+                with self._temporary_agent(
+                    AIAgent(
+                        model=turn_route["model"],
+                        **turn_route["runtime"],
+                        max_iterations=max_iterations,
+                        quiet_mode=True,
+                        verbose_logging=False,
+                        enabled_toolsets=enabled_toolsets,
+                        reasoning_config=reasoning_config,
+                        service_tier=self._service_tier,
+                        request_overrides=turn_route.get("request_overrides"),
+                        providers_allowed=pr.get("only"),
+                        providers_ignored=pr.get("ignore"),
+                        providers_order=pr.get("order"),
+                        provider_sort=pr.get("sort"),
+                        provider_require_parameters=pr.get("require_parameters", False),
+                        provider_data_collection=pr.get("data_collection"),
+                        session_id=task_id,
+                        platform=platform_key,
+                        user_id=source.user_id,
+                        session_db=self._session_db,
+                        fallback_model=self._fallback_model,
+                    ),
+                    shutdown_memory_provider=True,
+                ) as agent:
+                    return agent.run_conversation(
+                        user_message=prompt,
+                        task_id=task_id,
+                    )
 
             result = await self._run_in_executor_with_context(run_sync)
 
@@ -5899,35 +5949,37 @@ class GatewayRunner:
             )
 
             def run_sync():
-                agent = AIAgent(
-                    model=turn_route["model"],
-                    **turn_route["runtime"],
-                    max_iterations=8,
-                    quiet_mode=True,
-                    verbose_logging=False,
-                    enabled_toolsets=[],
-                    reasoning_config=reasoning_config,
-                    service_tier=self._service_tier,
-                    request_overrides=turn_route.get("request_overrides"),
-                    providers_allowed=pr.get("only"),
-                    providers_ignored=pr.get("ignore"),
-                    providers_order=pr.get("order"),
-                    provider_sort=pr.get("sort"),
-                    provider_require_parameters=pr.get("require_parameters", False),
-                    provider_data_collection=pr.get("data_collection"),
-                    session_id=task_id,
-                    platform=platform_key,
-                    session_db=None,
-                    fallback_model=self._fallback_model,
-                    skip_memory=True,
-                    skip_context_files=True,
-                    persist_session=False,
-                )
-                return agent.run_conversation(
-                    user_message=btw_prompt,
-                    conversation_history=history_snapshot,
-                    task_id=task_id,
-                )
+                with self._temporary_agent(
+                    AIAgent(
+                        model=turn_route["model"],
+                        **turn_route["runtime"],
+                        max_iterations=8,
+                        quiet_mode=True,
+                        verbose_logging=False,
+                        enabled_toolsets=[],
+                        reasoning_config=reasoning_config,
+                        service_tier=self._service_tier,
+                        request_overrides=turn_route.get("request_overrides"),
+                        providers_allowed=pr.get("only"),
+                        providers_ignored=pr.get("ignore"),
+                        providers_order=pr.get("order"),
+                        provider_sort=pr.get("sort"),
+                        provider_require_parameters=pr.get("require_parameters", False),
+                        provider_data_collection=pr.get("data_collection"),
+                        session_id=task_id,
+                        platform=platform_key,
+                        session_db=None,
+                        fallback_model=self._fallback_model,
+                        skip_memory=True,
+                        skip_context_files=True,
+                        persist_session=False,
+                    )
+                ) as agent:
+                    return agent.run_conversation(
+                        user_message=btw_prompt,
+                        conversation_history=history_snapshot,
+                        task_id=task_id,
+                    )
 
             result = await self._run_in_executor_with_context(run_sync)
 
@@ -6247,52 +6299,54 @@ class GatewayRunner:
             original_count = len(msgs)
             approx_tokens = estimate_messages_tokens_rough(msgs)
 
-            tmp_agent = AIAgent(
-                **runtime_kwargs,
-                model=model,
-                max_iterations=4,
-                quiet_mode=True,
-                skip_memory=True,
-                enabled_toolsets=["memory"],
-                session_id=session_entry.session_id,
-            )
-            tmp_agent._print_fn = lambda *a, **kw: None
+            with self._temporary_agent(
+                AIAgent(
+                    **runtime_kwargs,
+                    model=model,
+                    max_iterations=4,
+                    quiet_mode=True,
+                    skip_memory=True,
+                    enabled_toolsets=["memory"],
+                    session_id=session_entry.session_id,
+                )
+            ) as tmp_agent:
+                tmp_agent._print_fn = lambda *a, **kw: None
 
-            compressor = tmp_agent.context_compressor
-            compress_start = compressor.protect_first_n
-            compress_start = compressor._align_boundary_forward(msgs, compress_start)
-            compress_end = compressor._find_tail_cut_by_tokens(msgs, compress_start)
-            if compress_start >= compress_end:
-                return "Nothing to compress yet (the transcript is still all protected context)."
+                compressor = tmp_agent.context_compressor
+                compress_start = compressor.protect_first_n
+                compress_start = compressor._align_boundary_forward(msgs, compress_start)
+                compress_end = compressor._find_tail_cut_by_tokens(msgs, compress_start)
+                if compress_start >= compress_end:
+                    return "Nothing to compress yet (the transcript is still all protected context)."
 
-            loop = asyncio.get_event_loop()
-            compressed, _ = await loop.run_in_executor(
-                None,
-                lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens, focus_topic=focus_topic)
-            )
+                loop = asyncio.get_event_loop()
+                compressed, _ = await loop.run_in_executor(
+                    None,
+                    lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens, focus_topic=focus_topic)
+                )
 
-            # _compress_context already calls end_session() on the old session
-            # (preserving its full transcript in SQLite) and creates a new
-            # session_id for the continuation.  Write the compressed messages
-            # into the NEW session so the original history stays searchable.
-            new_session_id = tmp_agent.session_id
-            if new_session_id != session_entry.session_id:
-                session_entry.session_id = new_session_id
-                self.session_store._save()
+                # _compress_context already calls end_session() on the old session
+                # (preserving its full transcript in SQLite) and creates a new
+                # session_id for the continuation.  Write the compressed messages
+                # into the NEW session so the original history stays searchable.
+                new_session_id = tmp_agent.session_id
+                if new_session_id != session_entry.session_id:
+                    session_entry.session_id = new_session_id
+                    self.session_store._save()
 
-            self.session_store.rewrite_transcript(new_session_id, compressed)
-            # Reset stored token count — transcript changed, old value is stale
-            self.session_store.update_session(
-                session_entry.session_key, last_prompt_tokens=0
-            )
-            new_tokens = estimate_messages_tokens_rough(compressed)
-            summary = summarize_manual_compression(
-                msgs,
-                compressed,
-                approx_tokens,
-                new_tokens,
-            )
-            lines = [f"🗜️ {summary['headline']}"]
+                self.session_store.rewrite_transcript(new_session_id, compressed)
+                # Reset stored token count — transcript changed, old value is stale
+                self.session_store.update_session(
+                    session_entry.session_key, last_prompt_tokens=0
+                )
+                new_tokens = estimate_messages_tokens_rough(compressed)
+                summary = summarize_manual_compression(
+                    msgs,
+                    compressed,
+                    approx_tokens,
+                    new_tokens,
+                )
+                lines = [f"🗜️ {summary['headline']}"]
             if focus_topic:
                 lines.append(f"Focus: \"{focus_topic}\"")
             lines.append(summary["token_line"])
