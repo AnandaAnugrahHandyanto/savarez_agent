@@ -38,7 +38,7 @@ Update this file whenever a session makes meaningful changes so the next session
 
 ## Open Threads
 - This file did not exist before this session; it is now the default central map/status file for repo changes.
-- If future sessions change the repo, append or refresh this file in the same session.
+- Operational rule now set: meaningful repo changes should end with targeted verification, explicit staging, atomic commit, push, and `WORK_MAP.md` update in the same session.
 - Full-suite verification was not run in this recording step.
 
 ## Next Practical Step
