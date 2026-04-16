@@ -230,10 +230,10 @@ class ContextCompressor(ContextEngine):
     def __init__(
         self,
         model: str,
-        threshold_percent: float = 0.50,
+        threshold_percent: float = 0.75,
         protect_first_n: int = 3,
-        protect_last_n: int = 20,
-        summary_target_ratio: float = 0.20,
+        protect_last_n: int = 24,
+        summary_target_ratio: float = 0.30,
         quiet_mode: bool = False,
         summary_model_override: str = None,
         base_url: str = "",
@@ -862,6 +862,17 @@ The user has requested that this compaction PRIORITISE preserving all informatio
     # Tail protection by token budget
     # ------------------------------------------------------------------
 
+    def _recent_non_tool_indexes(self, messages: List[Dict[str, Any]], count: int = 6) -> List[int]:
+        """Return indexes of the most recent non-tool messages."""
+        indexes: List[int] = []
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i].get("role") != "tool":
+                indexes.append(i)
+                if len(indexes) >= count:
+                    break
+        indexes.reverse()
+        return indexes
+
     def _find_tail_cut_by_tokens(
         self, messages: List[Dict[str, Any]], head_end: int,
         token_budget: int | None = None,
@@ -915,10 +926,108 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         if cut_idx <= head_end:
             cut_idx = max(fallback_cut, head_end + 1)
 
+        # Hard guard: always preserve the last few non-tool messages even if
+        # there is lots of trailing tool chatter after them.
+        recent_non_tool = self._recent_non_tool_indexes(messages, count=6)
+        if recent_non_tool:
+            forced_cut = recent_non_tool[0]
+            if forced_cut < cut_idx:
+                cut_idx = forced_cut
+
         # Align to avoid splitting tool groups
         cut_idx = self._align_boundary_backward(messages, cut_idx)
 
         return max(cut_idx, head_end + 1)
+
+    def _build_local_fallback_summary(self, turns: List[Dict[str, Any]]) -> str:
+        """Build a deterministic fallback handoff without an LLM.
+
+        Keeps recent user/assistant plain-text content, a compact todo snapshot,
+        and skips bulky tool chatter. This is intentionally lossy but much better
+        than the old "summary unavailable" marker.
+        """
+        user_lines: List[str] = []
+        assistant_lines: List[str] = []
+        todo_lines: List[str] = []
+        file_lines: List[str] = []
+        other_notes: List[str] = []
+
+        def _clean(text: str, limit: int = 280) -> str:
+            text = " ".join((text or "").split())
+            if len(text) > limit:
+                text = text[: limit - 3].rstrip() + "..."
+            return text
+
+        for msg in turns:
+            role = msg.get("role")
+            content = msg.get("content") or ""
+            if not isinstance(content, str):
+                content = str(content)
+            cleaned = _clean(content)
+            if not cleaned:
+                continue
+            if role == "user":
+                if cleaned.startswith("[") and "task list" in cleaned.lower():
+                    for line in content.splitlines():
+                        line = line.strip()
+                        if line.startswith("-") or line.startswith("•") or line.startswith("["):
+                            todo_lines.append(_clean(line, 180))
+                    continue
+                user_lines.append(cleaned)
+            elif role == "assistant":
+                assistant_lines.append(cleaned)
+            elif role == "tool":
+                continue
+            else:
+                other_notes.append(cleaned)
+
+            lowered = cleaned.lower()
+            for token in cleaned.split():
+                if "/" in token and len(token) > 3:
+                    file_lines.append(_clean(token, 140))
+                elif any(token.endswith(ext) for ext in (".py", ".js", ".ts", ".json", ".yaml", ".yml", ".md", ".sh")):
+                    file_lines.append(_clean(token, 140))
+            if "error" in lowered or "failed" in lowered or "失败" in cleaned or "报错" in cleaned:
+                other_notes.append(cleaned)
+
+        def _uniq(seq: List[str], limit: int) -> List[str]:
+            out: List[str] = []
+            seen = set()
+            for item in seq:
+                if item not in seen:
+                    seen.add(item)
+                    out.append(item)
+                if len(out) >= limit:
+                    break
+            return out
+
+        user_lines = _uniq(user_lines, 8)
+        assistant_lines = _uniq(assistant_lines, 8)
+        todo_lines = _uniq(todo_lines, 8)
+        file_lines = _uniq(file_lines, 10)
+        other_notes = _uniq(other_notes, 6)
+
+        sections = [SUMMARY_PREFIX]
+        sections.append("## Local Fallback Handoff")
+        sections.append("Summary model failed, so this fallback keeps the most useful plain-text turns and drops old tool outputs.")
+
+        if todo_lines:
+            sections.append("\n## Preserved Task State")
+            sections.extend(f"- {line}" for line in todo_lines)
+        if user_lines:
+            sections.append("\n## Recent User Messages")
+            sections.extend(f"- {line}" for line in user_lines)
+        if assistant_lines:
+            sections.append("\n## Recent Assistant Messages")
+            sections.extend(f"- {line}" for line in assistant_lines)
+        if file_lines:
+            sections.append("\n## Mentioned Files/Paths")
+            sections.extend(f"- {line}" for line in file_lines)
+        if other_notes:
+            sections.append("\n## Notes")
+            sections.extend(f"- {line}" for line in other_notes)
+
+        return "\n".join(sections)
 
     # ------------------------------------------------------------------
     # Main compression entry point
@@ -1012,19 +1121,13 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                     msg["content"] = existing + "\n\n" + _compression_note
             compressed.append(msg)
 
-        # If LLM summary failed, insert a static fallback so the model
-        # knows context was lost rather than silently dropping everything.
+        # If LLM summary failed, keep a deterministic local fallback instead of
+        # losing all compressed context. Prioritize user/assistant text and drop
+        # tool noise so the next turn still has a usable handoff.
         if not summary:
             if not self.quiet_mode:
-                logger.warning("Summary generation failed — inserting static fallback context marker")
-            n_dropped = compress_end - compress_start
-            summary = (
-                f"{SUMMARY_PREFIX}\n"
-                f"Summary generation was unavailable. {n_dropped} conversation turns were "
-                f"removed to free context space but could not be summarized. The removed "
-                f"turns contained earlier work in this session. Continue based on the "
-                f"recent messages below and the current state of any files or resources."
-            )
+                logger.warning("Summary generation failed — building local fallback handoff")
+            summary = self._build_local_fallback_summary(turns_to_summarize)
 
         _merge_summary_into_tail = False
         last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"
