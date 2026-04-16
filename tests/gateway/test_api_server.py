@@ -12,6 +12,7 @@ Tests cover:
 - Error handling (invalid JSON, missing fields)
 """
 
+import asyncio
 import json
 import time
 import uuid
@@ -31,6 +32,9 @@ from gateway.platforms.api_server import (
     cors_middleware,
     security_headers_middleware,
 )
+from gateway.run import GatewayRunner
+from gateway.session import SessionSource, build_session_key
+from gateway.session_context import _UNSET, _VAR_MAP, get_session_env
 
 
 # ---------------------------------------------------------------------------
@@ -240,6 +244,13 @@ def auth_adapter():
     return _make_adapter(api_key="sk-secret")
 
 
+@pytest.fixture(autouse=True)
+def _reset_session_contextvars():
+    yield
+    for var in _VAR_MAP.values():
+        var.set(_UNSET)
+
+
 # ---------------------------------------------------------------------------
 # /health endpoint
 # ---------------------------------------------------------------------------
@@ -256,6 +267,94 @@ class TestHealthEndpoint:
             assert resp.headers.get("X-Content-Type-Options") == "nosniff"
             assert resp.headers.get("Referrer-Policy") == "no-referrer"
 
+
+class TestGatewayBinding:
+    def test_gateway_runner_binds_api_server_adapter(self):
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig()
+        config = PlatformConfig(enabled=True)
+
+        adapter = runner._create_adapter(Platform.API_SERVER, config)
+
+        assert isinstance(adapter, APIServerAdapter)
+        assert adapter._gateway_runner is runner
+
+
+class TestRunAgentSessionContext:
+    @pytest.mark.asyncio
+    async def test_run_agent_propagates_session_context_and_drains_notify_watchers(self, adapter):
+        from tools.process_registry import process_registry
+
+        runner = object.__new__(GatewayRunner)
+        runner._run_process_watcher = AsyncMock()
+        adapter.bind_gateway_runner(runner)
+
+        process_registry.pending_watchers.clear()
+        captured = {}
+        session_id = "api-session-42"
+        expected_session_key = build_session_key(
+            SessionSource(
+                platform=Platform.API_SERVER,
+                chat_id=session_id,
+                chat_type="dm",
+            )
+        )
+
+        class _FakeAgent:
+            session_prompt_tokens = 11
+            session_completion_tokens = 7
+            session_total_tokens = 18
+
+            def run_conversation(self, user_message, conversation_history, task_id):
+                from tools.approval import get_current_session_key
+                from tools.process_registry import process_registry as _pr
+
+                captured["platform"] = get_session_env("HERMES_SESSION_PLATFORM")
+                captured["chat_id"] = get_session_env("HERMES_SESSION_CHAT_ID")
+                captured["session_key"] = get_current_session_key(default="")
+                _pr.pending_watchers.append(
+                    {
+                        "session_id": "proc_123",
+                        "check_interval": 5,
+                        "session_key": captured["session_key"],
+                        "platform": captured["platform"],
+                        "chat_id": captured["chat_id"],
+                        "user_id": "",
+                        "user_name": "",
+                        "thread_id": "",
+                        "notify_on_complete": True,
+                    }
+                )
+                return {"final_response": "done", "messages": [], "api_calls": 1}
+
+        with patch.object(adapter, "_create_agent", return_value=_FakeAgent()):
+            result, usage = await adapter._run_agent(
+                user_message="hello",
+                conversation_history=[],
+                session_id=session_id,
+            )
+
+        await asyncio.sleep(0)
+
+        assert result["final_response"] == "done"
+        assert usage == {"input_tokens": 11, "output_tokens": 7, "total_tokens": 18}
+        assert captured == {
+            "platform": "api_server",
+            "chat_id": session_id,
+            "session_key": expected_session_key,
+        }
+        runner._run_process_watcher.assert_awaited_once()
+        watcher = runner._run_process_watcher.await_args.args[0]
+        assert watcher["notify_on_complete"] is True
+        assert watcher["platform"] == "api_server"
+        assert watcher["chat_id"] == session_id
+        assert watcher["session_key"] == expected_session_key
+        assert process_registry.pending_watchers == []
+        assert get_session_env("HERMES_SESSION_PLATFORM") == ""
+        assert get_session_env("HERMES_SESSION_CHAT_ID") == ""
+
+
+class TestHealthAliases:
     @pytest.mark.asyncio
     async def test_health_returns_ok(self, adapter):
         app = _create_app(adapter)
