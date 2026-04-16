@@ -5305,6 +5305,12 @@ For more help on a command:
     webhook_parser.set_defaults(func=cmd_webhook)
 
     # =========================================================================
+    # state command
+    # =========================================================================
+    from hermes_cli.state_cli import setup_state_parser
+    setup_state_parser(subparsers)
+
+    # =========================================================================
     # doctor command
     # =========================================================================
     doctor_parser = subparsers.add_parser(
