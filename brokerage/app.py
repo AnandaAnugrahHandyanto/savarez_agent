@@ -116,6 +116,12 @@ def create_app(
         except ValueError as exc:
             raise _translate_error(exc) from exc
 
+    @app.get("/positions", dependencies=[Depends(require_auth)])
+    def get_positions(account_mode: str | None = None) -> dict:
+        """Return current broker account positions."""
+        positions = deps.service.get_positions(account_mode=account_mode)
+        return {"positions": positions, "count": len(positions)}
+
     return app
 
 

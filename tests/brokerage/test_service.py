@@ -15,7 +15,7 @@ from brokerage.storage import SQLiteBrokerageStore
 
 
 class FakeBroker(BrokerAdapter):
-    def __init__(self, result: BrokerSubmissionResult | None = None, *, order_statuses: dict[str, dict] | None = None):
+    def __init__(self, result: BrokerSubmissionResult | None = None, *, order_statuses: dict[str, dict] | None = None, positions: list[dict] | None = None):
         self.result = result or BrokerSubmissionResult(
             accepted=True,
             broker_order_id="ib-123",
@@ -23,6 +23,7 @@ class FakeBroker(BrokerAdapter):
         )
         self.order_statuses = order_statuses or {}
         self.submitted: list[TradeIntent] = []
+        self._positions = positions or []
 
     def submit_order(self, intent: TradeIntent) -> BrokerSubmissionResult:
         self.submitted.append(intent)
@@ -39,6 +40,9 @@ class FakeBroker(BrokerAdapter):
 
     def cancel_order(self, order_id: str):
         return None
+
+    def get_positions(self, *, account_mode: str | None = None) -> list[dict]:
+        return self._positions
 
 
 def _make_service(tmp_path, broker: BrokerAdapter | None = None) -> BrokerageService:
@@ -452,3 +456,23 @@ def test_cancel_cancelled_intent_fails(tmp_path):
 
     with pytest.raises(ValueError, match="pending_confirmation"):
         service.cancel_intent(created["intent_id"])
+
+
+def test_get_positions_delegates_to_broker(tmp_path):
+    positions = [
+        {"symbol": "AAPL", "position": 5.0, "avg_cost": 264.98, "account_mode": "paper"},
+    ]
+    broker = FakeBroker(positions=positions)
+    service = _make_service(tmp_path, broker=broker)
+
+    result = service.get_positions(account_mode="paper")
+
+    assert result == positions
+
+
+def test_get_positions_returns_empty_list_when_no_positions(tmp_path):
+    service = _make_service(tmp_path)
+
+    result = service.get_positions()
+
+    assert result == []

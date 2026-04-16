@@ -16,12 +16,13 @@ from brokerage.storage import SQLiteBrokerageStore
 
 
 class FakeBroker(BrokerAdapter):
-    def __init__(self, result: BrokerSubmissionResult | None = None):
+    def __init__(self, result: BrokerSubmissionResult | None = None, positions: list[dict] | None = None):
         self.result = result or BrokerSubmissionResult(
             accepted=True,
             broker_order_id="ib-123",
             broker_status="Submitted",
         )
+        self._positions = positions or []
 
     def submit_order(self, intent: TradeIntent) -> BrokerSubmissionResult:
         return self.result
@@ -38,12 +39,15 @@ class FakeBroker(BrokerAdapter):
     def cancel_order(self, order_id: str):
         return None
 
+    def get_positions(self, *, account_mode: str | None = None) -> list[dict]:
+        return self._positions
 
-def _make_client(tmp_path: Path, *, token: str = "test-token") -> TestClient:
+
+def _make_client(tmp_path: Path, *, token: str = "test-token", positions: list[dict] | None = None) -> TestClient:
     settings = BrokerageSettings(service_token=token)
     store = SQLiteBrokerageStore(tmp_path / "brokerage.db")
     policy = BrokeragePolicy(settings)
-    service = BrokerageService(settings, store, policy, FakeBroker())
+    service = BrokerageService(settings, store, policy, FakeBroker(positions=positions))
     app = create_app(service=service, auth_token=token)
     return TestClient(app)
 
@@ -196,3 +200,50 @@ def test_get_trade_intent_returns_current_status(tmp_path):
     assert body["intent_id"] == created["intent_id"]
     assert body["status"] == "pending_confirmation"
     assert body["confirmation_code"] == created["confirmation_code"]
+
+
+def test_get_positions_returns_empty_when_no_positions(tmp_path):
+    client = _make_client(tmp_path)
+
+    response = client.get("/positions", headers=_auth_headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["positions"] == []
+    assert body["count"] == 0
+
+
+def test_get_positions_returns_broker_positions(tmp_path):
+    positions = [
+        {"symbol": "AAPL", "position": 5.0, "avg_cost": 264.98, "account_mode": "paper"},
+        {"symbol": "MSFT", "position": 3.0, "avg_cost": 420.50, "account_mode": "paper"},
+    ]
+    client = _make_client(tmp_path, positions=positions)
+
+    response = client.get("/positions", headers=_auth_headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["count"] == 2
+    assert body["positions"] == positions
+
+
+def test_get_positions_passes_account_mode_query_param(tmp_path):
+    positions = [
+        {"symbol": "AAPL", "position": 5.0, "avg_cost": 264.98, "account_mode": "paper"},
+    ]
+    client = _make_client(tmp_path, positions=positions)
+
+    response = client.get("/positions?account_mode=paper", headers=_auth_headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["count"] == 1
+
+
+def test_get_positions_requires_auth(tmp_path):
+    client = _make_client(tmp_path)
+
+    response = client.get("/positions")
+
+    assert response.status_code == 401

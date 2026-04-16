@@ -158,6 +158,10 @@ class BrokerageService:
         row = self._require_intent(intent_id)
         return self._refresh_broker_status(row)
 
+    def get_positions(self, *, account_mode: str | None = None) -> list[dict]:
+        """Return current broker account positions."""
+        return self.broker.get_positions(account_mode=account_mode)
+
     def _refresh_broker_status(self, row: dict) -> dict:
         if row.get("status") != "submitted" or not row.get("ibkr_order_id"):
             return row

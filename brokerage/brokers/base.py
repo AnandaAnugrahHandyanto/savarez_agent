@@ -32,6 +32,14 @@ class BrokerAdapter(ABC):
         """Return broker connection health status. Override in subclasses."""
         return {"connected": False, "mode": None}
 
+    def get_positions(self, *, account_mode: str | None = None) -> list[dict]:
+        """Return current account positions as a list of dicts.
+
+        Each dict has keys: symbol, position (float), avg_cost (float), account_mode.
+        Override in subclasses. Returns empty list by default.
+        """
+        return []
+
     def disconnect(self) -> None:
         """Graceful disconnect. Override in subclasses."""
         pass

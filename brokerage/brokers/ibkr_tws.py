@@ -324,3 +324,35 @@ class IBKRTwsBrokerAdapter(BrokerAdapter):
 
     def cancel_order(self, order_id: str):
         raise NotImplementedError("cancel_order not implemented yet")
+
+    def get_positions(self, *, account_mode: str | None = None) -> list[dict]:
+        """Return current IBKR account positions.
+
+        Requires an active connection. If account_mode is given and differs
+        from the current connection, reconnects to the appropriate port.
+        """
+        mode = account_mode or self._connected_mode or "paper"
+        try:
+            self._ensure_connected(mode)
+        except Exception as exc:
+            logger.warning("Cannot connect to IBKR for positions query: %s", exc)
+            return []
+
+        if self._ib is None:
+            return []
+
+        try:
+            positions = self._ib.positions()
+        except Exception as exc:
+            logger.warning("Error fetching IBKR positions: %s", exc)
+            return []
+
+        result = []
+        for p in positions:
+            result.append({
+                "symbol": p.contract.symbol,
+                "position": float(p.position),
+                "avg_cost": float(p.avgCost),
+                "account_mode": mode,
+            })
+        return result
