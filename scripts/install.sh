@@ -122,6 +122,26 @@ log_error() {
     echo -e "${RED}✗${NC} $1"
 }
 
+run_with_heartbeat() {
+    local label="$1"
+    shift
+    local interval="${HERMES_INSTALL_HEARTBEAT_SECONDS:-15}"
+    local elapsed=0
+
+    "$@" &
+    local cmd_pid=$!
+
+    while kill -0 "$cmd_pid" 2>/dev/null; do
+        sleep 1
+        elapsed=$((elapsed + 1))
+        if [ "$interval" -gt 0 ] && [ $((elapsed % interval)) -eq 0 ]; then
+            log_info "$label still running... (${elapsed}s elapsed)"
+        fi
+    done
+
+    wait "$cmd_pid"
+}
+
 is_termux() {
     [ -n "${TERMUX_VERSION:-}" ] || [[ "${PREFIX:-}" == *"com.termux/files/usr"* ]]
 }
@@ -1098,8 +1118,9 @@ install_node_deps() {
 
     if [ -f "$INSTALL_DIR/package.json" ]; then
         log_info "Installing Node.js dependencies (browser tools)..."
+        log_info "This step can be quiet for a while while npm downloads browser packages."
         cd "$INSTALL_DIR"
-        npm install --silent 2>/dev/null || {
+        run_with_heartbeat "Installing Node.js dependencies (browser tools)" npm install --silent || {
             log_warn "npm install failed (browser tools may not work)"
         }
         log_success "Node.js dependencies installed"
@@ -1167,7 +1188,8 @@ install_node_deps() {
     if [ -f "$INSTALL_DIR/scripts/whatsapp-bridge/package.json" ]; then
         log_info "Installing WhatsApp bridge dependencies..."
         cd "$INSTALL_DIR/scripts/whatsapp-bridge"
-        npm install --silent 2>/dev/null || {
+        log_info "This step can also be quiet while npm resolves WhatsApp bridge packages."
+        run_with_heartbeat "Installing WhatsApp bridge dependencies" npm install --silent || {
             log_warn "WhatsApp bridge npm install failed (WhatsApp may not work)"
         }
         log_success "WhatsApp bridge dependencies installed"
