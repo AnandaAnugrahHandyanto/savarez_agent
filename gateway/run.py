@@ -5615,7 +5615,7 @@ class GatewayRunner:
             return f"{descriptions[new_mode]}\n_(could not save to config: {e})_"
 
     async def _handle_persona_command(self, event: MessageEvent) -> str:
-        """Handle /persona [reload] — invalidate all cached agent system prompts and reload from SOUL.md."""
+        """Handle /persona [reload] — reload SOUL.md (name, personality, tone) across all cached sessions."""
         # 1. Invalidate all cached agents
         invalidated = 0
         _cache_lock = getattr(self, "_agent_cache_lock", None)
@@ -5643,7 +5643,7 @@ class GatewayRunner:
                             # strip thread suffix if present (format: "platform:chat_id:thread_id")
                             chat_id = chat_id.split(":")[0]
                             try:
-                                await adapter.send(chat_id, "Persona reloaded — I've refreshed my identity from SOUL.md in all chats.")
+                                await adapter.send(chat_id, "Persona reloaded — SOUL.md changes (name, personality, tone) are now active in this chat.")
                                 notified += 1
                             except Exception as e:
                                 logger.debug("Failed to notify session %s: %s", session_key, e)
@@ -5656,9 +5656,9 @@ class GatewayRunner:
         soul_path = _hermes_home / "SOUL.md"
         soul_status = "SOUL.md found" if soul_path.exists() else "⚠️ SOUL.md not found — using default identity"
         return (
-            f"Persona reloaded. {soul_status}. "
+            f"SOUL.md reloaded. {soul_status}. "
             f"Invalidated {invalidated} cached session(s), notified {notified} other chat(s). "
-            f"Next message in each chat will use the updated identity."
+            f"Next message in each chat will use the updated name, personality, and tone."
         )
 
     async def _handle_compress_command(self, event: MessageEvent) -> str:
