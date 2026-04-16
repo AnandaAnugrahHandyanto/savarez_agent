@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+import hermes_cli.auth as auth
 
 from hermes_cli.auth import (
     AuthError,
@@ -127,6 +128,64 @@ def test_resolve_provider_explicit_codex_does_not_fallback(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     assert resolve_provider("openai-codex") == "openai-codex"
+
+
+def test_resolve_codex_runtime_credentials_recovers_from_cli_on_refresh_failure(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    codex_home = tmp_path / "codex-cli"
+    _setup_hermes_auth(hermes_home, access_token="hermes-at", refresh_token="hermes-rt")
+    codex_home.mkdir(parents=True, exist_ok=True)
+    (codex_home / "auth.json").write_text(
+        json.dumps({"tokens": {"access_token": "cli-at", "refresh_token": "cli-rt"}})
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    calls = {"count": 0}
+
+    def _fake_refresh(tokens, timeout_seconds):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise AuthError(
+                "refresh token revoked",
+                provider="openai-codex",
+                code="invalid_grant",
+                relogin_required=True,
+            )
+        assert tokens["access_token"] == "cli-at"
+        assert tokens["refresh_token"] == "cli-rt"
+        auth._save_codex_tokens({"access_token": "validated-at", "refresh_token": "validated-rt"})
+        return {"access_token": "validated-at", "refresh_token": "validated-rt"}
+
+    monkeypatch.setattr("hermes_cli.auth._refresh_codex_auth_tokens", _fake_refresh)
+
+    resolved = resolve_codex_runtime_credentials(force_refresh=True, refresh_if_expiring=False)
+
+    assert resolved["api_key"] == "validated-at"
+    assert calls["count"] == 2
+
+
+
+def test_resolve_codex_runtime_credentials_raises_original_error_when_cli_recovery_missing(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    _setup_hermes_auth(hermes_home, access_token="hermes-at", refresh_token="hermes-rt")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex-home"))
+
+    def _fake_refresh(tokens, timeout_seconds):
+        raise AuthError(
+            "refresh token revoked",
+            provider="openai-codex",
+            code="invalid_grant",
+            relogin_required=True,
+        )
+
+    monkeypatch.setattr("hermes_cli.auth._refresh_codex_auth_tokens", _fake_refresh)
+
+    with pytest.raises(AuthError) as exc:
+        resolve_codex_runtime_credentials(force_refresh=True, refresh_if_expiring=False)
+
+    assert exc.value.code == "invalid_grant"
 
 
 def test_save_codex_tokens_roundtrip(tmp_path, monkeypatch):
