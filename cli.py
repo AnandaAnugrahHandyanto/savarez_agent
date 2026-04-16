@@ -1917,7 +1917,7 @@ class HermesCLI:
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
-            "model_label": f"{model_short} F" if fast_mode_enabled else model_short,
+            "model_label": f"{model_short} ⚡" if fast_mode_enabled else model_short,
             "fast_mode_enabled": fast_mode_enabled,
             "duration": format_duration_compact(elapsed_seconds),
             "reasoning_effort": reasoning_effort,

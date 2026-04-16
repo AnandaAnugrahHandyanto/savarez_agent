@@ -229,7 +229,7 @@ class TestCLIStatusBar:
 
         text = cli_obj._build_status_bar_text(width=100)
 
-        assert "gpt-5.4 F" in text
+        assert "gpt-5.4 ⚡" in text
 
     def test_status_bar_ignores_invalid_fast_mode_setting(self):
         cli_obj = _make_cli(model="gpt-5.4")
@@ -237,7 +237,7 @@ class TestCLIStatusBar:
 
         text = cli_obj._build_status_bar_text(width=100)
 
-        assert "gpt-5.4 F" not in text
+        assert "gpt-5.4 ⚡" not in text
 
     def test_status_bar_prefers_agent_fast_mode_setting(self):
         cli_obj = _attach_agent(
@@ -254,7 +254,7 @@ class TestCLIStatusBar:
 
         text = cli_obj._build_status_bar_text(width=120)
 
-        assert "gpt-5.4 F" in text
+        assert "gpt-5.4 ⚡" in text
 
     def test_status_bar_fragments_show_fast_mode_flag(self):
         cli_obj = _attach_agent(
@@ -274,7 +274,23 @@ class TestCLIStatusBar:
         with patch("prompt_toolkit.application.get_app", return_value=mock_app):
             frags = cli_obj._get_status_bar_fragments()
 
-        assert any("gpt-5.4 F" in text for _, text in frags)
+        assert any("gpt-5.4 ⚡" in text for _, text in frags)
+
+    def test_status_bar_fast_mode_marker_respects_narrow_width_budget(self):
+        cli_obj = _attach_agent(
+            _make_cli(model="gpt-5.4"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            service_tier="priority",
+        )
+        text = cli_obj._build_status_bar_text(width=60)
+
+        assert "gpt-5.4 ⚡" in text
+        assert cli_obj._status_bar_display_width(text) <= 60
 
     def test_status_bar_ignores_invalid_reasoning_setting(self):
         cli_obj = _make_cli()
