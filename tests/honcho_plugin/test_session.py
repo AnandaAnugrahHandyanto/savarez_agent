@@ -474,6 +474,24 @@ class TestConcludeToolDispatch:
         provider._manager.create_conclusion.assert_not_called()
         provider._manager.delete_conclusion.assert_not_called()
 
+    def test_honcho_conclude_rejects_both_params(self):
+        """Calling honcho_conclude with both conclusion and delete_id returns a tool error."""
+        import json
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+
+        result = provider.handle_tool_call(
+            "honcho_conclude",
+            {"conclusion": "User prefers dark mode", "delete_id": "conc_123"},
+        )
+
+        parsed = json.loads(result)
+        assert "error" in parsed or "exactly one" in parsed.get("result", "")
+        provider._manager.create_conclusion.assert_not_called()
+        provider._manager.delete_conclusion.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Message chunking

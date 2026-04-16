@@ -1012,13 +1012,27 @@ class HonchoMemoryProvider(MemoryProvider):
 
             elif tool_name == "honcho_conclude":
                 delete_id = args.get("delete_id")
+                if delete_id is None:
+                    delete_id = ""
+                elif not isinstance(delete_id, str):
+                    delete_id = str(delete_id)
+                delete_id = delete_id.strip()
+
+                conclusion = args.get("conclusion", "")
+                if conclusion is None:
+                    conclusion = ""
+                elif not isinstance(conclusion, str):
+                    conclusion = str(conclusion)
+                conclusion = conclusion.strip()
+
                 peer = args.get("peer", "user")
+                if delete_id and conclusion:
+                    return tool_error("Pass exactly one of conclusion or delete_id, not both.")
                 if delete_id:
                     ok = self._manager.delete_conclusion(self._session_key, delete_id, peer=peer)
                     if ok:
                         return json.dumps({"result": f"Conclusion {delete_id} deleted."})
                     return tool_error(f"Failed to delete conclusion {delete_id}.")
-                conclusion = args.get("conclusion", "")
                 if not conclusion:
                     return tool_error("Missing required parameter: conclusion or delete_id")
                 ok = self._manager.create_conclusion(self._session_key, conclusion, peer=peer)

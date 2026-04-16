@@ -3622,6 +3622,51 @@ class AIAgent:
         if self._memory_store:
             self._memory_store.load_from_disk()
 
+    @staticmethod
+    def _normalize_responses_tool_parameters(parameters: Any) -> Dict[str, Any]:
+        """Normalize tool parameter schemas for Responses API compatibility."""
+        if not isinstance(parameters, dict):
+            return {"type": "object", "properties": {}}
+
+        schema = copy.deepcopy(parameters)
+        properties = schema.get("properties")
+        if not isinstance(properties, dict):
+            schema["properties"] = {}
+        if schema.get("type") != "object":
+            schema["type"] = "object"
+
+        merged_required = schema.get("required")
+        if not isinstance(merged_required, list):
+            merged_required = []
+
+        top_level_all_of = schema.pop("allOf", None)
+        if isinstance(top_level_all_of, list):
+            for branch in top_level_all_of:
+                if not isinstance(branch, dict):
+                    continue
+                branch_properties = branch.get("properties")
+                if isinstance(branch_properties, dict):
+                    for key, value in branch_properties.items():
+                        if key not in schema["properties"]:
+                            schema["properties"][key] = copy.deepcopy(value)
+                branch_required = branch.get("required")
+                if isinstance(branch_required, list):
+                    for item in branch_required:
+                        if isinstance(item, str) and item not in merged_required:
+                            merged_required.append(item)
+                if "additionalProperties" in branch and "additionalProperties" not in schema:
+                    schema["additionalProperties"] = branch["additionalProperties"]
+
+        if merged_required:
+            schema["required"] = merged_required
+        elif "required" in schema and not isinstance(schema.get("required"), list):
+            schema.pop("required", None)
+
+        for key in ("anyOf", "oneOf", "enum", "not"):
+            schema.pop(key, None)
+
+        return schema
+
     def _responses_tools(self, tools: Optional[List[Dict[str, Any]]] = None) -> Optional[List[Dict[str, Any]]]:
         """Convert chat-completions tool schemas to Responses function-tool schemas."""
         source_tools = tools if tools is not None else self.tools
@@ -3639,7 +3684,9 @@ class AIAgent:
                 "name": name,
                 "description": fn.get("description", ""),
                 "strict": False,
-                "parameters": fn.get("parameters", {"type": "object", "properties": {}}),
+                "parameters": self._normalize_responses_tool_parameters(
+                    fn.get("parameters", {"type": "object", "properties": {}})
+                ),
             })
         return converted or None
 
@@ -3967,7 +4014,7 @@ class AIAgent:
                         "name": name.strip(),
                         "description": description,
                         "strict": strict,
-                        "parameters": parameters,
+                        "parameters": self._normalize_responses_tool_parameters(parameters),
                     }
                 )
 

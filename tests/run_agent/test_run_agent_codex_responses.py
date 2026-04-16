@@ -735,6 +735,37 @@ def test_preflight_codex_api_kwargs_rejects_unsupported_request_fields(monkeypat
         agent._preflight_codex_api_kwargs(kwargs)
 
 
+def test_preflight_codex_api_kwargs_sanitizes_top_level_parameter_anyof(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    kwargs = _codex_request_kwargs()
+    kwargs["tools"] = [
+        {
+            "type": "function",
+            "name": "honcho_conclude",
+            "description": "Write or delete a conclusion.",
+            "strict": False,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "conclusion": {"type": "string"},
+                    "delete_id": {"type": "string"},
+                },
+                "anyOf": [
+                    {"required": ["conclusion"]},
+                    {"required": ["delete_id"]},
+                ],
+            },
+        }
+    ]
+
+    result = agent._preflight_codex_api_kwargs(kwargs)
+
+    params = result["tools"][0]["parameters"]
+    assert params["type"] == "object"
+    assert sorted(params["properties"].keys()) == ["conclusion", "delete_id"]
+    assert "anyOf" not in params
+
+
 def test_preflight_codex_api_kwargs_allows_reasoning_and_temperature(monkeypatch):
     agent = _build_agent(monkeypatch)
     kwargs = _codex_request_kwargs()
