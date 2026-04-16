@@ -772,6 +772,21 @@ class TestLoadConfig(unittest.TestCase):
             result = _load_config()
         self.assertIsInstance(result, dict)
 
+    def test_does_not_import_cli_or_set_terminal_cwd_when_cli_unloaded(self):
+        from tools.code_execution_tool import _load_config
+
+        original_cli = sys.modules.pop("cli", None)
+        original_cwd = os.environ.pop("TERMINAL_CWD", None)
+        try:
+            result = _load_config()
+            self.assertEqual(result, {})
+            self.assertNotIn("TERMINAL_CWD", os.environ)
+        finally:
+            if original_cli is not None:
+                sys.modules["cli"] = original_cli
+            if original_cwd is not None:
+                os.environ["TERMINAL_CWD"] = original_cwd
+
 
 # ---------------------------------------------------------------------------
 # Interrupt event

@@ -20,6 +20,7 @@ import json
 import logging
 logger = logging.getLogger(__name__)
 import os
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -941,10 +942,15 @@ def _load_config() -> dict:
     to the persistent config (hermes_cli/config.py load_config()) so that
     ``delegation.model`` / ``delegation.provider`` are picked up regardless
     of the entry point (CLI, gateway, cron).
+
+    Important: do NOT import ``cli`` here in gateway/cron contexts. Importing
+    that module has process-wide side effects, including resolving
+    ``terminal.cwd: .`` into ``TERMINAL_CWD`` based on the process cwd.
     """
     try:
-        from cli import CLI_CONFIG
-        cfg = CLI_CONFIG.get("delegation", {})
+        cli_mod = sys.modules.get("cli")
+        cli_config = getattr(cli_mod, "CLI_CONFIG", None) if cli_mod else None
+        cfg = cli_config.get("delegation", {}) if isinstance(cli_config, dict) else {}
         if cfg:
             return cfg
     except Exception:

@@ -569,6 +569,34 @@ class TestBlockedTools(unittest.TestCase):
         self.assertEqual(MAX_DEPTH, 2)
 
 
+class TestLoadConfig(unittest.TestCase):
+    def test_uses_loaded_cli_module_without_importing(self):
+        from tools.delegate_tool import _load_config
+
+        mock_cli = MagicMock()
+        mock_cli.CLI_CONFIG = {"delegation": {"max_concurrent_children": 9}}
+        with patch.dict(sys.modules, {"cli": mock_cli}):
+            result = _load_config()
+
+        self.assertEqual(result, {"max_concurrent_children": 9})
+
+    def test_fallback_does_not_import_cli_or_set_terminal_cwd(self):
+        from tools.delegate_tool import _load_config
+
+        original_cli = sys.modules.pop("cli", None)
+        original_cwd = os.environ.pop("TERMINAL_CWD", None)
+        try:
+            with patch("hermes_cli.config.load_config", return_value={"delegation": {"max_concurrent_children": 7}}):
+                result = _load_config()
+            self.assertEqual(result, {"max_concurrent_children": 7})
+            self.assertNotIn("TERMINAL_CWD", os.environ)
+        finally:
+            if original_cli is not None:
+                sys.modules["cli"] = original_cli
+            if original_cwd is not None:
+                os.environ["TERMINAL_CWD"] = original_cwd
+
+
 class TestDelegationCredentialResolution(unittest.TestCase):
     """Tests for provider:model credential resolution in delegation config."""
 

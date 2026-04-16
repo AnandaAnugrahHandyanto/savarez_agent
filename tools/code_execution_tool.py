@@ -1253,12 +1253,20 @@ def _kill_process_group(proc, escalate: bool = False):
 
 
 def _load_config() -> dict:
-    """Load code_execution config from CLI_CONFIG if available."""
+    """Load code_execution config from an already-loaded CLI module if available.
+
+    Avoid importing ``cli`` here: in gateway/cron contexts that import has
+    module-level side effects (notably resolving ``terminal.cwd: .`` into
+    ``TERMINAL_CWD`` based on the process CWD).
+    """
     try:
-        from cli import CLI_CONFIG
-        return CLI_CONFIG.get("code_execution", {})
+        cli_mod = sys.modules.get("cli")
+        cli_config = getattr(cli_mod, "CLI_CONFIG", None) if cli_mod else None
+        if isinstance(cli_config, dict):
+            return cli_config.get("code_execution", {})
     except Exception:
-        return {}
+        pass
+    return {}
 
 
 # ---------------------------------------------------------------------------
