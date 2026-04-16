@@ -360,11 +360,14 @@ def show_status(args):
             print("  Manager:      docker (foreground)")
         else:
             try:
-                from hermes_cli.gateway import get_service_name
+                from hermes_cli.gateway import get_service_name, _ensure_user_systemd_env
                 _gw_svc = get_service_name()
             except Exception:
                 _gw_svc = "hermes-gateway"
+                _ensure_user_systemd_env = None
             try:
+                if _ensure_user_systemd_env is not None:
+                    _ensure_user_systemd_env()
                 result = subprocess.run(
                     ["systemctl", "--user", "is-active", _gw_svc],
                     capture_output=True,
