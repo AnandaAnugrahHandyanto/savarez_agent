@@ -171,6 +171,10 @@ CONCLUDE_SCHEMA = {
                 "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
             },
         },
+        # anyOf removed — Anthropic API rejects anyOf/oneOf/allOf at the top
+        # level of input_schema (HTTP 400). Runtime validation in the handler
+        # already enforces that exactly one of conclusion/delete_id is provided.
+        # See issue #10812.
         "required": [],
     },
 }
