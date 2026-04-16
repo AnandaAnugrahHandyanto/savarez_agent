@@ -568,7 +568,7 @@ class TestPersistence:
                 "provider": "openrouter",
                 "api_mode": "chat_completions",
                 "base_url": "https://openrouter.example/v1",
-                "api_key": "***",
+                "api_key": "test-key",
                 "command": None,
                 "args": [],
             }
@@ -605,7 +605,7 @@ class TestPersistence:
                 "provider": "copilot-acp",
                 "api_mode": "chat_completions",
                 "base_url": "acp://copilot",
-                "api_key": "***",
+                "api_key": "test-key",
                 "command": "hermes",
                 "args": ["acp"],
             }
