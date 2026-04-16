@@ -369,14 +369,16 @@ class TestSessionStoreRewriteTranscript:
 
     @pytest.fixture()
     def store(self, tmp_path):
+        from hermes_state import SessionDB
+
         config = GatewayConfig()
         with patch("gateway.session.SessionStore._ensure_loaded"):
             s = SessionStore(sessions_dir=tmp_path, config=config)
-        s._db = None  # no SQLite for these tests
+        s._db = SessionDB(db_path=tmp_path / "state.db")
         s._loaded = True
         return s
 
-    def test_rewrite_replaces_jsonl(self, store, tmp_path):
+    def test_rewrite_replaces_transcript(self, store, tmp_path):
         session_id = "test_session_1"
         # Write initial transcript
         for msg in [
@@ -408,178 +410,63 @@ class TestSessionStoreRewriteTranscript:
         assert reloaded == []
 
 
-class TestLoadTranscriptCorruptLines:
-    """Regression: corrupt JSONL lines (e.g. from mid-write crash) must be
-    skipped instead of crashing the entire transcript load.  GH-1193."""
-
-    @pytest.fixture()
-    def store(self, tmp_path):
-        config = GatewayConfig()
-        with patch("gateway.session.SessionStore._ensure_loaded"):
-            s = SessionStore(sessions_dir=tmp_path, config=config)
-        s._db = None
-        s._loaded = True
-        return s
-
-    def test_corrupt_line_skipped(self, store, tmp_path):
-        session_id = "corrupt_test"
-        transcript_path = store.get_transcript_path(session_id)
-        transcript_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(transcript_path, "w") as f:
-            f.write('{"role": "user", "content": "hello"}\n')
-            f.write('{"role": "assistant", "content": "hi th')  # truncated
-            f.write("\n")
-            f.write('{"role": "user", "content": "goodbye"}\n')
-
-        messages = store.load_transcript(session_id)
-        assert len(messages) == 2
-        assert messages[0]["content"] == "hello"
-        assert messages[1]["content"] == "goodbye"
-
-    def test_all_lines_corrupt_returns_empty(self, store, tmp_path):
-        session_id = "all_corrupt"
-        transcript_path = store.get_transcript_path(session_id)
-        transcript_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(transcript_path, "w") as f:
-            f.write("not json at all\n")
-            f.write("{truncated\n")
-
-        messages = store.load_transcript(session_id)
-        assert messages == []
-
-    def test_valid_transcript_unaffected(self, store, tmp_path):
-        session_id = "valid_test"
-        store.append_to_transcript(session_id, {"role": "user", "content": "a"})
-        store.append_to_transcript(session_id, {"role": "assistant", "content": "b"})
-
-        messages = store.load_transcript(session_id)
-        assert len(messages) == 2
-        assert messages[0]["content"] == "a"
-        assert messages[1]["content"] == "b"
-
-
-class TestLoadTranscriptLegacyMigration:
-    """Regression: legacy JSONL transcripts should migrate into SQLite once."""
+class TestLegacyTranscriptMigration:
+    """Legacy JSONL is imported once; mixed state is explicit."""
 
     @pytest.fixture()
     def store_with_db(self, tmp_path):
-        """SessionStore with SQLite active and legacy JSONL available."""
         from hermes_state import SessionDB
 
         config = GatewayConfig()
         with patch("gateway.session.SessionStore._ensure_loaded"):
             s = SessionStore(sessions_dir=tmp_path, config=config)
         s._db = SessionDB(db_path=tmp_path / "state.db")
-        s._loaded = True
+        s._loaded = False
         return s
 
-    def _write_legacy_transcript(self, store_with_db, sid, messages):
+    def _write_legacy_transcript(self, store_with_db, sid, lines):
         transcript_path = store_with_db.get_transcript_path(sid)
         transcript_path.parent.mkdir(parents=True, exist_ok=True)
         with open(transcript_path, "w", encoding="utf-8") as f:
-            for msg in messages:
-                f.write(json.dumps(msg) + "\n")
+            for line in lines:
+                f.write(line)
         return transcript_path
 
-    def _append_db_message_at(self, store_with_db, sid, role, content, ts):
-        with patch("hermes_state.time.time", return_value=ts):
-            store_with_db._db.append_message(session_id=sid, role=role, content=content)
-
-    def test_jsonl_longer_than_sqlite_migrates_into_sqlite(self, store_with_db):
-        """Legacy JSONL should preserve a newer SQLite-only tail during migration."""
+    def test_pure_legacy_transcript_imports_once(self, store_with_db):
         sid = "legacy_session"
-        store_with_db._db.create_session(session_id=sid, source="gateway", model="m")
-        legacy_messages = [
-            {
-                "role": "user" if i % 2 == 0 else "assistant",
-                "content": f"msg-{i}",
-                "timestamp": float(100 + i),
-            }
-            for i in range(10)
-        ]
-        transcript_path = self._write_legacy_transcript(store_with_db, sid, legacy_messages)
-        self._append_db_message_at(store_with_db, sid, "user", "new-q", 1000.0)
-        self._append_db_message_at(store_with_db, sid, "assistant", "new-a", 1001.0)
-
-        result = store_with_db.load_transcript(sid)
-        assert len(result) == 12
-        assert result[0]["content"] == "msg-0"
-        assert result[-2]["content"] == "new-q"
-        assert result[-1]["content"] == "new-a"
-        assert not transcript_path.exists()
-        assert len(store_with_db._db.get_messages_as_conversation(sid)) == 12
-
-    def test_sqlite_longer_than_jsonl_still_preserves_older_legacy_prefix(self, store_with_db):
-        """A shorter legacy prefix should still be preserved ahead of a newer SQLite tail."""
-        sid = "migrated_session"
-        store_with_db._db.create_session(session_id=sid, source="gateway", model="m")
         transcript_path = self._write_legacy_transcript(store_with_db, sid, [
-            {"role": "user", "content": "old-q", "timestamp": 100.0},
-            {"role": "assistant", "content": "old-a", "timestamp": 101.0},
-        ])
-        for i in range(4):
-            role = "user" if i % 2 == 0 else "assistant"
-            self._append_db_message_at(store_with_db, sid, role, f"db-{i}", 1000.0 + i)
-
-        result = store_with_db.load_transcript(sid)
-        assert len(result) == 6
-        assert [m["content"] for m in result] == ["old-q", "old-a", "db-0", "db-1", "db-2", "db-3"]
-        assert not transcript_path.exists()
-
-    def test_sqlite_empty_imports_jsonl_once(self, store_with_db):
-        """If SQLite has no rows, import legacy JSONL and retire the file."""
-        sid = "no_db_rows"
-        transcript_path = self._write_legacy_transcript(store_with_db, sid, [
-            {"role": "user", "content": "hello", "timestamp": 100.0},
-            {"role": "assistant", "content": "hi", "timestamp": 101.0},
+            json.dumps({"role": "user", "content": "hello", "timestamp": 100.0}) + "\n",
+            json.dumps({"role": "assistant", "content": "hi", "timestamp": 101.0}) + "\n",
         ])
 
         result = store_with_db.load_transcript(sid)
-        assert len(result) == 2
-        assert result[0]["content"] == "hello"
+        assert [m["content"] for m in result] == ["hello", "hi"]
         assert not transcript_path.exists()
-        assert len(store_with_db._db.get_messages_as_conversation(sid)) == 2
+        assert [m["content"] for m in store_with_db._db.get_messages_as_conversation(sid)] == ["hello", "hi"]
 
-    def test_db_history_before_jsonl_tail_merges_without_losing_tail(self, store_with_db):
-        """Fallback JSONL writes after DB recovery should append to the canonical history."""
-        sid = "db_then_jsonl"
-        store_with_db._db.create_session(session_id=sid, source="gateway", model="m")
-        self._append_db_message_at(store_with_db, sid, "user", "db-q", 100.0)
-        self._append_db_message_at(store_with_db, sid, "assistant", "db-a", 101.0)
+    def test_corrupt_legacy_lines_are_skipped_during_import(self, store_with_db):
+        sid = "corrupt_session"
         transcript_path = self._write_legacy_transcript(store_with_db, sid, [
-            {"role": "user", "content": "jsonl-q", "timestamp": 1000.0},
-            {"role": "assistant", "content": "jsonl-a", "timestamp": 1001.0},
+            '{"role": "user", "content": "hello"}\n',
+            '{"role": "assistant", "content": "hi th\n',
+            '{"role": "assistant", "content": "goodbye"}\n',
         ])
 
         result = store_with_db.load_transcript(sid)
-        assert [m["content"] for m in result] == ["db-q", "db-a", "jsonl-q", "jsonl-a"]
+        assert [m["content"] for m in result] == ["hello", "goodbye"]
         assert not transcript_path.exists()
-        assert [m["content"] for m in store_with_db._db.get_messages_as_conversation(sid)] == [
-            "db-q",
-            "db-a",
-            "jsonl-q",
-            "jsonl-a",
-        ]
 
-    def test_both_empty_returns_empty(self, store_with_db):
-        """Neither source has data — returns empty list."""
-        result = store_with_db.load_transcript("nonexistent")
-        assert result == []
-
-    def test_ambiguous_equal_length_histories_stay_read_only(self, store_with_db):
-        """Conflicting equal-length histories should not trigger destructive migration."""
-        sid = "equal_session"
+    def test_mixed_sqlite_and_jsonl_state_raises(self, store_with_db):
+        sid = "mixed_session"
         store_with_db._db.create_session(session_id=sid, source="gateway", model="m")
+        store_with_db._db.append_message(session_id=sid, role="user", content="db-q")
         transcript_path = self._write_legacy_transcript(store_with_db, sid, [
-            {"role": "user", "content": "jsonl-q"},
-            {"role": "assistant", "content": "jsonl-a"},
+            json.dumps({"role": "user", "content": "jsonl-q"}) + "\n",
+            json.dumps({"role": "assistant", "content": "jsonl-a"}) + "\n",
         ])
-        self._append_db_message_at(store_with_db, sid, "user", "db-q", 1000.0)
-        self._append_db_message_at(store_with_db, sid, "assistant", "db-a", 1001.0)
 
-        result = store_with_db.load_transcript(sid)
-        assert len(result) == 2
-        assert result[0]["content"] == "db-q"
+        with pytest.raises(RuntimeError, match="conflicts with existing SQLite history"):
+            store_with_db.load_transcript(sid)
         assert transcript_path.exists()
 
 
