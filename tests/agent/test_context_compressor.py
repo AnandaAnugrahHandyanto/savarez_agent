@@ -241,6 +241,43 @@ class TestSummaryFailureCooldown:
         assert second is None
         assert mock_call.call_count == 1
 
+    def test_missing_summary_model_falls_back_to_main_model(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="missing-summary-model",
+                quiet_mode=True,
+            )
+
+        messages = [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+        err = Exception("model_not_found")
+        err.status_code = 404
+        calls = []
+
+        def mock_call_llm(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                raise err
+            response = MagicMock()
+            response.choices = [MagicMock()]
+            response.choices[0].message.content = "## Goal\nRecovered."
+            return response
+
+        with patch("agent.context_compressor.call_llm", side_effect=mock_call_llm):
+            summary = c._generate_summary(messages, focus_topic="database schema")
+
+        assert summary == f"{SUMMARY_PREFIX}\n## Goal\nRecovered."
+        assert len(calls) == 2
+        assert calls[0]["model"] == "missing-summary-model"
+        assert "model" not in calls[1]
+        assert 'FOCUS TOPIC: "database schema"' in calls[1]["messages"][0]["content"]
+        assert c.summary_model == ""
+        assert c._summary_model_fallen_back is False
+
 
 class TestSummaryPrefixNormalization:
     def test_legacy_prefix_is_replaced(self):
