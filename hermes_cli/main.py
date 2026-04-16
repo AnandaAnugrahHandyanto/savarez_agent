@@ -3610,6 +3610,23 @@ def _install_python_dependencies_with_optional_fallback(
     if failed_extras:
         print(f"  ⚠ Skipped optional extras that still failed: {', '.join(failed_extras)}")
 
+    # Validate that Feishu dependencies are installed if Feishu env vars are set.
+    # The Feishu platform requires lark-oapi, which is part of the [feishu] extra.
+    # If env vars are present but the package is missing, the gateway will crash on restart.
+    feishu_app_id = os.environ.get("FEISHU_APP_ID")
+    feishu_app_secret = os.environ.get("FEISHU_APP_SECRET")
+    if feishu_app_id and feishu_app_secret:
+        try:
+            import importlib
+            lark_oapi = importlib.import_module("lark_oapi")
+        except ImportError:
+            print()
+            print("  ERROR: Feishu credentials are configured (FEISHU_APP_ID and FEISHU_APP_SECRET")
+            print("  are set), but the Feishu dependency 'lark-oapi' is not installed.")
+            print("  Run 'pip install hermes-agent[feishu]' to install it.")
+            print("  The Feishu platform will NOT be available after this upgrade.")
+            print()
+
 
 def cmd_update(args):
     """Update Hermes Agent to the latest version."""
