@@ -364,6 +364,33 @@ class TestConfigFallbackIps:
             "149.154.167.220", "149.154.167.221",
         ]
 
+    def test_multi_account_env_tokens_populate_extra_accounts(self, monkeypatch):
+        from gateway.config import GatewayConfig, Platform, _apply_env_overrides
+
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "primary-token")
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN_DEVTEAM", "dev-token")
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN_ALERTS", "alerts-token")
+        config = GatewayConfig(platforms={})
+        _apply_env_overrides(config)
+
+        telegram_cfg = config.platforms[Platform.TELEGRAM]
+        assert telegram_cfg.enabled is True
+        assert telegram_cfg.token == "primary-token"
+        assert telegram_cfg.extra["telegram_accounts"]["devteam"]["token"] == "dev-token"
+        assert telegram_cfg.extra["telegram_accounts"]["alerts"]["token"] == "alerts-token"
+
+    def test_multi_account_env_without_primary_still_creates_legacy_telegram_platform(self, monkeypatch):
+        from gateway.config import GatewayConfig, Platform, _apply_env_overrides
+
+        monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN_DEVTEAM", "dev-token")
+        config = GatewayConfig(platforms={})
+        _apply_env_overrides(config)
+
+        telegram_cfg = config.platforms[Platform.TELEGRAM]
+        assert telegram_cfg.enabled is True
+        assert telegram_cfg.token == "dev-token"
+
     def test_env_var_creates_platform_if_missing(self, monkeypatch):
         from gateway.config import GatewayConfig, Platform, _apply_env_overrides
 

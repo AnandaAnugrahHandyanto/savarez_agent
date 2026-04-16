@@ -8,6 +8,7 @@ action="list" and for resolving human-friendly channel names to numeric IDs.
 
 import json
 import logging
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -17,6 +18,7 @@ from utils import atomic_json_write
 logger = logging.getLogger(__name__)
 
 DIRECTORY_PATH = get_hermes_home() / "channel_directory.json"
+_TELEGRAM_ACCOUNT_KEY_RE = re.compile(r"^telegram\[([a-z0-9_-]+)\]$", re.IGNORECASE)
 
 
 def _normalize_channel_query(value: str) -> str:
@@ -31,6 +33,46 @@ def _channel_target_name(platform_name: str, channel: Dict[str, Any]) -> str:
     if platform_name != "discord" and channel.get("type"):
         return f"{name} ({channel['type']})"
     return name
+
+
+def _normalize_platform_key(platform_name: Any) -> str:
+    """Normalize adapter/directory platform identifiers to lowercase string keys."""
+    raw = getattr(platform_name, "value", platform_name)
+    return str(raw).strip().lower()
+
+
+def _base_platform_name(platform_name: str) -> str:
+    """Collapse account-qualified platform names like telegram[devteam] to telegram."""
+    match = _TELEGRAM_ACCOUNT_KEY_RE.fullmatch(platform_name.strip().lower())
+    if match:
+        return "telegram"
+    return platform_name.strip().lower()
+
+
+def _platform_account_id(platform_name: str) -> Optional[str]:
+    """Extract the account_id from a platform key like telegram[devteam]."""
+    match = _TELEGRAM_ACCOUNT_KEY_RE.fullmatch(platform_name.strip().lower())
+    if match:
+        return match.group(1)
+    return None
+
+
+def _merge_channel_lists(*channel_lists: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Merge directory entries while preserving order and deduplicating by id/name/account."""
+    merged: List[Dict[str, Any]] = []
+    seen: set[tuple[str, str, Optional[str]]] = set()
+    for channels in channel_lists:
+        for channel in channels or []:
+            key = (
+                str(channel.get("id", "")),
+                str(channel.get("name", "")),
+                channel.get("account_id"),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(channel)
+    return merged
 
 
 def _session_entry_id(origin: Dict[str, Any]) -> Optional[str]:
@@ -69,12 +111,23 @@ def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
 
     for platform, adapter in adapters.items():
         try:
-            if platform == Platform.DISCORD:
-                platforms["discord"] = _build_discord(adapter)
-            elif platform == Platform.SLACK:
-                platforms["slack"] = _build_slack(adapter)
+            platform_key = _normalize_platform_key(platform)
+            base_platform = _base_platform_name(platform_key)
+            account_id = _platform_account_id(platform_key) or getattr(adapter, "account_id", None)
+
+            if base_platform == Platform.DISCORD.value:
+                channels = _build_discord(adapter)
+            elif base_platform == Platform.SLACK.value:
+                channels = _build_slack(adapter)
+            else:
+                continue
+
+            if account_id:
+                channels = [dict(ch, account_id=account_id) for ch in channels]
+                platforms[platform_key] = _merge_channel_lists(platforms.get(platform_key, []), channels)
+            platforms[base_platform] = _merge_channel_lists(platforms.get(base_platform, []), channels)
         except Exception as e:
-            logger.warning("Channel directory: failed to build %s: %s", platform.value, e)
+            logger.warning("Channel directory: failed to build %s: %s", _normalize_platform_key(platform), e)
 
     # Platforms that don't support direct channel enumeration get session-based
     # discovery automatically.  Skip infrastructure entries that aren't messaging
@@ -201,7 +254,10 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
     - Slack: "engineering", "#engineering"
     """
     directory = load_directory()
-    channels = directory.get("platforms", {}).get(platform_name, [])
+    normalized_platform = _normalize_platform_key(platform_name)
+    channels = directory.get("platforms", {}).get(normalized_platform, [])
+    if not channels:
+        channels = directory.get("platforms", {}).get(_base_platform_name(normalized_platform), [])
     if not channels:
         return None
 
@@ -211,7 +267,7 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
     for ch in channels:
         if _normalize_channel_query(ch["name"]) == query:
             return ch["id"]
-        if _normalize_channel_query(_channel_target_name(platform_name, ch)) == query:
+        if _normalize_channel_query(_channel_target_name(_base_platform_name(normalized_platform), ch)) == query:
             return ch["id"]
 
     # 2. Guild-qualified match for Discord ("GuildName/channel")

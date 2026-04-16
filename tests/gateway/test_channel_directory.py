@@ -154,6 +154,21 @@ class TestResolveChannelName:
             assert resolve_channel_name("telegram", "Dev Group (group)") == "456"
             assert resolve_channel_name("telegram", "Coaching Chat / topic 17585 (group)") == "-1001:17585"
 
+    def test_account_specific_platform_key_resolves_first(self, tmp_path):
+        platforms = {
+            "telegram": [
+                {"id": "123", "name": "Shared Room", "type": "group"},
+            ],
+            "telegram[devteam]": [
+                {"id": "999", "name": "Shared Room", "type": "group", "account_id": "devteam"},
+                {"id": "1001:7", "name": "Alerts Topic", "type": "group", "account_id": "devteam"},
+            ],
+        }
+        with self._setup(tmp_path, platforms):
+            assert resolve_channel_name("telegram[devteam]", "Shared Room") == "999"
+            assert resolve_channel_name("telegram[devteam]", "Alerts Topic (group)") == "1001:7"
+            assert resolve_channel_name("telegram[ops]", "Shared Room") == "123"
+
 
 class TestBuildFromSessions:
     def _write_sessions(self, tmp_path, sessions_data):
@@ -261,6 +276,9 @@ class TestFormatDirectoryForDisplay:
                 {"id": "123", "name": "Alice", "type": "dm"},
                 {"id": "456", "name": "Dev Group", "type": "group"},
                 {"id": "-1001:17585", "name": "Coaching Chat / topic 17585", "type": "group"},
+            ],
+            "telegram[devteam]": [
+                {"id": "999", "name": "Dev Team Room", "type": "group", "account_id": "devteam"},
             ]
         })
         with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
@@ -270,6 +288,7 @@ class TestFormatDirectoryForDisplay:
         assert "telegram:Alice" in result
         assert "telegram:Dev Group" in result
         assert "telegram:Coaching Chat / topic 17585" in result
+        assert "telegram[devteam]:Dev Team Room" in result
 
     def test_discord_grouped_by_guild(self, tmp_path):
         cache_file = _write_directory(tmp_path, {

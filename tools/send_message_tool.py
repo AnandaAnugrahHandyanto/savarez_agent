@@ -5,6 +5,7 @@ Sends a message to a user or channel on any connected messaging platform
 human-friendly channel names to IDs. Works in both CLI and gateway contexts.
 """
 
+import copy
 import json
 import logging
 import os
@@ -17,6 +18,7 @@ from agent.redact import redact_sensitive_text
 logger = logging.getLogger(__name__)
 
 _TELEGRAM_TOPIC_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
+_TELEGRAM_ACCOUNT_TARGET_RE = re.compile(r"^\s*([a-z0-9_-]+)\s*:(.+)$", re.IGNORECASE)
 _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::([-A-Za-z0-9_]+))?\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
 # Discord snowflake IDs are numeric, same regex pattern as Telegram topic targets.
@@ -111,27 +113,33 @@ def _handle_send(args):
     target_ref = parts[1].strip() if len(parts) > 1 else None
     chat_id = None
     thread_id = None
+    account_id = None
 
     if target_ref:
-        chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
+        account_id, parsed_target_ref = _parse_account_qualified_target(platform_name, target_ref)
+        chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, parsed_target_ref)
     else:
+        parsed_target_ref = None
         is_explicit = False
 
     # Resolve human-friendly channel names to numeric IDs
-    if target_ref and not is_explicit:
+    if parsed_target_ref and not is_explicit:
         try:
             from gateway.channel_directory import resolve_channel_name
-            resolved = resolve_channel_name(platform_name, target_ref)
+            lookup_platform_name = _platform_delivery_key(platform_name, account_id)
+            resolved = resolve_channel_name(lookup_platform_name, parsed_target_ref)
+            if not resolved and account_id:
+                resolved = resolve_channel_name(platform_name, parsed_target_ref)
             if resolved:
                 chat_id, thread_id, _ = _parse_target_ref(platform_name, resolved)
             else:
                 return json.dumps({
-                    "error": f"Could not resolve '{target_ref}' on {platform_name}. "
+                    "error": f"Could not resolve '{parsed_target_ref}' on {lookup_platform_name}. "
                     f"Use send_message(action='list') to see available targets."
                 })
         except Exception:
             return json.dumps({
-                "error": f"Could not resolve '{target_ref}' on {platform_name}. "
+                "error": f"Could not resolve '{parsed_target_ref}' on {_platform_delivery_key(platform_name, account_id)}. "
                 f"Try using a numeric channel ID instead."
             })
 
@@ -170,8 +178,11 @@ def _handle_send(args):
         return tool_error(f"Unknown platform: {platform_name}. Available: {avail}")
 
     pconfig = config.platforms.get(platform)
+    if account_id:
+        pconfig = _resolve_account_platform_config(platform, pconfig, account_id)
     if not pconfig or not pconfig.enabled:
-        return tool_error(f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables.")
+        target_platform_name = _platform_delivery_key(platform_name, account_id)
+        return tool_error(f"Platform '{target_platform_name}' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables.")
 
     from gateway.platforms.base import BasePlatformAdapter
 
@@ -180,18 +191,21 @@ def _handle_send(args):
 
     used_home_channel = False
     if not chat_id:
-        home = config.get_home_channel(platform)
+        home = pconfig.home_channel if getattr(pconfig, "home_channel", None) else config.get_home_channel(platform)
         if home:
             chat_id = home.chat_id
+            if not thread_id:
+                thread_id = getattr(home, "thread_id", None)
             used_home_channel = True
         else:
+            target_platform_name = _platform_delivery_key(platform_name, account_id)
             return json.dumps({
-                "error": f"No home channel set for {platform_name} to determine where to send the message. "
-                f"Either specify a channel directly with '{platform_name}:CHANNEL_NAME', "
+                "error": f"No home channel set for {target_platform_name} to determine where to send the message. "
+                f"Either specify a channel directly with '{target_platform_name}:CHANNEL_NAME', "
                 f"or set a home channel via: hermes config set {platform_name.upper()}_HOME_CHANNEL <channel_id>"
             })
 
-    duplicate_skip = _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id)
+    duplicate_skip = _maybe_skip_cron_duplicate_send(_platform_delivery_key(platform_name, account_id), chat_id, thread_id)
     if duplicate_skip:
         return json.dumps(duplicate_skip)
 
@@ -208,7 +222,7 @@ def _handle_send(args):
             )
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
-            result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
+            result["note"] = f"Sent to {_platform_delivery_key(platform_name, account_id)} home channel (chat_id: {chat_id})"
 
         # Mirror the sent message into the target's gateway session
         if isinstance(result, dict) and result.get("success") and mirror_text:
@@ -226,6 +240,79 @@ def _handle_send(args):
         return json.dumps(result)
     except Exception as e:
         return json.dumps(_error(f"Send failed: {e}"))
+
+
+def _getattr_or_default(obj, name: str, default=None):
+    """Return an attribute if present, otherwise a default value."""
+    return getattr(obj, name, default)
+
+
+def _parse_account_qualified_target(platform_name: str, target_ref: str):
+    """Extract an optional account qualifier from targets like devteam:-1001 or devteam:My Group."""
+    if platform_name != "telegram":
+        return None, target_ref
+
+    match = _TELEGRAM_ACCOUNT_TARGET_RE.fullmatch(target_ref)
+    if not match:
+        return None, target_ref
+
+    account_id = match.group(1).strip().lower()
+    remainder = match.group(2).strip()
+    if not account_id or not remainder:
+        return None, target_ref
+
+    if _TELEGRAM_TOPIC_TARGET_RE.fullmatch(account_id):
+        return None, target_ref
+
+    return account_id, remainder
+
+
+def _platform_delivery_key(platform_name: str, account_id: str | None = None) -> str:
+    """Return normalized platform label, including Telegram account suffix when present."""
+    if platform_name == "telegram" and account_id:
+        return f"telegram[{account_id}]"
+    return platform_name
+
+
+def _resolve_account_platform_config(platform, pconfig, account_id: str):
+    """Resolve an account-specific platform config while preserving base settings."""
+    from gateway.config import Platform
+
+    if platform != Platform.TELEGRAM or not pconfig:
+        return pconfig
+
+    extra_accounts = {}
+    if isinstance(getattr(pconfig, "extra", None), dict):
+        extra_accounts = pconfig.extra.get("telegram_accounts", {})
+    if not isinstance(extra_accounts, dict):
+        return None
+
+    account_data = extra_accounts.get(account_id)
+    if not isinstance(account_data, dict):
+        return None
+
+    resolved = copy.deepcopy(pconfig)
+    resolved.enabled = bool(account_data.get("enabled", True))
+    resolved.token = account_data.get("token", _getattr_or_default(resolved, "token"))
+    resolved.api_key = account_data.get("api_key", _getattr_or_default(resolved, "api_key"))
+    resolved.reply_to_mode = account_data.get("reply_to_mode", _getattr_or_default(resolved, "reply_to_mode"))
+    resolved.account_id = account_id
+
+    merged_extra = dict(getattr(pconfig, "extra", {}) or {})
+    merged_extra.pop("telegram_accounts", None)
+    account_extra = account_data.get("extra", {})
+    if isinstance(account_extra, dict):
+        merged_extra.update(account_extra)
+    resolved.extra = merged_extra
+
+    if isinstance(account_data.get("home_channel"), dict):
+        try:
+            from gateway.config import HomeChannel
+            resolved.home_channel = HomeChannel.from_dict(account_data["home_channel"])
+        except Exception:
+            pass
+
+    return resolved
 
 
 def _parse_target_ref(platform_name: str, target_ref: str):

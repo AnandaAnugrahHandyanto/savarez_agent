@@ -11,6 +11,7 @@ Handles loading and validating configuration for:
 import logging
 import os
 import json
+import re
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
@@ -156,6 +157,7 @@ class PlatformConfig:
     
     # Platform-specific settings
     extra: Dict[str, Any] = field(default_factory=dict)
+    account_id: Optional[str] = None
     
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -163,6 +165,8 @@ class PlatformConfig:
             "extra": self.extra,
             "reply_to_mode": self.reply_to_mode,
         }
+        if self.account_id:
+            result["account_id"] = self.account_id
         if self.token:
             result["token"] = self.token
         if self.api_key:
@@ -184,7 +188,77 @@ class PlatformConfig:
             home_channel=home_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
             extra=data.get("extra", {}),
+            account_id=data.get("account_id"),
         )
+
+
+def _normalize_account_id(value: Any) -> Optional[str]:
+    """Normalize account IDs to a compact stable token or None."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    normalized = re.sub(r"[^a-z0-9_-]+", "-", text.lower()).strip("-_")
+    return normalized or None
+
+
+def _telegram_env_accounts() -> List[tuple[Optional[str], str]]:
+    """Return Telegram tokens from env as (account_id, token), preserving legacy behavior."""
+    accounts: List[tuple[Optional[str], str]] = []
+
+    primary = os.getenv("TELEGRAM_BOT_TOKEN")
+    if primary:
+        accounts.append((None, primary))
+
+    prefix = "TELEGRAM_BOT_TOKEN_"
+    for key, value in sorted(os.environ.items()):
+        if not key.startswith(prefix) or not value:
+            continue
+        suffix = key[len(prefix):].strip()
+        account_id = _normalize_account_id(suffix)
+        if not account_id:
+            continue
+        accounts.append((account_id, value))
+
+    return accounts
+
+
+def _apply_telegram_account_overrides(config: "GatewayConfig") -> None:
+    """Apply Telegram env overrides, including optional multi-account support."""
+    telegram_accounts = _telegram_env_accounts()
+    if not telegram_accounts:
+        return
+
+    primary_config = config.platforms.get(Platform.TELEGRAM)
+    if primary_config is None:
+        primary_config = PlatformConfig()
+        config.platforms[Platform.TELEGRAM] = primary_config
+
+    primary_config.enabled = True
+    primary_config.token = telegram_accounts[0][1]
+    primary_config.account_id = _normalize_account_id(primary_config.account_id)
+
+    accounts_map: Dict[str, Dict[str, Any]] = {}
+    existing_accounts = primary_config.extra.get("telegram_accounts", {})
+    if isinstance(existing_accounts, dict):
+        for raw_account_id, account_data in existing_accounts.items():
+            account_id = _normalize_account_id(raw_account_id)
+            if not account_id or not isinstance(account_data, dict):
+                continue
+            accounts_map[account_id] = dict(account_data)
+
+    for account_id, token in telegram_accounts[1:]:
+        if not account_id:
+            continue
+        account_cfg = dict(accounts_map.get(account_id, {}))
+        account_cfg["enabled"] = True
+        account_cfg["token"] = token
+        account_cfg["account_id"] = account_id
+        accounts_map[account_id] = account_cfg
+
+    if accounts_map:
+        primary_config.extra["telegram_accounts"] = accounts_map
 
 
 @dataclass
@@ -770,12 +844,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     """Apply environment variable overrides to config."""
     
     # Telegram
-    telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
-    if telegram_token:
-        if Platform.TELEGRAM not in config.platforms:
-            config.platforms[Platform.TELEGRAM] = PlatformConfig()
-        config.platforms[Platform.TELEGRAM].enabled = True
-        config.platforms[Platform.TELEGRAM].token = telegram_token
+    _apply_telegram_account_overrides(config)
     
     # Reply threading mode for Telegram (off/first/all)
     telegram_reply_mode = os.getenv("TELEGRAM_REPLY_TO_MODE", "").lower()
