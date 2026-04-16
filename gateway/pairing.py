@@ -60,6 +60,16 @@ def _secure_write(path: Path, data: str) -> None:
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, str(path))
+        # In Docker, bot owners often run `docker exec ... hermes pairing approve`
+        # as root while the gateway itself runs as the non-root `hermes` user.
+        # Preserve the pairing directory owner/group so root-authored approval
+        # files stay readable without loosening the 0600 permission model.
+        try:
+            if hasattr(os, "chown") and getattr(os, "geteuid", lambda: -1)() == 0:
+                parent_stat = path.parent.stat()
+                os.chown(path, parent_stat.st_uid, parent_stat.st_gid)
+        except OSError:
+            pass
         try:
             os.chmod(path, 0o600)
         except OSError:

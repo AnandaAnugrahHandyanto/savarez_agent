@@ -43,6 +43,35 @@ class TestSecureWrite:
         mode = oct(target.stat().st_mode & 0o777)
         assert mode == "0o600"
 
+    def test_root_write_preserves_parent_owner_group(self, tmp_path, monkeypatch):
+        target = tmp_path / "secret.json"
+        parent_stat = target.parent.stat()
+        chown_calls = []
+
+        monkeypatch.setattr("gateway.pairing.os.geteuid", lambda: 0)
+        monkeypatch.setattr(
+            "gateway.pairing.os.chown",
+            lambda path, uid, gid: chown_calls.append((path, uid, gid)),
+        )
+
+        _secure_write(target, "data")
+
+        assert chown_calls == [(target, parent_stat.st_uid, parent_stat.st_gid)]
+
+    def test_non_root_write_skips_owner_fixup(self, tmp_path, monkeypatch):
+        target = tmp_path / "secret.json"
+        chown_calls = []
+
+        monkeypatch.setattr("gateway.pairing.os.geteuid", lambda: 1000)
+        monkeypatch.setattr(
+            "gateway.pairing.os.chown",
+            lambda path, uid, gid: chown_calls.append((path, uid, gid)),
+        )
+
+        _secure_write(target, "data")
+
+        assert chown_calls == []
+
 
 # ---------------------------------------------------------------------------
 # Code generation
