@@ -323,8 +323,18 @@ def get_provider(name: str) -> Optional[ProviderDef]:
         base_url_env = overlay.base_url_env_var if overlay else ""
         base_url_override = overlay.base_url_override if overlay else ""
 
-        # Combine env vars: models.dev env + hermes extra
-        env_vars = list(mdev_info.env)
+        env_vars: List[str]
+        try:
+            from hermes_cli.auth import PROVIDER_REGISTRY
+
+            pconfig = PROVIDER_REGISTRY.get(canonical)
+            if pconfig and getattr(pconfig, "api_key_env_vars", None):
+                env_vars = list(pconfig.api_key_env_vars)
+            else:
+                env_vars = list(mdev_info.env)
+        except Exception:
+            env_vars = list(mdev_info.env)
+
         if overlay and overlay.extra_env_vars:
             for ev in overlay.extra_env_vars:
                 if ev not in env_vars:
