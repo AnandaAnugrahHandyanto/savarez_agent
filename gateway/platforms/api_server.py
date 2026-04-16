@@ -46,6 +46,7 @@ from gateway.platforms.base import (
     SendResult,
     is_network_accessible,
 )
+from gateway.session import SessionContext, SessionSource, build_session_key
 
 logger = logging.getLogger(__name__)
 
@@ -395,6 +396,27 @@ class APIServerAdapter(BasePlatformAdapter):
         # Creation timestamps for orphaned-run TTL sweep
         self._run_streams_created: Dict[str, float] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        self._gateway_runner: Optional[Any] = None
+
+    def bind_gateway_runner(self, gateway_runner: Any) -> None:
+        """Attach the owning GatewayRunner for shared watcher delivery."""
+        self._gateway_runner = gateway_runner
+
+    def _build_session_context(self, session_id: Optional[str]) -> SessionContext:
+        """Build a synthetic session context for API-server initiated turns."""
+        chat_id = str(session_id or "api_server")
+        source = SessionSource(
+            platform=Platform.API_SERVER,
+            chat_id=chat_id,
+            chat_type="dm",
+        )
+        return SessionContext(
+            source=source,
+            connected_platforms=[],
+            home_channels={},
+            session_id=chat_id,
+            session_key=build_session_key(source),
+        )
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -2004,9 +2026,28 @@ class APIServerAdapter(BasePlatformAdapter):
         callers (e.g. the SSE writer) to call ``agent.interrupt()`` from
         another thread to stop in-progress LLM calls.
         """
-        loop = asyncio.get_event_loop()
+        session_context = self._build_session_context(session_id)
+        if self._gateway_runner is not None:
+            session_env_tokens = self._gateway_runner._set_session_env(session_context)
+        else:
+            from gateway.session_context import set_session_vars
+
+            session_env_tokens = set_session_vars(
+                platform=session_context.source.platform.value,
+                chat_id=session_context.source.chat_id,
+                chat_name=session_context.source.chat_name or "",
+                thread_id=session_context.source.thread_id or "",
+                user_id=session_context.source.user_id or "",
+                user_name=session_context.source.user_name or "",
+                session_key=session_context.session_key,
+            )
 
         def _run():
+            from tools.approval import (
+                reset_current_session_key,
+                set_current_session_key,
+            )
+
             agent = self._create_agent(
                 ephemeral_system_prompt=ephemeral_system_prompt,
                 session_id=session_id,
@@ -2017,11 +2058,15 @@ class APIServerAdapter(BasePlatformAdapter):
             )
             if agent_ref is not None:
                 agent_ref[0] = agent
-            result = agent.run_conversation(
-                user_message=user_message,
-                conversation_history=conversation_history,
-                task_id="default",
-            )
+            approval_session_token = set_current_session_key(session_context.session_key)
+            try:
+                result = agent.run_conversation(
+                    user_message=user_message,
+                    conversation_history=conversation_history,
+                    task_id="default",
+                )
+            finally:
+                reset_current_session_key(approval_session_token)
             usage = {
                 "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                 "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
@@ -2029,7 +2074,25 @@ class APIServerAdapter(BasePlatformAdapter):
             }
             return result, usage
 
-        return await loop.run_in_executor(None, _run)
+        try:
+            result = await asyncio.to_thread(_run)
+            if self._gateway_runner is not None:
+                try:
+                    from tools.process_registry import process_registry
+
+                    while process_registry.pending_watchers:
+                        watcher = process_registry.pending_watchers.pop(0)
+                        asyncio.create_task(self._gateway_runner._run_process_watcher(watcher))
+                except Exception as exc:
+                    logger.error("API server process watcher setup error: %s", exc)
+            return result
+        finally:
+            if self._gateway_runner is not None:
+                self._gateway_runner._clear_session_env(session_env_tokens)
+            else:
+                from gateway.session_context import clear_session_vars
+
+                clear_session_vars(session_env_tokens)
 
     # ------------------------------------------------------------------
     # /v1/runs — structured event streaming
