@@ -454,6 +454,7 @@ class TestInit:
             patch("run_agent.get_tool_definitions", return_value=[]),
             patch("run_agent.check_toolset_requirements", return_value={}),
             patch("agent.anthropic_adapter._anthropic_sdk") as mock_anthropic,
+            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value=None),
         ):
             agent = AIAgent(
                 api_key="test-key-1234567890",

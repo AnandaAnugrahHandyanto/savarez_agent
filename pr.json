@@ -1,0 +1,6 @@
+{
+  "title": "Fix: Ensure reasoning items don't include id field for API compatibility",
+  "body": "This PR fixes an issue where reasoning items were including the id field, which causes the API to return 404 errors when store=False. The fix ensures that id fields are only used for local deduplication and not included in the outgoing API requests.",
+  "head": "Eruditi:trae/solo-agent-wBGkrc",
+  "base": "main"
+}
