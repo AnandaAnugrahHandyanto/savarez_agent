@@ -19,6 +19,26 @@ SCRIPT_PATH = (
 )
 
 
+def test_fallback_path_resolves_to_hermes_agent_root():
+    """Fallback path search finds hermes_constants.py from both repo and installed locations."""
+    from pathlib import Path
+
+    # Repo location: parents[4] directly has hermes_constants.py
+    repo_script = SCRIPT_PATH.resolve()
+    repo_candidate = repo_script.parents[4]
+    assert (repo_candidate / "hermes_constants.py").exists(), (
+        f"Repo path: expected hermes_constants.py at {repo_candidate}"
+    )
+
+    # Installed location: parents[4] is ~/.hermes, need parents[4]/"hermes-agent"
+    # Simulate by computing what parents[4] would be from the installed path
+    installed_parents4 = repo_candidate.parent  # ~/.hermes
+    installed_candidate = installed_parents4 / "hermes-agent"
+    assert (installed_candidate / "hermes_constants.py").exists(), (
+        f"Installed path: expected hermes_constants.py at {installed_candidate}"
+    )
+
+
 class FakeCredentials:
     def __init__(self, payload=None):
         self._payload = payload or {
@@ -238,3 +258,109 @@ class TestExchangeAuthCode:
         assert setup_module.TOKEN_PATH.exists()
         # Pending auth is cleaned up
         assert not setup_module.PENDING_AUTH_PATH.exists()
+
+
+class TestInstallDeps:
+    def test_returns_true_when_already_installed(self, setup_module):
+        """No subprocess calls when packages are already importable."""
+        import sys
+        from unittest.mock import patch, MagicMock
+
+        fake_googleapiclient = MagicMock()
+        fake_google_auth = MagicMock()
+
+        with patch.dict(sys.modules, {
+            "googleapiclient": fake_googleapiclient,
+            "google_auth_oauthlib": fake_google_auth,
+        }), patch("subprocess.check_call") as mock_call:
+            result = setup_module.install_deps()
+
+        assert result is True
+        mock_call.assert_not_called()
+
+    def test_uses_uv_when_available(self, setup_module):
+        """uv pip install --python sys.executable is tried first when uv is on PATH."""
+        import subprocess
+        import sys
+        from unittest.mock import patch, MagicMock
+
+        # Remove cached imports so install_deps() sees them as missing
+        saved = {}
+        for mod in ("googleapiclient", "google_auth_oauthlib"):
+            saved[mod] = sys.modules.pop(mod, None)
+
+        calls = []
+        def fake_check_call(cmd, **kwargs):
+            calls.append(list(cmd))
+
+        try:
+            with patch.object(setup_module.shutil, "which", return_value="/usr/bin/uv"), \
+                 patch("subprocess.check_call", side_effect=fake_check_call):
+                result = setup_module.install_deps()
+        finally:
+            for mod, val in saved.items():
+                if val is not None:
+                    sys.modules[mod] = val
+                else:
+                    sys.modules.pop(mod, None)
+
+        assert result is True
+        assert any(c[0] == "/usr/bin/uv" and "pip" in c for c in calls)
+
+    def test_falls_back_to_pip_user_when_uv_missing(self, setup_module):
+        """Falls back through pip → pip --user when uv is not found."""
+        import subprocess
+        import sys
+        from unittest.mock import patch
+
+        saved = {}
+        for mod in ("googleapiclient", "google_auth_oauthlib"):
+            saved[mod] = sys.modules.pop(mod, None)
+
+        calls = []
+        def fake_check_call(cmd, **kwargs):
+            calls.append(list(cmd))
+            if "--user" not in cmd:
+                raise subprocess.CalledProcessError(1, cmd)
+
+        try:
+            with patch.object(setup_module.shutil, "which", return_value=None), \
+                 patch("subprocess.check_call", side_effect=fake_check_call):
+                result = setup_module.install_deps()
+        finally:
+            for mod, val in saved.items():
+                if val is not None:
+                    sys.modules[mod] = val
+                else:
+                    sys.modules.pop(mod, None)
+
+        assert result is True
+        assert any("--user" in c for c in calls)
+
+    def test_returns_false_when_all_methods_fail(self, setup_module, capsys):
+        """Returns False and prints error when all install methods fail."""
+        import subprocess
+        import sys
+        from unittest.mock import patch
+
+        saved = {}
+        for mod in ("googleapiclient", "google_auth_oauthlib"):
+            saved[mod] = sys.modules.pop(mod, None)
+
+        def always_fail(cmd, **kwargs):
+            raise subprocess.CalledProcessError(1, cmd)
+
+        try:
+            with patch.object(setup_module.shutil, "which", return_value=None), \
+                 patch("subprocess.check_call", side_effect=always_fail):
+                result = setup_module.install_deps()
+        finally:
+            for mod, val in saved.items():
+                if val is not None:
+                    sys.modules[mod] = val
+                else:
+                    sys.modules.pop(mod, None)
+
+        assert result is False
+        out = capsys.readouterr().out
+        assert "ERROR" in out or "failed" in out.lower()
