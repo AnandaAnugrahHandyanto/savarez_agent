@@ -2850,7 +2850,11 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _reactions_enabled(self) -> bool:
         """Check if message reactions are enabled via config/env."""
-        return os.getenv("TELEGRAM_REACTIONS", "true").lower() not in ("false", "0", "no")
+        return os.getenv("TELEGRAM_REACTIONS", "false").lower() not in ("false", "0", "no")
+
+    async def _set_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
+        """Set a single emoji reaction on a Telegram message."""
+        return await self.set_message_reaction(chat_id, message_id, emoji)
 
     async def set_message_reaction(
         self,
@@ -2863,28 +2867,18 @@ class TelegramAdapter(BasePlatformAdapter):
 
         Wraps the Bot API ``setMessageReaction`` call with full error handling
         so that a failed reaction never breaks the main message flow.
-
-        Args:
-            chat_id: Target chat (int or str).
-            message_id: Message to react to (int or str).
-            emoji: A single emoji string, e.g. ``"👍"``. Must be from Telegram's
-                default reaction set: 👍 ❤️ 🔥 🥰 👏 😁 😍 🤩 😘 🤔 😱 🤯
-                😢 😡 🎉 🤮 💩 🙏 👎 😐 😊 🥱 😴 🤡 🤣 😎 🤗 🫣 😏 👌 🤝
-                ✌️ 🫶 👀 💀 🙈
-            is_big: Whether to show the reaction as a big animation.
-
-        Returns:
-            True if the reaction was set successfully.
         """
         if not self._bot:
             return False
         try:
-            await self._bot.set_message_reaction(
-                chat_id=int(chat_id),
-                message_id=int(message_id),
-                reaction=emoji,
-                is_big=is_big,
-            )
+            kwargs = {
+                "chat_id": int(chat_id),
+                "message_id": int(message_id),
+                "reaction": emoji,
+            }
+            if is_big:
+                kwargs["is_big"] = True
+            await self._bot.set_message_reaction(**kwargs)
             return True
         except Exception as e:
             logger.warning("[%s] set_message_reaction failed (%s): %s %s", self.name, emoji, type(e).__name__, e)
@@ -3004,7 +2998,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # --- Heart / love / appreciation ---
         _HEART_PATTERNS = ["love", "beautiful", "amazing", "wonderful", "thank you", "appreciate", "great"]
         if any(p in lower for p in _HEART_PATTERNS):
-            return "❤\ufe0f"
+            return "❤️"
 
         # --- Question / thinking ---
         if text.endswith("?") and len(text) < 100:
@@ -3022,12 +3016,7 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
         if chat_id and message_id:
-            # Use create_task with a stored reference to prevent GC
-            task = asyncio.create_task(
-                self._do_reaction(chat_id, message_id, "👀", "start")
-            )
-            self._reaction_tasks.add(task)
-            task.add_done_callback(self._reaction_tasks.discard)
+            await self._set_reaction(chat_id, message_id, "👀")
 
     async def on_processing_complete(
         self, event: MessageEvent, outcome: ProcessingOutcome,
@@ -3043,39 +3032,10 @@ class TelegramAdapter(BasePlatformAdapter):
         if outcome == ProcessingOutcome.CANCELLED:
             return
         if outcome == ProcessingOutcome.FAILURE:
-            emoji = "😢"
+            emoji = "👎"
         else:
             emoji = self._pick_reaction_emoji(response_text)
-        task = asyncio.create_task(
-            self._do_reaction(chat_id, message_id, emoji, "complete")
-        )
-        self._reaction_tasks.add(task)
-        task.add_done_callback(self._reaction_tasks.discard)
-
-    async def _do_reaction(
-        self, chat_id, message_id, emoji: str, stage: str
-    ) -> None:
-        """Execute a reaction API call with logging."""
-        try:
-            logger.info(
-                "[%s] Setting reaction %s on msg %s in chat %s (stage=%s)",
-                self.name, emoji, message_id, chat_id, stage,
-            )
-            ok = await self.set_message_reaction(
-                chat_id, message_id, emoji,
-            )
-            if not ok:
-                logger.warning(
-                    "[%s] Reaction %s FAILED (stage=%s)", self.name, emoji, stage,
-                )
-            else:
-                logger.info(
-                    "[%s] Reaction %s OK (stage=%s)", self.name, emoji, stage,
-                )
-        except Exception as e:
-            logger.error(
-                "[%s] Reaction exception (%s): %s", self.name, stage, e, exc_info=True,
-            )
+        await self._set_reaction(chat_id, message_id, emoji)
 
     # ── Incoming reaction events (user reacts to bot messages) ────────────
 
