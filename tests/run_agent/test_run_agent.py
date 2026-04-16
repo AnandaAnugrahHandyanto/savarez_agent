@@ -1560,6 +1560,100 @@ class TestConcurrentToolExecution:
 class TestPathsOverlap:
     """Unit tests for the _paths_overlap helper."""
 
+    def test_memory_tool_bridge_skips_provider_when_write_fails(self, agent):
+        agent._memory_manager = MagicMock()
+        agent._memory_store = MagicMock()
+
+        with patch(
+            "tools.memory_tool.memory_tool",
+            return_value=json.dumps({"success": False, "error": "too full"}),
+        ):
+            result = agent._invoke_tool(
+                "memory",
+                {"action": "add", "target": "memory", "content": "fact"},
+                "task-1",
+            )
+
+        assert json.loads(result)["success"] is False
+        agent._memory_manager.on_memory_write.assert_not_called()
+
+    def test_memory_tool_bridge_skips_provider_when_add_is_duplicate_noop(self, agent):
+        agent._memory_manager = MagicMock()
+        agent._memory_store = MagicMock()
+
+        with patch(
+            "tools.memory_tool.memory_tool",
+            return_value=json.dumps(
+                {
+                    "success": True,
+                    "target": "memory",
+                    "entries": ["fact"],
+                    "mutated": False,
+                    "message": "Entry already exists (no duplicate added).",
+                }
+            ),
+        ):
+            result = agent._invoke_tool(
+                "memory",
+                {"action": "add", "target": "memory", "content": "fact"},
+                "task-1",
+            )
+
+        assert json.loads(result)["success"] is True
+        agent._memory_manager.on_memory_write.assert_not_called()
+
+    def test_memory_tool_bridge_uses_saved_entry_for_normalized_add(self, agent):
+        agent._memory_manager = MagicMock()
+        agent._memory_store = MagicMock()
+
+        with patch(
+            "tools.memory_tool.memory_tool",
+            return_value=json.dumps(
+                {
+                    "success": True,
+                    "target": "memory",
+                    "entries": ["short durable fact"],
+                    "saved_entry": "short durable fact",
+                }
+            ),
+        ):
+            result = agent._invoke_tool(
+                "memory",
+                {"action": "add", "target": "memory", "content": "Long original content that was normalized"},
+                "task-1",
+            )
+
+        assert json.loads(result)["success"] is True
+        agent._memory_manager.on_memory_write.assert_called_once_with(
+            "add", "memory", "short durable fact"
+        )
+
+    def test_memory_tool_bridge_notifies_remove_with_old_text(self, agent):
+        agent._memory_manager = MagicMock()
+        agent._memory_store = MagicMock()
+
+        with patch(
+            "tools.memory_tool.memory_tool",
+            return_value=json.dumps(
+                {
+                    "success": True,
+                    "target": "memory",
+                    "entries": [],
+                    "removed_entry": "QMT HTTP API auth credential placeholder",
+                }
+            ),
+        ):
+            result = agent._invoke_tool(
+                "memory",
+                {"action": "remove", "target": "memory", "old_text": "placeholder"},
+                "task-1",
+            )
+
+        assert json.loads(result)["success"] is True
+        agent._memory_manager.on_memory_write.assert_called_once_with(
+            "remove", "memory", "QMT HTTP API auth credential placeholder"
+        )
+
     def test_same_path_overlaps(self):
         from run_agent import _paths_overlap
         assert _paths_overlap(Path("src/a.py"), Path("src/a.py"))

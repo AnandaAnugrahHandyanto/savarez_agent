@@ -32,7 +32,7 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -46,11 +46,130 @@ def get_memory_dir() -> Path:
 
 ENTRY_DELIMITER = "\n§\n"
 
+_MEMORY_NORMALIZE_MAX_LEN = 220
+_MEMORY_SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？.!?;；])\s+")
+_MEMORY_ROUTING_KEYWORDS = (
+    "workflow",
+    "runbook",
+    "steps",
+    "procedure",
+    "checklist",
+    "pitfall",
+    "verification",
+    "验收",
+    "流程",
+    "步骤",
+    "清单",
+    "排查",
+    "迁移",
+)
+_MEMORY_LONGFORM_KEYWORDS = (
+    "summary",
+    "details",
+    "evidence",
+    "context",
+    "analysis",
+    "research",
+    "source",
+    "relevance",
+    "章节",
+    "总结",
+    "详情",
+    "证据",
+    "背景",
+    "分析",
+    "研究",
+    "来源",
+)
 
-# ---------------------------------------------------------------------------
-# Memory content scanning — lightweight check for injection/exfiltration
-# in content that gets injected into the system prompt.
-# ---------------------------------------------------------------------------
+
+def _collapse_whitespace(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _normalize_memory_entry(content: str) -> Tuple[str, Optional[str]]:
+    """Compact candidate memory content into a short durable-fact sentence.
+
+    Returns (normalized_content, note). note is a short explanation when the
+    content had to be compacted aggressively.
+    """
+    text = content.strip()
+    if not text:
+        return "", None
+
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    lines = [_collapse_whitespace(line) for line in text.splitlines() if line.strip()]
+    compact = " ".join(lines)
+    compact = re.sub(r"\s*([：:；;，,。!?！？])\s*", r"\1 ", compact)
+    compact = _collapse_whitespace(compact)
+
+    note = None
+    if len(compact) > _MEMORY_NORMALIZE_MAX_LEN or "\n" in text:
+        note = "Entry normalized to a short durable-fact form before saving."
+
+    if len(compact) <= _MEMORY_NORMALIZE_MAX_LEN:
+        return compact, note
+
+    pieces = [p.strip() for p in _MEMORY_SENTENCE_SPLIT_RE.split(compact) if p.strip()]
+    if not pieces:
+        pieces = [compact]
+
+    summary = pieces[0]
+    if len(summary) > _MEMORY_NORMALIZE_MAX_LEN:
+        summary = summary[: _MEMORY_NORMALIZE_MAX_LEN - 1].rstrip() + "…"
+
+    return summary, note or "Entry normalized to a short durable-fact form before saving."
+
+
+def _classify_memory_candidate(target: str, content: str) -> Optional[Dict[str, str]]:
+    """Return routing guidance when content is a poor fit for built-in memory."""
+    compact = _collapse_whitespace(content)
+    lowered = compact.lower()
+    line_count = len([line for line in content.splitlines() if line.strip()])
+
+    if target == "memory":
+        if line_count >= 4 or any(k in lowered for k in _MEMORY_ROUTING_KEYWORDS):
+            return {
+                "route": "skill",
+                "reason": "Content looks like a reusable workflow/procedure rather than a short durable fact.",
+                "suggestion": "Create or update a Hermes skill and keep memory to a one-line routing rule.",
+            }
+        if len(compact) > _MEMORY_NORMALIZE_MAX_LEN * 2 or any(k in lowered for k in _MEMORY_LONGFORM_KEYWORDS):
+            return {
+                "route": "obsidian",
+                "reason": "Content looks like long-form knowledge/evidence that belongs in Obsidian rather than built-in memory.",
+                "suggestion": "Write or update an Obsidian note, then keep memory to a short index fact only if needed.",
+            }
+
+    return None
+
+
+def _memory_overflow_guidance(
+    *,
+    target: str,
+    current: int,
+    limit: int,
+    original_content: str,
+    normalized_content: str,
+    projected_total: int,
+    route_hint: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    guidance: Dict[str, Any] = {
+        "usage": f"{current:,}/{limit:,}",
+        "suggested_memory_entry": normalized_content,
+        "projected_usage": f"{projected_total:,}/{limit:,}",
+    }
+    if normalized_content != original_content:
+        guidance["normalized_from"] = original_content
+    if route_hint:
+        guidance["suggested_route"] = route_hint["route"]
+        guidance["route_reason"] = route_hint["reason"]
+        guidance["route_suggestion"] = route_hint["suggestion"]
+    else:
+        guidance["suggested_route"] = "memory"
+        guidance["route_reason"] = "The content is memory-appropriate but needs a shorter entry or existing entries to be compressed."
+        guidance["route_suggestion"] = "Replace a longer existing entry or save only the suggested short durable-fact version."
+    return guidance
 
 _MEMORY_THREAT_PATTERNS = [
     # Prompt injection
@@ -60,6 +179,13 @@ _MEMORY_THREAT_PATTERNS = [
     (r'system\s+prompt\s+override', "sys_prompt_override"),
     (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
     (r'act\s+as\s+(if|though)\s+you\s+(have\s+no|don\'t\s+have)\s+(restrictions|limits|rules)', "bypass_restrictions"),
+    # Plaintext secrets / credentials
+    (
+        r'\b(api[_ -]?key|token|secret|password|passwd|credential(?:s)?)\b\s*'
+        r'(?:[:=]|is\b|为)\s*'
+        r'(?:\*{3,}|(?=[A-Za-z0-9._-]{6,}\b)(?=[A-Za-z0-9._-]*[\d_-])[A-Za-z0-9._-]+)',
+        "plain_secret",
+    ),
     # Exfiltration via curl/wget with secrets
     (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl"),
     (r'wget\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_wget"),
@@ -196,8 +322,14 @@ class MemoryStore:
         if not content:
             return {"success": False, "error": "Content cannot be empty."}
 
-        # Scan for injection/exfiltration before accepting
-        scan_error = _scan_memory_content(content)
+        normalized_content, normalization_note = _normalize_memory_entry(content)
+        route_hint = _classify_memory_candidate(target, content)
+
+        # Scan both original and normalized content for injection/exfiltration
+        # before accepting. Normalization can truncate long entries; scanning
+        # only the saved short form would let a dangerous payload hidden later
+        # in the original input bypass the guard.
+        scan_error = _scan_memory_content(content) or _scan_memory_content(normalized_content)
         if scan_error:
             return {"success": False, "error": scan_error}
 
@@ -208,32 +340,70 @@ class MemoryStore:
             entries = self._entries_for(target)
             limit = self._char_limit(target)
 
-            # Reject exact duplicates
-            if content in entries:
-                return self._success_response(target, "Entry already exists (no duplicate added).")
+            # Reject exact duplicates, including legacy on-disk entries that
+            # predate normalization and still contain multiline/verbose text.
+            duplicate_entry = next(
+                (
+                    entry
+                    for entry in entries
+                    if entry == normalized_content
+                    or _normalize_memory_entry(entry)[0] == normalized_content
+                ),
+                None,
+            )
+            if duplicate_entry is not None:
+                response = self._success_response(
+                    target,
+                    "Entry already exists (no duplicate added).",
+                    mutated=False,
+                )
+                if normalization_note:
+                    response["normalization_note"] = normalization_note
+                if route_hint:
+                    response["routing_hint"] = route_hint
+                return response
 
             # Calculate what the new total would be
-            new_entries = entries + [content]
+            new_entries = entries + [normalized_content]
             new_total = len(ENTRY_DELIMITER.join(new_entries))
 
             if new_total > limit:
                 current = self._char_count(target)
-                return {
+                guidance = _memory_overflow_guidance(
+                    target=target,
+                    current=current,
+                    limit=limit,
+                    original_content=content,
+                    normalized_content=normalized_content,
+                    projected_total=new_total,
+                    route_hint=route_hint,
+                )
+                response = {
                     "success": False,
                     "error": (
                         f"Memory at {current:,}/{limit:,} chars. "
-                        f"Adding this entry ({len(content)} chars) would exceed the limit. "
-                        f"Replace or remove existing entries first."
+                        f"Adding this entry ({len(normalized_content)} chars after normalization) would exceed the limit. "
+                        f"Replace/remove existing entries or use the suggested route."
                     ),
                     "current_entries": entries,
-                    "usage": f"{current:,}/{limit:,}",
+                    **guidance,
                 }
+                if normalization_note:
+                    response["normalization_note"] = normalization_note
+                return response
 
-            entries.append(content)
+            entries.append(normalized_content)
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
-        return self._success_response(target, "Entry added.")
+        response = self._success_response(target, "Entry added.")
+        if normalization_note:
+            response["normalization_note"] = normalization_note
+        if route_hint:
+            response["routing_hint"] = route_hint
+        if normalized_content != content:
+            response["saved_entry"] = normalized_content
+        return response
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
         """Find entry containing old_text substring, replace it with new_content."""
@@ -244,8 +414,12 @@ class MemoryStore:
         if not new_content:
             return {"success": False, "error": "new_content cannot be empty. Use 'remove' to delete entries."}
 
-        # Scan replacement content for injection/exfiltration
-        scan_error = _scan_memory_content(new_content)
+        normalized_content, normalization_note = _normalize_memory_entry(new_content)
+        route_hint = _classify_memory_candidate(target, new_content)
+
+        # Scan replacement content for injection/exfiltration.
+        # As with add(), scan both the original input and the normalized saved form.
+        scan_error = _scan_memory_content(new_content) or _scan_memory_content(normalized_content)
         if scan_error:
             return {"success": False, "error": scan_error}
 
@@ -275,23 +449,45 @@ class MemoryStore:
 
             # Check that replacement doesn't blow the budget
             test_entries = entries.copy()
-            test_entries[idx] = new_content
+            test_entries[idx] = normalized_content
             new_total = len(ENTRY_DELIMITER.join(test_entries))
 
             if new_total > limit:
-                return {
+                current = self._char_count(target)
+                guidance = _memory_overflow_guidance(
+                    target=target,
+                    current=current,
+                    limit=limit,
+                    original_content=new_content,
+                    normalized_content=normalized_content,
+                    projected_total=new_total,
+                    route_hint=route_hint,
+                )
+                response = {
                     "success": False,
                     "error": (
-                        f"Replacement would put memory at {new_total:,}/{limit:,} chars. "
-                        f"Shorten the new content or remove other entries first."
+                        f"Memory at {current:,}/{limit:,} chars. "
+                        f"Replacing with this entry ({len(normalized_content)} chars after normalization) would exceed the limit. "
+                        f"Shorten the new content or use the suggested route."
                     ),
+                    **guidance,
                 }
+                if normalization_note:
+                    response["normalization_note"] = normalization_note
+                return response
 
-            entries[idx] = new_content
+            entries[idx] = normalized_content
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
-        return self._success_response(target, "Entry replaced.")
+        response = self._success_response(target, "Entry replaced.")
+        if normalization_note:
+            response["normalization_note"] = normalization_note
+        if route_hint:
+            response["routing_hint"] = route_hint
+        if normalized_content != new_content:
+            response["saved_entry"] = normalized_content
+        return response
 
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
         """Remove the entry containing old_text substring."""
@@ -321,11 +517,13 @@ class MemoryStore:
                 # All identical -- safe to remove just the first
 
             idx = matches[0][0]
-            entries.pop(idx)
+            removed_entry = entries.pop(idx)
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
-        return self._success_response(target, "Entry removed.")
+        response = self._success_response(target, "Entry removed.")
+        response["removed_entry"] = removed_entry
+        return response
 
     def format_for_system_prompt(self, target: str) -> Optional[str]:
         """
@@ -342,7 +540,7 @@ class MemoryStore:
 
     # -- Internal helpers --
 
-    def _success_response(self, target: str, message: str = None) -> Dict[str, Any]:
+    def _success_response(self, target: str, message: str = None, *, mutated: bool = True) -> Dict[str, Any]:
         entries = self._entries_for(target)
         current = self._char_count(target)
         limit = self._char_limit(target)
@@ -354,6 +552,7 @@ class MemoryStore:
             "entries": entries,
             "usage": f"{pct}% — {current:,}/{limit:,} chars",
             "entry_count": len(entries),
+            "mutated": mutated,
         }
         if message:
             resp["message"] = message

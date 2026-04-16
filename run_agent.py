@@ -6936,16 +6936,33 @@ class AIAgent:
                 old_text=function_args.get("old_text"),
                 store=self._memory_store,
             )
-            # Bridge: notify external memory provider of built-in memory writes
-            if self._memory_manager and function_args.get("action") in ("add", "replace"):
+            # Bridge: notify external memory providers only after a successful
+            # built-in write, keeping local and external memory in sync.
+            if self._memory_manager:
                 try:
-                    self._memory_manager.on_memory_write(
-                        function_args.get("action", ""),
-                        target,
-                        function_args.get("content", ""),
-                    )
+                    parsed = json.loads(result)
                 except Exception:
-                    pass
+                    parsed = None
+                action = function_args.get("action", "")
+                if (
+                    isinstance(parsed, dict)
+                    and parsed.get("success") is True
+                    and parsed.get("mutated", True)
+                    and action in ("add", "replace", "remove")
+                ):
+                    bridge_content = function_args.get("content", "")
+                    if action in ("add", "replace"):
+                        bridge_content = parsed.get("saved_entry") or bridge_content
+                    elif action == "remove":
+                        bridge_content = parsed.get("removed_entry") or function_args.get("old_text", "")
+                    try:
+                        self._memory_manager.on_memory_write(
+                            action,
+                            target,
+                            bridge_content,
+                        )
+                    except Exception:
+                        pass
             return result
         elif self._memory_manager and self._memory_manager.has_tool(function_name):
             return self._memory_manager.handle_tool_call(function_name, function_args)
