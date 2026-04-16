@@ -81,6 +81,27 @@ def _explode_runtime_resolution():
     )
 
 
+def test_resolve_session_agent_runtime_passes_model_max_tokens_from_config(monkeypatch):
+    runner = _make_runner()
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": "http://localhost:8080/v1",
+            "api_key": "test-key",
+        },
+    )
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "local-model")
+
+    model, runtime_kwargs = runner._resolve_session_agent_runtime(
+        user_config={"model": {"default": "local-model", "max_tokens": 32768}}
+    )
+
+    assert model == "local-model"
+    assert runtime_kwargs["max_tokens"] == 32768
+
 def test_run_agent_prefers_session_override_over_global_runtime(monkeypatch):
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
     monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
