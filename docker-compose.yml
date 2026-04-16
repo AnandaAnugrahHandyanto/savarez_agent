@@ -87,7 +87,7 @@ services:
       - hermes_data:/opt/data
     ports:
       - "8081:8080"
-    entrypoint: ["/opt/venv/bin/python", "-m", "acp_adapter"]
+    entrypoint: ["/opt/hermes/.venv/bin/python", "-m", "acp_adapter"]
 
   website:
     image: hermes-agent
