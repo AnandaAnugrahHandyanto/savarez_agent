@@ -320,6 +320,11 @@ class FeishuGroupRule:
     policy: str  # "open" | "allowlist" | "blacklist" | "admin_only" | "disabled"
     allowlist: set[str] = field(default_factory=set)
     blacklist: set[str] = field(default_factory=set)
+    # When False, bot processes every message in this group (no @mention required).
+    # Only use this for solo bot-user groups or dedicated topic channels where you
+    # want Robocat to respond to every message. Default True preserves the safe
+    # mention-gated behaviour for team/multi-person groups.
+    require_mention: bool = True
 
 
 @dataclass
@@ -1104,6 +1109,7 @@ class FeishuAdapter(BasePlatformAdapter):
                     policy=str(rule_cfg.get("policy", "open")).strip().lower(),
                     allowlist=set(str(u).strip() for u in rule_cfg.get("allowlist", []) if str(u).strip()),
                     blacklist=set(str(u).strip() for u in rule_cfg.get("blacklist", []) if str(u).strip()),
+                    require_mention=bool(rule_cfg.get("require_mention", True)),
                 )
 
         # Bot-level admins
@@ -3061,9 +3067,20 @@ class FeishuAdapter(BasePlatformAdapter):
         return bool(sender_ids and (sender_ids & self._allowed_group_users))
 
     def _should_accept_group_message(self, message: Any, sender_id: Any, chat_id: str = "") -> bool:
-        """Require an explicit @mention before group messages enter the agent."""
+        """Require an explicit @mention before group messages enter the agent.
+
+        Groups with ``require_mention: false`` configured in ``group_rules`` bypass
+        the mention gate entirely — every message in that group is routed to the
+        bot (subject to the policy/allowlist/blacklist check above). This is
+        intended for solo bot-user groups or dedicated topic channels where the
+        bot should act like a DM participant.
+        """
         if not self._allow_group_message(sender_id, chat_id):
             return False
+        # Per-group opt-out: skip the mention gate entirely.
+        rule = self._group_rules.get(chat_id) if chat_id else None
+        if rule and not rule.require_mention:
+            return True
         # @_all is Feishu's @everyone placeholder — always route to the bot.
         raw_content = getattr(message, "content", "") or ""
         if "@_all" in raw_content:

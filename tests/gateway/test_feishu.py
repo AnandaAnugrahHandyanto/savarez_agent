@@ -920,6 +920,60 @@ class TestAdapterBehavior(unittest.TestCase):
             )
         )
 
+    def test_per_group_require_mention_false_bypasses_mention_gate(self):
+        """Groups opted in via ``require_mention: false`` process every message."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        config = PlatformConfig(
+            extra={
+                "group_rules": {
+                    "oc_solo_topic": {
+                        "policy": "open",
+                        "require_mention": False,
+                    },
+                    "oc_team_chat": {
+                        "policy": "open",
+                        # require_mention defaults to True
+                    },
+                }
+            }
+        )
+        adapter = FeishuAdapter(config)
+        adapter._bot_open_id = "ou_bot"
+
+        # A plain message with NO mentions — the normal mention gate would drop it.
+        no_mention = SimpleNamespace(mentions=[], content="")
+        sender = SimpleNamespace(open_id="ou_jerry", user_id=None)
+
+        # Solo topic group — should accept without mention.
+        self.assertTrue(
+            adapter._should_accept_group_message(no_mention, sender, "oc_solo_topic")
+        )
+
+        # Regular team group — still requires a mention, so this is dropped.
+        self.assertFalse(
+            adapter._should_accept_group_message(no_mention, sender, "oc_team_chat")
+        )
+
+        # Policy gate still applies — a blacklist hit on the opt-out group is still dropped.
+        config_with_blacklist = PlatformConfig(
+            extra={
+                "group_rules": {
+                    "oc_solo_topic": {
+                        "policy": "blacklist",
+                        "blacklist": ["ou_jerry"],
+                        "require_mention": False,
+                    }
+                }
+            }
+        )
+        adapter2 = FeishuAdapter(config_with_blacklist)
+        adapter2._bot_open_id = "ou_bot"
+        self.assertFalse(
+            adapter2._should_accept_group_message(no_mention, sender, "oc_solo_topic")
+        )
+
     def test_per_group_disabled_policy_blocks_all(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
