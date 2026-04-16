@@ -181,7 +181,12 @@ class PlatformConfig:
         home_channel = None
         if "home_channel" in data:
             if isinstance(data["home_channel"], dict):
-                home_channel = HomeChannel.from_dict(data["home_channel"])
+                try:
+                    home_channel = HomeChannel.from_dict(data["home_channel"])
+                except (KeyError, TypeError, ValueError):
+                    logger.warning(
+                        "Ignoring malformed home_channel in platform config"
+                    )
             else:
                 logger.warning(
                     "Ignoring invalid home_channel in platform config "

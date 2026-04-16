@@ -67,6 +67,19 @@ class TestPlatformConfigRoundtrip:
         assert restored.home_channel is None
         assert restored.extra == {}
 
+    def test_malformed_home_channel_mapping_is_ignored(self):
+        restored = PlatformConfig.from_dict(
+            {
+                "enabled": True,
+                "token": "tok_123",
+                "home_channel": {"platform": "not-a-platform"},
+            }
+        )
+
+        assert restored.enabled is True
+        assert restored.token == "tok_123"
+        assert restored.home_channel is None
+
 
 class TestGetConnectedPlatforms:
     def test_returns_enabled_with_token(self):
