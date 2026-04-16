@@ -454,33 +454,53 @@ class SlackAdapter(BasePlatformAdapter):
 
         # 2b) Convert markdown tables → monospace code blocks.
         # Slack has no native table support; wrapping in ``` gives clean fixed-width rendering.
-        def _convert_table(m: re.Match) -> str:
+        # Handles two styles:
+        #   A) Pipe tables:  | col | col |  (GFM standard)
+        #   B) Space-aligned tables: plain text header + dash separator line + rows
+        def _wrap_as_code_block(raw: str) -> str:
+            """Wrap raw text as a fenced code block placeholder, stripping inline markup."""
+            # Strip markdown bold (**text** or __text__) and inline code (`text`) markers
+            # so they don't get mangled by later passes inside the code block
+            clean = re.sub(r'\*\*(.+?)\*\*', r'\1', raw)
+            clean = re.sub(r'__(.+?)__', r'\1', clean)
+            clean = re.sub(r'`([^`]+)`', r'\1', clean)
+            return _ph('```\n' + clean.rstrip() + '\n```\n')
+
+        def _convert_pipe_table(m: re.Match) -> str:
             raw = m.group(0)
             lines = raw.splitlines()
             # Filter out separator rows (---|---|---) to keep the block compact
             visible = [l for l in lines if not re.match(r'^\s*\|?[\s:]*-+[\s:|-]*\|?\s*$', l)]
             if not visible:
-                return _ph(f'```\n{raw}\n```')
-            # Determine column widths for alignment
+                return _wrap_as_code_block(raw)
             def _cells(row: str):
                 return [c.strip() for c in row.strip().strip('|').split('|')]
             rows = [_cells(l) for l in visible]
-            col_widths = [max(len(r[i]) if i < len(r) else 0 for r in rows)
+            col_widths = [max(len(re.sub(r'\*\*(.+?)\*\*', r'\1', re.sub(r'`([^`]+)`', r'\1', r[i]))) if i < len(r) else 0 for r in rows)
                           for i in range(max(len(r) for r in rows))]
             formatted_lines = []
             for i, row in enumerate(rows):
-                padded = '  '.join(c.ljust(col_widths[j]) if j < len(row) else ' ' * col_widths[j]
-                                   for j, c in enumerate(row))
+                # Strip inline markup from cells before aligning
+                clean_row = [re.sub(r'\*\*(.+?)\*\*', r'\1', re.sub(r'`([^`]+)`', r'\1', c)) for c in row]
+                padded = '  '.join(c.ljust(col_widths[j]) if j < len(clean_row) else ' ' * col_widths[j]
+                                   for j, c in enumerate(clean_row))
                 formatted_lines.append(padded.rstrip())
                 if i == 0:
                     formatted_lines.append('-' * sum(col_widths) + '-' * (2 * (len(col_widths) - 1)))
-            return _ph(f'```\n' + '\n'.join(formatted_lines).rstrip() + '\n```\n')
+            return _ph('```\n' + '\n'.join(formatted_lines).rstrip() + '\n```\n')
 
-        # Match a block of lines that look like a markdown table
-        # (at least a header row + separator row, optional data rows)
+        # Style A: pipe tables  | col | col |
         text = re.sub(
             r'(?m)^(\|.+\|\s*\n)(\|[\s:|-]+\|\s*\n)(\|.+\|\s*\n?)*',
-            _convert_table,
+            _convert_pipe_table,
+            text,
+        )
+
+        # Style B: space-aligned tables — header line + pure-dashes separator (≥10 dashes) + data rows
+        # The separator line is a row of dashes/spaces only, at least 10 chars wide.
+        text = re.sub(
+            r'(?m)^([^\n|`]{10,}\n)([-]{10,}[-\s]*\n)([^\n|`]{1,}\n?)+',
+            lambda m: _wrap_as_code_block(m.group(0)),
             text,
         )
 
