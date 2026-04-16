@@ -246,6 +246,63 @@ class TestStepCallback:
 
         mock_btc.assert_called_once_with("tc-aaa", "web_search", result=None)
 
+    def test_empty_string_result_preserved(self, mock_conn, event_loop_fixture):
+        """Empty string tool result should be preserved, not collapsed to None."""
+        from collections import deque
+
+        tool_call_ids = {"terminal": deque(["tc-empty"])}
+        loop = event_loop_fixture
+
+        cb = make_step_cb(mock_conn, "session-1", loop, tool_call_ids)
+
+        with patch("acp_adapter.events.asyncio.run_coroutine_threadsafe") as mock_rcts, \
+             patch("acp_adapter.events.build_tool_complete") as mock_btc:
+            future = MagicMock(spec=Future)
+            future.result.return_value = None
+            mock_rcts.return_value = future
+
+            cb(1, [{"name": "terminal", "result": ""}])
+
+        mock_btc.assert_called_once_with("tc-empty", "terminal", result="")
+
+    def test_zero_result_preserved(self, mock_conn, event_loop_fixture):
+        """Zero (0) tool result should be preserved, not collapsed to None."""
+        from collections import deque
+
+        tool_call_ids = {"calculate": deque(["tc-zero"])}
+        loop = event_loop_fixture
+
+        cb = make_step_cb(mock_conn, "session-1", loop, tool_call_ids)
+
+        with patch("acp_adapter.events.asyncio.run_coroutine_threadsafe") as mock_rcts, \
+             patch("acp_adapter.events.build_tool_complete") as mock_btc:
+            future = MagicMock(spec=Future)
+            future.result.return_value = None
+            mock_rcts.return_value = future
+
+            cb(1, [{"name": "calculate", "result": 0}])
+
+        mock_btc.assert_called_once_with("tc-zero", "calculate", result="0")
+
+    def test_output_fallback_when_no_result_key(self, mock_conn, event_loop_fixture):
+        """When 'result' key is missing, fall back to 'output' key."""
+        from collections import deque
+
+        tool_call_ids = {"terminal": deque(["tc-out"])}
+        loop = event_loop_fixture
+
+        cb = make_step_cb(mock_conn, "session-1", loop, tool_call_ids)
+
+        with patch("acp_adapter.events.asyncio.run_coroutine_threadsafe") as mock_rcts, \
+             patch("acp_adapter.events.build_tool_complete") as mock_btc:
+            future = MagicMock(spec=Future)
+            future.result.return_value = None
+            mock_rcts.return_value = future
+
+            cb(1, [{"name": "terminal", "output": "some output"}])
+
+        mock_btc.assert_called_once_with("tc-out", "terminal", result="some output")
+
 
 # ---------------------------------------------------------------------------
 # Message callback
