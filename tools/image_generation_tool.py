@@ -28,14 +28,16 @@ Usage:
     )
 """
 
+import datetime
 import json
 import logging
 import os
-import datetime
 import threading
 import uuid
 from typing import Dict, Any, Optional, Union
 from urllib.parse import urlencode
+
+import httpx
 import fal_client
 from tools.debug_helpers import DebugSession
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
@@ -50,6 +52,9 @@ DEFAULT_NUM_INFERENCE_STEPS = 50
 DEFAULT_GUIDANCE_SCALE = 4.5
 DEFAULT_NUM_IMAGES = 1
 DEFAULT_OUTPUT_FORMAT = "png"
+MINIMAX_GLOBAL_BASE_URL = "https://api.minimax.io"
+MINIMAX_CN_BASE_URL = "https://api.minimaxi.com"
+MINIMAX_DEFAULT_MODEL = "image-01"
 
 # Safety settings
 ENABLE_SAFETY_CHECKER = False
@@ -79,6 +84,12 @@ VALID_IMAGE_SIZES = [
 ]
 VALID_OUTPUT_FORMATS = ["jpeg", "png"]
 VALID_ACCELERATION_MODES = ["none", "regular", "high"]
+
+MINIMAX_ASPECT_RATIO_MAP = {
+    "landscape": "16:9",
+    "square": "1:1",
+    "portrait": "9:16",
+}
 
 _debug = DebugSession("image_tools", env_var="IMAGE_TOOLS_DEBUG")
 _managed_fal_client = None
@@ -212,6 +223,170 @@ def _submit_fal_request(model: str, arguments: Dict[str, Any]):
         arguments=arguments,
         headers=request_headers,
     )
+
+
+def _load_hermes_config() -> Dict[str, Any]:
+    """Best-effort config loader to keep tool availability resilient."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        return cfg if isinstance(cfg, dict) else {}
+    except Exception:
+        return {}
+
+
+def _normalize_minimax_base_url(base_url: str) -> str:
+    normalized = str(base_url or "").strip().rstrip("/")
+    if not normalized:
+        return MINIMAX_GLOBAL_BASE_URL
+    if normalized.endswith("/v1"):
+        return normalized
+    return f"{normalized}/v1"
+
+
+def _infer_minimax_provider(base_url: str) -> str:
+    lowered = str(base_url or "").strip().lower()
+    if "minimaxi.com" in lowered:
+        return "minimax-cn"
+    return "minimax"
+
+
+def _resolve_minimax_config() -> Optional[Dict[str, str]]:
+    """Resolve MiniMax credentials from env first, then config.yaml."""
+    env_candidates = [
+        ("minimax-cn", os.getenv("MINIMAX_CN_API_KEY", "").strip(), os.getenv("MINIMAX_CN_BASE_URL", "").strip() or MINIMAX_CN_BASE_URL),
+        ("minimax", os.getenv("MINIMAX_API_KEY", "").strip(), os.getenv("MINIMAX_BASE_URL", "").strip() or MINIMAX_GLOBAL_BASE_URL),
+    ]
+    for provider, api_key, base_url in env_candidates:
+        if api_key:
+            return {
+                "provider": provider,
+                "api_key": api_key,
+                "base_url": _normalize_minimax_base_url(base_url),
+            }
+
+    config = _load_hermes_config()
+    for server_cfg in (config.get("mcp_servers") or {}).values():
+        if not isinstance(server_cfg, dict):
+            continue
+        env_cfg = server_cfg.get("env") or {}
+        if not isinstance(env_cfg, dict):
+            continue
+        api_key = str(
+            env_cfg.get("MINIMAX_CN_API_KEY")
+            or env_cfg.get("MINIMAX_API_KEY")
+            or ""
+        ).strip()
+        if not api_key:
+            continue
+        base_url = str(
+            env_cfg.get("MINIMAX_CN_API_HOST")
+            or env_cfg.get("MINIMAX_CN_BASE_URL")
+            or env_cfg.get("MINIMAX_API_HOST")
+            or env_cfg.get("MINIMAX_BASE_URL")
+            or ""
+        ).strip()
+        if not base_url:
+            provider = "minimax-cn" if env_cfg.get("MINIMAX_CN_API_KEY") else "minimax"
+            base_url = MINIMAX_CN_BASE_URL if provider == "minimax-cn" else MINIMAX_GLOBAL_BASE_URL
+        else:
+            provider = _infer_minimax_provider(base_url)
+        return {
+            "provider": provider,
+            "api_key": api_key,
+            "base_url": _normalize_minimax_base_url(base_url),
+        }
+
+    return None
+
+
+def _extract_minimax_image_url(response_json: Dict[str, Any]) -> str:
+    """Pull the first usable image URL or data URL from a MiniMax response."""
+    candidates = []
+
+    direct_urls = response_json.get("image_urls")
+    if isinstance(direct_urls, list):
+        candidates.extend(direct_urls)
+
+    data = response_json.get("data")
+    if isinstance(data, dict):
+        data_urls = data.get("image_urls")
+        if isinstance(data_urls, list):
+            candidates.extend(data_urls)
+        nested_images = data.get("images")
+        if isinstance(nested_images, list):
+            for item in nested_images:
+                if isinstance(item, dict) and item.get("url"):
+                    candidates.append(item["url"])
+                elif isinstance(item, str):
+                    candidates.append(item)
+
+        for key in ("image_base64", "image_b64", "base64", "image"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip() and not value.startswith("http"):
+                return f"data:image/jpeg;base64,{value.strip()}"
+            if isinstance(value, list):
+                for item in value:
+                    if isinstance(item, str) and item.strip():
+                        if item.startswith("http"):
+                            candidates.append(item)
+                        else:
+                            return f"data:image/jpeg;base64,{item.strip()}"
+
+    images = response_json.get("images")
+    if isinstance(images, list):
+        for item in images:
+            if isinstance(item, dict) and item.get("url"):
+                candidates.append(item["url"])
+            elif isinstance(item, str):
+                candidates.append(item)
+
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+
+    raise ValueError("MiniMax response did not contain an image URL")
+
+
+def _generate_with_minimax(
+    prompt: str,
+    aspect_ratio: str,
+    seed: Optional[int] = None,
+) -> Dict[str, Any]:
+    cfg = _resolve_minimax_config()
+    if not cfg:
+        raise ValueError("MiniMax credentials are not configured")
+
+    response = httpx.post(
+        f"{cfg['base_url']}/image_generation",
+        headers={
+            "Authorization": f"Bearer {cfg['api_key']}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": MINIMAX_DEFAULT_MODEL,
+            "prompt": prompt.strip(),
+            "aspect_ratio": MINIMAX_ASPECT_RATIO_MAP.get(aspect_ratio, "16:9"),
+            "response_format": "url",
+            "n": 1,
+            "prompt_optimizer": False,
+            **({"seed": seed} if seed is not None and isinstance(seed, int) else {}),
+        },
+        timeout=httpx.Timeout(120.0, connect=20.0),
+    )
+    response.raise_for_status()
+    payload = response.json()
+
+    base_resp = payload.get("base_resp") or {}
+    status_code = base_resp.get("status_code", 0)
+    if status_code not in (0, "0", None):
+        raise ValueError(base_resp.get("status_msg") or f"MiniMax image generation failed: {status_code}")
+
+    image_url = _extract_minimax_image_url(payload)
+    return {
+        "provider": cfg["provider"],
+        "image_url": image_url,
+    }
 
 
 def _validate_parameters(
@@ -358,7 +533,11 @@ def image_generate_tool(
     seed: Optional[int] = None
 ) -> str:
     """
-    Generate images from text prompts using FAL.ai's FLUX 2 Pro model with automatic upscaling.
+    Generate images from text prompts.
+
+    Prefers MiniMax when credentials are available so the agent can go directly
+    from "generate image" requests to an image result. Falls back to the
+    existing FAL.ai FLUX pipeline otherwise.
     
     Uses the synchronous fal_client API to avoid event loop lifecycle issues.
     The async API's global httpx.AsyncClient (cached via @cached_property) breaks
@@ -408,102 +587,123 @@ def image_generate_tool(
     start_time = datetime.datetime.now()
     
     try:
-        logger.info("Generating %s image(s) with FLUX 2 Pro: %s", num_images, prompt[:80])
+        logger.info("Generating %s image(s): %s", num_images, prompt[:80])
         
         # Validate prompt
         if not prompt or not isinstance(prompt, str) or len(prompt.strip()) == 0:
             raise ValueError("Prompt is required and must be a non-empty string")
         
-        # Check API key availability
-        if not (os.getenv("FAL_KEY") or _resolve_managed_fal_gateway()):
-            message = "FAL_KEY environment variable not set"
+        minimax_cfg = _resolve_minimax_config()
+        use_minimax = minimax_cfg is not None
+
+        if not use_minimax and not (os.getenv("FAL_KEY") or _resolve_managed_fal_gateway()):
+            message = "No image generation provider configured (MiniMax or FAL)"
             if managed_nous_tools_enabled():
-                message += " and managed FAL gateway is unavailable"
+                message += "; managed FAL gateway is also unavailable"
             raise ValueError(message)
-        
-        # Validate other parameters
-        validated_params = _validate_parameters(
-            image_size, num_inference_steps, guidance_scale, num_images, output_format, "none"
-        )
-        
-        # Prepare arguments for FAL.ai FLUX 2 Pro API
-        arguments = {
-            "prompt": prompt.strip(),
-            "image_size": validated_params["image_size"],
-            "num_inference_steps": validated_params["num_inference_steps"],
-            "guidance_scale": validated_params["guidance_scale"],
-            "num_images": validated_params["num_images"],
-            "output_format": validated_params["output_format"],
-            "enable_safety_checker": ENABLE_SAFETY_CHECKER,
-            "safety_tolerance": SAFETY_TOLERANCE,
-            "sync_mode": True  # Use sync mode for immediate results
-        }
-        
-        # Add seed if provided
-        if seed is not None and isinstance(seed, int):
-            arguments["seed"] = seed
-        
-        logger.info("Submitting generation request to FAL.ai FLUX 2 Pro...")
-        logger.info("  Model: %s", DEFAULT_MODEL)
-        logger.info("  Aspect Ratio: %s -> %s", aspect_ratio_lower, image_size)
-        logger.info("  Steps: %s", validated_params['num_inference_steps'])
-        logger.info("  Guidance: %s", validated_params['guidance_scale'])
-        
-        # Submit request to FAL.ai using sync API (avoids cached event loop issues)
-        handler = _submit_fal_request(
-            DEFAULT_MODEL,
-            arguments=arguments,
-        )
-        
-        # Get the result (sync — blocks until done)
-        result = handler.get()
-        
-        generation_time = (datetime.datetime.now() - start_time).total_seconds()
-        
-        # Process the response
-        if not result or "images" not in result:
-            raise ValueError("Invalid response from FAL.ai API - no images returned")
-        
-        images = result.get("images", [])
-        if not images:
-            raise ValueError("No images were generated")
-        
-        # Format image data and upscale images
-        formatted_images = []
-        for img in images:
-            if isinstance(img, dict) and "url" in img:
-                original_image = {
-                    "url": img["url"],
-                    "width": img.get("width", 0),
-                    "height": img.get("height", 0)
-                }
-                
-                # Attempt to upscale the image
-                upscaled_image = _upscale_image(img["url"], prompt.strip())
-                
-                if upscaled_image:
-                    # Use upscaled image if successful
-                    formatted_images.append(upscaled_image)
-                else:
-                    # Fall back to original image if upscaling fails
-                    logger.warning("Using original image as fallback")
-                    original_image["upscaled"] = False
-                    formatted_images.append(original_image)
-        
-        if not formatted_images:
-            raise ValueError("No valid image URLs returned from API")
-        
-        upscaled_count = sum(1 for img in formatted_images if img.get("upscaled", False))
-        logger.info("Generated %s image(s) in %.1fs (%s upscaled)", len(formatted_images), generation_time, upscaled_count)
-        
-        # Prepare successful response - minimal format
-        response_data = {
-            "success": True,
-            "image": formatted_images[0]["url"] if formatted_images else None
-        }
-        
+
+        if use_minimax:
+            logger.info(
+                "Submitting generation request to MiniMax (%s)...",
+                minimax_cfg["provider"],
+            )
+            minimax_result = _generate_with_minimax(
+                prompt=prompt,
+                aspect_ratio=aspect_ratio_lower,
+                seed=seed,
+            )
+            generation_time = (datetime.datetime.now() - start_time).total_seconds()
+            logger.info(
+                "Generated image with MiniMax in %.1fs (%s)",
+                generation_time,
+                minimax_result["provider"],
+            )
+            response_data = {
+                "success": True,
+                "image": minimax_result["image_url"],
+                "provider": minimax_result["provider"],
+            }
+            debug_call_data["provider"] = minimax_result["provider"]
+            debug_call_data["images_generated"] = 1
+        else:
+            # Validate other parameters
+            validated_params = _validate_parameters(
+                image_size, num_inference_steps, guidance_scale, num_images, output_format, "none"
+            )
+
+            # Prepare arguments for FAL.ai FLUX 2 Pro API
+            arguments = {
+                "prompt": prompt.strip(),
+                "image_size": validated_params["image_size"],
+                "num_inference_steps": validated_params["num_inference_steps"],
+                "guidance_scale": validated_params["guidance_scale"],
+                "num_images": validated_params["num_images"],
+                "output_format": validated_params["output_format"],
+                "enable_safety_checker": ENABLE_SAFETY_CHECKER,
+                "safety_tolerance": SAFETY_TOLERANCE,
+                "sync_mode": True,
+            }
+
+            if seed is not None and isinstance(seed, int):
+                arguments["seed"] = seed
+
+            logger.info("Submitting generation request to FAL.ai FLUX 2 Pro...")
+            logger.info("  Model: %s", DEFAULT_MODEL)
+            logger.info("  Aspect Ratio: %s -> %s", aspect_ratio_lower, image_size)
+            logger.info("  Steps: %s", validated_params['num_inference_steps'])
+            logger.info("  Guidance: %s", validated_params['guidance_scale'])
+
+            handler = _submit_fal_request(
+                DEFAULT_MODEL,
+                arguments=arguments,
+            )
+            result = handler.get()
+            generation_time = (datetime.datetime.now() - start_time).total_seconds()
+
+            if not result or "images" not in result:
+                raise ValueError("Invalid response from FAL.ai API - no images returned")
+
+            images = result.get("images", [])
+            if not images:
+                raise ValueError("No images were generated")
+
+            formatted_images = []
+            for img in images:
+                if isinstance(img, dict) and "url" in img:
+                    original_image = {
+                        "url": img["url"],
+                        "width": img.get("width", 0),
+                        "height": img.get("height", 0)
+                    }
+
+                    upscaled_image = _upscale_image(img["url"], prompt.strip())
+
+                    if upscaled_image:
+                        formatted_images.append(upscaled_image)
+                    else:
+                        logger.warning("Using original image as fallback")
+                        original_image["upscaled"] = False
+                        formatted_images.append(original_image)
+
+            if not formatted_images:
+                raise ValueError("No valid image URLs returned from API")
+
+            upscaled_count = sum(1 for img in formatted_images if img.get("upscaled", False))
+            logger.info(
+                "Generated %s image(s) in %.1fs (%s upscaled)",
+                len(formatted_images),
+                generation_time,
+                upscaled_count,
+            )
+            response_data = {
+                "success": True,
+                "image": formatted_images[0]["url"] if formatted_images else None,
+                "provider": "fal",
+            }
+            debug_call_data["provider"] = "fal"
+            debug_call_data["images_generated"] = len(formatted_images)
+
         debug_call_data["success"] = True
-        debug_call_data["images_generated"] = len(formatted_images)
         debug_call_data["generation_time"] = generation_time
         
         # Log debug information
@@ -543,6 +743,11 @@ def check_fal_api_key() -> bool:
     return bool(os.getenv("FAL_KEY") or _resolve_managed_fal_gateway())
 
 
+def check_minimax_api_key() -> bool:
+    """Check whether MiniMax image generation credentials are available."""
+    return _resolve_minimax_config() is not None
+
+
 def check_image_generation_requirements() -> bool:
     """
     Check if all requirements for image generation tools are met.
@@ -551,7 +756,9 @@ def check_image_generation_requirements() -> bool:
         bool: True if requirements are met, False otherwise
     """
     try:
-        # Check API key
+        if check_minimax_api_key():
+            return True
+
         if not check_fal_api_key():
             return False
         
@@ -646,7 +853,7 @@ from tools.registry import registry, tool_error
 
 IMAGE_GENERATE_SCHEMA = {
     "name": "image_generate",
-    "description": "Generate high-quality images from text prompts using FLUX 2 Pro model with automatic 2x upscaling. Creates detailed, artistic images that are automatically upscaled for hi-rez results. Returns a single upscaled image URL. Display it using markdown: ![description](URL)",
+    "description": "Generate high-quality images from text prompts. Prefer this immediately for image requests instead of researching image APIs. Uses MiniMax when configured, otherwise falls back to FLUX 2 Pro with automatic 2x upscaling. Returns a single image URL. Display it using markdown: ![description](URL)",
     "parameters": {
         "type": "object",
         "properties": {
