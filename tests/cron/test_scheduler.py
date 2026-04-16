@@ -714,6 +714,110 @@ class TestRunJobSessionPersistence:
         # But the output log should show the placeholder
         assert "(No response generated)" in output
 
+    def test_run_job_corrects_copilot_api_mode_for_job_model(self, tmp_path):
+        """Cron jobs that override the model must get api_mode re-derived.
+
+        resolve_runtime_provider() picks api_mode from config.yaml's default
+        model.  When a cron job overrides with a different model on the same
+        copilot provider (e.g. default is GPT-4.x → chat_completions but the
+        job uses GPT-5 → codex_responses), run_job must re-derive api_mode
+        from the job's actual model before handing it to the agent.
+
+        Regression test for the sibling of PR #6647, which fixed the same
+        bug pattern in tools/delegate_tool.py.
+        """
+        job = {
+            "id": "copilot-gpt5-job",
+            "name": "copilot gpt5 test",
+            "prompt": "hello",
+            "model": "copilot/gpt-5.4-mini",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "copilot-token",
+                     "base_url": "https://api.githubcopilot.com",
+                     "provider": "copilot",
+                     # Wrong mode — derived from config.yaml default,
+                     # not from the job's model.  The fix must correct it.
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch(
+                 "hermes_cli.models.copilot_model_api_mode",
+                 return_value="codex_responses",
+             ) as mock_api_mode, \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            success, _output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+
+        # copilot_model_api_mode must have been called with the job's model,
+        # not the config.yaml default.
+        mock_api_mode.assert_called_once()
+        called_args, called_kwargs = mock_api_mode.call_args
+        assert (called_args and called_args[0] == "copilot/gpt-5.4-mini") or \
+               called_kwargs.get("model_id") == "copilot/gpt-5.4-mini"
+
+        # The agent must receive the corrected api_mode.
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["api_mode"] == "codex_responses"
+        assert kwargs["provider"] == "copilot"
+
+    def test_run_job_leaves_api_mode_alone_for_non_copilot_providers(self, tmp_path):
+        """Non-copilot providers must not trigger the api_mode override."""
+        job = {
+            "id": "openrouter-job",
+            "name": "openrouter test",
+            "prompt": "hello",
+            "model": "anthropic/claude-sonnet-4.5",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://openrouter.ai/api/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch(
+                 "hermes_cli.models.copilot_model_api_mode",
+                 return_value="codex_responses",
+             ) as mock_api_mode, \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            success, _output, _fr, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        # Must NOT be called for non-copilot providers.
+        mock_api_mode.assert_not_called()
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["api_mode"] == "chat_completions"
+        assert kwargs["provider"] == "openrouter"
+
     def test_run_job_sets_auto_delivery_env_from_dotenv_home_channel(self, tmp_path, monkeypatch):
         job = {
             "id": "test-job",

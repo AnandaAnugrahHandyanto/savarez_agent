@@ -700,6 +700,38 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             message = format_runtime_provider_error(exc)
             raise RuntimeError(message) from exc
 
+        # `resolve_runtime_provider()` derives the copilot api_mode from
+        # `model.default` in config.yaml, but a cron job may override the
+        # model (e.g. `copilot/gpt-5.4-mini` while config.yaml's default is
+        # `qwen3.5-auto`).  Re-derive api_mode from the job's actual model
+        # so GPT-5 jobs hit Responses API and GPT-4.x jobs hit Chat
+        # Completions.  Mirrors the fix applied to the delegation path in
+        # PR #6647.
+        if str(runtime.get("provider") or "").strip().lower() == "copilot" and model:
+            try:
+                from hermes_cli.models import copilot_model_api_mode
+                corrected_mode = copilot_model_api_mode(
+                    model,
+                    api_key=runtime.get("api_key"),
+                )
+                if corrected_mode and corrected_mode != runtime.get("api_mode"):
+                    logger.info(
+                        "Job '%s': corrected copilot api_mode for model %r: %s -> %s",
+                        job_id,
+                        model,
+                        runtime.get("api_mode"),
+                        corrected_mode,
+                    )
+                    runtime["api_mode"] = corrected_mode
+            except Exception as exc:
+                logger.warning(
+                    "Job '%s': failed to re-derive copilot api_mode for model %r: %s",
+                    job_id,
+                    model,
+                    exc,
+                    exc_info=True,
+                )
+
         from agent.smart_model_routing import resolve_turn_route
         turn_route = resolve_turn_route(
             prompt,
