@@ -519,6 +519,22 @@ def load_cli_config() -> Dict[str, Any]:
 
     return defaults
 
+
+def _resolve_model_max_tokens(config: Dict[str, Any] | None) -> Optional[int]:
+    """Return model.max_tokens from config when it is a valid integer."""
+    if not isinstance(config, dict):
+        return None
+    model_cfg = config.get("model", {})
+    if not isinstance(model_cfg, dict):
+        return None
+    raw = model_cfg.get("max_tokens")
+    if raw in (None, ""):
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
 # Load configuration at module startup
 CLI_CONFIG = load_cli_config()
 
@@ -1709,6 +1725,8 @@ class HermesCLI:
             self.max_turns = int(os.getenv("HERMES_MAX_ITERATIONS"))
         else:
             self.max_turns = 90
+
+        self.max_tokens = _resolve_model_max_tokens(CLI_CONFIG)
         
         # Parse and validate toolsets
         self.enabled_toolsets = toolsets
@@ -2878,6 +2896,7 @@ class HermesCLI:
                 acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"),
                 credential_pool=runtime.get("credential_pool"),
+                max_tokens=self.max_tokens,
                 max_iterations=self.max_turns,
                 enabled_toolsets=self.enabled_toolsets,
                 verbose_logging=self.verbose,
@@ -5688,6 +5707,7 @@ class HermesCLI:
                     api_mode=turn_route["runtime"].get("api_mode"),
                     acp_command=turn_route["runtime"].get("command"),
                     acp_args=turn_route["runtime"].get("args"),
+                    max_tokens=self.max_tokens,
                     max_iterations=self.max_turns,
                     enabled_toolsets=self.enabled_toolsets,
                     quiet_mode=True,
@@ -5826,6 +5846,7 @@ class HermesCLI:
                     api_mode=turn_route["runtime"].get("api_mode"),
                     acp_command=turn_route["runtime"].get("command"),
                     acp_args=turn_route["runtime"].get("args"),
+                    max_tokens=self.max_tokens,
                     max_iterations=8,
                     enabled_toolsets=[],
                     quiet_mode=True,

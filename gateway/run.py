@@ -456,6 +456,21 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     return ""
 
 
+def _resolve_gateway_max_tokens(config: dict | None = None) -> Optional[int]:
+    """Read model.max_tokens from config.yaml when it is a valid integer."""
+    cfg = config if config is not None else _load_gateway_config()
+    model_cfg = cfg.get("model", {})
+    if not isinstance(model_cfg, dict):
+        return None
+    raw = model_cfg.get("max_tokens")
+    if raw in (None, ""):
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def _resolve_hermes_bin() -> Optional[list[str]]:
     """Resolve the Hermes update command as argv parts.
 
@@ -5682,6 +5697,7 @@ class GatewayRunner:
 
             pr = self._provider_routing
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            model_max_tokens = _resolve_gateway_max_tokens(user_config)
             reasoning_config = self._load_reasoning_config()
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
@@ -5691,6 +5707,7 @@ class GatewayRunner:
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
+                    max_tokens=model_max_tokens,
                     max_iterations=max_iterations,
                     quiet_mode=True,
                     verbose_logging=False,
@@ -5848,6 +5865,7 @@ class GatewayRunner:
                 return
 
             platform_key = _platform_config_key(source.platform)
+            model_max_tokens = _resolve_gateway_max_tokens(user_config)
             reasoning_config = self._load_reasoning_config()
             self._service_tier = self._load_service_tier()
             turn_route = self._resolve_turn_agent_config(question, model, runtime_kwargs)
@@ -5871,6 +5889,7 @@ class GatewayRunner:
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
+                    max_tokens=model_max_tokens,
                     max_iterations=8,
                     quiet_mode=True,
                     verbose_logging=False,
@@ -8546,6 +8565,7 @@ class GatewayRunner:
                     logger.debug("interim_assistant_callback error: %s", _e)
 
             turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            model_max_tokens = _resolve_gateway_max_tokens(user_config)
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
@@ -8577,6 +8597,7 @@ class GatewayRunner:
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
+                    max_tokens=model_max_tokens,
                     max_iterations=max_iterations,
                     quiet_mode=True,
                     verbose_logging=False,
@@ -8614,6 +8635,7 @@ class GatewayRunner:
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides")
+            agent.max_tokens = model_max_tokens
 
             _bg_review_release = threading.Event()
             _bg_review_pending: list[str] = []

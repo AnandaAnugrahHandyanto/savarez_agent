@@ -172,6 +172,45 @@ def test_runtime_resolution_failure_is_not_sticky(monkeypatch):
     assert shell.agent is not None
 
 
+def test_init_agent_passes_model_max_tokens_from_config(monkeypatch):
+    cli = _import_cli()
+
+    def _runtime_resolve(**kwargs):
+        return {
+            "provider": "openrouter",
+            "api_mode": "chat_completions",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "test-key",
+            "source": "env/config",
+        }
+
+    class _DummyAgent:
+        def __init__(self, *args, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+    monkeypatch.setattr(cli, "AIAgent", _DummyAgent)
+    monkeypatch.setattr(
+        cli,
+        "CLI_CONFIG",
+        {
+            **cli.CLI_CONFIG,
+            "model": {
+                **cli.CLI_CONFIG.get("model", {}),
+                "max_tokens": 32768,
+            },
+        },
+        raising=False,
+    )
+
+    shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
+
+    assert shell.max_tokens == 32768
+    assert shell._init_agent() is True
+    assert shell.agent.kwargs["max_tokens"] == 32768
+
+
 def test_runtime_resolution_rebuilds_agent_on_routing_change(monkeypatch):
     cli = _import_cli()
 
