@@ -290,6 +290,13 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _WEIXIN_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), None, True
+    # Slack IDs: C (channel), D (DM), G (group), B (bot) followed by alphanumeric.
+    # May include a thread timestamp after a colon (e.g. C0ANYSL2GBE:1776351448.347679).
+    if platform_name == "slack":
+        _SLACK_ID_RE = re.compile(r"^([BCDFGUVW][A-Z0-9]+)(?::(\d+\.\d+))?$")
+        match = _SLACK_ID_RE.fullmatch(target_ref)
+        if match:
+            return match.group(1), match.group(2), True
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True
     # Matrix room IDs (start with !) and user IDs (start with @) are explicit
