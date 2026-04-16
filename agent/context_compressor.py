@@ -858,6 +858,19 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             idx = check
         return idx
 
+    def _compute_compress_start(self, messages):
+        """Return the first message index eligible for compression (HEAD boundary).
+
+        The HEAD is only meaningful when the session begins with a system
+        prompt.  If the first message is not a system message the session
+        started cold -- there is no privileged opening exchange to protect,
+        so compress_start is 0.  Centralising this logic here prevents the
+        compress() path and any preview paths (e.g. gateway /compress) from
+        drifting independently.
+        """
+        raw = self.protect_first_n if (messages and messages[0].get("role") == "system") else 0
+        return self._align_boundary_forward(messages, raw)
+
     # ------------------------------------------------------------------
     # Tail protection by token budget
     # ------------------------------------------------------------------
@@ -918,6 +931,23 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         # Align to avoid splitting tool groups
         cut_idx = self._align_boundary_backward(messages, cut_idx)
 
+        # ------------------------------------------------------------------
+        # HOTFIX: Ensure the last user message is always in the TAIL.
+        #
+        # The token-budget walk can land the cut AFTER the last user turn
+        # if tool results are small (few tokens, many fit under budget).
+        # That puts the user's question in MIDDLE → summarized → ghost.
+        # Search from the TRUE end of the message list to find the last
+        # user, then ensure the cut includes it regardless of alignment.
+        # ------------------------------------------------------------------
+        last_user_idx = None
+        for i in range(n - 1, -1, -1):
+            if messages[i].get("role") == "user":
+                last_user_idx = i
+                break
+        if last_user_idx is not None and cut_idx > last_user_idx:
+            cut_idx = last_user_idx
+
         return max(cut_idx, head_end + 1)
 
     # ------------------------------------------------------------------
@@ -944,8 +974,10 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 everything else.  Inspired by Claude Code's ``/compact``.
         """
         n_messages = len(messages)
-        # Only need head + 3 tail messages minimum (token budget decides the real tail size)
-        _min_for_compress = self.protect_first_n + 3 + 1
+        # Use the actual effective head size (0 when no system message) so the
+        # minimum-messages guard is not too conservative for cold-start sessions.
+        _effective_head = self.protect_first_n if (messages and messages[0].get("role") == "system") else 0
+        _min_for_compress = _effective_head + 3 + 1
         if n_messages <= _min_for_compress:
             if not self.quiet_mode:
                 logger.warning(
@@ -965,8 +997,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             logger.info("Pre-compression: pruned %d old tool result(s)", pruned_count)
 
         # Phase 2: Determine boundaries
-        compress_start = self.protect_first_n
-        compress_start = self._align_boundary_forward(messages, compress_start)
+        compress_start = self._compute_compress_start(messages)
 
         # Use token-budget tail protection instead of fixed message count
         compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
