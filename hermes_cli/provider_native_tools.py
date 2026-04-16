@@ -17,12 +17,12 @@ _TOOL_DEFAULTS = {
     "music_gen": ("music_gen", "provider", {"", "auto"}),
 }
 
-_TOOL_SUMMARIES = {
-    "tts":       "TTS \u2192 speech-2.6-hd (30+ voices)",
-    "image_gen": "Image generation \u2192 image-01",
-    "vision":    "Vision analysis \u2192 MiniMax-VL-01",
-    "video_gen": "Video generation \u2192 MiniMax-Hailuo-2.3",
-    "music_gen": "Music generation \u2192 music-2.6",
+_TOOL_LABELS = {
+    "tts": "Text-to-speech",
+    "image_gen": "Image generation",
+    "vision": "Vision analysis",
+    "video_gen": "Video generation",
+    "music_gen": "Music generation",
 }
 
 
@@ -34,12 +34,14 @@ def _api_host(config):
         return ""
 
 
+def _is_native_provider(config):
+    return "minimax" in _api_host(config)
+
+
 def _provider_label(config):
-    host = _api_host(config)
-    if "minimaxi.com" in host:
-        return "minimax-cn"
-    if "minimax" in host:
-        return "minimax"
+    model = config.get("model") or {}
+    if isinstance(model, dict):
+        return str(model.get("provider") or "").strip().lower()
     return ""
 
 
@@ -66,7 +68,7 @@ def active_provider_api_root(config):
 def endpoint_and_key(subpath, config=None):
     """``(url, api_key)`` for a native subpath, or ``("", "")``."""
     cfg = config if config is not None else _safe_load_config()
-    if not _provider_label(cfg):
+    if not _is_native_provider(cfg):
         return "", ""
     root = active_provider_api_root(cfg).rstrip("/")
     key = (os.environ.get("MINIMAX_API_KEY", "").strip()
@@ -78,7 +80,7 @@ def endpoint_and_key(subpath, config=None):
 
 def get_native_tools(config):
     """Tool categories served natively by the active provider, or ``()``."""
-    if not _provider_label(config):
+    if not _is_native_provider(config):
         return ()
     return tuple(_TOOL_DEFAULTS) + ("vision",)
 
@@ -89,6 +91,8 @@ def provider_has_native_tool(tool, config):
 
 def apply_provider_native_tool_defaults(config):
     """Wire config defaults for providers that serve tools natively."""
+    if not _is_native_provider(config):
+        return set()
     label = _provider_label(config)
     if not label:
         return set()
@@ -111,4 +115,4 @@ def describe_changes(changed, config):
     items = sorted(changed)
     if not items:
         return "No changes \u2014 existing tool choices were preserved."
-    return "\n".join(f"  \u2022 {_TOOL_SUMMARIES.get(k, k)}" for k in items)
+    return "\n".join(f"  \u2022 {_TOOL_LABELS.get(k, k)}" for k in items)

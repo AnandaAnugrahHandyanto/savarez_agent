@@ -19,8 +19,8 @@ _CN = "https://api.minimaxi.com/anthropic"
 _CN_APAC = "https://api-apac.minimaxi.com/anthropic"
 
 
-def _cfg(base_url):
-    return {"model": {"base_url": base_url}}
+def _cfg(base_url, provider="minimax"):
+    return {"model": {"base_url": base_url, "provider": provider}}
 
 
 class TestApiHost:
@@ -140,7 +140,7 @@ class TestApplyDefaults:
         assert second == set()
 
     def test_cn_provider(self):
-        config = _cfg(_CN)
+        config = _cfg(_CN, provider="minimax-cn")
         changed = apply_provider_native_tool_defaults(config)
         assert "tts" in changed
         assert config["tts"]["provider"] == "minimax-cn"
@@ -165,10 +165,10 @@ class TestDescribeChanges:
         )
         assert out.count("\u2022") == 5
 
-    def test_contains_model_names(self):
+    def test_contains_category_labels(self):
         out = describe_changes({"image_gen", "video_gen"}, _cfg(_INTL))
-        assert "image-01" in out
-        assert "Hailuo" in out
+        assert "Image generation" in out
+        assert "Video generation" in out
 
 
 class TestEndpointAndKey:
@@ -180,7 +180,7 @@ class TestEndpointAndKey:
 
     def test_cn_host(self, monkeypatch):
         monkeypatch.setenv("MINIMAX_CN_API_KEY", "sk-cn")
-        url, key = endpoint_and_key("/v1/t2a_v2", _cfg(_CN))
+        url, key = endpoint_and_key("/v1/t2a_v2", _cfg(_CN, provider="minimax-cn"))
         assert url == "https://api.minimaxi.com/v1/t2a_v2"
         assert key == "sk-cn"
 
