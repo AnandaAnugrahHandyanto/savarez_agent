@@ -284,6 +284,11 @@ DEFAULT_CONFIG = {
         # threshold before escalating to a full timeout.  The warning fires
         # once per run and does not interrupt the agent.  0 = disable warning.
         "gateway_timeout_warning": 900,
+        # Route tool progress, status messages, and approval requests to a
+        # designated "home chat" (control room) for monitoring across sessions.
+        # Format: "platform:chat_id" (e.g. "whatsapp:13181372117007@lid").
+        # Empty string = disabled.
+        "monitor_chat": "",
     },
     
     "terminal": {
