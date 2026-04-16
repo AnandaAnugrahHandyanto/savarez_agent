@@ -146,3 +146,17 @@ class TestSubparserRoutingFallback:
         assert args.yolo is True
         assert args.worktree is True
         assert args.skills == ["myskill"]
+
+
+def test_main_subcommand_help_prints_once(monkeypatch, capsys):
+    """`hermes <subcommand> -h` should not duplicate help output."""
+    import hermes_cli.main as main_mod
+
+    monkeypatch.setattr(sys, "argv", ["hermes", "dashboard", "-h"])
+
+    with pytest.raises(SystemExit) as excinfo:
+        main_mod.main()
+
+    assert excinfo.value.code == 0
+    out = capsys.readouterr().out
+    assert out.count("usage: hermes dashboard") == 1
