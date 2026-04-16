@@ -94,9 +94,17 @@ def _is_blocked_device(filepath: str) -> bool:
 # terminal tool's approval system.  These match prefixes after os.path.realpath.
 _SENSITIVE_PATH_PREFIXES = (
     "/etc/", "/boot/", "/usr/lib/systemd/",
+    # macOS resolves /etc to /private/etc. Keep /private/var protected,
+    # but explicitly allow per-user tempfile roots under /private/var/folders.
     "/private/etc/", "/private/var/",
 )
-_SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
+_SENSITIVE_EXACT_PATHS = {
+    "/var/run/docker.sock", "/run/docker.sock",
+    "/private/var/run/docker.sock",
+}
+_ALLOWED_PATH_PREFIXES = (
+    "/private/var/folders/",
+)
 
 
 def _check_sensitive_path(filepath: str) -> str | None:
@@ -110,11 +118,14 @@ def _check_sensitive_path(filepath: str) -> str | None:
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
     )
+    if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
+        return _err
+    for allowed_prefix in _ALLOWED_PATH_PREFIXES:
+        if resolved.startswith(allowed_prefix):
+            return None
     for prefix in _SENSITIVE_PATH_PREFIXES:
         if resolved.startswith(prefix) or normalized.startswith(prefix):
             return _err
-    if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
-        return _err
     return None
 
 

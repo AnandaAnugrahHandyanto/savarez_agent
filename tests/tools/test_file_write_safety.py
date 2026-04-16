@@ -94,9 +94,35 @@ class TestCheckSensitivePathMacOSBypass:
         from tools.file_tools import _check_sensitive_path
         assert _check_sensitive_path("/private/etc/ssh/sshd_config") is not None
 
-    def test_private_var_blocked(self):
+    def test_private_var_db_blocked(self):
         from tools.file_tools import _check_sensitive_path
         assert _check_sensitive_path("/private/var/db/something") is not None
+
+    def test_private_var_log_blocked(self):
+        from tools.file_tools import _check_sensitive_path
+        assert _check_sensitive_path("/private/var/log/system.log") is not None
+
+    def test_private_var_run_docker_sock_blocked(self):
+        from tools.file_tools import _check_sensitive_path
+        assert _check_sensitive_path("/private/var/run/docker.sock") is not None
+
+    def test_exact_sensitive_path_wins_over_private_var_folders_allowlist(self, monkeypatch):
+        from tools.file_tools import _check_sensitive_path
+
+        monkeypatch.setattr("tools.file_tools._SENSITIVE_EXACT_PATHS", {"/private/var/folders/test/docker.sock"})
+        assert _check_sensitive_path("/private/var/folders/test/docker.sock") is not None
+
+    def test_private_var_tempfile_allowed(self):
+        from tools.file_tools import _check_sensitive_path
+        assert _check_sensitive_path("/private/var/folders/ab/cd/T/hermes-test.txt") is None
+
+    def test_private_var_symlink_to_sensitive_target_blocked(self, tmp_path):
+        from tools.file_tools import _check_sensitive_path
+
+        link_path = tmp_path / "hosts-link"
+        link_path.symlink_to("/etc/hosts")
+
+        assert _check_sensitive_path(str(link_path)) is not None
 
     def test_boot_still_blocked(self):
         from tools.file_tools import _check_sensitive_path
