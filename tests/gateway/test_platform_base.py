@@ -1,5 +1,6 @@
 """Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
+import asyncio
 import os
 from unittest.mock import patch
 
@@ -8,6 +9,7 @@ from gateway.platforms.base import (
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
     MessageEvent,
     MessageType,
+    SendResult,
     safe_url_for_log,
     utf16_len,
     _prefix_within_utf16_limit,
@@ -322,6 +324,75 @@ class TestExtractMedia:
         assert "After" in cleaned
 
 
+class TestSendFileFallback:
+    def _adapter(self):
+        from gateway.config import Platform, PlatformConfig
+
+        class StubAdapter(BasePlatformAdapter):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.document_calls = []
+
+            async def connect(self):
+                return True
+
+            async def disconnect(self):
+                pass
+
+            async def send(self, *a, **kw):
+                raise AssertionError("send() should not be used by send_file fallback")
+
+            async def get_chat_info(self, *a):
+                return {}
+
+            async def send_document(
+                self,
+                chat_id,
+                file_path,
+                caption=None,
+                file_name=None,
+                reply_to=None,
+                **kwargs,
+            ):
+                self.document_calls.append({
+                    "chat_id": chat_id,
+                    "file_path": file_path,
+                    "caption": caption,
+                    "file_name": file_name,
+                    "reply_to": reply_to,
+                    "kwargs": kwargs,
+                })
+                return SendResult(success=True, message_id="doc-1")
+
+        config = PlatformConfig(enabled=True, token="test")
+        return StubAdapter(config=config, platform=Platform.TELEGRAM)
+
+    def test_send_file_delegates_to_send_document_override(self):
+        adapter = self._adapter()
+
+        result = asyncio.run(
+            adapter.send_file(
+                chat_id="chat-1",
+                file_path="/tmp/report.pdf",
+                caption="Please review",
+                file_name="report.pdf",
+                reply_to="msg-9",
+                metadata={"thread_id": "123"},
+            )
+        )
+
+        assert result.success is True
+        assert result.message_id == "doc-1"
+        assert adapter.document_calls == [{
+            "chat_id": "chat-1",
+            "file_path": "/tmp/report.pdf",
+            "caption": "Please review",
+            "file_name": "report.pdf",
+            "reply_to": "msg-9",
+            "kwargs": {"metadata": {"thread_id": "123"}},
+        }]
+
+
 # ---------------------------------------------------------------------------
 # truncate_message
 # ---------------------------------------------------------------------------
@@ -581,4 +652,3 @@ class TestTruncateMessageUtf16:
             assert fence_count % 2 == 0, (
                 f"Chunk {i} has unbalanced fences ({fence_count})"
             )
-
