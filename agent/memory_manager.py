@@ -62,11 +62,17 @@ _PROMPT_STRUCTURE_TAG_RE = re.compile(
 
 
 def sanitize_context(text: str) -> str:
-    """Strip fence tags, injected context blocks, and system notes from provider output."""
+    """Strip fence tags, injected context blocks, and system notes.
+
+    This function is also applied to user input in run_agent.py, so it
+    must stay narrowly focused on leaked memory fences and system notes.
+    Prompt-structure tag stripping is intentionally handled only in
+    build_memory_context_block() to avoid silently rewriting legitimate
+    user text that contains angle-bracket tokens.
+    """
     text = _INTERNAL_CONTEXT_RE.sub('', text)
     text = _INTERNAL_NOTE_RE.sub('', text)
     text = _FENCE_TAG_RE.sub('', text)
-    text = _PROMPT_STRUCTURE_TAG_RE.sub('', text)
     return text
 
 
@@ -79,6 +85,12 @@ def build_memory_context_block(raw_context: str) -> str:
     if not raw_context or not raw_context.strip():
         return ""
     clean = sanitize_context(raw_context)
+    # Strip prompt-structuring tags only from memory provider output.
+    # These tags (<system>, <assistant>, <tool_use>, etc.) could be
+    # injected by a compromised memory backend to manipulate prompt
+    # parsing.  This is done here rather than in sanitize_context()
+    # because that function is also applied to user input.
+    clean = _PROMPT_STRUCTURE_TAG_RE.sub('', clean)
     return (
         "<memory-context>\n"
         "[System note: The following is recalled memory context, "
