@@ -173,23 +173,20 @@ class TestDescribeChanges:
 
 
 class TestCredential:
-    def test_intl_prefers_minimax_key(self, monkeypatch):
+    def test_prefers_minimax_key(self, monkeypatch):
         monkeypatch.setenv("MINIMAX_API_KEY", "sk-intl")
         monkeypatch.setenv("MINIMAX_CN_API_KEY", "sk-cn")
-        assert _credential(_cfg(_INTL)) == "sk-intl"
+        assert _credential() == "sk-intl"
 
-    def test_cn_prefers_cn_key(self, monkeypatch):
-        monkeypatch.setenv("MINIMAX_API_KEY", "sk-intl")
-        monkeypatch.setenv("MINIMAX_CN_API_KEY", "sk-cn")
-        assert _credential(_cfg(_CN)) == "sk-cn"
-
-    def test_fallback(self, monkeypatch):
+    def test_fallback_to_cn_key(self, monkeypatch):
         monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
         monkeypatch.setenv("MINIMAX_CN_API_KEY", "sk-cn")
-        assert _credential(_cfg(_INTL)) == "sk-cn"
+        assert _credential() == "sk-cn"
 
-    def test_empty_for_non_native(self):
-        assert _credential(_cfg("https://api.openai.com/v1")) == ""
+    def test_empty_when_no_key(self, monkeypatch):
+        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+        monkeypatch.delenv("MINIMAX_CN_API_KEY", raising=False)
+        assert _credential() == ""
 
 
 class TestEndpointAndKey:

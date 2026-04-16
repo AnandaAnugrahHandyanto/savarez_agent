@@ -13,12 +13,12 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
-# hostname → (provider_label, credential_env_priority)
-_NATIVE_HOSTS: Dict[str, Tuple[str, Tuple[str, ...]]] = {
-    "api.minimax.io":        ("minimax",    ("MINIMAX_API_KEY", "MINIMAX_CN_API_KEY")),
-    "api-uw.minimax.io":     ("minimax",    ("MINIMAX_API_KEY", "MINIMAX_CN_API_KEY")),
-    "api.minimaxi.com":      ("minimax-cn", ("MINIMAX_CN_API_KEY", "MINIMAX_API_KEY")),
-    "api-apac.minimaxi.com": ("minimax-cn", ("MINIMAX_CN_API_KEY", "MINIMAX_API_KEY")),
+# hostname → provider_label
+_NATIVE_HOSTS: Dict[str, str] = {
+    "api.minimax.io":        "minimax",
+    "api-uw.minimax.io":     "minimax",
+    "api.minimaxi.com":      "minimax-cn",
+    "api-apac.minimaxi.com": "minimax-cn",
 }
 
 _NATIVE_TOOLS = ("tts", "image_gen", "vision", "video_gen", "music_gen")
@@ -38,6 +38,9 @@ _TOOL_SUMMARIES: Dict[str, str] = {
     "music_gen": "Music generation \u2192 music-2.6",
 }
 
+# env vars to try, in order — covers both international and CN keys
+_CREDENTIAL_VARS = ("MINIMAX_API_KEY", "MINIMAX_CN_API_KEY")
+
 
 def _api_host(config: Dict[str, Any]) -> str:
     url = (config.get("model") or {}).get("base_url", "")
@@ -47,15 +50,12 @@ def _api_host(config: Dict[str, Any]) -> str:
         return ""
 
 
-def _host_entry(config: Dict[str, Any]):
-    return _NATIVE_HOSTS.get(_api_host(config))
+def _provider_label(config: Dict[str, Any]) -> str:
+    return _NATIVE_HOSTS.get(_api_host(config), "")
 
 
-def _credential(config: Dict[str, Any]) -> str:
-    entry = _host_entry(config)
-    if not entry:
-        return ""
-    for var in entry[1]:
+def _credential() -> str:
+    for var in _CREDENTIAL_VARS:
         v = os.environ.get(var, "").strip()
         if v:
             return v
@@ -85,10 +85,10 @@ def active_provider_api_root(config: Dict[str, Any]) -> str:
 def endpoint_and_key(subpath: str, config: Dict[str, Any] = None) -> Tuple[str, str]:
     """``(url, api_key)`` for a native subpath, or ``("", "")``."""
     cfg = config if config is not None else _safe_load_config()
-    if not _host_entry(cfg):
+    if not _provider_label(cfg):
         return "", ""
     root = active_provider_api_root(cfg).rstrip("/")
-    key = _credential(cfg)
+    key = _credential()
     if not root or not key:
         return "", ""
     return f"{root}{subpath}", key
@@ -96,7 +96,7 @@ def endpoint_and_key(subpath: str, config: Dict[str, Any] = None) -> Tuple[str, 
 
 def get_native_tools(config: Dict[str, Any]) -> Tuple[str, ...]:
     """Tool categories served natively by the active provider, or ``()``."""
-    return _NATIVE_TOOLS if _host_entry(config) else ()
+    return _NATIVE_TOOLS if _provider_label(config) else ()
 
 
 def provider_has_native_tool(tool: str, config: Dict[str, Any]) -> bool:
@@ -105,15 +105,14 @@ def provider_has_native_tool(tool: str, config: Dict[str, Any]) -> bool:
 
 def apply_provider_native_tool_defaults(config: Dict[str, Any]) -> Set[str]:
     """Wire config defaults for providers that serve tools natively."""
-    entry = _host_entry(config)
-    if not entry:
+    label = _provider_label(config)
+    if not label:
         return set()
-    provider_label = entry[0]
     changed: Set[str] = set()
     for cat, (section, key, overridable) in _TOOL_DEFAULTS.items():
         cfg = config.setdefault(section, {})
         if isinstance(cfg, dict) and str(cfg.get(key) or "").strip().lower() in overridable:
-            cfg[key] = provider_label
+            cfg[key] = label
             changed.add(cat)
     if changed:
         aux = config.get("auxiliary") if isinstance(config.get("auxiliary"), dict) else {}
