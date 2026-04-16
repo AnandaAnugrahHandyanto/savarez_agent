@@ -5778,6 +5778,7 @@ Examples:
 
     sessions_list = sessions_subparsers.add_parser("list", help="List recent sessions")
     sessions_list.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
+    sessions_list.add_argument("--exclude-source", action="append", help="Exclude sessions from this source (can be specified multiple times)")
     sessions_list.add_argument("--limit", type=int, default=20, help="Max sessions to show")
 
     sessions_export = sessions_subparsers.add_parser("export", help="Export sessions to a JSONL file")
@@ -5805,6 +5806,7 @@ Examples:
         help="Interactive session picker — browse, search, and resume sessions",
     )
     sessions_browse.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
+    sessions_browse.add_argument("--exclude-source", action="append", help="Exclude sessions from this source (can be specified multiple times)")
     sessions_browse.add_argument("--limit", type=int, default=50, help="Max sessions to load (default: 50)")
 
     def _confirm_prompt(prompt: str) -> bool:
@@ -5828,6 +5830,12 @@ Examples:
         # Hide third-party tool sessions by default, but honour explicit --source
         _source = getattr(args, "source", None)
         _exclude = None if _source else ["tool"]
+        
+        _user_exclude = getattr(args, "exclude_source", None)
+        if _user_exclude:
+            if _exclude is None:
+                _exclude = []
+            _exclude.extend(_user_exclude)
 
         if action == "list":
             sessions = db.list_sessions_rich(source=args.source, exclude_sources=_exclude, limit=args.limit)
@@ -5923,8 +5931,7 @@ Examples:
         elif action == "browse":
             limit = getattr(args, "limit", 50) or 50
             source = getattr(args, "source", None)
-            _browse_exclude = None if source else ["tool"]
-            sessions = db.list_sessions_rich(source=source, exclude_sources=_browse_exclude, limit=limit)
+            sessions = db.list_sessions_rich(source=source, exclude_sources=_exclude, limit=limit)
             db.close()
             if not sessions:
                 print("No sessions found.")
