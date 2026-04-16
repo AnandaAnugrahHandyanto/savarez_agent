@@ -131,7 +131,7 @@ async function startSocket() {
     printQRInTerminal: false,
     browser: ['Hermes Agent', 'Chrome', '120.0'],
     syncFullHistory: false,
-    markOnlineOnConnect: false,
+    markOnlineOnConnect: true,
     // Required for Baileys 7.x: without this, incoming messages that need
     // E2EE session re-establishment are silently dropped (msg.message === null)
     getMessage: async (key) => {
@@ -236,6 +236,13 @@ async function startSocket() {
       const contextInfo = getContextInfo(messageContent);
       const mentionedIds = Array.from(new Set((contextInfo?.mentionedJid || []).map(normalizeWhatsAppId).filter(Boolean)));
       const quotedParticipant = normalizeWhatsAppId(contextInfo?.participant || contextInfo?.remoteJid || '');
+
+      // Extract quoted message text for reply context
+      let quotedText = '';
+      if (contextInfo?.quotedMessage) {
+        const qm = contextInfo.quotedMessage;
+        quotedText = qm.conversation || qm.extendedTextMessage?.text || qm.imageMessage?.caption || qm.videoMessage?.caption || qm.documentMessage?.caption || '';
+      }
 
       // Extract message body
       let body = '';
@@ -348,10 +355,13 @@ async function startSocket() {
         mediaUrls,
         mentionedIds,
         quotedParticipant,
+        quotedText,
         botIds,
         timestamp: msg.messageTimestamp,
       };
 
+      // Send read receipt
+      try { await sock.readMessages([msg.key]); } catch {}
       messageQueue.push(event);
       if (messageQueue.length > MAX_QUEUE_SIZE) {
         messageQueue.shift();

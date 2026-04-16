@@ -163,6 +163,16 @@ class WhatsAppAdapter(BasePlatformAdapter):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
 
+    def _get_ignored_chats(self) -> set[str]:
+        """Chats/senders to never respond to. Configure via
+        config.yaml → platforms.whatsapp.ignored_chats: [<jid>, ...]"""
+        raw = self.config.extra.get("ignored_chats")
+        if raw is None:
+            raw = os.getenv("WHATSAPP_IGNORED_CHATS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        return {part.strip() for part in str(raw).split(",") if part.strip()}
+
     def _compile_mention_patterns(self):
         patterns = self.config.extra.get("mention_patterns")
         if patterns is None:
@@ -255,6 +265,15 @@ class WhatsAppAdapter(BasePlatformAdapter):
         return cleaned.strip() or text
 
     def _should_process_message(self, data: Dict[str, Any]) -> bool:
+        # Hard ignore list — chats we never respond to.
+        # Override via config: whatsapp.ignored_chats: [<jid>, ...]
+        ignored = set(self._get_ignored_chats())
+        sender = str(data.get("sender") or data.get("from") or "")
+        chat_id_raw = str(data.get("chatId") or "")
+        for candidate in (sender, chat_id_raw):
+            if candidate and candidate in ignored:
+                logger.info("[%s] Ignoring message from %s (in ignored_chats)", self.name, candidate)
+                return False
         if not data.get("isGroup"):
             return True
         chat_id = str(data.get("chatId") or "")
@@ -880,6 +899,10 @@ class WhatsAppAdapter(BasePlatformAdapter):
             # the message text so the agent can read it inline.
             # Cap at 100KB to match Telegram/Discord/Slack behaviour.
             body = data.get("body", "")
+            # Inject quoted message text for reply context
+            quoted_text = data.get("quotedText", "")
+            if quoted_text:
+                body = f"[Replying to: {quoted_text}]\n{body}"
             if data.get("isGroup"):
                 body = self._clean_bot_mention_text(body, data)
             MAX_TEXT_INJECT_BYTES = 100 * 1024
