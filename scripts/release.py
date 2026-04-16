@@ -211,6 +211,7 @@ AUTHOR_MAP = {
     "zzn+pa@zzn.im": "xinbenlv",
     "zaynjarvis@gmail.com": "ZaynJarvis",
     "zhiheng.liu@bytedance.com": "ZaynJarvis",
+    "brantzh6@users.nore.github.com": "brantzh6",
 }
 
 
