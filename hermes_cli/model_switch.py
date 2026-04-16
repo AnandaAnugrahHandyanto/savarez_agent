@@ -787,7 +787,7 @@ def list_authenticated_providers(
 
     results: List[dict] = []
     seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)
-    seen_mdev_ids: set = set()  # prevent duplicate entries for aliases (e.g. kimi-coding + kimi-coding-cn)
+    seen_display_names: set = set()  # track display names to detect duplicates (#10526)
 
     data = fetch_models_dev()
 
@@ -800,11 +800,6 @@ def list_authenticated_providers(
 
     # --- 1. Check Hermes-mapped providers ---
     for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
-        # Skip aliases that map to the same models.dev provider (e.g.
-        # kimi-coding and kimi-coding-cn both → kimi-for-coding).
-        # The first one with valid credentials wins (#10526).
-        if mdev_id in seen_mdev_ids:
-            continue
         pdata = data.get(mdev_id)
         if not isinstance(pdata, dict):
             continue
@@ -834,6 +829,16 @@ def list_authenticated_providers(
         pinfo = _mdev_pinfo(mdev_id)
         display_name = pinfo.name if pinfo else mdev_id
 
+        # Disambiguate duplicate display names (#10526)
+        if display_name in seen_display_names:
+            if hermes_id.endswith("-cn"):
+                display_name = f"{display_name} (China)"
+            elif "-" in hermes_id:
+                suffix = hermes_id.split("-")[-1].upper()
+                display_name = f"{display_name} ({suffix})"
+            else:
+                display_name = f"{display_name} ({hermes_id})"
+
         results.append({
             "slug": slug,
             "name": display_name,
@@ -844,7 +849,7 @@ def list_authenticated_providers(
             "source": "built-in",
         })
         seen_slugs.add(slug.lower())
-        seen_mdev_ids.add(mdev_id)
+        seen_display_names.add(pinfo.name if pinfo else mdev_id)
 
     # --- 2. Check Hermes-only providers (nous, openai-codex, copilot, opencode-go) ---
     from hermes_cli.providers import HERMES_OVERLAYS
