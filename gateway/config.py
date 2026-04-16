@@ -1167,8 +1167,14 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     signal_account = os.getenv("SIGNAL_ACCOUNT")
     if signal_url and signal_account:
         if Platform.SIGNAL not in config.platforms:
-            config.platforms[Platform.SIGNAL] = PlatformConfig()
-        config.platforms[Platform.SIGNAL].enabled = True
+            # Not declared in config.yaml — env vars alone enable Signal.
+            config.platforms[Platform.SIGNAL] = PlatformConfig(enabled=True)
+        # When platforms.signal is already declared in config.yaml, preserve
+        # its ``enabled`` value (including an explicit ``enabled: false``) so
+        # env vars only supply connection defaults, not override the YAML
+        # opt-out. Env vars still update ``extra`` so a re-enable in YAML
+        # picks up the current env-supplied url/account without another
+        # restart cycle. See issue #11096 (Bug 3).
         config.platforms[Platform.SIGNAL].extra.update({
             "http_url": signal_url,
             "account": signal_account,
