@@ -151,8 +151,7 @@ CONCLUDE_SCHEMA = {
     "description": (
         "Write or delete a conclusion about a peer in Honcho's memory. "
         "Conclusions are persistent facts that build a peer's profile. "
-        "You MUST pass exactly one of: `conclusion` (to create) or `delete_id` (to delete). "
-        "Passing neither is an error. "
+        "To create a conclusion, pass 'conclusion'. To delete a conclusion, pass 'delete_id'. "
         "Deletion is only for PII removal — Honcho self-heals incorrect conclusions over time."
     ),
     "parameters": {
@@ -160,21 +159,20 @@ CONCLUDE_SCHEMA = {
         "properties": {
             "conclusion": {
                 "type": "string",
-                "description": "A factual statement to persist. Required when not using delete_id.",
+                "description": "A factual statement to persist. Pass this to create a new conclusion.",
             },
             "delete_id": {
                 "type": "string",
-                "description": "Conclusion ID to delete (for PII removal). Required when not using conclusion.",
+                "description": "Conclusion ID to delete (for PII removal). Pass this to delete an existing conclusion.",
             },
             "peer": {
                 "type": "string",
                 "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
             },
         },
-        "anyOf": [
-            {"required": ["conclusion"]},
-            {"required": ["delete_id"]},
-        ],
+        # Note: OpenAI function schema doesn't support anyOf/oneOf at the top level.
+        # The LLM should pass either conclusion OR delete_id based on the description.
+        # Both are optional at the schema level; validation happens in the handler.
     },
 }
 
