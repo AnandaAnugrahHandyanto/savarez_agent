@@ -18,6 +18,7 @@ from hermes_cli.models import provider_label
 from hermes_cli.nous_subscription import get_nous_subscription_features
 from hermes_cli.runtime_provider import resolve_requested_provider
 from hermes_constants import OPENROUTER_MODELS_URL
+from tools.image_generation_tool import check_fal_api_key
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 
 def check_mark(ok: bool) -> str:
@@ -134,12 +135,51 @@ def show_status(args):
         "ElevenLabs": "ELEVENLABS_API_KEY",
         "GitHub": "GITHUB_TOKEN",
     }
+
+    image_generation_cfg = config.get("image_generation", {}) if isinstance(config, dict) else {}
+    image_generation_provider = ""
+    image_generation_model = ""
+    image_generation_provider_error = ""
+    if isinstance(image_generation_cfg, dict):
+        image_generation_model = str(image_generation_cfg.get("model") or "").strip()
+        raw_image_generation_provider = str(image_generation_cfg.get("provider") or "").strip()
+        try:
+            from tools.image_generation_tool import _normalize_image_provider
+            image_generation_provider = _normalize_image_provider(raw_image_generation_provider)
+        except Exception:
+            image_generation_provider = raw_image_generation_provider.lower()
+        try:
+            from tools.image_generation_tool import _load_image_generation_config
+            normalized_image_cfg = _load_image_generation_config()
+            image_generation_provider_error = str(normalized_image_cfg.get("provider_error") or "").strip()
+        except Exception as exc:
+            image_generation_provider_error = str(exc)
     
     for name, env_var in keys.items():
         value = get_env_value(env_var) or ""
         has_key = bool(value)
         display = redact_key(value) if not show_all else value
         print(f"  {name:<12}  {check_mark(has_key)} {display}")
+
+    if image_generation_provider:
+        ready = False
+        if image_generation_provider == "openrouter":
+            ready = bool(
+                str(image_generation_cfg.get("api_key") or "").strip()
+                or get_env_value("OPENROUTER_API_KEY")
+            )
+        elif image_generation_provider == "fal":
+            try:
+                ready = bool(check_fal_api_key())
+            except Exception:
+                ready = bool(get_env_value("FAL_KEY"))
+        label = image_generation_provider or str(image_generation_cfg.get("provider") or "").strip().lower()
+        if image_generation_model:
+            label = f"{label} ({image_generation_model})"
+        if image_generation_provider_error:
+            label = f"{label} — invalid config: {image_generation_provider_error}"
+            ready = False
+        print(f"  {'Image Gen':<12}  {check_mark(ready)} {label}")
 
     from hermes_cli.auth import get_anthropic_key
     anthropic_value = get_anthropic_key()
