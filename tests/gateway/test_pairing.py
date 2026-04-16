@@ -43,6 +43,25 @@ class TestSecureWrite:
         mode = oct(target.stat().st_mode & 0o777)
         assert mode == "0o600"
 
+    def test_root_write_preserves_existing_file_ownership(self, tmp_path):
+        target = tmp_path / "approved.json"
+        target.write_text("{}")
+        owner = target.stat()
+
+        with patch("gateway.pairing.os.geteuid", return_value=0), patch("gateway.pairing.os.chown") as mock_chown:
+            _secure_write(target, '{"user": "alice"}')
+
+        mock_chown.assert_called_once_with(target, owner.st_uid, owner.st_gid)
+
+    def test_root_write_uses_parent_dir_ownership_for_new_files(self, tmp_path):
+        target = tmp_path / "approved.json"
+        owner = tmp_path.stat()
+
+        with patch("gateway.pairing.os.geteuid", return_value=0), patch("gateway.pairing.os.chown") as mock_chown:
+            _secure_write(target, '{"user": "alice"}')
+
+        mock_chown.assert_called_once_with(target, owner.st_uid, owner.st_gid)
+
 
 # ---------------------------------------------------------------------------
 # Code generation

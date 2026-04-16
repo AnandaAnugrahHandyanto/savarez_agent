@@ -46,6 +46,16 @@ MAX_FAILED_ATTEMPTS = 5             # Failed approvals before lockout
 PAIRING_DIR = get_hermes_dir("platforms/pairing", "pairing")
 
 
+def _ownership_hint(path: Path) -> Optional[tuple[int, int]]:
+    """Return the owner/group we should preserve for an atomic rewrite."""
+    try:
+        stat_source = path if path.exists() else path.parent
+        stat_result = stat_source.stat()
+    except OSError:
+        return None
+    return stat_result.st_uid, stat_result.st_gid
+
+
 def _secure_write(path: Path, data: str) -> None:
     """Write data to file with restrictive permissions (owner read/write only).
 
@@ -53,6 +63,7 @@ def _secure_write(path: Path, data: str) -> None:
     complete file or the new one — never a partial write.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
+    ownership = _ownership_hint(path)
     fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -60,6 +71,11 @@ def _secure_write(path: Path, data: str) -> None:
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, str(path))
+        if ownership is not None and hasattr(os, "geteuid") and os.geteuid() == 0:
+            try:
+                os.chown(path, *ownership)
+            except OSError:
+                pass
         try:
             os.chmod(path, 0o600)
         except OSError:
