@@ -1,0 +1,11 @@
+name: codex-memory-pro
+version: 1.0.0
+description: "codex-memory-pro 长效记忆系统 — 跨会话记忆持久化、治理规则、Obsidian 文档检索、任务 checkpoint 管理。通过 MemoryProvider hook 自动注入上下文、持久化对话轮次、镜像内置记忆写入。"
+hooks:
+  - on_turn_start
+  - on_session_end
+  - on_pre_compress
+  - on_memory_write
+  - on_delegation
+  - prefetch
+  - sync_turn
