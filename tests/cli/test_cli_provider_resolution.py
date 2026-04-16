@@ -200,6 +200,40 @@ def test_runtime_resolution_rebuilds_agent_on_routing_change(monkeypatch):
     assert shell.api_mode == "codex_responses"
 
 
+def test_cli_init_agent_passes_model_max_tokens_from_config(monkeypatch):
+    cli = _import_cli()
+
+    def _runtime_resolve(**kwargs):
+        return {
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": "http://localhost:8080/v1",
+            "api_key": "test-key",
+            "source": "env/config",
+        }
+
+    class _DummyAgent:
+        last_init = None
+
+        def __init__(self, *args, **kwargs):
+            type(self).last_init = dict(kwargs)
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+    monkeypatch.setattr(cli, "AIAgent", _DummyAgent)
+    monkeypatch.setitem(cli.CLI_CONFIG, "model", {
+        "default": "local-model",
+        "provider": "custom",
+        "base_url": "http://localhost:8080/v1",
+        "max_tokens": 32768,
+    })
+
+    shell = cli.HermesCLI(model="local-model", compact=True, max_turns=1)
+
+    assert shell._init_agent() is True
+    assert _DummyAgent.last_init is not None
+    assert _DummyAgent.last_init["max_tokens"] == 32768
+
 def test_cli_turn_routing_uses_primary_when_disabled(monkeypatch):
     cli = _import_cli()
     shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
