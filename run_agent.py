@@ -991,9 +991,18 @@ class AIAgent:
                         "api_key": _routed_client.api_key,
                         "base_url": str(_routed_client.base_url),
                     }
-                    # Preserve any default_headers the router set
-                    if hasattr(_routed_client, '_default_headers') and _routed_client._default_headers:
-                        client_kwargs["default_headers"] = dict(_routed_client._default_headers)
+                    # Preserve any default_headers the router set.
+                    # OpenAI SDK stores headers passed via ``default_headers=``
+                    # on the client constructor in ``_custom_headers``; the
+                    # older ``_default_headers`` attribute is not exposed for
+                    # routed clients, so the original check silently failed
+                    # and provider-specific headers (Copilot Editor-Version,
+                    # Copilot-Integration-Id, Kimi User-Agent, etc.) were
+                    # lost on every request-client rebuild.  See PR #6076
+                    # for the same fix in the fallback activation path.
+                    _rh = getattr(_routed_client, '_custom_headers', None) or getattr(_routed_client, '_default_headers', None)
+                    if _rh:
+                        client_kwargs["default_headers"] = dict(_rh)
                 else:
                     # When the user explicitly chose a non-OpenRouter provider
                     # but no credentials were found, fail fast with a clear
