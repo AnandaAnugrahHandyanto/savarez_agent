@@ -805,11 +805,6 @@ def list_authenticated_providers(
 
     # --- 1. Check Hermes-mapped providers ---
     for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
-        # Skip aliases that map to the same models.dev provider (e.g.
-        # kimi-coding and kimi-coding-cn both → kimi-for-coding).
-        # The first one with valid credentials wins (#10526).
-        if mdev_id in seen_mdev_ids:
-            continue
         pdata = data.get(mdev_id)
         if not isinstance(pdata, dict):
             continue
@@ -838,6 +833,17 @@ def list_authenticated_providers(
         slug = hermes_id
         pinfo = _mdev_pinfo(mdev_id)
         display_name = pinfo.name if pinfo else mdev_id
+
+        # Disambiguate duplicate display names (fixes #10526)
+        # e.g. kimi-coding and kimi-coding-cn both map to "Kimi For Coding"
+        if mdev_id in seen_mdev_ids:
+            # Append region hint from hermes_id suffix
+            if "-cn" in hermes_id:
+                display_name = f"{display_name} (China)"
+            elif "-eu" in hermes_id:
+                display_name = f"{display_name} (EU)"
+            else:
+                display_name = f"{display_name} ({hermes_id})"
 
         results.append({
             "slug": slug,
