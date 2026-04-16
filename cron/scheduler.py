@@ -487,63 +487,31 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         return False, f"Script execution failed: {exc}"
 
 
-def _run_precheck(precheck_path: str) -> tuple[bool, str]:
-    """Run a precheck script to decide whether to invoke the LLM.
-
-    Returns (proceed, output_or_error):
-      - (True, output)   → precheck passed, output is context for the LLM
-      - (False, "")      → precheck failed with empty output (silent skip)
-      - (False, errmsg)  → precheck failed with error message
-    """
-    ok, output = _run_job_script(precheck_path)
-    if not ok:
-        return False, output
-    if not output.strip():
-        # Empty output means "nothing to report" — skip LLM silently
-        return False, ""
-    return True, output
-
-
-def _build_job_prompt(job: dict, precheck_output: str = "") -> str:
+def _build_job_prompt(job: dict, script_output: Optional[str] = None) -> str:
     """Build the effective prompt for a cron job, optionally loading one or more skills first."""
     prompt = job.get("prompt", "")
 
-    # Inject precheck output into prompt if precheck was run
-    if precheck_output:
+    # If script_output is None, the caller didn't pre-run the script —
+    # run it ourselves so _build_job_prompt remains testable as a unit.
+    if script_output is None and job.get("script"):
+        ok, script_output = _run_job_script(job["script"])
+        if not ok:
+            script_output = f"[Script error]: {script_output}"
+        elif not script_output:
+            script_output = "[Script ran successfully but produced no output.]"
+
+    # Inject script output / error into prompt if a script was run
+    if script_output is not None:
+        is_error = script_output.startswith("[Script error]")
+        header = "## Script Error" if is_error else "## Script Output"
         prompt = (
-            "## Precheck Output\n"
-            "The precheck script ran and produced the following output. "
+            f"{header}\n"
+            "The following data was collected by a pre-run script. "
             "Use it as context for your analysis.\n\n"
-            f"```\n{precheck_output}\n```\n\n"
+            f"```\n{script_output}\n```\n\n"
             f"{prompt}"
         )
     skills = job.get("skills")
-
-    # Run data-collection script if configured, inject output as context.
-    script_path = job.get("script")
-    if script_path:
-        success, script_output = _run_job_script(script_path)
-        if success:
-            if script_output:
-                prompt = (
-                    "## Script Output\n"
-                    "The following data was collected by a pre-run script. "
-                    "Use it as context for your analysis.\n\n"
-                    f"```\n{script_output}\n```\n\n"
-                    f"{prompt}"
-                )
-            else:
-                prompt = (
-                    "[Script ran successfully but produced no output.]\n\n"
-                    f"{prompt}"
-                )
-        else:
-            prompt = (
-                "## Script Error\n"
-                "The data-collection script failed. Report this to the user.\n\n"
-                f"```\n{script_output}\n```\n\n"
-                f"{prompt}"
-            )
 
     # Always prepend cron execution guidance so the agent knows how
     # delivery works and can suppress delivery when appropriate.
@@ -627,47 +595,35 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     origin = _resolve_origin(job)
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
 
-    # Precheck: run before the LLM to decide whether to proceed.
-    # If precheck fails (non-zero exit) or returns empty output, skip the LLM.
-    precheck_path = job.get("precheck")
-    precheck_output = ""
-    if precheck_path:
-        logger.info("Running precheck script: %s", precheck_path)
-        proceed, pc_result = _run_precheck(precheck_path)
-        if not proceed:
-            # Silent skip (empty pc_result) or explicit failure message
-            if pc_result:
-                output = f"""# Cron Job: {job_name}
+    # Script: run before the LLM to collect context.
+    # If script_skip_if_empty is set and script returns empty output,
+    # skip the LLM invocation entirely.
+    script_path = job.get("script")
+    script_skip_if_empty = job.get("script_skip_if_empty", False)
+    script_output = None
+    if script_path:
+        logger.info("Running script: %s", script_path)
+        ok, script_output = _run_job_script(script_path)
+        if not ok:
+            script_output = f"[Script error]: {script_output}"
+            logger.warning("Job '%s': script failed — %s", job_name, script_output)
+        elif not script_output.strip() and script_skip_if_empty:
+            output = f"""# Cron Job: {job_name}
 
 **Job ID:** {job_id}
 **Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
 **Schedule:** {job.get('schedule_display', 'N/A')}
 
-## Precheck Failed
-
-```
-{pc_result}
-```
-
-The job was skipped — no LLM was invoked.
+Script returned no output (script_skip_if_empty=true) — skipping LLM silently.
 """
-                logger.info("Job '%s': precheck failed — skipping LLM", job_name)
-                return False, output, "", pc_result
-            else:
-                output = f"""# Cron Job: {job_name}
+            logger.info("Job '%s': script empty + skip_if_empty — skipping LLM", job_name)
+            return True, output, "", None
+        elif not script_output.strip():
+            # Script succeeded but produced no output — note it for the LLM
+            script_output = "[Script ran successfully but produced no output.]"
+        logger.info("Script output: %s", (script_output or "(empty)")[:100])
 
-**Job ID:** {job_id}
-**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
-**Schedule:** {job.get('schedule_display', 'N/A')}
-
-Precheck returned no output — skipping LLM (silent).
-"""
-                logger.info("Job '%s': precheck returned empty — skipping LLM silently", job_name)
-                return True, output, "", None
-        precheck_output = pc_result
-        logger.info("Precheck passed, output: %s", precheck_output[:100])
-
-    prompt = _build_job_prompt(job, precheck_output=precheck_output)
+    prompt = _build_job_prompt(job, script_output=script_output)
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
 

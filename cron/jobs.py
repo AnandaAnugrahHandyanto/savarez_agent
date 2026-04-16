@@ -378,7 +378,7 @@ def create_job(
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
     script: Optional[str] = None,
-    precheck: Optional[str] = None,
+    script_skip_if_empty: bool = False,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -398,6 +398,9 @@ def create_job(
         script: Optional path to a Python script whose stdout is injected into the
                 prompt each run.  The script runs before the agent turn, and its output
                 is prepended as context.  Useful for data collection / change detection.
+        script_skip_if_empty: If True and the script exits zero with empty stdout,
+                skip the LLM invocation entirely (no delivery).  Script errors still
+                cause a failure.  Allows "only act when something changed" patterns.
 
     Returns:
         The created job dict
@@ -428,8 +431,7 @@ def create_job(
     normalized_base_url = normalized_base_url or None
     normalized_script = str(script).strip() if isinstance(script, str) else None
     normalized_script = normalized_script or None
-    normalized_precheck = str(precheck).strip() if isinstance(precheck, str) else None
-    normalized_precheck = normalized_precheck or None
+    normalized_script_skip_if_empty = bool(script_skip_if_empty)
 
     label_source = (prompt or (normalized_skills[0] if normalized_skills else None)) or "cron job"
     job = {
@@ -442,7 +444,7 @@ def create_job(
         "provider": normalized_provider,
         "base_url": normalized_base_url,
         "script": normalized_script,
-        "precheck": normalized_precheck,
+        "script_skip_if_empty": normalized_script_skip_if_empty,
         "schedule": parsed_schedule,
         "schedule_display": parsed_schedule.get("display", schedule),
         "repeat": {

@@ -60,7 +60,7 @@ Jobs are stored in `~/.hermes/cron/jobs.json` with atomic write semantics (write
   "model": null,
   "provider": null,
   "script": null,
-  "precheck": null
+  "script_skip_if_empty": false
 }
 ```
 
@@ -91,7 +91,7 @@ tick()
   4. For each due job:
      a. Set state to "running"
      b. Create fresh AIAgent session (no conversation history)
-     c. Run precheck script (if configured) — skip LLM if precheck fails or returns empty
+     c. Run script (if configured) — skip LLM if script exits zero with empty output and script_skip_if_empty is true
      d. Load attached skills in order (injected as user messages)
      e. Run the job prompt through the agent
      f. Deliver the response to the configured target
@@ -143,17 +143,7 @@ import requests, json
 # Print summary to stdout — agent analyzes and reports
 ```
 
-### Precheck — Conditional LLM Invocation
-
-Jobs can attach a `precheck` script via the `precheck` field. The script runs *before* the LLM is invoked and decides whether to proceed:
-
-| Result | Behavior |
-|--------|----------|
-| Exit non-zero | Skip LLM, mark job failed, no delivery |
-| Exit zero + empty stdout | Skip LLM silently, no delivery |
-| Exit zero + non-empty stdout | Inject output into prompt, call LLM normally |
-
-This is useful for gating cron runs on external conditions — for example, only alerting when a service is down, or only reporting when new content exists.
+When `script_skip_if_empty` is `true`, a script that exits zero with empty stdout causes the job to skip the LLM invocation entirely (silent skip, no delivery). This allows "only act when something changed" patterns without needing a separate precheck mechanism.
 
 ```json
 {
@@ -161,11 +151,12 @@ This is useful for gating cron runs on external conditions — for example, only
   "name": "GitHub commit summary",
   "prompt": "Summarize the new commits below.",
   "schedule": { "kind": "cron", "expr": "0 9 * * *" },
-  "precheck": "check_github.py"
+  "script": "check_github.py",
+  "script_skip_if_empty": true
 }
 ```
 
-Precheck shares the same timeout as scripts (120s default). `_get_script_timeout()` resolves the limit through the three-layer chain: module override → `HERMES_CRON_SCRIPT_TIMEOUT` env var → `cron.script_timeout_seconds` config → 120s default.
+Script timeout defaults to 120 seconds. `_get_script_timeout()` resolves the limit through a three-layer chain:
 
 1. **Module-level override** — `_SCRIPT_TIMEOUT` (for tests/monkeypatching). Only used when it differs from the default.
 2. **Environment variable** — `HERMES_CRON_SCRIPT_TIMEOUT`

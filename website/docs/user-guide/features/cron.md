@@ -254,21 +254,20 @@ cron:
 
 Or set the `HERMES_CRON_SCRIPT_TIMEOUT` environment variable. The resolution order is: env var → config.yaml → 120s default.
 
-## Precheck — conditional LLM invocation
+## Script — conditional LLM invocation
 
-A cron job can attach a `precheck` script that runs **before** the LLM is invoked. This lets you skip the LLM entirely when conditions aren't met, avoiding unnecessary API calls and costs.
+The `script` field already runs before the LLM. By combining it with `script_skip_if_empty: true`, you can skip the LLM entirely when the script returns empty output — useful for "only act when something changed" patterns.
 
 ### Behavior
 
 | Script result | What happens |
 |---------------|--------------|
-| Exit non-zero | Job skipped, error logged, no LLM call, no delivery |
-| Exit zero + empty stdout | Job skipped silently, no LLM call, no delivery |
+| Exit non-zero | Script error injected into prompt, LLM is called (existing behavior) |
+| Exit zero + empty stdout + `script_skip_if_empty=false` (default) | "Script ran but produced no output" injected into prompt, LLM is called |
+| Exit zero + empty stdout + `script_skip_if_empty=true` | Job skipped silently, no LLM call, no delivery |
 | Exit zero + non-empty stdout | Output injected into prompt, LLM is called normally |
 
 ### Use case
-
-Useful for "only report when something changes" patterns:
 
 ```python
 # check_github.py — exits 0 only when there are new commits
@@ -278,7 +277,7 @@ result = subprocess.run(["git", "log", "HEAD..origin/main", "--oneline"], captur
 if result.stdout.strip():
     print(result.stdout.strip())
     sys.exit(0)
-sys.exit(1)  # no new commits — skip LLM
+# no new commits — script produces no output, LLM is skipped
 ```
 
 ```python
@@ -286,27 +285,28 @@ cronjob(
     action="create",
     prompt="Summarize the new commits below.",
     schedule="every 1h",
-    precheck="check_github.py",
+    script="check_github.py",
+    script_skip_if_empty=True,
 )
 ```
 
 ### Example: only alert on failures
 
 ```python
-# check_health.py — exits 0 with output when service is down
+# check_health.py — exits 0 with output when service is down, empty when healthy
 import requests, sys
 try:
     r = requests.get("https://example.com/health", timeout=5)
     if r.status_code != 200:
         print(f"Service unhealthy: HTTP {r.status_code}")
-        sys.exit(0)  # alert
-    sys.exit(1)  # healthy — skip LLM silently
+        sys.exit(0)  # has output → LLM is called
+    sys.exit(0)  # healthy, no output → LLM skipped silently with skip_if_empty
 except Exception as e:
     print(f"Health check error: {e}")
     sys.exit(0)  # treat error as worth alerting on
 ```
 
-Precheck shares the same timeout as scripts (120s default, configurable via `HERMES_CRON_SCRIPT_TIMEOUT`).
+Script timeout applies (120s default, configurable via `HERMES_CRON_SCRIPT_TIMEOUT`).
 
 ## Provider recovery
 
