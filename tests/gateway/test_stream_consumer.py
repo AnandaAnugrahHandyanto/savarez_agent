@@ -609,6 +609,31 @@ class TestSegmentBreakOnToolBoundary:
 
 class TestInterimCommentaryMessages:
     @pytest.mark.asyncio
+    async def test_commentary_only_leaves_final_response_sent_false(self):
+        """Commentary is visible interim output, not the final reply."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1")
+        )
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5),
+        )
+
+        consumer.on_commentary("I'll inspect the repository first.")
+        consumer.finish()
+
+        await consumer.run()
+
+        sent_texts = [call[1]["content"] for call in adapter.send.call_args_list]
+        assert sent_texts == ["I'll inspect the repository first."]
+        assert consumer.final_response_sent is False
+
+    @pytest.mark.asyncio
     async def test_commentary_message_stays_separate_from_final_stream(self):
         adapter = MagicMock()
         adapter.send = AsyncMock(side_effect=[

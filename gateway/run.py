@@ -9348,7 +9348,11 @@ class GatewayRunner:
                 if not was_interrupted:
                     # Queued message after normal completion — deliver the first
                     # response before processing the queued follow-up.
-                    # Skip if streaming already delivered it.
+                    # Skip only when the final assistant reply was explicitly
+                    # previewed or streaming confirmed it was delivered.
+                    # `already_sent` can also mean the consumer posted interim
+                    # commentary/tool-progress text, which must not suppress
+                    # the real final response.
                     _sc = stream_consumer_holder[0]
                     if _sc and stream_task:
                         try:
@@ -9362,11 +9366,8 @@ class GatewayRunner:
                         except Exception as e:
                             logger.debug("Stream consumer wait before queued message failed: %s", e)
                     _already_streamed = bool(
-                        _sc
-                        and (
-                            getattr(_sc, "final_response_sent", False)
-                            or getattr(_sc, "already_sent", False)
-                        )
+                        result.get("response_previewed")
+                        or (_sc and getattr(_sc, "final_response_sent", False))
                     )
                     first_response = result.get("final_response", "")
                     if first_response and not _already_streamed:
@@ -9465,16 +9466,19 @@ class GatewayRunner:
         # with mimo-v2-pro, GLM-5, etc.).  The stream consumer may have
         # sent intermediate text ("Let me search for that…") alongside the
         # tool call, setting already_sent=True, but that text is NOT the
-        # final answer.  Suppressing delivery here leaves the user staring
-        # at silence.  (#10xxx — "agent stops after web search")
+        # final answer. Likewise, interim commentary in Discord threads can
+        # leave already_sent=True while final_response_sent remains False.
+        # Only explicit final previews (response_previewed) or
+        # final_response_sent should suppress base delivery here.
+        # (#10xxx — "agent stops after web search")
         _sc = stream_consumer_holder[0]
-        if _sc and isinstance(response, dict) and not response.get("failed"):
+        if isinstance(response, dict) and not response.get("failed"):
             _final = response.get("final_response") or ""
             _is_empty_sentinel = not _final or _final == "(empty)"
-            if not _is_empty_sentinel and (
-                getattr(_sc, "final_response_sent", False)
-                or getattr(_sc, "already_sent", False)
-            ):
+            _final_already_delivered = bool(response.get("response_previewed"))
+            if _sc and getattr(_sc, "final_response_sent", False):
+                _final_already_delivered = True
+            if not _is_empty_sentinel and _final_already_delivered:
                 response["already_sent"] = True
         
         return response
