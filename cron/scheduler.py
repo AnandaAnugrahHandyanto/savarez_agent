@@ -15,6 +15,7 @@ import logging
 import os
 import subprocess
 import sys
+from dotenv import load_dotenv
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -57,6 +58,9 @@ SILENT_MARKER = "[SILENT]"
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
 _hermes_home = get_hermes_home()
+
+# Load environment variables from .env file for cron jobs
+load_dotenv(_hermes_home / ".env")
 
 # File-based lock prevents concurrent ticks from gateway + daemon + systemd timer
 _LOCK_DIR = _hermes_home / "cron"
