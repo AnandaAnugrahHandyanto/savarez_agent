@@ -1,6 +1,6 @@
 ---
 name: mcporter
-description: Use the mcporter CLI to list, configure, auth, and call MCP servers/tools directly (HTTP or stdio), including ad-hoc servers, config edits, and CLI/type generation.
+description: "mcporter CLI tool — manage mcporter-specific config, OAuth auth for mcporter-managed servers, ad-hoc server connections, and generate CLI wrappers or TypeScript types. Only use when the user explicitly asks for mcporter by name. For general MCP server queries (listing configured servers, available tools), use native-mcp instead."
 version: 1.0.0
 author: community
 license: MIT
@@ -15,6 +15,8 @@ prerequisites:
 # mcporter
 
 Use `mcporter` to discover, call, and manage [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) servers and tools directly from the terminal.
+
+> **When NOT to use this skill:** Do not use mcporter for general MCP questions like "list my configured MCP servers", "what MCP tools do I have?", or "show my MCP setup". Those queries should be answered using Hermes's native MCP client (see the `native-mcp` skill). Only use mcporter when the user explicitly asks for the `mcporter` CLI by name, or needs ad-hoc server connections not configured in `config.yaml`.
 
 ## Prerequisites
 
