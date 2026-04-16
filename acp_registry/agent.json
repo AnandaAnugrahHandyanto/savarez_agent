@@ -6,7 +6,9 @@
   "icon": "icon.svg",
   "distribution": {
     "type": "command",
-    "command": "hermes",
-    "args": ["acp"]
+    "command": "/Users/vincentlai/.local/bin/hermes",
+    "args": [
+      "acp"
+    ]
   }
 }
