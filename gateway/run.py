@@ -4127,13 +4127,24 @@ class GatewayRunner:
             # partial output before the failure).  Without this guard,
             # users see the agent "stop responding without explanation."
             if agent_result.get("already_sent") and not agent_result.get("failed"):
-                if response:
-                    _media_adapter = self.adapters.get(source.platform)
-                    if _media_adapter:
-                        await self._deliver_media_from_response(
-                            response, event, _media_adapter,
-                        )
-                return None
+                # Only skip independent delivery if the stream consumer
+                # confirmed it delivered the final response content.
+                # If final_response_sent is False, the final text was NOT
+                # streamed — fall through to deliver it normally.
+                if agent_result.get("final_response_sent", False):
+                    if response:
+                        _media_adapter = self.adapters.get(source.platform)
+                        if _media_adapter:
+                            await self._deliver_media_from_response(
+                                response, event, _media_adapter,
+                            )
+                    return None
+                else:
+                    logger.warning(
+                        "Stream had already_sent=True but final_response_sent=False — "
+                        "falling through to independent delivery for session %s",
+                        event.session_id,
+                    )
 
             return response
             
@@ -9476,6 +9487,7 @@ class GatewayRunner:
                 or getattr(_sc, "already_sent", False)
             ):
                 response["already_sent"] = True
+                response["final_response_sent"] = getattr(_sc, "final_response_sent", False)
         
         return response
 

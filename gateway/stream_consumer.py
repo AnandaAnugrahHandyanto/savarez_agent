@@ -322,7 +322,10 @@ class GatewayStreamConsumer:
                         self._last_sent_text = ""
                         self._last_edit_time = time.monotonic()
                         if got_done:
-                            self._final_response_sent = self._already_sent
+                            # Only mark final response as sent if we actually
+                            # delivered content in this final flush (not just
+                            # earlier tool-progress messages).
+                            self._final_response_sent = self._already_sent and bool(chunks)
                             return
                         if got_segment_break:
                             self._message_id = None
@@ -409,13 +412,18 @@ class GatewayStreamConsumer:
                 except Exception:
                     pass
             # If we delivered any content before being cancelled, mark the
-            # final response as sent so the gateway's already_sent check
-            # doesn't trigger a duplicate message.  The 5-second
-            # stream_task timeout (gateway/run.py) can cancel us while
-            # waiting on a slow Telegram API call — without this flag the
-            # gateway falls through to the normal send path.
+            # final response as sent ONLY if the accumulated content matches
+            # what was last sent/edited (user already saw it).  If there's
+            # new unsent text beyond what was displayed, the gateway's
+            # fallback path should deliver it.
             if self._already_sent:
-                self._final_response_sent = True
+                # Strip cursor suffix for comparison — last_sent_text may
+                # include the cursor from progressive edits.
+                _last = self._last_sent_text
+                if _last.endswith(self.cfg.cursor):
+                    _last = _last[: -len(self.cfg.cursor)]
+                _unsent = len(self._accumulated) > 0 and self._accumulated != _last
+                self._final_response_sent = not _unsent
         except Exception as e:
             logger.error("Stream consumer error: %s", e)
 
