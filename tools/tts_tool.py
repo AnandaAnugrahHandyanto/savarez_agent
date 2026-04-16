@@ -2,9 +2,10 @@
 """
 Text-to-Speech Tool Module
 
-Supports six TTS providers:
+Supports seven TTS providers:
 - Edge TTS (default, free, no API key): Microsoft Edge neural voices
 - ElevenLabs (premium): High-quality voices, needs ELEVENLABS_API_KEY
+- Deepgram (premium): Low-latency neural voices, needs DEEPGRAM_API_KEY
 - OpenAI TTS: Good quality, needs OPENAI_API_KEY
 - MiniMax TTS: High-quality with voice cloning, needs MINIMAX_API_KEY
 - Mistral (Voxtral TTS): Multilingual, native Opus, needs MISTRAL_API_KEY
@@ -71,6 +72,11 @@ def _import_mistral_client():
     from mistralai.client import Mistral
     return Mistral
 
+def _import_deepgram_client():
+    """Lazy import Deepgram client. Returns the class or raises ImportError."""
+    from deepgram import DeepgramClient
+    return DeepgramClient
+
 def _import_sounddevice():
     """Lazy import sounddevice. Returns the module or raises ImportError/OSError."""
     import sounddevice as sd
@@ -93,6 +99,7 @@ DEFAULT_MINIMAX_VOICE_ID = "English_Graceful_Lady"
 DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.io/v1/t2a_v2"
 DEFAULT_MISTRAL_TTS_MODEL = "voxtral-mini-tts-2603"
 DEFAULT_MISTRAL_TTS_VOICE_ID = "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral
+DEFAULT_DEEPGRAM_MODEL = "aura-2-thalia-en"  # Thalia - natural, conversational
 
 def _get_default_output_dir() -> str:
     from hermes_constants import get_hermes_dir
@@ -436,6 +443,51 @@ def _generate_mistral_tts(text: str, output_path: str, tts_config: Dict[str, Any
 
 
 # ===========================================================================
+# Provider: Deepgram (Aura TTS)
+# ===========================================================================
+def _generate_deepgram_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate audio using Deepgram Aura TTS API.
+
+    The Deepgram model name encodes the voice (e.g. ``aura-2-thalia-en``).
+    Supports native Opus output for Telegram voice bubbles.
+    """
+    api_key = os.getenv("DEEPGRAM_API_KEY", "")
+    if not api_key:
+        raise ValueError("DEEPGRAM_API_KEY not set. Get one at https://console.deepgram.com/")
+
+    dg_config = tts_config.get("deepgram", {})
+    model = dg_config.get("model", DEFAULT_DEEPGRAM_MODEL)
+
+    if output_path.endswith(".ogg"):
+        encoding = "opus"
+    elif output_path.endswith(".wav"):
+        encoding = "linear16"
+    elif output_path.endswith(".flac"):
+        encoding = "flac"
+    else:
+        encoding = "mp3"
+
+    DeepgramClient = _import_deepgram_client()
+    client = DeepgramClient(api_key=api_key)
+    try:
+        options: Dict[str, Any] = {"model": model, "encoding": encoding}
+        if encoding == "linear16":
+            options["container"] = "wav"
+        source = {"text": text}
+        response = client.speak.rest.v("1").stream_memory(source, options)
+        buf = response.stream_memory or response.stream
+        audio_bytes = buf.getvalue()
+    except Exception as e:
+        logger.error("Deepgram TTS failed: %s", e, exc_info=True)
+        raise RuntimeError(f"Deepgram TTS failed: {type(e).__name__}") from e
+
+    with open(output_path, "wb") as f:
+        f.write(audio_bytes)
+
+    return output_path
+
+
+# ===========================================================================
 # NeuTTS (local, on-device TTS via neutts_cli)
 # ===========================================================================
 
@@ -563,7 +615,7 @@ def text_to_speech_tool(
         out_dir.mkdir(parents=True, exist_ok=True)
         # Use .ogg for Telegram with providers that support native Opus output,
         # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
-        if want_opus and provider in ("openai", "elevenlabs", "mistral"):
+        if want_opus and provider in ("openai", "elevenlabs", "mistral", "deepgram"):
             file_path = out_dir / f"tts_{timestamp}.ogg"
         else:
             file_path = out_dir / f"tts_{timestamp}.mp3"
@@ -611,6 +663,18 @@ def text_to_speech_tool(
                 }, ensure_ascii=False)
             logger.info("Generating speech with Mistral Voxtral TTS...")
             _generate_mistral_tts(text, file_str, tts_config)
+
+        elif provider == "deepgram":
+            try:
+                _import_deepgram_client()
+            except ImportError:
+                return json.dumps({
+                    "success": False,
+                    "error": "Deepgram provider selected but 'deepgram-sdk' package not installed. "
+                             "Run: pip install 'hermes-agent[deepgram]'"
+                }, ensure_ascii=False)
+            logger.info("Generating speech with Deepgram Aura TTS...")
+            _generate_deepgram_tts(text, file_str, tts_config)
 
         elif provider == "neutts":
             if not _check_neutts_available():
@@ -666,7 +730,7 @@ def text_to_speech_tool(
             if opus_path:
                 file_str = opus_path
                 voice_compatible = True
-        elif provider in ("elevenlabs", "openai", "mistral"):
+        elif provider in ("elevenlabs", "openai", "mistral", "deepgram"):
             voice_compatible = file_str.endswith(".ogg")
 
         file_size = os.path.getsize(file_str)
@@ -737,6 +801,12 @@ def check_tts_requirements() -> bool:
     try:
         _import_mistral_client()
         if os.getenv("MISTRAL_API_KEY"):
+            return True
+    except ImportError:
+        pass
+    try:
+        _import_deepgram_client()
+        if os.getenv("DEEPGRAM_API_KEY"):
             return True
     except ImportError:
         pass
@@ -1027,6 +1097,8 @@ if __name__ == "__main__":
         f"{'set' if resolve_openai_audio_api_key() else 'not set (VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY)'}"
     )
     print(f"  MiniMax:    {'API key set' if os.getenv('MINIMAX_API_KEY') else 'not set (MINIMAX_API_KEY)'}")
+    print(f"  Deepgram:   {'installed' if _check(_import_deepgram_client, 'dg') else 'not installed (pip install deepgram-sdk)'}")
+    print(f"    API Key:  {'set' if os.getenv('DEEPGRAM_API_KEY') else 'not set (DEEPGRAM_API_KEY)'}")
     print(f"  ffmpeg:     {'✅ found' if _has_ffmpeg() else '❌ not found (needed for Telegram Opus)'}")
     print(f"\n  Output dir: {DEFAULT_OUTPUT_DIR}")
 

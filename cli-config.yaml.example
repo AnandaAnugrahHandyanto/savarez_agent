@@ -626,7 +626,7 @@ platform_toolsets:
 #   todo         - Task planning and tracking for multi-step work
 #   memory       - Persistent memory across sessions (personal notes + user profile)
 #   session_search - Search and recall past conversations (FTS5 + Gemini Flash summarization)
-#   tts          - Text-to-speech (Edge TTS free, ElevenLabs, OpenAI, MiniMax, Mistral)
+#   tts          - Text-to-speech (Edge TTS free, ElevenLabs, OpenAI, MiniMax, Mistral, Deepgram)
 #   cronjob      - Schedule and manage automated tasks (CLI-only)
 #   rl           - RL training tools (Tinker-Atropos)
 #
@@ -689,6 +689,52 @@ platform_toolsets:
 #       allowed_models: []      # model whitelist (empty = all)
 #       max_tool_rounds: 5      # tool loop limit (0 = disable)
 #       log_level: "info"       # audit verbosity
+
+# =============================================================================
+# Text-to-Speech (TTS)
+# =============================================================================
+# Convert text responses to audio. Enable the 'tts' toolset per platform.
+# Providers: edge (free) | elevenlabs | openai | minimax | mistral | deepgram | neutts (local)
+# Set the corresponding API key in .env for the chosen provider.
+#
+# tts:
+#   provider: "edge"    # edge | elevenlabs | openai | minimax | mistral | deepgram | neutts
+#   speed: 1.0          # Global speed multiplier (not all providers support this)
+#
+#   edge:
+#     voice: "en-US-AriaNeural"   # Any Microsoft Edge neural voice name
+#     # speed: 1.0                # Adjusts rate as a percentage offset from 1.0
+#
+#   elevenlabs:
+#     voice_id: "pNInz6obpgDQGcFmaJgB"          # ElevenLabs voice ID (Adam)
+#     model_id: "eleven_multilingual_v2"          # TTS model
+#     streaming_model_id: "eleven_flash_v2_5"     # Model used for real-time streaming
+#
+#   openai:
+#     model: "gpt-4o-mini-tts"    # gpt-4o-mini-tts | tts-1 | tts-1-hd
+#     voice: "alloy"              # alloy | echo | fable | onyx | nova | shimmer
+#     # speed: 1.0                # 0.25–4.0
+#
+#   minimax:
+#     model: "speech-2.8-hd"
+#     voice_id: "English_Graceful_Lady"
+#
+#   mistral:
+#     model: "voxtral-mini-tts-2603"
+#     voice_id: "c69964a6-ab8b-4f8a-9465-ec0925096ec8"   # Paul - Neutral
+#
+#   deepgram:
+#     model: "aura-2-thalia-en"   # Deepgram Aura model; voice is encoded in the model name.
+#                                 # Options: aura-2-thalia-en | aura-2-andromeda-en |
+#                                 #          aura-2-helena-en | aura-2-apollo-en |
+#                                 #          aura-2-arcas-en  | aura-2-aries-en
+#                                 # Set DEEPGRAM_API_KEY in .env. Install: pip install deepgram-sdk
+#
+#   neutts:
+#     model: "neuphonic/neutts-air-q4-gguf"
+#     device: "cpu"               # cpu | cuda
+#     # ref_audio: "/path/to/reference.wav"   # Optional voice reference for cloning
+#     # ref_text:  "/path/to/reference.txt"
 
 # =============================================================================
 # Voice Transcription (Speech-to-Text)
