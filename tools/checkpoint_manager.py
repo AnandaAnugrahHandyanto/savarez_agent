@@ -357,6 +357,41 @@ class CheckpointManager:
                 results.append(entry)
         return results
 
+    def list_all_checkpoints(self) -> Dict[str, List[Dict]]:
+        """List all available checkpoints across all tracked directories.
+
+        Returns a dict mapping working_dir to list of checkpoints.
+        This is useful when /rollback is called from a directory that doesn't
+        have its own checkpoints but has subdirectories that do (fixes #10505).
+        """
+        all_checkpoints: Dict[str, List[Dict]] = {}
+
+        if not CHECKPOINT_BASE.exists():
+            return all_checkpoints
+
+        for shadow_dir in CHECKPOINT_BASE.iterdir():
+            if not shadow_dir.is_dir():
+                continue
+
+            workdir_file = shadow_dir / "HERMES_WORKDIR"
+            if not workdir_file.exists():
+                continue
+
+            try:
+                working_dir = workdir_file.read_text(encoding="utf-8").strip()
+                if not working_dir:
+                    continue
+
+                # Reuse list_checkpoints for each directory
+                checkpoints = self.list_checkpoints(working_dir)
+                if checkpoints:
+                    all_checkpoints[working_dir] = checkpoints
+            except Exception as e:
+                logger.debug("Failed to read HERMES_WORKDIR for %s: %s", shadow_dir, e)
+                continue
+
+        return all_checkpoints
+
     @staticmethod
     def _parse_shortstat(stat_line: str, entry: Dict) -> None:
         """Parse git --shortstat output into entry dict."""

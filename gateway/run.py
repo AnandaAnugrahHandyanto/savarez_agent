@@ -5597,7 +5597,25 @@ class GatewayRunner:
 
         if not arg:
             checkpoints = mgr.list_checkpoints(cwd)
-            return format_checkpoint_list(checkpoints, cwd)
+            if checkpoints:
+                return format_checkpoint_list(checkpoints, cwd)
+
+            # No checkpoints for current dir — list all (fixes #10505)
+            all_checkpoints = mgr.list_all_checkpoints()
+            if not all_checkpoints:
+                return f"No checkpoints found anywhere."
+
+            lines = ["📍 No checkpoints for current directory, but found:"]
+            for working_dir, cps in all_checkpoints.items():
+                lines.append(f"\n**{working_dir}** ({len(cps)} checkpoints)")
+                for i, cp in enumerate(cps[:5], 1):  # show top 5 per dir
+                    lines.append(
+                        f"  {i}. {cp['short_hash']} — {cp['timestamp'][:10]} "
+                        f"({cp['files_changed']} files)"
+                    )
+                if len(cps) > 5:
+                    lines.append(f"  ... and {len(cps) - 5} more")
+            return "\n".join(lines)
 
         # Restore by number or hash
         checkpoints = mgr.list_checkpoints(cwd)
