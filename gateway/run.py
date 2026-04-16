@@ -9365,7 +9365,6 @@ class GatewayRunner:
                         _sc
                         and (
                             getattr(_sc, "final_response_sent", False)
-                            or getattr(_sc, "already_sent", False)
                         )
                     )
                     first_response = result.get("final_response", "")
@@ -9473,7 +9472,6 @@ class GatewayRunner:
             _is_empty_sentinel = not _final or _final == "(empty)"
             if not _is_empty_sentinel and (
                 getattr(_sc, "final_response_sent", False)
-                or getattr(_sc, "already_sent", False)
             ):
                 response["already_sent"] = True
         
