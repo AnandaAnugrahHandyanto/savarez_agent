@@ -495,8 +495,24 @@ def memory_tool(
             return tool_error("old_text is required for 'remove' action.", success=False)
         result = store.remove(target, old_text)
 
+    elif action == "read":
+        # Read all entries for the target
+        entries = store._entries_for(target)
+        current = store._char_count(target)
+        limit = store._char_limit(target)
+        pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
+        
+        result = {
+            "success": True,
+            "target": target,
+            "entries": entries,
+            "usage": f"{pct}% — {current:,}/{limit:,} chars",
+            "entry_count": len(entries),
+            "message": "Memory read successfully."
+        }
+
     else:
-        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
+        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove, read", success=False)
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -532,7 +548,7 @@ MEMORY_SCHEMA = {
         "- 'user': who the user is -- name, role, preferences, communication style, pet peeves\n"
         "- 'memory': your notes -- environment facts, project conventions, tool quirks, lessons learned\n\n"
         "ACTIONS: add (new entry), replace (update existing -- old_text identifies it), "
-        "remove (delete -- old_text identifies it).\n\n"
+        "remove (delete -- old_text identifies it), read (view all entries).\n\n"
         "SKIP: trivial/obvious info, things easily re-discovered, raw data dumps, and temporary task state."
     ),
     "parameters": {
@@ -540,7 +556,7 @@ MEMORY_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "replace", "remove"],
+                "enum": ["add", "replace", "remove", "read"],
                 "description": "The action to perform."
             },
             "target": {
