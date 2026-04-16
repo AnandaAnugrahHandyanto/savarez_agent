@@ -1,0 +1,76 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Hermes Agent — Coolify + Nebius Token Factory
+#
+# Rendered at first boot (or when HERMES_FORCE_CONFIG_REWRITE=1) by
+# deploy/coolify/entrypoint.sh. ${VAR} placeholders are filled in from the
+# Coolify environment.
+#
+# To change defaults: edit this file in the repo, commit, redeploy. To pick
+# up changes without wiping the live config, set HERMES_FORCE_CONFIG_REWRITE=1
+# in Coolify, redeploy once, then unset it.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# =============================================================================
+# Model — Nebius Token Factory (OpenAI-compatible)
+# =============================================================================
+# Qwen3-Coder is tuned for agentic / tool-calling workflows (terminal, file,
+# cron, web). If you need more raw reasoning power at the cost of latency,
+# switch HERMES_PRIMARY_MODEL to Qwen/Qwen3-235B-A22B-Thinking-2507 or
+# deepseek-ai/DeepSeek-V3.
+model:
+  default: "${HERMES_PRIMARY_MODEL}"
+  provider: "custom"
+  base_url: "${NEBIUS_BASE_URL}"
+  api_key: "${NEBIUS_API_KEY}"
+
+# =============================================================================
+# Fallback — activates on rate-limit / auth / 5xx from primary (once per session)
+# =============================================================================
+fallback_model:
+  provider: "custom"
+  model: "${HERMES_FALLBACK_MODEL}"
+  base_url: "${NEBIUS_BASE_URL}"
+  api_key_env: "NEBIUS_API_KEY"
+
+# =============================================================================
+# Toolsets — full agent toolbox (cron + terminal + python + file + web +
+# browser + skills + todo). Container isolation is the security boundary,
+# so we give the agent every tool it needs to self-direct.
+# =============================================================================
+platform_toolsets:
+  cli:      [hermes-cli]
+  telegram: [hermes-telegram]
+  discord:  [hermes-discord]
+  slack:    [hermes-slack]
+  whatsapp: [hermes-whatsapp]
+
+# =============================================================================
+# Dangerous-command approval
+# =============================================================================
+# "off" lets scheduled cron tasks fire without a human-in-the-loop. Flip to
+# "manual" if you want the bot to ask in chat before running risky commands.
+approvals:
+  mode: "off"
+  timeout: 60
+
+# =============================================================================
+# Python / code execution sandbox
+# =============================================================================
+code_execution:
+  timeout: 300         # max seconds per script before kill
+  max_tool_calls: 50   # max tool RPCs per script
+
+# =============================================================================
+# Subagent delegation
+# =============================================================================
+delegation:
+  max_iterations: 50
+  default_toolsets: ["terminal", "file", "web"]
+
+# =============================================================================
+# Display
+# =============================================================================
+display:
+  streaming: true
+  tool_progress: all
+  compact: false

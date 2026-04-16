@@ -1,0 +1,84 @@
+# Coolify-ready compose for Hermes Agent running on Nebius Token Factory.
+#
+# Usage in Coolify:
+#   • New resource → "Docker Compose" → pick this repo + branch
+#   • Set "Base Directory" to /deploy/coolify
+#   • Add environment variables in the Coolify UI; mark NEBIUS_API_KEY and
+#     messaging tokens as secrets.
+#
+# The image itself is built from the upstream Dockerfile at repo root — no
+# fork of the upstream build. All Coolify-specific behavior lives in this
+# directory via bind-mounted entrypoint + config template.
+
+services:
+  hermes:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: hermes-agent
+    restart: unless-stopped
+
+    entrypoint: ["/opt/coolify/entrypoint.sh"]
+    command: ["gateway", "run"]
+
+    volumes:
+      # Overlay scripts — edit in the repo, redeploy, no rebuild needed.
+      - ./entrypoint.sh:/opt/coolify/entrypoint.sh:ro
+      - ./config.template.yaml:/opt/coolify/config.template.yaml:ro
+      # Persistent agent state: cron schedules, skills, memories, sessions,
+      # workspace, auth store.
+      - hermes-data:/opt/data
+
+    environment:
+      # ── Nebius Token Factory (OpenAI-compatible) ──────────────────────────
+      # NEBIUS_API_KEY is REQUIRED. Add it as a Coolify secret.
+      NEBIUS_API_KEY: ${NEBIUS_API_KEY:?NEBIUS_API_KEY must be set in Coolify}
+      NEBIUS_BASE_URL: ${NEBIUS_BASE_URL:-https://api.studio.nebius.com/v1}
+
+      # ── Model selection (override in Coolify to try other Nebius models) ──
+      HERMES_PRIMARY_MODEL: ${HERMES_PRIMARY_MODEL:-Qwen/Qwen3-Coder-480B-A35B-Instruct}
+      HERMES_FALLBACK_MODEL: ${HERMES_FALLBACK_MODEL:-deepseek-ai/DeepSeek-V3}
+
+      # ── Agent authorization ───────────────────────────────────────────────
+      # Container is the security boundary — turn off approval prompts so
+      # scheduled cron tasks can fire unattended.
+      HERMES_YOLO_MODE: ${HERMES_YOLO_MODE:-1}
+
+      # ── Volume ownership alignment (optional) ─────────────────────────────
+      HERMES_UID: ${HERMES_UID:-10000}
+      HERMES_GID: ${HERMES_GID:-10000}
+
+      # ── Force re-render of config.yaml on next boot (default: keep live) ──
+      HERMES_FORCE_CONFIG_REWRITE: ${HERMES_FORCE_CONFIG_REWRITE:-0}
+
+      # ── Messaging gateway tokens (set any you use; leave others empty) ────
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_ALLOWED_USERS: ${TELEGRAM_ALLOWED_USERS:-}
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
+      DISCORD_ALLOWED_USERS: ${DISCORD_ALLOWED_USERS:-}
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
+      SLACK_APP_TOKEN: ${SLACK_APP_TOKEN:-}
+
+      # ── Optional tool API keys ────────────────────────────────────────────
+      FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY:-}
+      FIRECRAWL_API_URL: ${FIRECRAWL_API_URL:-}
+      BROWSERBASE_API_KEY: ${BROWSERBASE_API_KEY:-}
+      BROWSERBASE_PROJECT_ID: ${BROWSERBASE_PROJECT_ID:-}
+      FAL_KEY: ${FAL_KEY:-}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+
+    # Uncomment if you run a webhook-based platform (Slack Events API, Line,
+    # etc.). Telegram / Discord use outbound-only long-polling and don't need
+    # an exposed port.
+    # ports:
+    #   - "8787:8787"
+
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'hermes' > /dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+
+volumes:
+  hermes-data:
