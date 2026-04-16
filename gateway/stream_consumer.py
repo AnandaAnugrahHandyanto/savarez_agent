@@ -100,6 +100,11 @@ class GatewayStreamConsumer:
         self._current_edit_interval = self.cfg.edit_interval  # Adaptive backoff
         self._final_response_sent = False
 
+        # Card Kit 2.0 streaming state (Feishu)
+        self._card_mode = getattr(adapter, 'streaming_card_enabled', False)
+        self._card_id: Optional[str] = None
+        self._card_sequence: int = 1
+
         # Think-block filter state (mirrors CLI's _stream_delta tag suppression)
         self._in_think_block = False
         self._think_buffer = ""
@@ -131,6 +136,7 @@ class GatewayStreamConsumer:
         self._last_sent_text = ""
         self._fallback_final_send = False
         self._fallback_prefix = ""
+        # Card state is reset separately via _close_current_card (async)
 
     def on_delta(self, text: str) -> None:
         """Thread-safe callback — called from the agent's worker thread.
@@ -355,7 +361,9 @@ class GatewayStreamConsumer:
 
                     display_text = self._accumulated
                     if not got_done and not got_segment_break and commentary_text is None:
-                        display_text += self.cfg.cursor
+                        # Card mode has built-in streaming animation — no cursor needed
+                        if not self._card_id:
+                            display_text += self.cfg.cursor
 
                     current_update_visible = await self._send_or_edit(display_text)
                     self._last_edit_time = time.monotonic()
@@ -374,9 +382,12 @@ class GatewayStreamConsumer:
                             self._final_response_sent = await self._send_or_edit(self._accumulated)
                         elif not self._already_sent:
                             self._final_response_sent = await self._send_or_edit(self._accumulated)
+                    # Close streaming card if active
+                    await self._close_current_card(self._accumulated)
                     return
 
                 if commentary_text is not None:
+                    await self._close_current_card(self._accumulated)
                     self._reset_segment_state()
                     await self._send_commentary(commentary_text)
                     self._last_edit_time = time.monotonic()
@@ -397,6 +408,7 @@ class GatewayStreamConsumer:
                 # a real string like "msg_1", not "__no_edit__", so that case
                 # still resets and creates a fresh segment as intended.)
                 if got_segment_break:
+                    await self._close_current_card(self._accumulated)
                     self._reset_segment_state(preserve_no_edit=True)
 
                 await asyncio.sleep(0.05)  # Small yield to not busy-loop
@@ -408,6 +420,7 @@ class GatewayStreamConsumer:
                     await self._send_or_edit(self._accumulated)
                 except Exception:
                     pass
+            await self._close_current_card(self._accumulated)
             # If we delivered any content before being cancelled, mark the
             # final response as sent so the gateway's already_sent check
             # doesn't trigger a duplicate message.  The 5-second
@@ -619,6 +632,27 @@ class GatewayStreamConsumer:
             logger.error("Commentary send error: %s", e)
             return False
 
+    async def _close_current_card(self, final_text: str = "") -> None:
+        """Close the active streaming card, if any."""
+        if not self._card_id:
+            return
+        card_id = self._card_id
+        seq = self._card_sequence
+        self._card_id = None
+        self._card_sequence = 1
+        try:
+            clean = self._clean_for_display(final_text) if final_text else ""
+            # Final content update
+            if clean and clean != self._last_sent_text:
+                self._card_sequence = seq + 1
+                await self.adapter.update_streaming_card(card_id, clean, seq)
+                seq = self._card_sequence
+            # Close streaming mode
+            summary = clean or self._last_sent_text or ""
+            await self.adapter.close_streaming_card(card_id, summary, seq + 1)
+        except Exception as e:
+            logger.warning("Failed to close streaming card %s: %s", card_id, e)
+
     async def _send_or_edit(self, text: str) -> bool:
         """Send or edit the streaming message.
 
@@ -640,6 +674,11 @@ class GatewayStreamConsumer:
             return True  # cursor-only / whitespace-only update
         if not text.strip():
             return True  # nothing to send is "success"
+
+        # ── Card Kit 2.0 streaming path ─────────────────────────────
+        if self._card_mode:
+            return await self._send_or_edit_card(text)
+
         # Guard: do not create a brand-new standalone message when the only
         # visible content is a handful of characters alongside the streaming
         # cursor.  During rapid tool-calling the model often emits 1-2 tokens
@@ -744,4 +783,47 @@ class GatewayStreamConsumer:
                     return False
         except Exception as e:
             logger.error("Stream send/edit error: %s", e)
+            return False
+
+    async def _send_or_edit_card(self, text: str) -> bool:
+        """Card Kit 2.0 streaming path — create card on first call, update element after."""
+        try:
+            if self._card_id is None:
+                # First call: create the streaming card
+                card_info = await self.adapter.create_streaming_card(
+                    self.chat_id, metadata=self.metadata,
+                )
+                if not card_info:
+                    # Card creation failed — fall back to normal edit mode
+                    logger.info("Card Kit streaming unavailable, falling back to edit mode")
+                    self._card_mode = False
+                    return await self._send_or_edit(text)
+                self._card_id = card_info["card_id"]
+                self._message_id = card_info["message_id"]
+                self._card_sequence = 2  # sequence 1 was the initial card creation
+                self._already_sent = True
+
+            # Skip if text is identical to what we last sent
+            if text == self._last_sent_text:
+                return True
+
+            # Update card element content
+            ok = await self.adapter.update_streaming_card(
+                self._card_id, text, self._card_sequence,
+            )
+            if ok:
+                self._card_sequence += 1
+                self._last_sent_text = text
+                self._already_sent = True
+                self._final_response_sent = True
+                return True
+            else:
+                # Card update failed — fall back to edit mode for remainder
+                logger.info("Card update failed, falling back to edit mode")
+                self._card_mode = False
+                # Keep message_id so edit_message can try updating the message
+                return False
+        except Exception as e:
+            logger.error("Card streaming error: %s", e)
+            self._card_mode = False
             return False

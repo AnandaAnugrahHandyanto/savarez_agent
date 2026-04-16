@@ -2855,3 +2855,51 @@ class TestSenderNameResolution(unittest.TestCase):
             result = asyncio.run(adapter._resolve_sender_name_from_api("ou_broken"))
 
         self.assertIsNone(result)
+
+
+class TestStreamingCardSettings(unittest.TestCase):
+    """Test Card Kit 2.0 streaming card configuration."""
+
+    def test_streaming_card_default_enabled(self):
+        from gateway.platforms.feishu import FeishuAdapter
+        from gateway.config import PlatformConfig
+
+        adapter = FeishuAdapter(PlatformConfig())
+        self.assertTrue(adapter.streaming_card_enabled)
+
+    def test_streaming_card_disabled_via_extra(self):
+        from gateway.platforms.feishu import FeishuAdapter
+        from gateway.config import PlatformConfig
+
+        config = PlatformConfig(extra={"streaming_card": False})
+        adapter = FeishuAdapter(config)
+        self.assertFalse(adapter.streaming_card_enabled)
+
+    def test_streaming_card_enabled_via_extra(self):
+        from gateway.platforms.feishu import FeishuAdapter
+        from gateway.config import PlatformConfig
+
+        config = PlatformConfig(extra={"streaming_card": True})
+        adapter = FeishuAdapter(config)
+        self.assertTrue(adapter.streaming_card_enabled)
+
+    def test_card_api_base_feishu(self):
+        from gateway.platforms.feishu import FeishuAdapter
+        from gateway.config import PlatformConfig
+
+        adapter = FeishuAdapter(PlatformConfig(extra={"domain": "feishu"}))
+        self.assertEqual(adapter._card_api_base(), "https://open.feishu.cn/open-apis")
+
+    def test_card_api_base_lark(self):
+        from gateway.platforms.feishu import FeishuAdapter
+        from gateway.config import PlatformConfig
+
+        adapter = FeishuAdapter(PlatformConfig(extra={"domain": "lark"}))
+        self.assertEqual(adapter._card_api_base(), "https://open.larksuite.com/open-apis")
+
+    def test_card_api_base_custom(self):
+        from gateway.platforms.feishu import FeishuAdapter
+        from gateway.config import PlatformConfig
+
+        adapter = FeishuAdapter(PlatformConfig(extra={"domain": "https://custom.example.com"}))
+        self.assertEqual(adapter._card_api_base(), "https://custom.example.com/open-apis")

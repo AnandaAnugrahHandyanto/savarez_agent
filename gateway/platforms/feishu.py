@@ -65,6 +65,7 @@ try:
         GetChatRequest,
         GetMessageRequest,
         GetMessageResourceRequest,
+        ListMessageRequest,
         P2ImMessageMessageReadV1,
         ReplyMessageRequest,
         ReplyMessageRequestBody,
@@ -190,6 +191,14 @@ _FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent 
 _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
 _FEISHU_ACK_EMOJI = "OK"
 
+# Card Kit 2.0 streaming constants
+_CARD_ELEMENT_ID = "content"
+_CARD_TOKEN_TTL_SECONDS = 1500  # refresh every ~25 min (token valid 2h)
+_CARD_API_BASES = {
+    "feishu": "https://open.feishu.cn/open-apis",
+    "lark": "https://open.larksuite.com/open-apis",
+}
+
 # QR onboarding constants
 _ONBOARD_ACCOUNTS_URLS = {
     "feishu": "https://accounts.feishu.cn",
@@ -311,6 +320,12 @@ class FeishuAdapterSettings:
     admins: frozenset[str] = frozenset()
     default_group_policy: str = ""
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
+    require_mention: bool = True  # Global default: require @mention in groups
+    auto_trigger_patterns: tuple[str, ...] = ()
+    poll_chats: tuple[str, ...] = ()  # Chat IDs to poll for bot messages via API
+    poll_interval_seconds: float = 5.0  # Polling interval in seconds
+    bark_url: str = ""  # Bark push notification URL (e.g. https://api.day.app/{key})
+    streaming_card: bool = True  # Use Card Kit 2.0 streaming cards instead of edit-message
 
 
 @dataclass
@@ -320,6 +335,7 @@ class FeishuGroupRule:
     policy: str  # "open" | "allowlist" | "blacklist" | "admin_only" | "disabled"
     allowlist: set[str] = field(default_factory=set)
     blacklist: set[str] = field(default_factory=set)
+    require_mention: Optional[bool] = None  # None = use global default
 
 
 @dataclass
@@ -1089,6 +1105,10 @@ class FeishuAdapter(BasePlatformAdapter):
         # Exec approval button state (approval_id → {session_key, message_id, chat_id})
         self._approval_state: Dict[int, Dict[str, str]] = {}
         self._approval_counter = itertools.count(1)
+        self._poll_task: Optional[asyncio.Task] = None
+        # Card Kit 2.0 streaming token cache
+        self._card_api_token: Optional[str] = None
+        self._card_api_token_time: float = 0.0
         self._load_seen_message_ids()
 
     @staticmethod
@@ -1100,10 +1120,12 @@ class FeishuAdapter(BasePlatformAdapter):
             for chat_id, rule_cfg in raw_group_rules.items():
                 if not isinstance(rule_cfg, dict):
                     continue
+                _rm = rule_cfg.get("require_mention")
                 group_rules[str(chat_id)] = FeishuGroupRule(
                     policy=str(rule_cfg.get("policy", "open")).strip().lower(),
                     allowlist=set(str(u).strip() for u in rule_cfg.get("allowlist", []) if str(u).strip()),
                     blacklist=set(str(u).strip() for u in rule_cfg.get("blacklist", []) if str(u).strip()),
+                    require_mention=bool(_rm) if _rm is not None else None,
                 )
 
         # Bot-level admins
@@ -1112,6 +1134,10 @@ class FeishuAdapter(BasePlatformAdapter):
 
         # Default group policy (for groups not in group_rules)
         default_group_policy = str(extra.get("default_group_policy", "")).strip().lower()
+
+        # Global require_mention default (True if not specified)
+        _global_rm = extra.get("require_mention")
+        require_mention = bool(_global_rm) if _global_rm is not None else True
 
         return FeishuAdapterSettings(
             app_id=str(extra.get("app_id") or os.getenv("FEISHU_APP_ID", "")).strip(),
@@ -1168,7 +1194,17 @@ class FeishuAdapter(BasePlatformAdapter):
             ws_ping_timeout=_coerce_int(extra.get("ws_ping_timeout"), default=None, min_value=1),
             admins=admins,
             default_group_policy=default_group_policy,
+            require_mention=require_mention,
             group_rules=group_rules,
+            auto_trigger_patterns=tuple(
+                str(p).strip() for p in extra.get("auto_trigger_patterns", []) if str(p).strip()
+            ),
+            poll_chats=tuple(
+                str(c).strip() for c in extra.get("poll_chats", []) if str(c).strip()
+            ),
+            poll_interval_seconds=float(extra.get("poll_interval_seconds", 5.0)),
+            bark_url=str(extra.get("bark_url") or os.getenv("BARK_URL", "")).strip(),
+            streaming_card=_to_boolean(extra.get("streaming_card", True)),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1182,6 +1218,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._allowed_group_users = set(settings.allowed_group_users)
         self._admins = set(settings.admins)
         self._default_group_policy = settings.default_group_policy or settings.group_policy
+        self._require_mention = settings.require_mention
         self._group_rules = settings.group_rules
         self._bot_open_id = settings.bot_open_id
         self._bot_user_id = settings.bot_user_id
@@ -1199,6 +1236,218 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_reconnect_interval = settings.ws_reconnect_interval
         self._ws_ping_interval = settings.ws_ping_interval
         self._ws_ping_timeout = settings.ws_ping_timeout
+        self._auto_trigger_patterns = settings.auto_trigger_patterns
+        self._poll_chats = settings.poll_chats
+        self._poll_interval_seconds = settings.poll_interval_seconds
+        self._bark_url = settings.bark_url
+
+    # -----------------------------------------------------------------
+    # Card Kit 2.0 streaming API
+    # -----------------------------------------------------------------
+
+    @property
+    def streaming_card_enabled(self) -> bool:
+        """Whether Card Kit 2.0 streaming cards are enabled for this adapter."""
+        return self._settings.streaming_card
+
+    def _card_api_base(self) -> str:
+        domain = self._settings.domain_name
+        if domain in _CARD_API_BASES:
+            return _CARD_API_BASES[domain]
+        if domain.startswith("http"):
+            return f"{domain.rstrip('/')}/open-apis"
+        return _CARD_API_BASES["feishu"]
+
+    async def _ensure_card_api_token(self) -> Optional[str]:
+        """Get a cached tenant_access_token for Card Kit API calls."""
+        now = time.time()
+        if self._card_api_token and now - self._card_api_token_time < _CARD_TOKEN_TTL_SECONDS:
+            return self._card_api_token
+        # _sync_get_token expects base without /open-apis (it appends that itself)
+        base = self._card_api_base().removesuffix("/open-apis")
+        try:
+            data = await asyncio.to_thread(
+                self._sync_get_token, base, self._app_id, self._app_secret,
+            )
+            token = data.get("tenant_access_token")
+            if token:
+                self._card_api_token = token
+                self._card_api_token_time = now
+                return token
+            logger.warning("[Feishu] Card API token request failed: %s", data)
+        except Exception as exc:
+            logger.warning("[Feishu] Card API token error: %s", exc)
+        return None
+
+    async def create_streaming_card(
+        self,
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, str]]:
+        """Create a Card Kit 2.0 streaming card and send it as a message.
+
+        Returns ``{"card_id": ..., "message_id": ...}`` on success, or *None*.
+        """
+        token = await self._ensure_card_api_token()
+        if not token or not self._client:
+            return None
+
+        api_base = self._card_api_base()
+
+        # 1. Create card entity with streaming mode
+        card_json = {
+            "schema": "2.0",
+            "config": {
+                "streaming_mode": True,
+                "summary": {"content": "..."},
+                "streaming_config": {
+                    "print_frequency_ms": {"default": 50},
+                    "print_step": {"default": 2},
+                },
+            },
+            "body": {
+                "elements": [
+                    {
+                        "tag": "markdown",
+                        "content": "...",
+                        "element_id": _CARD_ELEMENT_ID,
+                    }
+                ],
+            },
+        }
+        try:
+            create_payload = json.dumps(
+                {"type": "card_json", "data": json.dumps(card_json, ensure_ascii=False)},
+                ensure_ascii=False,
+            ).encode()
+            req = Request(
+                f"{api_base}/cardkit/v1/cards",
+                data=create_payload,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            resp_data = json.loads((await asyncio.to_thread(urlopen, req, None, 15)).read())
+        except HTTPError as exc:
+            body = ""
+            try:
+                body = exc.read().decode()[:500]
+            except Exception:
+                pass
+            logger.warning("[Feishu] Card Kit create failed: %s — %s", exc, body)
+            return None
+        except Exception as exc:
+            logger.warning("[Feishu] Card Kit create failed: %s", exc)
+            return None
+
+        if resp_data.get("code") != 0 or not resp_data.get("data", {}).get("card_id"):
+            logger.warning("[Feishu] Card Kit create error: %s", resp_data.get("msg"))
+            return None
+
+        card_id = resp_data["data"]["card_id"]
+
+        # 2. Send card as message
+        try:
+            content_payload = json.dumps(
+                {"type": "card", "data": {"card_id": card_id}}, ensure_ascii=False,
+            )
+            reply_to = metadata.get("thread_id") if metadata else None
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=content_payload,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+            result = self._finalize_send_result(response, "send streaming card failed")
+            if not result.success or not result.message_id:
+                logger.warning("[Feishu] Send streaming card failed: %s", result.error)
+                return None
+            logger.info("[Feishu] Streaming card created: card_id=%s, message_id=%s", card_id, result.message_id)
+            return {"card_id": card_id, "message_id": result.message_id}
+        except Exception as exc:
+            logger.warning("[Feishu] Send streaming card error: %s", exc)
+            return None
+
+    async def update_streaming_card(
+        self, card_id: str, content: str, sequence: int,
+    ) -> bool:
+        """Update the content element of a streaming card."""
+        token = await self._ensure_card_api_token()
+        if not token:
+            return False
+        api_base = self._card_api_base()
+        try:
+            payload = json.dumps(
+                {
+                    "content": content,
+                    "sequence": sequence,
+                    "uuid": f"s_{card_id}_{sequence}",
+                },
+                ensure_ascii=False,
+            ).encode()
+            req = Request(
+                f"{api_base}/cardkit/v1/cards/{card_id}/elements/{_CARD_ELEMENT_ID}/content",
+                data=payload,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                method="PUT",
+            )
+            resp_data = json.loads((await asyncio.to_thread(urlopen, req, None, 15)).read())
+            if resp_data.get("code") != 0:
+                logger.debug("[Feishu] Card element update failed: %s", resp_data.get("msg"))
+                return False
+            return True
+        except Exception as exc:
+            logger.debug("[Feishu] Card element update error: %s", exc)
+            return False
+
+    async def close_streaming_card(
+        self, card_id: str, summary: str, sequence: int,
+    ) -> bool:
+        """Close streaming mode on a card."""
+        token = await self._ensure_card_api_token()
+        if not token:
+            return False
+        api_base = self._card_api_base()
+        clean_summary = summary.replace("\n", " ").strip()
+        if len(clean_summary) > 50:
+            clean_summary = clean_summary[:47] + "..."
+        try:
+            settings_json = json.dumps(
+                {"config": {"streaming_mode": False, "summary": {"content": clean_summary}}},
+                ensure_ascii=False,
+            )
+            payload = json.dumps(
+                {
+                    "settings": settings_json,
+                    "sequence": sequence,
+                    "uuid": f"c_{card_id}_{sequence}",
+                },
+                ensure_ascii=False,
+            ).encode()
+            req = Request(
+                f"{api_base}/cardkit/v1/cards/{card_id}/settings",
+                data=payload,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                method="PATCH",
+            )
+            resp_data = json.loads((await asyncio.to_thread(urlopen, req, None, 15)).read())
+            if resp_data.get("code") != 0:
+                logger.debug("[Feishu] Card close failed: %s", resp_data.get("msg"))
+                return False
+            logger.info("[Feishu] Streaming card closed: card_id=%s", card_id)
+            return True
+        except Exception as exc:
+            logger.debug("[Feishu] Card close error: %s", exc)
+            return False
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -1258,6 +1507,10 @@ class FeishuAdapter(BasePlatformAdapter):
             self._loop = asyncio.get_running_loop()
             await self._connect_with_retry()
             self._mark_connected()
+            # Start bot-message polling if configured.
+            if self._poll_chats and self._auto_trigger_patterns:
+                self._poll_task = asyncio.create_task(self._poll_bot_messages())
+                logger.info("[Feishu] Bot message polling enabled for %d chat(s)", len(self._poll_chats))
             logger.info("[Feishu] Connected in %s mode (%s)", self._connection_mode, self._domain_name)
             return True
         except Exception as exc:
@@ -1270,6 +1523,14 @@ class FeishuAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Disconnect from Feishu/Lark."""
         self._running = False
+        # Stop bot-message polling task.
+        if self._poll_task and not self._poll_task.done():
+            self._poll_task.cancel()
+            try:
+                await self._poll_task
+            except asyncio.CancelledError:
+                pass
+            self._poll_task = None
         await self._cancel_pending_tasks(self._pending_text_batch_tasks)
         await self._cancel_pending_tasks(self._pending_media_batch_tasks)
         self._reset_batch_buffers()
@@ -1348,6 +1609,20 @@ class FeishuAdapter(BasePlatformAdapter):
     # Outbound — send / edit / send_image / send_voice / …
     # =========================================================================
 
+    async def _send_bark_notification(self, content: str) -> None:
+        """Fire a Bark push notification after sending a message (best-effort)."""
+        if not self._bark_url:
+            return
+        try:
+            from urllib.parse import quote
+            bot_name = self._bot_name or "派派"
+            preview = content[:100].replace("\n", " ").strip()
+            url = f"{self._bark_url.rstrip('/')}/{quote(bot_name)}/{quote(preview)}"
+            req = Request(url, headers={"User-Agent": "Hermes/1.0"})
+            await asyncio.to_thread(urlopen, req, timeout=5)
+        except Exception as exc:
+            logger.debug("[Feishu] Bark notification failed: %s", exc)
+
     async def send(
         self,
         chat_id: str,
@@ -1400,7 +1675,10 @@ class FeishuAdapter(BasePlatformAdapter):
                     )
                 last_response = response
 
-            return self._finalize_send_result(last_response, "send failed")
+            result = self._finalize_send_result(last_response, "send failed")
+            if result.success:
+                asyncio.ensure_future(self._send_bark_notification(content))
+            return result
         except Exception as exc:
             logger.error("[Feishu] Send error: %s", exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
@@ -1544,6 +1822,68 @@ class FeishuAdapter(BasePlatformAdapter):
             caption=caption,
             outbound_message_type="audio",
         )
+
+    async def upload_audio_file(self, audio_path: str) -> Optional[str]:
+        """Upload an audio file to Feishu and return the file_key (or None on failure)."""
+        if not self._client or not os.path.exists(audio_path):
+            return None
+        display_name = os.path.basename(audio_path)
+        upload_file_type, _ = self._resolve_outbound_file_routing(
+            file_path=display_name, requested_message_type="audio",
+        )
+        try:
+            with open(audio_path, "rb") as file_obj:
+                body = self._build_file_upload_body(
+                    file_type=upload_file_type, file_name=display_name, file=file_obj,
+                )
+                request = self._build_file_upload_request(body)
+                upload_response = await asyncio.to_thread(self._client.im.v1.file.create, request)
+            return self._extract_response_field(upload_response, "file_key")
+        except Exception as exc:
+            logger.error("[Feishu] Failed to upload audio %s: %s", audio_path, exc)
+            return None
+
+    async def send_text_with_audio(
+        self,
+        chat_id: str,
+        text: str,
+        audio_file_key: str,
+        audio_file_name: str = "voice.ogg",
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a single post message containing both text and an embedded audio player."""
+        media_tag = {"tag": "media", "file_key": audio_file_key, "file_name": audio_file_name}
+        payload = self._build_media_post_payload(caption=text, media_tag=media_tag)
+        message_response = await self._feishu_send_with_retry(
+            chat_id=chat_id, msg_type="post", payload=payload,
+            reply_to=reply_to, metadata=metadata,
+        )
+        return self._finalize_send_result(message_response, "text+audio send failed")
+
+    async def edit_message_append_audio(
+        self,
+        message_id: str,
+        text: str,
+        audio_file_key: str,
+        audio_file_name: str = "voice.ogg",
+    ) -> SendResult:
+        """Edit an existing message to a post that includes text + embedded audio."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        try:
+            media_tag = {"tag": "media", "file_key": audio_file_key, "file_name": audio_file_name}
+            payload = self._build_media_post_payload(caption=text, media_tag=media_tag)
+            body = self._build_update_message_body(msg_type="post", content=payload)
+            request = self._build_update_message_request(message_id=message_id, request_body=body)
+            response = await asyncio.to_thread(self._client.im.v1.message.update, request)
+            result = self._finalize_send_result(response, "edit+audio failed")
+            if result.success:
+                result.message_id = message_id
+            return result
+        except Exception as exc:
+            logger.error("[Feishu] Failed to edit message %s with audio: %s", message_id, exc, exc_info=True)
+            return SendResult(success=False, error=str(exc))
 
     async def send_document(
         self,
@@ -1782,14 +2122,17 @@ class FeishuAdapter(BasePlatformAdapter):
         if not message_id or self._is_duplicate(message_id):
             logger.debug("[Feishu] Dropping duplicate/missing message_id: %s", message_id)
             return
-        if getattr(sender, "sender_type", "") == "bot":
+        is_bot_sender = getattr(sender, "sender_type", "") == "bot"
+        if is_bot_sender and not self._bot_message_matches_trigger(message):
             logger.debug("[Feishu] Dropping bot-originated event: %s", message_id)
             return
 
         chat_type = getattr(message, "chat_type", "p2p")
         chat_id = getattr(message, "chat_id", "") or ""
+        if chat_type != "p2p":
+            logger.info("[Feishu] Group message arrived: chat_type=%s chat_id=%s message_id=%s", chat_type, chat_id, message_id)
         if chat_type != "p2p" and not self._should_accept_group_message(message, sender_id, chat_id):
-            logger.debug("[Feishu] Dropping group message that failed mention/policy gate: %s", message_id)
+            logger.info("[Feishu] Dropping group message that failed mention/policy gate: %s (chat_id=%s)", message_id, chat_id)
             return
         await self._process_inbound_message(
             data=data,
@@ -2162,8 +2505,12 @@ class FeishuAdapter(BasePlatformAdapter):
     ) -> None:
         text, inbound_type, media_urls, media_types = await self._extract_message_content(message)
         if inbound_type == MessageType.TEXT and not text and not media_urls:
-            logger.debug("[Feishu] Ignoring unsupported or empty message type: %s", getattr(message, "message_type", ""))
-            return
+            # In group chats, a bare @mention (no extra text) still deserves a response.
+            if chat_type != "p2p":
+                text = ""
+            else:
+                logger.debug("[Feishu] Ignoring unsupported or empty message type: %s", getattr(message, "message_type", ""))
+                return
 
         if inbound_type == MessageType.TEXT and text.startswith("/"):
             inbound_type = MessageType.COMMAND
@@ -3060,12 +3407,271 @@ class FeishuAdapter(BasePlatformAdapter):
 
         return bool(sender_ids and (sender_ids & self._allowed_group_users))
 
+    # =========================================================================
+    # Bot message polling (for messages invisible to event subscriptions)
+    # =========================================================================
+
+    async def _poll_bot_messages(self) -> None:
+        """Background task: poll configured chats for bot messages every N seconds.
+
+        Feishu's im.message.receive_v1 event does NOT deliver messages sent by
+        bots (webhook or app).  This poller uses the List Messages API to fetch
+        recent messages and routes bot-originated ones through the normal
+        inbound pipeline when they match ``auto_trigger_patterns``.
+        """
+        interval = self._poll_interval_seconds
+        # On first poll after startup, look back 10 minutes to catch messages
+        # that arrived while the gateway was down or restarting.
+        self._poll_first_run = True
+        # Small initial delay to let the adapter fully start up.
+        await asyncio.sleep(min(interval, 3.0))
+        logger.info(
+            "[Feishu] Poll task started: chats=%s interval=%.1fs patterns=%s",
+            self._poll_chats, interval, self._auto_trigger_patterns,
+        )
+        while self._running:
+            for chat_id in self._poll_chats:
+                try:
+                    await self._poll_one_chat(chat_id)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.warning("[Feishu] Poll error for chat %s", chat_id, exc_info=True)
+            self._poll_first_run = False
+            try:
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                break
+        logger.info("[Feishu] Poll task stopped")
+
+    async def _poll_one_chat(self, chat_id: str) -> None:
+        """Fetch recent messages from one chat and route bot messages.
+
+        Uses asyncio.to_thread + synchronous requests to completely decouple
+        from the async event loop.  When the loop is busy (e.g. agent processing),
+        httpx async clients time out because the loop can't service their I/O.
+        Running synchronous requests in a thread avoids this entirely.
+        """
+        now_ts = int(time.time())
+        if getattr(self, "_poll_first_run", False):
+            window = 600
+        else:
+            window = max(int(self._poll_interval_seconds * 4), 120)
+        start_ts = str(now_ts - window)
+        end_ts = str(now_ts)
+
+        base_url = _ONBOARD_OPEN_URLS.get(self._domain_name, "https://open.feishu.cn")
+        try:
+            token = await self._get_poll_access_token(base_url)
+            if not token:
+                return
+            data = await asyncio.to_thread(
+                self._sync_poll_list_messages,
+                base_url, token, chat_id, start_ts, end_ts,
+            )
+        except Exception as exc:
+            logger.warning("[Feishu] Poll error for %s: %s: %s", chat_id, type(exc).__name__, exc)
+            return
+
+        if data.get("code", -1) != 0:
+            logger.debug("[Feishu] Poll list failed for %s: code=%s msg=%s",
+                         chat_id, data.get("code"), data.get("msg"))
+            return
+
+        items = (data.get("data") or {}).get("items") or []
+        if items:
+            logger.info("[Feishu] Poll found %d message(s) in %s", len(items), chat_id)
+        for item in items:
+            msg_item = self._dict_to_namespace(item)
+            await self._maybe_route_polled_message(msg_item, chat_id)
+
+    @staticmethod
+    def _sync_poll_list_messages(
+        base_url: str, token: str, chat_id: str, start_ts: str, end_ts: str,
+    ) -> dict:
+        """Synchronous HTTP call via subprocess curl — immune to process-internal
+        connection pool / DNS / thread issues that plague requests in long-running
+        asyncio processes."""
+        import subprocess, json as _json, urllib.parse
+        params = urllib.parse.urlencode({
+            "container_id_type": "chat",
+            "container_id": chat_id,
+            "start_time": start_ts,
+            "end_time": end_ts,
+            "page_size": "20",
+        })
+        url = f"{base_url}/open-apis/im/v1/messages?{params}"
+        result = subprocess.run(
+            ["curl", "-s", "-m", "15", "-H", f"Authorization: Bearer {token}", url],
+            capture_output=True, text=True, timeout=20,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"curl failed (rc={result.returncode}): {result.stderr[:200]}")
+        return _json.loads(result.stdout)
+
+    async def _get_poll_access_token(self, base_url: str) -> Optional[str]:
+        """Get a tenant_access_token for polling, with simple caching."""
+        now = time.time()
+        cached = getattr(self, "_poll_token_cache", None)
+        if cached and now - cached[1] < 1500:  # refresh every 25 min (token valid 2h)
+            return cached[0]
+        try:
+            data = await asyncio.to_thread(
+                self._sync_get_token, base_url, self._app_id, self._app_secret,
+            )
+            token = data.get("tenant_access_token")
+            if token:
+                self._poll_token_cache = (token, now)
+                return token
+            logger.warning("[Feishu] Poll token request failed: %s", data)
+            return None
+        except Exception as exc:
+            logger.warning("[Feishu] Poll token error: %s", exc)
+            return None
+
+    @staticmethod
+    def _sync_get_token(base_url: str, app_id: str, app_secret: str) -> dict:
+        """Synchronous token fetch via subprocess curl."""
+        import subprocess, json as _json
+        url = f"{base_url}/open-apis/auth/v3/tenant_access_token/internal"
+        payload = _json.dumps({"app_id": app_id, "app_secret": app_secret})
+        result = subprocess.run(
+            ["curl", "-s", "-m", "15", "-X", "POST",
+             "-H", "Content-Type: application/json",
+             "-d", payload, url],
+            capture_output=True, text=True, timeout=20,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"curl token failed (rc={result.returncode}): {result.stderr[:200]}")
+        return _json.loads(result.stdout)
+
+    @staticmethod
+    def _dict_to_namespace(d: dict) -> SimpleNamespace:
+        """Recursively convert a dict to SimpleNamespace for getattr compatibility."""
+        ns = SimpleNamespace()
+        for k, v in d.items():
+            if isinstance(v, dict):
+                setattr(ns, k, FeishuAdapter._dict_to_namespace(v))
+            else:
+                setattr(ns, k, v)
+        return ns
+
+    async def _maybe_route_polled_message(self, msg_item: Any, chat_id: str) -> None:
+        """Check a single polled message and route it if it's a bot message matching triggers."""
+        sender = getattr(msg_item, "sender", None)
+        sender_type = (getattr(sender, "sender_type", "") or "").lower()
+        if sender_type not in ("app", "bot"):
+            return  # Only interested in bot-originated messages
+
+        message_id = getattr(msg_item, "message_id", None) or ""
+        if not message_id or self._is_duplicate(message_id):
+            return
+
+        # Check content against auto_trigger_patterns.
+        body = getattr(msg_item, "body", None)
+        raw_content = (getattr(body, "content", None) or "") if body else ""
+        msg_type = getattr(msg_item, "msg_type", "text") or "text"
+
+        if not self._poll_content_matches_trigger(raw_content, msg_type):
+            logger.debug("[Feishu] Poll: skipping non-matching bot msg %s", message_id)
+            return
+
+        logger.info(
+            "[Feishu] Poll: routing bot message %s from chat %s (type=%s)",
+            message_id, chat_id, msg_type,
+        )
+
+        # Send immediate feedback so the user knows parsing has started.
+        try:
+            await self.send(
+                chat_id=chat_id,
+                content="收到微信链接，开始解析 🔄",
+                reply_to=message_id,
+            )
+        except Exception:
+            logger.warning("[Feishu] Poll: failed to send parsing-start ack for %s", message_id)
+
+        # Build a synthetic MessageEvent and dispatch it.
+        sender_id_str = getattr(sender, "id", None) or "bot"
+        chat_info = await self.get_chat_info(chat_id)
+        source = self.build_source(
+            chat_id=chat_id,
+            chat_name=chat_info.get("name") or chat_id,
+            chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type="group"),
+            user_id=sender_id_str,
+            user_name=f"bot:{sender_id_str[:16]}",
+        )
+
+        # Normalize the content through the standard Feishu message normalizer.
+        normalized = normalize_feishu_message(message_type=msg_type, raw_content=raw_content)
+        text = normalized.text_content or ""
+
+        event = MessageEvent(
+            text=text,
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message=msg_item,
+            message_id=message_id,
+            timestamp=datetime.now(),
+        )
+        await self._handle_message_with_guards(event)
+
+    def _poll_content_matches_trigger(self, raw_content: str, msg_type: str) -> bool:
+        """Check if polled message content matches any auto_trigger_patterns."""
+        if not self._auto_trigger_patterns:
+            return False
+        normalized = normalize_feishu_message(message_type=msg_type, raw_content=raw_content)
+        search_text = (normalized.text_content or "") + " " + raw_content
+        for pattern in self._auto_trigger_patterns:
+            if pattern in search_text:
+                return True
+        return False
+
+    def _bot_message_matches_trigger(self, message: Any) -> bool:
+        """Check if a bot-originated message matches any auto_trigger_patterns."""
+        if not self._auto_trigger_patterns:
+            return False
+        raw_content = getattr(message, "content", "") or ""
+        normalized = normalize_feishu_message(
+            message_type=getattr(message, "message_type", "") or "",
+            raw_content=raw_content,
+        )
+        search_text = (normalized.text_content or "") + " " + raw_content
+        for pattern in self._auto_trigger_patterns:
+            if pattern in search_text:
+                return True
+        return False
+
     def _should_accept_group_message(self, message: Any, sender_id: Any, chat_id: str = "") -> bool:
         """Require an explicit @mention before group messages enter the agent."""
+        raw_content = getattr(message, "content", "") or ""
+
+        # Auto-trigger patterns bypass group policy — content-based acceptance.
+        if self._auto_trigger_patterns:
+            # Check both text_content and raw JSON to catch URLs in card/interactive msgs.
+            normalized_for_trigger = normalize_feishu_message(
+                message_type=getattr(message, "message_type", "") or "",
+                raw_content=raw_content,
+            )
+            search_text = (normalized_for_trigger.text_content or "") + " " + raw_content
+            for pattern in self._auto_trigger_patterns:
+                if pattern in search_text:
+                    return True
+
         if not self._allow_group_message(sender_id, chat_id):
             return False
+
+        # Determine effective require_mention for this group.
+        rule = self._group_rules.get(chat_id) if chat_id else None
+        effective_require_mention = (
+            rule.require_mention if (rule and rule.require_mention is not None) else self._require_mention
+        )
+
+        # If @mention is not required, accept after policy gate passes.
+        if not effective_require_mention:
+            return True
+
         # @_all is Feishu's @everyone placeholder — always route to the bot.
-        raw_content = getattr(message, "content", "") or ""
         if "@_all" in raw_content:
             return True
         mentions = getattr(message, "mentions", None) or []
@@ -3403,6 +4009,7 @@ class FeishuAdapter(BasePlatformAdapter):
             .app_secret(self._app_secret)
             .domain(domain)
             .log_level(lark.LogLevel.WARNING)
+            .timeout(10.0)
             .build()
         )
 
