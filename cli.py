@@ -7490,26 +7490,42 @@ class HermesCLI:
                 choice_wrapped.append((i, wrapped))
 
         # Budget vertical space so HSplit never clips the command or choices.
-        # Panel chrome without description: top border + title + blank_after_title
-        # + blank_between_cmd_and_choices + bottom border = 5 rows.
-        # Reserve a conservative number of rows below the panel for
-        # status_bar + input_rule + input_area + margin.
+        # Panel chrome (full layout with separators):
+        #   top border + title + blank_after_title
+        #   + blank_between_cmd_choices + bottom border = 5 rows.
+        # In tight terminals we collapse to:
+        #   top border + title + bottom border = 3 rows (no blanks).
+        #
+        # reserved_below: rows consumed below the approval panel by the
+        # spinner/tool-progress line, status bar, input area, separators, and
+        # prompt symbol. Measured at ~6 rows during live PTY approval prompts;
+        # budget 6 so we don't overestimate the panel's room.
         term_rows = shutil.get_terminal_size((100, 24)).lines
-        base_chrome = 5
-        reserved_below = 4
+        chrome_full = 5
+        chrome_tight = 3
+        reserved_below = 6
+
+        available = max(0, term_rows - reserved_below)
+        mandatory_full = chrome_full + len(cmd_wrapped) + len(choice_wrapped)
+
+        # If the full-chrome panel doesn't fit, drop the separator blanks.
+        # This keeps the command and every choice on-screen in compact terminals.
+        use_compact_chrome = mandatory_full > available
+        chrome_rows = chrome_tight if use_compact_chrome else chrome_full
 
         # If the command itself is too long to leave room for choices (e.g. user
         # hit "view" on a multi-hundred-character command), truncate it so the
-        # approve/deny buttons still render. Keep at least 2 rows of command.
-        max_cmd_rows = max(2, term_rows - reserved_below - base_chrome - len(choice_wrapped))
+        # approve/deny buttons still render. Keep at least 1 row of command.
+        max_cmd_rows = max(1, available - chrome_rows - len(choice_wrapped))
         if len(cmd_wrapped) > max_cmd_rows:
-            keep = max(1, max_cmd_rows - 1)
+            keep = max(1, max_cmd_rows - 1) if max_cmd_rows > 1 else 1
             cmd_wrapped = cmd_wrapped[:keep] + ["… (command truncated — use /logs or /debug for full text)"]
 
-        # Allocate remaining rows to description. The extra -1 accounts for the
-        # blank separator row between choices and description.
-        mandatory_no_desc = base_chrome + len(cmd_wrapped) + len(choice_wrapped)
-        available_for_desc = term_rows - reserved_below - mandatory_no_desc - 1
+        # Allocate any remaining rows to description. The extra -1 in full mode
+        # accounts for the blank separator between choices and description.
+        mandatory_no_desc = chrome_rows + len(cmd_wrapped) + len(choice_wrapped)
+        desc_sep_cost = 0 if use_compact_chrome else 1
+        available_for_desc = available - mandatory_no_desc - desc_sep_cost
         # Even on huge terminals, cap description height so the panel stays compact.
         available_for_desc = max(0, min(available_for_desc, 10))
 
@@ -7522,22 +7538,26 @@ class HermesCLI:
 
         # Render: title → command → choices → description (description last so
         # any remaining overflow clips from the bottom of the least-critical
-        # content, never from the command or choices).
+        # content, never from the command or choices). Use compact chrome (no
+        # blank separators) when the terminal is tight.
         lines = []
         lines.append(('class:approval-border', '╭' + ('─' * box_width) + '╮\n'))
         _append_panel_line(lines, 'class:approval-border', 'class:approval-title', title, box_width)
-        _append_blank_panel_line(lines, 'class:approval-border', box_width)
+        if not use_compact_chrome:
+            _append_blank_panel_line(lines, 'class:approval-border', box_width)
 
         for wrapped in cmd_wrapped:
             _append_panel_line(lines, 'class:approval-border', 'class:approval-cmd', wrapped, box_width)
-        _append_blank_panel_line(lines, 'class:approval-border', box_width)
+        if not use_compact_chrome:
+            _append_blank_panel_line(lines, 'class:approval-border', box_width)
 
         for i, wrapped in choice_wrapped:
             style = 'class:approval-selected' if i == selected else 'class:approval-choice'
             _append_panel_line(lines, 'class:approval-border', style, wrapped, box_width)
 
         if desc_wrapped:
-            _append_blank_panel_line(lines, 'class:approval-border', box_width)
+            if not use_compact_chrome:
+                _append_blank_panel_line(lines, 'class:approval-border', box_width)
             for wrapped in desc_wrapped:
                 _append_panel_line(lines, 'class:approval-border', 'class:approval-desc', wrapped, box_width)
 
@@ -9245,13 +9265,25 @@ class HermesCLI:
                 other_wrapped = []
 
             # Budget the question so mandatory rows always render.
-            # Chrome: top border (with title) + blank_after_title + blank_after_question
-            # + blank_before_bottom + bottom border = 5 rows.
+            # Chrome layouts:
+            #   full : top border + blank_after_title + blank_after_question
+            #          + blank_before_bottom + bottom border = 5 rows
+            #   tight: top border + bottom border = 2 rows (drop all blanks)
+            #
+            # reserved_below matches the approval-panel budget (~6 rows for
+            # spinner/tool-progress + status + input + separators + prompt).
             term_rows = shutil.get_terminal_size((100, 24)).lines
-            chrome = 5
-            reserved_below = 4
-            mandatory = chrome + len(choice_wrapped) + len(other_wrapped)
-            max_question_rows = max(2, term_rows - reserved_below - mandatory)
+            chrome_full = 5
+            chrome_tight = 2
+            reserved_below = 6
+
+            available = max(0, term_rows - reserved_below)
+            mandatory_full = chrome_full + len(choice_wrapped) + len(other_wrapped)
+
+            use_compact_chrome = mandatory_full > available
+            chrome_rows = chrome_tight if use_compact_chrome else chrome_full
+
+            max_question_rows = max(1, available - chrome_rows - len(choice_wrapped) - len(other_wrapped))
             max_question_rows = min(max_question_rows, 12)  # soft cap on huge terminals
 
             question_wrapped = _wrap_panel_text(question, inner_text_width)
@@ -9264,17 +9296,20 @@ class HermesCLI:
             lines.append(('class:clarify-border', '╭─ '))
             lines.append(('class:clarify-title', 'Hermes needs your input'))
             lines.append(('class:clarify-border', ' ' + ('─' * max(0, box_width - len("Hermes needs your input") - 3)) + '╮\n'))
-            _append_blank_panel_line(lines, 'class:clarify-border', box_width)
+            if not use_compact_chrome:
+                _append_blank_panel_line(lines, 'class:clarify-border', box_width)
 
             # Question text (bounded)
             for wrapped in question_wrapped:
                 _append_panel_line(lines, 'class:clarify-border', 'class:clarify-question', wrapped, box_width)
-            _append_blank_panel_line(lines, 'class:clarify-border', box_width)
+            if not use_compact_chrome:
+                _append_blank_panel_line(lines, 'class:clarify-border', box_width)
 
             if cli_ref._clarify_freetext and not choices:
                 for wrapped in other_wrapped:
                     _append_panel_line(lines, 'class:clarify-border', 'class:clarify-choice', wrapped, box_width)
-                _append_blank_panel_line(lines, 'class:clarify-border', box_width)
+                if not use_compact_chrome:
+                    _append_blank_panel_line(lines, 'class:clarify-border', box_width)
 
             if choices:
                 # Multiple-choice mode: show selectable options
@@ -9293,7 +9328,8 @@ class HermesCLI:
                 for wrapped in other_wrapped:
                     _append_panel_line(lines, 'class:clarify-border', other_style, wrapped, box_width)
 
-            _append_blank_panel_line(lines, 'class:clarify-border', box_width)
+            if not use_compact_chrome:
+                _append_blank_panel_line(lines, 'class:clarify-border', box_width)
             lines.append(('class:clarify-border', '╰' + ('─' * box_width) + '╯\n'))
             return lines
 
