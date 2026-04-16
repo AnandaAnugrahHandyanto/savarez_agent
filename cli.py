@@ -1613,6 +1613,7 @@ class HermesCLI:
         """
         # Initialize Rich console
         self.console = Console()
+        self.chat_console = ChatConsole()
         self.config = CLI_CONFIG
         self.compact = compact if compact is not None else CLI_CONFIG["display"].get("compact", False)
         # tool_progress: "off", "new", "all", "verbose" (from config.yaml display section)
@@ -2680,7 +2681,7 @@ class HermesCLI:
             )
         except Exception as exc:
             message = format_runtime_provider_error(exc)
-            ChatConsole().print(f"[bold red]{message}[/]")
+            self.chat_console.print(f"[bold red]{message}[/]")
             return False
 
         api_key = runtime.get("api_key")
@@ -2838,14 +2839,14 @@ class HermesCLI:
                 title_part = ""
                 if session_meta.get("title"):
                     title_part = f" \"{session_meta['title']}\""
-                ChatConsole().print(
+                self.chat_console.print(
                     f"[bold {_accent_hex()}]↻ Resumed session[/] "
                     f"[bold]{_escape(self.session_id)}[/]"
                     f"[bold {_accent_hex()}]{_escape(title_part)}[/] "
                     f"({msg_count} user message{'s' if msg_count != 1 else ''}, {len(restored)} total messages)"
                 )
             else:
-                ChatConsole().print(
+                self.chat_console.print(
                     f"[bold {_accent_hex()}]Session {_escape(self.session_id)} found but has no messages. Starting fresh.[/]"
                 )
             # Re-open the session (clear ended_at so it's active again)
@@ -2935,7 +2936,7 @@ class HermesCLI:
                     self._pending_title = None
             return True
         except Exception as e:
-            ChatConsole().print(f"[bold red]Failed to initialize agent: {e}[/]")
+            self.chat_console.print(f"[bold red]Failed to initialize agent: {e}[/]")
             return False
     
     def show_banner(self):
@@ -3754,12 +3755,12 @@ class HermesCLI:
             for cmd, desc in commands.items():
                 if not self._command_available(cmd):
                     continue
-                ChatConsole().print(f"    [bold {_accent_hex()}]{cmd:<15}[/] [dim]-[/] {_escape(desc)}")
+                self.chat_console.print(f"    [bold {_accent_hex()}]{cmd:<15}[/] [dim]-[/] {_escape(desc)}")
 
         if _skill_commands:
             _cprint(f"\n  ⚡ {_BOLD}Skill Commands{_RST} ({len(_skill_commands)} installed):")
             for cmd, info in sorted(_skill_commands.items()):
-                ChatConsole().print(
+                self.chat_console.print(
                     f"    [bold {_accent_hex()}]{cmd:<22}[/] [dim]-[/] {_escape(info['description'])}"
                 )
 
@@ -5194,7 +5195,7 @@ class HermesCLI:
     def _handle_skills_command(self, cmd: str):
         """Handle /skills slash command — delegates to hermes_cli.skills_hub."""
         from hermes_cli.skills_hub import handle_skills_slash
-        handle_skills_slash(cmd, ChatConsole())
+        handle_skills_slash(cmd, self.chat_console)
 
     def _show_gateway_status(self):
         """Show status of the gateway and connected messaging platforms."""
@@ -5303,10 +5304,9 @@ class HermesCLI:
             # renderer) instead of self.console (which writes raw to stdout
             # and gets mangled by patch_stdout).
             if self._app:
-                cc = ChatConsole()
                 term_w = shutil.get_terminal_size().columns
                 if self.compact or term_w < 80:
-                    cc.print(_build_compact_banner())
+                    self.chat_console.print(_build_compact_banner())
                 else:
                     tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
                     cwd = os.getenv("TERMINAL_CWD", os.getcwd())
@@ -5314,7 +5314,7 @@ class HermesCLI:
                     if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
                         ctx_len = self.agent.context_compressor.context_length
                     build_welcome_banner(
-                        console=cc,
+                        console=self.chat_console,
                         model=self.model,
                         cwd=cwd,
                         tools=tools,
@@ -5332,7 +5332,7 @@ class HermesCLI:
                         _tip_color = get_active_skin().get_color("banner_dim", "#B8860B")
                     except Exception:
                         _tip_color = "#B8860B"
-                    cc.print(f"[dim {_tip_color}]✦ Tip: {_tip}[/]")
+                    self.chat_console.print(f"[dim {_tip_color}]✦ Tip: {_tip}[/]")
                 except Exception:
                     pass
             else:
@@ -5439,7 +5439,7 @@ class HermesCLI:
         elif canonical == "statusbar":
             self._status_bar_visible = not self._status_bar_visible
             state = "visible" if self._status_bar_visible else "hidden"
-            self.console.print(f"  Status bar {state}")
+            self.chat_console.print(f"  Status bar {state}")
         elif canonical == "verbose":
             self._toggle_verbose()
         elif canonical == "yolo":
@@ -5534,15 +5534,15 @@ class HermesCLI:
                             )
                             output = result.stdout.strip() or result.stderr.strip()
                             if output:
-                                self.console.print(_rich_text_from_ansi(output))
+                                self.chat_console.print(_rich_text_from_ansi(output))
                             else:
-                                self.console.print("[dim]Command returned no output[/]")
+                                self.chat_console.print("[dim]Command returned no output[/]")
                         except subprocess.TimeoutExpired:
-                            self.console.print("[bold red]Quick command timed out (30s)[/]")
+                            self.chat_console.print("[bold red]Quick command timed out (30s)[/]")
                         except Exception as e:
-                            self.console.print(f"[bold red]Quick command error: {e}[/]")
+                            self.chat_console.print(f"[bold red]Quick command error: {e}[/]")
                     else:
-                        self.console.print(f"[bold red]Quick command '{base_cmd}' has no command defined[/]")
+                        self.chat_console.print(f"[bold red]Quick command '{base_cmd}' has no command defined[/]")
                 elif qcmd.get("type") == "alias":
                     target = qcmd.get("target", "").strip()
                     if target:
@@ -5551,9 +5551,9 @@ class HermesCLI:
                         aliased_command = f"{target} {user_args}".strip()
                         return self.process_command(aliased_command)
                     else:
-                        self.console.print(f"[bold red]Quick command '{base_cmd}' has no target defined[/]")
+                        self.chat_console.print(f"[bold red]Quick command '{base_cmd}' has no target defined[/]")
                 else:
-                    self.console.print(f"[bold red]Quick command '{base_cmd}' has unsupported type (supported: 'exec', 'alias')[/]")
+                    self.chat_console.print(f"[bold red]Quick command '{base_cmd}' has unsupported type (supported: 'exec', 'alias')[/]")
             # Check for plugin-registered slash commands
             elif base_cmd.lstrip("/") in _get_plugin_cmd_handler_names():
                 from hermes_cli.plugins import get_plugin_command_handler
@@ -5578,7 +5578,7 @@ class HermesCLI:
                     if hasattr(self, '_pending_input'):
                         self._pending_input.put(msg)
                 else:
-                    ChatConsole().print(f"[bold red]Failed to load skill for {base_cmd}[/]")
+                    self.chat_console.print(f"[bold red]Failed to load skill for {base_cmd}[/]")
             else:
                 # Prefix matching: if input uniquely identifies one command, execute it.
                 # Matches against both built-in COMMANDS and installed skill commands so
@@ -5639,14 +5639,14 @@ class HermesCLI:
         )
 
         if not msg:
-            ChatConsole().print("[bold red]Failed to load the bundled /plan skill[/]")
+            self.chat_console.print("[bold red]Failed to load the bundled /plan skill[/]")
             return
 
         _cprint(f"  📝 Plan mode queued via skill. Markdown plan target: {plan_path}")
         if hasattr(self, '_pending_input'):
             self._pending_input.put(msg)
         else:
-            ChatConsole().print("[bold red]Plan mode unavailable: input queue not initialized[/]")
+            self.chat_console.print("[bold red]Plan mode unavailable: input queue not initialized[/]")
     
     def _handle_background_command(self, cmd: str):
         """Handle /background <prompt> — run a prompt in a separate background session.
@@ -5735,10 +5735,10 @@ class HermesCLI:
                     import time as _tmod
                     _tmod.sleep(0.05)  # brief pause for refresh
                 print()
-                ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+                self.chat_console.print(f"[{_accent_hex()}]{'─' * 40}[/]")
                 _cprint(f"  ✅ Background task #{task_num} complete")
                 _cprint(f"  Prompt: \"{prompt[:60]}{'...' if len(prompt) > 60 else ''}\"")
-                ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+                self.chat_console.print(f"[{_accent_hex()}]{'─' * 40}[/]")
                 if response:
                     try:
                         from hermes_cli.skin_engine import get_active_skin
@@ -5751,8 +5751,7 @@ class HermesCLI:
                         _resp_color = "#CD7F32"
                         _resp_text = "#FFF8DC"
 
-                    _chat_console = ChatConsole()
-                    _chat_console.print(Panel(
+                    self.chat_console.print(Panel(
                         _rich_text_from_ansi(response),
                         title=f"[{_resp_color} bold]{label} (background #{task_num})[/]",
                         title_align="left",
@@ -5877,7 +5876,7 @@ class HermesCLI:
                     except Exception:
                         _resp_color = "#4F6D4A"
 
-                    ChatConsole().print(Panel(
+                    self.chat_console.print(Panel(
                         _rich_text_from_ansi(response),
                         title=f"[{_resp_color} bold]⚕ /btw[/]",
                         title_align="left",
@@ -6200,10 +6199,10 @@ class HermesCLI:
         current = bool(os.environ.get("HERMES_YOLO_MODE"))
         if current:
             os.environ.pop("HERMES_YOLO_MODE", None)
-            self.console.print("  ⚠ YOLO mode [bold red]OFF[/] — dangerous commands will require approval.")
+            self.chat_console.print("  ⚠ YOLO mode [bold red]OFF[/] — dangerous commands will require approval.")
         else:
             os.environ["HERMES_YOLO_MODE"] = "1"
-            self.console.print("  ⚡ YOLO mode [bold green]ON[/] — all commands auto-approved. Use with caution.")
+            self.chat_console.print("  ⚡ YOLO mode [bold green]ON[/] — all commands auto-approved. Use with caution.")
 
     def _handle_reasoning_command(self, cmd: str):
         """Handle /reasoning — manage effort level and display toggle.
@@ -7588,7 +7587,7 @@ class HermesCLI:
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
 
-        ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+        self.chat_console.print(f"[{_accent_hex()}]{'─' * 40}[/]")
         print(flush=True)
         
         try:
@@ -7869,8 +7868,7 @@ class HermesCLI:
                     # _flush_stream() already closed the box. Skip Rich Panel.
                     pass
                 else:
-                    _chat_console = ChatConsole()
-                    _chat_console.print(Panel(
+                    self.chat_console.print(Panel(
                         _rich_text_from_ansi(response),
                         title=f"[{_resp_color} bold]{label}[/]",
                         title_align="left",
@@ -9575,19 +9573,19 @@ class HermesCLI:
                         n_pastes = len(paste_refs)
                         _user_bar = f"[{_accent_hex()}]{'─' * 40}[/]"
                         print()
-                        ChatConsole().print(_user_bar)
+                        self.chat_console.print(_user_bar)
                         # Show any surrounding user text alongside the paste summary
                         split_parts = _paste_ref_re.split(user_input)
                         visible_user_text = " ".join(
                             split_parts[i].strip() for i in range(0, len(split_parts), 2) if split_parts[i].strip()
                         )
                         if visible_user_text:
-                            ChatConsole().print(
+                            self.chat_console.print(
                                 f"[bold {_accent_hex()}]\u25cf[/] [bold]{_escape(visible_user_text)}[/] "
                                 f"[dim]({n_pastes} pasted block{'s' if n_pastes > 1 else ''}, {total_lines} lines total)[/]"
                             )
                         else:
-                            ChatConsole().print(
+                            self.chat_console.print(
                                 f"[bold {_accent_hex()}]\u25cf[/] [bold]{_escape(f'[Pasted text: {total_lines} lines]')}[/]"
                             )
                         user_input = expanded
@@ -9597,15 +9595,15 @@ class HermesCLI:
                             first_line = user_input.split('\n')[0]
                             line_count = user_input.count('\n') + 1
                             print()
-                            ChatConsole().print(_user_bar)
-                            ChatConsole().print(
+                            self.chat_console.print(_user_bar)
+                            self.chat_console.print(
                                 f"[bold {_accent_hex()}]●[/] [bold]{_escape(first_line)}[/] "
                                 f"[dim](+{line_count - 1} lines)[/]"
                             )
                         else:
                             print()
-                            ChatConsole().print(_user_bar)
-                            ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]")
+                            self.chat_console.print(_user_bar)
+                            self.chat_console.print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]")
                     
                     # Show image attachment count
                     if submit_images:

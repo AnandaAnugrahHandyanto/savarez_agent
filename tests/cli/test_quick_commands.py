@@ -1,6 +1,6 @@
 """Tests for user-defined quick commands that bypass the agent loop."""
 import subprocess
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import MagicMock, patch
 from rich.text import Text
 import pytest
 
@@ -20,7 +20,7 @@ class TestCLIQuickCommands:
         from cli import HermesCLI
         cli = HermesCLI.__new__(HermesCLI)
         cli.config = {"quick_commands": quick_commands}
-        cli.console = MagicMock()
+        cli.chat_console = MagicMock()
         cli.agent = None
         cli.conversation_history = []
         return cli
@@ -29,8 +29,8 @@ class TestCLIQuickCommands:
         cli = self._make_cli({"dn": {"type": "exec", "command": "echo daily-note"}})
         result = cli.process_command("/dn")
         assert result is True
-        cli.console.print.assert_called_once()
-        printed = self._printed_plain(cli.console.print.call_args[0][0])
+        cli.chat_console.print.assert_called_once()
+        printed = self._printed_plain(cli.chat_console.print.call_args[0][0])
         assert printed == "daily-note"
 
     def test_exec_command_stderr_shown_on_no_stdout(self):
@@ -38,13 +38,13 @@ class TestCLIQuickCommands:
         result = cli.process_command("/err")
         assert result is True
         # stderr fallback — should print something
-        cli.console.print.assert_called_once()
+        cli.chat_console.print.assert_called_once()
 
     def test_exec_command_no_output_shows_fallback(self):
         cli = self._make_cli({"empty": {"type": "exec", "command": "true"}})
         cli.process_command("/empty")
-        cli.console.print.assert_called_once()
-        args = cli.console.print.call_args[0][0]
+        cli.chat_console.print.assert_called_once()
+        args = cli.chat_console.print.call_args[0][0]
         assert "no output" in args.lower()
 
     def test_alias_command_routes_to_target(self):
@@ -65,22 +65,22 @@ class TestCLIQuickCommands:
     def test_alias_no_target_shows_error(self):
         cli = self._make_cli({"broken": {"type": "alias", "target": ""}})
         cli.process_command("/broken")
-        cli.console.print.assert_called_once()
-        args = cli.console.print.call_args[0][0]
+        cli.chat_console.print.assert_called_once()
+        args = cli.chat_console.print.call_args[0][0]
         assert "no target defined" in args.lower()
 
     def test_unsupported_type_shows_error(self):
         cli = self._make_cli({"bad": {"type": "prompt", "command": "echo hi"}})
         cli.process_command("/bad")
-        cli.console.print.assert_called_once()
-        args = cli.console.print.call_args[0][0]
+        cli.chat_console.print.assert_called_once()
+        args = cli.chat_console.print.call_args[0][0]
         assert "unsupported type" in args.lower()
 
     def test_missing_command_field_shows_error(self):
         cli = self._make_cli({"oops": {"type": "exec"}})
         cli.process_command("/oops")
-        cli.console.print.assert_called_once()
-        args = cli.console.print.call_args[0][0]
+        cli.chat_console.print.assert_called_once()
+        args = cli.chat_console.print.call_args[0][0]
         assert "no command defined" in args.lower()
 
     def test_quick_command_takes_priority_over_skill_commands(self):
@@ -88,8 +88,8 @@ class TestCLIQuickCommands:
         cli = self._make_cli({"mygif": {"type": "exec", "command": "echo overridden"}})
         with patch("cli._skill_commands", {"/mygif": {"name": "gif-search"}}):
             cli.process_command("/mygif")
-        cli.console.print.assert_called_once()
-        printed = self._printed_plain(cli.console.print.call_args[0][0])
+        cli.chat_console.print.assert_called_once()
+        printed = self._printed_plain(cli.chat_console.print.call_args[0][0])
         assert printed == "overridden"
 
     def test_unknown_command_still_shows_error(self):
@@ -104,8 +104,8 @@ class TestCLIQuickCommands:
         cli = self._make_cli({"slow": {"type": "exec", "command": "sleep 100"}})
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("sleep", 30)):
             cli.process_command("/slow")
-        cli.console.print.assert_called_once()
-        args = cli.console.print.call_args[0][0]
+        cli.chat_console.print.assert_called_once()
+        args = cli.chat_console.print.call_args[0][0]
         assert "timed out" in args.lower()
 
 
