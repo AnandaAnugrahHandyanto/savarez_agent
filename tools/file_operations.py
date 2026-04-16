@@ -28,12 +28,16 @@ Usage:
 import os
 import re
 import difflib
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from tools.binary_extensions import BINARY_EXTENSIONS
+from tools.environments.local import LocalEnvironment
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -427,13 +431,17 @@ class ShellFileOperations(FileOperations):
         # Redirect bare filenames to HERMES_HOME when a matching file exists
         # there.  A "bare filename" has no path separator and no special prefix
         # (~ or .), so it would otherwise silently resolve against self.cwd.
+        # Scoped to local environments only: in Docker/SSH/remote backends the
+        # write command executes on the remote side where the host HERMES_HOME
+        # path is not necessarily accessible at the same path.
         if '/' not in path and not path.startswith(('.', '~')):
             try:
-                candidate = get_hermes_home() / path
-                if candidate.exists():
-                    return str(candidate)
-            except Exception:
-                pass
+                if isinstance(self.env, LocalEnvironment):
+                    candidate = get_hermes_home() / path
+                    if candidate.exists():
+                        return str(candidate)
+            except (OSError, ImportError) as e:
+                logger.debug("bare-filename HERMES_HOME lookup failed for %r: %s", path, e)
 
         # Handle ~ and ~user
         if path.startswith('~'):
