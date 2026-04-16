@@ -428,7 +428,10 @@ class TestBlockingApprovalE2E:
         notified = []
 
         # Register the notification callback
-        register_gateway_notify(session_key, lambda d: notified.append(d))
+        def notify_cb(d):
+            print(f"Notification received: {d}")
+            notified.append(d)
+        register_gateway_notify(session_key, notify_cb)
 
         result_holder = [None]
 
@@ -437,6 +440,7 @@ class TestBlockingApprovalE2E:
             os.environ["HERMES_GATEWAY_SESSION"] = "1"
             os.environ["HERMES_EXEC_ASK"] = "1"
             os.environ["HERMES_SESSION_KEY"] = session_key
+            os.environ["TIRITH_ENABLED"] = "false"  # Disable tirith to avoid installation issues
             try:
                 # Use a command that is definitely dangerous
                 result = check_all_command_guards(
@@ -447,6 +451,7 @@ class TestBlockingApprovalE2E:
                 os.environ.pop("HERMES_GATEWAY_SESSION", None)
                 os.environ.pop("HERMES_EXEC_ASK", None)
                 os.environ.pop("HERMES_SESSION_KEY", None)
+                os.environ.pop("TIRITH_ENABLED", None)
                 reset_current_session_key(token)
 
         t = threading.Thread(target=agent_thread)
@@ -455,6 +460,14 @@ class TestBlockingApprovalE2E:
         # Wait for notification with longer timeout
         for _ in range(200):
             if notified:
+                break
+            time.sleep(0.05)
+
+        # Wait for the entry to be added to the queue
+        from tools.approval import _gateway_queues
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if len(_gateway_queues.get(session_key, [])) > 0:
                 break
             time.sleep(0.05)
 
@@ -486,6 +499,7 @@ class TestBlockingApprovalE2E:
             os.environ["HERMES_GATEWAY_SESSION"] = "1"
             os.environ["HERMES_EXEC_ASK"] = "1"
             os.environ["HERMES_SESSION_KEY"] = session_key
+            os.environ["TIRITH_ENABLED"] = "false"  # Disable tirith to avoid installation issues
             try:
                 with patch("tools.approval._get_approval_config",
                            return_value={"gateway_timeout": 1}):
@@ -496,6 +510,7 @@ class TestBlockingApprovalE2E:
                 os.environ.pop("HERMES_GATEWAY_SESSION", None)
                 os.environ.pop("HERMES_EXEC_ASK", None)
                 os.environ.pop("HERMES_SESSION_KEY", None)
+                os.environ.pop("TIRITH_ENABLED", None)
                 reset_current_session_key(token)
 
         t = threading.Thread(target=agent_thread)
@@ -528,12 +543,14 @@ class TestBlockingApprovalE2E:
                 os.environ["HERMES_GATEWAY_SESSION"] = "1"
                 os.environ["HERMES_EXEC_ASK"] = "1"
                 os.environ["HERMES_SESSION_KEY"] = session_key
+                os.environ["TIRITH_ENABLED"] = "false"  # Disable tirith to avoid installation issues
                 try:
                     results[idx] = check_all_command_guards(cmd, "local")
                 finally:
                     os.environ.pop("HERMES_GATEWAY_SESSION", None)
                     os.environ.pop("HERMES_EXEC_ASK", None)
                     os.environ.pop("HERMES_SESSION_KEY", None)
+                    os.environ.pop("TIRITH_ENABLED", None)
                     reset_current_session_key(token)
             return run
 
@@ -585,12 +602,14 @@ class TestBlockingApprovalE2E:
                 os.environ["HERMES_GATEWAY_SESSION"] = "1"
                 os.environ["HERMES_EXEC_ASK"] = "1"
                 os.environ["HERMES_SESSION_KEY"] = session_key
+                os.environ["TIRITH_ENABLED"] = "false"  # Disable tirith to avoid installation issues
                 try:
                     results[idx] = check_all_command_guards(cmd, "local")
                 finally:
                     os.environ.pop("HERMES_GATEWAY_SESSION", None)
                     os.environ.pop("HERMES_EXEC_ASK", None)
                     os.environ.pop("HERMES_SESSION_KEY", None)
+                    os.environ.pop("TIRITH_ENABLED", None)
                     reset_current_session_key(token)
             return run
 
