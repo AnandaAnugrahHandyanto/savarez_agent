@@ -252,6 +252,37 @@ class IBKRTwsBrokerAdapter(BrokerAdapter):
             trade = self._find_open_trade(numeric_order_id)
             if trade is not None:
                 broker_status = getattr(getattr(trade, "orderStatus", None), "status", None)
+                # If the open-trade status is non-terminal, cross-check with
+                # execution records — ib_insync's orderStatus can be stale
+                # until the next event-loop tick processes the fill event.
+                non_terminal = {
+                    "PendingSubmit", "PreSubmitted", "Submitted", "ApiPending",
+                    "PendingCancel", "PendingReplace",
+                }
+                if broker_status in non_terminal:
+                    try:
+                        fills = self._ib.reqExecutions()
+                    except Exception:
+                        fills = []
+                    matching_fills = [
+                        fill for fill in fills
+                        if getattr(getattr(fill, "execution", None), "orderId", None) == numeric_order_id
+                    ]
+                    if matching_fills:
+                        total_shares = sum(
+                            float(getattr(getattr(fill, "execution", None), "shares", 0) or 0)
+                            for fill in matching_fills
+                        )
+                        latest_execution = getattr(matching_fills[-1], "execution", None)
+                        if expected_quantity is not None and total_shares < expected_quantity:
+                            return {
+                                "broker_status": "PartiallyFilled",
+                                "detail": getattr(latest_execution, "execId", None),
+                            }
+                        return {
+                            "broker_status": "Filled",
+                            "detail": getattr(latest_execution, "execId", None),
+                        }
                 return {"broker_status": broker_status}
 
             try:
