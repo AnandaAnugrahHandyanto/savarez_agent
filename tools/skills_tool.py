@@ -1309,6 +1309,13 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         if isinstance(metadata, dict):
             result["metadata"] = metadata
 
+        # Track load_count for skills_check.py --watch / hermes skills stats
+        try:
+            from agent.skill_stats import _maybe_record_skill_load
+            _maybe_record_skill_load(name)
+        except ImportError:
+            pass  # Non-fatal if stats module unavailable
+
         return json.dumps(result, ensure_ascii=False)
 
     except Exception as e:
