@@ -4,6 +4,7 @@ import builtins
 import importlib
 import logging
 import sys
+from unittest.mock import patch
 
 import pytest
 
@@ -18,7 +19,9 @@ from agent.prompt_builder import (
     build_skills_system_prompt,
     build_nous_subscription_prompt,
     build_context_files_prompt,
+    find_project_context_file,
     build_environment_hints,
+    clear_context_files_prompt_cache,
     CONTEXT_FILE_MAX_CHARS,
     DEFAULT_AGENT_IDENTITY,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
@@ -473,15 +476,31 @@ class TestBuildNousSubscriptionPrompt:
 
 
 class TestBuildContextFilesPrompt:
-    def test_empty_dir_loads_seeded_global_soul(self, tmp_path):
-        from unittest.mock import patch
+    @pytest.fixture(autouse=True)
+    def _clear_context_cache(self):
+        clear_context_files_prompt_cache()
+        yield
+        clear_context_files_prompt_cache()
 
+    def test_empty_dir_loads_seeded_global_soul(self, tmp_path):
         fake_home = tmp_path / "fake_home"
         fake_home.mkdir()
         with patch("pathlib.Path.home", return_value=fake_home):
             result = build_context_files_prompt(cwd=str(tmp_path))
         assert "Project Context" in result
         assert "Hermes Agent" in result
+
+    def test_load_soul_md_ignores_directory_without_debug_noise(self, tmp_path, monkeypatch, caplog):
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        (hermes_home / "SOUL.md").mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        with caplog.at_level(logging.DEBUG, logger="agent.prompt_builder"):
+            result = build_context_files_prompt(cwd=str(tmp_path), skip_soul=False)
+
+        assert "## SOUL.md" not in result
+        assert "Could not read" not in caplog.text
 
     def test_loads_agents_md(self, tmp_path):
         (tmp_path / "AGENTS.md").write_text("Use Ruff for linting.")
@@ -575,6 +594,230 @@ class TestBuildContextFilesPrompt:
         sub.mkdir(parents=True)
         result = build_context_files_prompt(cwd=str(sub))
         assert "Root project rules" in result
+
+    def test_find_project_context_file_prefers_hermes_md(self, tmp_path):
+        (tmp_path / "AGENTS.md").write_text("Agent guidelines here.")
+        (tmp_path / ".hermes.md").write_text("Hermes project rules.")
+
+        result = find_project_context_file(cwd=str(tmp_path))
+
+        assert result == (tmp_path / ".hermes.md")
+
+    def test_find_project_context_file_detects_cursor_rules_when_no_higher_priority_file(self, tmp_path):
+        rules_dir = tmp_path / ".cursor" / "rules"
+        rules_dir.mkdir(parents=True)
+        rule_file = rules_dir / "custom.mdc"
+        rule_file.write_text("Use ESLint.")
+
+        result = find_project_context_file(cwd=str(tmp_path))
+
+        assert result == rule_file
+
+    def test_find_project_context_file_can_walk_ancestors_for_agents_md(self, tmp_path):
+        (tmp_path / ".git").mkdir()
+        agents_file = tmp_path / "AGENTS.md"
+        agents_file.write_text("Root instructions")
+        subdir = tmp_path / "backend" / "src"
+        subdir.mkdir(parents=True)
+
+        result = find_project_context_file(cwd=str(subdir), include_ancestor_hints=True)
+
+        assert result == agents_file
+
+    def test_find_project_context_file_can_walk_ancestors_for_claude_md(self, tmp_path):
+        (tmp_path / ".git").mkdir()
+        claude_file = tmp_path / "CLAUDE.md"
+        claude_file.write_text("Root claude rules")
+        subdir = tmp_path / "frontend" / "src"
+        subdir.mkdir(parents=True)
+
+        result = find_project_context_file(cwd=str(subdir), include_ancestor_hints=True)
+
+        assert result == claude_file
+
+    def test_find_project_context_file_can_walk_ancestors_for_cursorrules(self, tmp_path):
+        (tmp_path / ".git").mkdir()
+        cursorrules_file = tmp_path / ".cursorrules"
+        cursorrules_file.write_text("Root cursor rules")
+        subdir = tmp_path / "mobile" / "app"
+        subdir.mkdir(parents=True)
+
+        result = find_project_context_file(cwd=str(subdir), include_ancestor_hints=True)
+
+        assert result == cursorrules_file
+
+    def test_find_project_context_file_can_walk_ancestors_for_cursor_rules_mdc(self, tmp_path):
+        (tmp_path / ".git").mkdir()
+        rules_dir = tmp_path / ".cursor" / "rules"
+        rules_dir.mkdir(parents=True)
+        rule_file = rules_dir / "project.mdc"
+        rule_file.write_text("Root cursor rules")
+        subdir = tmp_path / "ios" / "client"
+        subdir.mkdir(parents=True)
+
+        result = find_project_context_file(cwd=str(subdir), include_ancestor_hints=True)
+
+        assert result == rule_file
+
+    def test_find_project_context_file_limits_ancestor_search_without_git_root(self, tmp_path):
+        outer_agents = tmp_path / "AGENTS.md"
+        outer_agents.write_text("Outer rules")
+        deep = tmp_path / "a" / "b" / "c" / "d" / "e" / "f"
+        deep.mkdir(parents=True)
+
+        result = find_project_context_file(cwd=str(deep), include_ancestor_hints=True)
+
+        assert result is None
+
+    def test_find_project_context_file_reuses_discovery_when_unchanged(self, tmp_path, monkeypatch):
+        (tmp_path / ".git").mkdir()
+        agents_file = tmp_path / "AGENTS.md"
+        agents_file.write_text("Root instructions")
+        subdir = tmp_path / "backend" / "src"
+        subdir.mkdir(parents=True)
+
+        original_find_hermes_md = find_project_context_file.__globals__["_find_hermes_md"]
+        calls = 0
+
+        def counting_find_hermes_md(cwd_path):
+            nonlocal calls
+            calls += 1
+            return original_find_hermes_md(cwd_path)
+
+        monkeypatch.setitem(find_project_context_file.__globals__, "_find_hermes_md", counting_find_hermes_md)
+
+        first = find_project_context_file(cwd=str(subdir), include_ancestor_hints=True)
+        second = find_project_context_file(cwd=str(subdir), include_ancestor_hints=True)
+
+        assert first == agents_file
+        assert second == agents_file
+        assert calls == 1
+
+    def test_find_project_context_file_invalidates_discovery_cache_when_new_file_appears(self, tmp_path, monkeypatch):
+        (tmp_path / ".git").mkdir()
+        subdir = tmp_path / "backend" / "src"
+        subdir.mkdir(parents=True)
+
+        original_find_hermes_md = find_project_context_file.__globals__["_find_hermes_md"]
+        calls = 0
+
+        def counting_find_hermes_md(cwd_path):
+            nonlocal calls
+            calls += 1
+            return original_find_hermes_md(cwd_path)
+
+        monkeypatch.setitem(find_project_context_file.__globals__, "_find_hermes_md", counting_find_hermes_md)
+
+        first = find_project_context_file(cwd=str(subdir), include_ancestor_hints=True)
+        (tmp_path / "AGENTS.md").write_text("Root instructions")
+        second = find_project_context_file(cwd=str(subdir), include_ancestor_hints=True)
+
+        assert first is None
+        assert second == (tmp_path / "AGENTS.md")
+        assert calls == 2
+
+    def test_find_project_context_file_ignores_directory_named_agents_md(self, tmp_path):
+        (tmp_path / "AGENTS.md").mkdir()
+
+        result = find_project_context_file(cwd=str(tmp_path))
+
+        assert result is None
+
+    def test_find_project_context_file_ignores_directory_named_cursor_rule_file(self, tmp_path):
+        rules_dir = tmp_path / ".cursor" / "rules"
+        rules_dir.mkdir(parents=True)
+        (rules_dir / "fake.mdc").mkdir()
+
+        result = find_project_context_file(cwd=str(tmp_path))
+
+        assert result is None
+
+    def test_build_context_files_prompt_ignores_directory_named_cursor_rule_file_without_debug_noise(self, tmp_path, caplog):
+        rules_dir = tmp_path / ".cursor" / "rules"
+        rules_dir.mkdir(parents=True)
+        (rules_dir / "fake.mdc").mkdir()
+        (rules_dir / "real.mdc").write_text("Use ESLint.")
+
+        with caplog.at_level(logging.DEBUG, logger="agent.prompt_builder"):
+            result = build_context_files_prompt(cwd=str(tmp_path), skip_soul=True)
+
+        assert "Use ESLint." in result
+        assert "Could not read" not in caplog.text
+
+    def test_build_context_files_prompt_ignores_directory_named_agents_md(self, tmp_path, caplog):
+        (tmp_path / "AGENTS.md").mkdir()
+
+        with caplog.at_level(logging.DEBUG, logger="agent.prompt_builder"):
+            result = build_context_files_prompt(cwd=str(tmp_path), skip_soul=True)
+
+        assert "Project Context" not in result
+        assert "## AGENTS.md" not in result
+        assert "Could not read" not in caplog.text
+
+    def test_build_context_files_prompt_ignores_directory_named_claude_md(self, tmp_path, caplog):
+        (tmp_path / "CLAUDE.md").mkdir()
+
+        with caplog.at_level(logging.DEBUG, logger="agent.prompt_builder"):
+            result = build_context_files_prompt(cwd=str(tmp_path), skip_soul=True)
+
+        assert "Project Context" not in result
+        assert "## CLAUDE.md" not in result
+        assert "Could not read" not in caplog.text
+
+    def test_build_context_files_prompt_ignores_directory_named_cursorrules(self, tmp_path, caplog):
+        (tmp_path / ".cursorrules").mkdir()
+
+        with caplog.at_level(logging.DEBUG, logger="agent.prompt_builder"):
+            result = build_context_files_prompt(cwd=str(tmp_path), skip_soul=True)
+
+        assert "Project Context" not in result
+        assert "## .cursorrules" not in result
+        assert "Could not read" not in caplog.text
+
+    def test_reuses_cached_processed_context_file_when_unchanged(self, tmp_path, monkeypatch):
+        agents_file = tmp_path / "AGENTS.md"
+        agents_file.write_text("Use Ruff for linting.", encoding="utf-8")
+
+        read_count = 0
+        original_read_text = type(agents_file).read_text
+
+        def counting_read_text(path_self, *args, **kwargs):
+            nonlocal read_count
+            if path_self.resolve() == agents_file.resolve():
+                read_count += 1
+            return original_read_text(path_self, *args, **kwargs)
+
+        monkeypatch.setattr(type(agents_file), "read_text", counting_read_text)
+
+        first = build_context_files_prompt(cwd=str(tmp_path), skip_soul=True)
+        second = build_context_files_prompt(cwd=str(tmp_path), skip_soul=True)
+
+        assert first == second
+        assert "Ruff for linting" in second
+        assert read_count == 1
+
+    def test_invalidates_cached_context_file_when_contents_change(self, tmp_path, monkeypatch):
+        agents_file = tmp_path / "AGENTS.md"
+        agents_file.write_text("Use Ruff for linting.", encoding="utf-8")
+
+        read_count = 0
+        original_read_text = type(agents_file).read_text
+
+        def counting_read_text(path_self, *args, **kwargs):
+            nonlocal read_count
+            if path_self.resolve() == agents_file.resolve():
+                read_count += 1
+            return original_read_text(path_self, *args, **kwargs)
+
+        monkeypatch.setattr(type(agents_file), "read_text", counting_read_text)
+
+        first = build_context_files_prompt(cwd=str(tmp_path), skip_soul=True)
+        agents_file.write_text("Use pytest for testing.", encoding="utf-8")
+        second = build_context_files_prompt(cwd=str(tmp_path), skip_soul=True)
+
+        assert "Ruff for linting" in first
+        assert "Use pytest for testing." in second
+        assert read_count == 2
 
     def test_hermes_md_stops_at_git_root(self, tmp_path):
         """Should NOT walk past the git root."""

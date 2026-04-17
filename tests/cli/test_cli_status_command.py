@@ -86,6 +86,27 @@ def test_show_session_status_prints_gateway_style_summary():
     assert kwargs.get("markup") is False
 
 
+def test_show_session_status_includes_todo_summary_when_present():
+    cli_obj = _make_cli()
+    cli_obj.agent = SimpleNamespace(
+        session_total_tokens=321,
+        _todo_store=SimpleNamespace(
+            read=lambda: [
+                {"id": "t1", "content": "Ship fix", "status": "in_progress"},
+                {"id": "t2", "content": "Write tests", "status": "pending"},
+                {"id": "t3", "content": "Done item", "status": "completed"},
+            ]
+        ),
+    )
+
+    with patch("cli.display_hermes_home", return_value="~/.hermes"):
+        cli_obj._show_session_status()
+
+    printed = "\n".join(str(call.args[0]) for call in cli_obj.console.print.call_args_list)
+    assert "Tasks: 1 in progress, 1 pending" in printed
+    assert "Current Task: Ship fix" in printed
+
+
 def test_profile_command_reports_custom_root_profile(monkeypatch, tmp_path, capsys):
     """Profile detection works for custom-root deployments (not under ~/.hermes)."""
     cli_obj = _make_cli()

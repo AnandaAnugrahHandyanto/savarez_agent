@@ -112,6 +112,33 @@ async def test_status_command_includes_session_title_when_present():
 
 
 @pytest.mark.asyncio
+async def test_status_command_includes_todo_summary_when_present():
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=321,
+    )
+    runner = _make_runner(session_entry)
+    todo_store = SimpleNamespace(
+        read=lambda: [
+            {"id": "t1", "content": "Ship fix", "status": "in_progress"},
+            {"id": "t2", "content": "Write tests", "status": "pending"},
+            {"id": "t3", "content": "Done item", "status": "completed"},
+        ]
+    )
+    runner._running_agents[build_session_key(_make_source())] = SimpleNamespace(_todo_store=todo_store)
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Tasks:** 1 in progress, 1 pending" in result
+    assert "**Current Task:** Ship fix" in result
+
+
+@pytest.mark.asyncio
 async def test_handle_message_persists_agent_token_counts(monkeypatch):
     import gateway.run as gateway_run
 
