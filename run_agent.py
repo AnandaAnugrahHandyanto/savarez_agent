@@ -557,6 +557,8 @@ class AIAgent:
         api_mode: str = None,
         acp_command: str = None,
         acp_args: list[str] | None = None,
+        acp_multi_turn: bool = False,
+        acp_max_rounds: int = 3,
         command: str = None,
         args: list[str] | None = None,
         model: str = "",
@@ -683,6 +685,8 @@ class AIAgent:
         self.provider = provider_name or ""
         self.acp_command = acp_command or command
         self.acp_args = list(acp_args or args or [])
+        self.acp_multi_turn = bool(acp_multi_turn)
+        self.acp_max_rounds = max(1, int(acp_max_rounds))
         if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse"}:
             self.api_mode = api_mode
         elif self.provider == "openai-codex":
@@ -4419,6 +4423,12 @@ class AIAgent:
             from agent.copilot_acp_client import CopilotACPClient
 
             client = CopilotACPClient(**client_kwargs)
+            if getattr(self, "acp_multi_turn", False):
+                client._persistent_mode = True
+                logger.info(
+                    "ACP persistent mode enabled (multi-turn) %s",
+                    self._client_log_context(),
+                )
             logger.info(
                 "Copilot ACP client created (%s, shared=%s) %s",
                 reason,
@@ -8646,6 +8656,21 @@ class AIAgent:
                 pass
 
         while (api_call_count < self.max_iterations and self.iteration_budget.remaining > 0) or self._budget_grace_call:
+            # Enforce ACP max rounds for persistent session mode
+            if self.acp_multi_turn and self.acp_command:
+                client = getattr(self, "client", None)
+                acp_rounds_used = getattr(client, "_acp_rounds_used", 0) if client else 0
+                if acp_rounds_used >= self.acp_max_rounds:
+                    _turn_exit_reason = f"acp_max_rounds_reached({self.acp_max_rounds})"
+                    if not self.quiet_mode:
+                        self._safe_print(f"\n⏹️  ACP max rounds reached ({acp_rounds_used}/{self.acp_max_rounds}), ending multi-turn session")
+                    # Close the ACP client to clean up the subprocess
+                    if client is not None and hasattr(client, "close"):
+                        try:
+                            client.close()
+                        except Exception:
+                            pass
+                    break
             # Reset per-turn checkpoint dedup so each iteration can take one snapshot
             self._checkpoint_mgr.new_turn()
 
