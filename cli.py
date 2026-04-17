@@ -8889,24 +8889,20 @@ class HermesCLI:
         except Exception:
             _voice_key = "c-b"
 
-        # First, register a no-op handler to consume Ctrl+B and prevent default behavior
-        # This ensures Ctrl+B never causes exit, regardless of voice mode state
+        # Register handler that always consumes Ctrl+B to prevent default behavior
         @kb.add(_voice_key, eager=True)
-        def handle_voice_key_consume(event):
-            """Consume Ctrl+B to prevent default behavior (exit, cursor move, etc.)."""
-            # Just consume the event - do nothing else
-            # This prevents any default prompt_toolkit or terminal behavior
-            pass
-
-        # Then, register the actual voice handler with a filter for when voice mode is enabled
-        @kb.add(_voice_key, eager=True, filter=Condition(lambda: cli_ref._voice_mode))
-        def handle_voice_record(event):
-            """Toggle voice recording when voice mode is active.
-
-            IMPORTANT: This handler runs in prompt_toolkit's event-loop thread.
-            Any blocking call here (locks, sd.wait, disk I/O) freezes the
-            entire UI.  All heavy work is dispatched to daemon threads.
+        def handle_voice_key(event):
             """
+            Handle Ctrl+B key press.
+            When voice mode is enabled: toggles voice recording.
+            When voice mode is disabled: consumes the event to prevent exit.
+            """
+            # If voice mode is disabled, just consume the event and do nothing
+            # This prevents Ctrl+B from causing exit or other default behavior
+            if not cli_ref._voice_mode:
+                return  # Event is consumed by virtue of being handled
+            
+            # Voice mode is enabled - proceed with voice recording logic
             # Always allow STOPPING a recording (even when agent is running)
             if cli_ref._voice_recording:
                 # Manual stop via push-to-talk key: stop continuous mode
