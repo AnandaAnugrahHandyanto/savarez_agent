@@ -1084,9 +1084,17 @@ def list_authenticated_providers(
                     "api_url": api_url,
                     "models": [],
                 }
+            # Read default model (single string field)
             default_model = (entry.get("model") or "").strip()
             if default_model and default_model not in groups[slug]["models"]:
                 groups[slug]["models"].append(default_model)
+
+            # Read models dict ({model_name: {context_length, ...}}) — add each key
+            cfg_models = entry.get("models", {})
+            if isinstance(cfg_models, dict):
+                for m in cfg_models:
+                    if m and m not in groups[slug]["models"]:
+                        groups[slug]["models"].append(m)
 
         for slug, grp in groups.items():
             if slug.lower() in seen_slugs:
