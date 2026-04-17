@@ -20,6 +20,7 @@ from email.mime.base import MIMEBase
 from email import encoders
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Optional
 from unittest.mock import patch, MagicMock, AsyncMock
 
 from gateway.platforms.base import SendResult
@@ -1279,6 +1280,353 @@ class TestImapConnectionCleanup(unittest.TestCase):
 
         self.assertEqual(results, [])
         mock_imap.logout.assert_called_once()
+
+
+class TestSessionKeying(unittest.TestCase):
+    """Tests for per-thread email session keying via Gmail's X-GM-THRID.
+
+    PR B opt-in via `platforms.email.extra.session_keying: gmail_thread_id`.
+    Default `sender` mode preserves the pre-PR-B single-session-per-sender
+    behavior.
+    """
+
+    _ENV = {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_IMAP_HOST": "imap.gmail.com",
+        "EMAIL_SMTP_HOST": "smtp.gmail.com",
+    }
+
+    def _make_adapter(self, session_keying: Optional[str] = None):
+        from gateway.config import PlatformConfig
+        extra = {}
+        if session_keying is not None:
+            extra["session_keying"] = session_keying
+        with patch.dict(os.environ, self._ENV):
+            from gateway.platforms.email import EmailAdapter
+            return EmailAdapter(PlatformConfig(enabled=True, extra=extra))
+
+    @staticmethod
+    def _mock_fetch_response(uid: bytes, thrid: Optional[str], body: bytes):
+        """Build the payload that `imap.uid('fetch', ...)` returns for Gmail.
+
+        Real Gmail response when fetching (RFC822 X-GM-THRID) looks like:
+            ('OK', [(b'5 (UID 5 X-GM-THRID 1234567890 RFC822 {123}', <body>), b')'])
+        """
+        header = f"{uid.decode()} (UID {uid.decode()}".encode()
+        if thrid is not None:
+            header += f" X-GM-THRID {thrid}".encode()
+        header += b" RFC822 {" + str(len(body)).encode() + b"}"
+        return ("OK", [(header, body), b")"])
+
+    @staticmethod
+    def _raw_email(sender: str = "alice@example.com",
+                   subject: str = "Hello",
+                   message_id: str = "<a@x>") -> bytes:
+        msg = MIMEText("body", "plain", "utf-8")
+        msg["From"] = sender
+        msg["Subject"] = subject
+        msg["Message-ID"] = message_id
+        return msg.as_bytes()
+
+    # ---------------- default / sender-mode behavior ----------------
+
+    def test_sender_mode_is_default(self):
+        adapter = self._make_adapter()
+        self.assertEqual(adapter._session_keying, "sender")
+
+    def test_sender_mode_produces_no_thread_id(self):
+        """In sender mode, source.thread_id stays None and the session key
+        reduces to the chat_id — preserves pre-PR-B behavior."""
+        import asyncio
+        adapter = self._make_adapter(session_keying="sender")
+        captured = []
+
+        async def capture(event):
+            captured.append(event)
+        adapter.handle_message = capture
+
+        asyncio.run(adapter._dispatch_message({
+            "uid": b"1",
+            "sender_addr": "alice@example.com",
+            "sender_name": "Alice",
+            "subject": "Hello",
+            "message_id": "<a@x>",
+            "in_reply_to": "",
+            "body": "Body",
+            "attachments": [],
+            "date": "",
+            "gmail_thread_id": None,
+        }))
+        self.assertEqual(len(captured), 1)
+        self.assertIsNone(captured[0].source.thread_id)
+
+    def test_unknown_mode_falls_back_to_sender(self):
+        adapter = self._make_adapter(session_keying="bogus_mode")
+        self.assertEqual(adapter._session_keying, "sender")
+
+    # ---------------- gmail_thread_id mode behavior ----------------
+
+    def test_gmail_mode_assigns_gthr_prefixed_thread_id(self):
+        """With THRID present, thread_id is `gthr-<digits>` — the prefix
+        makes thread IDs distinguishable from message-id fallbacks in logs."""
+        import asyncio
+        adapter = self._make_adapter(session_keying="gmail_thread_id")
+        captured = []
+
+        async def capture(event):
+            captured.append(event)
+        adapter.handle_message = capture
+
+        asyncio.run(adapter._dispatch_message({
+            "uid": b"1",
+            "sender_addr": "alice@example.com",
+            "sender_name": "Alice",
+            "subject": "Hello",
+            "message_id": "<a@x>",
+            "in_reply_to": "",
+            "body": "Body",
+            "attachments": [],
+            "date": "",
+            "gmail_thread_id": "1234567890123456789",
+        }))
+        self.assertEqual(captured[0].source.thread_id, "gthr-1234567890123456789")
+
+    def test_gmail_mode_without_thrid_falls_back_to_message_id_hash(self):
+        """When THRID is absent (edge case — extension somehow off), treat
+        this message as its own thread root via a stable hash of its own
+        Message-ID."""
+        import asyncio
+        adapter = self._make_adapter(session_keying="gmail_thread_id")
+        captured = []
+
+        async def capture(event):
+            captured.append(event)
+        adapter.handle_message = capture
+
+        asyncio.run(adapter._dispatch_message({
+            "uid": b"1",
+            "sender_addr": "alice@example.com",
+            "sender_name": "Alice",
+            "subject": "Hello",
+            "message_id": "<a@x>",
+            "in_reply_to": "",
+            "body": "Body",
+            "attachments": [],
+            "date": "",
+            "gmail_thread_id": None,
+        }))
+        tid = captured[0].source.thread_id
+        self.assertIsNotNone(tid)
+        self.assertTrue(tid.startswith("mid-"))
+
+    def test_gmail_mode_same_thrid_produces_same_thread_id(self):
+        """Multiple inbound messages with the same THRID must resolve to the
+        same session key — that's the point of the feature."""
+        import asyncio
+        adapter = self._make_adapter(session_keying="gmail_thread_id")
+        captured = []
+
+        async def capture(event):
+            captured.append(event)
+        adapter.handle_message = capture
+
+        for i, mid in enumerate(["<a@x>", "<b@x>", "<c@x>"]):
+            asyncio.run(adapter._dispatch_message({
+                "uid": str(i).encode(),
+                "sender_addr": "alice@example.com",
+                "sender_name": "Alice",
+                "subject": "Thread topic",
+                "message_id": mid,
+                "in_reply_to": "",
+                "body": "Body",
+                "attachments": [],
+                "date": "",
+                "gmail_thread_id": "42",
+            }))
+        tids = {e.source.thread_id for e in captured}
+        self.assertEqual(tids, {"gthr-42"})
+
+    def test_gmail_mode_distinct_thrids_produce_distinct_thread_ids(self):
+        import asyncio
+        adapter = self._make_adapter(session_keying="gmail_thread_id")
+        captured = []
+
+        async def capture(event):
+            captured.append(event)
+        adapter.handle_message = capture
+
+        for uid, mid, thrid in [
+            (b"1", "<a@x>", "11"),
+            (b"2", "<b@x>", "22"),
+        ]:
+            asyncio.run(adapter._dispatch_message({
+                "uid": uid,
+                "sender_addr": "alice@example.com",
+                "sender_name": "Alice",
+                "subject": "Hello",
+                "message_id": mid,
+                "in_reply_to": "",
+                "body": "Body",
+                "attachments": [],
+                "date": "",
+                "gmail_thread_id": thrid,
+            }))
+        tids = [e.source.thread_id for e in captured]
+        self.assertEqual(tids, ["gthr-11", "gthr-22"])
+
+    # ---------------- capability probe ----------------
+
+    def test_capability_probe_degrades_when_extension_missing(self):
+        """When the server doesn't advertise X-GM-EXT-1, the adapter must
+        fall back to sender mode rather than silently misroute sessions."""
+        import asyncio
+        adapter = self._make_adapter(session_keying="gmail_thread_id")
+        self.assertEqual(adapter._session_keying, "gmail_thread_id")
+
+        mock_imap = MagicMock()
+        # Server without X-GM-EXT-1 — vanilla IMAP4REV1 only.
+        mock_imap.capability.return_value = ("OK", [b"IMAP4REV1 STARTTLS AUTH=PLAIN"])
+        mock_imap.uid.return_value = ("OK", [b""])
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
+             patch("smtplib.SMTP") as mock_smtp:
+            mock_smtp.return_value = MagicMock()
+            asyncio.run(adapter.connect())
+
+        self.assertFalse(adapter._has_gmail_ext)
+        self.assertEqual(adapter._session_keying, "sender")
+
+        # Clean up the poll task spun up by connect()
+        adapter._running = False
+        if adapter._poll_task:
+            adapter._poll_task.cancel()
+
+    def test_capability_probe_keeps_mode_when_extension_present(self):
+        import asyncio
+        adapter = self._make_adapter(session_keying="gmail_thread_id")
+
+        mock_imap = MagicMock()
+        mock_imap.capability.return_value = ("OK", [b"IMAP4REV1 X-GM-EXT-1 AUTH=PLAIN"])
+        mock_imap.uid.return_value = ("OK", [b""])
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
+             patch("smtplib.SMTP") as mock_smtp:
+            mock_smtp.return_value = MagicMock()
+            asyncio.run(adapter.connect())
+
+        self.assertTrue(adapter._has_gmail_ext)
+        self.assertEqual(adapter._session_keying, "gmail_thread_id")
+        adapter._running = False
+        if adapter._poll_task:
+            adapter._poll_task.cancel()
+
+    # ---------------- THRID parser ----------------
+
+    def test_parse_gm_thrid_extracts_decimal(self):
+        from gateway.platforms.email import EmailAdapter
+        response = (b"5 (UID 5 X-GM-THRID 1234567890123456789 RFC822 {123}", b"body")
+        self.assertEqual(
+            EmailAdapter._parse_gm_thrid(response),
+            "1234567890123456789",
+        )
+
+    def test_parse_gm_thrid_returns_none_when_absent(self):
+        from gateway.platforms.email import EmailAdapter
+        response = (b"5 (UID 5 RFC822 {123}", b"body")
+        self.assertIsNone(EmailAdapter._parse_gm_thrid(response))
+
+    def test_parse_gm_thrid_returns_none_for_malformed_input(self):
+        from gateway.platforms.email import EmailAdapter
+        self.assertIsNone(EmailAdapter._parse_gm_thrid(None))
+        self.assertIsNone(EmailAdapter._parse_gm_thrid("not a tuple"))
+
+    # ---------------- fetch wires THRID through ----------------
+
+    def test_fetch_populates_gmail_thread_id_when_gmail_mode_active(self):
+        adapter = self._make_adapter(session_keying="gmail_thread_id")
+        adapter._has_gmail_ext = True  # bypass capability probe for unit test
+
+        mock_imap = MagicMock()
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"5"])
+            if command == "fetch":
+                # Verify we asked for X-GM-THRID in addition to RFC822.
+                self.assertIn("X-GM-THRID", args[1])
+                return self._mock_fetch_response(
+                    b"5", "1234567890123456789", self._raw_email(),
+                )
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            results = adapter._fetch_new_messages()
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["gmail_thread_id"], "1234567890123456789")
+
+    def test_fetch_skips_extended_items_in_sender_mode(self):
+        """In sender mode, the FETCH call must stay on (RFC822) so we don't
+        send extra request bytes servers without the Gmail extension would
+        reject."""
+        adapter = self._make_adapter(session_keying="sender")
+
+        mock_imap = MagicMock()
+        seen_items = []
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"5"])
+            if command == "fetch":
+                seen_items.append(args[1])
+                return ("OK", [(b"5 (UID 5", self._raw_email()), b")"])
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            adapter._fetch_new_messages()
+        self.assertEqual(seen_items, ["(RFC822)"])
+
+    # ---------------- metadata plumbing through send_image / send_document ----------------
+
+    def test_send_image_passes_metadata_through_to_send(self):
+        """Regression: pre-PR-B send_image dropped metadata, so image replies
+        in gmail_thread_id mode would fall back to the latest-subject heuristic
+        instead of threading into the exact thread."""
+        import asyncio
+        adapter = self._make_adapter(session_keying="gmail_thread_id")
+        adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="<x>"))
+        asyncio.run(adapter.send_image(
+            "alice@example.com",
+            "https://example.com/i.png",
+            caption="hi",
+            metadata={"thread_id": "gthr-42"},
+        ))
+        _, kwargs = adapter.send.call_args
+        self.assertEqual(kwargs.get("metadata"), {"thread_id": "gthr-42"})
+
+    def test_send_document_forwards_thread_id_to_attachment_sender(self):
+        import asyncio
+        import tempfile
+        adapter = self._make_adapter(session_keying="gmail_thread_id")
+
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            f.write(b"content")
+            path = f.name
+
+        with patch.object(adapter, "_send_email_with_attachment",
+                          return_value="<x>") as spy:
+            asyncio.run(adapter.send_document(
+                "alice@example.com",
+                path,
+                caption="docs",
+                metadata={"thread_id": "gthr-99"},
+            ))
+        # Signature: _send_email_with_attachment(to_addr, body, file_path,
+        #                                         file_name, thread_id)
+        called_args = spy.call_args[0]
+        self.assertEqual(called_args[4], "gthr-99")
 
 
 if __name__ == "__main__":

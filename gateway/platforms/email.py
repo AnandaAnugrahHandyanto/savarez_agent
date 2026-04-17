@@ -17,6 +17,7 @@ Environment variables:
 
 import asyncio
 import email as email_lib
+import hashlib
 import imaplib
 import logging
 import os
@@ -240,18 +241,49 @@ class EmailAdapter(BasePlatformAdapter):
         extra = config.extra or {}
         self._skip_attachments = extra.get("skip_attachments", False)
 
+        # Session-keying mode — controls whether inbound messages from the
+        # same sender share a session or are split per-thread.
+        #   "sender"           (default): one session per sender address,
+        #                                  preserving pre-existing behavior.
+        #   "gmail_thread_id": one session per Gmail thread, keyed by Gmail's
+        #                      X-GM-THRID IMAP extension. Requires an
+        #                      imap.gmail.com-style server that advertises the
+        #                      X-GM-EXT-1 capability (Google Workspace / Gmail).
+        # Configure via:
+        #   platforms:
+        #     email:
+        #       extra:
+        #         session_keying: gmail_thread_id
+        mode = (extra.get("session_keying") or "sender").lower()
+        if mode not in ("sender", "gmail_thread_id"):
+            logger.warning(
+                "[Email] Unknown session_keying=%r, falling back to 'sender'",
+                extra.get("session_keying"),
+            )
+            mode = "sender"
+        self._session_keying: str = mode
+        # Populated in connect() from imap.capability(); stays False until a
+        # successful login confirms the server advertises X-GM-EXT-1.
+        self._has_gmail_ext: bool = False
+
         # Track message IDs we've already processed to avoid duplicates
         self._seen_uids: set = set()
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
         self._poll_task: Optional[asyncio.Task] = None
 
-        # Map (sender_addr, message_id) -> subject/message-id/last_seen_ts for threading.
-        # Keyed by (sender, message_id) so two concurrent inbound messages from the
-        # same sender can coexist without one clobbering the other's reply headers.
+        # Map (sender_addr, thread_key) -> subject/message-id/last_seen_ts for threading.
+        # Keyed by a tuple so two concurrent inbound messages from the same
+        # sender can coexist without one clobbering the other's reply headers.
+        # In sender mode, thread_key is the inbound message_id. In
+        # gmail_thread_id mode, thread_key is the derived thread identifier
+        # (e.g. "gthr-1234567890").
         self._thread_context: Dict[Tuple[str, str], Dict[str, Any]] = {}
         self._thread_context_max: int = 500
 
-        logger.info("[Email] Adapter initialized for %s", self._address)
+        logger.info(
+            "[Email] Adapter initialized for %s (session_keying=%s)",
+            self._address, self._session_keying,
+        )
 
     def _trim_seen_uids(self) -> None:
         """Keep only the most recent UIDs to prevent unbounded memory growth.
@@ -318,12 +350,42 @@ class EmailAdapter(BasePlatformAdapter):
                 latest = ctx
         return latest or {}
 
+    def _detect_gmail_extension(self, imap: imaplib.IMAP4_SSL) -> bool:
+        """Return True when the IMAP server advertises X-GM-EXT-1.
+
+        X-GM-EXT-1 is Gmail's IMAP extension capability — see
+        https://developers.google.com/gmail/imap/imap-extensions. Presence
+        guarantees `X-GM-THRID`, `X-GM-MSGID`, and `X-GM-LABELS` are
+        available as FETCH data items.
+        """
+        try:
+            status, data = imap.capability()
+            if status != "OK" or not data:
+                return False
+            caps_raw = b" ".join(data) if isinstance(data, list) else bytes(data)
+            return b"X-GM-EXT-1" in caps_raw.upper()
+        except Exception as e:
+            logger.warning("[Email] Capability probe failed: %s", e)
+            return False
+
     async def connect(self) -> bool:
         """Connect to the IMAP server and start polling for new messages."""
         try:
             # Test IMAP connection
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
             imap.login(self._address, self._password)
+            # Probe for Gmail IMAP extension (X-GM-EXT-1). If the caller asked
+            # for gmail_thread_id mode but the server doesn't advertise the
+            # extension, degrade to sender mode with a warning so we fail
+            # loudly in logs rather than silently mis-route sessions.
+            self._has_gmail_ext = self._detect_gmail_extension(imap)
+            if self._session_keying == "gmail_thread_id" and not self._has_gmail_ext:
+                logger.warning(
+                    "[Email] session_keying=gmail_thread_id requested but "
+                    "server %s does not advertise X-GM-EXT-1; falling back to "
+                    "sender mode", self._imap_host,
+                )
+                self._session_keying = "sender"
             # Mark all existing messages as seen so we only process new ones
             imap.select("INBOX")
             status, data = imap.uid("search", None, "ALL")
@@ -385,9 +447,37 @@ class EmailAdapter(BasePlatformAdapter):
         for msg_data in messages:
             await self._dispatch_message(msg_data)
 
+    @staticmethod
+    def _parse_gm_thrid(fetch_response: Any) -> Optional[str]:
+        """Extract X-GM-THRID from a Gmail IMAP FETCH response.
+
+        Gmail returns the THRID inline with the RFC822 literal header, e.g.
+            b'5 (UID 5 X-GM-THRID 1234567890123456789 RFC822 {12345}'
+        Returns the decoded decimal THRID or None if not present.
+        """
+        try:
+            if not fetch_response or not isinstance(fetch_response, tuple):
+                return None
+            header = fetch_response[0]
+            if not isinstance(header, (bytes, bytearray)):
+                return None
+            m = re.search(rb"X-GM-THRID\s+(\d+)", header)
+            if m:
+                return m.group(1).decode("ascii")
+        except Exception as e:
+            logger.debug("[Email] THRID parse failed: %s", e)
+        return None
+
     def _fetch_new_messages(self) -> List[Dict[str, Any]]:
         """Fetch new (unseen) messages from IMAP. Runs in executor thread."""
         results = []
+        # Extend the FETCH payload to include X-GM-THRID when Gmail session
+        # keying is active. No-op server-side cost: THRID is already indexed
+        # on the Gmail side, and it's returned on the same round-trip.
+        use_gmail_thrid = (
+            self._session_keying == "gmail_thread_id" and self._has_gmail_ext
+        )
+        fetch_items = "(RFC822 X-GM-THRID)" if use_gmail_thrid else "(RFC822)"
         try:
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
             try:
@@ -406,9 +496,15 @@ class EmailAdapter(BasePlatformAdapter):
                     if len(self._seen_uids) > self._seen_uids_max:
                         self._trim_seen_uids()
 
-                    status, msg_data = imap.uid("fetch", uid, "(RFC822)")
+                    status, msg_data = imap.uid("fetch", uid, fetch_items)
                     if status != "OK":
                         continue
+
+                    # msg_data[0] is (header_bytes, rfc822_body) for a tuple
+                    # response, or a bare literal in edge cases.
+                    gmail_thrid: Optional[str] = None
+                    if use_gmail_thrid:
+                        gmail_thrid = self._parse_gm_thrid(msg_data[0])
 
                     raw_email = msg_data[0][1]
                     msg = email_lib.message_from_bytes(raw_email)
@@ -441,6 +537,7 @@ class EmailAdapter(BasePlatformAdapter):
                         "body": body,
                         "attachments": attachments,
                         "date": msg.get("Date", ""),
+                        "gmail_thread_id": gmail_thrid,
                     })
             finally:
                 try:
@@ -484,10 +581,31 @@ class EmailAdapter(BasePlatformAdapter):
             if att["type"] == "image":
                 msg_type = MessageType.PHOTO
 
+        # Derive the session thread_id based on keying mode.
+        #   - sender mode: no thread_id, collapses all messages from this
+        #     sender into one session (pre-existing behavior).
+        #   - gmail_thread_id mode: use Gmail's X-GM-THRID prefixed with
+        #     "gthr-" so the session key is deterministic across restarts.
+        #     If THRID is missing (Gmail didn't return it — edge case on
+        #     delegated mailboxes, etc.), fall back to hashing the inbound
+        #     Message-ID so the message is treated as its own thread root.
+        thread_id: Optional[str] = None
+        if self._session_keying == "gmail_thread_id":
+            thrid = msg_data.get("gmail_thread_id")
+            if thrid:
+                thread_id = f"gthr-{thrid}"
+            else:
+                own_mid = msg_data.get("message_id") or ""
+                if own_mid:
+                    digest = hashlib.sha1(own_mid.encode("utf-8", errors="ignore")).hexdigest()[:12]
+                    thread_id = f"mid-{digest}"
+
         # Store thread context for reply threading.
-        # Key is (sender_addr, message_id) so concurrent inbound messages from
-        # the same sender don't overwrite each other's reply headers.
-        ctx_key = (sender_addr, msg_data["message_id"])
+        # In sender mode thread_id is None, so key on message_id (preserves
+        # the PR A clobber-prevention guarantee).
+        # In gmail_thread_id mode key on thread_id so multiple messages
+        # within the same thread accumulate on a single context entry.
+        ctx_key = (sender_addr, thread_id or msg_data["message_id"])
         self._thread_context[ctx_key] = {
             "subject": subject,
             "message_id": msg_data["message_id"],
@@ -501,6 +619,7 @@ class EmailAdapter(BasePlatformAdapter):
             chat_type="dm",
             user_id=sender_addr,
             user_name=msg_data["sender_name"] or sender_addr,
+            thread_id=thread_id,
         )
 
         event = MessageEvent(
@@ -523,11 +642,18 @@ class EmailAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send an email reply to the given address."""
+        """Send an email reply to the given address.
+
+        `metadata["thread_id"]` (if present) is used to look up the exact
+        reply-threading context for the originating inbound message, so
+        concurrent threads from the same sender don't cross-pollinate reply
+        headers.
+        """
+        thread_id = (metadata or {}).get("thread_id")
         try:
             loop = asyncio.get_running_loop()
             message_id = await loop.run_in_executor(
-                None, self._send_email, chat_id, content, reply_to
+                None, self._send_email, chat_id, content, reply_to, thread_id
             )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
@@ -539,16 +665,17 @@ class EmailAdapter(BasePlatformAdapter):
         to_addr: str,
         body: str,
         reply_to_msg_id: Optional[str] = None,
+        thread_id: Optional[str] = None,
     ) -> str:
         """Send an email via SMTP. Runs in executor thread."""
         msg = MIMEMultipart()
         msg["From"] = self._address
         msg["To"] = to_addr
 
-        # Thread context for reply — helper finds the right entry under the
-        # (sender, message_id) tuple key. Without a thread_id hint (plumbed in
-        # PR B), falls back to the most-recent entry from this sender.
-        ctx = self._lookup_thread_context(to_addr)
+        # Thread context for reply — helper resolves to the exact stored entry
+        # when thread_id is present (PR B keying), otherwise falls back to
+        # the most-recent entry for this sender (PR A behavior).
+        ctx = self._lookup_thread_context(to_addr, thread_id)
         subject = ctx.get("subject", "Hermes Agent")
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
@@ -588,11 +715,16 @@ class EmailAdapter(BasePlatformAdapter):
         image_url: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send an image URL as part of an email body."""
+        """Send an image URL as part of an email body.
+
+        Accepts `metadata` so thread_id-scoped replies carry the correct
+        In-Reply-To / Message-ID headers in gmail_thread_id mode.
+        """
         text = caption or ""
         text += f"\n\nImage: {image_url}"
-        return await self.send(chat_id, text.strip(), reply_to)
+        return await self.send(chat_id, text.strip(), reply_to, metadata=metadata)
 
     async def send_document(
         self,
@@ -601,8 +733,14 @@ class EmailAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a file as an email attachment."""
+        """Send a file as an email attachment.
+
+        Accepts `metadata` so thread_id-scoped attachment replies thread
+        correctly in gmail_thread_id mode.
+        """
+        thread_id = (metadata or {}).get("thread_id")
         try:
             loop = asyncio.get_running_loop()
             message_id = await loop.run_in_executor(
@@ -612,6 +750,7 @@ class EmailAdapter(BasePlatformAdapter):
                 caption or "",
                 file_path,
                 file_name,
+                thread_id,
             )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
@@ -624,13 +763,14 @@ class EmailAdapter(BasePlatformAdapter):
         body: str,
         file_path: str,
         file_name: Optional[str] = None,
+        thread_id: Optional[str] = None,
     ) -> str:
         """Send an email with a file attachment via SMTP."""
         msg = MIMEMultipart()
         msg["From"] = self._address
         msg["To"] = to_addr
 
-        ctx = self._lookup_thread_context(to_addr)
+        ctx = self._lookup_thread_context(to_addr, thread_id)
         subject = ctx.get("subject", "Hermes Agent")
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
