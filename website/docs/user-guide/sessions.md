@@ -190,6 +190,9 @@ hermes sessions list
 # Filter by platform
 hermes sessions list --source telegram
 
+# Exclude specific sources (e.g. hide cron jobs)
+hermes sessions list --exclude-source cron
+
 # Show more sessions
 hermes sessions list --limit 50
 ```
