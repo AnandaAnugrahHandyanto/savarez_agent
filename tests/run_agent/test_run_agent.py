@@ -3274,16 +3274,17 @@ class TestLowBudgetHandoff:
     def test_run_conversation_real_write_file_tool_creates_checkpoint_and_handoff_artifacts(self, agent, tmp_path, monkeypatch):
         import tools.checkpoint_manager as checkpoint_manager
 
-        handoff_home = tmp_path / "hermes-home"
-        checkpoint_base = tmp_path / "shadow-checkpoints"
-        work_dir = tmp_path / "project"
+        safe_root = self._safe_temp_root()
+        handoff_home = safe_root / "hermes-home"
+        checkpoint_base = safe_root / "shadow-checkpoints"
+        work_dir = safe_root / "project"
         work_dir.mkdir()
         target_file = work_dir / "main.py"
         target_file.write_text("print('seed')\n", encoding="utf-8")
 
         monkeypatch.setattr(run_agent, "get_hermes_home", lambda: handoff_home)
         monkeypatch.setattr(checkpoint_manager, "CHECKPOINT_BASE", checkpoint_base)
-        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(tmp_path))
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
 
         agent.tools = _make_tool_defs("write_file")
         agent.valid_tool_names = {"write_file"}
@@ -3367,16 +3368,17 @@ class TestLowBudgetHandoff:
     def test_run_conversation_real_patch_tool_creates_checkpoint_and_handoff_artifacts(self, agent, tmp_path, monkeypatch):
         import tools.checkpoint_manager as checkpoint_manager
 
-        handoff_home = tmp_path / "hermes-home"
-        checkpoint_base = tmp_path / "shadow-checkpoints"
-        work_dir = tmp_path / "project"
+        safe_root = self._safe_temp_root()
+        handoff_home = safe_root / "hermes-home"
+        checkpoint_base = safe_root / "shadow-checkpoints"
+        work_dir = safe_root / "project"
         work_dir.mkdir()
         target_file = work_dir / "main.py"
         target_file.write_text("print('seed')\n", encoding="utf-8")
 
         monkeypatch.setattr(run_agent, "get_hermes_home", lambda: handoff_home)
         monkeypatch.setattr(checkpoint_manager, "CHECKPOINT_BASE", checkpoint_base)
-        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(tmp_path))
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
 
         agent.tools = _make_tool_defs("patch")
         agent.valid_tool_names = {"patch"}
@@ -3467,9 +3469,10 @@ class TestLowBudgetHandoff:
     def test_run_conversation_real_terminal_tool_creates_checkpoint_and_handoff_artifacts(self, agent, tmp_path, monkeypatch):
         import tools.checkpoint_manager as checkpoint_manager
 
-        handoff_home = tmp_path / "hermes-home"
-        checkpoint_base = tmp_path / "shadow-checkpoints"
-        work_dir = tmp_path / "project"
+        safe_root = self._safe_temp_root()
+        handoff_home = safe_root / "hermes-home"
+        checkpoint_base = safe_root / "shadow-checkpoints"
+        work_dir = safe_root / "project"
         work_dir.mkdir()
         target_file = work_dir / "main.py"
         target_file.write_text("print('seed')\n", encoding="utf-8")
@@ -3561,16 +3564,17 @@ class TestLowBudgetHandoff:
     def test_run_conversation_real_multi_tool_same_turn_preserves_order_and_handoff_artifacts(self, agent, tmp_path, monkeypatch):
         import tools.checkpoint_manager as checkpoint_manager
 
-        handoff_home = tmp_path / "hermes-home"
-        checkpoint_base = tmp_path / "shadow-checkpoints"
-        work_dir = tmp_path / "project"
+        safe_root = self._safe_temp_root()
+        handoff_home = safe_root / "hermes-home"
+        checkpoint_base = safe_root / "shadow-checkpoints"
+        work_dir = safe_root / "project"
         work_dir.mkdir()
         target_file = work_dir / "main.py"
         target_file.write_text("print('seed')\n", encoding="utf-8")
 
         monkeypatch.setattr(run_agent, "get_hermes_home", lambda: handoff_home)
         monkeypatch.setattr(checkpoint_manager, "CHECKPOINT_BASE", checkpoint_base)
-        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(tmp_path))
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
 
         agent.tools = _make_tool_defs("write_file", "patch")
         agent.valid_tool_names = {"write_file", "patch"}
