@@ -316,7 +316,19 @@ Each route is rate-limited to **30 requests per minute** by default (fixed-windo
 platforms:
   webhook:
     extra:
-      rate_limit: 60  # requests per minute
+      rate_limit: 60  # global default: requests per minute
+```
+
+You can also override this for specific routes:
+
+```yaml
+platforms:
+  webhook:
+    extra:
+      routes:
+        my-route:
+          rate_limit: 5  # route override: requests per minute
+          # ... rest of route config
 ```
 
 Requests exceeding the limit receive a `429 Too Many Requests` response.
