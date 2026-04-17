@@ -5733,13 +5733,18 @@ Examples:
         description=(
             "Set up and manage external memory provider plugins.\n\n"
             "Available providers: honcho, openviking, mem0, hindsight,\n"
-            "holographic, retaindb, byterover.\n\n"
+            "holographic, retaindb, byterover, rasputin.\n\n"
             "Only one external provider can be active at a time.\n"
             "Built-in memory (MEMORY.md/USER.md) is always active."
         ),
     )
     memory_sub = memory_parser.add_subparsers(dest="memory_command")
-    memory_sub.add_parser("setup", help="Interactive provider selection and configuration")
+    memory_setup_parser = memory_sub.add_parser("setup", help="Interactive provider selection and configuration")
+    memory_setup_parser.add_argument(
+        "provider_name",
+        nargs="?",
+        help="Optional provider name for direct setup (e.g. rasputin)",
+    )
     memory_sub.add_parser("status", help="Show current memory provider config")
     memory_sub.add_parser("off", help="Disable external provider (built-in only)")
     _reset_parser = memory_sub.add_parser(
