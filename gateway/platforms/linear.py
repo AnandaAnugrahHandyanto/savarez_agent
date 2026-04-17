@@ -21,6 +21,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import secrets
 import socket as _socket
 import time
@@ -58,7 +59,7 @@ DEFAULT_SCOPES = ["read", "write", "app:mentionable", "app:assignable"]
 STATE_TTL_SECONDS = 1800
 TOKEN_REFRESH_SKEW_SECONDS = 300
 MAX_BODY_BYTES = 1_048_576
-_TOKEN_STORE_FILENAME="linear...json"
+_TOKEN_STORE_FILENAME = "linear_oauth_tokens.json"
 _STATE_STORE_FILENAME = "linear_oauth_states.json"
 _LINEAR_APP_LOCK_SCOPE = "linear_app"
 DEFAULT_MAX_CONCURRENT_SESSIONS = 3
@@ -209,6 +210,54 @@ class LinearAdapter(BasePlatformAdapter):
             "block_reason": block_reason,
         }
 
+    @staticmethod
+    def _normalize_project_key(name: Any) -> Optional[str]:
+        normalized = re.sub(r"[^A-Za-z0-9]+", "_", str(name or "")).strip("_")
+        return normalized or None
+
+    @staticmethod
+    def _extract_project_registry_metadata(prompt_context: Any) -> Dict[str, Any]:
+        text = str(prompt_context or "")
+        if not text:
+            return {}
+
+        metadata: Dict[str, Any] = {}
+
+        project_match = re.search(r'<project\s+name="([^"]+)"[^>]*>(.*?)</project>', text, re.IGNORECASE | re.DOTALL)
+        if project_match:
+            project_name = project_match.group(1).strip()
+            if project_name:
+                metadata["project_name"] = project_name
+                project_key = LinearAdapter._normalize_project_key(project_name)
+                if project_key:
+                    metadata["project_key"] = project_key
+            project_blob = project_match.group(2)
+        else:
+            project_blob = text
+
+        obsidian_match = re.search(r"Obsidian:\s*([^|\n<]+)", project_blob, re.IGNORECASE)
+        if obsidian_match:
+            metadata["obsidian_path"] = obsidian_match.group(1).strip()
+
+        repo_match = re.search(r"Repo:\s*([^|\n<]+)", project_blob, re.IGNORECASE)
+        if repo_match:
+            repo_value = repo_match.group(1).strip()
+            if repo_value and repo_value.startswith("github.com/"):
+                repo_value = f"https://{repo_value}"
+            if repo_value:
+                metadata["repo_url"] = repo_value
+
+        discord_match = re.search(
+            r"Discord:\s*#?([^\s|<]+)\s*\((\d+)\)",
+            project_blob,
+            re.IGNORECASE,
+        )
+        if discord_match:
+            metadata["discord_channel_name"] = discord_match.group(1).strip()
+            metadata["discord_channel_id"] = discord_match.group(2).strip()
+
+        return metadata
+
     def _store_session_metadata(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         agent_session = payload.get("agentSession") or {}
         issue = agent_session.get("issue") or {}
@@ -217,7 +266,9 @@ class LinearAdapter(BasePlatformAdapter):
         project = issue.get("project") or {}
         creator = agent_session.get("creator") or {}
         assignee = issue.get("assignee") or {}
+        project_metadata = self._extract_project_registry_metadata(payload.get("promptContext"))
         session = {
+            "context_type": "linear_agent_session",
             "agent_session_id": str(agent_session.get("id") or ""),
             "app_user_id": str(payload.get("appUserId") or agent_session.get("appUserId") or ""),
             "organization_id": str(payload.get("organizationId") or agent_session.get("organizationId") or ""),
@@ -229,12 +280,14 @@ class LinearAdapter(BasePlatformAdapter):
             "team_name": str((issue.get("team") or {}).get("name") or issue.get("team") or ""),
             "project_id": str(project.get("id") or ""),
             "project_name": str(project.get("name") or ""),
+            "project_key": self._normalize_project_key(project.get("name") or "") or None,
             "label_names": self._extract_label_names(issue),
             "creator_id": str(agent_session.get("creatorId") or creator.get("id") or ""),
             "creator_name": str(creator.get("name") or ""),
             "current_assignee_id": str(assignee.get("id") or issue.get("assigneeId") or "") or None,
             "current_assignee_name": str(assignee.get("name") or issue.get("assignee") or "") or None,
             "updated_at": time.time(),
+            **project_metadata,
             **policy,
         }
         self._session_info[chat_id] = session
@@ -246,6 +299,100 @@ class LinearAdapter(BasePlatformAdapter):
             return current_assignee
         creator_id = session.get("creator_id")
         return creator_id or None
+
+    @staticmethod
+    def _is_blocking_relation_type(value: Any) -> bool:
+        normalized = re.sub(r"[^a-z]", "", str(value or "").lower())
+        return normalized in {"blockedby", "blockedbyrelation", "blockedbyissue"}
+
+    async def _list_unresolved_dependencies(self, session: Dict[str, Any]) -> List[Dict[str, str]]:
+        issue_id = str(session.get("issue_id") or session.get("issue_identifier") or "")
+        app_user_id = str(session.get("app_user_id") or "")
+        if not issue_id or not app_user_id:
+            return []
+        access_token = await self._ensure_access_token(app_user_id)
+        payload = {
+            "query": (
+                "query { issue(id: \""
+                + issue_id
+                + "\") { relations { nodes { type relatedIssue { identifier title state { name type } } } } } }"
+            )
+        }
+        result = await asyncio.to_thread(
+            self._http_json,
+            "https://api.linear.app/graphql",
+            payload,
+            {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            },
+        )
+        relations = (((result.get("data") or {}).get("issue") or {}).get("relations") or {}).get("nodes") or []
+        unresolved: List[Dict[str, str]] = []
+        for relation in relations:
+            if not self._is_blocking_relation_type(relation.get("type")):
+                continue
+            related_issue = relation.get("relatedIssue") or {}
+            state = related_issue.get("state") or {}
+            state_type = str(state.get("type") or "").strip().lower()
+            if state_type in {"completed", "canceled"}:
+                continue
+            unresolved.append(
+                {
+                    "identifier": str(related_issue.get("identifier") or related_issue.get("title") or "dependency"),
+                    "state": str(state.get("name") or state_type or "unknown"),
+                }
+            )
+        return unresolved
+
+    def _build_dependency_block_message(self, unresolved_dependencies: List[Dict[str, str]]) -> str:
+        dependency = unresolved_dependencies[0]
+        return (
+            "Jax did not start because this issue depends on unresolved work: "
+            f"{dependency.get('identifier', 'dependency')} ({dependency.get('state', 'unknown')})."
+        )
+
+    def _classify_retry_decision(self, session: Dict[str, Any]) -> Dict[str, Any]:
+        retry_policy = str(session.get("retry_policy") or "none").strip().lower()
+        max_attempts_by_policy = {
+            "none": 0,
+            "conservative": 1,
+            "standard": 2,
+            "aggressive": 4,
+        }
+        max_attempts = max_attempts_by_policy.get(retry_policy, 0)
+        error_class = str(session.get("last_error_class") or "permanent_failure").strip().lower()
+        attempt_count = int(session.get("retry_attempt_count") or 0)
+        retryable = error_class in {"transient_api", "transient_tool"}
+        should_retry = retryable and attempt_count < max_attempts
+        next_attempt = attempt_count + 1 if should_retry else attempt_count
+        return {
+            "retry_policy": retry_policy,
+            "error_class": error_class,
+            "attempt_count": attempt_count,
+            "max_attempts": max_attempts,
+            "retryable": retryable,
+            "should_retry": should_retry,
+            "next_attempt": next_attempt,
+        }
+
+    def _classify_refit_decision(self, session: Dict[str, Any]) -> Dict[str, Any]:
+        autonomy_first = bool(session.get("autonomy_first", False))
+        error_class = str(session.get("last_error_class") or "").strip().lower()
+        refit_attempt_count = int(session.get("refit_attempt_count") or 0)
+        max_refits = int(session.get("max_refit_attempts") or 1)
+        refittable = autonomy_first and error_class in {"agent_execution_error", "scope_too_large", "ambiguous_spec"}
+        should_refit = refittable and refit_attempt_count < max_refits
+        next_attempt = refit_attempt_count + 1 if should_refit else refit_attempt_count
+        return {
+            "autonomy_first": autonomy_first,
+            "error_class": error_class,
+            "refit_attempt_count": refit_attempt_count,
+            "max_refits": max_refits,
+            "refittable": refittable,
+            "should_refit": should_refit,
+            "next_attempt": next_attempt,
+        }
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -349,6 +496,7 @@ class LinearAdapter(BasePlatformAdapter):
             "name": info.get("chat_name") or chat_id,
             "type": "linear",
             "chat_id": chat_id,
+            "session_metadata": dict(info) if info else {},
         }
 
     # ------------------------------------------------------------------
@@ -509,6 +657,21 @@ class LinearAdapter(BasePlatformAdapter):
                 f"Jax cannot execute this task automatically and moved it to {self._blocked_state_name} for Pablo. Reason: {reason}",
             )
             return
+
+        if session:
+            unresolved_dependencies = await self._list_unresolved_dependencies(session)
+            if unresolved_dependencies:
+                assignee_id = self._determine_handoff_assignee(session)
+                block_message = self._build_dependency_block_message(unresolved_dependencies)
+                session["unresolved_dependencies"] = unresolved_dependencies
+                await self._transition_issue_for_session(
+                    session,
+                    self._blocked_state_name,
+                    assignee_id=assignee_id,
+                    comment=block_message,
+                )
+                await self._maybe_send_queue_activity(event.source.chat_id, block_message)
+                return
 
         queue_notice_needed = False
 
@@ -797,6 +960,8 @@ class LinearAdapter(BasePlatformAdapter):
         assignee_id = session.get("current_assignee_id")
         execution_mode = session.get("execution_mode", self._default_execution_mode)
         if outcome.name == "SUCCESS":
+            session["retry_requested"] = False
+            session["retry_last_error_class"] = None
             if execution_mode == "autonomous_dev":
                 await self._transition_issue_for_session(
                     session,
@@ -835,11 +1000,59 @@ class LinearAdapter(BasePlatformAdapter):
             )
             return
 
+        retry_decision = self._classify_retry_decision(session)
+        session["retry_last_error_class"] = retry_decision["error_class"]
+        if retry_decision["should_retry"]:
+            session["retry_attempt_count"] = retry_decision["next_attempt"]
+            session["retry_requested"] = True
+            await self._transition_issue_for_session(
+                session,
+                self._in_progress_state_name,
+                assignee_id=assignee_id,
+                comment=(
+                    "Jax hit a "
+                    f"{retry_decision['error_class']} failure and left this issue in {self._in_progress_state_name} "
+                    f"for retry (attempt {retry_decision['next_attempt']}/{retry_decision['max_attempts']})."
+                ),
+            )
+            return
+
+        session["retry_requested"] = False
+        refit_decision = self._classify_refit_decision(session)
+        if refit_decision["should_refit"]:
+            session["refit_attempt_count"] = refit_decision["next_attempt"]
+            session["workflow_decision"] = "change_scope"
+            session["retrigger_requested"] = True
+            await self._transition_issue_for_session(
+                session,
+                self._in_progress_state_name,
+                assignee_id=assignee_id,
+                comment=(
+                    "Jax hit an "
+                    f"{refit_decision['error_class']} failure, narrowed the scope into a smaller executable slice, "
+                    f"and left this issue in {self._in_progress_state_name} for an autonomous rerun "
+                    f"(refit {refit_decision['next_attempt']}/{refit_decision['max_refits']})."
+                ),
+            )
+            return
+        session["retrigger_requested"] = False
+        if refit_decision["refittable"] and refit_decision["max_refits"]:
+            comment = (
+                "Jax could not retrofit this issue into a smaller executable slice after an "
+                f"{refit_decision['error_class']} failure and moved it to Blocked for follow-up."
+            )
+        elif retry_decision["retryable"] and retry_decision["max_attempts"]:
+            comment = (
+                "Jax exhausted retry attempts after a "
+                f"{retry_decision['error_class']} failure and moved this issue to Blocked for follow-up."
+            )
+        else:
+            comment = "Jax could not finish this issue and moved it to Blocked for follow-up."
         await self._transition_issue_for_session(
             session,
             self._blocked_state_name,
             assignee_id=assignee_id,
-            comment="Jax could not finish this issue and moved it to Blocked for follow-up.",
+            comment=comment,
         )
 
     async def _transition_issue_for_session(
@@ -984,8 +1197,12 @@ class LinearAdapter(BasePlatformAdapter):
         request = urllib.request.Request(url, data=body, method="POST")
         for key, value in headers.items():
             request.add_header(key, value)
-        with urllib.request.urlopen(request, timeout=30) as response:
-            data = response.read().decode("utf-8")
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                data = response.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            payload = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"HTTP {exc.code}: {payload}") from exc
         return json.loads(data) if data else {}
 
     def _http_form(self, url: str, form: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:

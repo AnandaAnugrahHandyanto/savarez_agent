@@ -3622,7 +3622,8 @@ class GatewayRunner:
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
-        
+        session_metadata = await self._resolve_structured_session_metadata(source)
+
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
         if getattr(session_entry, 'was_auto_reset', False):
@@ -7473,6 +7474,17 @@ class GatewayRunner:
         finally:
             notify_path.unlink(missing_ok=True)
 
+    async def _resolve_structured_session_metadata(self, source: SessionSource) -> Dict[str, Any]:
+        adapter = self.adapters.get(source.platform)
+        if not adapter:
+            return {}
+        try:
+            info = await adapter.get_chat_info(source.chat_id)
+        except Exception:
+            return {}
+        metadata = info.get("session_metadata") if isinstance(info, dict) else None
+        return dict(metadata) if isinstance(metadata, dict) else {}
+
     def _set_session_env(self, context: SessionContext) -> list:
         """Set session context variables for the current async task.
 
@@ -8790,6 +8802,7 @@ class GatewayRunner:
                     platform=platform_key,
                     user_id=source.user_id,
                     gateway_session_key=session_key,
+                    session_metadata=session_metadata,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )
@@ -8808,6 +8821,7 @@ class GatewayRunner:
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides")
+            agent.session_metadata = dict(session_metadata) if isinstance(session_metadata, dict) else {}
 
             _bg_review_release = threading.Event()
             _bg_review_pending: list[str] = []

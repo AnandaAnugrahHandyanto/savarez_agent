@@ -123,6 +123,12 @@ async def test_callback_rejects_expired_oauth_state():
     assert adapter._load_json(adapter._states_path) == {}
 
 
+def test_linear_uses_canonical_oauth_token_store_filename():
+    adapter = _make_adapter()
+
+    assert adapter._tokens_path.name == "linear_oauth_tokens.json"
+
+
 def test_build_prompt_for_created_event_uses_prompt_context_and_flow_metadata():
     adapter = _make_adapter(project_execution_modes={"Jax Control Plane": "autonomous_with_testing"})
     payload = {
@@ -150,6 +156,43 @@ def test_build_prompt_for_created_event_uses_prompt_context_and_flow_metadata():
     assert "Investigate regression" in prompt
     assert "Task type: ops" in prompt
     assert "Project execution mode: autonomous_with_testing" in prompt
+
+
+def test_store_session_metadata_captures_project_registry_pointers_from_prompt_context():
+    adapter = _make_adapter(project_execution_modes={"Jax Control Plane": "autonomous_with_testing"})
+    payload = {
+        "action": "created",
+        "promptContext": (
+            '<issue identifier="PAB-143">'
+            '<project name="Jax Control Plane">'
+            'Internal Jax ops/control plane. '
+            'Obsidian: /lab/obsidian_vault/Projects/Jax Control Plane/ | '
+            'Repo: github.com/pablots99/jax-control-plane | '
+            'Discord: #jax-control-plane (1493569165100056596)'
+            '</project>'
+            '</issue>'
+        ),
+        "agentSession": {
+            "id": "session-123",
+            "url": "https://linear.app/session/123",
+            "issue": {
+                "id": "issue-1",
+                "identifier": "PAB-143",
+                "title": "Capture metadata",
+                "project": {"id": "proj-1", "name": "Jax Control Plane"},
+                "labels": {"nodes": [{"name": "type:engineering"}]},
+            },
+        },
+        "appUserId": "app-user-1",
+    }
+
+    session = adapter._store_session_metadata(payload)
+
+    assert session["project_key"] == "Jax_Control_Plane"
+    assert session["obsidian_path"] == "/lab/obsidian_vault/Projects/Jax Control Plane/"
+    assert session["repo_url"] == "https://github.com/pablots99/jax-control-plane"
+    assert session["discord_channel_name"] == "jax-control-plane"
+    assert session["discord_channel_id"] == "1493569165100056596"
 
 
 @pytest.mark.asyncio
@@ -233,6 +276,55 @@ async def test_linear_processing_respects_max_concurrent_sessions(monkeypatch):
         ),
         ("linear:session-2", "Jax is starting work on this session now."),
     ]
+
+
+@pytest.mark.asyncio
+async def test_dependency_block_prevents_processing_and_moves_issue_to_blocked(monkeypatch):
+    adapter = _make_adapter()
+    adapter._session_info["linear:session-1"] = {
+        "agent_session_id": "session-1",
+        "app_user_id": "app-user-1",
+        "issue_id": "issue-1",
+        "issue_identifier": "PAB-80",
+        "team_id": "team-1",
+        "task_type": "engineering",
+        "execution_mode": "autonomous_with_testing",
+        "creator_id": "user-1",
+        "creator_name": "Pablo",
+        "current_assignee_id": "user-1",
+        "can_execute": True,
+    }
+    transitions = []
+    activities = []
+    super_mock = AsyncMock()
+
+    async def _fake_transition(session, target_state, *, assignee_id=None, comment=None):
+        transitions.append((target_state, assignee_id, comment))
+
+    async def _fake_activity(chat_id, body):
+        activities.append((chat_id, body))
+
+    async def _fake_unresolved_dependencies(session):
+        return [{"identifier": "PAB-79", "state": "In Progress"}]
+
+    monkeypatch.setattr(adapter, "_transition_issue_for_session", _fake_transition)
+    monkeypatch.setattr(adapter, "_maybe_send_queue_activity", _fake_activity)
+    monkeypatch.setattr(adapter, "_list_unresolved_dependencies", _fake_unresolved_dependencies)
+    monkeypatch.setattr("gateway.platforms.base.BasePlatformAdapter._process_message_background", super_mock)
+
+    event = SimpleNamespace(source=SimpleNamespace(chat_id="linear:session-1"))
+    await adapter._process_message_background(event, "session-1")
+
+    assert transitions == [(
+        "Blocked",
+        "user-1",
+        "Jax did not start because this issue depends on unresolved work: PAB-79 (In Progress).",
+    )]
+    assert activities == [(
+        "linear:session-1",
+        "Jax did not start because this issue depends on unresolved work: PAB-79 (In Progress).",
+    )]
+    super_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -424,6 +516,141 @@ async def test_processing_complete_moves_autonomous_dev_issue_to_done(monkeypatc
         "Done",
         "user-1",
         "Jax finished implementation work and marked this issue Done automatically.",
+    )]
+
+
+@pytest.mark.asyncio
+async def test_processing_complete_retryable_failure_leaves_issue_in_progress_for_retry(monkeypatch):
+    adapter = _make_adapter()
+    event = SimpleNamespace(source=SimpleNamespace(chat_id="linear:session-1"))
+    adapter._session_info["linear:session-1"] = {
+        "issue_id": "issue-1",
+        "issue_identifier": "PAB-80",
+        "team_id": "team-1",
+        "task_type": "engineering",
+        "execution_mode": "autonomous_with_testing",
+        "can_execute": True,
+        "current_assignee_id": "user-1",
+        "retry_policy": "standard",
+        "retry_attempt_count": 0,
+        "last_error_class": "transient_api",
+    }
+    transitions = []
+
+    async def _fake_transition(session, target_state, *, assignee_id=None, comment=None):
+        transitions.append((target_state, assignee_id, comment))
+
+    monkeypatch.setattr(adapter, "_transition_issue_for_session", _fake_transition)
+
+    await adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
+
+    assert adapter._session_info["linear:session-1"]["retry_attempt_count"] == 1
+    assert adapter._session_info["linear:session-1"]["retry_requested"] is True
+    assert transitions == [(
+        "In Progress",
+        "user-1",
+        "Jax hit a transient_api failure and left this issue in In Progress for retry (attempt 1/2).",
+    )]
+
+
+@pytest.mark.asyncio
+async def test_processing_complete_exhausted_retryable_failure_moves_issue_to_blocked(monkeypatch):
+    adapter = _make_adapter()
+    event = SimpleNamespace(source=SimpleNamespace(chat_id="linear:session-1"))
+    adapter._session_info["linear:session-1"] = {
+        "issue_id": "issue-1",
+        "issue_identifier": "PAB-80",
+        "team_id": "team-1",
+        "task_type": "engineering",
+        "execution_mode": "autonomous_with_testing",
+        "can_execute": True,
+        "current_assignee_id": "user-1",
+        "retry_policy": "standard",
+        "retry_attempt_count": 2,
+        "last_error_class": "transient_api",
+    }
+    transitions = []
+
+    async def _fake_transition(session, target_state, *, assignee_id=None, comment=None):
+        transitions.append((target_state, assignee_id, comment))
+
+    monkeypatch.setattr(adapter, "_transition_issue_for_session", _fake_transition)
+
+    await adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
+
+    assert adapter._session_info["linear:session-1"]["retry_requested"] is False
+    assert transitions == [(
+        "Blocked",
+        "user-1",
+        "Jax exhausted retry attempts after a transient_api failure and moved this issue to Blocked for follow-up.",
+    )]
+
+
+@pytest.mark.asyncio
+async def test_processing_complete_autonomy_first_error_refits_scope_and_retriggers(monkeypatch):
+    adapter = _make_adapter()
+    event = SimpleNamespace(source=SimpleNamespace(chat_id="linear:session-1"))
+    adapter._session_info["linear:session-1"] = {
+        "issue_id": "issue-1",
+        "issue_identifier": "PAB-80",
+        "team_id": "team-1",
+        "task_type": "engineering",
+        "execution_mode": "autonomous_with_testing",
+        "can_execute": True,
+        "current_assignee_id": "user-1",
+        "autonomy_first": True,
+        "refit_attempt_count": 0,
+        "last_error_class": "agent_execution_error",
+    }
+    transitions = []
+
+    async def _fake_transition(session, target_state, *, assignee_id=None, comment=None):
+        transitions.append((target_state, assignee_id, comment))
+
+    monkeypatch.setattr(adapter, "_transition_issue_for_session", _fake_transition)
+
+    await adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
+
+    assert adapter._session_info["linear:session-1"]["refit_attempt_count"] == 1
+    assert adapter._session_info["linear:session-1"]["retrigger_requested"] is True
+    assert adapter._session_info["linear:session-1"]["workflow_decision"] == "change_scope"
+    assert transitions == [(
+        "In Progress",
+        "user-1",
+        "Jax hit an agent_execution_error failure, narrowed the scope into a smaller executable slice, and left this issue in In Progress for an autonomous rerun (refit 1/1).",
+    )]
+
+
+@pytest.mark.asyncio
+async def test_processing_complete_exhausted_refit_moves_issue_to_blocked(monkeypatch):
+    adapter = _make_adapter()
+    event = SimpleNamespace(source=SimpleNamespace(chat_id="linear:session-1"))
+    adapter._session_info["linear:session-1"] = {
+        "issue_id": "issue-1",
+        "issue_identifier": "PAB-80",
+        "team_id": "team-1",
+        "task_type": "engineering",
+        "execution_mode": "autonomous_with_testing",
+        "can_execute": True,
+        "current_assignee_id": "user-1",
+        "autonomy_first": True,
+        "refit_attempt_count": 1,
+        "last_error_class": "agent_execution_error",
+    }
+    transitions = []
+
+    async def _fake_transition(session, target_state, *, assignee_id=None, comment=None):
+        transitions.append((target_state, assignee_id, comment))
+
+    monkeypatch.setattr(adapter, "_transition_issue_for_session", _fake_transition)
+
+    await adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
+
+    assert adapter._session_info["linear:session-1"]["retrigger_requested"] is False
+    assert transitions == [(
+        "Blocked",
+        "user-1",
+        "Jax could not retrofit this issue into a smaller executable slice after an agent_execution_error failure and moved it to Blocked for follow-up.",
     )]
 
 

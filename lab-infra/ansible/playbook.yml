@@ -1,0 +1,10 @@
+---
+- name: Bootstrap jax-mind VPS
+  hosts: jaxmind
+  become: true
+
+  roles:
+    - docker
+    - traefik
+    - woodpecker
+    - monitoring
