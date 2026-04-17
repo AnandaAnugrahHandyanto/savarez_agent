@@ -4472,8 +4472,19 @@ class AIAgent:
                 elif hasattr(_socket, "TCP_KEEPALIVE"):
                     # macOS (uses TCP_KEEPALIVE instead of TCP_KEEPIDLE)
                     _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPALIVE, 30))
+                _proxy = (
+                    os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+                    or os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
+                    or os.environ.get("ALL_PROXY") or os.environ.get("all_proxy")
+                )
+                # httpx's HTTPTransport does not support SOCKS URLs without the
+                # httpx-socks extra; skip rather than raising at client
+                # construction time.  macOS users running Clash/ShadowsocksX
+                # often export ALL_PROXY=socks5://... from their shell setup.
+                if _proxy and _proxy.lower().startswith("socks"):
+                    _proxy = None
                 client_kwargs["http_client"] = _httpx.Client(
-                    transport=_httpx.HTTPTransport(socket_options=_sock_opts),
+                    transport=_httpx.HTTPTransport(socket_options=_sock_opts, proxy=_proxy),
                 )
             except Exception:
                 pass  # Fall through to default transport if socket opts fail
