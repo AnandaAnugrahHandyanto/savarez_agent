@@ -9,6 +9,7 @@ or a temp file (local).
 import json
 import logging
 import os
+import select
 import shlex
 import subprocess
 import threading
@@ -410,16 +411,35 @@ class BaseEnvironment(ABC):
 
         Shared across all backends — not overridden.
 
+        Uses select() with a short timeout to read stdout instead of a
+        blocking iterator. This prevents the drain thread from hanging
+        forever when a background child process (e.g. a dev server) keeps
+        the pipe open after the parent exits.
+
         Fires the ``activity_callback`` (if set on this instance) every 10s
         while the process is running so the gateway's inactivity timeout
         doesn't kill long-running commands.
         """
         output_chunks: list[str] = []
+        _stop_drain = threading.Event()
 
         def _drain():
+            """Drain stdout using select() so the loop is interruptible."""
             try:
-                for line in proc.stdout:
-                    output_chunks.append(line)
+                fd = proc.stdout.fileno()
+                while not _stop_drain.is_set():
+                    try:
+                        ready, _, _ = select.select([fd], [], [], 0.3)
+                    except (ValueError, OSError):
+                        break
+                    if ready:
+                        try:
+                            data = os.read(fd, 4096)
+                            if not data:
+                                break
+                            output_chunks.append(data.decode("utf-8", errors="replace"))
+                        except OSError:
+                            break
             except UnicodeDecodeError:
                 output_chunks.clear()
                 output_chunks.append(
@@ -440,14 +460,24 @@ class BaseEnvironment(ABC):
         while proc.poll() is None:
             if is_interrupted():
                 self._kill_process(proc)
+                _stop_drain.set()
                 drain_thread.join(timeout=2)
+                try:
+                    proc.stdout.close()
+                except Exception:
+                    pass
                 return {
                     "output": "".join(output_chunks) + "\n[Command interrupted]",
                     "returncode": 130,
                 }
             if time.monotonic() > deadline:
                 self._kill_process(proc)
+                _stop_drain.set()
                 drain_thread.join(timeout=2)
+                try:
+                    proc.stdout.close()
+                except Exception:
+                    pass
                 partial = "".join(output_chunks)
                 timeout_msg = f"\n[Command timed out after {timeout}s]"
                 return {
@@ -460,8 +490,10 @@ class BaseEnvironment(ABC):
             touch_activity_if_due(_activity_state, "terminal command running")
             time.sleep(0.2)
 
+        # Process exited normally — signal drain thread and close stdout
+        # so the pipe EOF propagates even if background children hold it.
+        _stop_drain.set()
         drain_thread.join(timeout=5)
-
         try:
             proc.stdout.close()
         except Exception:
