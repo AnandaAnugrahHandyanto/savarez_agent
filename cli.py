@@ -4542,6 +4542,31 @@ class HermesCLI:
         scroll_offset = max(0, min(scroll_offset, n - visible))
         return scroll_offset, visible
 
+    def _model_picker_max_index(self, state: Optional[dict] = None) -> int:
+        """Return the maximum valid index for the current model picker stage."""
+        state = state or self._model_picker_state
+        if not state:
+            return -1
+        if state.get("stage") == "provider":
+            # Provider rows plus trailing "Cancel"
+            return len(state.get("providers") or [])
+        # Model rows plus trailing "Back" and "Cancel"
+        return len(state.get("model_list") or []) + 1
+
+    def _move_model_picker_selection(self, delta: int) -> None:
+        """Move model picker selection with wrap-around navigation."""
+        state = self._model_picker_state
+        if not state:
+            return
+        max_idx = self._model_picker_max_index(state)
+        if max_idx < 0:
+            return
+        current = int(state.get("selected", 0))
+        if delta < 0:
+            state["selected"] = max_idx if current <= 0 else current - 1
+        elif delta > 0:
+            state["selected"] = 0 if current >= max_idx else current + 1
+
     def _apply_model_switch_result(self, result, persist_global: bool) -> None:
         if not result.success:
             _cprint(f"  ✗ {result.error_message}")
@@ -8707,7 +8732,7 @@ class HermesCLI:
         @kb.add('up', filter=Condition(lambda: bool(self._model_picker_state)))
         def model_picker_up(event):
             if self._model_picker_state:
-                self._model_picker_state["selected"] = max(0, self._model_picker_state.get("selected", 0) - 1)
+                self._move_model_picker_selection(-1)
                 event.app.invalidate()
 
         @kb.add('down', filter=Condition(lambda: bool(self._model_picker_state)))
@@ -8715,11 +8740,7 @@ class HermesCLI:
             state = self._model_picker_state
             if not state:
                 return
-            if state.get("stage") == "provider":
-                max_idx = len(state.get("providers") or [])
-            else:
-                max_idx = len(state.get("model_list") or []) + 1
-            state["selected"] = min(max_idx, state.get("selected", 0) + 1)
+            self._move_model_picker_selection(1)
             event.app.invalidate()
 
         @kb.add('escape', filter=Condition(lambda: bool(self._model_picker_state)), eager=True)
@@ -9513,6 +9534,8 @@ class HermesCLI:
                 for p in state.get("providers") or []:
                     count = p.get("total_models", len(p.get("models", [])))
                     label = f"{p['name']} ({count} model{'s' if count != 1 else ''})"
+                    if p.get("warning"):
+                        label += "  [warning]"
                     if p.get("is_current"):
                         label += "  ← current"
                     choices.append(label)
@@ -9527,6 +9550,9 @@ class HermesCLI:
                     hint = f"Select a model ({len(model_list)} available)"
                 else:
                     hint = "No models listed for this provider. Use Back or Cancel."
+                warning_text = (provider_data.get("warning") or "").strip()
+                if warning_text:
+                    hint = f"{hint} | Warning: {warning_text}"
 
             box_width = _panel_box_width(title, [hint] + choices, min_width=46, max_width=84)
             inner_text_width = max(8, box_width - 6)
