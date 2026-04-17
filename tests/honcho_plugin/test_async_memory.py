@@ -19,6 +19,7 @@ from unittest.mock import MagicMock, patch, call
 import pytest
 
 from plugins.memory.honcho.client import HonchoClientConfig
+from plugins.memory.honcho import HonchoMemoryProvider
 from plugins.memory.honcho.session import (
     HonchoSession,
     HonchoSessionManager,
@@ -321,6 +322,39 @@ class TestAsyncWriterThread:
         thread.join(timeout=3)
         assert not thread.is_alive()
 
+    def test_shutdown_joins_prefetch_workers(self):
+        mgr = _make_manager(write_frequency="turn")
+        gate = threading.Event()
+
+        def slow_context(*_args, **_kwargs):
+            gate.wait(timeout=2.0)
+            return {"representation": "ready"}
+
+        def slow_dialectic(*_args, **_kwargs):
+            gate.wait(timeout=2.0)
+            return "done"
+
+        mgr.get_prefetch_context = slow_context
+        mgr.dialectic_query = slow_dialectic
+        mgr._cache["cli:test"] = _make_session()
+
+        mgr.prefetch_context("cli:test", "hello")
+        mgr.prefetch_dialectic("cli:test", "hello")
+
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            with mgr._background_threads_lock:
+                if len(mgr._background_threads) >= 2:
+                    break
+            time.sleep(0.01)
+
+        gate.set()
+        mgr.shutdown()
+
+        with mgr._background_threads_lock:
+            tracked = list(mgr._background_threads)
+        assert all(not thread.is_alive() for thread in tracked)
+
 
 # ---------------------------------------------------------------------------
 # async retry on failure
@@ -467,3 +501,14 @@ class TestPrefetchCacheAccessors:
 
         assert mgr.pop_dialectic_result("cli:test") == "Resume with toolset cleanup"
         assert mgr.pop_dialectic_result("cli:test") == ""
+
+
+class TestHonchoProviderShutdown:
+    def test_shutdown_calls_manager_shutdown(self):
+        provider = HonchoMemoryProvider()
+        manager = MagicMock()
+        provider._manager = manager
+
+        provider.shutdown()
+
+        manager.shutdown.assert_called_once_with()

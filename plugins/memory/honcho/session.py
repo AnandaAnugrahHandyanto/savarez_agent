@@ -131,6 +131,9 @@ class HonchoSessionManager:
         # Async write queue — started lazily on first enqueue
         self._async_queue: queue.Queue | None = None
         self._async_thread: threading.Thread | None = None
+        self._shutdown_event = threading.Event()
+        self._background_threads: set[threading.Thread] = set()
+        self._background_threads_lock = threading.Lock()
         if write_frequency == "async":
             self._async_queue = queue.Queue()
             self._async_thread = threading.Thread(
@@ -139,6 +142,36 @@ class HonchoSessionManager:
                 daemon=True,
             )
             self._async_thread.start()
+
+    def _join_timeout_seconds(self) -> float:
+        timeout = getattr(self._config, "timeout", None)
+        if timeout:
+            try:
+                return max(5.0, float(timeout) + 2.0)
+            except (TypeError, ValueError):
+                pass
+        return 10.0
+
+    def _start_background_thread(self, *, name: str, target) -> threading.Thread | None:
+        """Start a tracked Honcho worker thread unless shutdown has begun."""
+        if self._shutdown_event.is_set():
+            return None
+
+        thread: threading.Thread | None = None
+
+        def _wrapped() -> None:
+            try:
+                target()
+            finally:
+                if thread is not None:
+                    with self._background_threads_lock:
+                        self._background_threads.discard(thread)
+
+        thread = threading.Thread(target=_wrapped, name=name, daemon=True)
+        with self._background_threads_lock:
+            self._background_threads.add(thread)
+        thread.start()
+        return thread
 
     @property
     def honcho(self) -> Honcho:
@@ -444,11 +477,22 @@ class HonchoSessionManager:
                     break
 
     def shutdown(self) -> None:
-        """Gracefully shut down the async writer thread."""
+        """Gracefully shut down Honcho background workers."""
+        self._shutdown_event.set()
+
+        join_timeout = self._join_timeout_seconds()
+
+        with self._background_threads_lock:
+            background_threads = list(self._background_threads)
+
+        for thread in background_threads:
+            if thread.is_alive():
+                thread.join(timeout=join_timeout)
+
         if self._async_queue is not None and self._async_thread is not None:
             self.flush_all()
             self._async_queue.put(_ASYNC_SHUTDOWN)
-            self._async_thread.join(timeout=10)
+            self._async_thread.join(timeout=join_timeout)
 
     def delete(self, key: str) -> bool:
         """Delete a session from local cache."""
@@ -567,13 +611,18 @@ class HonchoSessionManager:
             session_key: The session key to query against.
             query: The user's current message, used as the query.
         """
+        if self._shutdown_event.is_set():
+            return
+
         def _run():
             result = self.dialectic_query(session_key, query)
-            if result:
+            if result and not self._shutdown_event.is_set():
                 self.set_dialectic_result(session_key, result)
 
-        t = threading.Thread(target=_run, name="honcho-dialectic-prefetch", daemon=True)
-        t.start()
+        self._start_background_thread(
+            name="honcho-dialectic-prefetch",
+            target=_run,
+        )
 
     def set_dialectic_result(self, session_key: str, result: str) -> None:
         """Store a prefetched dialectic result in a thread-safe way."""
@@ -598,13 +647,18 @@ class HonchoSessionManager:
         Non-blocking. Consumed next turn via pop_context_result(). This avoids
         a synchronous HTTP round-trip blocking every response.
         """
+        if self._shutdown_event.is_set():
+            return
+
         def _run():
             result = self.get_prefetch_context(session_key, user_message)
-            if result:
+            if result and not self._shutdown_event.is_set():
                 self.set_context_result(session_key, result)
 
-        t = threading.Thread(target=_run, name="honcho-context-prefetch", daemon=True)
-        t.start()
+        self._start_background_thread(
+            name="honcho-context-prefetch",
+            target=_run,
+        )
 
     def set_context_result(self, session_key: str, result: dict[str, str]) -> None:
         """Store a prefetched context result in a thread-safe way."""

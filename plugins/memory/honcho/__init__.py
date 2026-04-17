@@ -194,6 +194,9 @@ class HonchoMemoryProvider(MemoryProvider):
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread: Optional[threading.Thread] = None
         self._sync_thread: Optional[threading.Thread] = None
+        self._background_threads: set[threading.Thread] = set()
+        self._background_threads_lock = threading.Lock()
+        self._shutdown_event = threading.Event()
 
         # B1: recall_mode — set during initialize from config
         self._recall_mode = "hybrid"  # "context", "tools", or "hybrid"
@@ -516,6 +519,8 @@ class HonchoMemoryProvider(MemoryProvider):
         """
         if self._cron_skipped:
             return ""
+        if self._shutdown_event.is_set():
+            return ""
 
         # B1: tools-only mode — no auto-injection
         if self._recall_mode == "tools":
@@ -574,8 +579,9 @@ class HonchoMemoryProvider(MemoryProvider):
                 except Exception as exc:
                     logger.debug("Honcho first-turn dialectic failed: %s", exc)
 
-            _t = threading.Thread(target=_run_first_turn, daemon=True)
-            _t.start()
+            _t = self._start_background_thread(target=_run_first_turn)
+            if _t is None:
+                return ""
             _t.join(timeout=_first_turn_timeout)
             if not _t.is_alive():
                 first_turn_dialectic = _result_holder[0] if _result_holder else ""
@@ -634,6 +640,8 @@ class HonchoMemoryProvider(MemoryProvider):
         """
         if self._cron_skipped:
             return
+        if self._shutdown_event.is_set():
+            return
         if not self._manager or not self._session_key or not query:
             return
 
@@ -662,16 +670,16 @@ class HonchoMemoryProvider(MemoryProvider):
         def _run():
             try:
                 result = self._run_dialectic_depth(query)
-                if result and result.strip():
+                if result and result.strip() and not self._shutdown_event.is_set():
                     with self._prefetch_lock:
                         self._prefetch_result = result
             except Exception as e:
                 logger.debug("Honcho prefetch failed: %s", e)
 
-        self._prefetch_thread = threading.Thread(
-            target=_run, daemon=True, name="honcho-prefetch"
+        self._prefetch_thread = self._start_background_thread(
+            target=_run,
+            name="honcho-prefetch",
         )
-        self._prefetch_thread.start()
 
     # ----- Dialectic depth: multi-pass .chat() with cold/warm prompts -----
 
@@ -865,6 +873,8 @@ class HonchoMemoryProvider(MemoryProvider):
         """
         if self._cron_skipped:
             return
+        if self._shutdown_event.is_set():
+            return
         if not self._manager or not self._session_key:
             return
 
@@ -882,17 +892,19 @@ class HonchoMemoryProvider(MemoryProvider):
                 logger.debug("Honcho sync_turn failed: %s", e)
 
         if self._sync_thread and self._sync_thread.is_alive():
-            self._sync_thread.join(timeout=5.0)
-        self._sync_thread = threading.Thread(
-            target=_sync, daemon=True, name="honcho-sync"
+            self._sync_thread.join(timeout=self._join_timeout_seconds())
+        self._sync_thread = self._start_background_thread(
+            target=_sync,
+            name="honcho-sync",
         )
-        self._sync_thread.start()
 
     def on_memory_write(self, action: str, target: str, content: str) -> None:
         """Mirror built-in user profile writes as Honcho conclusions."""
         if action != "add" or target != "user" or not content:
             return
         if self._cron_skipped:
+            return
+        if self._shutdown_event.is_set():
             return
         if not self._manager or not self._session_key:
             return
@@ -903,8 +915,7 @@ class HonchoMemoryProvider(MemoryProvider):
             except Exception as e:
                 logger.debug("Honcho memory mirror failed: %s", e)
 
-        t = threading.Thread(target=_write, daemon=True, name="honcho-memwrite")
-        t.start()
+        self._start_background_thread(target=_write, name="honcho-memwrite")
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """Flush all pending messages to Honcho on session end."""
@@ -914,11 +925,40 @@ class HonchoMemoryProvider(MemoryProvider):
             return
         # Wait for pending sync
         if self._sync_thread and self._sync_thread.is_alive():
-            self._sync_thread.join(timeout=10.0)
+            self._sync_thread.join(timeout=self._join_timeout_seconds())
         try:
             self._manager.flush_all()
         except Exception as e:
             logger.debug("Honcho session-end flush failed: %s", e)
+
+    def _join_timeout_seconds(self) -> float:
+        timeout = getattr(self._config, "timeout", None)
+        if timeout:
+            try:
+                return max(5.0, float(timeout) + 2.0)
+            except (TypeError, ValueError):
+                pass
+        return 10.0
+
+    def _start_background_thread(self, *, target, name: str | None = None) -> Optional[threading.Thread]:
+        if self._shutdown_event.is_set():
+            return None
+
+        thread: Optional[threading.Thread] = None
+
+        def _wrapped() -> None:
+            try:
+                target()
+            finally:
+                if thread is not None:
+                    with self._background_threads_lock:
+                        self._background_threads.discard(thread)
+
+        thread = threading.Thread(target=_wrapped, daemon=True, name=name)
+        with self._background_threads_lock:
+            self._background_threads.add(thread)
+        thread.start()
+        return thread
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         """Return tool schemas, respecting recall_mode.
@@ -1034,13 +1074,25 @@ class HonchoMemoryProvider(MemoryProvider):
             return tool_error(f"Honcho {tool_name} failed: {e}")
 
     def shutdown(self) -> None:
+        self._shutdown_event.set()
+
+        join_timeout = self._join_timeout_seconds()
+
         for t in (self._prefetch_thread, self._sync_thread):
             if t and t.is_alive():
-                t.join(timeout=5.0)
-        # Flush any remaining messages
+                t.join(timeout=join_timeout)
+
+        with self._background_threads_lock:
+            background_threads = list(self._background_threads)
+
+        for t in background_threads:
+            if t.is_alive():
+                t.join(timeout=join_timeout)
+
+        # Flush any remaining messages and stop manager-owned workers.
         if self._manager:
             try:
-                self._manager.flush_all()
+                self._manager.shutdown()
             except Exception:
                 pass
 
