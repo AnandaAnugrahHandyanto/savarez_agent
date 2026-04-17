@@ -1143,7 +1143,7 @@ def select_provider_and_model(args=None):
         _model_flow_kimi(config, current_model)
     elif selected_provider == "bedrock":
         _model_flow_bedrock(config, current_model)
-    elif selected_provider in ("gemini", "deepseek", "xai", "zai", "kimi-coding-cn", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "xiaomi", "arcee", "ollama-cloud"):
+    elif selected_provider in ("gemini", "deepseek", "xai", "zai", "kimi-coding-cn", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "xiaomi", "arcee", "nvidia", "ollama-cloud"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
     # ── Post-switch cleanup: clear stale OPENAI_BASE_URL ──────────────
@@ -2472,10 +2472,10 @@ def _model_flow_kimi(config, current_model=""):
 
     # Step 3: Model selection — show appropriate models for the endpoint
     if is_coding_plan:
-        # Coding Plan models (kimi-for-coding first)
+        # Coding Plan models (kimi-k2.5 first)
         model_list = [
-            "kimi-for-coding",
             "kimi-k2.5",
+            "kimi-for-coding",
             "kimi-k2-thinking",
             "kimi-k2-thinking-turbo",
         ]
@@ -4954,7 +4954,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "xai", "ollama-cloud", "huggingface", "zai", "kimi-coding", "kimi-coding-cn", "minimax", "minimax-cn", "kilocode", "xiaomi", "arcee"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "xai", "ollama-cloud", "huggingface", "zai", "kimi-coding", "kimi-coding-cn", "minimax", "minimax-cn", "kilocode", "xiaomi", "arcee", "nvidia"],
         default=None,
         help="Inference provider (default: auto)"
     )
@@ -5600,6 +5600,25 @@ Examples:
     skills_uninstall = skills_subparsers.add_parser("uninstall", help="Remove a hub-installed skill")
     skills_uninstall.add_argument("name", help="Skill name to remove")
 
+    skills_reset = skills_subparsers.add_parser(
+        "reset",
+        help="Reset a bundled skill — clears 'user-modified' tracking so updates work again",
+        description=(
+            "Clear a bundled skill's entry from the sync manifest (~/.hermes/skills/.bundled_manifest) "
+            "so future 'hermes update' runs stop marking it as user-modified. Pass --restore to also "
+            "replace the current copy with the bundled version."
+        ),
+    )
+    skills_reset.add_argument("name", help="Skill name to reset (e.g. google-workspace)")
+    skills_reset.add_argument(
+        "--restore", action="store_true",
+        help="Also delete the current copy and re-copy the bundled version",
+    )
+    skills_reset.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Skip confirmation prompt when using --restore",
+    )
+
     skills_publish = skills_subparsers.add_parser("publish", help="Publish a skill to a registry")
     skills_publish.add_argument("skill_path", help="Path to skill directory")
     skills_publish.add_argument("--to", default="github", choices=["github", "clawhub"], help="Target registry")
@@ -5903,6 +5922,12 @@ Examples:
 
     mcp_cfg_p = mcp_sub.add_parser("configure", aliases=["config"], help="Toggle tool selection")
     mcp_cfg_p.add_argument("name", help="Server name to configure")
+
+    mcp_login_p = mcp_sub.add_parser(
+        "login",
+        help="Force re-authentication for an OAuth-based MCP server",
+    )
+    mcp_login_p.add_argument("name", help="Server name to re-authenticate")
 
     def cmd_mcp(args):
         from hermes_cli.mcp_config import mcp_command
