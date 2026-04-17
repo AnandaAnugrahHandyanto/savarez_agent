@@ -3411,7 +3411,30 @@ class GatewayRunner:
                 if msg.get("role") in ("assistant", "user", "tool")
             )
             if not found_in_history:
-                message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
+                # Ask cron whether this reply needs extra skill context
+                # (e.g. user replying to a mail-triage delivery to delete
+                # an email).  cron.reply_context owns the cron-specific
+                # resolution; the gateway stays platform-agnostic.
+                skill_context = ""
+                try:
+                    from cron.reply_context import resolve_skill_for_reply
+                    platform_str = source.platform.value if source.platform else ""
+                    extra_ctx = resolve_skill_for_reply(
+                        platform_str,
+                        source.chat_id,
+                        event.reply_to_message_id,
+                        event.reply_to_text,
+                    )
+                    if extra_ctx:
+                        skill_context = extra_ctx
+                        # Larger snippet for cron replies — they often
+                        # contain structured data (email IDs, etc.) the
+                        # agent needs to act on.
+                        reply_snippet = event.reply_to_text[:2000]
+                except Exception:
+                    logger.debug("cron reply context resolution failed", exc_info=True)
+
+                message_text = f'{skill_context}[Replying to: "{reply_snippet}"]\n\n{message_text}'
 
         if "@" in message_text:
             try:

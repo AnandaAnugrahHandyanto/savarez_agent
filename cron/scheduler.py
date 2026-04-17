@@ -326,6 +326,32 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         job["id"], platform_name, chat_id, err,
                     )
                     adapter_ok = False  # fall through to standalone path
+                elif send_result and getattr(send_result, "success", True):
+                    # Record every chunk's message id so a reply to any chunk
+                    # — not just the first one carrying "Cronjob Response:" —
+                    # can recover the job's skill context via the gateway's
+                    # cron.reply_context.resolve_skill_for_reply() helper.
+                    try:
+                        from cron.delivery_registry import register as _register_delivery
+                        raw = getattr(send_result, "raw_response", None) or {}
+                        mids: list = []
+                        raw_ids = raw.get("message_ids") if isinstance(raw, dict) else None
+                        if raw_ids:
+                            mids = list(raw_ids)
+                        elif getattr(send_result, "message_id", None):
+                            mids = [send_result.message_id]
+                        _register_delivery(
+                            platform_name,
+                            chat_id,
+                            mids,
+                            job.get("name", job["id"]),
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Job '%s': could not register delivery message ids",
+                            job["id"],
+                            exc_info=True,
+                        )
 
             # Send extracted media files as native attachments via the live adapter
             if adapter_ok and media_files:
