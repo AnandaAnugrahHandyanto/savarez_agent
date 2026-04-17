@@ -28,7 +28,10 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
 
     # --- Replicate lines 59-87: terminal config bridge ---
     terminal_cfg = cfg.get("terminal", {})
+    configured_terminal_cwd_value = None
     if terminal_cfg and isinstance(terminal_cfg, dict):
+        if "cwd" in terminal_cfg:
+            configured_terminal_cwd_value = terminal_cfg.get("cwd")
         terminal_env_map = {
             "backend": "TERMINAL_ENV",
             "cwd": "TERMINAL_CWD",
@@ -55,6 +58,10 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
 
     # --- Replicate lines 144-147: MESSAGING_CWD fallback ---
     configured_cwd = env.get("TERMINAL_CWD", "")
+    if isinstance(configured_terminal_cwd_value, str):
+        configured_terminal_cwd_value = configured_terminal_cwd_value.strip()
+    if configured_terminal_cwd_value in (".", "auto", "cwd"):
+        configured_cwd = configured_terminal_cwd_value
     if not configured_cwd or configured_cwd in (".", "auto", "cwd"):
         messaging_cwd = env.get("MESSAGING_CWD") or "/root"  # Path.home() for root
         env["TERMINAL_CWD"] = messaging_cwd
@@ -112,13 +119,19 @@ class TestTopLevelCwdAlias:
         """cwd: '.' should trigger MESSAGING_CWD fallback."""
         cfg = {"cwd": "."}
         result = _simulate_config_bridge(cfg, {"MESSAGING_CWD": "/home/hermes"})
-        # "." is stripped but truthy, so it gets set as TERMINAL_CWD
-        # Then the MESSAGING_CWD fallback does NOT trigger since TERMINAL_CWD
-        # is set and not in (".", "auto", "cwd").
-        # Wait — "." IS in the fallback list! So this should fall through.
-        # Actually the alias sets it to ".", then the messaging fallback
-        # checks if it's in (".", "auto", "cwd") and overrides.
         assert result["TERMINAL_CWD"] == "/home/hermes"
+
+    def test_terminal_dot_cwd_overrides_preexpanded_service_cwd(self):
+        """Gateway should honor MESSAGING_CWD even if '.' was expanded earlier."""
+        cfg = {"terminal": {"cwd": "."}}
+        result = _simulate_config_bridge(
+            cfg,
+            {
+                "MESSAGING_CWD": "/home/hermes/messages",
+                "TERMINAL_CWD": "/home/hermes/.hermes/hermes-agent",
+            },
+        )
+        assert result["TERMINAL_CWD"] == "/home/hermes/messages"
 
     def test_auto_cwd_triggers_messaging_fallback(self):
         cfg = {"cwd": "auto"}

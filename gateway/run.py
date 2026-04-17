@@ -89,6 +89,7 @@ load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).resolve(
 # Bridge config.yaml values into the environment so os.getenv() picks them up.
 # config.yaml is authoritative for terminal settings — overrides .env.
 _config_path = _hermes_home / 'config.yaml'
+_configured_terminal_cwd_value = None
 if _config_path.exists():
     try:
         import yaml as _yaml
@@ -105,6 +106,8 @@ if _config_path.exists():
         # config.yaml overrides .env for these since it's the documented config path.
         _terminal_cfg = _cfg.get("terminal", {})
         if _terminal_cfg and isinstance(_terminal_cfg, dict):
+            if "cwd" in _terminal_cfg:
+                _configured_terminal_cwd_value = _terminal_cfg.get("cwd")
             _terminal_env_map = {
                 "backend": "TERMINAL_ENV",
                 "cwd": "TERMINAL_CWD",
@@ -234,9 +237,14 @@ os.environ["HERMES_EXEC_ASK"] = "1"
 # If the user set an explicit path in config.yaml (not "." or "auto"),
 # respect it. Otherwise use MESSAGING_CWD or default to home directory.
 _configured_cwd = os.environ.get("TERMINAL_CWD", "")
+if isinstance(_configured_terminal_cwd_value, str):
+    _configured_terminal_cwd_value = _configured_terminal_cwd_value.strip()
+if _configured_terminal_cwd_value in (".", "auto", "cwd"):
+    _configured_cwd = _configured_terminal_cwd_value
 if not _configured_cwd or _configured_cwd in (".", "auto", "cwd"):
     messaging_cwd = os.getenv("MESSAGING_CWD") or str(Path.home())
     os.environ["TERMINAL_CWD"] = messaging_cwd
+    logging.getLogger(__name__).info("[CWD-BRIDGE] Set TERMINAL_CWD=%s from MESSAGING_CWD (configured=%r)", messaging_cwd, _configured_terminal_cwd_value)
 
 from gateway.config import (
     Platform,
@@ -9391,6 +9399,7 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
 
 
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
+    logger.info("[CWD-CHECK] start_gateway entry TERMINAL_CWD=%s", os.environ.get("TERMINAL_CWD", "<unset>"))
     """
     Start the gateway and run until interrupted.
     

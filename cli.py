@@ -409,7 +409,7 @@ def load_cli_config() -> Dict[str, Any]:
             existing_terminal_cwd = os.environ.get("TERMINAL_CWD", "")
             if existing_terminal_cwd and existing_terminal_cwd not in (".", "auto", "cwd"):
                 terminal_config["cwd"] = existing_terminal_cwd
-                defaults["terminal"]["cwd"] = terminal_config["cwd"]
+                defaults["terminal"]["cwd"] = existing_terminal_cwd
             else:
                 terminal_config["cwd"] = os.getcwd()
                 defaults["terminal"]["cwd"] = terminal_config["cwd"]
