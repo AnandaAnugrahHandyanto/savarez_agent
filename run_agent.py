@@ -353,6 +353,51 @@ def _sanitize_surrogates(text: str) -> str:
     return text
 
 
+def _user_message_text(user_message) -> str:
+    """Best-effort string representation of a possibly-multi-part user message.
+
+    The agent loop's ``user_message`` parameter is typed as ``str`` but in
+    practice can also be an OpenAI-style multi-part list of content parts
+    (``[{type:"text",text:"..."}, {type:"image_url",image_url:{...}}, ...]``)
+    when the request comes through the OpenAI-compat HTTP API server. The
+    raw multi-part list must be passed to the LLM unchanged so vision-capable
+    models receive their image parts, but anywhere we want to *display* or
+    *pattern-match* the text (logging previews, codex-ack heuristics, etc.)
+    we need a flat string. This helper is the single place that flattening
+    happens — keep it small and side-effect-free.
+
+    - ``str`` → returned as-is
+    - ``list`` of OpenAI content parts → join the ``text`` of each text part
+      with spaces; non-text parts are summarised as ``[image]``/``[audio]``/
+      ``[file]`` so that previews don't lose track of their existence
+    - ``None`` → empty string
+    - anything else → ``str(...)``
+    """
+    if user_message is None:
+        return ""
+    if isinstance(user_message, str):
+        return user_message
+    if isinstance(user_message, list):
+        parts: list[str] = []
+        for part in user_message:
+            if isinstance(part, dict):
+                ptype = part.get("type")
+                if ptype == "text":
+                    parts.append(str(part.get("text", "")))
+                elif ptype in ("image_url", "input_image"):
+                    parts.append("[image]")
+                elif ptype in ("input_audio", "audio"):
+                    parts.append("[audio]")
+                elif ptype in ("file", "input_file"):
+                    parts.append("[file]")
+                else:
+                    parts.append(f"[{ptype or 'part'}]")
+            elif isinstance(part, str):
+                parts.append(part)
+        return " ".join(p for p in parts if p)
+    return str(user_message)
+
+
 def _sanitize_messages_surrogates(messages: list) -> bool:
     """Sanitize surrogate characters from all string content in a messages list.
 
@@ -2224,7 +2269,7 @@ class AIAgent:
             "path",
         )
 
-        user_text = (user_message or "").strip().lower()
+        user_text = _user_message_text(user_message).strip().lower()
         user_targets_workspace = (
             any(marker in user_text for marker in workspace_markers)
             or "~/" in user_text
@@ -8340,7 +8385,8 @@ class AIAgent:
         self.iteration_budget = IterationBudget(self.max_iterations)
 
         # Log conversation turn start for debugging/observability
-        _msg_preview = (user_message[:80] + "...") if len(user_message) > 80 else user_message
+        _preview_text = _user_message_text(user_message)
+        _msg_preview = (_preview_text[:80] + "...") if len(_preview_text) > 80 else _preview_text
         _msg_preview = _msg_preview.replace("\n", " ")
         logger.info(
             "conversation turn: session=%s model=%s provider=%s platform=%s history=%d msg=%r",
@@ -8388,7 +8434,8 @@ class AIAgent:
         self._persist_user_message_idx = current_turn_user_idx
         
         if not self.quiet_mode:
-            self._safe_print(f"💬 Starting conversation: '{user_message[:60]}{'...' if len(user_message) > 60 else ''}'")
+            _print_text = _user_message_text(user_message)
+            self._safe_print(f"💬 Starting conversation: '{_print_text[:60]}{'...' if len(_print_text) > 60 else ''}'")
         
         # ── System prompt (cached per session for prefix caching) ──
         # Built once on first call, reused for all subsequent calls.
