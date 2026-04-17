@@ -37,7 +37,6 @@ class TestProviderRegistry:
         ("minimax", "MiniMax", "api_key"),
         ("minimax-cn", "MiniMax (China)", "api_key"),
         ("venice", "Venice", "api_key"),
-        ("ai-gateway", "AI Gateway", "api_key"),
         ("ai-gateway", "Vercel AI Gateway", "api_key"),
         ("kilocode", "Kilo Code", "api_key"),
     ])

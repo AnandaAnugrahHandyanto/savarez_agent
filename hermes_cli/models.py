@@ -213,6 +213,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "openai-gpt-53-codex",
         "zai-org-glm-4.7",
         "kimi-k2-5",
+    ],
     "arcee": [
         "trinity-large-thinking",
         "trinity-large-preview",
@@ -908,7 +909,7 @@ def list_available_providers() -> list[dict[str, str]]:
         aliases_for.setdefault(canonical, []).append(alias)
 
     result = []
-    for pid in provider_order:
+    for pid in _PROVIDER_ORDER:
         label = _PROVIDER_LABELS.get(pid, pid)
         alias_list = aliases_for.get(pid, [])
         # Check if this provider has credentials available
