@@ -26,7 +26,8 @@ COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
 # Fallback OpenRouter snapshot used when the live catalog is unavailable.
 # (model_id, display description shown in menus)
 OPENROUTER_MODELS: list[tuple[str, str]] = [
-    ("anthropic/claude-opus-4.6",       "recommended"),
+    ("anthropic/claude-opus-4.7",       "recommended"),
+    ("anthropic/claude-opus-4.6",       ""),
     ("anthropic/claude-sonnet-4.6",     ""),
     ("qwen/qwen3.6-plus",               ""),
     ("anthropic/claude-sonnet-4.5",     ""),
@@ -135,6 +136,11 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemma-4-31b-it",
         "gemma-4-26b-it",
     ],
+    "google-gemini-cli": [
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+    ],
     "zai": [
         "glm-5.1",
         "glm-5",
@@ -181,6 +187,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "MiniMax-M2",
     ],
     "anthropic": [
+        "claude-opus-4-7",
         "claude-opus-4-6",
         "claude-sonnet-4-6",
         "claude-opus-4-5-20251101",
@@ -245,6 +252,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "big-pickle",
     ],
     "opencode-go": [
+        "glm-5.1",
         "glm-5",
         "kimi-k2.5",
         "mimo-v2-pro",
@@ -535,6 +543,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("copilot-acp",    "GitHub Copilot ACP",       "GitHub Copilot ACP (spawns `copilot --acp --stdio`)"),
     ProviderEntry("huggingface",    "Hugging Face",             "Hugging Face Inference Providers (20+ open models)"),
     ProviderEntry("gemini",         "Google AI Studio",         "Google AI Studio (Gemini models — OpenAI-compatible endpoint)"),
+    ProviderEntry("google-gemini-cli", "Google Gemini (OAuth)",   "Google Gemini via OAuth + Code Assist (free tier supported; no API key needed)"),
     ProviderEntry("deepseek",       "DeepSeek",                 "DeepSeek (DeepSeek-V3, R1, coder — direct API)"),
     ProviderEntry("xai",            "xAI",                      "xAI (Grok models — direct API)"),
     ProviderEntry("zai",            "Z.AI / GLM",               "Z.AI / GLM (Zhipu AI direct API)"),
@@ -598,6 +607,8 @@ _PROVIDER_ALIASES = {
     "qwen": "alibaba",
     "alibaba-cloud": "alibaba",
     "qwen-portal": "qwen-oauth",
+    "gemini-cli": "google-gemini-cli",
+    "gemini-oauth": "google-gemini-cli",
     "hf": "huggingface",
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
@@ -1048,7 +1059,7 @@ def detect_provider_for_model(
             return (resolved_provider, default_models[0])
 
     # Aggregators list other providers' models — never auto-switch TO them
-    _AGGREGATORS = {"nous", "openrouter"}
+    _AGGREGATORS = {"nous", "openrouter", "ai-gateway", "copilot", "kilocode"}
 
     # If the model belongs to the current provider's catalog, don't suggest switching
     current_models = _PROVIDER_MODELS.get(current_provider, [])
@@ -1303,6 +1314,10 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                 return live
         except Exception:
             pass
+    if normalized == "ollama-cloud":
+        live = fetch_ollama_cloud_models(force_refresh=force_refresh)
+        if live:
+            return live
     if normalized == "custom":
         base_url = _get_custom_base_url()
         if base_url:
@@ -1587,6 +1602,11 @@ def copilot_model_api_mode(
     primary signal.  Falls back to the catalog's ``supported_endpoints``
     only for models not covered by the pattern check.
     """
+    # Fetch the catalog once so normalize + endpoint check share it
+    # (avoids two redundant network calls for non-GPT-5 models).
+    if catalog is None and api_key:
+        catalog = fetch_github_model_catalog(api_key=api_key)
+
     normalized = normalize_copilot_model_id(model_id, catalog=catalog, api_key=api_key)
     if not normalized:
         return "chat_completions"
@@ -1596,9 +1616,6 @@ def copilot_model_api_mode(
         return "codex_responses"
 
     # Secondary: check catalog for non-GPT-5 models (Claude via /v1/messages, etc.)
-    if catalog is None and api_key:
-        catalog = fetch_github_model_catalog(api_key=api_key)
-
     if catalog:
         catalog_entry = next((item for item in catalog if item.get("id") == normalized), None)
         if isinstance(catalog_entry, dict):
