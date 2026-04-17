@@ -113,6 +113,10 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
 _PROVIDER_VISION_MODELS: Dict[str, str] = {
     "xiaomi": "mimo-v2-omni",
     "zai": "glm-5v-turbo",
+    # MiniMax's Anthropic-compatible endpoint natively supports image input
+    # for models such as MiniMax-M2.7.  The models.dev cache may not yet carry
+    # the correct modalities, so we override here.
+    "minimax": "MiniMax-M2.7",
 }
 
 # OpenRouter app attribution headers

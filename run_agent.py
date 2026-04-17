@@ -91,6 +91,7 @@ from agent.model_metadata import (
     save_context_length, is_local_endpoint,
     query_ollama_num_ctx,
 )
+from agent.models_dev import get_model_info
 from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
@@ -731,6 +732,26 @@ class AIAgent:
                 target=lambda: fetch_model_metadata(),
                 daemon=True,
             ).start()
+
+        # Check if the selected model supports native vision (multimodal input).
+        # When True, image blocks are passed through to the API unchanged.
+        # When False (or on lookup failure), images are converted to text
+        # descriptions via the auxiliary vision backend (Gemini Flash, etc.).
+        try:
+            _mi = get_model_info(self.provider, self.model)
+            _supports_vision = _mi.supports_vision() if _mi else False
+        except Exception:
+            _supports_vision = False
+
+        # Hardcoded overrides for providers/models whose models.dev cache entry
+        # is missing or stale (e.g. MiniMax-M2.7 on minimax.io supports vision).
+        _provider_vision_models_override = {
+            "minimax": True,  # MiniMax-M2.7 natively supports image input
+        }
+        if self.provider in _provider_vision_models_override:
+            _supports_vision = _provider_vision_models_override[self.provider]
+
+        self._model_supports_vision: bool = _supports_vision
 
         self.tool_progress_callback = tool_progress_callback
         self.tool_start_callback = tool_start_callback
@@ -5995,10 +6016,16 @@ class AIAgent:
         return "[A multimodal message was converted to text for Anthropic compatibility.]"
 
     def _prepare_anthropic_messages_for_api(self, api_messages: list) -> list:
+        # If no message has image parts, nothing to do.
         if not any(
             isinstance(msg, dict) and self._content_has_image_parts(msg.get("content"))
             for msg in api_messages
         ):
+            return api_messages
+
+        # Native multimodal models (e.g. MiniMax-M2.7, GPT-4o, Gemini-Pro-Vision)
+        # accept image blocks directly — skip text conversion and pass through.
+        if getattr(self, "_model_supports_vision", False):
             return api_messages
 
         transformed = copy.deepcopy(api_messages)
