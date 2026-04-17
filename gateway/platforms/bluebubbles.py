@@ -528,6 +528,26 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         **kwargs,
     ) -> SendResult:
+        # iMessage voice bubbles require Opus-in-CAF. BlueBubbles' own MP3->CAF
+        # converter currently produces PCM-in-CAF (see BlueBubblesApp/bluebubbles-server#793),
+        # so transcode here via macOS's native afconvert before handing off.
+        import shutil, subprocess
+        afconvert = shutil.which("afconvert") or "/usr/bin/afconvert"
+        if os.path.isfile(afconvert) and not audio_path.lower().endswith(".caf"):
+            caf_path = os.path.splitext(audio_path)[0] + ".caf"
+            try:
+                r = subprocess.run(
+                    [afconvert, "-f", "caff", "-d", "opus@24000", "-c", "1",
+                     audio_path, caf_path],
+                    capture_output=True, timeout=30,
+                )
+                if r.returncode == 0 and os.path.exists(caf_path) and os.path.getsize(caf_path) > 0:
+                    audio_path = caf_path
+                else:
+                    logger.warning("afconvert -> Opus/CAF failed: %s",
+                                   r.stderr.decode("utf-8", errors="ignore")[:200])
+            except Exception as exc:
+                logger.warning("afconvert -> Opus/CAF error: %s", exc)
         return await self._send_attachment(
             chat_id, audio_path, caption=caption, is_audio_message=True
         )
