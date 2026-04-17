@@ -602,6 +602,12 @@ class TestBuildSystemPrompt:
         prompt = agent_with_memory_tool._build_system_prompt()
         assert MEMORY_GUIDANCE in prompt
 
+    def test_untrusted_content_guidance_when_any_tool_loaded(self, agent):
+        from agent.prompt_builder import UNTRUSTED_CONTENT_GUIDANCE
+
+        prompt = agent._build_system_prompt()
+        assert UNTRUSTED_CONTENT_GUIDANCE in prompt
+
     def test_no_memory_guidance_without_tool(self, agent):
         from agent.prompt_builder import MEMORY_GUIDANCE
 
@@ -755,7 +761,7 @@ class TestToolUseEnforcementConfig:
 
     def test_no_tools_never_injects(self):
         """Even with enforcement=true, no injection when agent has no tools."""
-        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE, UNTRUSTED_CONTENT_GUIDANCE
         with (
             patch("run_agent.get_tool_definitions", return_value=[]),
             patch("run_agent.check_toolset_requirements", return_value={}),
@@ -775,6 +781,7 @@ class TestToolUseEnforcementConfig:
             a.client = MagicMock()
             prompt = a._build_system_prompt()
             assert TOOL_USE_ENFORCEMENT_GUIDANCE not in prompt
+            assert UNTRUSTED_CONTENT_GUIDANCE not in prompt
 
 
 class TestInvalidateSystemPrompt:

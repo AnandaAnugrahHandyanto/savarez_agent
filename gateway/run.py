@@ -14,6 +14,8 @@ Usage:
 """
 
 import asyncio
+import importlib.util
+import inspect
 import json
 import logging
 import os
@@ -26,7 +28,7 @@ import threading
 import time
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Optional, Any, List
+from typing import Any, Callable, Dict, List, Optional
 
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
@@ -220,6 +222,37 @@ _configured_cwd = os.environ.get("TERMINAL_CWD", "")
 if not _configured_cwd or _configured_cwd in (".", "auto", "cwd"):
     messaging_cwd = os.getenv("MESSAGING_CWD") or str(Path.home())
     os.environ["TERMINAL_CWD"] = messaging_cwd
+
+def _custom_plugins_root() -> Path:
+    custom_home = os.environ.get("HERMES_CUSTOM_HOME")
+    if custom_home:
+        return Path(custom_home)
+    return _hermes_home / "custom_plugins"
+
+
+
+def _load_custom_gateway_agent_hook() -> Optional[Callable[[Any], None]]:
+    plugin_path = _custom_plugins_root() / "gateway" / "custom_runner.py"
+    if not plugin_path.exists():
+        return None
+    spec = importlib.util.spec_from_file_location(
+        "hermes_custom.gateway.custom_runner", plugin_path
+    )
+    if not spec or not spec.loader:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        logging.getLogger(__name__).exception("Failed to load %s", plugin_path)
+        return None
+    hook = getattr(module, "register_agent_hooks", None)
+    if callable(hook):
+        return hook
+    return None
+
+
+_CUSTOM_GATEWAY_AGENT_HOOK: Optional[Callable[[Any], None]] = _load_custom_gateway_agent_hook()
 
 from gateway.config import (
     Platform,
@@ -6782,6 +6815,20 @@ class GatewayRunner:
                     logger.debug("background_review_callback error: %s", _e)
 
             agent.background_review_callback = _bg_review_send
+
+            if (
+                _CUSTOM_GATEWAY_AGENT_HOOK is not None
+                and not getattr(agent, "_custom_gateway_hook_registered", False)
+            ):
+                try:
+                    hook_signature = inspect.signature(_CUSTOM_GATEWAY_AGENT_HOOK)
+                    if "logger" in hook_signature.parameters:
+                        _CUSTOM_GATEWAY_AGENT_HOOK(agent, logger=logger)
+                    else:
+                        _CUSTOM_GATEWAY_AGENT_HOOK(agent)
+                    agent._custom_gateway_hook_registered = True
+                except Exception as exc:
+                    logger.warning("Custom gateway hook failed: %s", exc)
 
             # Store agent reference for interrupt support
             agent_holder[0] = agent

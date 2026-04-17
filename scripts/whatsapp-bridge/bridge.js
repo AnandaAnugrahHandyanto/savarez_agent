@@ -23,6 +23,8 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
+import os from 'os';
+import { createRequire } from 'module';
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, appendFileSync } from 'fs';
 import { randomBytes } from 'crypto';
 import qrcode from 'qrcode-terminal';
@@ -61,6 +63,20 @@ const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n──────────
 const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   ? DEFAULT_REPLY_PREFIX
   : process.env.WHATSAPP_REPLY_PREFIX.replace(/\\n/g, '\n');
+
+const CUSTOM_PLUGINS_ROOT = process.env.HERMES_CUSTOM_HOME
+  ? path.resolve(process.env.HERMES_CUSTOM_HOME)
+  : path.join(os.homedir(), '.hermes', 'custom_plugins');
+const CUSTOM_BRIDGE_HOOKS = path.join(CUSTOM_PLUGINS_ROOT, 'bridge', 'custom_bridge_hooks.js');
+const require = createRequire(import.meta.url);
+let customBridgeHooks = {};
+try {
+  customBridgeHooks = require(CUSTOM_BRIDGE_HOOKS);
+} catch (err) {
+  if (WHATSAPP_DEBUG) {
+    console.warn('[bridge] no custom bridge hooks loaded:', err.message);
+  }
+}
 
 function formatOutgoingMessage(message) {
   // In bot mode, messages come from a different number so the prefix is
@@ -348,7 +364,7 @@ async function startSocket() {
         continue;
       }
 
-      const event = {
+      let event = {
         messageId: msg.key.id,
         chatId,
         senderId,
@@ -365,14 +381,46 @@ async function startSocket() {
         timestamp: msg.messageTimestamp,
       };
 
+      if (typeof customBridgeHooks.filterIncomingEvent === 'function') {
+        try {
+          const filtered = customBridgeHooks.filterIncomingEvent(event);
+          if (!filtered) {
+            continue;
+          }
+          event = filtered;
+        } catch (err) {
+          console.error('[bridge] filterIncomingEvent error:', err.message);
+        }
+      }
+
+      let shouldLogTap = true;
+      if (typeof customBridgeHooks.shouldLogGroupEvent === 'function') {
+        try {
+          shouldLogTap = !!customBridgeHooks.shouldLogGroupEvent(event);
+        } catch (err) {
+          console.error('[bridge] shouldLogGroupEvent error:', err.message);
+          shouldLogTap = true;
+        }
+      }
+
       messageQueue.push(event);
       if (messageQueue.length > MAX_QUEUE_SIZE) {
         messageQueue.shift();
       }
-      try {
-        appendFileSync(MONITOR_TAP_FILE, `${JSON.stringify(event)}\n`);
-      } catch (err) {
-        console.error('[bridge] Failed to append monitor tap:', err.message);
+      if (shouldLogTap) {
+        try {
+          appendFileSync(MONITOR_TAP_FILE, `${JSON.stringify(event)}\n`);
+        } catch (err) {
+          console.error('[bridge] Failed to append monitor tap:', err.message);
+        }
+      }
+
+      if (typeof customBridgeHooks.handleRobin === 'function') {
+        try {
+          customBridgeHooks.handleRobin(event);
+        } catch (err) {
+          console.error('[bridge] handleRobin error:', err.message);
+        }
       }
     }
   });
