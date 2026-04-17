@@ -167,7 +167,8 @@ _FEISHU_WEBHOOK_RATE_LIMIT_MAX = 120               # max requests per window per
 _FEISHU_WEBHOOK_RATE_MAX_KEYS = 4096               # max tracked keys (prevents unbounded growth)
 _FEISHU_WEBHOOK_BODY_TIMEOUT_SECONDS = 30          # max seconds to read request body
 _FEISHU_WEBHOOK_ANOMALY_THRESHOLD = 25             # consecutive error responses before WARNING log
-_Feishu_WEBHOOK_ANOMALY_TTL_SECONDS = 6 * 60 * 60  # anomaly tracker TTL (6 hours) — matches openclaw
+_FEISHU_WEBHOOK_ANOMALY_TTL_SECONDS = 6 * 60 * 60  # anomaly tracker TTL (6 hours) — matches openclaw
+_FEISHU_CONVERSATION_WINDOW_SECONDS = 5 * 60      # 5-minute rolling window for conversation continuity
 
 # Keywords that trigger bot response in group chats (no @mention required)
 _FEISHU_GROUP_TRIGGER_KEYWORDS = [
@@ -176,8 +177,9 @@ _FEISHU_GROUP_TRIGGER_KEYWORDS = [
     "不会", "不懂", "解题", "答题", "计算", "练习", "课本", "教材",
     "批改", "讲解", "教我", "帮我", "这个题", "那道题",
 ]
-_Feishu_GROUP_RECENT_CHATS_TTL_SECONDS = 5 * 60    # 5-minute conversation window
+
 _FEISHU_CARD_ACTION_DEDUP_TTL_SECONDS = 15 * 60    # card action token dedup window (15 min)
+_FEISHU_GROUP_RECENT_CHATS_TTL_SECONDS = 5 * 60    # 5-minute conversation window for group chats
 _FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent message IDs
 _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
 _FEISHU_ACK_EMOJI = "OK"
@@ -2164,8 +2166,26 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to_message_id = (
             getattr(message, "parent_id", None)
             or getattr(message, "upper_message_id", None)
+            or getattr(message, "reply_id", None)
+            or getattr(message, "quote_id", None)
             or None
         )
+
+        # Debug: log ALL message attributes to find the actual reply/quote field
+        _debug_reply_fields = {
+            k: getattr(message, k, None)
+            for k in dir(message)
+            if not k.startswith("_") and "id" in k.lower()
+        }
+        logger.warning(
+            "[Feishu] Reply/quote debug — parent_id=%r upper_message_id=%r reply_id=%r quote_id=%r | all_id_fields=%s",
+            getattr(message, "parent_id", None),
+            getattr(message, "upper_message_id", None),
+            getattr(message, "reply_id", None),
+            getattr(message, "quote_id", None),
+            _debug_reply_fields,
+        )
+
         reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
 
         logger.info(
