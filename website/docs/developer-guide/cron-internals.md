@@ -59,7 +59,8 @@ Jobs are stored in `~/.hermes/cron/jobs.json` with atomic write semantics (write
   "created_at": "2025-01-01T00:00:00Z",
   "model": null,
   "provider": null,
-  "script": null
+  "script": null,
+  "script_skip_if_empty": false
 }
 ```
 
@@ -90,12 +91,13 @@ tick()
   4. For each due job:
      a. Set state to "running"
      b. Create fresh AIAgent session (no conversation history)
-     c. Load attached skills in order (injected as user messages)
-     d. Run the job prompt through the agent
-     e. Deliver the response to the configured target
-     f. Update run_count, compute next_run
-     g. If repeat count exhausted → state = "completed"
-     h. Otherwise → state = "scheduled"
+     c. Run script (if configured) — skip LLM if script exits zero with empty output and script_skip_if_empty is true
+     d. Load attached skills in order (injected as user messages)
+     e. Run the job prompt through the agent
+     f. Deliver the response to the configured target
+     g. Update run_count, compute next_run
+     h. If repeat count exhausted → state = "completed"
+     i. Otherwise → state = "scheduled"
   5. Write updated jobs back to jobs.json
   6. Release scheduler lock
 ```
@@ -141,7 +143,20 @@ import requests, json
 # Print summary to stdout — agent analyzes and reports
 ```
 
-The script timeout defaults to 120 seconds. `_get_script_timeout()` resolves the limit through a three-layer chain:
+When `script_skip_if_empty` is `true`, a script that exits zero with empty stdout causes the job to skip the LLM invocation entirely (silent skip, no delivery). This allows "only act when something changed" patterns without needing a separate precheck mechanism.
+
+```json
+{
+  "id": "a1b2c3d4e5f6",
+  "name": "GitHub commit summary",
+  "prompt": "Summarize the new commits below.",
+  "schedule": { "kind": "cron", "expr": "0 9 * * *" },
+  "script": "check_github.py",
+  "script_skip_if_empty": true
+}
+```
+
+Script timeout defaults to 120 seconds. `_get_script_timeout()` resolves the limit through a three-layer chain:
 
 1. **Module-level override** — `_SCRIPT_TIMEOUT` (for tests/monkeypatching). Only used when it differs from the default.
 2. **Environment variable** — `HERMES_CRON_SCRIPT_TIMEOUT`

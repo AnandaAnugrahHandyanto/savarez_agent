@@ -555,3 +555,119 @@ class TestRunJobEnvVarCleanup:
         assert os.environ.get("HERMES_SESSION_PLATFORM") is None
         assert os.environ.get("HERMES_SESSION_CHAT_ID") is None
         assert os.environ.get("HERMES_SESSION_CHAT_NAME") is None
+
+
+class TestScriptSkipIfEmpty:
+    """Tests for script_skip_if_empty field and behavior."""
+
+    def test_create_job_with_script_skip_if_empty(self, cron_env):
+        from cron.jobs import create_job, get_job
+
+        job = create_job(
+            prompt="Analyze the data",
+            schedule="every 30m",
+            script="check_changes.py",
+            script_skip_if_empty=True,
+        )
+        assert job["script_skip_if_empty"] is True
+
+        loaded = get_job(job["id"])
+        assert loaded["script_skip_if_empty"] is True
+
+    def test_create_job_default_script_skip_if_empty_false(self, cron_env):
+        from cron.jobs import create_job
+
+        job = create_job(prompt="Hello", schedule="every 1h")
+        assert job.get("script_skip_if_empty") is False
+
+    def test_update_script_skip_if_empty(self, cron_env):
+        from cron.jobs import create_job, update_job
+
+        job = create_job(prompt="Hello", schedule="every 1h")
+        assert job.get("script_skip_if_empty") is False
+
+        updated = update_job(job["id"], {"script_skip_if_empty": True})
+        assert updated["script_skip_if_empty"] is True
+
+    def test_update_script_skip_if_empty_false(self, cron_env):
+        from cron.jobs import create_job, update_job
+
+        job = create_job(
+            prompt="Hello", schedule="every 1h", script="check.py", script_skip_if_empty=True
+        )
+        assert job["script_skip_if_empty"] is True
+
+        updated = update_job(job["id"], {"script_skip_if_empty": False})
+        assert updated["script_skip_if_empty"] is False
+
+    def test_build_job_prompt_with_skip_if_empty_false_no_script(self, cron_env):
+        """When script_skip_if_empty=false (default) and script returns empty,
+        _build_job_prompt still injects the notice and calls LLM."""
+        from cron.scheduler import _build_job_prompt
+
+        script = cron_env / "scripts" / "noop.py"
+        script.write_text("# nothing\n")
+
+        job = {
+            "prompt": "Check status.",
+            "script": str(script),
+            "script_skip_if_empty": False,
+        }
+        prompt = _build_job_prompt(job)
+        assert "no output" in prompt.lower()
+        assert "Check status." in prompt
+
+    def test_build_job_prompt_with_skip_if_empty_true_no_script(self, cron_env):
+        """When script_skip_if_empty=true and script returns empty output,
+        _build_job_prompt does NOT inject "no output" — it lets run_job handle the skip."""
+        from cron.scheduler import _build_job_prompt
+
+        script = cron_env / "scripts" / "noop.py"
+        script.write_text("# nothing\n")
+
+        job = {
+            "prompt": "Check status.",
+            "script": str(script),
+            "script_skip_if_empty": True,
+        }
+        prompt = _build_job_prompt(job)
+        # The "no output" notice should NOT appear since run_job will skip LLM
+        assert "no output" not in prompt.lower()
+        assert "Check status." in prompt
+
+
+class TestCronjobToolScriptSkipIfEmpty:
+    """Test script_skip_if_empty via the cronjob tool API."""
+
+    def test_create_with_script_skip_if_empty(self, cron_env, monkeypatch):
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        from tools.cronjob_tools import cronjob
+
+        result = json.loads(cronjob(
+            action="create",
+            schedule="every 1h",
+            prompt="Monitor things",
+            script="check.py",
+            script_skip_if_empty=True,
+        ))
+        assert result["success"] is True
+        assert result["job"]["script_skip_if_empty"] is True
+
+    def test_update_script_skip_if_empty(self, cron_env, monkeypatch):
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        from tools.cronjob_tools import cronjob
+
+        create_result = json.loads(cronjob(
+            action="create",
+            schedule="every 1h",
+            prompt="Monitor things",
+        ))
+        job_id = create_result["job_id"]
+
+        update_result = json.loads(cronjob(
+            action="update",
+            job_id=job_id,
+            script_skip_if_empty=True,
+        ))
+        assert update_result["success"] is True
+        assert update_result["job"]["script_skip_if_empty"] is True

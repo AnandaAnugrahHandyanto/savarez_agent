@@ -254,6 +254,60 @@ cron:
 
 Or set the `HERMES_CRON_SCRIPT_TIMEOUT` environment variable. The resolution order is: env var → config.yaml → 120s default.
 
+## Script — conditional LLM invocation
+
+The `script` field already runs before the LLM. By combining it with `script_skip_if_empty: true`, you can skip the LLM entirely when the script returns empty output — useful for "only act when something changed" patterns.
+
+### Behavior
+
+| Script result | What happens |
+|---------------|--------------|
+| Exit non-zero | Script error injected into prompt, LLM is called (existing behavior) |
+| Exit zero + empty stdout + `script_skip_if_empty=false` (default) | "Script ran but produced no output" injected into prompt, LLM is called |
+| Exit zero + empty stdout + `script_skip_if_empty=true` | Job skipped silently, no LLM call, no delivery |
+| Exit zero + non-empty stdout | Output injected into prompt, LLM is called normally |
+
+### Use case
+
+```python
+# check_github.py — exits 0 only when there are new commits
+import subprocess, sys
+result = subprocess.run(["git", "fetch", "origin"], capture_output=True)
+result = subprocess.run(["git", "log", "HEAD..origin/main", "--oneline"], capture_output=True)
+if result.stdout.strip():
+    print(result.stdout.strip())
+    sys.exit(0)
+# no new commits — script produces no output, LLM is skipped
+```
+
+```python
+cronjob(
+    action="create",
+    prompt="Summarize the new commits below.",
+    schedule="every 1h",
+    script="check_github.py",
+    script_skip_if_empty=True,
+)
+```
+
+### Example: only alert on failures
+
+```python
+# check_health.py — exits 0 with output when service is down, empty when healthy
+import requests, sys
+try:
+    r = requests.get("https://example.com/health", timeout=5)
+    if r.status_code != 200:
+        print(f"Service unhealthy: HTTP {r.status_code}")
+        sys.exit(0)  # has output → LLM is called
+    sys.exit(0)  # healthy, no output → LLM skipped silently with skip_if_empty
+except Exception as e:
+    print(f"Health check error: {e}")
+    sys.exit(0)  # treat error as worth alerting on
+```
+
+Script timeout applies (120s default, configurable via `HERMES_CRON_SCRIPT_TIMEOUT`).
+
 ## Provider recovery
 
 Cron jobs inherit your configured fallback providers and credential pool rotation. If the primary API key is rate-limited or the provider returns an error, the cron agent can:
