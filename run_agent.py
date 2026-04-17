@@ -43,7 +43,7 @@ import fire
 from datetime import datetime
 from pathlib import Path
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, set_runtime_hermes_home
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
@@ -554,6 +554,7 @@ class AIAgent:
         base_url: str = None,
         api_key: str = None,
         provider: str = None,
+        hermes_home: str | Path | None = None,
         api_mode: str = None,
         acp_command: str = None,
         acp_args: list[str] | None = None,
@@ -651,6 +652,10 @@ class AIAgent:
                 polluting trajectories with user-specific persona or project instructions.
         """
         _install_safe_stdio()
+
+        self.hermes_home = (
+            Path(hermes_home).expanduser().resolve() if hermes_home is not None else get_hermes_home().resolve()
+        )
 
         self.model = model
         self.max_iterations = max_iterations
@@ -839,7 +844,7 @@ class AIAgent:
         # both live under ~/.hermes/logs/.  Idempotent, so gateway mode
         # (which creates a new AIAgent per message) won't duplicate handlers.
         from hermes_logging import setup_logging, setup_verbose_logging
-        setup_logging(hermes_home=_hermes_home)
+        setup_logging(hermes_home=self.hermes_home)
 
         if self.verbose_logging:
             setup_verbose_logging()
@@ -1141,8 +1146,7 @@ class AIAgent:
             self.session_id = f"{timestamp_str}_{short_uuid}"
         
         # Session logs go into ~/.hermes/sessions/ alongside gateway sessions
-        hermes_home = get_hermes_home()
-        self.logs_dir = hermes_home / "sessions"
+        self.logs_dir = self.hermes_home / "sessions"
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
         
@@ -1266,11 +1270,10 @@ class AIAgent:
                     if _mp and _mp.is_available():
                         self._memory_manager.add_provider(_mp)
                     if self._memory_manager.providers:
-                        from hermes_constants import get_hermes_home as _ghh
                         _init_kwargs = {
                             "session_id": self.session_id,
                             "platform": platform or "cli",
-                            "hermes_home": str(_ghh()),
+                            "hermes_home": str(self.hermes_home),
                             "agent_context": "primary",
                         }
                         # Thread session title for memory provider scoping
@@ -1524,7 +1527,7 @@ class AIAgent:
             try:
                 self.context_compressor.on_session_start(
                     self.session_id,
-                    hermes_home=str(get_hermes_home()),
+                    hermes_home=str(self.hermes_home),
                     platform=self.platform or "cli",
                     model=self.model,
                     context_length=getattr(self.context_compressor, "context_length", 0),
@@ -2408,6 +2411,7 @@ class AIAgent:
                         quiet_mode=True,
                         platform=self.platform,
                         provider=self.provider,
+                        hermes_home=self.hermes_home,
                     )
                     review_agent._memory_store = self._memory_store
                     review_agent._memory_enabled = self._memory_enabled
@@ -8262,6 +8266,8 @@ class AIAgent:
         Returns:
             Dict: Complete conversation result with final response and message history
         """
+        set_runtime_hermes_home(self.hermes_home)
+
         # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
         # Installed once, transparent when streams are healthy, prevents crash on write.
         _install_safe_stdio()

@@ -2,12 +2,14 @@
 
 import os
 from pathlib import Path
-from unittest.mock import patch
-
-import pytest
 
 import hermes_constants
-from hermes_constants import get_default_hermes_root, is_container
+from hermes_constants import (
+    get_default_hermes_root,
+    get_hermes_home,
+    hermes_home_context,
+    is_container,
+)
 
 
 class TestGetDefaultHermesRoot:
@@ -61,6 +63,25 @@ class TestGetDefaultHermesRoot:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setenv("HERMES_HOME", str(profile))
         assert get_default_hermes_root() == docker_root
+
+    def test_runtime_override_becomes_root_when_env_unset(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "native-home")
+        runtime_home = tmp_path / "agents" / "123" / ".hermes"
+
+        with hermes_home_context(runtime_home):
+            assert get_hermes_home() == runtime_home.resolve()
+            assert get_default_hermes_root() == runtime_home.resolve()
+
+    def test_runtime_override_is_context_local(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "native-home")
+        runtime_home = tmp_path / "agents" / "123" / ".hermes"
+
+        before = get_hermes_home()
+        with hermes_home_context(runtime_home):
+            assert get_hermes_home() == runtime_home.resolve()
+        assert get_hermes_home() == before
 
 
 class TestIsContainer:

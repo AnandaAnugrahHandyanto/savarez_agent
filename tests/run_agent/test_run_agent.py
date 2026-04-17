@@ -93,7 +93,6 @@ def test_aiagent_reuses_existing_errors_log_handler():
     try:
         for handler in list(root_logger.handlers):
             root_logger.removeHandler(handler)
-
         error_log_path.parent.mkdir(parents=True, exist_ok=True)
         preexisting_handler = RotatingFileHandler(
             error_log_path,
@@ -136,6 +135,56 @@ def test_aiagent_reuses_existing_errors_log_handler():
                 handler.close()
         for handler in original_handlers:
             root_logger.addHandler(handler)
+
+
+def test_aiagent_accepts_explicit_hermes_home(tmp_path):
+    custom_home = tmp_path / "agent-a" / ".hermes"
+
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            hermes_home=custom_home,
+        )
+
+    assert agent.hermes_home == custom_home.resolve()
+    assert agent.logs_dir == custom_home.resolve() / "sessions"
+    assert agent.logs_dir.is_dir()
+
+
+def test_aiagent_instances_keep_distinct_hermes_homes(tmp_path):
+    home_a = tmp_path / "agent-a" / ".hermes"
+    home_b = tmp_path / "agent-b" / ".hermes"
+
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        agent_a = AIAgent(
+            api_key="test-key-1234567890",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            hermes_home=home_a,
+        )
+        agent_b = AIAgent(
+            api_key="test-key-1234567890",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            hermes_home=home_b,
+        )
+
+    assert agent_a.hermes_home == home_a.resolve()
+    assert agent_b.hermes_home == home_b.resolve()
+    assert agent_a.logs_dir != agent_b.logs_dir
 
 
 class TestProviderModelNormalization:

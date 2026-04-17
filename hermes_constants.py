@@ -5,7 +5,37 @@ without risk of circular imports.
 """
 
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar, Token
 from pathlib import Path
+
+_runtime_hermes_home: ContextVar[Path | None] = ContextVar("runtime_hermes_home", default=None)
+
+
+def set_runtime_hermes_home(path: str | Path | None) -> Token:
+    """Override Hermes home for the current runtime context.
+
+    This is primarily used by embedded/library callers that need multiple
+    concurrent AIAgent instances in one Python process, each with its own
+    profile root.
+    """
+    resolved = None if path is None else Path(path).expanduser().resolve()
+    return _runtime_hermes_home.set(resolved)
+
+
+def reset_runtime_hermes_home(token: Token) -> None:
+    """Reset a runtime-local Hermes home override."""
+    _runtime_hermes_home.reset(token)
+
+
+@contextmanager
+def hermes_home_context(path: str | Path | None):
+    """Context manager for a runtime-local Hermes home override."""
+    token = set_runtime_hermes_home(path)
+    try:
+        yield
+    finally:
+        reset_runtime_hermes_home(token)
 
 
 def get_hermes_home() -> Path:
@@ -14,6 +44,9 @@ def get_hermes_home() -> Path:
     Reads HERMES_HOME env var, falls back to ~/.hermes.
     This is the single source of truth — all other copies should import this.
     """
+    runtime_home = _runtime_hermes_home.get()
+    if runtime_home is not None:
+        return runtime_home
     return Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
 
 
@@ -35,9 +68,14 @@ def get_default_hermes_root() -> Path:
     """
     native_home = Path.home() / ".hermes"
     env_home = os.environ.get("HERMES_HOME", "")
+    current_home = get_hermes_home()
     if not env_home:
-        return native_home
-    env_path = Path(env_home)
+        if current_home == native_home:
+            return native_home
+        if current_home.parent.name == "profiles":
+            return current_home.parent.parent
+        return current_home
+    env_path = current_home
     try:
         env_path.resolve().relative_to(native_home.resolve())
         # HERMES_HOME is under ~/.hermes (normal or profile mode)
@@ -128,10 +166,8 @@ def get_subprocess_home() -> str | None:
     Activation is directory-based: if the ``home/`` subdirectory doesn't
     exist, returns ``None`` and behavior is unchanged.
     """
-    hermes_home = os.getenv("HERMES_HOME")
-    if not hermes_home:
-        return None
-    profile_home = os.path.join(hermes_home, "home")
+    hermes_home = get_hermes_home()
+    profile_home = os.path.join(str(hermes_home), "home")
     if os.path.isdir(profile_home):
         return profile_home
     return None
