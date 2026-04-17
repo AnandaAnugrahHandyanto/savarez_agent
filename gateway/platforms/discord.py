@@ -779,7 +779,8 @@ class DiscordAdapter(BasePlatformAdapter):
         except asyncio.CancelledError:
             raise
         except Exception as e:  # pragma: no cover - defensive logging
-            logger.warning("[%s] Slash command sync failed: %s", self.name, e, exc_info=True)
+            extra = getattr(e, '_errors', None)
+            logger.warning("[%s] Slash command sync failed: %s | raw_errors=%s", self.name, e, extra, exc_info=True)
 
     async def _add_reaction(self, message: Any, emoji: str) -> bool:
         """Add an emoji reaction to a Discord message."""
@@ -1983,26 +1984,49 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # ── Helper: build a callback for a skill command key ──
             def _make_handler(_key: str):
-                @discord.app_commands.describe(args="Optional arguments for the skill")
+                @discord.app_commands.describe(args="Args")
                 async def _handler(interaction: discord.Interaction, args: str = ""):
                     await self._run_simple_slash(interaction, f"{_key} {args}".strip())
                 _handler.__name__ = f"skill_{_key.lstrip('/').replace('-', '_')}"
                 return _handler
 
-            # ── Uncategorized (root-level) skills → direct subcommands ──
-            for discord_name, description, cmd_key in uncategorized:
-                cmd = discord.app_commands.Command(
-                    name=discord_name,
-                    description=description or f"Run the {discord_name} skill",
-                    callback=_make_handler(cmd_key),
+            # Discord limits the total /skill command payload to 8000 bytes.
+            # With 90+ skills, full descriptions blow that limit.
+            # Use very short descriptions (≤45 chars) for skill subcommands.
+            def _clamp_desc(d: str) -> str:
+                return d[:42] + "..." if len(d) > 45 else d
+
+            # ── Uncategorized skills ──
+            # Discord forbids mixing direct subcommands with subcommand groups
+            # at the same level.  If categories exist, wrap uncategorized skills
+            # in an "other" subgroup; otherwise register them directly.
+            if uncategorized and categories:
+                other_group = discord.app_commands.Group(
+                    name="other",
+                    description="Other skills",
+                    parent=skill_group,
                 )
-                skill_group.add_command(cmd)
+                for discord_name, description, cmd_key in uncategorized:
+                    cmd = discord.app_commands.Command(
+                        name=discord_name,
+                        description=_clamp_desc(description or f"Run the {discord_name} skill"),
+                        callback=_make_handler(cmd_key),
+                    )
+                    other_group.add_command(cmd)
+            elif uncategorized:
+                for discord_name, description, cmd_key in uncategorized:
+                    cmd = discord.app_commands.Command(
+                        name=discord_name,
+                        description=_clamp_desc(description or f"Run the {discord_name} skill"),
+                        callback=_make_handler(cmd_key),
+                    )
+                    skill_group.add_command(cmd)
 
             # ── Category subcommand groups ──
             for cat_name in sorted(categories):
                 cat_desc = f"{cat_name.replace('-', ' ').title()} skills"
-                if len(cat_desc) > 100:
-                    cat_desc = cat_desc[:97] + "..."
+                if len(cat_desc) > 45:
+                    cat_desc = cat_desc[:42] + "..."
                 cat_group = discord.app_commands.Group(
                     name=cat_name,
                     description=cat_desc,
@@ -2011,7 +2035,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 for discord_name, description, cmd_key in categories[cat_name]:
                     cmd = discord.app_commands.Command(
                         name=discord_name,
-                        description=description or f"Run the {discord_name} skill",
+                        description=_clamp_desc(description or f"Run the {discord_name} skill"),
                         callback=_make_handler(cmd_key),
                     )
                     cat_group.add_command(cmd)
