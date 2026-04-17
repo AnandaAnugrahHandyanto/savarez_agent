@@ -174,6 +174,12 @@ class WeComAdapter(BasePlatformAdapter):
         self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE)
         self._reply_req_ids: Dict[str, str] = {}
 
+        # Watchdog: force reconnect if no inbound messages after reconnect.
+        self._watchdog_task: Optional[asyncio.Task] = None
+        self._last_msg_at: float = 0.0
+        self._connected_at: float = 0.0
+        self._watchdog_timeout: float = float(os.getenv("HERMES_WECOM_WATCHDOG_TIMEOUT_SECONDS", "300"))
+
         # Text batching: merge rapid successive messages (Telegram-style).
         # WeCom clients split long messages around 4000 chars.
         self._text_batch_delay_seconds = float(os.getenv("HERMES_WECOM_TEXT_BATCH_DELAY_SECONDS", "0.6"))
@@ -207,8 +213,12 @@ class WeComAdapter(BasePlatformAdapter):
             self._http_client = httpx.AsyncClient(timeout=30.0, follow_redirects=True)
             await self._open_connection()
             self._mark_connected()
+            now = asyncio.get_running_loop().time()
+            self._last_msg_at = now
+            self._connected_at = now
             self._listen_task = asyncio.create_task(self._listen_loop())
             self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+            self._watchdog_task = asyncio.create_task(self._watchdog_loop())
             logger.info("[%s] Connected to %s", self.name, self._ws_url)
             return True
         except Exception as exc:
@@ -241,6 +251,14 @@ class WeComAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
             self._heartbeat_task = None
+
+        if self._watchdog_task:
+            self._watchdog_task.cancel()
+            try:
+                await self._watchdog_task
+            except asyncio.CancelledError:
+                pass
+            self._watchdog_task = None
 
         self._fail_pending_responses(RuntimeError("WeCom adapter disconnected"))
         await self._cleanup_ws()
@@ -333,6 +351,10 @@ class WeComAdapter(BasePlatformAdapter):
                 try:
                     await self._open_connection()
                     backoff_idx = 0
+                    self._mark_connected()
+                    now = asyncio.get_running_loop().time()
+                    self._connected_at = now
+                    self._last_msg_at = now
                     logger.info("[%s] Reconnected", self.name)
                 except Exception as reconnect_exc:
                     logger.warning("[%s] Reconnect failed: %s", self.name, reconnect_exc)
@@ -347,6 +369,7 @@ class WeComAdapter(BasePlatformAdapter):
             if msg.type == aiohttp.WSMsgType.TEXT:
                 payload = self._parse_json(msg.data)
                 if payload:
+                    logger.info("[%s] Received websocket payload: cmd=%s req_id=%s", self.name, payload.get("cmd"), self._payload_req_id(payload))
                     await self._dispatch_payload(payload)
             elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                 raise RuntimeError("WeCom websocket closed")
@@ -371,6 +394,34 @@ class WeComAdapter(BasePlatformAdapter):
         except asyncio.CancelledError:
             pass
 
+    async def _watchdog_loop(self) -> None:
+        """Monitor inbound message flow and force reconnect if it stalls.
+
+        WeCom servers sometimes stop delivering ``aibot_msg_callback`` events
+        after a WebSocket reconnect even though the connection appears healthy
+        (pings still flow).  This watchdog detects that silent failure by
+        tracking the last time we saw a real message.  If no messages arrive
+        within ``_watchdog_timeout`` seconds after the connection (or a
+        reconnect) has been up for at least 2 minutes, we close the socket so
+        that ``_listen_loop`` will reconnect and re-subscribe.
+        """
+        try:
+            while self._running:
+                await asyncio.sleep(60)
+                if not self._ws or self._ws.closed:
+                    continue
+                now = asyncio.get_running_loop().time()
+                time_since_connect = now - self._connected_at
+                time_since_msg = now - self._last_msg_at
+                if time_since_connect > 120 and time_since_msg > self._watchdog_timeout:
+                    logger.warning(
+                        "[%s] Watchdog: no callback messages for %.0fs (connected %.0fs ago), forcing reconnect",
+                        self.name, time_since_msg, time_since_connect,
+                    )
+                    await self._cleanup_ws()
+        except asyncio.CancelledError:
+            pass
+
     async def _dispatch_payload(self, payload: Dict[str, Any]) -> None:
         """Route inbound websocket payloads."""
         req_id = self._payload_req_id(payload)
@@ -383,12 +434,13 @@ class WeComAdapter(BasePlatformAdapter):
             return
 
         if cmd in CALLBACK_COMMANDS:
+            self._last_msg_at = asyncio.get_running_loop().time()
             await self._on_message(payload)
             return
         if cmd in {APP_CMD_PING, APP_CMD_EVENT_CALLBACK}:
             return
 
-        logger.debug("[%s] Ignoring websocket payload: %s", self.name, cmd or payload)
+        logger.info("[%s] Ignoring websocket payload: %s", self.name, cmd or payload)
 
     def _fail_pending_responses(self, exc: Exception) -> None:
         """Fail all outstanding request futures."""
@@ -490,10 +542,10 @@ class WeComAdapter(BasePlatformAdapter):
         is_group = str(body.get("chattype") or "").lower() == "group"
         if is_group:
             if not self._is_group_allowed(chat_id, sender_id):
-                logger.debug("[%s] Group %s / sender %s blocked by policy", self.name, chat_id, sender_id)
+                logger.info("[%s] Group %s / sender %s blocked by policy", self.name, chat_id, sender_id)
                 return
         elif not self._is_dm_allowed(sender_id):
-            logger.debug("[%s] DM sender %s blocked by policy", self.name, sender_id)
+            logger.info("[%s] DM sender %s blocked by policy", self.name, sender_id)
             return
 
         text, reply_text = self._extract_text(body)
@@ -851,7 +903,10 @@ class WeComAdapter(BasePlatformAdapter):
         normalized = str(reply_to or "").strip()
         if not normalized or normalized.startswith("quote:"):
             return None
-        return self._reply_req_ids.get(normalized)
+        # Disable reply stream entirely for WeCom: proactive APP_CMD_SEND
+        # works for both DMs and groups, whereas reply stream silently fails
+        # in groups (API returns ok but message never renders).
+        return None
 
     # ------------------------------------------------------------------
     # Outbound messaging
@@ -1302,11 +1357,14 @@ class WeComAdapter(BasePlatformAdapter):
 
         try:
             reply_req_id = self._reply_req_id_for_message(reply_to)
+            logger.info("[%s] send() chat_id=%s reply_to=%s reply_req_id=%s", self.name, chat_id, reply_to, reply_req_id)
             if reply_req_id:
                 try:
                     response = await self._send_reply_stream(reply_req_id, content)
+                    logger.info("[%s] Reply stream response: %s", self.name, response)
                 except Exception as exc:
                     err_str = str(exc).lower()
+                    logger.info("[%s] Reply stream exception: %s", self.name, exc)
                     if "600039" in err_str or "device type not support" in err_str:
                         logger.warning(
                             "[%s] Reply stream failed (%s), falling back to proactive send",
@@ -1324,6 +1382,7 @@ class WeComAdapter(BasePlatformAdapter):
                                 "markdown": {"content": content[:self.MAX_MESSAGE_LENGTH]},
                             },
                         )
+                        logger.info("[%s] Proactive fallback response: %s", self.name, response)
                     else:
                         raise
             else:
@@ -1335,6 +1394,7 @@ class WeComAdapter(BasePlatformAdapter):
                         "markdown": {"content": content[:self.MAX_MESSAGE_LENGTH]},
                     },
                 )
+                logger.info("[%s] Proactive send response: %s", self.name, response)
         except asyncio.TimeoutError:
             return SendResult(success=False, error="Timeout sending message to WeCom")
         except Exception as exc:
@@ -1343,6 +1403,7 @@ class WeComAdapter(BasePlatformAdapter):
 
         error = self._response_error(response)
         if error:
+            logger.info("[%s] Response error: %s", self.name, error)
             return SendResult(success=False, error=error)
 
         return SendResult(
