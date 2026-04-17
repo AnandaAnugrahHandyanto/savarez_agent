@@ -63,6 +63,24 @@ class TestGatewayPidState:
 
         assert status.get_running_pid() == os.getpid()
 
+    def test_get_running_pid_treats_windows_oserror_probe_as_stale(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+        pid_path.write_text(json.dumps({
+            "pid": 99999,
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway"],
+        }))
+
+        monkeypatch.setattr(status, "_IS_WINDOWS", True)
+
+        def fake_kill(pid, sig):
+            raise OSError(11, "试图加载格式不正确的程序。")
+
+        monkeypatch.setattr(status.os, "kill", fake_kill)
+
+        assert status.get_running_pid() is None
+
 
 class TestGatewayRuntimeStatus:
     def test_write_runtime_status_overwrites_stale_pid_on_restart(self, tmp_path, monkeypatch):

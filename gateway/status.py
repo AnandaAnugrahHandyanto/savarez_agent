@@ -98,6 +98,25 @@ def _get_process_start_time(pid: int) -> Optional[int]:
         return None
 
 
+def _pid_looks_alive(pid: int) -> bool:
+    """Return ``True`` when a PID appears to still exist.
+
+    ``os.kill(pid, 0)`` is the usual cross-platform existence probe, but on
+    Windows some invalid/stale PIDs can raise plain ``OSError`` variants such
+    as ``WinError 11`` instead of the more common ``ProcessLookupError``.
+    Treat those as "not alive" so stale PID files do not crash gateway startup.
+    """
+    try:
+        os.kill(pid, 0)  # signal 0 = existence check, no actual signal sent
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+    except OSError:
+        if _IS_WINDOWS:
+            return False
+        raise
+
+
 def _read_process_cmdline(pid: int) -> Optional[str]:
     """Return the process command line as a space-separated string."""
     cmdline_path = Path(f"/proc/{pid}/cmdline")
@@ -327,9 +346,7 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
 
         stale = existing_pid is None
         if not stale:
-            try:
-                os.kill(existing_pid, 0)
-            except (ProcessLookupError, PermissionError):
+            if not _pid_looks_alive(existing_pid):
                 stale = True
             else:
                 current_start = _get_process_start_time(existing_pid)
@@ -430,9 +447,7 @@ def get_running_pid() -> Optional[int]:
         remove_pid_file()
         return None
 
-    try:
-        os.kill(pid, 0)  # signal 0 = existence check, no actual signal sent
-    except (ProcessLookupError, PermissionError):
+    if not _pid_looks_alive(pid):
         remove_pid_file()
         return None
 
