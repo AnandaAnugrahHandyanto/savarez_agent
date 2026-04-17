@@ -6,6 +6,7 @@ only looked at `providers:`.
 """
 
 import hermes_cli.providers as providers_mod
+from agent.models_dev import ModelInfo
 from hermes_cli.model_switch import list_authenticated_providers, switch_model
 from hermes_cli.providers import resolve_provider_full
 
@@ -156,3 +157,54 @@ def test_list_deduplicates_same_model_in_group(monkeypatch):
     assert len(my_rows) == 1
     assert my_rows[0]["models"] == ["llama3", "mistral"]
     assert my_rows[0]["total_models"] == 2
+
+
+def test_switch_model_uses_passed_custom_providers_for_context_override(monkeypatch):
+    """switch_model should use its custom_providers argument before disk config."""
+    def _boom_load_config():
+        raise AssertionError("load_config should not run when custom_providers is passed")
+
+    monkeypatch.setattr("hermes_cli.config.load_config", _boom_load_config)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested: {
+            "api_key": "test-key",
+            "base_url": "http://localhost:11434/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr("hermes_cli.models.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.get_model_info",
+        lambda *a, **k: ModelInfo(
+            id="qwen/qwen3.6",
+            name="Qwen 3.6",
+            family="qwen3.6",
+            provider_id="qwen",
+            context_window=128_000,
+            max_output=8_192,
+        ),
+    )
+
+    result = switch_model(
+        raw_input="qwen3.6",
+        current_provider="custom",
+        current_model="old-model",
+        current_base_url="http://localhost:11434/v1",
+        current_api_key="test-key",
+        custom_providers=[
+            {
+                "name": "Local llama.cpp",
+                "base_url": "http://localhost:11434/v1",
+                "models": {
+                    "qwen3.6": {"context_length": 256_000},
+                },
+            }
+        ],
+    )
+
+    assert result.success is True
+    assert result.context_length == 256_000
+    assert result.model_info is not None
+    assert result.model_info.context_window == 128_000

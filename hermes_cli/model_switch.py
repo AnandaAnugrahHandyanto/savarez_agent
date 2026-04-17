@@ -755,18 +755,21 @@ def switch_model(
     context_length: Optional[int] = None
     if base_url:
         try:
-            from hermes_cli.config import get_compatible_custom_providers, load_config
-            _cfg = load_config()
-            _cps = get_compatible_custom_providers(_cfg)
+            _cps = custom_providers
+            if _cps is None:
+                from hermes_cli.config import get_compatible_custom_providers, load_config
+                _cfg = load_config()
+                _cps = get_compatible_custom_providers(_cfg)
             _url_norm = base_url.rstrip("/")
-            for _cp in _cps:
-                if isinstance(_cp, dict) and (_cp.get("base_url") or "").rstrip("/") == _url_norm:
-                    _cp_models = _cp.get("models", {})
-                    if isinstance(_cp_models, dict):
-                        _cp_mcfg = _cp_models.get(new_model, {})
-                        if isinstance(_cp_mcfg, dict) and _cp_mcfg.get("context_length"):
-                            context_length = int(_cp_mcfg["context_length"])
-                    break
+            if isinstance(_cps, list):
+                for _cp in _cps:
+                    if isinstance(_cp, dict) and (_cp.get("base_url") or "").rstrip("/") == _url_norm:
+                        _cp_models = _cp.get("models", {})
+                        if isinstance(_cp_models, dict):
+                            _cp_mcfg = _cp_models.get(new_model, {})
+                            if isinstance(_cp_mcfg, dict) and _cp_mcfg.get("context_length"):
+                                context_length = int(_cp_mcfg["context_length"])
+                        break
         except Exception:
             pass
 

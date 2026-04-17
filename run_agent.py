@@ -1705,10 +1705,9 @@ class AIAgent:
         if api_key:
             self.api_key = api_key
 
-        # ── Clear config_context_length when provider changes so per-model
-        #    custom_providers[].models[].context_length lookup can run ──
-        if new_provider != old_provider:
-            self._config_context_length = None
+        # Preserve startup-configured model.context_length override across
+        # provider switches. Per-model custom-provider overrides are resolved
+        # separately in the context compressor update path below.
 
         # ── Build new client ──
         if api_mode == "anthropic_messages":

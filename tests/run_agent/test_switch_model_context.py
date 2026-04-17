@@ -72,3 +72,21 @@ def test_switch_model_without_config_context_length():
         mock_ctx_len.assert_called_once()
         call_kwargs = mock_ctx_len.call_args.kwargs
         assert call_kwargs.get("config_context_length") is None
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=128_000)
+def test_switch_model_provider_change_preserves_global_config_context_length(mock_ctx_len):
+    """Provider switches should not clear startup model.context_length override."""
+    agent = _make_agent_with_compressor(config_context_length=32_768)
+
+    agent.switch_model(
+        "new-model",
+        "custom",
+        api_key="sk-new",
+        base_url="http://localhost:11434/v1",
+        api_mode="chat_completions",
+    )
+
+    call_kwargs = mock_ctx_len.call_args.kwargs
+    assert call_kwargs.get("config_context_length") == 32_768
+    assert agent._config_context_length == 32_768
