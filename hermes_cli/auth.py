@@ -400,6 +400,24 @@ def _resolve_api_key_provider_secret(
         if has_usable_secret(val):
             return val, env_var
 
+    try:
+        from agent.credential_pool import load_pool
+
+        pool = load_pool(provider_id)
+        if pool and pool.has_credentials():
+            entry = pool.select()
+            if entry is not None:
+                token = (
+                    getattr(entry, "runtime_api_key", None)
+                    or getattr(entry, "access_token", "")
+                )
+                token = str(token or "").strip()
+                if has_usable_secret(token):
+                    label = getattr(entry, "label", None) or getattr(entry, "id", None) or "unknown"
+                    return token, f"pool:{label}"
+    except Exception:
+        pass
+
     return "", ""
 
 

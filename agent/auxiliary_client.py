@@ -1763,9 +1763,12 @@ def get_available_vision_backends() -> List[str]:
             if _strict_vision_backend_available(main_provider):
                 available.append(main_provider)
         else:
-            client, _ = resolve_provider_client(main_provider, _read_main_model())
-            if client is not None:
-                available.append(main_provider)
+            if main_provider in _PROVIDER_VISION_MODELS:
+                client, _ = resolve_provider_client(
+                    main_provider, _PROVIDER_VISION_MODELS.get(main_provider) or _read_main_model()
+                )
+                if client is not None:
+                    available.append(main_provider)
     # 2. OpenRouter, 3. Nous — skip if already covered by main provider.
     for p in _VISION_AUTO_PROVIDER_ORDER:
         if p not in available and _strict_vision_backend_available(p):
@@ -1832,17 +1835,18 @@ def resolve_vision_provider_client(
             else:
                 # Exotic provider (DeepSeek, Alibaba, Xiaomi, named custom, etc.)
                 # Use provider-specific vision model if available, otherwise main model.
-                vision_model = _PROVIDER_VISION_MODELS.get(main_provider, main_model)
-                rpc_client, rpc_model = resolve_provider_client(
-                    main_provider, vision_model,
-                    api_mode=resolved_api_mode)
-                if rpc_client is not None:
-                    logger.info(
-                        "Vision auto-detect: using active provider %s (%s)",
-                        main_provider, rpc_model or vision_model,
-                    )
-                    return _finalize(
-                        main_provider, rpc_client, rpc_model or vision_model)
+                vision_model = _PROVIDER_VISION_MODELS.get(main_provider)
+                if vision_model:
+                    rpc_client, rpc_model = resolve_provider_client(
+                        main_provider, vision_model,
+                        api_mode=resolved_api_mode)
+                    if rpc_client is not None:
+                        logger.info(
+                            "Vision auto-detect: using active provider %s (%s)",
+                            main_provider, rpc_model or vision_model,
+                        )
+                        return _finalize(
+                            main_provider, rpc_client, rpc_model or vision_model)
 
         # Fall back through aggregators.
         for candidate in _VISION_AUTO_PROVIDER_ORDER:
