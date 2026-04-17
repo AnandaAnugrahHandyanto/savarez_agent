@@ -183,7 +183,6 @@ _FEISHU_GROUP_TRIGGER_KEYWORDS = [
 ]
 
 _FEISHU_CARD_ACTION_DEDUP_TTL_SECONDS = 15 * 60    # card action token dedup window (15 min)
-_FEISHU_GROUP_RECENT_CHATS_TTL_SECONDS = 5 * 60    # 5-minute conversation window for group chats
 
 _APPROVAL_CHOICE_MAP: Dict[str, str] = {
     "approve_once": "once",
