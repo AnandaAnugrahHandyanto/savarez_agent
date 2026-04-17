@@ -82,6 +82,7 @@ class GatewayStreamConsumer:
         chat_id: str,
         config: Optional[StreamConsumerConfig] = None,
         metadata: Optional[dict] = None,
+        reply_to: Optional[str] = None,
     ):
         self.adapter = adapter
         self.chat_id = chat_id
@@ -89,7 +90,7 @@ class GatewayStreamConsumer:
         self.metadata = metadata
         self._queue: queue.Queue = queue.Queue()
         self._accumulated = ""
-        self._message_id: Optional[str] = None
+        self._message_id: Optional[str] = reply_to
         self._already_sent = False
         self._edit_supported = True  # Disabled when progressive edits are no longer usable
         self._last_edit_time = 0.0

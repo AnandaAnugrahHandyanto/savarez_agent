@@ -1172,6 +1172,7 @@ class FeishuAdapter(BasePlatformAdapter):
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
+        self._last_inbound_message_ids: dict = {}  # chat_id -> message_id
         self._app_id = settings.app_id
         self._app_secret = settings.app_secret
         self._domain_name = settings.domain_name
@@ -2186,6 +2187,9 @@ class FeishuAdapter(BasePlatformAdapter):
         )
 
         chat_id = getattr(message, "chat_id", "") or ""
+        # Track last inbound message_id per chat for auto-thread reply
+        if chat_id and message_id:
+            self._last_inbound_message_ids[chat_id] = message_id
         chat_info = await self.get_chat_info(chat_id)
         sender_profile = await self._resolve_sender_profile(sender_id)
         source = self.build_source(
@@ -3272,7 +3276,11 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
-        reply_in_thread = bool((metadata or {}).get("thread_id"))
+        _auto_thread = os.getenv("FEISHU_AUTO_THREAD", "false").lower() in ("true", "1", "yes")
+        reply_in_thread = bool((metadata or {}).get("thread_id")) or _auto_thread
+        # When auto_thread is on and no reply_to, use last inbound message_id
+        if _auto_thread and not reply_to:
+            reply_to = self._last_inbound_message_ids.get(chat_id)
         if reply_to:
             body = self._build_reply_message_body(
                 content=payload,

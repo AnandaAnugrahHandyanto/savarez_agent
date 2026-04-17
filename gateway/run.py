@@ -7840,11 +7840,14 @@ class GatewayRunner:
                         buffer_threshold=_scfg.buffer_threshold,
                         cursor=_effective_cursor,
                     )
+                    _feishu_auto_thread = os.getenv("FEISHU_AUTO_THREAD", "false").lower() in ("true", "1", "yes")
+                    _sc_reply_to = event_message_id if (_feishu_auto_thread and source.platform == Platform.FEISHU) else None
                     _stream_consumer = GatewayStreamConsumer(
                         adapter=_adapter,
                         chat_id=source.chat_id,
                         config=_consumer_cfg,
                         metadata=_thread_metadata,
+                        reply_to=_sc_reply_to,
                     )
             except Exception as _sc_err:
                 logger.debug("Proxy: could not set up stream consumer: %s", _sc_err)
@@ -8406,11 +8409,14 @@ class GatewayRunner:
                             buffer_threshold=_scfg.buffer_threshold,
                             cursor=_effective_cursor,
                         )
+                        _feishu_auto_thread2 = os.getenv("FEISHU_AUTO_THREAD", "false").lower() in ("true", "1", "yes")
+                        _sc_reply_to2 = event_message_id if (_feishu_auto_thread2 and source.platform == Platform.FEISHU) else None
                         _stream_consumer = GatewayStreamConsumer(
                             adapter=_adapter,
                             chat_id=source.chat_id,
                             config=_consumer_cfg,
                             metadata={"thread_id": _progress_thread_id} if _progress_thread_id else None,
+                            reply_to=_sc_reply_to2,
                         )
                         if _want_stream_deltas:
                             _stream_delta_cb = _stream_consumer.on_delta
