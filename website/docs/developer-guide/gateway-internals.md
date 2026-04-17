@@ -30,7 +30,7 @@ The messaging gateway is the long-running process that connects Hermes to 14+ ex
 │                  GatewayRunner                  │
 │                                                 │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐       │
-│  │ Telegram │  │ Discord  │  │  Slack   │  ...  │
+│  │ Telegram │  │ Discord  │  │  Slack   │       │
 │  │ Adapter  │  │ Adapter  │  │ Adapter  │       │
 │  └────┬─────┘  └────┬─────┘  └────┬─────┘       │
 │       │             │             │             │
