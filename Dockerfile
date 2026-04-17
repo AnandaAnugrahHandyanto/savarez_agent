@@ -64,7 +64,7 @@ RUN chown -R hermes:hermes /opt/hermes
 USER hermes
 
 # Create Python virtual environment
-ARG EXTRAS="modal,daytona,messaging,cron,cli,tts-premium,slack,pty,honcho,mcp,homeassistant,sms,acp,voice,dingtalk,feishu,mistral,web"
+ARG EXTRAS="modal,daytona,messaging,cron,cli,tts-premium,slack,pty,honcho,mcp,homeassistant,sms,acp,voice,dingtalk,feishu,mistral,bedrock,web"
 ENV VIRTUAL_ENV=/opt/hermes/.venv
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
