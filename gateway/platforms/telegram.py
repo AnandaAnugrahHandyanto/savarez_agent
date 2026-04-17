@@ -651,6 +651,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._handle_command
             ))
             self._app.add_handler(TelegramMessageHandler(
+                filters.UpdateType.CHANNEL_POSTS & filters.COMMAND,
+                self._handle_command
+            ))
+            self._app.add_handler(TelegramMessageHandler(
                 filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
                 self._handle_location_message
             ))
@@ -2246,14 +2250,25 @@ class TelegramAdapter(BasePlatformAdapter):
         event.text = self._clean_bot_trigger_text(event.text)
         self._enqueue_text_event(event)
     
+    @staticmethod
+    def _get_update_message(update: Update) -> Optional[Message]:
+        """Return the Telegram message payload from any supported update type."""
+        return (
+            getattr(update, "message", None)
+            or getattr(update, "edited_message", None)
+            or getattr(update, "channel_post", None)
+            or getattr(update, "edited_channel_post", None)
+        )
+
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""
-        if not update.message or not update.message.text:
+        message = self._get_update_message(update)
+        if not message or not message.text:
             return
-        if not self._should_process_message(update.message, is_command=True):
+        if not self._should_process_message(message, is_command=True):
             return
         
-        event = self._build_message_event(update.message, MessageType.COMMAND)
+        event = self._build_message_event(message, MessageType.COMMAND)
         await self.handle_message(event)
     
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
