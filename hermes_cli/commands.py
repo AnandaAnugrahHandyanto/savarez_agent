@@ -651,8 +651,11 @@ def discord_skill_commands_by_category(
             _names_used.add(discord_name)
 
             desc = info.get("description", "")
-            if len(desc) > 100:
-                desc = desc[:97] + "..."
+            # Truncate to 50 chars — with 75+ skills, longer descriptions
+            # push the serialized /skill group past Discord's 8000-char
+            # command size limit. (#11321)
+            if len(desc) > 50:
+                desc = desc[:47] + "..."
 
             # Determine category from the relative path within SKILLS_DIR.
             # e.g. creative/ascii-art/SKILL.md → parts = ("creative", "ascii-art")
