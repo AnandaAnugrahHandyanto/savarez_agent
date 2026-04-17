@@ -8881,8 +8881,8 @@ class HermesCLI:
         # Voice push-to-talk key: configurable via config.yaml (voice.record_key)
         # Default: Ctrl+B (avoids conflict with Ctrl+R readline reverse-search)
         # Config uses "ctrl+b" format; prompt_toolkit expects "c-b" format.
-        # Always register a handler to prevent default behavior, but only
-        # activate voice recording when voice mode is enabled.
+        # Always register the key binding to prevent Ctrl+B from causing exit.
+        # Voice recording only activates when voice mode is enabled.
         try:
             from hermes_cli.config import load_config
             _raw_key = load_config().get("voice", {}).get("record_key", "ctrl+b")
@@ -8897,13 +8897,19 @@ class HermesCLI:
             IMPORTANT: This handler runs in prompt_toolkit's event-loop thread.
             Any blocking call here (locks, sd.wait, disk I/O) freezes the
             entire UI.  All heavy work is dispatched to daemon threads.
+            
+            This handler ALWAYS consumes the Ctrl+B event to prevent it from
+            triggering default behavior (like exit). Voice recording only
+            activates when voice mode is enabled.
             """
-            # If voice mode is not enabled, silently consume the key
-            # to prevent any default behavior (e.g., terminal bell, exit)
-            # The eager=True flag ensures this handler runs first and consumes the event
+            # Consume the event immediately to prevent default behavior
+            # This prevents Ctrl+B from causing exit even when voice is disabled
+            event.app.current_buffer.cursor_position  # Touch buffer to mark event handled
+            
+            # If voice mode is not enabled, just consume the event and return
             if not cli_ref._voice_mode:
-                # Event is consumed by virtue of being handled - do nothing
                 return
+            
             # Always allow STOPPING a recording (even when agent is running)
             if cli_ref._voice_recording:
                 # Manual stop via push-to-talk key: stop continuous mode
