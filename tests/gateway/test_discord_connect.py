@@ -56,8 +56,9 @@ class FakeTree:
 
 
 class FakeBot:
-    def __init__(self, *, intents, proxy=None):
+    def __init__(self, *, intents, proxy=None, allowed_mentions=None, **_):
         self.intents = intents
+        self.allowed_mentions = allowed_mentions
         self.user = SimpleNamespace(id=999, name="Hermes")
         self._events = {}
         self.tree = FakeTree()
@@ -95,8 +96,8 @@ async def test_connect_only_requests_members_intent_when_needed(monkeypatch, all
 
     created = {}
 
-    def fake_bot_factory(*, command_prefix, intents, proxy=None):
-        created["bot"] = FakeBot(intents=intents)
+    def fake_bot_factory(*, command_prefix, intents, proxy=None, allowed_mentions=None, **_):
+        created["bot"] = FakeBot(intents=intents, allowed_mentions=allowed_mentions)
         return created["bot"]
 
     monkeypatch.setattr(discord_platform.commands, "Bot", fake_bot_factory)
@@ -106,6 +107,13 @@ async def test_connect_only_requests_members_intent_when_needed(monkeypatch, all
 
     assert ok is True
     assert created["bot"].intents.members is expected_members_intent
+    # Safe-default AllowedMentions must be applied on every connect so the
+    # bot cannot @everyone from LLM output.  Granular overrides live in the
+    # dedicated test_discord_allowed_mentions.py module.
+    am = created["bot"].allowed_mentions
+    assert am is not None, "connect() must pass an AllowedMentions to commands.Bot"
+    assert am.everyone is False
+    assert am.roles is False
 
     await adapter.disconnect()
 
@@ -124,7 +132,11 @@ async def test_connect_releases_token_lock_on_timeout(monkeypatch):
     monkeypatch.setattr(
         discord_platform.commands,
         "Bot",
-        lambda **kwargs: FakeBot(intents=kwargs["intents"], proxy=kwargs.get("proxy")),
+        lambda **kwargs: FakeBot(
+            intents=kwargs["intents"],
+            proxy=kwargs.get("proxy"),
+            allowed_mentions=kwargs.get("allowed_mentions"),
+        ),
     )
 
     async def fake_wait_for(awaitable, timeout):
