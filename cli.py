@@ -8890,7 +8890,7 @@ class HermesCLI:
         except Exception:
             _voice_key = "c-b"
 
-        @kb.add(_voice_key)
+        @kb.add(_voice_key, eager=True)
         def handle_voice_record(event):
             """Toggle voice recording when voice mode is active.
 
@@ -8900,7 +8900,9 @@ class HermesCLI:
             """
             # If voice mode is not enabled, silently consume the key
             # to prevent any default behavior (e.g., terminal bell, exit)
+            # The eager=True flag ensures this handler runs first and consumes the event
             if not cli_ref._voice_mode:
+                # Event is consumed by virtue of being handled - do nothing
                 return
             # Always allow STOPPING a recording (even when agent is running)
             if cli_ref._voice_recording:
