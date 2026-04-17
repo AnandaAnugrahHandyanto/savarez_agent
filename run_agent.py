@@ -2304,6 +2304,18 @@ class AIAgent:
         
         return None
 
+    def _build_empty_response_message(self, reasoning_text: Optional[str]) -> str:
+        """Return a user-facing fallback when the model produced no visible content."""
+        if reasoning_text:
+            return (
+                "⚠️ The model produced internal reasoning but no visible response "
+                "after all retries. Try again or rephrase your question."
+            )
+        return (
+            "⚠️ The model returned no content after all retries. "
+            "Try again or rephrase your question."
+        )
+
     def _cleanup_task_resources(self, task_id: str) -> None:
         """Clean up VM and browser resources for a given task.
 
@@ -8314,6 +8326,7 @@ class AIAgent:
         self._last_content_tools_all_housekeeping = False
         self._mute_post_response = False
         self._unicode_sanitization_passes = 0
+        self._response_is_empty_fallback = False
 
         # Pre-turn connection health check: detect and clean up dead TCP
         # connections left over from provider outages or dropped streams.
@@ -11036,6 +11049,7 @@ class AIAgent:
                         assistant_msg = self._build_assistant_message(assistant_message, finish_reason)
                         assistant_msg["content"] = "(empty)"
                         messages.append(assistant_msg)
+                        self._response_is_empty_fallback = True
 
                         if reasoning_text:
                             reasoning_preview = reasoning_text[:500] + "..." if len(reasoning_text) > 500 else reasoning_text
@@ -11046,7 +11060,7 @@ class AIAgent:
                             )
                             self._emit_status(
                                 "⚠️ Model produced reasoning but no visible "
-                                "response after all retries. Returning empty."
+                                "response after all retries. Returning fallback message."
                             )
                         else:
                             logger.warning(
@@ -11062,7 +11076,7 @@ class AIAgent:
                                    ". No fallback providers configured.")
                             )
 
-                        final_response = "(empty)"
+                        final_response = self._build_empty_response_message(reasoning_text)
                         break
                     
                     # Reset retry counter/signature on successful content
@@ -11281,6 +11295,8 @@ class AIAgent:
         result = {
             "final_response": final_response,
             "last_reasoning": last_reasoning,
+            "empty_response_reasoning": last_reasoning if self._response_is_empty_fallback else None,
+            "response_is_empty_fallback": self._response_is_empty_fallback,
             "messages": messages,
             "api_calls": api_call_count,
             "completed": completed,
