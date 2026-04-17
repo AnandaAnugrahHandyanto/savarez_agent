@@ -450,6 +450,28 @@ class TestGatewayServiceDetection:
 
         assert gateway_cli._is_service_running() is False
 
+    def test_find_gateway_pids_uses_runtime_pid_for_current_profile(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 4321)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+
+        assert gateway_cli.find_gateway_pids() == [4321]
+
+    def test_find_gateway_pids_respects_excluded_runtime_pid(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 4321)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+
+        assert gateway_cli.find_gateway_pids(exclude_pids={4321}) == []
+
 
 class TestGatewaySystemServiceRouting:
     def test_systemd_restart_self_requests_graceful_restart_and_waits(self, monkeypatch, capsys):

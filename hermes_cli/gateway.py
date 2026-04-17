@@ -171,6 +171,14 @@ def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = Fals
     """
     _exclude = exclude_pids or set()
     pids = [pid for pid in _get_service_pids() if pid not in _exclude]
+
+    if not all_profiles:
+        from gateway.status import get_running_pid
+
+        current_pid = get_running_pid()
+        if current_pid is not None and current_pid not in pids and current_pid not in _exclude:
+            pids.append(current_pid)
+
     patterns = [
         "hermes_cli.main gateway",
         "hermes_cli.main --profile",
