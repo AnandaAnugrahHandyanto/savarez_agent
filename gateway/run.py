@@ -261,6 +261,7 @@ from gateway.config import (
 )
 from gateway.session import (
     SessionStore,
+    SessionEntry,
     SessionSource,
     SessionContext,
     build_session_context,
@@ -572,6 +573,9 @@ class GatewayRunner:
     _restart_via_service: bool = False
     _stop_task: Optional[asyncio.Task] = None
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
+    _startup_resume_messages: List[Dict[str, Any]] = []
+    _startup_resume_source_session_id: Optional[str] = None
+    _startup_resume_consumed: bool = False
     
     def __init__(self, config: Optional[GatewayConfig] = None):
         self.config = config or load_gateway_config()
@@ -609,6 +613,9 @@ class GatewayRunner:
         self._restart_detached = False
         self._restart_via_service = False
         self._stop_task: Optional[asyncio.Task] = None
+        self._startup_resume_messages = []
+        self._startup_resume_source_session_id = None
+        self._startup_resume_consumed = False
         
         # Track running agents per session for interrupt support
         # Key: session_key, Value: AIAgent instance
@@ -661,6 +668,7 @@ class GatewayRunner:
             self._session_db = SessionDB()
         except Exception as e:
             logger.debug("SQLite session store not available: %s", e)
+        self._startup_resume_messages = self._load_startup_resume_messages()
         
         # DM pairing store for code-based user authorization
         from gateway.pairing import PairingStore
@@ -680,6 +688,76 @@ class GatewayRunner:
 
 
     # -- Setup skill availability ----------------------------------------
+
+    def _load_startup_resume_messages(self) -> List[Dict[str, Any]]:
+        """Load one startup recovery seed from the most recent gateway session."""
+        if not self._session_db or not getattr(self.config, "auto_resume_last_session", False):
+            return []
+
+        exclude_sources = ["cli", "local", "cron", "api_server", "webhook", "acp"]
+        limit = max(
+            1,
+            min(int(getattr(self.config, "auto_resume_message_limit", 40) or 40), 100),
+        )
+        try:
+            candidate = self._session_db.get_latest_resume_candidate(
+                exclude_sources=exclude_sources,
+            )
+            if not candidate:
+                return []
+            messages = self._session_db.get_recent_conversation_tail(
+                candidate["id"],
+                limit=limit,
+            )
+            if not messages:
+                return []
+            self._startup_resume_source_session_id = candidate["id"]
+            logger.info(
+                "Loaded %d startup resume message(s) from session %s (%s)",
+                len(messages),
+                candidate["id"],
+                candidate.get("source", "unknown"),
+            )
+            return messages
+        except Exception as e:
+            logger.debug("Startup session recovery preload failed: %s", e)
+            return []
+
+    def _maybe_seed_startup_resume_history(
+        self,
+        session_entry: SessionEntry,
+        history: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Seed a brand-new empty session with one recovered transcript tail."""
+        if history:
+            return history
+        if self._startup_resume_consumed or not self._startup_resume_messages:
+            return history
+        if getattr(session_entry, "was_auto_reset", False):
+            return history
+        if session_entry.created_at != session_entry.updated_at:
+            return history
+
+        seed = [msg.copy() for msg in self._startup_resume_messages]
+        try:
+            self.session_store.rewrite_transcript(session_entry.session_id, seed)
+        except Exception as e:
+            logger.warning(
+                "Startup session recovery failed for %s: %s",
+                session_entry.session_id,
+                e,
+            )
+            return history
+
+        self._startup_resume_consumed = True
+        self._startup_resume_messages = []
+        logger.info(
+            "Seeded new session %s with %d recovered message(s) from %s",
+            session_entry.session_id,
+            len(seed),
+            self._startup_resume_source_session_id or "unknown session",
+        )
+        return seed
 
     def _has_setup_skill(self) -> bool:
         """Check if the hermes-agent-setup skill is installed."""
@@ -3593,6 +3671,8 @@ class GatewayRunner:
 
         # Load conversation history from transcript
         history = self.session_store.load_transcript(session_entry.session_id)
+        if _is_new_session:
+            history = self._maybe_seed_startup_resume_history(session_entry, history)
         
         # -----------------------------------------------------------------
         # Session hygiene: auto-compress pathologically large transcripts

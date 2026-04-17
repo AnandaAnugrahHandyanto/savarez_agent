@@ -263,6 +263,70 @@ class TestMessageStorage:
         assert conv[0]["codex_reasoning_items"][0]["encrypted_content"] == "enc_blob_123"
 
 
+class TestStartupResumeHelpers:
+    def test_get_latest_resume_candidate_excludes_sources_and_children(self, db):
+        db.create_session(session_id="cli_recent", source="cli")
+        db.append_message("cli_recent", role="user", content="local session")
+
+        db.create_session(session_id="cron_recent", source="cron")
+        db.append_message("cron_recent", role="user", content="cron session")
+
+        db.create_session(session_id="root_old", source="telegram")
+        db.append_message("root_old", role="user", content="old root")
+        time.sleep(0.01)
+
+        db.create_session(session_id="root_new", source="discord")
+        db.append_message("root_new", role="user", content="new root")
+        time.sleep(0.01)
+
+        db.create_session(
+            session_id="child_newer",
+            source="discord",
+            parent_session_id="root_new",
+        )
+        db.append_message("child_newer", role="user", content="child should be ignored")
+
+        latest = db.get_latest_resume_candidate(
+            exclude_sources=["cli", "cron"],
+        )
+
+        assert latest is not None
+        assert latest["id"] == "root_new"
+
+    def test_get_recent_conversation_tail_returns_last_text_turns_in_order(self, db):
+        db.create_session(session_id="s1", source="telegram")
+        db.append_message("s1", role="user", content="u1")
+        db.append_message("s1", role="assistant", content="a1", reasoning="r1")
+        db.append_message(
+            "s1",
+            role="assistant",
+            content="",
+            tool_calls=[{"id": "call_1", "function": {"name": "web_search", "arguments": "{}"}}],
+        )
+        db.append_message("s1", role="tool", content="tool output", tool_call_id="call_1")
+        db.append_message("s1", role="user", content="u2")
+        db.append_message(
+            "s1",
+            role="assistant",
+            content="a2",
+            reasoning_details=[{"type": "reasoning.summary", "summary": "two"}],
+        )
+        db.append_message("s1", role="user", content="u3")
+
+        tail = db.get_recent_conversation_tail("s1", limit=4)
+
+        assert tail == [
+            {"role": "assistant", "content": "a1", "reasoning": "r1"},
+            {"role": "user", "content": "u2"},
+            {
+                "role": "assistant",
+                "content": "a2",
+                "reasoning_details": [{"type": "reasoning.summary", "summary": "two"}],
+            },
+            {"role": "user", "content": "u3"},
+        ]
+
+
 # =========================================================================
 # FTS5 search
 # =========================================================================

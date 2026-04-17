@@ -258,6 +258,10 @@ class GatewayConfig:
     # Streaming configuration
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
 
+    # Startup recovery
+    auto_resume_last_session: bool = False
+    auto_resume_message_limit: int = 40
+
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
         connected = []
@@ -357,6 +361,8 @@ class GatewayConfig:
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
+            "auto_resume_last_session": self.auto_resume_last_session,
+            "auto_resume_message_limit": self.auto_resume_message_limit,
         }
     
     @classmethod
@@ -403,6 +409,11 @@ class GatewayConfig:
             data.get("unauthorized_dm_behavior"),
             "pair",
         )
+        auto_resume_message_limit = data.get("auto_resume_message_limit", 40)
+        try:
+            auto_resume_message_limit = int(auto_resume_message_limit)
+        except (TypeError, ValueError):
+            auto_resume_message_limit = 40
 
         return cls(
             platforms=platforms,
@@ -418,6 +429,11 @@ class GatewayConfig:
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
+            auto_resume_last_session=_coerce_bool(
+                data.get("auto_resume_last_session"),
+                False,
+            ),
+            auto_resume_message_limit=max(1, min(auto_resume_message_limit, 100)),
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:
@@ -509,6 +525,13 @@ def load_gateway_config() -> GatewayConfig:
                     yaml_cfg.get("unauthorized_dm_behavior"),
                     "pair",
                 )
+
+            gateway_cfg = yaml_cfg.get("gateway")
+            if isinstance(gateway_cfg, dict):
+                if "auto_resume_last_session" in gateway_cfg:
+                    gw_data["auto_resume_last_session"] = gateway_cfg["auto_resume_last_session"]
+                if "auto_resume_message_limit" in gateway_cfg:
+                    gw_data["auto_resume_message_limit"] = gateway_cfg["auto_resume_message_limit"]
 
             # Merge platforms section from config.yaml into gw_data so that
             # nested keys like platforms.webhook.extra.routes are loaded.
@@ -731,6 +754,13 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
             policy.idle_minutes,
         )
         policy.idle_minutes = 1440
+
+    if config.auto_resume_message_limit <= 0:
+        logger.warning(
+            "Invalid auto_resume_message_limit=%s (must be positive). Using default 40.",
+            config.auto_resume_message_limit,
+        )
+        config.auto_resume_message_limit = 40
 
     # Warn about empty bot tokens — platforms that loaded an empty string
     # won't connect and the cause can be confusing without a log line.
