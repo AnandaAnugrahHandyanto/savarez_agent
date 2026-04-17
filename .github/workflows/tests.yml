@@ -40,7 +40,7 @@ jobs:
       - name: Run tests
         run: |
           source .venv/bin/activate
-          python -m pytest tests/ -q --ignore=tests/integration --ignore=tests/e2e --tb=short -n auto
+          python -m pytest tests/ -q --ignore=tests/integration --ignore=tests/e2e --tb=short -n 0
         env:
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
