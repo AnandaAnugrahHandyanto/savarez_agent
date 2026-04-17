@@ -108,6 +108,115 @@ All documentation lives at **[hermes-agent.nousresearch.com/docs](https://hermes
 
 ---
 
+## Observability — OTel Tracing & Metrics
+
+Hermes Agent has built-in OpenTelemetry instrumentation. Enable it to get full traces and metrics in Grafana.
+
+**1. Start the observability stack** (Grafana + Tempo + Prometheus + Loki):
+From with the hermes-agent folder
+```bash
+docker run -d \
+  --name otel-lgtm \
+  --network host \
+  --restart unless-stopped \
+  -v ./otel//otel-lgtm/otelcol-config.yaml:/otel-lgtm/otelcol-config.yaml:ro \
+  grafana/otel-lgtm:latest
+
+```
+
+Ports exposed: Grafana (3000), Tempo (3200), Prometheus (9090), Loki (3100), OTLP receiver (4317/4318).
+
+**2. Install OTel packages:**
+
+```bash
+~/.hermes/hermes-agent/venv/bin/pip install \
+    opentelemetry-api \
+    opentelemetry-sdk \
+    opentelemetry-exporter-otlp-proto-http \
+    opentelemetry-sem-conv
+```
+
+**3. Enable and configure:**
+
+```bash
+export OTEL_ENABLED=true
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+export OTEL_SERVICE_NAME=hermes-agent
+```
+
+> **Note:** Use port **4318** (HTTP), not 4317 (gRPC). `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` must also be set.
+
+Changes made to .env will be persisted.
+
+**4. Restart the gateway** so env vars take effect:
+
+```bash
+sudo systemctl daemon-reload && sudo systemctl restart hermes-gateway
+```
+
+**5. Open Grafana** at `http://your-server:3000` (admin/admin). Traces appear under the Tempo datasource, metrics under Prometheus.
+
+**6. Verify datasources before importing dashboards:**
+
+- Go to **Connections -> Data sources** in Grafana.
+- Confirm a **Tempo** datasource exists and is healthy.
+- Confirm a **Prometheus** datasource exists and is healthy.
+- If either is missing, create it first (Tempo for traces, Prometheus for metrics), then import dashboards.
+
+**7. Optional: ship Hermes logs to Loki with Promtail**
+
+Promtail config templates are included under `otel/promtail/`.
+
+Scrape targets:
+- `~/.hermes/logs/gateway.log` (`app=hermes-agent`, `component=gateway`)
+- `~/.hermes/logs/agent.log` (`app=hermes-agent`, `component=agent`)
+- `~/.hermes/logs/errors.log` (`app=hermes-agent`, `component=errors`)
+- `~/.hermes/sessions/*.jsonl` (`app=hermes-agent`, `component=sessions`)
+
+Loki push endpoint:
+- `http://localhost:3100/loki/api/v1/push`
+
+> Ensure Loki is running and reachable at `http://localhost:3100` before enabling Promtail.
+
+Example install flow (Linux/systemd):
+```bash
+sudo install -m 0755 /path/to/promtail /usr/local/bin/promtail
+mkdir -p ~/.hermes/promtail
+cp otel/promtail/promtail-config.yaml ~/.hermes/promtail/promtail-config.yaml
+touch ~/.hermes/promtail/promtail-positions.yaml
+
+# edit otel/promtail/promtail-hermes.service and replace YOUR_USER
+sudo cp otel/promtail/promtail-hermes.service /etc/systemd/system/promtail-hermes.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now promtail-hermes
+```
+
+> `promtail-positions.yaml` is runtime state and should not be committed.
+
+**Available metrics:**
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `hermes.queries.total` | Counter | Total queries |
+| `hermes.tool_calls.total` | Counter | Tool calls by name/type |
+| `hermes.query.latency_seconds` | Histogram | End-to-end query latency |
+| `hermes.tool.latency_seconds` | Histogram | Per-tool latency |
+| `hermes.errors.total` | Counter | Errors by type |
+| `hermes.active_conversations` | UpDownCounter | Live conversations |
+| `hermes.conversation.state` | Observable Gauge | State per conversation (0=idle, 1=thinking, 2=tool_executing, 3=waiting_for_user) |
+
+A pre-built Grafana dashboard is available at `grafana-dashboards/hermes_observability_dashboard.json`.
+Import it after datasource verification so panel queries bind correctly.
+
+**6. To Disable Observability:**
+```bash
+export OTEL_ENABLED=false
+```
+
+
+---
+
 ## Migrating from OpenClaw
 
 If you're coming from OpenClaw, Hermes can automatically import your settings, memories, skills, and API keys.
