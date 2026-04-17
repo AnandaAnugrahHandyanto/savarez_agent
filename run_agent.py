@@ -557,8 +557,16 @@ class AIAgent:
         api_mode: str = None,
         acp_command: str = None,
         acp_args: list[str] | None = None,
+        # Working directory for the ACP subprocess (only used when provider is
+        # "copilot-acp"). `CopilotACPClient` already accepts this — without it,
+        # the subprocess falls back to `os.getcwd()`. Exposing the parameter on
+        # AIAgent lets a caller (or a delegated subagent — see
+        # `tools/delegate_tool.py`) target a specific project directory without
+        # having to chdir the whole Hermes process.
+        acp_cwd: str = None,
         command: str = None,
         args: list[str] | None = None,
+        cwd: str = None,  # Alias for acp_cwd, mirrors the command/args aliases.
         model: str = "",
         max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
         tool_delay: float = 1.0,
@@ -683,6 +691,7 @@ class AIAgent:
         self.provider = provider_name or ""
         self.acp_command = acp_command or command
         self.acp_args = list(acp_args or args or [])
+        self.acp_cwd = acp_cwd or cwd
         if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse"}:
             self.api_mode = api_mode
         elif self.provider == "openai-codex":
@@ -964,6 +973,8 @@ class AIAgent:
                 if self.provider == "copilot-acp":
                     client_kwargs["command"] = self.acp_command
                     client_kwargs["args"] = self.acp_args
+                    if self.acp_cwd:
+                        client_kwargs["acp_cwd"] = self.acp_cwd
                 effective_base = base_url
                 if "openrouter" in effective_base.lower():
                     client_kwargs["default_headers"] = {
