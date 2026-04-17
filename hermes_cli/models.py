@@ -11,8 +11,10 @@ import json
 import os
 import urllib.request
 import urllib.error
+import time
 from difflib import get_close_matches
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any, NamedTuple, Optional
 
 COPILOT_BASE_URL = "https://api.githubcopilot.com"
 COPILOT_MODELS_URL = f"{COPILOT_BASE_URL}/models"
@@ -24,11 +26,13 @@ COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
 # Fallback OpenRouter snapshot used when the live catalog is unavailable.
 # (model_id, display description shown in menus)
 OPENROUTER_MODELS: list[tuple[str, str]] = [
-    ("anthropic/claude-opus-4.6",       "recommended"),
+    ("anthropic/claude-opus-4.7",       "recommended"),
+    ("anthropic/claude-opus-4.6",       ""),
     ("anthropic/claude-sonnet-4.6",     ""),
     ("qwen/qwen3.6-plus",               ""),
     ("anthropic/claude-sonnet-4.5",     ""),
     ("anthropic/claude-haiku-4.5",      ""),
+    ("openrouter/elephant-alpha",       "free"),
     ("openai/gpt-5.4",                  ""),
     ("openai/gpt-5.4-mini",             ""),
     ("xiaomi/mimo-v2-pro",               ""),
@@ -43,6 +47,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("minimax/minimax-m2.7",            ""),
     ("minimax/minimax-m2.5",            ""),
     ("z-ai/glm-5.1",                    ""),
+    ("z-ai/glm-5v-turbo",               ""),
     ("z-ai/glm-5-turbo",                ""),
     ("moonshotai/kimi-k2.5",            ""),
     ("x-ai/grok-4.20",                  ""),
@@ -70,13 +75,14 @@ def _codex_curated_models() -> list[str]:
 
 _PROVIDER_MODELS: dict[str, list[str]] = {
     "nous": [
+        "xiaomi/mimo-v2-pro",
+        "anthropic/claude-opus-4.7",
         "anthropic/claude-opus-4.6",
         "anthropic/claude-sonnet-4.6",
         "anthropic/claude-sonnet-4.5",
         "anthropic/claude-haiku-4.5",
         "openai/gpt-5.4",
         "openai/gpt-5.4-mini",
-        "xiaomi/mimo-v2-pro",
         "openai/gpt-5.3-codex",
         "google/gemini-3-pro-preview",
         "google/gemini-3-flash-preview",
@@ -88,6 +94,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "minimax/minimax-m2.7",
         "minimax/minimax-m2.5",
         "z-ai/glm-5.1",
+        "z-ai/glm-5v-turbo",
         "z-ai/glm-5-turbo",
         "moonshotai/kimi-k2.5",
         "x-ai/grok-4.20-beta",
@@ -97,6 +104,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "arcee-ai/trinity-large-thinking",
         "openai/gpt-5.4-pro",
         "openai/gpt-5.4-nano",
+        "openrouter/elephant-alpha",
     ],
     "openai-codex": _codex_curated_models(),
     "copilot-acp": [
@@ -129,31 +137,35 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemma-4-31b-it",
         "gemma-4-26b-it",
     ],
+    "google-gemini-cli": [
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+    ],
     "zai": [
+        "glm-5.1",
         "glm-5",
+        "glm-5v-turbo",
         "glm-5-turbo",
         "glm-4.7",
         "glm-4.5",
         "glm-4.5-flash",
     ],
     "xai": [
-        "grok-4.20-0309-reasoning",
-        "grok-4.20-0309-non-reasoning",
-        "grok-4.20-multi-agent-0309",
+        "grok-4.20-reasoning",
         "grok-4-1-fast-reasoning",
-        "grok-4-1-fast-non-reasoning",
-        "grok-4-fast-reasoning",
-        "grok-4-fast-non-reasoning",
-        "grok-4-0709",
-        "grok-code-fast-1",
-        "grok-3",
-        "grok-3-mini",
     ],
     "kimi-coding": [
         "kimi-for-coding",
         "kimi-k2.5",
         "kimi-k2-thinking",
         "kimi-k2-thinking-turbo",
+        "kimi-k2-turbo-preview",
+        "kimi-k2-0905-preview",
+    ],
+    "kimi-coding-cn": [
+        "kimi-k2.5",
+        "kimi-k2-thinking",
         "kimi-k2-turbo-preview",
         "kimi-k2-0905-preview",
     ],
@@ -176,6 +188,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "MiniMax-M2",
     ],
     "anthropic": [
+        "claude-opus-4-7",
         "claude-opus-4-6",
         "claude-sonnet-4-6",
         "claude-opus-4-5-20251101",
@@ -200,6 +213,10 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "openai-gpt-53-codex",
         "zai-org-glm-4.7",
         "kimi-k2-5",
+    "arcee": [
+        "trinity-large-thinking",
+        "trinity-large-preview",
+        "trinity-mini",
     ],
     "opencode-zen": [
         "gpt-5.4-pro",
@@ -240,6 +257,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "big-pickle",
     ],
     "opencode-go": [
+        "glm-5.1",
         "glm-5",
         "kimi-k2.5",
         "mimo-v2-pro",
@@ -293,6 +311,22 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "zai-org/GLM-5",
         "XiaomiMiMo/MiMo-V2-Flash",
         "moonshotai/Kimi-K2-Thinking",
+    ],
+    # AWS Bedrock — static fallback list used when dynamic discovery is
+    # unavailable (no boto3, no credentials, or API error).  The agent
+    # prefers live discovery via ListFoundationModels + ListInferenceProfiles.
+    # Use inference profile IDs (us.*) since most models require them.
+    "bedrock": [
+        "us.anthropic.claude-sonnet-4-6",
+        "us.anthropic.claude-opus-4-6-v1",
+        "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "us.amazon.nova-pro-v1:0",
+        "us.amazon.nova-lite-v1:0",
+        "us.amazon.nova-micro-v1:0",
+        "deepseek.v3.2",
+        "us.meta.llama4-maverick-17b-instruct-v1:0",
+        "us.meta.llama4-scout-17b-instruct-v1:0",
     ],
 }
 
@@ -527,6 +561,10 @@ _PROVIDER_ALIASES = {
     "google-ai-studio": "gemini",
     "kimi": "kimi-coding",
     "moonshot": "kimi-coding",
+    "kimi-cn": "kimi-coding-cn",
+    "moonshot-cn": "kimi-coding-cn",
+    "arcee-ai": "arcee",
+    "arceeai": "arcee",
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
     "claude": "anthropic",
@@ -550,12 +588,37 @@ _PROVIDER_ALIASES = {
     "qwen": "alibaba",
     "alibaba-cloud": "alibaba",
     "qwen-portal": "qwen-oauth",
+    "gemini-cli": "google-gemini-cli",
+    "gemini-oauth": "google-gemini-cli",
     "hf": "huggingface",
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
     "mimo": "xiaomi",
     "xiaomi-mimo": "xiaomi",
+    "aws": "bedrock",
+    "aws-bedrock": "bedrock",
+    "amazon-bedrock": "bedrock",
+    "amazon": "bedrock",
+    "grok": "xai",
+    "x-ai": "xai",
+    "x.ai": "xai",
+    "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
+    "ollama_cloud": "ollama-cloud",
 }
+
+
+def get_default_model_for_provider(provider: str) -> str:
+    """Return the default model for a provider, or empty string if unknown.
+
+    Uses the first entry in _PROVIDER_MODELS as the default.  This is the
+    model a user would be offered first in the ``hermes model`` picker.
+
+    Used as a fallback when the user has configured a provider but never
+    selected a model (e.g. ``hermes auth add openai-codex`` without
+    ``hermes model``).
+    """
+    models = _PROVIDER_MODELS.get(provider, [])
+    return models[0] if models else ""
 
 
 def _openrouter_model_is_free(pricing: Any) -> bool:
@@ -626,13 +689,6 @@ def model_ids(*, force_refresh: bool = False) -> list[str]:
     """Return just the OpenRouter model-id strings."""
     return [mid for mid, _ in fetch_openrouter_models(force_refresh=force_refresh)]
 
-
-def menu_labels(*, force_refresh: bool = False) -> list[str]:
-    """Return display labels like 'anthropic/claude-opus-4.6 (recommended)'."""
-    labels = []
-    for mid, desc in fetch_openrouter_models(force_refresh=force_refresh):
-        labels.append(f"{mid} ({desc})" if desc else mid)
-    return labels
 
 
 
@@ -833,6 +889,9 @@ def list_available_providers() -> list[dict[str, str]]:
 
     Each dict has ``id``, ``label``, and ``aliases``.
     Checks which providers have valid credentials configured.
+
+    Derives the provider list from :data:`CANONICAL_PROVIDERS` (single
+    source of truth shared with ``hermes model``, ``/model``, etc.).
     """
     # Canonical providers in display order
     _PROVIDER_ORDER = [
@@ -849,7 +908,7 @@ def list_available_providers() -> list[dict[str, str]]:
         aliases_for.setdefault(canonical, []).append(alias)
 
     result = []
-    for pid in _PROVIDER_ORDER:
+    for pid in provider_order:
         label = _PROVIDER_LABELS.get(pid, pid)
         alias_list = aliases_for.get(pid, [])
         # Check if this provider has credentials available
@@ -987,7 +1046,7 @@ def detect_provider_for_model(
             return (resolved_provider, default_models[0])
 
     # Aggregators list other providers' models — never auto-switch TO them
-    _AGGREGATORS = {"nous", "openrouter"}
+    _AGGREGATORS = {"nous", "openrouter", "ai-gateway", "copilot", "kilocode"}
 
     # If the model belongs to the current provider's catalog, don't suggest switching
     current_models = _PROVIDER_MODELS.get(current_provider, [])
@@ -1004,7 +1063,8 @@ def detect_provider_for_model(
             break
 
     if direct_match:
-        # Check if we have credentials for this provider
+        # Check if we have credentials for this provider — env vars,
+        # credential pool, or auth store entries.
         has_creds = False
         try:
             from hermes_cli.auth import PROVIDER_REGISTRY
@@ -1017,16 +1077,28 @@ def detect_provider_for_model(
                         break
         except Exception:
             pass
+        # Also check credential pool and auth store — covers OAuth,
+        # Claude Code tokens, and other non-env-var credentials (#10300).
+        if not has_creds:
+            try:
+                from agent.credential_pool import load_pool
+                pool = load_pool(direct_match)
+                if pool.has_credentials():
+                    has_creds = True
+            except Exception:
+                pass
+        if not has_creds:
+            try:
+                from hermes_cli.auth import _load_auth_store
+                store = _load_auth_store()
+                if direct_match in store.get("providers", {}) or direct_match in store.get("credential_pool", {}):
+                    has_creds = True
+            except Exception:
+                pass
 
-        if has_creds:
-            return (direct_match, name)
-
-        # No direct creds — try to find this model on OpenRouter instead
-        or_slug = _find_openrouter_slug(name)
-        if or_slug:
-            return ("openrouter", or_slug)
-        # Still return the direct provider — credential resolution will
-        # give a clear error rather than silently using the wrong provider
+        # Always return the direct provider match.  If credentials are
+        # missing, the client init will give a clear error rather than
+        # silently routing through the wrong provider (#10300).
         return (direct_match, name)
 
     # --- Step 2: check OpenRouter catalog ---
@@ -1216,6 +1288,10 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         live = _fetch_ai_gateway_models()
         if live:
             return live
+    if normalized == "ollama-cloud":
+        live = fetch_ollama_cloud_models(force_refresh=force_refresh)
+        if live:
+            return live
     if normalized == "custom":
         base_url = _get_custom_base_url()
         if base_url:
@@ -1402,6 +1478,19 @@ _COPILOT_MODEL_ALIASES = {
     "anthropic/claude-sonnet-4.6": "claude-sonnet-4.6",
     "anthropic/claude-sonnet-4.5": "claude-sonnet-4.5",
     "anthropic/claude-haiku-4.5": "claude-haiku-4.5",
+    # Dash-notation fallbacks: Hermes' default Claude IDs elsewhere use
+    # hyphens (anthropic native format), but Copilot's API only accepts
+    # dot-notation.  Accept both so users who configure copilot + a
+    # default hyphenated Claude model don't hit HTTP 400
+    # "model_not_supported".  See issue #6879.
+    "claude-opus-4-6": "claude-opus-4.6",
+    "claude-sonnet-4-6": "claude-sonnet-4.6",
+    "claude-sonnet-4-5": "claude-sonnet-4.5",
+    "claude-haiku-4-5": "claude-haiku-4.5",
+    "anthropic/claude-opus-4-6": "claude-opus-4.6",
+    "anthropic/claude-sonnet-4-6": "claude-sonnet-4.6",
+    "anthropic/claude-sonnet-4-5": "claude-sonnet-4.5",
+    "anthropic/claude-haiku-4-5": "claude-haiku-4.5",
 }
 
 
@@ -1500,6 +1589,11 @@ def copilot_model_api_mode(
     primary signal.  Falls back to the catalog's ``supported_endpoints``
     only for models not covered by the pattern check.
     """
+    # Fetch the catalog once so normalize + endpoint check share it
+    # (avoids two redundant network calls for non-GPT-5 models).
+    if catalog is None and api_key:
+        catalog = fetch_github_model_catalog(api_key=api_key)
+
     normalized = normalize_copilot_model_id(model_id, catalog=catalog, api_key=api_key)
     if not normalized:
         return "chat_completions"
@@ -1509,9 +1603,6 @@ def copilot_model_api_mode(
         return "codex_responses"
 
     # Secondary: check catalog for non-GPT-5 models (Claude via /v1/messages, etc.)
-    if catalog is None and api_key:
-        catalog = fetch_github_model_catalog(api_key=api_key)
-
     if catalog:
         catalog_entry = next((item for item in catalog if item.get("id") == normalized), None)
         if isinstance(catalog_entry, dict):
@@ -1726,6 +1817,125 @@ def fetch_api_models(
     return probe_api_models(api_key, base_url, timeout=timeout).get("models")
 
 
+# ---------------------------------------------------------------------------
+# Ollama Cloud — merged model discovery with disk cache
+# ---------------------------------------------------------------------------
+
+
+
+_OLLAMA_CLOUD_CACHE_TTL = 3600  # 1 hour
+
+
+def _ollama_cloud_cache_path() -> Path:
+    """Return the path for the Ollama Cloud model cache."""
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "ollama_cloud_models_cache.json"
+
+
+def _load_ollama_cloud_cache(*, ignore_ttl: bool = False) -> Optional[dict]:
+    """Load cached Ollama Cloud models from disk.
+
+    Args:
+        ignore_ttl: If True, return data even if the TTL has expired (stale fallback).
+    """
+    try:
+        cache_path = _ollama_cloud_cache_path()
+        if not cache_path.exists():
+            return None
+        with open(cache_path, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return None
+        models = data.get("models")
+        if not (isinstance(models, list) and models):
+            return None
+        if not ignore_ttl:
+            cached_at = data.get("cached_at", 0)
+            if (time.time() - cached_at) > _OLLAMA_CLOUD_CACHE_TTL:
+                return None  # stale
+        return data
+    except Exception:
+        pass
+    return None
+
+
+def _save_ollama_cloud_cache(models: list[str]) -> None:
+    """Persist the merged Ollama Cloud model list to disk."""
+    try:
+        from utils import atomic_json_write
+        cache_path = _ollama_cloud_cache_path()
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json_write(cache_path, {"models": models, "cached_at": time.time()}, indent=None)
+    except Exception:
+        pass
+
+
+def fetch_ollama_cloud_models(
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    *,
+    force_refresh: bool = False,
+) -> list[str]:
+    """Fetch Ollama Cloud models by merging live API + models.dev, with disk cache.
+
+    Resolution order:
+      1. Disk cache (if fresh, < 1 hour, and not force_refresh)
+      2. Live ``/v1/models`` endpoint (primary — freshest source)
+      3. models.dev registry (secondary — fills gaps for unlisted models)
+      4. Merge: live models first, then models.dev additions (deduped)
+
+    Returns a list of model IDs (never None — empty list on total failure).
+    """
+    # 1. Check disk cache
+    if not force_refresh:
+        cached = _load_ollama_cloud_cache()
+        if cached is not None:
+            return cached["models"]
+
+    # 2. Live API probe
+    if not api_key:
+        api_key = os.getenv("OLLAMA_API_KEY", "")
+    if not base_url:
+        base_url = os.getenv("OLLAMA_BASE_URL", "") or "https://ollama.com/v1"
+
+    live_models: list[str] = []
+    if api_key:
+        result = fetch_api_models(api_key, base_url, timeout=8.0)
+        if result:
+            live_models = result
+
+    # 3. models.dev registry
+    mdev_models: list[str] = []
+    try:
+        from agent.models_dev import list_agentic_models
+        mdev_models = list_agentic_models("ollama-cloud")
+    except Exception:
+        pass
+
+    # 4. Merge: live first, then models.dev additions (deduped, order-preserving)
+    if live_models or mdev_models:
+        seen: set[str] = set()
+        merged: list[str] = []
+        for m in live_models:
+            if m and m not in seen:
+                seen.add(m)
+                merged.append(m)
+        for m in mdev_models:
+            if m and m not in seen:
+                seen.add(m)
+                merged.append(m)
+        if merged:
+            _save_ollama_cloud_cache(merged)
+            return merged
+
+    # Total failure — return stale cache if available (ignore TTL)
+    stale = _load_ollama_cloud_cache(ignore_ttl=True)
+    if stale is not None:
+        return stale["models"]
+
+    return []
+
+
 def validate_requested_model(
     model_name: str,
     provider: Optional[str],
@@ -1784,6 +1994,17 @@ def validate_requested_model(
                     "message": None,
                 }
 
+            # Auto-correct if the top match is very similar (e.g. typo)
+            auto = get_close_matches(requested_for_lookup, api_models, n=1, cutoff=0.9)
+            if auto:
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "corrected_model": auto[0],
+                    "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
+                }
+
             suggestions = get_close_matches(requested, api_models, n=3, cutoff=0.5)
             suggestion_text = ""
             if suggestions:
@@ -1821,6 +2042,45 @@ def validate_requested_model(
             "message": message,
         }
 
+    # OpenAI Codex has its own catalog path; /v1/models probing is not the right validation path.
+    if normalized == "openai-codex":
+        try:
+            codex_models = provider_model_ids("openai-codex")
+        except Exception:
+            codex_models = []
+        if codex_models:
+            if requested_for_lookup in set(codex_models):
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": None,
+                }
+            # Auto-correct if the top match is very similar (e.g. typo)
+            auto = get_close_matches(requested_for_lookup, codex_models, n=1, cutoff=0.9)
+            if auto:
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "corrected_model": auto[0],
+                    "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
+                }
+            suggestions = get_close_matches(requested_for_lookup, codex_models, n=3, cutoff=0.5)
+            suggestion_text = ""
+            if suggestions:
+                suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": False,
+                "message": (
+                    f"Note: `{requested}` was not found in the OpenAI Codex model listing. "
+                    f"It may still work if your account has access to it."
+                    f"{suggestion_text}"
+                ),
+            }
+
     # Probe the live API to check if the model actually exists
     api_models = fetch_api_models(api_key, base_url)
 
@@ -1838,6 +2098,18 @@ def validate_requested_model(
             # the user may have access to models not shown in the public
             # listing (e.g. Z.AI Pro/Max plans can use glm-5 on coding
             # endpoints even though it's not in /models).  Warn but allow.
+
+            # Auto-correct if the top match is very similar (e.g. typo)
+            auto = get_close_matches(requested_for_lookup, api_models, n=1, cutoff=0.9)
+            if auto:
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "corrected_model": auto[0],
+                    "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
+                }
+
             suggestions = get_close_matches(requested, api_models, n=3, cutoff=0.5)
             suggestion_text = ""
             if suggestions:
@@ -1856,6 +2128,42 @@ def validate_requested_model(
 
     # api_models is None — couldn't reach API.  Accept and persist,
     # but warn so typos don't silently break things.
+
+    # Bedrock: use our own discovery instead of HTTP /models endpoint.
+    # Bedrock's bedrock-runtime URL doesn't support /models — it uses the
+    # AWS SDK control plane (ListFoundationModels + ListInferenceProfiles).
+    if normalized == "bedrock":
+        try:
+            from agent.bedrock_adapter import discover_bedrock_models, resolve_bedrock_region
+            region = resolve_bedrock_region()
+            discovered = discover_bedrock_models(region)
+            discovered_ids = {m["id"] for m in discovered}
+            if requested in discovered_ids:
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": None,
+                }
+            # Not in discovered list — still accept (user may have custom
+            # inference profiles or cross-account access), but warn.
+            suggestions = get_close_matches(requested, list(discovered_ids), n=3, cutoff=0.4)
+            suggestion_text = ""
+            if suggestions:
+                suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": False,
+                "message": (
+                    f"Note: `{requested}` was not found in Bedrock model discovery for {region}. "
+                    f"It may still work with custom inference profiles or cross-account access."
+                    f"{suggestion_text}"
+                ),
+            }
+        except Exception:
+            pass  # Fall through to generic warning
+
     provider_label = _PROVIDER_LABELS.get(normalized, normalized)
     return {
         "accepted": True,

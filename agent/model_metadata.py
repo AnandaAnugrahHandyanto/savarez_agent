@@ -5,7 +5,6 @@ and run_agent.py for pre-flight context checks.
 """
 
 import logging
-import os
 import re
 import time
 from pathlib import Path
@@ -26,17 +25,23 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
     "gemini", "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic", "deepseek",
     "venice", "huggingface",
+    "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "minimax", "minimax-cn", "anthropic", "deepseek",
     "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba",
     "qwen-oauth",
     "xiaomi",
+    "arcee",
     "custom", "local",
     # Common aliases
     "google", "google-gemini", "google-ai-studio",
     "glm", "z-ai", "z.ai", "zhipu", "github", "github-copilot",
     "github-models", "kimi", "moonshot", "claude", "deep-seek",
     "veniceai", "venice-ai", "venice.ai",
+    "github-models", "kimi", "moonshot", "kimi-cn", "moonshot-cn", "claude", "deep-seek",
+    "ollama",
     "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "qwen",
     "mimo", "xiaomi-mimo",
+    "arcee-ai", "arceeai",
+    "xai", "x-ai", "x.ai", "grok",
     "qwen-portal",
 })
 
@@ -87,6 +92,11 @@ CONTEXT_PROBE_TIERS = [
 # Default context length when no detection method succeeds.
 DEFAULT_FALLBACK_CONTEXT = CONTEXT_PROBE_TIERS[0]
 
+# Minimum context length required to run Hermes Agent.  Models with fewer
+# tokens cannot maintain enough working memory for tool-calling workflows.
+# Sessions, model switches, and cron jobs should reject models below this.
+MINIMUM_CONTEXT_LENGTH = 64_000
+
 # Thin fallback defaults — only broad model family patterns.
 # These fire only when provider is unknown AND models.dev/OpenRouter/Anthropic
 # all miss. Replaced the previous 80+ entry dict.
@@ -96,15 +106,23 @@ DEFAULT_CONTEXT_LENGTHS = {
     # fuzzy-match collisions (e.g. "anthropic/claude-sonnet-4" is a
     # substring of "anthropic/claude-sonnet-4.6").
     # OpenRouter-prefixed models resolve via OpenRouter live API or models.dev.
+    "claude-opus-4-7": 1000000,
+    "claude-opus-4.7": 1000000,
     "claude-opus-4-6": 1000000,
     "claude-sonnet-4-6": 1000000,
     "claude-opus-4.6": 1000000,
     "claude-sonnet-4.6": 1000000,
     # Catch-all for older Claude models (must sort after specific entries)
     "claude": 200000,
-    # OpenAI
+    # OpenAI — GPT-5 family (most have 400k; specific overrides first)
+    # Source: https://developers.openai.com/api/docs/models
+    "gpt-5.4-nano": 400000,           # 400k (not 1.05M like full 5.4)
+    "gpt-5.4-mini": 400000,           # 400k (not 1.05M like full 5.4)
+    "gpt-5.4": 1050000,               # GPT-5.4, GPT-5.4 Pro (1.05M context)
+    "gpt-5.3-codex-spark": 128000,    # Spark variant has reduced 128k context
+    "gpt-5.1-chat": 128000,           # Chat variant has 128k context
+    "gpt-5": 400000,                  # GPT-5.x base, mini, codex variants (400k)
     "gpt-4.1": 1047576,
-    "gpt-5": 128000,
     "gpt-4": 128000,
     # Google
     "gemini": 1048576,
@@ -153,6 +171,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     "openai-gpt-53-codex": 409600,
     # Arcee
     "trinity": 262144,
+    # OpenRouter
+    "elephant": 262144,
     # Hugging Face Inference Providers — model IDs use org/name format
     "Qwen/Qwen3.5-397B-A17B": 131072,
     "Qwen/Qwen3.5-35B-A3B": 131072,
@@ -215,7 +235,9 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.anthropic.com": "anthropic",
     "api.z.ai": "zai",
     "api.moonshot.ai": "kimi-coding",
+    "api.moonshot.cn": "kimi-coding-cn",
     "api.kimi.com": "kimi-coding",
+    "api.arcee.ai": "arcee",
     "api.minimax": "minimax",
     "dashscope.aliyuncs.com": "alibaba",
     "dashscope-intl.aliyuncs.com": "alibaba",
@@ -232,6 +254,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.x.ai": "xai",
     "api.xiaomimimo.com": "xiaomi",
     "xiaomimimo.com": "xiaomi",
+    "ollama.com": "ollama-cloud",
 }
 
 
@@ -780,12 +803,12 @@ def _query_local_context_length(model: str, base_url: str) -> Optional[int]:
                 resp = client.post(f"{server_url}/api/show", json={"name": model})
                 if resp.status_code == 200:
                     data = resp.json()
-                    # Check model_info for context length
-                    model_info = data.get("model_info", {})
-                    for key, value in model_info.items():
-                        if "context_length" in key and isinstance(value, (int, float)):
-                            return int(value)
-                    # Check parameters string for num_ctx
+                    # Prefer explicit num_ctx from Modelfile parameters: this is
+                    # the *runtime* context Ollama will actually allocate KV cache
+                    # for. The GGUF model_info.context_length is the training max,
+                    # which can be larger than num_ctx — using it here would let
+                    # Hermes grow conversations past the runtime limit and Ollama
+                    # would silently truncate. Matches query_ollama_num_ctx().
                     params = data.get("parameters", "")
                     if "num_ctx" in params:
                         for line in params.split("\n"):
@@ -796,6 +819,11 @@ def _query_local_context_length(model: str, base_url: str) -> Optional[int]:
                                         return int(parts[-1])
                                     except ValueError:
                                         pass
+                    # Fall back to GGUF model_info context_length (training max)
+                    model_info = data.get("model_info", {})
+                    for key, value in model_info.items():
+                        if "context_length" in key and isinstance(value, (int, float)):
+                            return int(value)
 
             # LM Studio native API: /api/v1/models returns max_context_length.
             # This is more reliable than the OpenAI-compat /v1/models which
@@ -1000,6 +1028,16 @@ def get_model_context_length(
         if ctx:
             return ctx
 
+    # 4b. AWS Bedrock — use static context length table.
+    # Bedrock's ListFoundationModels doesn't expose context window sizes,
+    # so we maintain a curated table in bedrock_adapter.py.
+    if provider == "bedrock" or (base_url and "bedrock-runtime" in base_url):
+        try:
+            from agent.bedrock_adapter import get_bedrock_context_length
+            return get_bedrock_context_length(model)
+        except ImportError:
+            pass  # boto3 not installed — fall through to generic resolution
+
     # 5. Provider-aware lookups (before generic OpenRouter cache)
     # These are provider-specific and take priority over the generic OR cache,
     # since the same model can have different context limits per provider
@@ -1050,16 +1088,21 @@ def get_model_context_length(
 
 
 def estimate_tokens_rough(text: str) -> int:
-    """Rough token estimate (~4 chars/token) for pre-flight checks."""
+    """Rough token estimate (~4 chars/token) for pre-flight checks.
+
+    Uses ceiling division so short texts (1-3 chars) never estimate as
+    0 tokens, which would cause the compressor and pre-flight checks to
+    systematically undercount when many short tool results are present.
+    """
     if not text:
         return 0
-    return len(text) // 4
+    return (len(text) + 3) // 4
 
 
 def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
     """Rough token estimate for a message list (pre-flight only)."""
     total_chars = sum(len(str(msg)) for msg in messages)
-    return total_chars // 4
+    return (total_chars + 3) // 4
 
 
 def estimate_request_tokens_rough(
@@ -1082,4 +1125,4 @@ def estimate_request_tokens_rough(
         total_chars += sum(len(str(msg)) for msg in messages)
     if tools:
         total_chars += len(str(tools))
-    return total_chars // 4
+    return (total_chars + 3) // 4

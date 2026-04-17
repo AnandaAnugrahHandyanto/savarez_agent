@@ -12,7 +12,6 @@ import hashlib
 import logging
 import os
 import json
-import re
 import threading
 import uuid
 from pathlib import Path
@@ -83,6 +82,7 @@ class SessionSource:
     chat_topic: Optional[str] = None  # Channel topic/description (Discord, Slack)
     user_id_alt: Optional[str] = None  # Signal UUID (alternative to phone number)
     chat_id_alt: Optional[str] = None  # Signal group internal ID
+    is_bot: bool = False  # True when the message author is a bot/webhook (Discord)
     
     @property
     def description(self) -> str:
@@ -302,6 +302,8 @@ def build_session_context_prompt(
     lines.append("")
     lines.append("**Delivery options for scheduled tasks:**")
     
+    from hermes_constants import display_hermes_home
+
     # Origin delivery
     if context.source.platform == Platform.LOCAL:
         lines.append("- `\"origin\"` → Local output (saved to files)")
@@ -310,9 +312,11 @@ def build_session_context_prompt(
             _hash_chat_id(context.source.chat_id) if redact_pii else context.source.chat_id
         )
         lines.append(f"- `\"origin\"` → Back to this chat ({_origin_label})")
-    
+
     # Local always available
-    lines.append("- `\"local\"` → Save to local files only (~/.hermes/cron/output/)")
+    lines.append(
+        f"- `\"local\"` → Save to local files only ({display_hermes_home()}/cron/output/)"
+    )
     
     # Platform home channels
     for platform, home in context.home_channels.items():
@@ -807,9 +811,9 @@ class SessionStore:
         to avoid resetting long-idle sessions that are harmless to resume.
         Returns the number of sessions that were suspended.
         """
-        import time as _time
+        from datetime import timedelta
 
-        cutoff = _time.time() - max_age_seconds
+        cutoff = _now() - timedelta(seconds=max_age_seconds)
         count = 0
         with self._lock:
             self._ensure_loaded_locked()
@@ -878,7 +882,8 @@ class SessionStore:
         Used by ``/resume`` to restore a previously-named session.
         Ends the current session in SQLite (like reset), but instead of
         generating a fresh session ID, re-uses ``target_session_id`` so the
-        old transcript is loaded on the next message.
+        old transcript is loaded on the next message. If the target session was
+        previously ended, re-open it so gateway resume semantics match the CLI.
         """
         db_end_session_id = None
         new_entry = None
@@ -917,6 +922,12 @@ class SessionStore:
                 self._db.end_session(db_end_session_id, "session_switch")
             except Exception as e:
                 logger.debug("Session DB end_session failed: %s", e)
+
+        if self._db:
+            try:
+                self._db.reopen_session(target_session_id)
+            except Exception as e:
+                logger.debug("Session DB reopen_session failed: %s", e)
 
         return new_entry
 

@@ -136,6 +136,10 @@ class ProcessRegistry:
         import queue as _queue_mod
         self.completion_queue: _queue_mod.Queue = _queue_mod.Queue()
 
+        # Track sessions whose completion was already consumed by the agent
+        # via wait/poll/log.  Drain loops skip notifications for these.
+        self._completion_consumed: set = set()
+
     @staticmethod
     def _clean_shell_noise(text: str) -> str:
         """Strip shell startup warnings from the beginning of output."""
@@ -187,9 +191,15 @@ class ProcessRegistry:
                     session._watch_disabled = True
                     self.completion_queue.put({
                         "session_id": session.id,
+                        "session_key": session.session_key,
                         "command": session.command,
                         "type": "watch_disabled",
                         "suppressed": session._watch_suppressed,
+                        "platform": session.watcher_platform,
+                        "chat_id": session.watcher_chat_id,
+                        "user_id": session.watcher_user_id,
+                        "user_name": session.watcher_user_name,
+                        "thread_id": session.watcher_thread_id,
                         "message": (
                             f"Watch patterns disabled for process {session.id} — "
                             f"too many matches ({session._watch_suppressed} suppressed). "
@@ -215,11 +225,17 @@ class ProcessRegistry:
 
         self.completion_queue.put({
             "session_id": session.id,
+            "session_key": session.session_key,
             "command": session.command,
             "type": "watch_match",
             "pattern": matched_pattern,
             "output": output,
             "suppressed": suppressed,
+            "platform": session.watcher_platform,
+            "chat_id": session.watcher_chat_id,
+            "user_id": session.watcher_user_id,
+            "user_name": session.watcher_user_name,
+            "thread_id": session.watcher_thread_id,
         })
 
     @staticmethod
@@ -318,7 +334,7 @@ class ProcessRegistry:
                 pty_env = _sanitize_subprocess_env(os.environ, env_vars)
                 pty_env["PYTHONUNBUFFERED"] = "1"
                 pty_proc = _PtyProcessCls.spawn(
-                    [user_shell, "-lic", command],
+                    [user_shell, "-lic", f"set +m; {command}"],
                     cwd=session.cwd,
                     env=pty_env,
                     dimensions=(30, 120),
@@ -359,7 +375,7 @@ class ProcessRegistry:
         bg_env = _sanitize_subprocess_env(os.environ, env_vars)
         bg_env["PYTHONUNBUFFERED"] = "1"
         proc = subprocess.Popen(
-            [user_shell, "-lic", command],
+            [user_shell, "-lic", f"set +m; {command}"],
             text=True,
             cwd=session.cwd,
             env=bg_env,
@@ -613,6 +629,10 @@ class ProcessRegistry:
 
     # ----- Query Methods -----
 
+    def is_completion_consumed(self, session_id: str) -> bool:
+        """Check if a completion notification was already consumed via wait/poll/log."""
+        return session_id in self._completion_consumed
+
     def get(self, session_id: str) -> Optional[ProcessSession]:
         """Get a session by ID (running or finished)."""
         with self._lock:
@@ -640,6 +660,7 @@ class ProcessRegistry:
         }
         if session.exited:
             result["exit_code"] = session.exit_code
+            self._completion_consumed.add(session_id)
         if session.detached:
             result["detached"] = True
             result["note"] = "Process recovered after restart -- output history unavailable"
@@ -665,13 +686,16 @@ class ProcessRegistry:
         else:
             selected = lines[offset:offset + limit]
 
-        return {
+        result = {
             "session_id": session.id,
             "status": "exited" if session.exited else "running",
             "output": "\n".join(selected),
             "total_lines": total_lines,
             "showing": f"{len(selected)} lines",
         }
+        if session.exited:
+            self._completion_consumed.add(session_id)
+        return result
 
     def wait(self, session_id: str, timeout: int = None) -> dict:
         """
@@ -714,6 +738,7 @@ class ProcessRegistry:
         while time.monotonic() < deadline:
             session = self._refresh_detached_session(session)
             if session.exited:
+                self._completion_consumed.add(session_id)
                 result = {
                     "status": "exited",
                     "exit_code": session.exit_code,
