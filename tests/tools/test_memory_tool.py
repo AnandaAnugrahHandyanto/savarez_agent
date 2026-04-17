@@ -272,6 +272,76 @@ class TestMemoryStoreNamespaceIsolation:
         assert "User B secret" not in mem_a
 
 
+class TestMemoryMigrationFromSharedRoot:
+    """Migration: shared root MEMORY.md/USER.md → per-user namespace dir."""
+
+    def test_migration_copies_shared_files_to_new_namespace(self, tmp_path, monkeypatch):
+        """When a namespaced user loads memory for the first time and the
+        shared root still has files, they should be auto-copied."""
+        root = tmp_path  # shared root
+        user_dir = tmp_path / "telegram_5137755622"
+        (root / "MEMORY.md").write_text("Shared memory entry\n§\nShared entry 2")
+        (root / "USER.md").write_text("Shared user profile")
+
+        def _get_dir(namespace=""):
+            if namespace:
+                return user_dir
+            return root
+
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", _get_dir)
+
+        store = MemoryStore(memory_char_limit=500, user_char_limit=300, namespace="telegram:5137755622")
+        store.load_from_disk()
+
+        assert (user_dir / "MEMORY.md").exists()
+        assert (user_dir / "USER.md").exists()
+        assert "Shared memory entry" in (user_dir / "MEMORY.md").read_text()
+        assert "Shared user profile" in (user_dir / "USER.md").read_text()
+        # Shared root files should still exist
+        assert (root / "MEMORY.md").exists()
+        assert (root / "USER.md").exists()
+        # Entries should be loaded
+        assert "Shared memory entry" in store.memory_entries
+        assert "Shared user profile" in store.user_entries
+
+    def test_migration_does_not_overwrite_existing_user_files(self, tmp_path, monkeypatch):
+        """If the user dir already has files, migration should not overwrite."""
+        root = tmp_path
+        user_dir = tmp_path / "telegram_5137755622"
+        user_dir.mkdir()
+        (root / "MEMORY.md").write_text("Old shared memory")
+        (user_dir / "MEMORY.md").write_text("User's own memory")
+
+        def _get_dir(namespace=""):
+            if namespace:
+                return user_dir
+            return root
+
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", _get_dir)
+
+        store = MemoryStore(memory_char_limit=500, user_char_limit=300, namespace="telegram:5137755622")
+        store.load_from_disk()
+
+        assert "User's own memory" in (user_dir / "MEMORY.md").read_text()
+        assert "Old shared memory" not in (user_dir / "MEMORY.md").read_text()
+
+    def test_migration_does_nothing_for_empty_namespace(self, tmp_path, monkeypatch):
+        """Global/CLI sessions (no namespace) should not trigger migration."""
+        root = tmp_path
+        (root / "MEMORY.md").write_text("Shared memory")
+
+        def _get_dir(namespace=""):
+            return root
+
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", _get_dir)
+
+        store = MemoryStore(memory_char_limit=500, user_char_limit=300)  # no namespace
+        store.load_from_disk()
+
+        # Should just load normally, no migration
+        assert "Shared memory" in store.memory_entries
+
+
 # =========================================================================
 # memory_tool() dispatcher
 # =========================================================================

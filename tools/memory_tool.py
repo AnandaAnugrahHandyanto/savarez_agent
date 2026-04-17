@@ -55,9 +55,40 @@ def get_memory_dir(namespace: str = "") -> Path:
     base = get_hermes_home() / "memories"
     if namespace:
         # Sanitize namespace to be filesystem-safe
-        safe_ns = re.sub(r'[^\w\-_@.\+]', '_', namespace)
+        safe_ns = re.sub(r'[^\w\-_@\.\+]', '_', namespace)
         return base / safe_ns
     return base
+
+
+# ---------------------------------------------------------------------------
+# Migration: when a namespaced user dir is created for the first time and
+# the shared root still has MEMORY.md / USER.md, automatically copy them
+# into the user dir so no memories are lost after enabling per-user
+# isolation.
+# ---------------------------------------------------------------------------
+
+def _migrate_from_shared(namespace: str) -> None:
+    """Copy shared root memories into a newly-created namespaced directory.
+
+    Only copies files that do NOT already exist in the target.  The shared
+    root files are left untouched so CLI / other users can still read them.
+    """
+    if not namespace:
+        return
+    mem_dir = get_memory_dir(namespace)
+    root_dir = get_memory_dir()  # shared root
+
+    for name in ("MEMORY.md", "USER.md"):
+        src = root_dir / name
+        dst = mem_dir / name
+        if dst.exists() or not src.exists():
+            continue
+        try:
+            content = src.read_text(encoding="utf-8")
+            dst.write_text(content, encoding="utf-8")
+            logger.info("Migrated shared %s → %s", src, dst)
+        except (OSError, IOError) as exc:
+            logger.warning("Could not migrate %s: %s", src, exc)
 
 ENTRY_DELIMITER = "\n§\n"
 
@@ -132,8 +163,11 @@ class MemoryStore:
 
     def load_from_disk(self):
         """Load entries from MEMORY.md and USER.md, capture system prompt snapshot."""
-        mem_dir = get_memory_dir()
+        mem_dir = get_memory_dir(self.namespace)
         mem_dir.mkdir(parents=True, exist_ok=True)
+
+        # Migrate shared root memories on first load for a new namespaced user.
+        _migrate_from_shared(self.namespace)
 
         self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
         self.user_entries = self._read_file(mem_dir / "USER.md")
@@ -205,24 +239,6 @@ class MemoryStore:
         mem_dir = get_memory_dir(self.namespace)
         mem_dir.mkdir(parents=True, exist_ok=True)
         self._write_file(self._path_for(target), self._entries_for(target))
-
-    def load_from_disk(self):
-        """Load entries from MEMORY.md and USER.md, capture system prompt snapshot."""
-        mem_dir = get_memory_dir(self.namespace)
-        mem_dir.mkdir(parents=True, exist_ok=True)
-
-        self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
-        self.user_entries = self._read_file(mem_dir / "USER.md")
-
-        # Deduplicate entries (preserves order, keeps first occurrence)
-        self.memory_entries = list(dict.fromkeys(self.memory_entries))
-        self.user_entries = list(dict.fromkeys(self.user_entries))
-
-        # Capture frozen snapshot for system prompt injection
-        self._system_prompt_snapshot = {
-            "memory": self._render_block("memory", self.memory_entries),
-            "user": self._render_block("user", self.user_entries),
-        }
 
     def _entries_for(self, target: str) -> List[str]:
         if target == "user":
