@@ -3126,17 +3126,30 @@ class HermesCLI:
         MAX_ASST_LINES = 3           # max lines of assistant text
 
         def _strip_reasoning(text: str) -> str:
-            """Remove <REASONING_SCRATCHPAD>...</REASONING_SCRATCHPAD> blocks
-            from displayed text (reasoning model internal thoughts)."""
+            """Remove hidden reasoning/thinking blocks from displayed text."""
             import re
-            cleaned = re.sub(
+            cleaned = text
+            block_patterns = (
+                r"<think>.*?</think>\s*",
+                r"<thinking>.*?</thinking>\s*",
+                r"<reasoning>.*?</reasoning>\s*",
                 r"<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>\s*",
-                "", text, flags=re.DOTALL,
+                r"<thought>.*?</thought>\s*",
             )
-            # Also strip unclosed reasoning tags at the end
+            for pattern in block_patterns:
+                cleaned = re.sub(pattern, "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+            # Also strip unclosed reasoning tags at the end.
             cleaned = re.sub(
-                r"<REASONING_SCRATCHPAD>.*$",
-                "", cleaned, flags=re.DOTALL,
+                r"<(?:think|thinking|reasoning|REASONING_SCRATCHPAD|thought)>.*$",
+                "",
+                cleaned,
+                flags=re.DOTALL | re.IGNORECASE,
+            )
+            cleaned = re.sub(
+                r"</?(?:think|thinking|reasoning|REASONING_SCRATCHPAD|thought)>\s*",
+                "",
+                cleaned,
+                flags=re.IGNORECASE,
             )
             return cleaned.strip()
 

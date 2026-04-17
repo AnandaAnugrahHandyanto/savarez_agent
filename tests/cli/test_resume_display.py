@@ -328,6 +328,22 @@ class TestDisplayResumedHistory:
         assert "Let me think step by step" not in output
         assert "The answer is 42" in output
 
+    def test_think_tags_stripped(self):
+        """<think> blocks should be stripped from resumed display."""
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "Think about this"},
+            {
+                "role": "assistant",
+                "content": "<think>\ninternal chain of thought\n</think>\nVisible answer",
+            },
+        ]
+        output = self._capture_display(cli)
+
+        assert "<think>" not in output
+        assert "internal chain of thought" not in output
+        assert "Visible answer" in output
+
     def test_pure_reasoning_message_skipped(self):
         """Assistant messages that are only reasoning should be skipped."""
         cli = _make_cli()
@@ -337,6 +353,19 @@ class TestDisplayResumedHistory:
                 "role": "assistant",
                 "content": "<REASONING_SCRATCHPAD>\nJust thinking...\n</REASONING_SCRATCHPAD>",
             },
+            {"role": "assistant", "content": "Hi there!"},
+        ]
+        output = self._capture_display(cli)
+
+        assert "Just thinking" not in output
+        assert "Hi there!" in output
+
+    def test_pure_think_message_skipped(self):
+        """Assistant messages that are only <think> blocks should be skipped."""
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "<think>\nJust thinking...\n</think>"},
             {"role": "assistant", "content": "Hi there!"},
         ]
         output = self._capture_display(cli)
