@@ -61,7 +61,13 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from gateway.platforms.discord import DiscordAdapter  # noqa: E402
+from gateway.platforms.discord import (  # noqa: E402
+    DiscordAdapter,
+    _DISCORD_SKILL_DESC_LIMIT,
+    _DISCORD_SKILL_GROUP_MAX_SIZE,
+    _estimate_discord_skill_group_size,
+    _fit_discord_skill_group_within_limit,
+)
 
 
 class FakeTree:
@@ -672,3 +678,58 @@ def test_register_skill_group_handler_dispatches_command(adapter):
     # The callback name should reflect the skill
     assert "gif_search" in gif_cmd.callback.__name__
 
+
+def test_register_skill_group_clamps_descriptions_and_hides_excess(adapter):
+    """Oversized /skill payloads should be trimmed instead of breaking sync."""
+    long_desc = "L" * 200
+    mock_categories = {
+        f"cat{i:02d}": [
+            (f"skill{j:02d}-{i:02d}", long_desc, f"/skill{j:02d}-{i:02d}")
+            for j in range(5)
+        ]
+        for i in range(25)
+    }
+
+    with patch(
+        "hermes_cli.commands.discord_skill_commands_by_category",
+        return_value=(mock_categories, [], 0),
+    ):
+        adapter._register_slash_commands()
+
+    skill_group = adapter._client.tree.commands["skill"]
+    child_count = sum(
+        len(child._children) if hasattr(child, "_children") else 1
+        for child in skill_group._children.values()
+    )
+    assert child_count < 125, "Expected some skills to be hidden to fit Discord's size limit"
+
+    for child in skill_group._children.values():
+        if hasattr(child, "_children"):
+            for cmd in child._children.values():
+                assert len(cmd.description) <= _DISCORD_SKILL_DESC_LIMIT
+        else:
+            assert len(child.description) <= _DISCORD_SKILL_DESC_LIMIT
+
+
+def test_real_skill_catalog_fits_discord_size_budget():
+    """The current built-in /skill catalog must stay within Discord's group limit."""
+    from hermes_cli.commands import discord_skill_commands_by_category
+
+    categories, uncategorized, hidden = discord_skill_commands_by_category(
+        reserved_names=set(),
+    )
+    fitted_categories, fitted_uncategorized, size_hidden = _fit_discord_skill_group_within_limit(
+        categories,
+        uncategorized,
+    )
+
+    total_hidden = hidden + size_hidden
+    total_visible = sum(len(items) for items in fitted_categories.values()) + len(fitted_uncategorized)
+
+    if total_visible == 0:
+        pytest.skip("No built-in Discord skill catalog available in this test environment")
+    assert total_hidden >= 0
+    assert (
+        _estimate_discord_skill_group_size(fitted_categories, fitted_uncategorized)
+        <= _DISCORD_SKILL_GROUP_MAX_SIZE
+    )

@@ -23,6 +23,9 @@ from typing import Callable, Dict, Optional, Any
 logger = logging.getLogger(__name__)
 
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
+_DISCORD_SKILL_GROUP_MAX_SIZE = 8000
+_DISCORD_SKILL_DESC_LIMIT = 40
+_DISCORD_SKILL_ARGS_DESC = "Arguments"
 
 try:
     import discord
@@ -78,6 +81,76 @@ def _clean_discord_id(entry: str) -> str:
 def check_discord_requirements() -> bool:
     """Check if Discord dependencies are available."""
     return DISCORD_AVAILABLE
+
+
+def _discord_skill_description(name: str, description: str) -> str:
+    """Clamp /skill descriptions so the aggregate payload stays under Discord's cap."""
+    text = (description or f"Run the {name} skill").strip() or f"Run the {name} skill"
+    if len(text) > _DISCORD_SKILL_DESC_LIMIT:
+        text = text[: _DISCORD_SKILL_DESC_LIMIT - 3].rstrip() + "..."
+    return text
+
+
+def _estimate_discord_skill_group_size(
+    categories: dict[str, list[tuple[str, str, str]]],
+    uncategorized: list[tuple[str, str, str]],
+) -> int:
+    """Approximate the command payload size Discord enforces for /skill."""
+    size = len("skill") + len("Run a Hermes skill")
+
+    for cat_name in sorted(categories):
+        cat_desc = f"{cat_name.replace('-', ' ').title()} skills"
+        if len(cat_desc) > 100:
+            cat_desc = cat_desc[:97] + "..."
+        size += len(cat_name) + len(cat_desc)
+        for discord_name, description, _cmd_key in categories[cat_name]:
+            size += len(discord_name)
+            size += len(_discord_skill_description(discord_name, description))
+            size += len("args") + len(_DISCORD_SKILL_ARGS_DESC)
+
+    for discord_name, description, _cmd_key in uncategorized:
+        size += len(discord_name)
+        size += len(_discord_skill_description(discord_name, description))
+        size += len("args") + len(_DISCORD_SKILL_ARGS_DESC)
+
+    return size
+
+
+def _fit_discord_skill_group_within_limit(
+    categories: dict[str, list[tuple[str, str, str]]],
+    uncategorized: list[tuple[str, str, str]],
+) -> tuple[dict[str, list[tuple[str, str, str]]], list[tuple[str, str, str]], int]:
+    """Trim commands until /skill fits under Discord's 8000-byte group limit."""
+    fitted_categories = {name: list(items) for name, items in categories.items()}
+    fitted_uncategorized = list(uncategorized)
+    hidden = 0
+
+    while (
+        _estimate_discord_skill_group_size(fitted_categories, fitted_uncategorized)
+        > _DISCORD_SKILL_GROUP_MAX_SIZE
+    ):
+        largest_category = None
+        largest_count = 0
+        for cat_name, items in fitted_categories.items():
+            if len(items) > largest_count:
+                largest_category = cat_name
+                largest_count = len(items)
+
+        if largest_category and fitted_categories[largest_category]:
+            fitted_categories[largest_category].pop()
+            if not fitted_categories[largest_category]:
+                del fitted_categories[largest_category]
+            hidden += 1
+            continue
+
+        if fitted_uncategorized:
+            fitted_uncategorized.pop()
+            hidden += 1
+            continue
+
+        break
+
+    return fitted_categories, fitted_uncategorized, hidden
 
 
 class VoiceReceiver:
@@ -1923,6 +1996,11 @@ class DiscordAdapter(BasePlatformAdapter):
             categories, uncategorized, hidden = discord_skill_commands_by_category(
                 reserved_names=existing_names,
             )
+            categories, uncategorized, size_hidden = _fit_discord_skill_group_within_limit(
+                categories,
+                uncategorized,
+            )
+            hidden += size_hidden
 
             if not categories and not uncategorized:
                 return
@@ -1934,7 +2012,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # ── Helper: build a callback for a skill command key ──
             def _make_handler(_key: str):
-                @discord.app_commands.describe(args="Optional arguments for the skill")
+                @discord.app_commands.describe(args=_DISCORD_SKILL_ARGS_DESC)
                 async def _handler(interaction: discord.Interaction, args: str = ""):
                     await self._run_simple_slash(interaction, f"{_key} {args}".strip())
                 _handler.__name__ = f"skill_{_key.lstrip('/').replace('-', '_')}"
@@ -1944,7 +2022,7 @@ class DiscordAdapter(BasePlatformAdapter):
             for discord_name, description, cmd_key in uncategorized:
                 cmd = discord.app_commands.Command(
                     name=discord_name,
-                    description=description or f"Run the {discord_name} skill",
+                    description=_discord_skill_description(discord_name, description),
                     callback=_make_handler(cmd_key),
                 )
                 skill_group.add_command(cmd)
@@ -1962,7 +2040,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 for discord_name, description, cmd_key in categories[cat_name]:
                     cmd = discord.app_commands.Command(
                         name=discord_name,
-                        description=description or f"Run the {discord_name} skill",
+                        description=_discord_skill_description(discord_name, description),
                         callback=_make_handler(cmd_key),
                     )
                     cat_group.add_command(cmd)
@@ -1977,7 +2055,7 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             if hidden:
                 logger.warning(
-                    "[%s] %d skill(s) not registered (Discord subcommand limits)",
+                    "[%s] %d skill(s) not registered (Discord slash command limits)",
                     self.name, hidden,
                 )
         except Exception as exc:
