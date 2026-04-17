@@ -165,6 +165,16 @@ class WeComAdapter(BasePlatformAdapter):
         self._group_allow_from = _coerce_list(extra.get("group_allow_from") or extra.get("groupAllowFrom"))
         self._groups = extra.get("groups") if isinstance(extra.get("groups"), dict) else {}
 
+        # Optional external auth webhook for custom per-user permission checks
+        self._auth_webhook_url = str(
+            extra.get("auth_webhook_url")
+            or extra.get("auth_webhook")
+            or os.getenv("WECOM_AUTH_WEBHOOK_URL", "")
+        ).strip()
+        self._auth_webhook_timeout = float(
+            extra.get("auth_webhook_timeout") or os.getenv("WECOM_AUTH_WEBHOOK_TIMEOUT", "5.0")
+        )
+
         self._session: Optional["aiohttp.ClientSession"] = None
         self._ws: Optional["aiohttp.ClientWebSocketResponse"] = None
         self._http_client: Optional["httpx.AsyncClient"] = None
@@ -496,6 +506,31 @@ class WeComAdapter(BasePlatformAdapter):
             logger.debug("[%s] DM sender %s blocked by policy", self.name, sender_id)
             return
 
+        # Custom external auth check via webhook
+        external_auth: Optional[Dict[str, Any]] = None
+        if self._auth_webhook_url and self._http_client:
+            try:
+                resp = await self._http_client.post(
+                    self._auth_webhook_url,
+                    json={
+                        "user_id": sender_id,
+                        "chat_id": chat_id,
+                        "is_group": is_group,
+                    },
+                    timeout=self._auth_webhook_timeout,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                if not data.get("allowed", True):
+                    logger.info("[%s] User %s blocked by external auth webhook", self.name, sender_id)
+                    return
+                # Store all returned auth data (including permissions/roles/tokens)
+                external_auth = data
+            except Exception as exc:
+                logger.warning("[%s] External auth webhook failed: %s", self.name, exc)
+                # Fail closed: block if webhook errors
+                return
+
         text, reply_text = self._extract_text(body)
         media_urls, media_types = await self._extract_media(body)
         message_type = self._derive_message_type(body, text, media_types)
@@ -527,6 +562,9 @@ class WeComAdapter(BasePlatformAdapter):
             reply_to_text=reply_text if has_reply_context else None,
             timestamp=datetime.now(tz=timezone.utc),
         )
+
+        # Attach external auth data (including permissions) if available
+        event.external_auth = external_auth
 
         # Only batch plain text messages — commands, media, etc. dispatch
         # immediately since they won't be split by the WeCom client.
