@@ -128,6 +128,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: Dict[str, str] = {}
+        # Inbound message guid dedup: BlueBubbles can fire multiple webhook events
+        # for a single iMessage (e.g. a new-message + ~1s-later updated-message for
+        # delivery receipt/edit). Tracking recently-seen guids prevents duplicate
+        # inbound processing. 60s TTL is generous; iMessage guid collisions are
+        # impossible in that window.
+        self._recent_message_guids: Dict[str, float] = {}
+        self._dedup_ttl_seconds: float = 60.0
 
     # ------------------------------------------------------------------
     # API helpers
@@ -805,6 +812,35 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return web.Response(text="ok")
 
         record = self._extract_payload_record(payload) or {}
+
+        # Dedup duplicate webhook events for the same iMessage guid. BlueBubbles
+        # emits more than one webhook per message in some conditions (the classic
+        # case is a new-message event followed ~1s later by an updated-message
+        # event for the same guid, which without this guard would be processed as
+        # two separate inbound turns).
+        msg_guid = self._value(
+            record.get("guid"), payload.get("guid"), record.get("originalGuid")
+        )
+        if msg_guid:
+            import time as _time
+            now = _time.monotonic()
+            # Evict expired entries opportunistically.
+            if self._recent_message_guids:
+                expired = [
+                    g for g, t in self._recent_message_guids.items()
+                    if now - t > self._dedup_ttl_seconds
+                ]
+                for g in expired:
+                    self._recent_message_guids.pop(g, None)
+            if msg_guid in self._recent_message_guids:
+                logger.debug(
+                    "[bluebubbles] dropping duplicate webhook for guid %s (event=%s)",
+                    msg_guid, event_type or "<none>",
+                )
+                from aiohttp import web as _web
+                return _web.Response(text="ok")
+            self._recent_message_guids[msg_guid] = now
+
         is_from_me = bool(
             record.get("isFromMe")
             or record.get("fromMe")
