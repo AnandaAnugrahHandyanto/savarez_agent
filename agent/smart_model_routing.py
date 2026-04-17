@@ -142,8 +142,61 @@ def choose_cheap_model_route(user_message: str, routing_config: Optional[Dict[st
 def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any]], primary: Dict[str, Any]) -> Dict[str, Any]:
     """Resolve the effective model/runtime for one turn.
 
-    Returns a dict with model/runtime/signature/label fields.
+    Uses the legacy cheap-vs-strong path by default. If routing_v2 is
+    enabled (smart_model_routing.v2_enabled), delegate to the routing_v2
+    selector and return a compatible runtime dict. Fall back to legacy
+    behavior on any error.
     """
+    # If v2 is enabled, try the advanced router (safe, opt-in)
+    try:
+        if routing_config and routing_config.get("v2_enabled"):
+            try:
+                from agent import routing_v2
+                from agent import benchmark_runner
+                # load benchmarks if present
+                bench_path = os.path.expanduser("~/.hermes/router/benchmarks.json")
+                benches = {}
+                try:
+                    if os.path.exists(bench_path):
+                        rep = benchmark_runner.load_report(bench_path)
+                        benches = benchmark_runner.report_to_benchmarks(rep)
+                except Exception:
+                    benches = {}
+                # try to read task_state if available
+                task_state = None
+                ts_path = os.path.expanduser("~/.hermes/router/task_state.json")
+                try:
+                    if os.path.exists(ts_path):
+                        import json
+                        task_state = json.loads(open(ts_path, "r").read())
+                except Exception:
+                    task_state = None
+                # tiers: prefer a constant on routing_v2 if exposed
+                tiers = getattr(routing_v2, "DEFAULT_TIERS", None)
+                sel = routing_v2.select_model(user_message, benches, tiers or [], task_state)
+                model = sel.get("model")
+                # build a conservative runtime: keep primary provider/runtime
+                return {
+                    "model": model or primary.get("model"),
+                    "runtime": {
+                        "api_key": primary.get("api_key"),
+                        "base_url": primary.get("base_url"),
+                        "provider": primary.get("provider"),
+                        "api_mode": primary.get("api_mode"),
+                        "command": primary.get("command"),
+                        "args": list(primary.get("args") or []),
+                        "credential_pool": primary.get("credential_pool"),
+                    },
+                    "label": f"v2 smart route → {model}",
+                    "signature": (model, primary.get("provider"), primary.get("base_url")),
+                }
+            except Exception:
+                # If anything goes wrong, fall through to legacy behavior
+                pass
+    except Exception:
+        pass
+
+    # Legacy simple/cheap path
     route = choose_cheap_model_route(user_message, routing_config)
     if not route:
         return {
