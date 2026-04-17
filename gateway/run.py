@@ -451,6 +451,31 @@ def _platform_config_key(platform: "Platform") -> str:
     return "cli" if platform == Platform.LOCAL else platform.value
 
 
+def _thread_metadata_for_delivery(
+    platform: "Platform",
+    chat_type: Optional[str],
+    thread_id: Optional[str],
+    event_message_id: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Return delivery metadata for threaded replies.
+
+    Mattermost top-level channel posts need a synthetic thread root derived from
+    the inbound post id so streamed replies, progress updates, and media stay in
+    one thread.
+    """
+    resolved_thread_id = thread_id
+    if (
+        not resolved_thread_id
+        and platform == Platform.MATTERMOST
+        and chat_type != "dm"
+        and event_message_id
+    ):
+        resolved_thread_id = event_message_id
+    if not resolved_thread_id:
+        return None
+    return {"thread_id": resolved_thread_id}
+
+
 def _load_gateway_config() -> dict:
     """Load and parse ~/.hermes/config.yaml, returning {} on any error."""
     try:
@@ -1395,7 +1420,12 @@ class GatewayRunner:
             if not adapter:
                 return True
 
-            thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+            thread_meta = _thread_metadata_for_delivery(
+                event.source.platform,
+                event.source.chat_type,
+                event.source.thread_id,
+                event.message_id,
+            )
             if self._queue_during_drain_enabled():
                 self._queue_or_replace_pending_event(session_key, event)
                 message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
@@ -1472,7 +1502,12 @@ class GatewayRunner:
             f"I'll respond to your message shortly."
         )
 
-        thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+        thread_meta = _thread_metadata_for_delivery(
+            event.source.platform,
+            event.source.chat_type,
+            event.source.thread_id,
+            event.message_id,
+        )
         try:
             await adapter._send_with_retry(
                 chat_id=event.source.chat_id,
@@ -3410,7 +3445,12 @@ class GatewayRunner:
                 )
                 if any(marker in message_text for marker in _stt_fail_markers):
                     _stt_adapter = self.adapters.get(source.platform)
-                    _stt_meta = {"thread_id": source.thread_id} if source.thread_id else None
+                    _stt_meta = _thread_metadata_for_delivery(
+                        source.platform,
+                        source.chat_type,
+                        source.thread_id,
+                        event.message_id,
+                    )
                     if _stt_adapter:
                         try:
                             _stt_msg = (
@@ -3831,7 +3871,11 @@ class GatewayRunner:
                         f"{_compress_token_threshold:,}",
                     )
 
-                    _hyg_meta = {"thread_id": source.thread_id} if source.thread_id else None
+                    _hyg_meta = _thread_metadata_for_delivery(
+                        source.platform,
+                        source.chat_type,
+                        source.thread_id,
+                    )
 
                     try:
                         from run_agent import AIAgent
@@ -4861,7 +4905,11 @@ class GatewayRunner:
                         lines.append("_(session only — use `/model <name> --global` to persist)_")
                         return "\n".join(lines)
 
-                    metadata = {"thread_id": source.thread_id} if source.thread_id else None
+                    metadata = _thread_metadata_for_delivery(
+                        source.platform,
+                        source.chat_type,
+                        source.thread_id,
+                    )
                     result = await adapter.send_model_picker(
                         chat_id=source.chat_id,
                         providers=providers,
@@ -5581,8 +5629,14 @@ class GatewayRunner:
                     "audio_path": actual_path,
                     "reply_to": event.message_id,
                 }
-                if event.source.thread_id:
-                    send_kwargs["metadata"] = {"thread_id": event.source.thread_id}
+                _voice_thread_meta = _thread_metadata_for_delivery(
+                    event.source.platform,
+                    event.source.chat_type,
+                    event.source.thread_id,
+                    event.message_id,
+                )
+                if _voice_thread_meta:
+                    send_kwargs["metadata"] = _voice_thread_meta
                 await adapter.send_voice(**send_kwargs)
         except Exception as e:
             logger.warning("Auto voice reply failed: %s", e, exc_info=True)
@@ -5612,7 +5666,12 @@ class GatewayRunner:
             _, cleaned = adapter.extract_images(response)
             local_files, _ = adapter.extract_local_files(cleaned)
 
-            _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+            _thread_meta = _thread_metadata_for_delivery(
+                event.source.platform,
+                event.source.chat_type,
+                event.source.thread_id,
+                event.message_id,
+            )
 
             _AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a'}
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
@@ -5768,7 +5827,11 @@ class GatewayRunner:
             logger.warning("No adapter for platform %s in background task %s", source.platform, task_id)
             return
 
-        _thread_metadata = {"thread_id": source.thread_id} if source.thread_id else None
+        _thread_metadata = _thread_metadata_for_delivery(
+            source.platform,
+            source.chat_type,
+            source.thread_id,
+        )
 
         try:
             user_config = _load_gateway_config()
@@ -5941,7 +6004,11 @@ class GatewayRunner:
             logger.warning("No adapter for platform %s in /btw task %s", source.platform, task_id)
             return
 
-        _thread_meta = {"thread_id": source.thread_id} if source.thread_id else None
+        _thread_meta = _thread_metadata_for_delivery(
+            source.platform,
+            source.chat_type,
+            source.thread_id,
+        )
 
         try:
             user_config = _load_gateway_config()
@@ -8490,7 +8557,7 @@ class GatewayRunner:
         # - Telegram uses message_thread_id only for forum topics; passing a
         #   normal DM/group message id as thread_id causes send failures
         # - Other platforms should use explicit source.thread_id only
-        if source.platform == Platform.SLACK:
+        if source.platform in (Platform.SLACK, Platform.MATTERMOST):
             _progress_thread_id = source.thread_id or event_message_id
         else:
             _progress_thread_id = source.thread_id

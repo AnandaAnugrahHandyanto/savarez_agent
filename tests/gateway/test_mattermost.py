@@ -206,6 +206,31 @@ class TestMattermostSend:
         assert payload["root_id"] == "root_post"
 
     @pytest.mark.asyncio
+    async def test_send_prefers_metadata_thread_id(self):
+        """metadata.thread_id should take precedence over reply_to for Mattermost threading."""
+        self.adapter._reply_mode = "thread"
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": "post457"})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+
+        result = await self.adapter.send(
+            "channel_1",
+            "Reply!",
+            reply_to="child_post",
+            metadata={"thread_id": "root_post"},
+        )
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert payload["root_id"] == "root_post"
+
+    @pytest.mark.asyncio
     async def test_send_without_thread_no_root_id(self):
         """When reply_mode is 'off', reply_to should NOT set root_id."""
         self.adapter._reply_mode = "off"
@@ -332,6 +357,52 @@ class TestMattermostWebSocketParsing:
         assert not self.adapter.handle_message.called
 
     @pytest.mark.asyncio
+    async def test_thread_id_from_root_id(self):
+        """Post with root_id should have thread_id set."""
+        post_data = {
+            "id": "post_threaded",
+            "user_id": "user_123",
+            "channel_id": "chan_456",
+            "message": "@bot_user_id Thread reply",
+            "root_id": "root_post_123",
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "O",
+                "sender_name": "@alice",
+            },
+        }
+
+        await self.adapter._handle_ws_event(event)
+        msg_event = self.adapter.handle_message.call_args[0][0]
+        assert msg_event.source.thread_id == "root_post_123"
+
+    @pytest.mark.asyncio
+    async def test_top_level_channel_post_uses_post_id_as_synthetic_thread(self):
+        """Top-level channel posts should synthesize a thread root when reply_mode=thread."""
+        self.adapter._reply_mode = "thread"
+        post_data = {
+            "id": "post_top_level",
+            "user_id": "user_123",
+            "channel_id": "chan_456",
+            "message": "@bot_user_id Hello there",
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "O",
+                "sender_name": "@alice",
+            },
+        }
+
+        await self.adapter._handle_ws_event(event)
+        msg_event = self.adapter.handle_message.call_args[0][0]
+        assert msg_event.source.thread_id == "post_top_level"
+
+    @pytest.mark.asyncio
     async def test_channel_type_mapping(self):
         """channel_type 'D' should map to 'dm'."""
         post_data = {
@@ -355,13 +426,16 @@ class TestMattermostWebSocketParsing:
         assert msg_event.source.chat_type == "dm"
 
     @pytest.mark.asyncio
-    async def test_thread_id_from_root_id(self):
-        """Post with root_id should have thread_id set."""
+    async def test_known_thread_bypasses_mention_gate(self):
+        """Replies in a known Mattermost thread should not require a fresh @mention."""
+        self.adapter._reply_mode = "thread"
+        self.adapter._register_known_thread("root_post_123")
+
         post_data = {
-            "id": "post_reply",
+            "id": "post_followup",
             "user_id": "user_123",
             "channel_id": "chan_456",
-            "message": "@bot_user_id Thread reply",
+            "message": "follow-up without mention",
             "root_id": "root_post_123",
         }
         event = {
@@ -376,6 +450,7 @@ class TestMattermostWebSocketParsing:
         await self.adapter._handle_ws_event(event)
         assert self.adapter.handle_message.called
         msg_event = self.adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "follow-up without mention"
         assert msg_event.source.thread_id == "root_post_123"
 
     @pytest.mark.asyncio
@@ -532,6 +607,48 @@ class TestMattermostFileUpload:
 
         assert result.success is True
         assert result.message_id == "post_with_file"
+
+    @pytest.mark.asyncio
+    @patch("tools.url_safety.is_safe_url", return_value=True)
+    async def test_send_image_uses_metadata_thread_id_for_root(self, _mock_safe):
+        """File uploads must honor metadata.thread_id so threaded delivery stays intact."""
+        self.adapter._reply_mode = "thread"
+
+        mock_dl_resp = AsyncMock()
+        mock_dl_resp.status = 200
+        mock_dl_resp.read = AsyncMock(return_value=b"\x89PNG\x00fake-image-data")
+        mock_dl_resp.content_type = "image/png"
+        mock_dl_resp.__aenter__ = AsyncMock(return_value=mock_dl_resp)
+        mock_dl_resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_upload_resp = AsyncMock()
+        mock_upload_resp.status = 200
+        mock_upload_resp.json = AsyncMock(return_value={"file_infos": [{"id": "file_abc123"}]})
+        mock_upload_resp.text = AsyncMock(return_value="")
+        mock_upload_resp.__aenter__ = AsyncMock(return_value=mock_upload_resp)
+        mock_upload_resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_post_resp = AsyncMock()
+        mock_post_resp.status = 200
+        mock_post_resp.json = AsyncMock(return_value={"id": "post_with_file"})
+        mock_post_resp.text = AsyncMock(return_value="")
+        mock_post_resp.__aenter__ = AsyncMock(return_value=mock_post_resp)
+        mock_post_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.get = MagicMock(return_value=mock_dl_resp)
+        self.adapter._session.post = MagicMock(side_effect=[mock_upload_resp, mock_post_resp])
+
+        result = await self.adapter.send_image(
+            "channel_1",
+            "https://img.example.com/cat.png",
+            caption="A cat",
+            reply_to="child_post",
+            metadata={"thread_id": "root_post"},
+        )
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args_list[-1][1]["json"]
+        assert payload["root_id"] == "root_post"
 
 
 # ---------------------------------------------------------------------------

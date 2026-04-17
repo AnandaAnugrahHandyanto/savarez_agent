@@ -998,6 +998,24 @@ class BasePlatformAdapter(ABC):
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
         self._busy_session_handler = handler
+
+    def _event_thread_metadata(self, event: MessageEvent) -> Optional[Dict[str, str]]:
+        """Return threaded delivery metadata for an inbound event.
+
+        Mattermost top-level channel posts need a synthetic thread root using
+        the inbound post id so every outbound send in the turn stays threaded.
+        """
+        thread_id = event.source.thread_id
+        if (
+            not thread_id
+            and self.platform == Platform.MATTERMOST
+            and event.source.chat_type != "dm"
+            and event.message_id
+        ):
+            thread_id = event.message_id
+        if not thread_id:
+            return None
+        return {"thread_id": str(thread_id)}
     
     def set_session_store(self, session_store: Any) -> None:
         """
@@ -1585,7 +1603,7 @@ class BasePlatformAdapter(ABC):
                     self.name, cmd, session_key,
                 )
                 try:
-                    _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+                    _thread_meta = self._event_thread_metadata(event)
                     response = await self._message_handler(event)
                     if response:
                         await self._send_with_retry(
@@ -1681,7 +1699,7 @@ class BasePlatformAdapter(ABC):
         self._active_sessions[session_key] = interrupt_event
         
         # Start continuous typing indicator (refreshes every 2 seconds)
-        _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+        _thread_metadata = self._event_thread_metadata(event)
         typing_task = asyncio.create_task(self._keep_typing(event.source.chat_id, metadata=_thread_metadata))
         
         try:
@@ -1917,7 +1935,7 @@ class BasePlatformAdapter(ABC):
             try:
                 error_type = type(e).__name__
                 error_detail = str(e)[:300] if str(e) else "no details available"
-                _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+                _thread_metadata = self._event_thread_metadata(event)
                 await self.send(
                     chat_id=event.source.chat_id,
                     content=(
