@@ -1,7 +1,9 @@
 """Tests for DingTalk platform adapter."""
 import asyncio
 import json
+import threading
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 import pytest
@@ -262,6 +264,136 @@ class TestConnect:
         assert len(adapter._session_webhooks) == 0
         assert len(adapter._dedup._seen) == 0
         assert adapter._http_client is None
+
+
+# ---------------------------------------------------------------------------
+# Incoming handler
+# ---------------------------------------------------------------------------
+
+
+class TestIncomingHandler:
+
+    @staticmethod
+    def _start_background_loop():
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+        return loop, thread
+
+    @staticmethod
+    def _stop_background_loop(loop, thread):
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=5)
+        loop.close()
+
+    def test_process_converts_callback_payload_before_dispatch(self, monkeypatch):
+        from gateway.platforms import dingtalk
+        from gateway.platforms.dingtalk import DingTalkAdapter, _IncomingHandler
+
+        fake_stream = SimpleNamespace(AckMessage=SimpleNamespace(STATUS_OK="OK"))
+        converted = SimpleNamespace(session_webhook="https://api.dingtalk.com/webhook")
+        from_dict = MagicMock(return_value=converted)
+
+        monkeypatch.setattr(dingtalk, "dingtalk_stream", fake_stream)
+        monkeypatch.setattr(
+            dingtalk,
+            "ChatbotMessage",
+            SimpleNamespace(from_dict=from_dict),
+            raising=False,
+        )
+
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._on_message = AsyncMock()
+        loop, thread = self._start_background_loop()
+        try:
+            handler = _IncomingHandler(adapter, loop)
+
+            status, reason = handler.process(SimpleNamespace(data={"sessionWebhook": "present"}))
+
+            assert (status, reason) == ("OK", "OK")
+            from_dict.assert_called_once_with({"sessionWebhook": "present"})
+            adapter._on_message.assert_awaited_once_with(converted)
+        finally:
+            self._stop_background_loop(loop, thread)
+
+    def test_process_keeps_preconverted_message(self, monkeypatch):
+        from gateway.platforms import dingtalk
+        from gateway.platforms.dingtalk import DingTalkAdapter, _IncomingHandler
+
+        fake_stream = SimpleNamespace(AckMessage=SimpleNamespace(STATUS_OK="OK"))
+        from_dict = MagicMock()
+        message = SimpleNamespace(session_webhook="https://api.dingtalk.com/webhook")
+
+        monkeypatch.setattr(dingtalk, "dingtalk_stream", fake_stream)
+        monkeypatch.setattr(
+            dingtalk,
+            "ChatbotMessage",
+            SimpleNamespace(from_dict=from_dict),
+            raising=False,
+        )
+
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._on_message = AsyncMock()
+        loop, thread = self._start_background_loop()
+        try:
+            handler = _IncomingHandler(adapter, loop)
+
+            status, reason = handler.process(message)
+
+            assert (status, reason) == ("OK", "OK")
+            from_dict.assert_not_called()
+            adapter._on_message.assert_awaited_once_with(message)
+        finally:
+            self._stop_background_loop(loop, thread)
+
+    @pytest.mark.asyncio
+    async def test_process_caches_session_webhook_for_followup_replies(self, monkeypatch):
+        from gateway.platforms import dingtalk
+        from gateway.platforms.dingtalk import DingTalkAdapter, _IncomingHandler
+
+        fake_stream = SimpleNamespace(AckMessage=SimpleNamespace(STATUS_OK="OK"))
+        webhook = "https://api.dingtalk.com/v1.0/gateway/conversations/sessions"
+        payload = {
+            "message_id": "msg-1",
+            "text": {"content": "hello"},
+            "conversation_id": "chat-123",
+            "conversation_type": "1",
+            "sender_id": "user-1",
+            "sender_nick": "Tester",
+            "sender_staff_id": "",
+            "conversation_title": "DM",
+            "create_at": "1710000000000",
+            "session_webhook": webhook,
+        }
+        converted = SimpleNamespace(**payload)
+
+        monkeypatch.setattr(dingtalk, "dingtalk_stream", fake_stream)
+        monkeypatch.setattr(
+            dingtalk,
+            "ChatbotMessage",
+            SimpleNamespace(from_dict=MagicMock(return_value=converted)),
+            raising=False,
+        )
+
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter.handle_message = AsyncMock()
+        adapter._http_client = AsyncMock()
+        adapter._http_client.post = AsyncMock(return_value=SimpleNamespace(status_code=200))
+        loop, thread = self._start_background_loop()
+        try:
+            handler = _IncomingHandler(adapter, loop)
+
+            status, reason = handler.process(SimpleNamespace(data=payload))
+
+            assert (status, reason) == ("OK", "OK")
+            assert adapter._session_webhooks["chat-123"] == webhook
+
+            result = await adapter.send("chat-123", "Follow-up")
+
+            assert result.success is True
+            assert adapter._http_client.post.call_args[0][0] == webhook
+        finally:
+            self._stop_background_loop(loop, thread)
 
 
 # ---------------------------------------------------------------------------

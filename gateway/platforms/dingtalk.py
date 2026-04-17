@@ -314,6 +314,26 @@ class _IncomingHandler(ChatbotHandler if DINGTALK_STREAM_AVAILABLE else object):
         self._adapter = adapter
         self._loop = loop
 
+    @staticmethod
+    def _coerce_message(message: Any) -> Any:
+        """Convert SDK callback wrappers into ChatbotMessage objects when possible."""
+        if getattr(message, "session_webhook", None):
+            return message
+
+        payload = getattr(message, "data", None)
+        if not isinstance(payload, dict):
+            return message
+
+        chatbot_message_cls = globals().get("ChatbotMessage")
+        if chatbot_message_cls is None or not hasattr(chatbot_message_cls, "from_dict"):
+            return message
+
+        try:
+            return chatbot_message_cls.from_dict(payload)
+        except Exception:
+            logger.exception("[DingTalk] Failed to convert callback payload into ChatbotMessage")
+            return message
+
     def process(self, message: "ChatbotMessage"):
         """Called by dingtalk-stream in its thread when a message arrives.
 
@@ -324,7 +344,10 @@ class _IncomingHandler(ChatbotHandler if DINGTALK_STREAM_AVAILABLE else object):
             logger.error("[DingTalk] Event loop unavailable, cannot dispatch message")
             return dingtalk_stream.AckMessage.STATUS_OK, "OK"
 
-        future = asyncio.run_coroutine_threadsafe(self._adapter._on_message(message), loop)
+        future = asyncio.run_coroutine_threadsafe(
+            self._adapter._on_message(self._coerce_message(message)),
+            loop,
+        )
         try:
             future.result(timeout=60)
         except Exception:
