@@ -1557,7 +1557,7 @@ class GatewayRunner:
                 if suspended:
                     logger.info("Suspended %d in-flight session(s) from previous run", suspended)
             except Exception as e:
-                logger.warning("Session suspension on startup failed: %s", e)
+                logger.warning("Session suspension on startup failed: %s", e, exc_info=True)
 
         connected_count = 0
         enabled_platform_count = 0
