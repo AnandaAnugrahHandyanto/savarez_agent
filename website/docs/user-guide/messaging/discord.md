@@ -116,13 +116,15 @@ On the **Bot** page, scroll down to **Privileged Gateway Intents**. You'll see t
 | Intent | Purpose | Required? |
 |--------|---------|-----------| 
 | **Presence Intent** | See user online/offline status | Optional |
-| **Server Members Intent** | Access the member list, resolve usernames | **Required** |
+| **Server Members Intent** | Access the member list, resolve usernames | Optional* |
 | **Message Content Intent** | Read the text content of messages | **Required** |
 
-**Enable both Server Members Intent and Message Content Intent** by toggling them **ON**.
+**Enable Message Content Intent** by toggling it **ON**.
 
 - Without **Message Content Intent**, your bot receives message events but the message text is empty — the bot literally cannot see what you typed.
 - Without **Server Members Intent**, the bot cannot resolve usernames for the allowed users list and may fail to identify who is messaging it.
+
+*If `DISCORD_ALLOWED_USERS` contains only numeric Discord IDs, the bot does not request Server Members Intent. If you allow usernames or mixed identifiers, it will request the intent automatically.
 
 :::warning[This is the #1 reason Discord bots don't work]
 If your bot is online but never responds to messages, the **Message Content Intent** is almost certainly disabled. Go back to the [Developer Portal](https://discord.com/developers/applications), select your application → Bot → Privileged Gateway Intents, and make sure **Message Content Intent** is toggled ON. Click **Save Changes**.
@@ -248,7 +250,12 @@ DISCORD_ALLOWED_USERS=284102345871466496
 
 # Multiple allowed users (comma-separated)
 # DISCORD_ALLOWED_USERS=284102345871466496,198765432109876543
+
+# Optional: use a proxy for Discord connections
+# DISCORD_PROXY=http://127.0.0.1:7890
 ```
+
+`DISCORD_PROXY` overrides `HTTPS_PROXY` and the macOS system proxy auto-detection used by the gateway.
 
 Then start the gateway:
 

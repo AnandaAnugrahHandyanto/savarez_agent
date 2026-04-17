@@ -187,6 +187,8 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `TELEGRAM_PROXY` | Proxy URL for Telegram connections — overrides `HTTPS_PROXY`. Supports `http://`, `https://`, `socks5://` |
 | `DISCORD_BOT_TOKEN` | Discord bot token |
 | `DISCORD_ALLOWED_USERS` | Comma-separated Discord user IDs allowed to use the bot |
+| `DISCORD_PROXY` | Proxy URL for Discord connections — overrides `HTTPS_PROXY` and macOS system proxy auto-detection |
+| `HERMES_DISCORD_VOICE_PACKET_DUMP` | Voice packet logging mode for Discord VC debugging: `off`, `errors` (default), or `all` |
 | `DISCORD_HOME_CHANNEL` | Default Discord channel for cron delivery |
 | `DISCORD_HOME_CHANNEL_NAME` | Display name for the Discord home channel |
 | `DISCORD_REQUIRE_MENTION` | Require an @mention before responding in server channels |

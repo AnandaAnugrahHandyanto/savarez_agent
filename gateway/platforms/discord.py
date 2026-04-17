@@ -120,6 +120,15 @@ class VoiceReceiver:
 
         # Debug logging counter (instance-level to avoid cross-instance races)
         self._packet_debug_count = 0
+        self._packet_dump_mode = os.getenv(
+            "HERMES_DISCORD_VOICE_PACKET_DUMP", "errors"
+        ).strip().lower()
+        if self._packet_dump_mode not in {"off", "errors", "all"}:
+            logger.warning(
+                "Invalid HERMES_DISCORD_VOICE_PACKET_DUMP=%r; using errors",
+                self._packet_dump_mode,
+            )
+            self._packet_dump_mode = "errors"
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -202,27 +211,37 @@ class VoiceReceiver:
     # Packet handler (called from SocketReader thread)
     # ------------------------------------------------------------------
 
+    def _dump_voice_packets(self, include_errors: bool = False) -> bool:
+        """Return True when voice packet dumps should be logged."""
+        if self._packet_dump_mode == "all":
+            return True
+        if include_errors and self._packet_dump_mode == "errors":
+            return True
+        return False
+
     def _on_packet(self, data: bytes):
         if not self._running or self._paused:
             return
 
-        # Log first few raw packets for debugging
+        # Log raw packets when packet dumping is enabled.
         self._packet_debug_count += 1
-        if self._packet_debug_count <= 5:
+        if self._dump_voice_packets():
             logger.debug(
                 "Raw UDP packet: len=%d, first_bytes=%s",
                 len(data), data[:4].hex() if len(data) >= 4 else "short",
             )
 
         if len(data) < 16:
+            if self._dump_voice_packets(include_errors=True):
+                logger.warning("Dropped short voice packet: len=%d", len(data))
             return
 
         # RTP version check: top 2 bits must be 10 (version 2).
         # Lower bits may vary (padding, extension, CSRC count).
         # Payload type (byte 1 lower 7 bits) = 0x78 (120) for voice.
         if (data[0] >> 6) != 2 or (data[1] & 0x7F) != 0x78:
-            if self._packet_debug_count <= 5:
-                logger.debug("Skipped non-RTP: byte0=0x%02x byte1=0x%02x", data[0], data[1])
+            if self._dump_voice_packets(include_errors=True):
+                logger.warning("Skipped non-RTP packet: byte0=0x%02x byte1=0x%02x", data[0], data[1])
             return
 
         first_byte = data[0]
@@ -248,7 +267,7 @@ class VoiceReceiver:
             ext_words = struct.unpack_from(">H", data, ext_preamble_offset + 2)[0]
             ext_data_len = ext_words * 4
 
-        if self._packet_debug_count <= 10:
+        if self._dump_voice_packets():
             with self._lock:
                 known_user = self._ssrc_to_user.get(ssrc, "unknown")
             logger.debug(
@@ -271,7 +290,7 @@ class VoiceReceiver:
             box = nacl.secret.Aead(self._secret_key)
             decrypted = box.decrypt(encrypted, header, bytes(nonce))
         except Exception as e:
-            if self._packet_debug_count <= 10:
+            if self._dump_voice_packets(include_errors=True):
                 logger.warning("NaCl decrypt failed: %s (hdr=%d, enc=%d)", e, header_size, len(encrypted))
             return
 
@@ -286,14 +305,14 @@ class VoiceReceiver:
         # bytes into DAVE/Opus and corrupts inbound audio.
         if has_padding:
             if not decrypted:
-                if self._packet_debug_count <= 10:
+                if self._dump_voice_packets(include_errors=True):
                     logger.warning(
                         "RTP padding bit set but no payload (ssrc=%d)", ssrc,
                     )
                 return
             pad_len = decrypted[-1]
             if pad_len == 0 or pad_len > len(decrypted):
-                if self._packet_debug_count <= 10:
+                if self._dump_voice_packets(include_errors=True):
                     logger.warning(
                         "Invalid RTP padding length %d for payload size %d (ssrc=%d)",
                         pad_len, len(decrypted), ssrc,
@@ -317,7 +336,7 @@ class VoiceReceiver:
                 except Exception as e:
                     # Unencrypted passthrough — use NaCl-decrypted data as-is
                     if "Unencrypted" not in str(e):
-                        if self._packet_debug_count <= 10:
+                        if self._dump_voice_packets(include_errors=True):
                             logger.warning("DAVE decrypt failed for ssrc=%d: %s", ssrc, e)
                         return
             # If SSRC unknown (no SPEAKING event yet), skip DAVE and try
@@ -333,7 +352,8 @@ class VoiceReceiver:
                 self._buffers[ssrc].extend(pcm)
                 self._last_packet_time[ssrc] = time.monotonic()
         except Exception as e:
-            logger.debug("Opus decode error for SSRC %s: %s", ssrc, e)
+            if self._dump_voice_packets(include_errors=True):
+                logger.warning("Opus decode error for SSRC %s: %s", ssrc, e)
             return
 
     # ------------------------------------------------------------------
@@ -1768,8 +1788,9 @@ class DiscordAdapter(BasePlatformAdapter):
             await self._run_simple_slash(interaction, "/reload-mcp")
 
         @tree.command(name="voice", description="Toggle voice reply mode")
-        @discord.app_commands.describe(mode="Voice mode: on, off, tts, channel, leave, or status")
+        @discord.app_commands.describe(mode="Voice mode: on, off, tts, join, channel, leave, or status")
         @discord.app_commands.choices(mode=[
+            discord.app_commands.Choice(name="join — join your voice channel", value="join"),
             discord.app_commands.Choice(name="channel — join your voice channel", value="channel"),
             discord.app_commands.Choice(name="leave — leave voice channel", value="leave"),
             discord.app_commands.Choice(name="on — voice reply to voice messages", value="on"),

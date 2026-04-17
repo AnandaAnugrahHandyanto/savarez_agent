@@ -512,6 +512,17 @@ class TestVoiceReceiver:
         assert receiver._paused is False
         assert len(receiver._buffers) == 0
         assert len(receiver._ssrc_to_user) == 0
+        assert receiver._packet_dump_mode == "errors"
+
+    def test_packet_dump_mode_honors_env(self):
+        with patch.dict(os.environ, {"HERMES_DISCORD_VOICE_PACKET_DUMP": "all"}):
+            receiver = self._make_receiver()
+        assert receiver._packet_dump_mode == "all"
+
+    def test_packet_dump_mode_invalid_value_falls_back(self):
+        with patch.dict(os.environ, {"HERMES_DISCORD_VOICE_PACKET_DUMP": "nope"}):
+            receiver = self._make_receiver()
+        assert receiver._packet_dump_mode == "errors"
 
     def test_start_sets_running(self):
         receiver = self._make_receiver()
@@ -1199,6 +1210,21 @@ class TestVoiceReceiverThreadSafety:
         t1.join()
         t2.join()
         assert len(errors) == 0, f"Race detected: {errors[:3]}"
+
+
+# =====================================================================
+# Slash command metadata
+# =====================================================================
+
+class TestVoiceSlashCommandChoices:
+    """The /voice slash command should expose join in autocomplete."""
+
+    def test_join_choice_is_present(self):
+        import inspect
+        from gateway.platforms.discord import DiscordAdapter
+
+        source = inspect.getsource(DiscordAdapter._register_slash_commands)
+        assert 'Choice(name="join — join your voice channel", value="join")' in source
 
 
 # =====================================================================

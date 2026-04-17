@@ -279,10 +279,10 @@ In the [Developer Portal](https://discord.com/developers/applications) → your 
 | Intent | Purpose |
 |--------|---------|
 | **Presence Intent** | Detect user online/offline status |
-| **Server Members Intent** | Map voice SSRC identifiers to Discord user IDs |
+| **Server Members Intent** | Optional for username resolution; SSRC→user mapping comes from Discord SPEAKING events |
 | **Message Content Intent** | Read text message content in channels |
 
-All three are required for full voice channel functionality. **Server Members Intent** is especially critical — without it, the bot cannot identify who is speaking in the voice channel.
+Only Message Content Intent is strictly required for text chat; Server Members Intent is only needed if you allow usernames in `DISCORD_ALLOWED_USERS` or want richer member lookup. SSRC→speaker mapping still comes from Discord SPEAKING events, not the members list.
 
 #### 3. Opus Codec
 
@@ -360,7 +360,7 @@ When the bot is in a voice channel:
 
 ### Echo Prevention
 
-The bot automatically pauses its audio listener while playing TTS replies, preventing it from hearing and re-processing its own output.
+The bot does not fully pause during TTS playback. Instead, it switches into a raised-RMS barge-in mode after a short guard window, so users can interrupt mid-sentence without the bot immediately hearing its own output. Tunables: `voice.discord_vc.barge_in_guard` and `voice.discord_vc.barge_in_rms`.
 
 ### Access Control
 

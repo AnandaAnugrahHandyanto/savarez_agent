@@ -355,7 +355,7 @@ In addition to the normal text-bot setup, make sure the bot has:
 
 Also enable privileged intents in the Developer Portal:
 - Presence Intent
-- Server Members Intent
+- Server Members Intent (only needed if `DISCORD_ALLOWED_USERS` includes usernames or mixed identifiers)
 - Message Content Intent
 
 ## Join and leave
@@ -364,9 +364,12 @@ In a Discord text channel where the bot is present:
 
 ```text
 /voice join
+/voice channel
 /voice leave
 /voice status
 ```
+
+`/voice join` now appears in Discord's slash-command autocomplete, and `/voice channel` remains the alias that maps to the same behavior.
 
 ### What happens when joined
 
