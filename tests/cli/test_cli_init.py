@@ -331,6 +331,28 @@ class TestRootLevelProviderOverride:
         assert "provider" not in result  # root key still cleaned up
 
 
+class TestInitAgentErrors:
+    def test_init_agent_escapes_rich_markup_in_exception_messages(self, monkeypatch):
+        cli_obj = _make_cli()
+        rendered_lines = []
+
+        monkeypatch.setattr(cli_obj, "_ensure_runtime_credentials", lambda: True)
+
+        def _boom(**_kwargs):
+            raise RuntimeError(
+                "Failed to initialize OpenAI client: Using SOCKS proxy, but the 'socksio' "
+                "package is not installed. Make sure to install httpx[socks]."
+            )
+
+        monkeypatch.setitem(cli_obj._init_agent.__globals__, "AIAgent", _boom)
+        monkeypatch.setitem(cli_obj._init_agent.__globals__, "_cprint", lambda line: rendered_lines.append(line))
+
+        assert cli_obj._init_agent() is False
+        rendered = "\n".join(rendered_lines)
+        assert "httpx[socks]" in rendered
+        assert "Failed to initialize agent:" in rendered
+
+
 class TestProviderResolution:
     def test_api_key_is_string_or_none(self):
         cli = _make_cli()

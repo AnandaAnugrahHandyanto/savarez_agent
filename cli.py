@@ -2958,7 +2958,9 @@ class HermesCLI:
                     self._pending_title = None
             return True
         except Exception as e:
-            ChatConsole().print(f"[bold red]Failed to initialize agent: {e}[/]")
+            ChatConsole().print(
+                f"[bold red]Failed to initialize agent: {_escape(str(e))}[/]"
+            )
             return False
     
     def show_banner(self):
