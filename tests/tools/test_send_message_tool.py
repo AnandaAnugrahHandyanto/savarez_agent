@@ -1900,6 +1900,7 @@ class TestSendMessageCurrentSessionTarget:
             )
 
         assert result["success"] is True
+        # thread_id must be None (stripped), not "1"
         send_mock.assert_awaited_once_with(
             Platform.TELEGRAM,
             telegram_cfg,
@@ -1970,6 +1971,7 @@ class TestSendSlackThreadId:
             )
 
         assert result["success"] is True
+        # Verify thread_ts was in the JSON payload
         call_kwargs = mock_session.post.call_args
         payload = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
         assert payload["thread_ts"] == "1712345678.1234"
