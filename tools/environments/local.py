@@ -106,9 +106,45 @@ def _build_provider_env_blocklist() -> frozenset:
 
 _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 
+# Guard so proxy_credentials registration runs only once, not on every subprocess call.
+_proxy_credentials_registered = False
+
+
+def _ensure_proxy_credentials_registered() -> None:
+    """Register proxy_credentials from config into env_passthrough (once).
+
+    Called from both _sanitize_subprocess_env and _make_run_env so that
+    whichever path runs first triggers registration.
+    """
+    global _proxy_credentials_registered
+    if _proxy_credentials_registered:
+        return
+    try:
+        from cli import CLI_CONFIG
+        proxy_creds = CLI_CONFIG.get("terminal", {}).get("proxy_credentials", [])
+        if proxy_creds:
+            from tools.env_passthrough import register_env_passthrough
+            register_env_passthrough(proxy_creds)
+    except ImportError:
+        pass
+    _proxy_credentials_registered = True
+
+
+def _reset_proxy_credentials_registered() -> None:
+    """Reset the one-shot guard — for use in tests only."""
+    global _proxy_credentials_registered
+    _proxy_credentials_registered = False
+
 
 def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
-    """Filter Hermes-managed secrets from a subprocess environment."""
+    """Filter Hermes-managed secrets from a subprocess environment.
+
+    `_HERMES_FORCE_<VAR>` entries in ``extra_env`` opt a blocked variable back in
+    intentionally for callers that truly need it.  Vars registered via
+    :mod:`tools.env_passthrough` (skill-declared or user-configured) also
+    bypass the blocklist.
+    """
+    _ensure_proxy_credentials_registered()
     try:
         from tools.env_passthrough import is_env_passthrough as _is_passthrough
     except Exception:
@@ -119,14 +155,18 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     for key, value in (base_env or {}).items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             continue
-        if key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
+        if (key not in _HERMES_PROVIDER_ENV_BLOCKLIST
+                or _is_passthrough(key)
+                or value.startswith("hermes-proxy://")):
             sanitized[key] = value
 
     for key, value in (extra_env or {}).items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             real_key = key[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
             sanitized[real_key] = value
-        elif key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
+        elif (key not in _HERMES_PROVIDER_ENV_BLOCKLIST
+              or _is_passthrough(key)
+              or value.startswith("hermes-proxy://")):
             sanitized[key] = value
 
     # Per-profile HOME isolation for background processes (same as _make_run_env).
@@ -185,6 +225,7 @@ _SANE_PATH = (
 
 def _make_run_env(env: dict) -> dict:
     """Build a run environment with a sane PATH and provider-var stripping."""
+    _ensure_proxy_credentials_registered()
     try:
         from tools.env_passthrough import is_env_passthrough as _is_passthrough
     except Exception:
@@ -196,7 +237,9 @@ def _make_run_env(env: dict) -> dict:
         if k.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             real_key = k[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
             run_env[real_key] = v
-        elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(k):
+        elif (k not in _HERMES_PROVIDER_ENV_BLOCKLIST
+              or _is_passthrough(k)
+              or v.startswith("hermes-proxy://")):
             run_env[k] = v
     existing_path = run_env.get("PATH", "")
     if "/usr/bin" not in existing_path.split(":"):
@@ -209,6 +252,18 @@ def _make_run_env(env: dict) -> dict:
     _profile_home = get_subprocess_home()
     if _profile_home:
         run_env["HOME"] = _profile_home
+
+    # Inject credential proxy env vars if proxy is running
+    try:
+        from cred_proxy.daemon import is_running as _cred_proxy_running, get_socket_path
+        if _cred_proxy_running():
+            _sock = get_socket_path()
+            run_env["http_proxy"] = f"http+unix://{_sock}"
+            # Phase 1: HTTPS is tunnelled via blind CONNECT relay — not intercepted.
+            # Credential substitution inside HTTPS traffic requires Phase 2 (MITM CA).
+            run_env["https_proxy"] = f"http+unix://{_sock}"
+    except ImportError:
+        pass
 
     return run_env
 
