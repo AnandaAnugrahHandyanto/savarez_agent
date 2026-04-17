@@ -2055,6 +2055,9 @@ class TelegramAdapter(BasePlatformAdapter):
             return content, []
 
         text = content
+        # Replace Markdown horizontal rules with a plain-text divider that works
+        # in Telegram entities mode (Telegram has no native hr entity).
+        text = re.sub(r'^\s*(?:-{3,}|={3,}|_{3,})\s*$', '────────', text, flags=re.MULTILINE)
         marks = []
 
         def _is_protected(s, e, protected):
