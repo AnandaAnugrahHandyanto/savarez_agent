@@ -6,8 +6,10 @@ functions here are pure — no I/O, no config reads — so they can be called
 from any execution path at the same logical position: after primary /
 runtime_kwargs are assembled, before ``resolve_turn_route()`` runs.
 
-See `.plans/2026-04-17_134913-skill-runtime-defaults.md` (Design Rules 4, 9)
-for the precedence model.
+Precedence (highest → lowest): explicit lock (``/model``, cron ``job.model``)
+> skill-declared defaults (after trust-cap enforcement) > session default.
+See ``website/docs/developer-guide/creating-skills.md`` for the end-user
+contract.
 """
 
 from __future__ import annotations

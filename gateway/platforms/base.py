@@ -692,7 +692,7 @@ class MessageEvent:
     # alongside the user turn so the gateway run-loop can apply turn-scoped
     # reasoning / model overrides without touching the rendered message body.
     # Treated as a sentinel: ``None`` and empty dict are equivalent (no
-    # override).  See ``.plans/2026-04-17_134913-skill-runtime-defaults.md``.
+    # override).
     turn_runtime_defaults: Optional[dict] = None
     
     # Internal flag — set for synthetic events (e.g. background process
