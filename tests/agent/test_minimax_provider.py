@@ -332,6 +332,26 @@ class TestMinimaxPreserveDots:
         from run_agent import AIAgent
         assert AIAgent._anthropic_preserve_dots(agent) is True
 
+    def test_opaque_custom_proxy_preserves_zai_model_dots(self):
+        from types import SimpleNamespace
+        agent = SimpleNamespace(
+            provider="custom",
+            base_url="https://proxy.example.com/anthropic",
+            model="z-ai/glm-5.1",
+        )
+        from run_agent import AIAgent
+        assert AIAgent._anthropic_preserve_dots(agent) is True
+
+    def test_opaque_custom_proxy_keeps_claude_hyphenation(self):
+        from types import SimpleNamespace
+        agent = SimpleNamespace(
+            provider="custom",
+            base_url="https://proxy.example.com/anthropic",
+            model="anthropic/claude-sonnet-4.6",
+        )
+        from run_agent import AIAgent
+        assert AIAgent._anthropic_preserve_dots(agent) is False
+
     def test_normalize_preserves_m25_free_dot(self):
         from agent.anthropic_adapter import normalize_model_name
         assert normalize_model_name("minimax-m2.5-free", preserve_dots=True) == "minimax-m2.5-free"
