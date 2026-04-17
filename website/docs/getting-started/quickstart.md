@@ -48,6 +48,8 @@ hermes setup       # Or configure everything at once
 | **Nous Portal** | Subscription-based, zero-config | OAuth login via `hermes model` |
 | **OpenAI Codex** | ChatGPT OAuth, uses Codex models | Device code auth via `hermes model` |
 | **Anthropic** | Claude models directly (Pro/Max or API key) | `hermes model` with Claude Code auth, or an Anthropic API key |
+| **Ollama** | Local daemon with dynamic model discovery (local + cloud-tagged models) | `hermes model` → select **Ollama** (default base URL: `http://localhost:11434/v1`) |
+| **Ollama Cloud** | Direct ollama.com cloud provider | Set `OLLAMA_API_KEY` (or choose in `hermes model`) |
 | **OpenRouter** | Multi-provider routing across many models | Enter your API key |
 | **Z.AI** | GLM / Zhipu-hosted models | Set `GLM_API_KEY` / `ZAI_API_KEY` |
 | **Kimi / Moonshot** | Moonshot-hosted coding and chat models | Set `KIMI_API_KEY` |

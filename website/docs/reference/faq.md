@@ -56,14 +56,13 @@ API calls go **only to the LLM provider you configure** (e.g., OpenRouter, your 
 
 ### Can I use it offline / with local models?
 
-Yes. Run `hermes model`, select **Custom endpoint**, and enter your server's URL:
+Yes. Run `hermes model` and choose either **Ollama (local and cloud models)** or **Custom endpoint**, then follow the prompts:
 
 ```bash
 hermes model
-# Select: Custom endpoint (enter URL manually)
-# API base URL: http://localhost:11434/v1
-# API key: ollama
-# Model name: qwen3.5:27b
+# Select: Ollama (local and cloud models)
+# Base URL: http://localhost:11434/v1   (default)
+# Pick a discovered model, or enter one manually
 # Context length: 32768   ← set this to match your server's actual context window
 ```
 
@@ -72,11 +71,13 @@ Or configure it directly in `config.yaml`:
 ```yaml
 model:
   default: qwen3.5:27b
-  provider: custom
+  provider: ollama
   base_url: http://localhost:11434/v1
 ```
 
-Hermes persists the endpoint, provider, and base URL in `config.yaml` so it survives restarts. If your local server has exactly one model loaded, `/model custom` auto-detects it. You can also set `provider: custom` in config.yaml — it's a first-class provider, not an alias for anything else.
+Hermes persists the endpoint, provider, and base URL in `config.yaml` so it survives restarts. If local Ollama has exactly one model available, `/model ollama` auto-selects it.
+
+For other local servers (vLLM, llama.cpp, SGLang, LocalAI), use `provider: custom` with your server's base URL.
 
 This works with Ollama, vLLM, llama.cpp server, SGLang, LocalAI, and others. See the [Configuration guide](../user-guide/configuration.md) for details.
 

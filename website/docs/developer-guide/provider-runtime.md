@@ -54,6 +54,8 @@ Current provider families include:
 - Kilo Code
 - Hugging Face
 - OpenCode Zen / OpenCode Go
+- Ollama (`provider: ollama`) — native local daemon path with model discovery
+- Ollama Cloud (`provider: ollama-cloud`) — direct ollama.com API (`OLLAMA_API_KEY`)
 - Custom (`provider: custom`) — first-class provider for any OpenAI-compatible endpoint
 - Named custom providers (`custom_providers` list in config.yaml)
 

@@ -19,6 +19,8 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **GitHub Copilot** | `hermes model` (OAuth device code flow, `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth token`) |
 | **GitHub Copilot ACP** | `hermes model` (spawns local `copilot --acp --stdio`) |
 | **Anthropic** | `hermes model` (Claude Pro/Max via Claude Code auth, Anthropic API key, or manual setup-token) |
+| **Ollama (local and cloud models)** | `hermes model` (native local provider, dynamic discovery; default base URL `http://localhost:11434/v1`) |
+| **Ollama Cloud** | `OLLAMA_API_KEY` in `~/.hermes/.env` (provider: `ollama-cloud`) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **AI Gateway** | `AI_GATEWAY_API_KEY` in `~/.hermes/.env` (provider: `ai-gateway`) |
 | **z.ai / GLM** | `GLM_API_KEY` in `~/.hermes/.env` (provider: `zai`) |
@@ -386,9 +388,11 @@ Both approaches persist to `config.yaml`, which is the source of truth for model
 **To add a new provider:** Exit your session (`Ctrl+C` or `/quit`), run `hermes model`, set up the new provider, then start a new session.
 :::
 
-Once you have at least one custom endpoint configured, you can switch models mid-session:
+Once you have providers configured, you can switch models mid-session:
 
 ```
+/model ollama:qwen3.5:27b        # Switch to a model on local Ollama
+/model ollama                    # Re-probe local Ollama and auto-select if one model
 /model custom:qwen-2.5          # Switch to a model on your custom endpoint
 /model custom                    # Auto-detect the model from the endpoint
 /model openrouter:claude-sonnet-4 # Switch back to a cloud provider
@@ -404,14 +408,14 @@ If you have **named custom providers** configured (see below), use the triple sy
 When switching providers, Hermes persists the base URL and provider to config so the change survives restarts. When switching away from a custom endpoint to a built-in provider, the stale base URL is automatically cleared.
 
 :::tip
-`/model custom` (bare, no model name) queries your endpoint's `/models` API and auto-selects the model if exactly one is loaded. Useful for local servers running a single model.
+`/model ollama` probes local Ollama (`/v1/models`, then `/api/tags`) and auto-selects if exactly one model is discovered. `/model custom` does the same auto-detect behavior for generic OpenAI-compatible endpoints.
 :::
 
 Everything below follows this same pattern — just change the URL, key, and model name.
 
 ---
 
-### Ollama — Local Models, Zero Config
+### Ollama — Local and Cloud Models, Zero Config
 
 [Ollama](https://ollama.com/) runs open-weight models locally with one command. Best for: quick local experimentation, privacy-sensitive work, offline use. Supports tool calling via the OpenAI-compatible API.
 
@@ -425,10 +429,9 @@ Then configure Hermes:
 
 ```bash
 hermes model
-# Select "Custom endpoint (self-hosted / VLLM / etc.)"
-# Enter URL: http://localhost:11434/v1
-# Skip API key (Ollama doesn't need one)
-# Enter model name (e.g. qwen2.5-coder:32b)
+# Select "Ollama (local and cloud models)"
+# Base URL defaults to http://localhost:11434/v1
+# Pick a discovered model (or enter one manually)
 ```
 
 Or configure `config.yaml` directly:
@@ -436,10 +439,17 @@ Or configure `config.yaml` directly:
 ```yaml
 model:
   default: qwen2.5-coder:32b
-  provider: custom
+  provider: ollama
   base_url: http://localhost:11434/v1
   context_length: 32768   # See warning below
 ```
+
+:::tip
+If local Ollama is unreachable during setup or `/model`, Hermes shows:
+Ollama was not reachable. Make sure Ollama is running (ollama serve).
+When no models are discovered, Hermes still surfaces baseline options (`kimi-k2.5:cloud`, `glm-5.1:cloud`) so you can continue setup.
+Compatibility aliases like `ollama-launch`, `ollama_launch`, and `ollama-local` resolve to the same native `ollama` provider.
+:::
 
 :::caution Ollama defaults to very low context lengths
 Ollama does **not** use your model's full context window by default. Depending on your VRAM, the default is:
@@ -479,8 +489,29 @@ ollama ps
 ```
 
 :::tip
-List available models with `ollama list`. Pull any model from the [Ollama library](https://ollama.com/library) with `ollama pull <model>`. Ollama handles GPU offloading automatically — no configuration needed for most setups.
+List available models with `ollama list`. Pull any model from the [Ollama library](https://ollama.com/library) with `ollama pull <model>`. Ollama handles GPU offloading automatically — no configuration needed for most setups. Local discovery can include `:cloud` models exposed by your running Ollama instance.
 :::
+
+---
+
+### Ollama Cloud — Direct ollama.com API
+
+Use this when you want Ollama-hosted cloud inference without routing through a local daemon.
+
+```bash
+export OLLAMA_API_KEY=***
+hermes chat --provider ollama-cloud --model kimi-k2.5:cloud
+```
+
+Or set it permanently:
+
+```yaml
+model:
+  provider: "ollama-cloud"
+  default: "kimi-k2.5:cloud"
+```
+
+`OLLAMA_BASE_URL` optionally overrides the default cloud endpoint (`https://ollama.com/v1`).
 
 ---
 
@@ -688,7 +719,7 @@ Use that IP in your Hermes config:
 ```yaml
 model:
   default: qwen2.5-coder:32b
-  provider: custom
+  provider: ollama
   base_url: http://172.29.192.1:11434/v1   # Windows host IP, not localhost
 ```
 
@@ -798,7 +829,7 @@ Hermes auto-detects context length from your server's `/v1/models` endpoint. If 
 ```yaml
 model:
   default: your-model
-  provider: custom
+  provider: ollama
   base_url: http://localhost:11434/v1
   context_length: 32768
 ```
@@ -937,7 +968,7 @@ For custom endpoints, you can also set context length per model:
 ```yaml
 custom_providers:
   - name: "My Local LLM"
-    base_url: "http://localhost:11434/v1"
+    base_url: "http://localhost:8000/v1"
     models:
       qwen3.5:27b:
         context_length: 32768

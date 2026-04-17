@@ -39,6 +39,8 @@ Both `provider` and `model` are **required**. If either is missing, the fallback
 | OpenRouter | `openrouter` | `OPENROUTER_API_KEY` |
 | Nous Portal | `nous` | `hermes auth` (OAuth) |
 | OpenAI Codex | `openai-codex` | `hermes model` (ChatGPT OAuth) |
+| Ollama (local and cloud models) | `ollama` | Local daemon running (default `http://localhost:11434/v1`) |
+| Ollama Cloud | `ollama-cloud` | `OLLAMA_API_KEY` |
 | GitHub Copilot | `copilot` | `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN` |
 | GitHub Copilot ACP | `copilot-acp` | External process (editor integration) |
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY` or Claude Code credentials |
@@ -119,10 +121,9 @@ fallback_model:
 **Local model as fallback for cloud:**
 ```yaml
 fallback_model:
-  provider: custom
-  model: llama-3.1-70b
-  base_url: http://localhost:8000/v1
-  api_key_env: LOCAL_API_KEY
+  provider: ollama
+  model: qwen3.5:27b
+  base_url: http://localhost:11434/v1
 ```
 
 **Codex OAuth as fallback:**

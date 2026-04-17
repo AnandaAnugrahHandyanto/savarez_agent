@@ -139,6 +139,8 @@ Switch between already-configured models without leaving a session:
 /model                              # Show current model and available options
 /model claude-sonnet-4              # Switch model (auto-detects provider)
 /model zai:glm-5                    # Switch provider and model
+/model ollama:qwen3.5:27b           # Use a model on local Ollama
+/model ollama                       # Re-discover models from local Ollama
 /model custom:qwen-2.5              # Use model on your custom endpoint
 /model custom                       # Auto-detect model from custom endpoint
 /model custom:local:qwen-2.5        # Use a named custom provider
