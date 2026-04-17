@@ -7159,12 +7159,17 @@ class AIAgent:
         try:
             # Build API messages for the flush call
             _needs_sanitize = self._should_sanitize_tool_calls()
+            # Skip ``reasoning_content`` entirely on Groq so the direct-
+            # client fallback (when auxiliary is unavailable) doesn't hit
+            # ``HTTP 400: property 'reasoning_content' is unsupported``.
+            # See issue #11089.
+            _reject_reasoning_content = self._provider_rejects_reasoning_content()
             api_messages = []
             for msg in messages:
                 api_msg = msg.copy()
                 if msg.get("role") == "assistant":
                     reasoning = msg.get("reasoning")
-                    if reasoning:
+                    if reasoning and not _reject_reasoning_content:
                         api_msg["reasoning_content"] = reasoning
                 api_msg.pop("reasoning", None)
                 api_msg.pop("finish_reason", None)
