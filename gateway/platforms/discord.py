@@ -1967,6 +1967,23 @@ class DiscordAdapter(BasePlatformAdapter):
                     )
                     cat_group.add_command(cmd)
 
+            # Check serialized size before registering — Discord rejects
+            # command groups that exceed 8000 chars when serialized. (#11321)
+            try:
+                import json as _json
+                _payload = skill_group.to_dict()
+                _size = len(_json.dumps(_payload))
+                if _size > 7500:
+                    logger.warning(
+                        "[%s] /skill group payload %d bytes — skipping registration "
+                        "to avoid Discord 400 error (limit 8000). "
+                        "Reduce built-in skills or disable unused categories.",
+                        self.name, _size,
+                    )
+                    return
+            except Exception:
+                pass
+
             tree.add_command(skill_group)
 
             total = sum(len(v) for v in categories.values()) + len(uncategorized)
