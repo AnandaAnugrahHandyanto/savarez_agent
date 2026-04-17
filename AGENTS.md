@@ -8,6 +8,18 @@ Instructions for AI coding assistants and developers working on the hermes-agent
 source venv/bin/activate  # ALWAYS activate before running Python
 ```
 
+## Local Customization Branch Policy
+
+- `main` must remain a clean tracking branch for `origin/main`.
+- Henry-specific changes belong on `henry/patches`, not as uncommitted drift on `main`.
+- Before syncing upstream, snapshot local work onto a named branch or commit.
+- Use `scripts/sync-local-mods.sh` for updates instead of raw `git pull` on a dirty tree.
+- Keep `core.hooksPath` set to `.githooks` in this repo.
+- Direct pushes to `main` require an explicit override: `HERMES_ALLOW_MAIN_PUSH=1`.
+- If a customization should survive future upgrades, it needs either:
+  - a local commit on `henry/patches`, or
+  - an upstream PR so it stops being a local customization.
+
 ## Project Structure
 
 ```
