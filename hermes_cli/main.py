@@ -3304,7 +3304,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     Args:
         web_dir: Path to the ``web/`` source directory.
         fatal: If True, print error guidance and return False on failure
-               instead of a soft warning (used by ``hermes web``).
+               instead of a soft warning (used by ``hermes dashboard``).
 
     Returns True if the build succeeded or was skipped (no package.json).
     """
@@ -3321,14 +3321,14 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     r1 = subprocess.run([npm, "install", "--silent"], cwd=web_dir, capture_output=True)
     if r1.returncode != 0:
         print(f"  {'✗' if fatal else '⚠'} Web UI npm install failed"
-              + ("" if fatal else " (hermes web will not be available)"))
+              + ("" if fatal else " (hermes dashboard will not be available)"))
         if fatal:
             print("  Run manually:  cd web && npm install && npm run build")
         return False
     r2 = subprocess.run([npm, "run", "build"], cwd=web_dir, capture_output=True)
     if r2.returncode != 0:
         print(f"  {'✗' if fatal else '⚠'} Web UI build failed"
-              + ("" if fatal else " (hermes web will not be available)"))
+              + ("" if fatal else " (hermes dashboard will not be available)"))
         if fatal:
             print("  Run manually:  cd web && npm install && npm run build")
         return False
