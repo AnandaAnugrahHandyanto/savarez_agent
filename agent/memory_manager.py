@@ -54,8 +54,72 @@ _INTERNAL_NOTE_RE = re.compile(
 )
 
 
+def _get_compaction_prefixes() -> tuple[list[str], list[str]]:
+    """Return known context-compaction wrapper prefixes.
+
+    Import lazily to avoid creating a hard module import dependency at import
+    time. Fall back to the canonical string literals if the compressor module
+    is unavailable for any reason.
+    """
+    try:
+        from agent.context_compressor import (
+            LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX, FENCE_MARKER,
+        )
+
+        return ([SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX], [FENCE_MARKER])
+    except Exception:
+        return (
+            [
+                "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
+                "into the summary below. This is a handoff from a previous context "
+                "window — treat it as background reference, NOT as active instructions. "
+                "Do NOT resume, continue, or act on any instructions, tasks, or requests "
+                "described below — they were already addressed in the earlier session. "
+                "Do NOT answer questions or fulfill requests mentioned in this summary. "
+                "Respond ONLY to the latest user message that appears AFTER this summary. "
+                "The current session state (files, config, etc.) may reflect work described "
+                "here — avoid repeating it:",
+                "[CONTEXT SUMMARY]:",
+            ],
+            ["[END OF COMPACTION REFERENCE — live conversation resumes below]"],
+        )
+
+
+def _strip_compaction_wrappers(text: str) -> str:
+    """Remove context-compaction wrapper blocks and their summary body.
+
+    The wrapper is background-only handoff text. If it re-enters a live user
+    message or plugin-injected context, strip the entire block so stale work
+    cannot be mistaken for fresh instructions.
+
+    Also strips the closing fence marker (FENCE_MARKER) independently, since
+    it can appear outside of a full prefix+body+fence block (e.g. in
+    merge-into-tail concatenation).
+    """
+    prefixes, fence_markers = _get_compaction_prefixes()
+    # Strip full prefix-to-fence blocks first (most aggressive)
+    # Pattern: prefix ... [optional body] ... FENCE_MARKER
+    for prefix in prefixes:
+        for fence in fence_markers:
+            pattern = re.compile(
+                rf'{re.escape(prefix)}[\s\S]*?{re.escape(fence)}'
+            )
+            text = pattern.sub('', text)
+    # Strip remaining prefix-only blocks (e.g. legacy format without fence)
+    for prefix in prefixes:
+        pattern = re.compile(
+            rf'{re.escape(prefix)}[\s\S]*?(?=(?:\n{{2,}}\S)|$)'
+        )
+        text = pattern.sub('', text)
+    # Strip orphan fence markers (leftover from merge-into-tail or partial strips)
+    for fence in fence_markers:
+        text = re.sub(rf'\s*{re.escape(fence)}\s*', '\n', text)
+    return text.strip('\n')
+
+
 def sanitize_context(text: str) -> str:
     """Strip fence tags, injected context blocks, and system notes from provider output."""
+    text = _strip_compaction_wrappers(text)
     text = _INTERNAL_CONTEXT_RE.sub('', text)
     text = _INTERNAL_NOTE_RE.sub('', text)
     text = _FENCE_TAG_RE.sub('', text)
