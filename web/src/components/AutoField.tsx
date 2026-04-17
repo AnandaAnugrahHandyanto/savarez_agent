@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectOption } from "@/components/ui/select";
@@ -33,11 +33,6 @@ export function AutoField({
     isObjectList ? JSON.stringify(value, null, 2) : "",
   );
 
-  useEffect(() => {
-    if (isObjectList) {
-      setObjectListText(JSON.stringify(value ?? [], null, 2));
-    }
-  }, [isObjectList, value]);
   if (schema.type === "boolean") {
     return (
       <div className="flex items-center justify-between gap-4">
