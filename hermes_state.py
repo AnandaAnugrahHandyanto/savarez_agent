@@ -672,11 +672,12 @@ class SessionDB:
             )
             numbered = cursor.fetchall()
 
-        if numbered:
-            # Return the most recent numbered variant
-            return numbered[0]["id"]
-        elif exact:
+        if exact:
+            # Prefer exact match over numbered variants
             return exact["id"]
+        elif numbered:
+            # Fallback to numbered variants if no exact match
+            return numbered[0]["id"]
         return None
 
     def get_next_title_in_lineage(self, base_title: str) -> str:
@@ -713,6 +714,73 @@ class SessionDB:
                 max_num = max(max_num, int(m.group(1)))
 
         return f"{base} #{max_num + 1}"
+
+    def _find_latest_leaf(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Find the latest leaf session in a compression split chain.
+
+        Given a session_id, if its end_reason is 'compression', follows the
+        parent_session_id chain to find the latest non-compression leaf node.
+        This is needed for /resume to show the actual latest content instead of
+        a frozen compression parent.
+
+        Returns the leaf session dict (including all fields) or the original
+        session dict if no children exist.
+
+        Compression chains can have multiple layers: A→B→C→D, so we traverse
+        until we find a node with no children.
+        """
+        with self._lock:
+            current_id = session_id
+            while True:
+                # First, check if current session exists and get its info
+                cursor = self._conn.execute(
+                    "SELECT * FROM sessions WHERE id = ?", (current_id,)
+                )
+                current_row = cursor.fetchone()
+                if not current_row:
+                    return None
+                current = dict(current_row)
+
+                # Look for children of this session
+                # We want the latest child (by started_at DESC)
+                cursor = self._conn.execute(
+                    "SELECT * FROM sessions WHERE parent_session_id = ? "
+                    "ORDER BY started_at DESC LIMIT 1",
+                    (current_id,)
+                )
+                child = cursor.fetchone()
+
+                if not child:
+                    # No more children - this is the leaf
+                    return current
+
+                # Move to the child and continue
+                current_id = child["id"]
+
+    def get_ancestor_ids(self, session_id: str) -> Set[str]:
+        """Get all ancestor session IDs for a given session (thread-safe).
+
+        Returns a set of session IDs in the parent chain (excluding the
+        session_id itself). Used to exclude ancestor sessions from /resume
+        candidates since their content is already reachable via the current
+        session.
+        """
+        ancestor_ids = set()
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT id, parent_session_id FROM sessions WHERE id = ?",
+                (session_id,)
+            )
+            row = cursor.fetchone()
+            while row and row["parent_session_id"]:
+                pid = row["parent_session_id"]
+                ancestor_ids.add(pid)
+                cursor = self._conn.execute(
+                    "SELECT id, parent_session_id FROM sessions WHERE id = ?",
+                    (pid,)
+                )
+                row = cursor.fetchone()
+        return ancestor_ids
 
     def list_sessions_rich(
         self,

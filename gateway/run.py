@@ -6877,6 +6877,71 @@ class GatewayRunner:
         session_key = self._session_key_for_source(source)
         name = event.get_command_args().strip()
 
+        # Handle /resume last or /resume - shortcuts (resume most recent session)
+        if name in ("last", "-"):
+            # Reuse the same list logic as /resume without args
+            try:
+                user_source = source.platform.value if source.platform else None
+                current_entry = self.session_store.get_or_create_session(source)
+                current_sid = current_entry.session_id
+
+                sessions = self._session_db.list_sessions_rich(
+                    source=user_source, limit=30, include_children=True
+                )
+                # Get message count threshold
+                resume_min_messages = 2
+                try:
+                    if isinstance(self.config, dict):
+                        resume_min_messages = self.config.get("resume_min_messages", 2)
+                    else:
+                        resume_min_messages = getattr(self.config, "resume_min_messages", 2)
+                except Exception:
+                    pass
+
+                # Build candidates list (same filtering as list path)
+                ancestor_ids = self._session_db.get_ancestor_ids(current_sid)
+                candidates = []
+                seen_ids = set()
+
+                for s in sessions:
+                    sid = s.get("id")
+                    if not sid or sid == current_sid:
+                        continue
+                    if sid in ancestor_ids:
+                        continue
+                    if sid in seen_ids:
+                        continue
+                    if (s.get("message_count") or 0) < resume_min_messages:
+                        continue
+
+                    end_reason = s.get("end_reason")
+                    display_session = s
+                    if end_reason == "compression":
+                        leaf = self._session_db._find_latest_leaf(sid)
+                        if leaf and leaf.get("id") != sid:
+                            leaf_id = leaf.get("id")
+                            if leaf_id == current_sid or leaf_id in seen_ids:
+                                continue
+                            if not leaf.get("preview"):
+                                leaf["preview"] = s.get("preview", "")
+                            display_session = leaf
+                            seen_ids.add(leaf_id)
+
+                    seen_ids.add(sid)
+                    candidates.append(display_session)
+                    # We only need the first (most recent) candidate
+                    break
+
+                if candidates:
+                    # Resume the first (most recent) candidate
+                    target_id = candidates[0].get("id")
+                else:
+                    # No candidates, fall back to list display
+                    name = ""  # Clear name to trigger list path below
+            except Exception as e:
+                logger.debug("Failed to resolve /resume last: %s", e)
+                name = ""  # Fall back to list display on error
+
         if not name:
             # List recent sessions with >= 3 messages for user selection
             try:
@@ -6895,21 +6960,15 @@ class GatewayRunner:
                 # Build set of ancestor session IDs to exclude
                 # (current session's parent chain — their content is already
                 # reachable via the current session)
-                ancestor_ids = set()
+                ancestor_ids = self._session_db.get_ancestor_ids(current_sid)
+
+                # Get message count threshold for filtering (configurable, default 2)
+                resume_min_messages = 2
                 try:
-                    ancestor_cursor = self._session_db._conn.execute(
-                        "SELECT id, parent_session_id FROM sessions WHERE id = ?",
-                        (current_sid,)
-                    )
-                    ancestor_row = ancestor_cursor.fetchone()
-                    while ancestor_row and ancestor_row["parent_session_id"]:
-                        pid = ancestor_row["parent_session_id"]
-                        ancestor_ids.add(pid)
-                        ancestor_cursor = self._session_db._conn.execute(
-                            "SELECT id, parent_session_id FROM sessions WHERE id = ?",
-                            (pid,)
-                        )
-                        ancestor_row = ancestor_cursor.fetchone()
+                    if isinstance(self.config, dict):
+                        resume_min_messages = self.config.get("resume_min_messages", 2)
+                    else:
+                        resume_min_messages = getattr(self.config, "resume_min_messages", 2)
                 except Exception:
                     pass
 
@@ -6921,7 +6980,7 @@ class GatewayRunner:
                         continue
                     if sid in seen_ids:
                         continue
-                    if (s.get("message_count") or 0) < 3:
+                    if (s.get("message_count") or 0) < resume_min_messages:
                         continue
 
                     # If this session was split by compression, resolve to the latest leaf
@@ -6947,22 +7006,57 @@ class GatewayRunner:
 
                 if not candidates:
                     return (
-                        "No resumable sessions found (need ≥ 3 messages).\n"
+                        f"No resumable sessions found (need ≥ {resume_min_messages} messages).\n"
                         "Use `/title My Session` to name your current session, "
                         "then `/resume My Session` to return to it later."
                     )
 
                 lines = ["📋 **Recent Sessions**\n"]
+                # Import datetime for relative time calculation
+                from datetime import datetime, timezone as dt_timezone
+                now = datetime.now(dt_timezone.utc)
+
                 for i, s in enumerate(candidates, 1):
                     title = s.get("title") or "untitled"
                     msg_count = s.get("message_count", 0)
                     preview = s.get("preview", "")[:40]
                     preview_part = f" — _{preview}_" if preview else ""
-                    lines.append(f"`{i}`. **{title}** ({msg_count} msgs){preview_part}")
+
+                    # Calculate relative time (e.g., "2h ago", "3d ago")
+                    time_part = ""
+                    last_active = s.get("last_active")
+                    if last_active:
+                        try:
+                            if isinstance(last_active, str):
+                                last_active_dt = datetime.fromisoformat(last_active.replace("Z", "+00:00"))
+                            else:
+                                last_active_dt = last_active
+                            if last_active_dt.tzinfo is None:
+                                last_active_dt = last_active_dt.replace(tzinfo=dt_timezone.utc)
+
+                            delta = now - last_active_dt
+                            days = delta.days
+                            hours = delta.total_seconds() / 3600
+                            minutes = delta.total_seconds() / 60
+
+                            if days > 0:
+                                time_part = f" • {days}d ago"
+                            elif hours >= 1:
+                                time_part = f" • {int(hours)}h ago"
+                            elif minutes >= 1:
+                                time_part = f" • {int(minutes)}m ago"
+                            else:
+                                time_part = " • just now"
+                        except Exception:
+                            pass  # Silently skip time parsing errors
+
+                    lines.append(f"`{i}`. **{title}** ({msg_count} msgs){time_part}{preview_part}")
                 lines.append("\nUsage: `/resume <number or session name>`")
 
-                # Store candidates for numeric lookup
-                self._resume_candidates = candidates
+                # Store candidates for numeric lookup (per-source to avoid conflicts)
+                if not hasattr(self, "_resume_candidates_map"):
+                    self._resume_candidates_map = {}
+                self._resume_candidates_map[session_key] = candidates
                 return "\n".join(lines)
 
             except Exception as e:
@@ -6973,7 +7067,8 @@ class GatewayRunner:
         target_id = None
         if name.isdigit():
             idx = int(name)
-            candidates = getattr(self, "_resume_candidates", None)
+            candidates_map = getattr(self, "_resume_candidates_map", {})
+            candidates = candidates_map.get(session_key) if candidates_map else None
             if candidates and 1 <= idx <= len(candidates):
                 target_id = candidates[idx - 1].get("id")
         if not target_id:
@@ -6985,6 +7080,7 @@ class GatewayRunner:
             )
 
         # If the target session was split by compression, resolve to the latest leaf
+        # Cache the leaf result for reuse below (avoid duplicate DB query)
         leaf = self._session_db._find_latest_leaf(target_id)
         if leaf and leaf.get("id") != target_id:
             target_id = leaf["id"]
@@ -7007,6 +7103,16 @@ class GatewayRunner:
         # Clear any running agent for this session key
         self._release_running_agent_state(session_key)
 
+        # Evict cached agent so next message gets a fresh agent with correct session
+        _cache_lock = getattr(self, "_agent_cache_lock", None)
+        if _cache_lock is not None:
+            with _cache_lock:
+                _cached = self._agent_cache.get(session_key)
+                _old_agent = _cached[0] if isinstance(_cached, tuple) else _cached if _cached else None
+        if _old_agent is not None:
+            self._cleanup_agent_resources(_old_agent)
+        self._evict_cached_agent(session_key)
+
         # Switch the session entry to point at the old session
         new_entry = self.session_store.switch_session(session_key, target_id)
         if not new_entry:
@@ -7017,9 +7123,9 @@ class GatewayRunner:
 
         # Get message count from session record for consistency with list display
         # (avoids loading the full transcript and uses the same count shown in the list)
+        # Reuse the leaf result from above to avoid duplicate DB query
         msg_count = 0
         try:
-            leaf = self._session_db._find_latest_leaf(target_id)
             if leaf:
                 msg_count = leaf.get("message_count", 0)
         except Exception as e:
