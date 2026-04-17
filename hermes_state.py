@@ -981,7 +981,51 @@ class SessionDB:
         # patterns were applied sequentially (e.g. ``my-app.config``).
         sanitized = re.sub(r"\b(\w+(?:[.-]\w+)+)\b", r'"\1"', sanitized)
 
-        # Step 6: Restore preserved quoted phrases
+        # Step 6: Improve CJK (Chinese/Japanese/Korean) search recall.
+        # FTS5's default tokenizer splits CJK text character-by-character.
+        # With implicit AND, searching "说出来的东西" requires all 6 chars
+        # in the same message — very low recall.  Solution: strip common
+        # stop-words, then connect remaining CJK characters with OR to
+        # find messages containing ANY of the meaningful characters.
+        # This trades precision for recall — better to find too much
+        # than nothing at all.
+        _CJK_STOPWORDS = set("的了是在这那个也就都而且但如果所以因为吗呢吧啊哦呀么")
+        _CJK_CHAR = re.compile(
+            r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff"
+            r"\U00020000-\U0002a6df\U0002a700-\U0002ebef"
+            r"\u3040-\u309f\u30a0-\u30ff"
+            r"\uac00-\ud7af]"
+        )
+
+        def _has_cjk(text: str) -> bool:
+            return bool(_CJK_CHAR.search(text))
+
+        if _has_cjk(sanitized):
+            # Extract meaningful CJK characters (skip stop-words)
+            meaningful = [c for c in sanitized if _CJK_CHAR.match(c) and c not in _CJK_STOPWORDS]
+            # Keep non-CJK parts (English words, numbers)
+            non_cjk = re.sub(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\U00020000-\U0002a6df"
+                             r"\U0002a700-\U0002ebef\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]",
+                             " ", sanitized).split()
+
+            # Build search from meaningful chars:
+            # - 2 chars: keep as AND (e.g. "重量" -> "重 量")
+            # - 3+ chars: split into 2-char pairs with OR between pairs,
+            #   AND within each pair.  "说出来东西" -> "(说 出) OR (来 东) OR (东 西)"
+            #   This gives better precision than single-char OR while still
+            #   finding partial matches.
+            parts = []
+            if len(meaningful) <= 2:
+                parts.extend(meaningful)  # implicit AND
+            else:
+                pairs = []
+                for i in range(0, len(meaningful) - 1, 1):
+                    pairs.append(f"{meaningful[i]} {meaningful[i+1]}")
+                parts.append(" OR ".join(pairs))
+            parts.extend(non_cjk)
+            sanitized = " ".join(parts)
+
+        # Step 7: Restore preserved quoted phrases
         for i, quoted in enumerate(_quoted_parts):
             sanitized = sanitized.replace(f"\x00Q{i}\x00", quoted)
 
@@ -1011,7 +1055,16 @@ class SessionDB:
         if not query or not query.strip():
             return []
 
-        query = self._sanitize_fts5_query(query)
+        raw_query = query.strip()
+
+        # Detect CJK content for potential LIKE fallback
+        _cjk_detect = re.compile(
+            r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff"
+            r"\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]"
+        )
+        _has_cjk = bool(_cjk_detect.search(raw_query))
+
+        query = self._sanitize_fts5_query(raw_query)
         if not query:
             return []
 
@@ -1062,8 +1115,45 @@ class SessionDB:
                 cursor = self._conn.execute(sql, params)
             except sqlite3.OperationalError:
                 # FTS5 query syntax error despite sanitization — return empty
-                return []
-            matches = [dict(row) for row in cursor.fetchall()]
+                matches = []
+            else:
+                matches = [dict(row) for row in cursor.fetchall()]
+
+        # CJK LIKE fallback: FTS5's default tokenizer handles CJK poorly
+        # (single-char tokens, no phrase matching).  When an FTS5 search
+        # returns no results for a CJK query, fall back to LIKE which
+        # does exact substring matching — slower but correct.
+        if not matches and _has_cjk:
+            like_where = ["m.content LIKE ?"]
+            like_params: list = [f"%{raw_query}%"]
+            if exclude_sources:
+                ep = ",".join("?" for _ in exclude_sources)
+                like_where.append(f"s.source NOT IN ({ep})")
+                like_params.extend(exclude_sources)
+            if role_filter:
+                rp = ",".join("?" for _ in role_filter)
+                like_where.append(f"m.role IN ({rp})")
+                like_params.extend(role_filter)
+            like_params.extend([limit, offset])
+            like_sql = f"""
+                SELECT
+                    m.id, m.session_id, m.role,
+                    substr(m.content, max(1, instr(m.content, ?) - 40), 120) AS snippet,
+                    m.content, m.timestamp, m.tool_name,
+                    s.source, s.model, s.started_at AS session_started
+                FROM messages m
+                JOIN sessions s ON s.id = m.session_id
+                WHERE {" AND ".join(like_where)}
+                ORDER BY m.id DESC
+                LIMIT ? OFFSET ?
+            """
+            like_params_full = [raw_query] + like_params
+            with self._lock:
+                try:
+                    cursor = self._conn.execute(like_sql, like_params_full)
+                    matches = [dict(row) for row in cursor.fetchall()]
+                except Exception:
+                    matches = []
 
         # Add surrounding context (1 message before + after each match).
         # Done outside the lock so we don't hold it across N sequential queries.
