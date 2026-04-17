@@ -294,6 +294,85 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
         return tool_error(f"Failed to list recent sessions: {e}", success=False)
 
 
+def session_search_compact(
+    query: str,
+    *,
+    db=None,
+    current_session_id: str = None,
+    limit: int = 3,
+) -> Dict[str, Any]:
+    """Return a compact non-LLM recall block for runtime prompt injection."""
+    if db is None:
+        return {"count": 0, "results": [], "block": "", "error": "Session database not available."}
+
+    query = (query or "").strip()
+    if not query:
+        return {"count": 0, "results": [], "block": ""}
+
+    raw_results = db.search_messages(
+        query=query,
+        role_filter=None,
+        exclude_sources=list(_HIDDEN_SESSION_SOURCES),
+        limit=max(10, limit * 5),
+        offset=0,
+    )
+    if not raw_results:
+        return {"count": 0, "results": [], "block": ""}
+
+    def _resolve_to_parent(session_id: str) -> str:
+        visited = set()
+        sid = session_id
+        while sid and sid not in visited:
+            visited.add(sid)
+            try:
+                session = db.get_session(sid)
+            except Exception:
+                session = None
+            if not session:
+                break
+            parent = session.get("parent_session_id")
+            if not parent:
+                break
+            sid = parent
+        return sid
+
+    current_root = _resolve_to_parent(current_session_id) if current_session_id else None
+    seen: dict[str, Dict[str, Any]] = {}
+    for row in raw_results:
+        raw_sid = row.get("session_id")
+        resolved_sid = _resolve_to_parent(raw_sid)
+        if current_root and resolved_sid == current_root:
+            continue
+        if current_session_id and raw_sid == current_session_id:
+            continue
+        if resolved_sid in seen:
+            continue
+        content = " ".join(str(row.get("content") or "").split())
+        snippet = content[:220] + ("..." if len(content) > 220 else "")
+        seen[resolved_sid] = {
+            "session_id": resolved_sid,
+            "when": _format_timestamp(row.get("session_started")),
+            "source": row.get("source", "unknown"),
+            "model": row.get("model"),
+            "snippet": snippet,
+        }
+        if len(seen) >= limit:
+            break
+
+    results = list(seen.values())
+    if not results:
+        return {"count": 0, "results": [], "block": ""}
+
+    lines = ["Session recall:"]
+    for item in results:
+        lines.append(f"- {item['when']} [{item['source']}]: {item['snippet']}")
+    return {
+        "count": len(results),
+        "results": results,
+        "block": "\n".join(lines),
+    }
+
+
 def session_search(
     query: str,
     role_filter: str = None,

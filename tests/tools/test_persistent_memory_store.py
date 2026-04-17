@@ -121,3 +121,78 @@ class TestPersistentMemoryStoreRetrieval:
         assert isinstance(block, str)
         assert len(block) <= 220
         assert "MEMORY" in block
+
+    def test_search_entries_can_filter_by_scope_and_query(self, store):
+        store.add_entry(
+            "memory",
+            "Tyler rail: ready claims without live proof stay blocked until a live receipt exists.",
+            kind="advisor-pattern",
+            scope="advisor",
+            scope_value="tyler",
+            importance=0.9,
+        )
+        store.add_entry(
+            "memory",
+            "Durden rail: stakeholder calm and support burden shifted to ops is cost-shifting theater.",
+            kind="advisor-pattern",
+            scope="advisor",
+            scope_value="durden",
+            importance=0.9,
+        )
+
+        tyler_hits = store.search_entries(
+            "memory",
+            "ready live proof",
+            scope="advisor",
+            scope_value="tyler",
+            limit=3,
+        )
+        durden_hits = store.search_entries(
+            "memory",
+            "support burden ops stakeholder calm",
+            scope="advisor",
+            scope_value="durden",
+            limit=3,
+        )
+
+        assert len(tyler_hits) == 1
+        assert "ready claims" in tyler_hits[0]["content"]
+        assert len(durden_hits) == 1
+        assert "cost-shifting theater" in durden_hits[0]["content"]
+
+
+class TestPersistentMemoryStoreLattice:
+    def test_initializes_lattice_tables(self, store):
+        conn = sqlite3.connect(store.db_path)
+        tables = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        conn.close()
+        assert "memory_lanes" in tables
+        assert "memory_lattice_events" in tables
+
+    def test_add_replace_forget_emit_lane_linked_lattice_events(self, store):
+        added = store.add_entry("memory", "Theme is blue", kind="instruction")
+        replaced = store.replace_entry("memory", "Theme is blue", "Theme is dark", kind="instruction")
+        forgotten = store.forget_entry("memory", "Theme is dark")
+
+        events = store.list_lattice_events(target="memory")
+        assert [event["block_type"] for event in events] == ["add", "replace", "forget"]
+        assert events[0]["prev_event_id"] is None
+        assert events[1]["prev_event_id"] == events[0]["id"]
+        assert events[1]["supersedes_event_id"] == events[0]["id"]
+        assert events[2]["prev_event_id"] == events[1]["id"]
+        assert events[2]["supersedes_event_id"] == events[1]["id"]
+        assert events[0]["entry_id"] == added["entry"]["id"]
+        assert events[1]["entry_id"] == replaced["entry"]["id"]
+        assert forgotten["success"] is True
+
+    def test_snapshot_includes_lanes_and_lattice_events(self, store):
+        store.add_entry("user", "User prefers concise replies", kind="preference")
+
+        snapshot = store.export_snapshot()
+        assert snapshot["format"] == "hermes-memory-snapshot-v1"
+        assert snapshot["lane_count"] >= 1
+        assert len(snapshot["lanes"]) >= 1
+        assert len(snapshot["lattice_events"]) >= 1

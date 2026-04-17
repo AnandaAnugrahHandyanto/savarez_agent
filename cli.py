@@ -7824,9 +7824,9 @@ class HermesCLI:
             def run_agent():
                 nonlocal result
                 recovery_prefix = self._consume_pending_recovery_context() if isinstance(message, str) else ""
-                agent_message = _voice_prefix + message if _voice_prefix else message
                 if recovery_prefix:
-                    agent_message = recovery_prefix + "\n\n" + agent_message
+                    setattr(self.agent, "_pending_clerk_recall_context", recovery_prefix)
+                agent_message = _voice_prefix + message if _voice_prefix else message
                 # Prepend pending model switch note so the model knows about the switch
                 _msn = getattr(self, '_pending_model_switch_note', None)
                 if _msn:

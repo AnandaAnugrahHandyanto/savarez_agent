@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
@@ -14,6 +15,15 @@ def _store() -> PersistentMemoryStore:
         db_path=hermes_home / "memory.db",
         memory_dir=hermes_home / "memories",
     )
+
+
+def _read_json(path: Path):
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
 
 
 def memory_command(args) -> None:
@@ -43,11 +53,18 @@ def memory_command(args) -> None:
         entries = store.export_snapshot()
         memory_md = store.memory_dir / "MEMORY.md"
         user_md = store.memory_dir / "USER.md"
+        latest_event = _read_json(get_hermes_home() / "state" / "last_memory_event.json")
+        latest_receipt = _read_json(get_hermes_home() / "state" / "last_recall_receipt.json")
         print(f"memory.db: {store.db_path}")
         print(f"active entries: {len(store.list_entries('memory')) + len(store.list_entries('user'))}")
         print(f"snapshot rows: {entries['entry_count']}")
         print(f"MEMORY.md: {memory_md}")
         print(f"USER.md: {user_md}")
+        if latest_event:
+            print(f"last memory event: {latest_event.get('event_id')} ({latest_event.get('action')} -> {','.join(latest_event.get('target_lanes') or [])})")
+        if latest_receipt:
+            lanes_used = ",".join(latest_receipt.get("lanes_used") or [])
+            print(f"last recall receipt: {latest_receipt.get('receipt_id')} ({lanes_used})")
         return
 
     raise SystemExit(f"Unknown memory action: {action}")

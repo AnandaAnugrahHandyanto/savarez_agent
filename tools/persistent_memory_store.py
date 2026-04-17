@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import time
 import uuid
@@ -105,6 +106,46 @@ class PersistentMemoryStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS memory_lanes (
+                    id TEXT PRIMARY KEY,
+                    target TEXT NOT NULL,
+                    scope TEXT NOT NULL DEFAULT 'global',
+                    scope_value TEXT,
+                    lane_key TEXT NOT NULL UNIQUE,
+                    description TEXT,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    last_event_id TEXT
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memory_lanes_target_scope ON memory_lanes(target, scope, scope_value)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS memory_lattice_events (
+                    id TEXT PRIMARY KEY,
+                    lane_id TEXT NOT NULL,
+                    entry_id TEXT,
+                    block_type TEXT NOT NULL,
+                    prev_event_id TEXT,
+                    supersedes_event_id TEXT,
+                    content TEXT,
+                    content_fingerprint TEXT,
+                    metadata_json TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memory_lattice_lane_created ON memory_lattice_events(lane_id, created_at)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memory_lattice_entry_created ON memory_lattice_events(entry_id, created_at)"
+            )
             conn.commit()
 
     def _normalize_content(self, content: str) -> str:
@@ -123,6 +164,88 @@ class PersistentMemoryStore:
             (entry_id, action, target, detail, time.time()),
         )
 
+    @staticmethod
+    def _lane_key(target: str, scope: str, scope_value: str | None) -> str:
+        return f"{target}:{scope}:{scope_value or '*'}"
+
+    def _ensure_lane(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        target: str,
+        scope: str,
+        scope_value: str | None,
+    ) -> Dict[str, Any]:
+        lane_key = self._lane_key(target, scope, scope_value)
+        row = conn.execute("SELECT * FROM memory_lanes WHERE lane_key = ?", (lane_key,)).fetchone()
+        if row:
+            return self._row_to_dict(row)
+        now = time.time()
+        lane_id = str(uuid.uuid4())
+        conn.execute(
+            """
+            INSERT INTO memory_lanes(id, target, scope, scope_value, lane_key, description, created_at, updated_at, last_event_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            """,
+            (lane_id, target, scope, scope_value, lane_key, f"{target} lane for {scope}={scope_value or '*'}", now, now),
+        )
+        row = conn.execute("SELECT * FROM memory_lanes WHERE id = ?", (lane_id,)).fetchone()
+        return self._row_to_dict(row)
+
+    def _latest_event_id_for_entry(self, conn: sqlite3.Connection, entry_id: str | None) -> str | None:
+        if not entry_id:
+            return None
+        row = conn.execute(
+            "SELECT id FROM memory_lattice_events WHERE entry_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+            (entry_id,),
+        ).fetchone()
+        return row["id"] if row else None
+
+    def _append_lattice_event(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        target: str,
+        scope: str,
+        scope_value: str | None,
+        block_type: str,
+        entry_id: str | None,
+        content: str,
+        metadata: Dict[str, Any],
+        supersedes_entry_id: str | None = None,
+    ) -> Dict[str, Any]:
+        lane = self._ensure_lane(conn, target=target, scope=scope, scope_value=scope_value)
+        event_id = str(uuid.uuid4())
+        created_at = time.time()
+        prev_event_id = lane.get("last_event_id")
+        supersedes_event_id = self._latest_event_id_for_entry(conn, supersedes_entry_id)
+        conn.execute(
+            """
+            INSERT INTO memory_lattice_events(
+                id, lane_id, entry_id, block_type, prev_event_id, supersedes_event_id,
+                content, content_fingerprint, metadata_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event_id,
+                lane["id"],
+                entry_id,
+                block_type,
+                prev_event_id,
+                supersedes_event_id,
+                content,
+                self._fingerprint(target, content) if content else None,
+                json.dumps(metadata, ensure_ascii=False, sort_keys=True),
+                created_at,
+            ),
+        )
+        conn.execute(
+            "UPDATE memory_lanes SET last_event_id = ?, updated_at = ? WHERE id = ?",
+            (event_id, created_at, lane["id"]),
+        )
+        row = conn.execute("SELECT * FROM memory_lattice_events WHERE id = ?", (event_id,)).fetchone()
+        return self._row_to_dict(row)
+
     def _row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
         return dict(row)
 
@@ -132,6 +255,35 @@ class PersistentMemoryStore:
         if not include_inactive:
             query += " AND status = 'active'"
         query += " ORDER BY updated_at DESC, created_at DESC"
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
+    def list_lattice_events(
+        self,
+        *,
+        target: str | None = None,
+        lane_key: str | None = None,
+        limit: int | None = None,
+    ) -> List[Dict[str, Any]]:
+        query = (
+            "SELECT e.*, l.lane_key, l.target FROM memory_lattice_events e "
+            "JOIN memory_lanes l ON l.id = e.lane_id"
+        )
+        clauses: list[str] = []
+        params: list[Any] = []
+        if target is not None:
+            clauses.append("l.target = ?")
+            params.append(target)
+        if lane_key is not None:
+            clauses.append("l.lane_key = ?")
+            params.append(lane_key)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY e.created_at ASC, e.id ASC"
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(limit)
         with self._connect() as conn:
             rows = conn.execute(query, params).fetchall()
         return [self._row_to_dict(r) for r in rows]
@@ -212,6 +364,25 @@ class PersistentMemoryStore:
                 ),
             )
             self._write_event(conn, entry_id, "add", target, content)
+            self._append_lattice_event(
+                conn,
+                target=target,
+                scope=scope,
+                scope_value=scope_value,
+                block_type="add",
+                entry_id=entry_id,
+                content=content,
+                metadata={
+                    "target": target,
+                    "kind": kind,
+                    "scope": scope,
+                    "scope_value": scope_value,
+                    "source": source,
+                    "confidence": confidence,
+                    "importance": importance,
+                    "status_after": "active",
+                },
+            )
             self._export_markdown_locked(conn, target)
             row = conn.execute("SELECT * FROM memory_entries WHERE id = ?", (entry_id,)).fetchone()
             conn.commit()
@@ -277,6 +448,26 @@ class PersistentMemoryStore:
                 ),
             )
             self._write_event(conn, old_row["id"], "supersede", target, new_content)
+            self._append_lattice_event(
+                conn,
+                target=target,
+                scope=scope,
+                scope_value=scope_value,
+                block_type="replace",
+                entry_id=new_id,
+                supersedes_entry_id=old_row["id"],
+                content=new_content,
+                metadata={
+                    "target": target,
+                    "kind": kind,
+                    "scope": scope,
+                    "scope_value": scope_value,
+                    "source": source,
+                    "confidence": confidence,
+                    "importance": importance,
+                    "status_after": "active",
+                },
+            )
             self._export_markdown_locked(conn, target)
             row = conn.execute("SELECT * FROM memory_entries WHERE id = ?", (new_id,)).fetchone()
             conn.commit()
@@ -298,9 +489,34 @@ class PersistentMemoryStore:
             now = time.time()
             conn.execute("UPDATE memory_entries SET status = 'forgotten', updated_at = ? WHERE id = ?", (now, row["id"]))
             self._write_event(conn, row["id"], "forget", target, row["content"])
+            self._append_lattice_event(
+                conn,
+                target=target,
+                scope=row["scope"],
+                scope_value=row["scope_value"],
+                block_type="forget",
+                entry_id=row["id"],
+                supersedes_entry_id=row["id"],
+                content=row["content"],
+                metadata={
+                    "target": target,
+                    "kind": row["kind"],
+                    "scope": row["scope"],
+                    "scope_value": row["scope_value"],
+                    "source": row["source"],
+                    "confidence": row["confidence"],
+                    "importance": row["importance"],
+                    "status_after": "forgotten",
+                },
+            )
             self._export_markdown_locked(conn, target)
             conn.commit()
-        return {"success": True, "message": "Entry removed.", "entries": self.list_entries(target)}
+        return {
+            "success": True,
+            "message": "Entry removed.",
+            "entries": self.list_entries(target),
+            "entry": self._row_to_dict(row),
+        }
 
     def retrieve_for_prompt(self, target: str) -> List[Dict[str, Any]]:
         target_bias = 0.2 if target == "user" else 0.0
@@ -323,6 +539,57 @@ class PersistentMemoryStore:
             items.append(item)
         items.sort(key=lambda x: (x["_score"], x["updated_at"]), reverse=True)
         return items
+
+    @staticmethod
+    def _tokenize(text: str) -> list[str]:
+        return re.findall(r"[a-z0-9]+", (text or "").lower())
+
+    def search_entries(
+        self,
+        target: str,
+        query: str,
+        *,
+        scope: str | None = None,
+        scope_value: str | None = None,
+        limit: int = 5,
+    ) -> List[Dict[str, Any]]:
+        sql = "SELECT * FROM memory_entries WHERE target = ? AND status = 'active'"
+        params: list[Any] = [target]
+        if scope is not None:
+            sql += " AND scope = ?"
+            params.append(scope)
+        if scope_value is not None:
+            sql += " AND scope_value = ?"
+            params.append(scope_value)
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+
+        query_clean = (query or "").strip().lower()
+        query_tokens = set(self._tokenize(query_clean))
+        now = time.time()
+        scored: list[Dict[str, Any]] = []
+        for row in rows:
+            item = self._row_to_dict(row)
+            content = str(item.get("content") or "")
+            content_lower = content.lower()
+            content_tokens = set(self._tokenize(content))
+            overlap = len(query_tokens & content_tokens) if query_tokens else 0
+            exact = 1 if query_clean and query_clean in content_lower else 0
+            if query_tokens and overlap <= 0 and exact == 0:
+                continue
+            age_days = max(0.0, (now - float(item.get("updated_at") or now)) / 86400.0)
+            recency = max(0.0, 0.3 - min(age_days / 365.0, 0.3))
+            score = (
+                overlap * 25
+                + exact * 50
+                + float(item.get("importance") or 0) * 10
+                + float(item.get("confidence") or 0) * 5
+                + recency
+            )
+            item["_search_score"] = score
+            scored.append(item)
+        scored.sort(key=lambda x: (x.get("_search_score", 0), x.get("updated_at", 0)), reverse=True)
+        return scored[:limit]
 
     def render_prompt_block(self, target: str, char_limit: Optional[int] = None) -> Optional[str]:
         limit = char_limit or self._char_limit(target)
@@ -354,12 +621,24 @@ class PersistentMemoryStore:
             rows = conn.execute(
                 "SELECT * FROM memory_entries ORDER BY created_at ASC, updated_at ASC"
             ).fetchall()
+            lane_rows = conn.execute(
+                "SELECT * FROM memory_lanes ORDER BY created_at ASC, updated_at ASC"
+            ).fetchall()
+            lattice_rows = conn.execute(
+                "SELECT * FROM memory_lattice_events ORDER BY created_at ASC, id ASC"
+            ).fetchall()
         entries = [self._row_to_dict(r) for r in rows]
+        lanes = [self._row_to_dict(r) for r in lane_rows]
+        lattice_events = [self._row_to_dict(r) for r in lattice_rows]
         return {
             "format": "hermes-memory-snapshot-v1",
             "exported_at": datetime.now(timezone.utc).isoformat(),
             "entry_count": len(entries),
+            "lane_count": len(lanes),
+            "lattice_event_count": len(lattice_events),
             "entries": entries,
+            "lanes": lanes,
+            "lattice_events": lattice_events,
         }
 
     def export_snapshot_to_file(self, output_path: Path | str) -> Path:

@@ -195,6 +195,18 @@ def _check_persistent_memory_health(issues: list[str]) -> None:
     else:
         check_info(f"{_DHH}/memory.db not created yet (will be created on first memory write)")
 
+    last_event = HERMES_HOME / "state" / "last_memory_event.json"
+    if last_event.exists():
+        check_ok(f"{_DHH}/state/last_memory_event.json exists")
+    else:
+        check_info(f"{_DHH}/state/last_memory_event.json not created yet")
+
+    last_receipt = HERMES_HOME / "state" / "last_recall_receipt.json"
+    if last_receipt.exists():
+        check_ok(f"{_DHH}/state/last_recall_receipt.json exists")
+    else:
+        check_info(f"{_DHH}/state/last_recall_receipt.json not created yet")
+
 
 def run_doctor(args):
     """Run diagnostic checks."""

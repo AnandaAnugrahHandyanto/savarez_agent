@@ -15,6 +15,7 @@ from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional
 
 from agent.llm_wiki import sync_memory_store_to_wiki
+from agent.write_compiler import WriteCompiler
 import tools.persistent_memory_store as pm
 
 logger = logging.getLogger(__name__)
@@ -180,14 +181,34 @@ class MemoryStore:
     def _refresh_live_entries(self, target: str):
         self._set_entries(target, self._load_target_from_backend(target))
 
-    def add(self, target: str, content: str) -> Dict[str, Any]:
+    def add(
+        self,
+        target: str,
+        content: str,
+        *,
+        kind: str | None = None,
+        scope: str = "global",
+        scope_value: str | None = None,
+        source: str = "manual",
+        confidence: float = 1.0,
+        importance: float = 0.5,
+    ) -> Dict[str, Any]:
         content = content.strip()
         if not content:
             return {"success": False, "error": "Content cannot be empty."}
         scan_error = _scan_memory_content(content)
         if scan_error:
             return {"success": False, "error": scan_error}
-        result = self._backend_store().add_entry(target, content, kind=self._entry_kind(target, content))
+        result = self._backend_store().add_entry(
+            target,
+            content,
+            kind=kind or self._entry_kind(target, content),
+            scope=scope,
+            scope_value=scope_value,
+            source=source,
+            confidence=confidence,
+            importance=importance,
+        )
         self._refresh_live_entries(target)
         self._sync_wiki_mirror()
         if not result.get("success"):
@@ -196,7 +217,11 @@ class MemoryStore:
             result.setdefault("current_entries", self._entries_for(target))
             result.setdefault("usage", f"{current:,}/{limit:,}")
             return result
-        return self._success_response(target, result.get("message", "Entry added."))
+        return self._success_response(
+            target,
+            result.get("message", "Entry added."),
+            entry=result.get("entry"),
+        )
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
         old_text = old_text.strip()
@@ -213,7 +238,11 @@ class MemoryStore:
         self._sync_wiki_mirror()
         if not result.get("success"):
             return result
-        return self._success_response(target, result.get("message", "Entry replaced."))
+        return self._success_response(
+            target,
+            result.get("message", "Entry replaced."),
+            entry=result.get("entry"),
+        )
 
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
         old_text = old_text.strip()
@@ -224,7 +253,11 @@ class MemoryStore:
         self._sync_wiki_mirror()
         if not result.get("success"):
             return result
-        return self._success_response(target, result.get("message", "Entry removed."))
+        return self._success_response(
+            target,
+            result.get("message", "Entry removed."),
+            entry=result.get("entry"),
+        )
 
     def format_for_system_prompt(self, target: str) -> Optional[str]:
         block = self._system_prompt_snapshot.get(target, "")
@@ -233,7 +266,48 @@ class MemoryStore:
     def render_live_for_system_prompt(self, target: str) -> Optional[str]:
         return self._backend_store().render_prompt_block(target, char_limit=self._char_limit(target))
 
-    def _success_response(self, target: str, message: str = None) -> Dict[str, Any]:
+    def search_for_recall(
+        self,
+        target: str,
+        query: str,
+        *,
+        scope: str | None = None,
+        scope_value: str | None = None,
+        limit: int = 3,
+    ) -> List[Dict[str, Any]]:
+        return self._backend_store().search_entries(
+            target,
+            query,
+            scope=scope,
+            scope_value=scope_value,
+            limit=limit,
+        )
+
+    def render_recall_block(
+        self,
+        query: str,
+        *,
+        target: str = "memory",
+        scope: str | None = None,
+        scope_value: str | None = None,
+        limit: int = 3,
+        heading: str = "Relevant memory recall",
+    ) -> str:
+        hits = self.search_for_recall(
+            target,
+            query,
+            scope=scope,
+            scope_value=scope_value,
+            limit=limit,
+        )
+        if not hits:
+            return ""
+        lines = [heading + ":"]
+        for item in hits:
+            lines.append(f"- {item['content']}")
+        return "\n".join(lines)
+
+    def _success_response(self, target: str, message: str = None, **extras: Any) -> Dict[str, Any]:
         entries = self._entries_for(target)
         current = self._char_count(target)
         limit = self._char_limit(target)
@@ -247,6 +321,7 @@ class MemoryStore:
         }
         if message:
             resp["message"] = message
+        resp.update(extras)
         return resp
 
     def _render_block(self, target: str, entries: List[str]) -> str:
@@ -271,6 +346,15 @@ def memory_tool(
     content: str = None,
     old_text: str = None,
     store: Optional[MemoryStore] = None,
+    *,
+    kind: str | None = None,
+    scope: str = "global",
+    scope_value: str | None = None,
+    source: str = "manual",
+    confidence: float = 1.0,
+    importance: float = 0.5,
+    restore_critical: bool = False,
+    provenance_ref: str = "",
 ) -> str:
     if store is None:
         return json.dumps({"success": False, "error": "Memory is not available. It may be disabled in config or this environment."}, ensure_ascii=False)
@@ -279,7 +363,16 @@ def memory_tool(
     if action == "add":
         if not content:
             return json.dumps({"success": False, "error": "Content is required for 'add' action."}, ensure_ascii=False)
-        result = store.add(target, content)
+        result = store.add(
+            target,
+            content,
+            kind=kind,
+            scope=scope,
+            scope_value=scope_value,
+            source=source,
+            confidence=confidence,
+            importance=importance,
+        )
     elif action == "replace":
         if not old_text:
             return json.dumps({"success": False, "error": "old_text is required for 'replace' action."}, ensure_ascii=False)
@@ -292,6 +385,20 @@ def memory_tool(
         result = store.remove(target, old_text)
     else:
         return json.dumps({"success": False, "error": f"Unknown action '{action}'. Use: add, replace, remove"}, ensure_ascii=False)
+    if result.get("success"):
+        event = WriteCompiler().compile_memory_write(
+            action=action,
+            target=target,
+            content=content or result.get("entry", {}).get("content") or old_text or "",
+            store_result=result,
+            kind=kind or (result.get("entry") or {}).get("kind") or store._entry_kind(target, content or old_text or ""),
+            scope=scope,
+            scope_value=scope_value,
+            source=source,
+            restore_critical=restore_critical,
+            provenance_ref=provenance_ref,
+        )
+        result["memory_event"] = event.to_dict()
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -331,6 +438,14 @@ MEMORY_SCHEMA = {
             "target": {"type": "string", "enum": ["memory", "user"], "description": "Which memory store: 'memory' for personal notes, 'user' for user profile."},
             "content": {"type": "string", "description": "The entry content. Required for 'add' and 'replace'."},
             "old_text": {"type": "string", "description": "Short unique substring identifying the entry to replace or remove."},
+            "kind": {"type": "string", "description": "Optional memory kind/classification."},
+            "scope": {"type": "string", "description": "Optional scope label for the memory entry."},
+            "scope_value": {"type": "string", "description": "Optional scope value paired with scope."},
+            "source": {"type": "string", "description": "Optional provenance source for the write."},
+            "confidence": {"type": "number", "description": "Optional confidence score for the write."},
+            "importance": {"type": "number", "description": "Optional importance score for the write."},
+            "restore_critical": {"type": "boolean", "description": "When true, emit restore-critical continuity sidecars."},
+            "provenance_ref": {"type": "string", "description": "Optional provenance reference for the canonical memory event."},
         },
         "required": ["action", "target"],
     },
@@ -347,7 +462,15 @@ registry.register(
         target=args.get("target", "memory"),
         content=args.get("content"),
         old_text=args.get("old_text"),
-        store=kw.get("store")),
+        store=kw.get("store"),
+        kind=args.get("kind"),
+        scope=args.get("scope", "global"),
+        scope_value=args.get("scope_value"),
+        source=args.get("source", "manual"),
+        confidence=args.get("confidence", 1.0),
+        importance=args.get("importance", 0.5),
+        restore_critical=args.get("restore_critical", False),
+        provenance_ref=args.get("provenance_ref", "")),
     check_fn=check_memory_requirements,
     emoji="🧠",
 )

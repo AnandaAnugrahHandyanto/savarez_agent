@@ -276,11 +276,11 @@ def test_pending_clerk_recovery_context_is_injected_once_on_first_turn():
     cli.chat("continue")
 
     first_message = fake_agent.run_conversation.call_args_list[0].kwargs["user_message"]
-    assert first_message.startswith("[Recovered shell state from Clerk after /reset.")
-    assert first_message.rstrip().endswith("continue")
+    assert first_message == "continue"
+    assert getattr(fake_agent, "_pending_clerk_recall_context") == "[Recovered shell state from Clerk after /reset.\n\nnext: Verify create plus readback.\n]"
     assert cli._pending_recovery_context is None
 
     fake_agent.run_conversation.reset_mock()
     cli.chat("second turn")
     second_message = fake_agent.run_conversation.call_args_list[0].kwargs["user_message"]
-    assert not second_message.startswith("[Recovered shell state from Clerk after /reset.")
+    assert second_message == "second turn"

@@ -76,6 +76,7 @@ from hermes_constants import OPENROUTER_BASE_URL
 
 # Agent internals extracted to agent/ package for modularity
 from agent.memory_manager import build_memory_context_block
+from agent.recall_assembler import RecallAssembler
 from agent.retry_utils import jittered_backoff
 from agent.error_classifier import classify_api_error, FailoverReason
 from agent.prompt_builder import (
@@ -6935,6 +6936,14 @@ class AIAgent:
                 content=function_args.get("content"),
                 old_text=function_args.get("old_text"),
                 store=self._memory_store,
+                kind=function_args.get("kind"),
+                scope=function_args.get("scope", "global"),
+                scope_value=function_args.get("scope_value"),
+                source=function_args.get("source", "manual"),
+                confidence=function_args.get("confidence", 1.0),
+                importance=function_args.get("importance", 0.5),
+                restore_critical=function_args.get("restore_critical", False),
+                provenance_ref=function_args.get("provenance_ref", ""),
             )
             # Bridge: notify external memory provider of built-in memory writes
             if self._memory_manager and function_args.get("action") in ("add", "replace"):
@@ -8076,13 +8085,31 @@ class AIAgent:
         # Clear any stale interrupt state at start
         self.clear_interrupt()
 
-        # External memory provider: prefetch once before the tool loop.
-        # Reuse the cached result on every iteration to avoid re-calling
-        # prefetch_all() on each tool call (10 tool calls = 10x latency + cost).
-        # Use original_user_message (clean input) — user_message may contain
-        # injected skill content that bloats / breaks provider queries.
+        # Continuity control plane: assemble recall once before the tool loop.
+        # This governs durable memory, wiki recall, compact session recall,
+        # and any active Clerk/reset continuity lane.
+        _recall_bundle = None
         _ext_prefetch_cache = ""
-        if self._memory_manager:
+        if self._memory_store or self._session_db:
+            try:
+                _query = original_user_message if isinstance(original_user_message, str) else ""
+                _clerk_context = getattr(self, "_pending_clerk_recall_context", "") or ""
+                _assembler = RecallAssembler(
+                    memory_store=self._memory_store,
+                    session_db=self._session_db,
+                    hermes_home=_hermes_home,
+                )
+                _recall_bundle = _assembler.assemble(
+                    query=_query,
+                    current_session_id=self.session_id,
+                    clerk_context=_clerk_context,
+                )
+                _ext_prefetch_cache = _recall_bundle.context_block or ""
+                self._last_recall_receipt = _recall_bundle.receipt.to_dict()
+                self._pending_clerk_recall_context = ""
+            except Exception:
+                pass
+        elif self._memory_manager:
             try:
                 _query = original_user_message if isinstance(original_user_message, str) else ""
                 _ext_prefetch_cache = self._memory_manager.prefetch_all(_query) or ""
