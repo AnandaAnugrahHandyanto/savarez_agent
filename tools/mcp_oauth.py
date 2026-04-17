@@ -44,7 +44,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, urlunparse
 
 logger = logging.getLogger(__name__)
 
@@ -467,9 +467,27 @@ def _maybe_preregister_client(
 
 
 def _parse_base_url(server_url: str) -> str:
-    """Strip path component from server URL, returning the base origin."""
+    """Return canonical server URL for OAuth resource matching.
+
+    Preserves the path component so that RFC 8707 resource indicator
+    validation works for MCP servers hosted on subpaths (e.g.
+    ``https://api.githubcopilot.com/mcp/``).  Previously only the
+    origin was kept, which broke ``_validate_resource_match`` whenever
+    the server's Protected Resource Metadata declared a resource URL
+    that included a path.
+
+    See: https://github.com/NousResearch/hermes-agent/issues/11807
+    """
+    # Normalize: lowercase scheme/host, strip fragment (RFC 8707 §2).
     parsed = urlparse(server_url)
-    return f"{parsed.scheme}://{parsed.netloc}"
+    return urlunparse((
+        parsed.scheme.lower(),
+        parsed.netloc.lower(),
+        parsed.path,
+        parsed.params,
+        parsed.query,
+        "",  # no fragment
+    ))
 
 
 def build_oauth_auth(
