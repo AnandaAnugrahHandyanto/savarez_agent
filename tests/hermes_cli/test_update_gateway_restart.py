@@ -6,7 +6,9 @@ rather than leaving zombie processes or telling users to manually restart
 when launchd will auto-respawn.
 """
 
+import plistlib
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
@@ -203,6 +205,66 @@ class TestLaunchdPlistCurrentness:
 
         assert gateway_cli.launchd_plist_is_current() is True
 
+    def test_launchd_plist_is_current_accepts_narrowed_canonical_path_and_semantic_equivalence(
+        self, tmp_path, monkeypatch
+    ):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        expected = plistlib.loads(gateway_cli.generate_launchd_plist().encode("utf-8"))
+        working_dir = expected["WorkingDirectory"]
+        canonical_path = ":".join(
+            [
+                str(Path(working_dir) / "venv" / "bin"),
+                str(Path(working_dir) / "node_modules" / ".bin"),
+                str(Path.home() / ".local" / "bin"),
+                "/opt/homebrew/bin",
+                "/usr/local/bin",
+                "/usr/bin",
+                "/bin",
+                "/usr/sbin",
+                "/sbin",
+            ]
+        )
+
+        installed_env = dict(expected["EnvironmentVariables"])
+        installed_env["PATH"] = canonical_path
+        installed = {
+            "StandardErrorPath": expected["StandardErrorPath"],
+            "StandardOutPath": expected["StandardOutPath"],
+            "KeepAlive": expected["KeepAlive"],
+            "RunAtLoad": expected["RunAtLoad"],
+            "EnvironmentVariables": installed_env,
+            "WorkingDirectory": expected["WorkingDirectory"],
+            "ProgramArguments": expected["ProgramArguments"],
+            "Label": expected["Label"],
+        }
+        plist_path.write_bytes(plistlib.dumps(installed, sort_keys=False))
+
+        monkeypatch.setenv("PATH", "/transient/app/bin:/usr/bin:/bin")
+
+        assert gateway_cli.launchd_plist_is_current() is True
+
+    def test_launchd_plist_is_current_rejects_missing_runtime_critical_path_entries(
+        self, tmp_path, monkeypatch
+    ):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        expected = plistlib.loads(gateway_cli.generate_launchd_plist().encode("utf-8"))
+        installed_env = dict(expected["EnvironmentVariables"])
+        installed_env["PATH"] = ":".join(
+            [
+                str(Path(expected["WorkingDirectory"]) / "venv" / "bin"),
+                "/usr/bin",
+                "/bin",
+            ]
+        )
+        expected["EnvironmentVariables"] = installed_env
+        plist_path.write_bytes(plistlib.dumps(expected, sort_keys=False))
+
+        assert gateway_cli.launchd_plist_is_current() is False
+
 
 # ---------------------------------------------------------------------------
 # cmd_update — macOS launchd detection
@@ -335,14 +397,45 @@ class TestCmdUpdateLaunchdRestart:
         )
 
         # Mock launchd_restart + find_gateway_pids (new code discovers all gateways)
-        with patch.object(gateway_cli, "launchd_restart") as mock_launchd_restart, \
+        with patch.object(gateway_cli, "launchd_job_is_loaded", return_value=(True, "state = running\n")) as mock_loaded, \
+             patch.object(gateway_cli, "launchd_restart") as mock_launchd_restart, \
              patch.object(gateway_cli, "find_gateway_pids", return_value=[]):
             cmd_update(mock_args)
 
         captured = capsys.readouterr().out
         assert "Restarted" in captured
         assert "Restart manually: hermes gateway run" not in captured
+        mock_loaded.assert_called_once_with(timeout=5)
         mock_launchd_restart.assert_called_once_with()
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_with_launchd_plist_but_helper_not_loaded_skips_launchd_restart(
+        self, mock_run, _mock_which, mock_args, capsys, tmp_path, monkeypatch,
+    ):
+        """When the plist exists but launchd_job_is_loaded() is false, cmd_update
+        should not claim a launchd-managed restart."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist/>")
+
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        mock_run.side_effect = _make_run_side_effect(
+            commit_count="3",
+            launchctl_loaded=False,
+        )
+
+        with patch.object(gateway_cli, "launchd_job_is_loaded", return_value=(False, "")) as mock_loaded, \
+             patch.object(gateway_cli, "launchd_restart") as mock_launchd_restart, \
+             patch.object(gateway_cli, "find_gateway_pids", return_value=[]), \
+             patch("gateway.status.get_running_pid", return_value=None):
+            cmd_update(mock_args)
+
+        captured = capsys.readouterr().out
+        assert "Restarted ai.hermes.gateway" not in captured
+        mock_loaded.assert_called_once_with(timeout=5)
+        mock_launchd_restart.assert_not_called()
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")

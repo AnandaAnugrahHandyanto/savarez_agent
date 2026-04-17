@@ -4420,14 +4420,16 @@ def cmd_update(args):
             # --- Launchd services (macOS) ---
             if is_macos():
                 try:
-                    from hermes_cli.gateway import launchd_restart, get_launchd_label, get_launchd_plist_path
+                    from hermes_cli.gateway import (
+                        get_launchd_label,
+                        get_launchd_plist_path,
+                        launchd_job_is_loaded,
+                        launchd_restart,
+                    )
                     plist_path = get_launchd_plist_path()
                     if plist_path.exists():
-                        check = subprocess.run(
-                            ["launchctl", "list", get_launchd_label()],
-                            capture_output=True, text=True, timeout=5,
-                        )
-                        if check.returncode == 0:
+                        loaded, _ = launchd_job_is_loaded(timeout=5)
+                        if loaded:
                             try:
                                 launchd_restart()
                                 restarted_services.append(get_launchd_label())
