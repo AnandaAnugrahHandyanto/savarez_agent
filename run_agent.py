@@ -8907,13 +8907,24 @@ class AIAgent:
             and len(messages) > self.context_compressor.protect_first_n
                                 + self.context_compressor.protect_last_n + 1
         ):
-            # Include tool schema tokens — with many tools these can add
-            # 20-30K+ tokens that the old sys+msg estimate missed entirely.
-            _preflight_tokens = estimate_request_tokens_rough(
-                messages,
-                system_prompt=active_system_prompt or "",
-                tools=self.tools or None,
-            )
+            # Use last_prompt_tokens (real API value) if available, fall back
+            # to estimate only if stale (0) after disconnects or new sessions.
+            # The rough estimate underestimates by ~10-15% because it misses
+            # system prompt (~4K) and tool schemas (~14K), causing premature
+            # compression loops.  (#2153)
+            _cc = self.context_compressor
+            if _cc.last_prompt_tokens > 0:
+                _preflight_tokens = (
+                    _cc.last_prompt_tokens + _cc.last_completion_tokens
+                )
+            else:
+                # Include tool schema tokens — with many tools these can add
+                # 20-30K+ tokens that the old sys+msg estimate missed entirely.
+                _preflight_tokens = estimate_request_tokens_rough(
+                    messages,
+                    system_prompt=active_system_prompt or "",
+                    tools=self.tools or None,
+                )
 
             if _preflight_tokens >= self.context_compressor.threshold_tokens:
                 logger.info(
@@ -8954,12 +8965,18 @@ class AIAgent:
                     self._last_content_with_tools = None
                     self._last_content_tools_all_housekeeping = False
                     self._mute_post_response = False
-                    # Re-estimate after compression
-                    _preflight_tokens = estimate_request_tokens_rough(
-                        messages,
-                        system_prompt=active_system_prompt or "",
-                        tools=self.tools or None,
-                    )
+                    # Re-estimate after compression — prefer real API value
+                    _cc = self.context_compressor
+                    if _cc.last_prompt_tokens > 0:
+                        _preflight_tokens = (
+                            _cc.last_prompt_tokens + _cc.last_completion_tokens
+                        )
+                    else:
+                        _preflight_tokens = estimate_request_tokens_rough(
+                            messages,
+                            system_prompt=active_system_prompt or "",
+                            tools=self.tools or None,
+                        )
                     if _preflight_tokens < self.context_compressor.threshold_tokens:
                         break  # Under threshold
 
@@ -11439,6 +11456,28 @@ class AIAgent:
                                     "results above and continue with the task."
                                 ),
                             })
+
+                            # Check for compression before continuing with empty response
+                            # recovery.  Without this, a large context can spiral — the
+                            # model returns empty due to context degradation, we add a
+                            # nudge and retry, but the context is still too large, so
+                            # the model returns empty again, and the cycle repeats.
+                            _cc = self.context_compressor
+                            if _cc.last_prompt_tokens > 0:
+                                _real_tokens = (
+                                    _cc.last_prompt_tokens + _cc.last_completion_tokens
+                                )
+                            else:
+                                _real_tokens = estimate_messages_tokens_rough(messages)
+                            if self.compression_enabled and _cc.should_compress(_real_tokens):
+                                self._safe_print("  ⟳ compacting context before retry…")
+                                messages, active_system_prompt = self._compress_context(
+                                    messages, system_message,
+                                    approx_tokens=_cc.last_prompt_tokens,
+                                    task_id=effective_task_id,
+                                )
+                                conversation_history = None
+
                             continue
 
                         # ── Thinking-only prefill continuation ──────────
@@ -11471,6 +11510,26 @@ class AIAgent:
                             messages.append(interim_msg)
                             self._session_messages = messages
                             self._save_session_log(messages)
+
+                            # Check for compression before retry with thinking prefill.
+                            # Without this, a large context can cause repeated empty
+                            # responses as the model struggles with context degradation.
+                            _cc = self.context_compressor
+                            if _cc.last_prompt_tokens > 0:
+                                _real_tokens = (
+                                    _cc.last_prompt_tokens + _cc.last_completion_tokens
+                                )
+                            else:
+                                _real_tokens = estimate_messages_tokens_rough(messages)
+                            if self.compression_enabled and _cc.should_compress(_real_tokens):
+                                self._safe_print("  ⟳ compacting context before prefill retry…")
+                                messages, active_system_prompt = self._compress_context(
+                                    messages, system_message,
+                                    approx_tokens=_cc.last_prompt_tokens,
+                                    task_id=effective_task_id,
+                                )
+                                conversation_history = None
+
                             continue
 
                         # ── Empty response retry ──────────────────────
@@ -11500,6 +11559,26 @@ class AIAgent:
                                 f"⚠️ Empty response from model — retrying "
                                 f"({self._empty_content_retries}/3)"
                             )
+
+                            # Check for compression before retry.  Empty responses
+                            # are often caused by context degradation — compressing
+                            # before retry gives the model a fresh context.
+                            _cc = self.context_compressor
+                            if _cc.last_prompt_tokens > 0:
+                                _real_tokens = (
+                                    _cc.last_prompt_tokens + _cc.last_completion_tokens
+                                )
+                            else:
+                                _real_tokens = estimate_messages_tokens_rough(messages)
+                            if self.compression_enabled and _cc.should_compress(_real_tokens):
+                                self._safe_print("  ⟳ compacting context before empty response retry…")
+                                messages, active_system_prompt = self._compress_context(
+                                    messages, system_message,
+                                    approx_tokens=_cc.last_prompt_tokens,
+                                    task_id=effective_task_id,
+                                )
+                                conversation_history = None
+
                             continue
 
                         # ── Exhausted retries — try fallback provider ──
@@ -11530,6 +11609,26 @@ class AIAgent:
                                     "now using %s on %s",
                                     self.model, self.provider,
                                 )
+
+                                # Check for compression before continuing with fallback.
+                                # Context degradation may have caused the empty responses;
+                                # compressing gives the fallback provider a fresh start.
+                                _cc = self.context_compressor
+                                if _cc.last_prompt_tokens > 0:
+                                    _real_tokens = (
+                                        _cc.last_prompt_tokens + _cc.last_completion_tokens
+                                    )
+                                else:
+                                    _real_tokens = estimate_messages_tokens_rough(messages)
+                                if self.compression_enabled and _cc.should_compress(_real_tokens):
+                                    self._safe_print("  ⟳ compacting context before fallback retry…")
+                                    messages, active_system_prompt = self._compress_context(
+                                        messages, system_message,
+                                        approx_tokens=_cc.last_prompt_tokens,
+                                        task_id=effective_task_id,
+                                    )
+                                    conversation_history = None
+
                                 continue
 
                         # Exhausted retries and fallback chain (or no
@@ -11598,6 +11697,26 @@ class AIAgent:
                         messages.append(continue_msg)
                         self._session_messages = messages
                         self._save_session_log(messages)
+
+                        # Check for compression before continuing with codex ack.
+                        # Codex intermediate responses can accumulate large context
+                        # that may trigger compression before the next retry.
+                        _cc = self.context_compressor
+                        if _cc.last_prompt_tokens > 0:
+                            _real_tokens = (
+                                _cc.last_prompt_tokens + _cc.last_completion_tokens
+                            )
+                        else:
+                            _real_tokens = estimate_messages_tokens_rough(messages)
+                        if self.compression_enabled and _cc.should_compress(_real_tokens):
+                            self._safe_print("  ⟳ compacting context before codex continuation…")
+                            messages, active_system_prompt = self._compress_context(
+                                messages, system_message,
+                                approx_tokens=_cc.last_prompt_tokens,
+                                task_id=effective_task_id,
+                            )
+                            conversation_history = None
+
                         continue
 
                     codex_ack_continuations = 0
