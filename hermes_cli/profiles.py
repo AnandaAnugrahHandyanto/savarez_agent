@@ -434,7 +434,7 @@ def create_profile(
 
     if clone_all and source_dir:
         # Full copy of source profile
-        shutil.copytree(source_dir, profile_dir)
+        shutil.copytree(source_dir, profile_dir, symlinks=True)
         # Strip runtime files
         for stale in _CLONE_ALL_STRIP:
             (profile_dir / stale).unlink(missing_ok=True)
@@ -802,6 +802,7 @@ def export_profile(name: str, output_path: str) -> Path:
             shutil.copytree(
                 profile_dir,
                 staged,
+                symlinks=True,
                 ignore=_default_export_ignore(profile_dir),
             )
             result = shutil.make_archive(base, "gztar", tmpdir, "default")
@@ -814,6 +815,7 @@ def export_profile(name: str, output_path: str) -> Path:
         shutil.copytree(
             profile_dir,
             staged,
+            symlinks=True,
             ignore=lambda d, contents: _CREDENTIAL_FILES & set(contents),
         )
         result = shutil.make_archive(base, "gztar", tmpdir, name)
