@@ -215,6 +215,12 @@ class IterationBudget:
 # When any of these appear in a batch, we fall back to sequential execution.
 _NEVER_PARALLEL_TOOLS = frozenset({"clarify"})
 
+# Models that require a specific temperature value to avoid HTTP 400 errors.
+# Applied via setdefault so user-supplied temperature (via request_overrides) still wins.
+_MODEL_REQUIRED_TEMPERATURES: Dict[str, float] = {
+    "kimi-for-coding": 0.6,
+}
+
 # Read-only tools with no shared mutable session state.
 _PARALLEL_SAFE_TOOLS = frozenset({
     "ha_get_state",
@@ -6897,6 +6903,11 @@ class AIAgent:
 
         if extra_body:
             api_kwargs["extra_body"] = extra_body
+
+        # Per-model required temperature overrides (e.g. kimi-for-coding requires
+        # temperature=0.6; omitting it causes HTTP 400).
+        if self.model in _MODEL_REQUIRED_TEMPERATURES:
+            api_kwargs.setdefault("temperature", _MODEL_REQUIRED_TEMPERATURES[self.model])
 
         # Priority Processing / generic request overrides (e.g. service_tier).
         # Applied last so overrides win over any defaults set above.
