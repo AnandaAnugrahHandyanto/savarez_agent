@@ -1,3 +1,4 @@
+import json
 import sys
 import types
 from importlib.util import module_from_spec, spec_from_file_location
@@ -211,6 +212,49 @@ def test_managed_fal_submit_reuses_cached_sync_client(monkeypatch):
 
     assert captured["sync_client_inits"] == 1
     assert captured["http_client"] is first_client
+
+
+def test_image_generate_prefers_minimax_when_credentials_exist(monkeypatch):
+    captured = {}
+    _install_fake_tools_package()
+    _install_fake_fal_client(captured)
+    monkeypatch.delenv("FAL_KEY", raising=False)
+    monkeypatch.setenv("MINIMAX_CN_API_KEY", "minimax-cn-test-key")
+    monkeypatch.delenv("MINIMAX_CN_BASE_URL", raising=False)
+
+    image_generation_tool = _load_tool_module(
+        "tools.image_generation_tool",
+        "image_generation_tool.py",
+    )
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "base_resp": {"status_code": 0},
+                "data": {"image_urls": ["https://cdn.example.com/generated.png"]},
+            }
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr(image_generation_tool.httpx, "post", fake_post)
+
+    result = json.loads(image_generation_tool.image_generate_tool("a test prompt", aspect_ratio="portrait"))
+
+    assert result["success"] is True
+    assert result["provider"] == "minimax-cn"
+    assert result["image"] == "https://cdn.example.com/generated.png"
+    assert captured["url"] == "https://api.minimaxi.com/v1/image_generation"
+    assert captured["headers"]["Authorization"] == "Bearer minimax-cn-test-key"
+    assert captured["json"]["aspect_ratio"] == "9:16"
+    assert captured["json"]["response_format"] == "url"
 
 
 def test_openai_tts_uses_managed_audio_gateway_when_direct_key_absent(monkeypatch, tmp_path):

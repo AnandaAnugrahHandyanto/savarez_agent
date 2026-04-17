@@ -39,6 +39,7 @@ import logging
 import os
 import threading
 import time
+import httpx
 from pathlib import Path  # noqa: F401 — used by test mocks
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
@@ -1594,8 +1595,10 @@ def resolve_provider_client(
 
             headers.update(copilot_default_headers())
 
-        client = OpenAI(api_key=api_key, base_url=base_url,
-                        **({"default_headers": headers} if headers else {}))
+        client = OpenAI(
+            api_key=api_key, base_url=base_url,
+            timeout=httpx.Timeout(timeout=900.0, connect=10.0),
+            **({"default_headers": headers} if headers else {}))
 
         # Copilot GPT-5+ models (except gpt-5-mini) require the Responses
         # API — they are not accessible via /chat/completions.  Wrap the

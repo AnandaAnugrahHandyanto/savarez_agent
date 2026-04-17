@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 
+import httpx
 import pytest
 
 from agent.auxiliary_client import (
@@ -481,6 +482,10 @@ class TestExplicitProviderRouting:
             mock_openai.return_value = MagicMock()
             client, model = resolve_provider_client("minimax")
             assert client is not None
+
+        timeout = mock_openai.call_args.kwargs["timeout"]
+        assert isinstance(timeout, httpx.Timeout)
+        assert timeout.connect == 10.0
 
     def test_explicit_deepseek(self, monkeypatch):
         """provider='deepseek' should use DEEPSEEK_API_KEY."""
