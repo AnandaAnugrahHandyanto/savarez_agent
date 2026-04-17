@@ -1216,9 +1216,17 @@ class AIAgent:
                 self._memory_flush_min_turns = int(mem_config.get("flush_min_turns", 6))
                 if self._memory_enabled or self._user_profile_enabled:
                     from tools.memory_tool import MemoryStore
+
+                    # Build per-user namespace: "platform:user_id"
+                    # Empty namespace = shared/global (CLI sessions, or when user_id is unknown)
+                    _ns = ""
+                    if getattr(self, '_user_id', None) and getattr(self, 'platform', None):
+                        _ns = f"{self.platform}:{self._user_id}"
+
                     self._memory_store = MemoryStore(
                         memory_char_limit=mem_config.get("memory_char_limit", 2200),
                         user_char_limit=mem_config.get("user_char_limit", 1375),
+                        namespace=_ns,
                     )
                     self._memory_store.load_from_disk()
             except Exception:
