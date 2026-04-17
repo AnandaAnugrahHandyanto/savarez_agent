@@ -29,6 +29,26 @@ When you run `hermes update`, the following steps occur:
 3. **Config migration** — detects new config options added since your version and prompts you to set them
 4. **Gateway auto-restart** — if the gateway service is running (systemd on Linux, launchd on macOS), it is **automatically restarted** after the update completes so the new code takes effect immediately
 
+### Re-running post-update steps with `--force`
+
+If a previous `hermes update` pulled new code successfully but a later step failed (e.g. dependency installation, skills sync, config migration, or gateway restart), running `hermes update` again will show "Already up to date!" and skip those steps — because the code is already at the latest version.
+
+Use `--force` to re-run all post-update steps without requiring a new version:
+
+```bash
+hermes update --force
+```
+
+This skips the git fetch/pull and version check, and directly executes:
+
+1. **Bytecode cache cleanup** — clears stale `__pycache__` directories
+2. **Python dependency install** — reinstalls with optional-extra fallback
+3. **Node.js dependency install** — runs `npm install` if `package.json` exists
+4. **Web UI build** — rebuilds the frontend if npm is available
+5. **Skills sync** — syncs bundled skills to all profiles
+6. **Config migration** — checks for and applies new configuration options
+7. **Gateway auto-restart** — restarts all running gateway instances
+
 Expected output looks like:
 
 ```

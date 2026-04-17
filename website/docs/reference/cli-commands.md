@@ -67,7 +67,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes profile` | Manage profiles — multiple isolated Hermes instances. |
 | `hermes completion` | Print shell completion scripts (bash/zsh). |
 | `hermes version` | Show version information. |
-| `hermes update` | Pull latest code and reinstall dependencies. |
+| `hermes update` | Pull latest code and reinstall dependencies. `--force` re-runs post-update steps without requiring a new version. |
 | `hermes uninstall` | Remove Hermes from the system. |
 
 ## `hermes chat`
