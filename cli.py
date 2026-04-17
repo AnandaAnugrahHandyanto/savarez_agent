@@ -4175,11 +4175,44 @@ class HermesCLI:
         target = parts[1].strip() if len(parts) > 1 else ""
 
         if not target:
-            _cprint("  Usage: /resume <session_id_or_title>")
-            if self._show_recent_sessions(reason="resume"):
+            # Show numbered list of recent sessions and prompt for selection
+            _cprint("  Recent sessions:")
+            _cprint()
+            sessions = self._list_recent_sessions(limit=10)
+            if not sessions:
+                _cprint("  No recent sessions found.")
+                _cprint("  Usage: /resume <session_id_or_title>")
                 return
-            _cprint("  Tip:   Use /history or `hermes sessions list` to find sessions.")
-            return
+            
+            from hermes_cli.main import _relative_time
+            _cprint(f"  {'#':<4} {'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
+            _cprint(f"  {'─' * 4} {'─' * 32} {'─' * 40} {'─' * 13} {'─' * 24}")
+            for i, session in enumerate(sessions, 1):
+                title = (session.get("title") or "—")[:30]
+                preview = (session.get("preview") or "")[:38]
+                last_active = _relative_time(session.get("last_active"))
+                sid = session["id"]
+                _cprint(f"  {i:<4} {title:<32} {preview:<40} {last_active:<13} {sid}")
+            
+            _cprint()
+            try:
+                user_input = input(f"  Enter session number to resume (1-{len(sessions)}), or press Enter to cancel: ").strip()
+                if user_input:
+                    try:
+                        idx = int(user_input)
+                        if 1 <= idx <= len(sessions):
+                            target = sessions[idx - 1]["id"]
+                        else:
+                            _cprint(f"  Invalid selection. Please enter a number between 1 and {len(sessions)}.")
+                            return
+                    except ValueError:
+                        _cprint("  Invalid input. Please enter a valid number.")
+                        return
+                else:
+                    return
+            except (EOFError, KeyboardInterrupt):
+                _cprint("\n  Cancelled.")
+                return
 
         if not self._session_db:
             _cprint("  Session database not available.")
