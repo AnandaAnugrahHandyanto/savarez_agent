@@ -70,6 +70,18 @@ except Exception:
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="acp-agent")
 
 
+def _normalize_prompt_blocks(prompt: Any) -> list[Any]:
+    """Accept ACP prompt payloads passed either as raw block lists or wrappers."""
+    if prompt is None:
+        return []
+    if isinstance(prompt, (list, tuple)):
+        return list(prompt)
+    prompt_blocks = getattr(prompt, "prompt", None)
+    if prompt_blocks is not None:
+        return _normalize_prompt_blocks(prompt_blocks)
+    return [prompt]
+
+
 def _extract_text(
     prompt: list[
         TextContentBlock
@@ -81,7 +93,7 @@ def _extract_text(
 ) -> str:
     """Extract plain text from ACP content blocks."""
     parts: list[str] = []
-    for block in prompt:
+    for block in _normalize_prompt_blocks(prompt):
         if isinstance(block, TextContentBlock):
             parts.append(block.text)
         elif hasattr(block, "text"):

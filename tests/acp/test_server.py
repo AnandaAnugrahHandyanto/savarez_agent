@@ -306,6 +306,34 @@ class TestPrompt:
         state.agent.run_conversation.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_prompt_accepts_wrapped_prompt_payload(self, agent):
+        """ACP clients may pass a wrapper object instead of a raw block list."""
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        state.agent.run_conversation = MagicMock(return_value={
+            "final_response": "Hello from wrapper payload",
+            "messages": [],
+        })
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        wrapped_prompt = SimpleNamespace(
+            prompt=[TextContentBlock(type="text", text="hello from wrapper")]
+        )
+        resp = await agent.prompt(prompt=wrapped_prompt, session_id=new_resp.session_id)
+
+        assert isinstance(resp, PromptResponse)
+        assert resp.stop_reason == "end_turn"
+        state.agent.run_conversation.assert_called_once_with(
+            user_message="hello from wrapper",
+            conversation_history=state.history,
+            task_id=new_resp.session_id,
+        )
+
+    @pytest.mark.asyncio
     async def test_prompt_updates_history(self, agent):
         """After a prompt, session history should be updated."""
         new_resp = await agent.new_session(cwd=".")
