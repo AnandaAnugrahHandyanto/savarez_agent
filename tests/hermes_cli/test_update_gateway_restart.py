@@ -6,7 +6,9 @@ rather than leaving zombie processes or telling users to manually restart
 when launchd will auto-respawn.
 """
 
+import plistlib
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
@@ -202,6 +204,66 @@ class TestLaunchdPlistCurrentness:
         monkeypatch.setenv("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")
 
         assert gateway_cli.launchd_plist_is_current() is True
+
+    def test_launchd_plist_is_current_accepts_narrowed_canonical_path_and_semantic_equivalence(
+        self, tmp_path, monkeypatch
+    ):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        expected = plistlib.loads(gateway_cli.generate_launchd_plist().encode("utf-8"))
+        working_dir = expected["WorkingDirectory"]
+        canonical_path = ":".join(
+            [
+                str(Path(working_dir) / "venv" / "bin"),
+                str(Path(working_dir) / "node_modules" / ".bin"),
+                str(Path.home() / ".local" / "bin"),
+                "/opt/homebrew/bin",
+                "/usr/local/bin",
+                "/usr/bin",
+                "/bin",
+                "/usr/sbin",
+                "/sbin",
+            ]
+        )
+
+        installed_env = dict(expected["EnvironmentVariables"])
+        installed_env["PATH"] = canonical_path
+        installed = {
+            "StandardErrorPath": expected["StandardErrorPath"],
+            "StandardOutPath": expected["StandardOutPath"],
+            "KeepAlive": expected["KeepAlive"],
+            "RunAtLoad": expected["RunAtLoad"],
+            "EnvironmentVariables": installed_env,
+            "WorkingDirectory": expected["WorkingDirectory"],
+            "ProgramArguments": expected["ProgramArguments"],
+            "Label": expected["Label"],
+        }
+        plist_path.write_bytes(plistlib.dumps(installed, sort_keys=False))
+
+        monkeypatch.setenv("PATH", "/transient/app/bin:/usr/bin:/bin")
+
+        assert gateway_cli.launchd_plist_is_current() is True
+
+    def test_launchd_plist_is_current_rejects_missing_runtime_critical_path_entries(
+        self, tmp_path, monkeypatch
+    ):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        expected = plistlib.loads(gateway_cli.generate_launchd_plist().encode("utf-8"))
+        installed_env = dict(expected["EnvironmentVariables"])
+        installed_env["PATH"] = ":".join(
+            [
+                str(Path(expected["WorkingDirectory"]) / "venv" / "bin"),
+                "/usr/bin",
+                "/bin",
+            ]
+        )
+        expected["EnvironmentVariables"] = installed_env
+        plist_path.write_bytes(plistlib.dumps(expected, sort_keys=False))
+
+        assert gateway_cli.launchd_plist_is_current() is False
 
 
 # ---------------------------------------------------------------------------

@@ -390,17 +390,8 @@ def show_status(args):
             print("  Manager:      systemd (user)")
         
     elif sys.platform == 'darwin':
-        from hermes_cli.gateway import get_launchd_label
-        try:
-            result = subprocess.run(
-                ["launchctl", "list", get_launchd_label()],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            is_loaded = result.returncode == 0
-        except subprocess.TimeoutExpired:
-            is_loaded = False
+        from hermes_cli.gateway import launchd_job_is_loaded
+        is_loaded, _ = launchd_job_is_loaded(timeout=5)
         print(f"  Status:       {check_mark(is_loaded)} {'loaded' if is_loaded else 'not loaded'}")
         print("  Manager:      launchd")
     else:
