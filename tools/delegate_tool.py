@@ -906,25 +906,39 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
 
     if configured_base_url:
-        api_key = (
-            configured_api_key
-            or os.getenv("OPENAI_API_KEY", "").strip()
-        )
-        if not api_key:
-            raise ValueError(
-                "Delegation base_url is configured but no API key was found. "
-                "Set delegation.api_key or OPENAI_API_KEY."
-            )
-
         base_lower = configured_base_url.lower()
         provider = "custom"
         api_mode = "chat_completions"
         if "chatgpt.com/backend-api/codex" in base_lower:
             provider = "openai-codex"
             api_mode = "codex_responses"
-        elif "api.anthropic.com" in base_lower:
+        elif configured_provider == "anthropic" or "api.anthropic.com" in base_lower:
             provider = "anthropic"
             api_mode = "anthropic_messages"
+
+        # For Anthropic, prefer ANTHROPIC_API_KEY/ANTHROPIC_TOKEN over OPENAI_API_KEY
+        if provider == "anthropic":
+            from agent.anthropic_adapter import resolve_anthropic_token
+            api_key = (
+                configured_api_key
+                or resolve_anthropic_token()
+                or ""
+            )
+            if not api_key:
+                raise ValueError(
+                    "Delegation base_url with Anthropic provider configured but no API key was found. "
+                    "Set delegation.api_key, ANTHROPIC_API_KEY, or ANTHROPIC_TOKEN."
+                )
+        else:
+            api_key = (
+                configured_api_key
+                or os.getenv("OPENAI_API_KEY", "").strip()
+            )
+            if not api_key:
+                raise ValueError(
+                    "Delegation base_url is configured but no API key was found. "
+                    "Set delegation.api_key or OPENAI_API_KEY."
+                )
 
         return {
             "model": configured_model,
