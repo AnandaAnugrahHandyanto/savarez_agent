@@ -3,6 +3,7 @@ CLI commands for the DM pairing system.
 
 Usage:
     hermes pairing list              # Show all pending + approved users
+    hermes pairing generate <platform> [user_id] [user_name]  # Generate a pairing code
     hermes pairing approve <platform> <code>  # Approve a pairing code
     hermes pairing revoke <platform> <user_id> # Revoke user access
     hermes pairing clear-pending     # Clear all expired/pending codes
@@ -17,6 +18,8 @@ def pairing_command(args):
 
     if action == "list":
         _cmd_list(store)
+    elif action == "generate":
+        _cmd_generate(store, args.platform, args.user_id, args.user_name)
     elif action == "approve":
         _cmd_approve(store, args.platform, args.code)
     elif action == "revoke":
@@ -24,7 +27,7 @@ def pairing_command(args):
     elif action == "clear-pending":
         _cmd_clear_pending(store)
     else:
-        print("Usage: hermes pairing {list|approve|revoke|clear-pending}")
+        print("Usage: hermes pairing {list|generate|approve|revoke|clear-pending}")
         print("Run 'hermes pairing --help' for details.")
 
 
@@ -59,6 +62,31 @@ def _cmd_list(store):
         print("\n  No approved users.")
 
     print()
+
+
+def _cmd_generate(store, platform: str, user_id: str, user_name: str = ""):
+    """Generate a new pairing code for a user."""
+    platform = platform.lower().strip()
+    user_id = user_id.strip() if user_id else ""
+    user_name = user_name.strip() if user_name else ""
+
+    if not user_id:
+        # Generate a placeholder user_id if not provided
+        import secrets
+        user_id = f"pending_{secrets.token_hex(4)}"
+
+    code = store.generate_code(platform, user_id, user_name)
+    if code:
+        display_name = user_name if user_name else user_id
+        print(f"\n  Generated pairing code for {display_name} on {platform}:")
+        print(f"  \n    {code}\n")
+        print(f"  Share this code with the user. They should text it to the agent.")
+        print(f"  Code expires in 1 hour.\n")
+    else:
+        print(f"\n  Could not generate code. Possible reasons:")
+        print(f"    - Max pending codes reached for {platform} (limit: 3)")
+        print(f"    - Platform is in lockout due to failed attempts")
+        print(f"    - Rate limit active for this user\n")
 
 
 def _cmd_approve(store, platform: str, code: str):
