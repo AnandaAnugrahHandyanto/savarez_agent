@@ -137,6 +137,21 @@ class TestProviderEnvBlocklist:
         for var in leaked_vars:
             assert var not in result_env, f"{var} leaked into subprocess env"
 
+    def test_extra_env_keys_are_stripped(self):
+        """Hermes-managed .env keys outside OPTIONAL_ENV_VARS must not leak."""
+        leaked_vars = {
+            "WEIXIN_TOKEN": "wx-token",
+            "WECOM_SECRET": "wecom-secret",
+            "FEISHU_APP_SECRET": "feishu-secret",
+            "WECOM_CALLBACK_CORP_SECRET": "cb-secret",
+            "WECOM_CALLBACK_ENCODING_AES_KEY": "aes-key",
+            "TERMINAL_ENV": "docker",
+        }
+        result_env = _run_with_env(extra_os_env=leaked_vars)
+
+        for var in leaked_vars:
+            assert var not in result_env, f"{var} leaked into subprocess env"
+
     def test_safe_vars_are_preserved(self):
         """Standard env vars (PATH, HOME, USER) must still be passed through."""
         result_env = _run_with_env()
@@ -247,6 +262,12 @@ class TestBlocklistCoverage:
                 assert name in _HERMES_PROVIDER_ENV_BLOCKLIST, (
                     f"Secret setting env var {name} missing from blocklist"
                 )
+
+    def test_extra_env_keys_are_in_blocklist(self):
+        """Hermes-managed .env keys outside OPTIONAL_ENV_VARS should stay covered."""
+        from hermes_cli.config import _EXTRA_ENV_KEYS
+
+        assert _EXTRA_ENV_KEYS.issubset(_HERMES_PROVIDER_ENV_BLOCKLIST)
 
     def test_gateway_runtime_vars_are_in_blocklist(self):
         extras = {
