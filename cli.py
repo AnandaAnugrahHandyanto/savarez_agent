@@ -4494,7 +4494,7 @@ class HermesCLI:
             _ask()
         return result[0]
 
-    def _open_model_picker(self, providers: list, current_model: str, current_provider: str, user_provs=None, custom_provs=None) -> None:
+    def _open_model_picker(self, providers: list, current_model: str, current_provider: str, user_provs=None, custom_provs=None, config_context_length=None) -> None:
         """Open prompt_toolkit-native /model picker modal."""
         self._capture_modal_input_snapshot()
         default_idx = next((i for i, p in enumerate(providers) if p.get("is_current")), 0)
@@ -4506,6 +4506,7 @@ class HermesCLI:
             "current_provider": current_provider,
             "user_provs": user_provs,
             "custom_provs": custom_provs,
+            "config_context_length": config_context_length,
         }
         self._invalidate(min_interval=0.0)
 
@@ -4555,14 +4556,10 @@ class HermesCLI:
         _cprint(f"    Provider: {provider_label}")
 
         mi = result.model_info
-        if mi:
-            if mi.context_window:
-                _cprint(f"    Context: {mi.context_window:,} tokens")
-            if mi.max_output:
-                _cprint(f"    Max output: {mi.max_output:,} tokens")
-            if mi.has_cost_data():
-                _cprint(f"    Cost: {mi.format_cost()}")
-            _cprint(f"    Capabilities: {mi.format_capabilities()}")
+        if result.display_context_length:
+            _cprint(f"    Context: {result.display_context_length:,} tokens")
+        elif mi and mi.context_window:
+            _cprint(f"    Context: {mi.context_window:,} tokens")
         else:
             try:
                 from agent.model_metadata import get_model_context_length
@@ -4575,6 +4572,13 @@ class HermesCLI:
                 _cprint(f"    Context: {ctx:,} tokens")
             except Exception:
                 pass
+
+        if mi:
+            if mi.max_output:
+                _cprint(f"    Max output: {mi.max_output:,} tokens")
+            if mi.has_cost_data():
+                _cprint(f"    Cost: {mi.format_cost()}")
+            _cprint(f"    Capabilities: {mi.format_capabilities()}")
 
         cache_enabled = (
             ("openrouter" in (result.base_url or "").lower() and "claude" in result.new_model.lower())
@@ -4649,6 +4653,7 @@ class HermesCLI:
                     explicit_provider=provider_data.get("slug"),
                     user_providers=state.get("user_provs"),
                     custom_providers=state.get("custom_provs"),
+                    config_context_length=state.get("config_context_length"),
                 )
                 self._close_model_picker()
                 self._apply_model_switch_result(result, persist_global)
@@ -4677,6 +4682,24 @@ class HermesCLI:
 
         user_provs = None
         custom_provs = None
+        config_context_length = None
+
+        try:
+            from hermes_cli.config import get_compatible_custom_providers, load_config
+            cfg = load_config()
+            user_provs = cfg.get("providers")
+            custom_provs = get_compatible_custom_providers(cfg)
+            model_cfg = cfg.get("model", {})
+            if isinstance(model_cfg, dict):
+                raw_ctx = model_cfg.get("context_length")
+                if raw_ctx is not None and not isinstance(raw_ctx, bool):
+                    try:
+                        _parsed_ctx = int(raw_ctx)
+                        config_context_length = _parsed_ctx if _parsed_ctx > 0 else None
+                    except (TypeError, ValueError):
+                        config_context_length = None
+        except Exception:
+            pass
 
         # No args at all: open prompt_toolkit-native picker modal
         if not model_input and not explicit_provider:
@@ -4716,7 +4739,9 @@ class HermesCLI:
                 provider_display,
                 user_provs=user_provs,
                 custom_provs=custom_provs,
+                config_context_length=config_context_length,
             )
+
             return
 
         # Perform the switch
@@ -4730,6 +4755,7 @@ class HermesCLI:
             explicit_provider=explicit_provider,
             user_providers=user_provs,
             custom_providers=custom_provs,
+            config_context_length=config_context_length,
         )
 
         if not result.success:
@@ -4781,14 +4807,10 @@ class HermesCLI:
 
         # Rich metadata from models.dev
         mi = result.model_info
-        if mi:
-            if mi.context_window:
-                _cprint(f"    Context: {mi.context_window:,} tokens")
-            if mi.max_output:
-                _cprint(f"    Max output: {mi.max_output:,} tokens")
-            if mi.has_cost_data():
-                _cprint(f"    Cost: {mi.format_cost()}")
-            _cprint(f"    Capabilities: {mi.format_capabilities()}")
+        if result.display_context_length:
+            _cprint(f"    Context: {result.display_context_length:,} tokens")
+        elif mi and mi.context_window:
+            _cprint(f"    Context: {mi.context_window:,} tokens")
         else:
             # Fallback to old context length lookup
             try:
@@ -4802,6 +4824,13 @@ class HermesCLI:
                 _cprint(f"    Context: {ctx:,} tokens")
             except Exception:
                 pass
+
+        if mi:
+            if mi.max_output:
+                _cprint(f"    Max output: {mi.max_output:,} tokens")
+            if mi.has_cost_data():
+                _cprint(f"    Cost: {mi.format_cost()}")
+            _cprint(f"    Capabilities: {mi.format_capabilities()}")
 
         # Cache notice
         cache_enabled = (

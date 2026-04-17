@@ -48,6 +48,7 @@ from hermes_constants import get_hermes_home
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
 from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli.providers import custom_provider_slug
 
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
@@ -165,6 +166,174 @@ def _install_safe_stdio() -> None:
         stream = getattr(sys, stream_name, None)
         if stream is not None and not isinstance(stream, _SafeWriter):
             setattr(sys, stream_name, _SafeWriter(stream))
+
+
+def _normalize_context_lookup_base_url(url: str) -> str:
+    """Normalize base_url strings before matching config overrides."""
+    return (url or "").strip().rstrip("/").lower()
+
+
+def _coerce_positive_runtime_context_length(raw_value: Any) -> Optional[int]:
+    """Return a positive integer runtime context override, or None when invalid."""
+    if raw_value is None or isinstance(raw_value, bool):
+        return None
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _warn_invalid_global_context_length(raw_value: Any) -> None:
+    logger.warning(
+        "Invalid model.context_length in config.yaml: %r — must be a plain integer "
+        "(e.g. 256000, not '256K'). Falling back to auto-detection.",
+        raw_value,
+    )
+    print(
+        f"\n⚠ Invalid model.context_length in config.yaml: {raw_value!r}\n"
+        f"  Must be a plain integer (e.g. 256000, not '256K').\n"
+        f"  Falling back to auto-detected context window.\n",
+        file=sys.stderr,
+    )
+
+
+def _warn_invalid_custom_provider_context_length(model: str, raw_value: Any) -> None:
+    logger.warning(
+        "Invalid context_length for model %r in custom_providers: %r — must be a plain "
+        "integer (e.g. 256000, not '256K'). Falling back to auto-detection.",
+        model,
+        raw_value,
+    )
+    print(
+        f"\n⚠ Invalid context_length for model {model!r} in custom_providers: {raw_value!r}\n"
+        f"  Must be a plain integer (e.g. 256000, not '256K').\n"
+        f"  Falling back to auto-detected context window.\n",
+        file=sys.stderr,
+    )
+
+
+def _iter_compatible_custom_providers(agent_cfg: Optional[Dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return config custom_providers in the same compatibility view used elsewhere."""
+    cfg = agent_cfg if isinstance(agent_cfg, dict) else {}
+    try:
+        from hermes_cli.config import get_compatible_custom_providers
+
+        custom_providers = get_compatible_custom_providers(cfg)
+    except Exception:
+        custom_providers = cfg.get("custom_providers")
+        if not isinstance(custom_providers, list):
+            custom_providers = []
+    return [entry for entry in custom_providers if isinstance(entry, dict)]
+
+
+def _custom_provider_context_match_score(
+    entry: dict[str, Any],
+    provider: str,
+    base_url: str,
+) -> int:
+    requested_provider = (provider or "").strip().lower()
+    requested_base_url = _normalize_context_lookup_base_url(base_url)
+
+    entry_name = (entry.get("name") or "").strip()
+    provider_candidates: set[str] = set()
+    if entry_name:
+        provider_candidates.add(entry_name.lower())
+        provider_candidates.add(custom_provider_slug(entry_name))
+    provider_key = (entry.get("provider_key") or "").strip().lower()
+    if provider_key:
+        provider_candidates.add(provider_key)
+
+    if requested_provider.startswith("custom:") and requested_provider in provider_candidates:
+        return 2
+
+    entry_base_url = _normalize_context_lookup_base_url(
+        entry.get("base_url") or entry.get("url") or entry.get("api") or ""
+    )
+    if requested_base_url and entry_base_url and requested_base_url == entry_base_url:
+        return 1
+
+    return 0
+
+
+def _resolve_custom_provider_model_context_length(
+    model: str,
+    provider: str,
+    base_url: str,
+    agent_cfg: Optional[Dict[str, Any]],
+) -> Optional[int]:
+    """Resolve per-model context_length from matching custom_providers entries."""
+    best_score = 0
+    best_context_length: Optional[int] = None
+
+    for entry in _iter_compatible_custom_providers(agent_cfg):
+        score = _custom_provider_context_match_score(entry, provider, base_url)
+        if score == 0 or score < best_score:
+            continue
+
+        resolved: Optional[int] = None
+        models = entry.get("models", {})
+        if isinstance(models, dict):
+            model_cfg = models.get(model, {})
+            if isinstance(model_cfg, dict):
+                raw_ctx = model_cfg.get("context_length")
+                if raw_ctx is not None:
+                    resolved = _coerce_positive_runtime_context_length(raw_ctx)
+                    if resolved is None:
+                        _warn_invalid_custom_provider_context_length(model, raw_ctx)
+
+        if resolved is None and str(entry.get("model") or "").strip() == model:
+            raw_ctx = entry.get("context_length")
+            if raw_ctx is not None:
+                resolved = _coerce_positive_runtime_context_length(raw_ctx)
+                if resolved is None:
+                    _warn_invalid_custom_provider_context_length(model, raw_ctx)
+
+        if resolved is not None:
+            best_score = score
+            best_context_length = resolved
+
+    return best_context_length
+
+
+def _resolve_runtime_config_context_length(
+    model: str,
+    provider: str,
+    base_url: str,
+    agent_cfg: Optional[Dict[str, Any]],
+) -> Optional[int]:
+    """Resolve the effective runtime context_length override for the active model.
+
+    Priority:
+    1. matching custom_providers[].models[model].context_length
+    2. top-level model.context_length
+    3. None -> auto-detect later
+    """
+    custom_ctx = _resolve_custom_provider_model_context_length(
+        model=model,
+        provider=provider,
+        base_url=base_url,
+        agent_cfg=agent_cfg,
+    )
+    if custom_ctx is not None:
+        return custom_ctx
+
+    model_cfg = agent_cfg.get("model", {}) if isinstance(agent_cfg, dict) else {}
+    if not isinstance(model_cfg, dict):
+        return None
+
+    raw_ctx = model_cfg.get("context_length")
+    if raw_ctx is None:
+        return None
+
+    try:
+        value = _coerce_positive_runtime_context_length(raw_ctx)
+        if value is None:
+            raise ValueError(raw_ctx)
+        return value
+    except (TypeError, ValueError):
+        _warn_invalid_global_context_length(raw_ctx)
+        return None
 
 
 class IterationBudget:
@@ -1353,72 +1522,18 @@ class AIAgent:
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
         compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
 
-        # Read explicit context_length override from model config
-        _model_cfg = _agent_cfg.get("model", {})
-        if isinstance(_model_cfg, dict):
-            _config_context_length = _model_cfg.get("context_length")
-        else:
-            _config_context_length = None
-        if _config_context_length is not None:
-            try:
-                _config_context_length = int(_config_context_length)
-            except (TypeError, ValueError):
-                logger.warning(
-                    "Invalid model.context_length in config.yaml: %r — "
-                    "must be a plain integer (e.g. 256000, not '256K'). "
-                    "Falling back to auto-detection.",
-                    _config_context_length,
-                )
-                import sys
-                print(
-                    f"\n⚠ Invalid model.context_length in config.yaml: {_config_context_length!r}\n"
-                    f"  Must be a plain integer (e.g. 256000, not '256K').\n"
-                    f"  Falling back to auto-detected context window.\n",
-                    file=sys.stderr,
-                )
-                _config_context_length = None
+        # Read effective context_length override from config.
+        # Priority: matching custom provider per-model override > global model.context_length.
+        _config_context_length = _resolve_runtime_config_context_length(
+            model=self.model,
+            provider=self.provider,
+            base_url=self.base_url,
+            agent_cfg=_agent_cfg,
+        )
+        _model_cfg = _agent_cfg.get("model", {}) if isinstance(_agent_cfg, dict) else {}
 
         # Store for reuse in switch_model (so config override persists across model switches)
         self._config_context_length = _config_context_length
-
-        # Check custom_providers per-model context_length
-        if _config_context_length is None:
-            try:
-                from hermes_cli.config import get_compatible_custom_providers
-                _custom_providers = get_compatible_custom_providers(_agent_cfg)
-            except Exception:
-                _custom_providers = _agent_cfg.get("custom_providers")
-                if not isinstance(_custom_providers, list):
-                    _custom_providers = []
-            for _cp_entry in _custom_providers:
-                if not isinstance(_cp_entry, dict):
-                    continue
-                _cp_url = (_cp_entry.get("base_url") or "").rstrip("/")
-                if _cp_url and _cp_url == self.base_url.rstrip("/"):
-                    _cp_models = _cp_entry.get("models", {})
-                    if isinstance(_cp_models, dict):
-                        _cp_model_cfg = _cp_models.get(self.model, {})
-                        if isinstance(_cp_model_cfg, dict):
-                            _cp_ctx = _cp_model_cfg.get("context_length")
-                            if _cp_ctx is not None:
-                                try:
-                                    _config_context_length = int(_cp_ctx)
-                                except (TypeError, ValueError):
-                                    logger.warning(
-                                        "Invalid context_length for model %r in "
-                                        "custom_providers: %r — must be a plain "
-                                        "integer (e.g. 256000, not '256K'). "
-                                        "Falling back to auto-detection.",
-                                        self.model, _cp_ctx,
-                                    )
-                                    import sys
-                                    print(
-                                        f"\n⚠ Invalid context_length for model {self.model!r} in custom_providers: {_cp_ctx!r}\n"
-                                        f"  Must be a plain integer (e.g. 256000, not '256K').\n"
-                                        f"  Falling back to auto-detected context window.\n",
-                                        file=sys.stderr,
-                                    )
-                    break
         
         # Select context engine: config-driven (like memory providers).
         # 1. Check config.yaml context.engine setting
@@ -1746,6 +1861,21 @@ class AIAgent:
             or is_native_anthropic
         )
 
+        # ── Refresh effective context_length override for the new runtime ──
+        _previous_config_context_length = getattr(self, "_config_context_length", None)
+        try:
+            from hermes_cli.config import load_config as _load_agent_config
+
+            _agent_cfg = _load_agent_config()
+            self._config_context_length = _resolve_runtime_config_context_length(
+                model=self.model,
+                provider=self.provider,
+                base_url=self.base_url,
+                agent_cfg=_agent_cfg,
+            )
+        except Exception:
+            self._config_context_length = _previous_config_context_length
+
         # ── Update context compressor ──
         if hasattr(self, "context_compressor") and self.context_compressor:
             from agent.model_metadata import get_model_context_length
@@ -1754,7 +1884,7 @@ class AIAgent:
                 base_url=self.base_url,
                 api_key=self.api_key,
                 provider=self.provider,
-                config_context_length=getattr(self, "_config_context_length", None),
+                config_context_length=self._config_context_length,
             )
             self.context_compressor.update_model(
                 model=self.model,

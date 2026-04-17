@@ -3644,14 +3644,6 @@ class GatewayRunner:
                         _hyg_model = _model_cfg
                     elif isinstance(_model_cfg, dict):
                         _hyg_model = _model_cfg.get("default") or _model_cfg.get("model") or _hyg_model
-                        # Read explicit context_length override from model config
-                        # (same as run_agent.py lines 995-1005)
-                        _raw_ctx = _model_cfg.get("context_length")
-                        if _raw_ctx is not None:
-                            try:
-                                _hyg_config_context_length = int(_raw_ctx)
-                            except (TypeError, ValueError):
-                                pass
                         # Read provider for accurate context detection
                         _hyg_provider = _model_cfg.get("provider") or None
                         _hyg_base_url = _model_cfg.get("base_url") or None
@@ -3677,33 +3669,17 @@ class GatewayRunner:
                 except Exception:
                     pass
 
-                # Check custom_providers per-model context_length
-                # (same fallback as run_agent.py lines 1171-1189).
-                # Must run after runtime resolution so _hyg_base_url is set.
-                if _hyg_config_context_length is None and _hyg_base_url:
-                    try:
-                        try:
-                            from hermes_cli.config import get_compatible_custom_providers as _gw_gcp
-                            _hyg_custom_providers = _gw_gcp(_hyg_data)
-                        except Exception:
-                            _hyg_custom_providers = _hyg_data.get("custom_providers")
-                            if not isinstance(_hyg_custom_providers, list):
-                                _hyg_custom_providers = []
-                        for _cp in _hyg_custom_providers:
-                            if not isinstance(_cp, dict):
-                                continue
-                            _cp_url = (_cp.get("base_url") or "").rstrip("/")
-                            if _cp_url and _cp_url == _hyg_base_url.rstrip("/"):
-                                _cp_models = _cp.get("models", {})
-                                if isinstance(_cp_models, dict):
-                                    _cp_model_cfg = _cp_models.get(_hyg_model, {})
-                                    if isinstance(_cp_model_cfg, dict):
-                                        _cp_ctx = _cp_model_cfg.get("context_length")
-                                        if _cp_ctx is not None:
-                                            _hyg_config_context_length = int(_cp_ctx)
-                                break
-                    except (TypeError, ValueError):
-                        pass
+                try:
+                    from run_agent import _resolve_runtime_config_context_length
+
+                    _hyg_config_context_length = _resolve_runtime_config_context_length(
+                        model=_hyg_model,
+                        provider=_hyg_provider or "",
+                        base_url=_hyg_base_url or "",
+                        agent_cfg=_hyg_data if isinstance(_hyg_data, dict) else {},
+                    )
+                except Exception:
+                    pass
             except Exception:
                 pass
 
@@ -4256,12 +4232,14 @@ class GatewayRunner:
         local models falling to the 128K default).
         """
         from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
+        from run_agent import _resolve_runtime_config_context_length
 
         model = _resolve_gateway_model()
         config_context_length = None
         provider = None
         base_url = None
         api_key = None
+        data = {}
 
         try:
             cfg_path = _hermes_home / "config.yaml"
@@ -4271,12 +4249,6 @@ class GatewayRunner:
                     data = _info_yaml.safe_load(f) or {}
                 model_cfg = data.get("model", {})
                 if isinstance(model_cfg, dict):
-                    raw_ctx = model_cfg.get("context_length")
-                    if raw_ctx is not None:
-                        try:
-                            config_context_length = int(raw_ctx)
-                        except (TypeError, ValueError):
-                            pass
                     provider = model_cfg.get("provider") or None
                     base_url = model_cfg.get("base_url") or None
         except Exception:
@@ -4285,11 +4257,21 @@ class GatewayRunner:
         # Resolve runtime credentials for probing
         try:
             runtime = _resolve_runtime_agent_kwargs()
-            provider = provider or runtime.get("provider")
-            base_url = base_url or runtime.get("base_url")
+            provider = runtime.get("provider") or provider
+            base_url = runtime.get("base_url") or base_url
             api_key = runtime.get("api_key")
         except Exception:
             pass
+
+        try:
+            config_context_length = _resolve_runtime_config_context_length(
+                model=model,
+                provider=provider or "",
+                base_url=base_url or "",
+                agent_cfg=data if isinstance(data, dict) else {},
+            )
+        except Exception:
+            config_context_length = None
 
         context_length = get_model_context_length(
             model,
@@ -4659,6 +4641,7 @@ class GatewayRunner:
         current_api_key = ""
         user_provs = None
         custom_provs = None
+        config_context_length = None
         config_path = _hermes_home / "config.yaml"
         try:
             if config_path.exists():
@@ -4669,6 +4652,13 @@ class GatewayRunner:
                     current_model = model_cfg.get("default", "")
                     current_provider = model_cfg.get("provider", current_provider)
                     current_base_url = model_cfg.get("base_url", "")
+                    raw_ctx = model_cfg.get("context_length")
+                    if raw_ctx is not None and not isinstance(raw_ctx, bool):
+                        try:
+                            _parsed_ctx = int(raw_ctx)
+                            config_context_length = _parsed_ctx if _parsed_ctx > 0 else None
+                        except (TypeError, ValueError):
+                            config_context_length = None
                 user_provs = cfg.get("providers")
                 try:
                     from hermes_cli.config import get_compatible_custom_providers
@@ -4732,6 +4722,7 @@ class GatewayRunner:
                             explicit_provider=provider_slug,
                             user_providers=user_provs,
                             custom_providers=custom_provs,
+                            config_context_length=config_context_length,
                         )
                         if not result.success:
                             return f"Error: {result.error_message}"
@@ -4781,9 +4772,11 @@ class GatewayRunner:
                         lines = [f"Model switched to `{result.new_model}`"]
                         lines.append(f"Provider: {plabel}")
                         mi = result.model_info
+                        if result.display_context_length:
+                            lines.append(f"Context: {result.display_context_length:,} tokens")
+                        elif mi and mi.context_window:
+                            lines.append(f"Context: {mi.context_window:,} tokens")
                         if mi:
-                            if mi.context_window:
-                                lines.append(f"Context: {mi.context_window:,} tokens")
                             if mi.max_output:
                                 lines.append(f"Max output: {mi.max_output:,} tokens")
                             if mi.has_cost_data():
@@ -4845,6 +4838,7 @@ class GatewayRunner:
             explicit_provider=explicit_provider,
             user_providers=user_provs,
             custom_providers=custom_provs,
+            config_context_length=config_context_length,
         )
 
         if not result.success:
@@ -4918,14 +4912,10 @@ class GatewayRunner:
 
         # Rich metadata from models.dev
         mi = result.model_info
-        if mi:
-            if mi.context_window:
-                lines.append(f"Context: {mi.context_window:,} tokens")
-            if mi.max_output:
-                lines.append(f"Max output: {mi.max_output:,} tokens")
-            if mi.has_cost_data():
-                lines.append(f"Cost: {mi.format_cost()}")
-            lines.append(f"Capabilities: {mi.format_capabilities()}")
+        if result.display_context_length:
+            lines.append(f"Context: {result.display_context_length:,} tokens")
+        elif mi and mi.context_window:
+            lines.append(f"Context: {mi.context_window:,} tokens")
         else:
             try:
                 from agent.model_metadata import get_model_context_length
@@ -4938,6 +4928,13 @@ class GatewayRunner:
                 lines.append(f"Context: {ctx:,} tokens")
             except Exception:
                 pass
+
+        if mi:
+            if mi.max_output:
+                lines.append(f"Max output: {mi.max_output:,} tokens")
+            if mi.has_cost_data():
+                lines.append(f"Cost: {mi.format_cost()}")
+            lines.append(f"Capabilities: {mi.format_capabilities()}")
 
         # Cache notice
         cache_enabled = (

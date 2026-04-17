@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import List, NamedTuple, Optional
+from typing import Any, List, NamedTuple, Optional
 
 from hermes_cli.providers import (
     custom_provider_slug,
@@ -238,6 +238,7 @@ class ModelSwitchResult:
     warning_message: str = ""
     provider_label: str = ""
     resolved_via_alias: str = ""
+    display_context_length: Optional[int] = None
     capabilities: Optional[ModelCapabilities] = None
     model_info: Optional[ModelInfo] = None
     is_global: bool = False
@@ -252,6 +253,128 @@ class CustomAutoResult:
     base_url: str = ""
     api_key: str = ""
     error_message: str = ""
+
+
+def _normalize_base_url(url: str) -> str:
+    """Return a canonical base_url string for comparisons."""
+    return (url or "").strip().rstrip("/").lower()
+
+
+def _coerce_positive_context_length(raw: Any) -> Optional[int]:
+    """Return a positive integer context length, or None when invalid."""
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _custom_provider_match_score(
+    entry: dict[str, Any],
+    provider: str,
+    base_url: str,
+) -> int:
+    """Score how well a custom provider entry matches the requested runtime."""
+    requested_provider = (provider or "").strip().lower()
+    requested_base_url = _normalize_base_url(base_url)
+
+    entry_name = (entry.get("name") or "").strip()
+    provider_candidates: set[str] = set()
+    if entry_name:
+        provider_candidates.add(entry_name.lower())
+        provider_candidates.add(custom_provider_slug(entry_name))
+    provider_key = (entry.get("provider_key") or "").strip().lower()
+    if provider_key:
+        provider_candidates.add(provider_key)
+
+    if requested_provider.startswith("custom:") and requested_provider in provider_candidates:
+        return 2
+
+    entry_base_url = _normalize_base_url(
+        entry.get("base_url") or entry.get("url") or entry.get("api") or ""
+    )
+    if requested_base_url and entry_base_url and requested_base_url == entry_base_url:
+        return 1
+
+    return 0
+
+
+def _resolve_custom_provider_context_length(
+    provider: str,
+    base_url: str,
+    model: str,
+    custom_providers: Optional[list[dict[str, Any]]],
+) -> Optional[int]:
+    """Return per-model context_length from the best matching custom provider."""
+    best_score = 0
+    best_context_length: Optional[int] = None
+
+    for entry in custom_providers or []:
+        if not isinstance(entry, dict):
+            continue
+
+        score = _custom_provider_match_score(entry, provider, base_url)
+        if score == 0 or score < best_score:
+            continue
+
+        resolved: Optional[int] = None
+        models = entry.get("models", {})
+        if isinstance(models, dict):
+            model_cfg = models.get(model, {})
+            if isinstance(model_cfg, dict):
+                raw = model_cfg.get("context_length")
+                resolved = _coerce_positive_context_length(raw)
+
+        if resolved is None and str(entry.get("model") or "").strip() == model:
+            raw = entry.get("context_length")
+            resolved = _coerce_positive_context_length(raw)
+
+        if resolved is not None:
+            best_score = score
+            best_context_length = resolved
+
+    return best_context_length
+
+
+def _resolve_display_context_length(
+    model: str,
+    provider: str,
+    base_url: str,
+    api_key: str,
+    model_info: Optional[ModelInfo],
+    custom_providers: Optional[list[dict[str, Any]]],
+    config_context_length: Optional[int] = None,
+) -> Optional[int]:
+    """Resolve the context window shown after a successful /model switch."""
+    custom_ctx = _resolve_custom_provider_context_length(
+        provider=provider,
+        base_url=base_url,
+        model=model,
+        custom_providers=custom_providers,
+    )
+    if custom_ctx is not None:
+        return custom_ctx
+
+    config_ctx = _coerce_positive_context_length(config_context_length)
+    if config_ctx is not None:
+        return config_ctx
+
+    if model_info and model_info.context_window:
+        return model_info.context_window
+
+    try:
+        from agent.model_metadata import get_model_context_length
+
+        return get_model_context_length(
+            model,
+            base_url=base_url,
+            api_key=api_key,
+            provider=provider,
+        )
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -418,6 +541,7 @@ def switch_model(
     explicit_provider: str = "",
     user_providers: dict = None,
     custom_providers: list | None = None,
+    config_context_length: Optional[int] = None,
 ) -> ModelSwitchResult:
     """Core model-switching pipeline shared between CLI and gateway.
 
@@ -452,6 +576,7 @@ def switch_model(
         explicit_provider: From --provider flag (empty = no explicit provider).
         user_providers: The ``providers:`` dict from config.yaml (for user endpoints).
         custom_providers: The ``custom_providers:`` list from config.yaml.
+        config_context_length: Optional global ``model.context_length`` override from config.
 
     Returns:
         ModelSwitchResult with all information the caller needs.
@@ -769,6 +894,15 @@ def switch_model(
         warning_message=" | ".join(warnings) if warnings else "",
         provider_label=provider_label,
         resolved_via_alias=resolved_alias,
+        display_context_length=_resolve_display_context_length(
+            model=new_model,
+            provider=target_provider,
+            base_url=base_url,
+            api_key=api_key,
+            model_info=model_info,
+            custom_providers=custom_providers,
+            config_context_length=config_context_length,
+        ),
         capabilities=capabilities,
         model_info=model_info,
         is_global=is_global,
