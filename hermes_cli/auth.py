@@ -225,6 +225,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("DEEPSEEK_API_KEY",),
         base_url_env_var="DEEPSEEK_BASE_URL",
     ),
+    "flock": ProviderConfig(
+        id="flock",
+        name="FLock API Platform",
+        auth_type="api_key",
+        inference_base_url="https://api.flock.io/v1",
+        api_key_env_vars=("FLOCK_API_KEY",),
+        base_url_env_var="FLOCK_BASE_URL",
+    ),
     "xai": ProviderConfig(
         id="xai",
         name="xAI",

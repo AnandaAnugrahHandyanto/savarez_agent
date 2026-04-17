@@ -824,6 +824,7 @@ def run_doctor(args):
         ("Kimi / Moonshot (China)", ("KIMI_CN_API_KEY",),                    "https://api.moonshot.cn/v1/models",   None, True),
         ("Arcee AI",         ("ARCEEAI_API_KEY",),                            "https://api.arcee.ai/api/v1/models",  "ARCEE_BASE_URL", True),
         ("DeepSeek",         ("DEEPSEEK_API_KEY",),                           "https://api.deepseek.com/v1/models",  "DEEPSEEK_BASE_URL", True),
+        ("FLock API",        ("FLOCK_API_KEY",),                              "https://api.flock.io/v1/models",      "FLOCK_BASE_URL", True),
         ("Hugging Face",     ("HF_TOKEN",),                                   "https://router.huggingface.co/v1/models", "HF_BASE_URL", True),
         ("NVIDIA NIM",       ("NVIDIA_API_KEY",),                             "https://integrate.api.nvidia.com/v1/models", "NVIDIA_BASE_URL", True),
         ("Alibaba/DashScope", ("DASHSCOPE_API_KEY",),                         "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models", "DASHSCOPE_BASE_URL", True),
@@ -864,6 +865,9 @@ def run_doctor(args):
                 _headers = {"Authorization": f"Bearer {_key}"}
                 if "api.kimi.com" in _url.lower():
                     _headers["User-Agent"] = "KimiCLI/1.30.0"
+                if "api.flock.io" in _url.lower():
+                    # Match the header the main inference path sends (see run_agent.py).
+                    _headers["x-litellm-api-key"] = _key
                 _resp = httpx.get(
                     _url,
                     headers=_headers,
