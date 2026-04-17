@@ -50,9 +50,45 @@ logger = logging.getLogger(__name__)
 # (HERMES_HOME env var changes) are always respected.  The old module-level
 # constant was cached at import time and could go stale if a profile switch
 # happened after the first import.
-def get_memory_dir() -> Path:
-    """Return the profile-scoped memories directory."""
-    return get_hermes_home() / "memories"
+def get_memory_dir(namespace: str = "") -> Path:
+    """Return the profile-scoped memories directory, optionally per-user."""
+    base = get_hermes_home() / "memories"
+    if namespace:
+        # Sanitize namespace to be filesystem-safe
+        safe_ns = re.sub(r'[^\w\-_@\.\+]', '_', namespace)
+        return base / safe_ns
+    return base
+
+
+# ---------------------------------------------------------------------------
+# Migration: when a namespaced user dir is created for the first time and
+# the shared root still has MEMORY.md / USER.md, automatically copy them
+# into the user dir so no memories are lost after enabling per-user
+# isolation.
+# ---------------------------------------------------------------------------
+
+def _migrate_from_shared(namespace: str) -> None:
+    """Copy shared root memories into a newly-created namespaced directory.
+
+    Only copies files that do NOT already exist in the target.  The shared
+    root files are left untouched so CLI / other users can still read them.
+    """
+    if not namespace:
+        return
+    mem_dir = get_memory_dir(namespace)
+    root_dir = get_memory_dir()  # shared root
+
+    for name in ("MEMORY.md", "USER.md"):
+        src = root_dir / name
+        dst = mem_dir / name
+        if dst.exists() or not src.exists():
+            continue
+        try:
+            content = src.read_text(encoding="utf-8")
+            dst.write_text(content, encoding="utf-8")
+            logger.info("Migrated shared %s → %s", src, dst)
+        except (OSError, IOError) as exc:
+            logger.warning("Could not migrate %s: %s", src, exc)
 
 ENTRY_DELIMITER = "\n§\n"
 
@@ -111,20 +147,27 @@ class MemoryStore:
         Never mutated mid-session. Keeps prefix cache stable.
       - memory_entries / user_entries: live state, mutated by tool calls, persisted to disk.
         Tool responses always reflect this live state.
+
+    Per-user isolation: when a namespace (e.g. "platform:user_id") is provided,
+    memory files are stored under a subdirectory, preventing cross-user leakage.
     """
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375, namespace: str = ""):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        self.namespace = namespace  # e.g. "telegram:123456" — empty = shared/global
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
 
     def load_from_disk(self):
         """Load entries from MEMORY.md and USER.md, capture system prompt snapshot."""
-        mem_dir = get_memory_dir()
+        mem_dir = get_memory_dir(self.namespace)
         mem_dir.mkdir(parents=True, exist_ok=True)
+
+        # Migrate shared root memories on first load for a new namespaced user.
+        _migrate_from_shared(self.namespace)
 
         self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
         self.user_entries = self._read_file(mem_dir / "USER.md")
@@ -176,9 +219,8 @@ class MemoryStore:
                     pass
             fd.close()
 
-    @staticmethod
-    def _path_for(target: str) -> Path:
-        mem_dir = get_memory_dir()
+    def _path_for(self, target: str) -> Path:
+        mem_dir = get_memory_dir(self.namespace)
         if target == "user":
             return mem_dir / "USER.md"
         return mem_dir / "MEMORY.md"
@@ -194,7 +236,8 @@ class MemoryStore:
 
     def save_to_disk(self, target: str):
         """Persist entries to the appropriate file. Called after every mutation."""
-        get_memory_dir().mkdir(parents=True, exist_ok=True)
+        mem_dir = get_memory_dir(self.namespace)
+        mem_dir.mkdir(parents=True, exist_ok=True)
         self._write_file(self._path_for(target), self._entries_for(target))
 
     def _entries_for(self, target: str) -> List[str]:

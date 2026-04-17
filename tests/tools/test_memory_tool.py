@@ -92,7 +92,7 @@ class TestScanMemoryContent:
 @pytest.fixture()
 def store(tmp_path, monkeypatch):
     """Create a MemoryStore with temp storage."""
-    monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+    monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda ns="": tmp_path)
     s = MemoryStore(memory_char_limit=500, user_char_limit=300)
     s.load_from_disk()
     return s
@@ -185,7 +185,7 @@ class TestMemoryStoreRemove:
 
 class TestMemoryStorePersistence:
     def test_save_and_load_roundtrip(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda ns="": tmp_path)
 
         store1 = MemoryStore()
         store1.load_from_disk()
@@ -198,7 +198,7 @@ class TestMemoryStorePersistence:
         assert "Alice, developer" in store2.user_entries
 
     def test_deduplication_on_load(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda ns="": tmp_path)
         # Write file with duplicates
         mem_file = tmp_path / "MEMORY.md"
         mem_file.write_text("duplicate entry\n§\nduplicate entry\n§\nunique entry")
@@ -224,6 +224,122 @@ class TestMemoryStoreSnapshot:
 
     def test_empty_snapshot_returns_none(self, store):
         assert store.format_for_system_prompt("memory") is None
+
+
+# =========================================================================
+# MemoryStore namespace isolation
+# =========================================================================
+
+class TestMemoryStoreNamespaceIsolation:
+    def test_namespace_isolates_users(self, tmp_path, monkeypatch):
+        """Two MemoryStore instances with different namespaces don't share entries."""
+        def _get_dir(ns=""):
+            if ns:
+                d = tmp_path / ns.replace(":", "_")
+            else:
+                d = tmp_path
+            d.mkdir(parents=True, exist_ok=True)
+            return d
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", _get_dir)
+
+        # User A's store
+        store_a = MemoryStore(memory_char_limit=500, user_char_limit=300, namespace="telegram:111")
+        store_a.load_from_disk()
+        store_a.add("memory", "User A secret")
+
+        # User B's store — should NOT see User A's entry
+        store_b = MemoryStore(memory_char_limit=500, user_char_limit=300, namespace="telegram:222")
+        store_b.load_from_disk()
+        assert "User A secret" not in store_b.memory_entries
+        assert len(store_b.memory_entries) == 0
+
+        # Global store (no namespace) — should also NOT see User A's entry
+        store_global = MemoryStore(memory_char_limit=500, user_char_limit=300)
+        store_global.load_from_disk()
+        assert "User A secret" not in store_global.memory_entries
+
+        # Verify User A's data is in the right directory
+        assert (tmp_path / "telegram_111" / "MEMORY.md").exists()
+        # User B hasn't written yet — write something to verify dir
+        store_b.add("memory", "User B secret")
+        assert (tmp_path / "telegram_222" / "MEMORY.md").exists()
+        # Confirm cross-contamination didn't happen
+        mem_a = (tmp_path / "telegram_111" / "MEMORY.md").read_text()
+        mem_b = (tmp_path / "telegram_222" / "MEMORY.md").read_text()
+        assert "User A secret" in mem_a
+        assert "User B secret" in mem_b
+        assert "User A secret" not in mem_b
+        assert "User B secret" not in mem_a
+
+
+class TestMemoryMigrationFromSharedRoot:
+    """Migration: shared root MEMORY.md/USER.md → per-user namespace dir."""
+
+    def test_migration_copies_shared_files_to_new_namespace(self, tmp_path, monkeypatch):
+        """When a namespaced user loads memory for the first time and the
+        shared root still has files, they should be auto-copied."""
+        root = tmp_path  # shared root
+        user_dir = tmp_path / "telegram_5137755622"
+        (root / "MEMORY.md").write_text("Shared memory entry\n§\nShared entry 2")
+        (root / "USER.md").write_text("Shared user profile")
+
+        def _get_dir(namespace=""):
+            if namespace:
+                return user_dir
+            return root
+
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", _get_dir)
+
+        store = MemoryStore(memory_char_limit=500, user_char_limit=300, namespace="telegram:5137755622")
+        store.load_from_disk()
+
+        assert (user_dir / "MEMORY.md").exists()
+        assert (user_dir / "USER.md").exists()
+        assert "Shared memory entry" in (user_dir / "MEMORY.md").read_text()
+        assert "Shared user profile" in (user_dir / "USER.md").read_text()
+        # Shared root files should still exist
+        assert (root / "MEMORY.md").exists()
+        assert (root / "USER.md").exists()
+        # Entries should be loaded
+        assert "Shared memory entry" in store.memory_entries
+        assert "Shared user profile" in store.user_entries
+
+    def test_migration_does_not_overwrite_existing_user_files(self, tmp_path, monkeypatch):
+        """If the user dir already has files, migration should not overwrite."""
+        root = tmp_path
+        user_dir = tmp_path / "telegram_5137755622"
+        user_dir.mkdir()
+        (root / "MEMORY.md").write_text("Old shared memory")
+        (user_dir / "MEMORY.md").write_text("User's own memory")
+
+        def _get_dir(namespace=""):
+            if namespace:
+                return user_dir
+            return root
+
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", _get_dir)
+
+        store = MemoryStore(memory_char_limit=500, user_char_limit=300, namespace="telegram:5137755622")
+        store.load_from_disk()
+
+        assert "User's own memory" in (user_dir / "MEMORY.md").read_text()
+        assert "Old shared memory" not in (user_dir / "MEMORY.md").read_text()
+
+    def test_migration_does_nothing_for_empty_namespace(self, tmp_path, monkeypatch):
+        """Global/CLI sessions (no namespace) should not trigger migration."""
+        root = tmp_path
+        (root / "MEMORY.md").write_text("Shared memory")
+
+        def _get_dir(namespace=""):
+            return root
+
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", _get_dir)
+
+        store = MemoryStore(memory_char_limit=500, user_char_limit=300)  # no namespace
+        store.load_from_disk()
+
+        # Should just load normally, no migration
+        assert "Shared memory" in store.memory_entries
 
 
 # =========================================================================
