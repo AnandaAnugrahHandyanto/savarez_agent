@@ -1292,3 +1292,30 @@ class TestInferenceProfileModalityInheritance:
 
         assert len(models) == 1
         assert models[0]["input_modalities"] == ["TEXT"]
+
+
+class TestBedrockModelPickerDetection:
+    """Test that /model (no args) detects Bedrock via AWS credential chain."""
+
+    def test_bedrock_detected_when_aws_credentials_available(self):
+        """Bedrock should appear in list_authenticated_providers when AWS creds exist."""
+        from hermes_cli.model_switch import list_authenticated_providers
+
+        with patch("agent.bedrock_adapter.has_aws_credentials", return_value=True), \
+             patch("agent.models_dev.fetch_models_dev", return_value={}):
+            providers = list_authenticated_providers(current_provider="bedrock")
+
+        bedrock = next((p for p in providers if p["slug"] == "bedrock"), None)
+        assert bedrock is not None, "bedrock should appear when AWS credentials are available"
+
+    def test_bedrock_not_detected_without_aws_credentials(self):
+        """Bedrock should NOT appear when no AWS credentials exist."""
+        from hermes_cli.model_switch import list_authenticated_providers
+
+        with patch("agent.bedrock_adapter.has_aws_credentials", return_value=False), \
+             patch("agent.models_dev.fetch_models_dev", return_value={}), \
+             patch.dict(os.environ, {}, clear=True):
+            providers = list_authenticated_providers(current_provider="openrouter")
+
+        bedrock = next((p for p in providers if p["slug"] == "bedrock"), None)
+        assert bedrock is None, "bedrock should not appear without AWS credentials"
