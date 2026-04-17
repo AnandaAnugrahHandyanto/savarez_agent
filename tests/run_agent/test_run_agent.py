@@ -1774,8 +1774,44 @@ class TestRunConversation:
         assert [call["api_call_count"] for call in pre_request_calls] == [1, 2]
         assert [call["api_call_count"] for call in post_request_calls] == [1, 2]
         assert all(call["session_id"] == agent.session_id for call in pre_request_calls)
+        assert [len(call["conversation_history"]) for call in pre_request_calls] == [1, 3]
+        assert all(call["user_message"] == "search something" for call in pre_request_calls)
+        assert all(isinstance(call["is_first_turn"], bool) for call in pre_request_calls)
         assert all("message_count" in c and "messages" not in c for c in pre_request_calls)
         assert all("usage" in c and "response" not in c for c in post_request_calls)
+
+    def test_pre_api_request_can_inject_request_scoped_context(self, agent):
+        self._setup_agent(agent)
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        resp1 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
+        resp2 = _mock_response(content="Done searching", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2]
+
+        def _hook(name, **kwargs):
+            if name == "pre_api_request":
+                history_len = len(kwargs["conversation_history"])
+                return [{"context": f"Request context {kwargs['api_call_count']} / {history_len}"}]
+            return []
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_hook),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search something")
+
+        assert result["final_response"] == "Done searching"
+
+        first_messages = agent.client.chat.completions.create.call_args_list[0].kwargs["messages"]
+        second_messages = agent.client.chat.completions.create.call_args_list[1].kwargs["messages"]
+        first_user = next(msg for msg in first_messages if msg["role"] == "user")
+        second_user = next(msg for msg in second_messages if msg["role"] == "user")
+
+        assert "Request context 1 / 1" in first_user["content"]
+        assert "Request context 2 / 3" in second_user["content"]
+        assert "Request context 1 / 1" not in second_user["content"]
 
     def test_interrupt_breaks_loop(self, agent):
         self._setup_agent(agent)

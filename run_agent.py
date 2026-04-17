@@ -320,9 +320,37 @@ def _extract_parallel_scope_path(tool_name: str, function_args: dict) -> Path | 
     expanded = Path(raw_path).expanduser()
     if expanded.is_absolute():
         return Path(os.path.abspath(str(expanded)))
-
     # Avoid resolve(); the file may not exist yet.
     return Path(os.path.abspath(str(Path.cwd() / expanded)))
+
+
+def _collect_ephemeral_hook_context(results: List[Any]) -> str:
+    """Normalize hook return values into a single ephemeral context string."""
+    context_parts: list[str] = []
+    for result in results:
+        if isinstance(result, dict) and result.get("context"):
+            context_parts.append(str(result["context"]))
+        elif isinstance(result, str) and result.strip():
+            context_parts.append(result)
+    return "\n\n".join(context_parts)
+
+
+def _append_ephemeral_context_to_user_message(
+    messages: List[Dict[str, Any]],
+    target_idx: int,
+    context: str,
+) -> None:
+    """Append ephemeral context to a specific user message in-place."""
+    if not context or target_idx < 0 or target_idx >= len(messages):
+        return
+
+    target_message = messages[target_idx]
+    if target_message.get("role") != "user":
+        return
+
+    base_content = target_message.get("content", "")
+    if isinstance(base_content, str):
+        target_message["content"] = base_content + "\n\n" + context
 
 
 def _paths_overlap(left: Path, right: Path) -> bool:
@@ -8582,14 +8610,7 @@ class AIAgent:
                 platform=getattr(self, "platform", None) or "",
                 sender_id=getattr(self, "_user_id", None) or "",
             )
-            _ctx_parts: list[str] = []
-            for r in _pre_results:
-                if isinstance(r, dict) and r.get("context"):
-                    _ctx_parts.append(str(r["context"]))
-                elif isinstance(r, str) and r.strip():
-                    _ctx_parts.append(r)
-            if _ctx_parts:
-                _plugin_user_context = "\n\n".join(_ctx_parts)
+            _plugin_user_context = _collect_ephemeral_hook_context(_pre_results)
         except Exception as exc:
             logger.warning("pre_llm_call hook failed: %s", exc)
 
@@ -8708,27 +8729,9 @@ class AIAgent:
             # Note: Reasoning is embedded in content via <think> tags for trajectory storage.
             # However, providers like Moonshot AI require a separate 'reasoning_content' field
             # on assistant messages with tool_calls. We handle both cases here.
-            api_messages = []
+            base_api_messages = []
             for idx, msg in enumerate(messages):
                 api_msg = msg.copy()
-
-                # Inject ephemeral context into the current turn's user message.
-                # Sources: memory manager prefetch + plugin pre_llm_call hooks
-                # with target="user_message" (the default).  Both are
-                # API-call-time only — the original message in `messages` is
-                # never mutated, so nothing leaks into session persistence.
-                if idx == current_turn_user_idx and msg.get("role") == "user":
-                    _injections = []
-                    if _ext_prefetch_cache:
-                        _fenced = build_memory_context_block(_ext_prefetch_cache)
-                        if _fenced:
-                            _injections.append(_fenced)
-                    if _plugin_user_context:
-                        _injections.append(_plugin_user_context)
-                    if _injections:
-                        _base = api_msg.get("content", "")
-                        if isinstance(_base, str):
-                            api_msg["content"] = _base + "\n\n" + "\n\n".join(_injections)
 
                 # For ALL assistant messages, pass reasoning back to the API
                 # This ensures multi-turn reasoning context is preserved
@@ -8755,7 +8758,24 @@ class AIAgent:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
                 # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
                 # The signature field helps maintain reasoning continuity
-                api_messages.append(api_msg)
+                base_api_messages.append(api_msg)
+
+            # Inject turn-scoped ephemeral context into the current turn's user
+            # message. This happens on the API copy only — the original
+            # conversation history in `messages` remains untouched.
+            _turn_injections = []
+            if _ext_prefetch_cache:
+                _fenced = build_memory_context_block(_ext_prefetch_cache)
+                if _fenced:
+                    _turn_injections.append(_fenced)
+            if _plugin_user_context:
+                _turn_injections.append(_plugin_user_context)
+            if _turn_injections:
+                _append_ephemeral_context_to_user_message(
+                    base_api_messages,
+                    current_turn_user_idx,
+                    "\n\n".join(_turn_injections),
+                )
 
             # Build the final system message: cached prompt + ephemeral system prompt.
             # Ephemeral additions are API-call-time only (not persisted to session DB).
@@ -8769,14 +8789,21 @@ class AIAgent:
             # This is intentional — system prompt modifications break the prompt
             # cache prefix.  The system prompt is reserved for Hermes internals.
             if effective_system:
-                api_messages = [{"role": "system", "content": effective_system}] + api_messages
+                base_api_messages = [{"role": "system", "content": effective_system}] + base_api_messages
 
             # Inject ephemeral prefill messages right after the system prompt
             # but before conversation history. Same API-call-time-only pattern.
             if self.prefill_messages:
                 sys_offset = 1 if effective_system else 0
                 for idx, pfm in enumerate(self.prefill_messages):
-                    api_messages.insert(sys_offset + idx, pfm.copy())
+                    base_api_messages.insert(sys_offset + idx, pfm.copy())
+
+            _request_user_idx = current_turn_user_idx + (1 if effective_system else 0) + len(self.prefill_messages or [])
+
+            # Preview request size for logs and request-hook metadata. The
+            # actual outbound request is rebuilt per-attempt below so
+            # pre_api_request can inject fresh ephemeral context.
+            api_messages = copy.deepcopy(base_api_messages)
 
             # Apply Anthropic prompt caching for Claude models via OpenRouter.
             # Auto-detected: if model name contains "claude" and base_url is OpenRouter,
@@ -8830,6 +8857,9 @@ class AIAgent:
             # Calculate approximate request size for logging
             total_chars = sum(len(str(msg)) for msg in api_messages)
             approx_tokens = estimate_messages_tokens_rough(api_messages)
+            prepared_message_count = len(api_messages)
+            prepared_total_chars = total_chars
+            prepared_approx_tokens = approx_tokens
             
             # Thinking spinner for quiet mode (animated during API call)
             thinking_spinner = None
@@ -8926,32 +8956,53 @@ class AIAgent:
 
                 try:
                     self._reset_stream_delivery_tracking()
-                    api_kwargs = self._build_api_kwargs(api_messages)
-                    if self._force_ascii_payload:
-                        _sanitize_structure_non_ascii(api_kwargs)
-                    if self.api_mode == "codex_responses":
-                        api_kwargs = self._preflight_codex_api_kwargs(api_kwargs, allow_stream=False)
+                    api_messages = copy.deepcopy(base_api_messages)
 
                     try:
                         from hermes_cli.plugins import invoke_hook as _invoke_hook
-                        _invoke_hook(
+                        _pre_request_results = _invoke_hook(
                             "pre_api_request",
                             task_id=effective_task_id,
                             session_id=self.session_id or "",
+                            user_message=original_user_message,
+                            conversation_history=list(messages),
+                            is_first_turn=(not bool(conversation_history)),
                             platform=self.platform or "",
                             model=self.model,
                             provider=self.provider,
                             base_url=self.base_url,
                             api_mode=self.api_mode,
                             api_call_count=api_call_count,
-                            message_count=len(api_messages),
+                            message_count=prepared_message_count,
                             tool_count=len(self.tools or []),
-                            approx_input_tokens=approx_tokens,
-                            request_char_count=total_chars,
+                            approx_input_tokens=prepared_approx_tokens,
+                            request_char_count=prepared_total_chars,
                             max_tokens=self.max_tokens,
                         )
+                        _request_user_context = _collect_ephemeral_hook_context(_pre_request_results)
                     except Exception:
-                        pass
+                        _request_user_context = ""
+
+                    if _request_user_context:
+                        _append_ephemeral_context_to_user_message(
+                            api_messages,
+                            _request_user_idx,
+                            _request_user_context,
+                        )
+
+                    if self._use_prompt_caching:
+                        api_messages = apply_anthropic_cache_control(api_messages, cache_ttl=self._cache_ttl, native_anthropic=(self.api_mode == 'anthropic_messages'))
+
+                    api_messages = self._sanitize_api_messages(api_messages)
+
+                    total_chars = sum(len(str(msg)) for msg in api_messages)
+                    approx_tokens = estimate_messages_tokens_rough(api_messages)
+
+                    api_kwargs = self._build_api_kwargs(api_messages)
+                    if self._force_ascii_payload:
+                        _sanitize_structure_non_ascii(api_kwargs)
+                    if self.api_mode == "codex_responses":
+                        api_kwargs = self._preflight_codex_api_kwargs(api_kwargs, allow_stream=False)
 
                     if env_var_enabled("HERMES_DUMP_REQUESTS"):
                         self._dump_api_request_debug(api_kwargs, reason="preflight")

@@ -222,6 +222,7 @@ def register(ctx):
     ctx.register_hook("pre_tool_call", my_tool_observer)
     ctx.register_hook("post_tool_call", my_tool_logger)
     ctx.register_hook("pre_llm_call", my_memory_callback)
+    ctx.register_hook("pre_api_request", my_live_state_callback)
     ctx.register_hook("post_llm_call", my_sync_callback)
     ctx.register_hook("on_session_start", my_init_callback)
     ctx.register_hook("on_session_end", my_cleanup_callback)
@@ -231,7 +232,7 @@ def register(ctx):
 
 - Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility — new parameters may be added in future versions without breaking your plugin.
 - If a callback **crashes**, it's logged and skipped. Other hooks and the agent continue normally. A misbehaving plugin can never break the agent.
-- All hooks are **fire-and-forget observers** whose return values are ignored — except `pre_llm_call`, which can [inject context](#pre_llm_call).
+- All hooks are **fire-and-forget observers** whose return values are ignored — except `pre_llm_call` and `pre_api_request`, which can inject context into the current turn's user message.
 
 ### Quick reference
 
@@ -240,6 +241,8 @@ def register(ctx):
 | [`pre_tool_call`](#pre_tool_call) | Before any tool executes | ignored |
 | [`post_tool_call`](#post_tool_call) | After any tool returns | ignored |
 | [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | context injection |
+| [`pre_api_request`](#pre_api_request) | Before each HTTP request to the LLM provider | request-scoped context injection |
+| [`post_api_request`](#post_api_request) | After each HTTP response from the LLM provider | ignored |
 | [`post_llm_call`](#post_llm_call) | Once per turn, after the tool-calling loop | ignored |
 | [`on_session_start`](#on_session_start) | New session created (first turn only) | ignored |
 | [`on_session_end`](#on_session_end) | Session ends | ignored |
@@ -348,7 +351,7 @@ def register(ctx):
 
 ### `pre_llm_call`
 
-Fires **once per turn**, before the tool-calling loop begins. This is the **only hook whose return value is used** — it can inject context into the current turn's user message.
+Fires **once per turn**, before the tool-calling loop begins. It can inject context into the current turn's user message.
 
 **Callback signature:**
 
@@ -425,6 +428,84 @@ def guardrails(**kwargs):
 def register(ctx):
     ctx.register_hook("pre_llm_call", guardrails)
 ```
+
+---
+
+### `pre_api_request`
+
+Fires **before each HTTP request** to the model provider inside the tool loop, including retries. This hook can inject request-scoped context into the current turn's user message for that request only.
+
+**Callback signature:**
+
+```python
+def my_callback(task_id: str, session_id: str, user_message: str,
+                conversation_history: list, is_first_turn: bool,
+                platform: str, model: str, provider: str, base_url: str,
+                api_mode: str, api_call_count: int, message_count: int,
+                tool_count: int, approx_input_tokens: int,
+                request_char_count: int, max_tokens: int, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `task_id` | `str` | Session/task identifier. Empty string if not set. |
+| `session_id` | `str` | Unique identifier for the current session |
+| `user_message` | `str` | The user's original message for this turn |
+| `conversation_history` | `list` | Copy of the current conversation history just before the request is sent |
+| `is_first_turn` | `bool` | `True` on the first turn of a session |
+| `platform` | `str` | Where the session is running |
+| `model` | `str` | The model identifier |
+| `provider` | `str` | The resolved provider name, if known |
+| `base_url` | `str` | Provider base URL |
+| `api_mode` | `str` | Hermes transport mode, such as `"chat_completions"` or `"codex_responses"` |
+| `api_call_count` | `int` | 1-based count of the current request within this turn |
+| `message_count` | `int` | Number of prepared request messages before this hook's own injected context is appended |
+| `tool_count` | `int` | Number of available tools for the request |
+| `approx_input_tokens` | `int` | Rough token estimate for the prepared request before this hook's own injected context is appended |
+| `request_char_count` | `int` | Rough character count for the prepared request before this hook's own injected context is appended |
+| `max_tokens` | `int` | Max output tokens configured for the request |
+
+**Fires:** In `run_agent.py`, inside the API retry loop, immediately before Hermes builds the provider request. It fires once per outbound request attempt, not once per user turn.
+
+**Return value:** If the callback returns a dict with a `"context"` key, or a plain non-empty string, the text is appended to the current turn's user message for that request only. Return `None` for no injection.
+
+**Where context is injected:** Always the **user message**, never the system prompt. The injection is ephemeral and request-scoped: it is rebuilt for each request attempt and never persisted to the session database.
+
+**Use cases:** Live browser state, dynamic app trees, per-request budget hints, progress snapshots, request-scoped guardrails.
+
+**Example — append live state for every request:**
+
+```python
+def inject_live_state(api_call_count, conversation_history, **kwargs):
+    summary = f"Live state snapshot before request {api_call_count}:"
+    summary += f"\n- Messages so far: {len(conversation_history)}"
+    summary += "\n- Browser URL: https://example.test/dashboard"
+    return {"context": summary}
+
+def register(ctx):
+    ctx.register_hook("pre_api_request", inject_live_state)
+```
+
+---
+
+### `post_api_request`
+
+Fires **after each HTTP response** from the model provider.
+
+**Callback signature:**
+
+```python
+def my_callback(task_id: str, session_id: str, platform: str, model: str,
+                provider: str, base_url: str, api_mode: str,
+                api_call_count: int, api_duration: float, finish_reason: str,
+                message_count: int, response_model: str | None, usage: dict,
+                assistant_content_chars: int, assistant_tool_call_count: int,
+                **kwargs):
+```
+
+**Return value:** Ignored.
+
+**Use cases:** Provider metrics, usage logging, latency dashboards, response-shape analytics.
 
 ---
 

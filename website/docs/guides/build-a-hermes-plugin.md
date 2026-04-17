@@ -419,16 +419,16 @@ Each hook is documented in full on the **[Event Hooks reference](/docs/user-guid
 | [`post_llm_call`](/docs/user-guide/features/hooks#post_llm_call) | Once per turn, after the tool-calling loop (successful turns only) | `session_id: str, user_message: str, assistant_response: str, conversation_history: list, model: str, platform: str` | ignored |
 | [`on_session_start`](/docs/user-guide/features/hooks#on_session_start) | New session created (first turn only) | `session_id: str, model: str, platform: str` | ignored |
 | [`on_session_end`](/docs/user-guide/features/hooks#on_session_end) | End of every `run_conversation` call + CLI exit | `session_id: str, completed: bool, interrupted: bool, model: str, platform: str` | ignored |
-| [`pre_api_request`](/docs/user-guide/features/hooks#pre_api_request) | Before each HTTP request to the LLM provider | `method: str, url: str, headers: dict, body: dict` | ignored |
-| [`post_api_request`](/docs/user-guide/features/hooks#post_api_request) | After each HTTP response from the LLM provider | `method: str, url: str, status_code: int, response: dict` | ignored |
+| [`pre_api_request`](/docs/user-guide/features/hooks#pre_api_request) | Before each HTTP request to the LLM provider | `task_id: str, session_id: str, user_message: str, conversation_history: list, is_first_turn: bool, platform: str, model: str, provider: str, base_url: str, api_mode: str, api_call_count: int, message_count: int, tool_count: int, approx_input_tokens: int, request_char_count: int, max_tokens: int` | request-scoped context injection |
+| [`post_api_request`](/docs/user-guide/features/hooks#post_api_request) | After each HTTP response from the LLM provider | `task_id: str, session_id: str, platform: str, model: str, provider: str, base_url: str, api_mode: str, api_call_count: int, api_duration: float, finish_reason: str, message_count: int, response_model: str \| None, usage: dict, assistant_content_chars: int, assistant_tool_call_count: int` | ignored |
 
-Most hooks are fire-and-forget observers — their return values are ignored. The exception is `pre_llm_call`, which can inject context into the conversation.
+Most hooks are fire-and-forget observers — their return values are ignored. The exceptions are `pre_llm_call` and `pre_api_request`, which can inject context into the current turn's user message.
 
 All callbacks should accept `**kwargs` for forward compatibility. If a hook callback crashes, it's logged and skipped. Other hooks and the agent continue normally.
 
 ### `pre_llm_call` context injection
 
-This is the only hook whose return value matters. When a `pre_llm_call` callback returns a dict with a `"context"` key (or a plain string), Hermes injects that text into the **current turn's user message**. This is the mechanism for memory plugins, RAG integrations, guardrails, and any plugin that needs to provide the model with additional context.
+When a `pre_llm_call` callback returns a dict with a `"context"` key (or a plain string), Hermes injects that text into the **current turn's user message**. This is the mechanism for memory plugins, RAG integrations, guardrails, and any plugin that needs to provide the model with additional context at turn scope. Use [`pre_api_request`](/docs/user-guide/features/hooks#pre_api_request) when the context needs to refresh before every provider request inside the tool loop.
 
 #### Return format
 
