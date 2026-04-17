@@ -13,7 +13,7 @@ Hermes Agent generates images from text prompts via FAL.ai. Eight models are sup
 
 | Model | Speed | Strengths | Price |
 |---|---|---|---|
-| `fal-ai/flux-2/klein/9b` *(default)* | <1s | Fast, crisp text | $0.006/MP |
+| `fal-ai/flux-2/klein/9b` *(default)* | `<1s` | Fast, crisp text | $0.006/MP |
 | `fal-ai/flux-2-pro` | ~6s | Studio photorealism | $0.03/MP |
 | `fal-ai/z-image/turbo` | ~2s | Bilingual EN/CN, 6B params | $0.005/MP |
 | `fal-ai/nano-banana-pro` | ~8s | Gemini 3 Pro, reasoning depth, text rendering | $0.15/image (1K) |
