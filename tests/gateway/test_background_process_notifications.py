@@ -224,6 +224,33 @@ async def test_thread_id_passed_to_send(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_run_process_watcher_strips_ansi_from_user_notifications(
+    monkeypatch, tmp_path
+):
+    import tools.process_registry as pr_module
+
+    ansi_output = "\x1b[31merror\x1b[0m and \x1b]0;title\x07noise"
+    sessions = [SimpleNamespace(output_buffer=ansi_output, exited=True, exit_code=1)]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    await runner._run_process_watcher(_watcher_dict())
+
+    assert adapter.send.await_count == 1
+    sent_message = adapter.send.await_args.args[1]
+    assert "error" in sent_message
+    assert "\x1b[" not in sent_message
+    assert "\x1b]" not in sent_message
+
+
+@pytest.mark.asyncio
 async def test_no_thread_id_sends_no_metadata(monkeypatch, tmp_path):
     """When thread_id is empty, metadata should be None (general topic)."""
     import tools.process_registry as pr_module
