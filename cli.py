@@ -3723,6 +3723,13 @@ class HermesCLI:
         provider = getattr(self, "provider", None) or "unknown"
         model = getattr(self, "model", None) or "(unknown)"
         is_running = bool(getattr(self, "_agent_running", False))
+        todo_items = []
+        todo_store = getattr(agent, "_todo_store", None) if agent else None
+        if todo_store is not None:
+            try:
+                todo_items = todo_store.read() or []
+            except Exception:
+                todo_items = []
 
         lines = [
             "Hermes CLI Status",
@@ -3739,6 +3746,12 @@ class HermesCLI:
             f"Tokens: {total_tokens:,}",
             f"Agent Running: {'Yes' if is_running else 'No'}",
         ])
+        in_progress = [item for item in todo_items if item.get("status") == "in_progress"]
+        pending = [item for item in todo_items if item.get("status") == "pending"]
+        if in_progress or pending:
+            lines.append(f"Tasks: {len(in_progress)} in progress, {len(pending)} pending")
+            if in_progress:
+                lines.append(f"Current Task: {in_progress[0].get('content', '(no description)')}")
         self.console.print("\n".join(lines), highlight=False, markup=False)
     
     def _fast_command_available(self) -> bool:

@@ -419,6 +419,27 @@ def build_environment_hints() -> str:
 CONTEXT_FILE_MAX_CHARS = 20_000
 CONTEXT_TRUNCATE_HEAD_RATIO = 0.7
 CONTEXT_TRUNCATE_TAIL_RATIO = 0.2
+CONTEXT_ANCESTOR_HINT_MAX_WALK = 5
+
+
+# =========================================================================
+# Context files prompt cache
+# =========================================================================
+
+_CONTEXT_FILES_PROMPT_CACHE_MAX = 32
+_CONTEXT_FILES_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
+_CONTEXT_FILES_PROMPT_CACHE_LOCK = threading.Lock()
+_PROJECT_CONTEXT_DISCOVERY_CACHE_MAX = 64
+_PROJECT_CONTEXT_DISCOVERY_CACHE: OrderedDict[tuple, Optional[str]] = OrderedDict()
+_PROJECT_CONTEXT_DISCOVERY_CACHE_LOCK = threading.Lock()
+
+
+def clear_context_files_prompt_cache() -> None:
+    """Drop the in-process processed-context-files cache."""
+    with _CONTEXT_FILES_PROMPT_CACHE_LOCK:
+        _CONTEXT_FILES_PROMPT_CACHE.clear()
+    with _PROJECT_CONTEXT_DISCOVERY_CACHE_LOCK:
+        _PROJECT_CONTEXT_DISCOVERY_CACHE.clear()
 
 
 # =========================================================================
@@ -890,6 +911,82 @@ def _truncate_content(content: str, filename: str, max_chars: int = CONTEXT_FILE
     return head + marker + tail
 
 
+def _read_cached_context_file(
+    path: Path,
+    *,
+    display_name: str,
+    truncate_label: str,
+    strip_frontmatter: bool = False,
+) -> str:
+    """Read, sanitize, wrap, and cache one context file by stat-based key."""
+    try:
+        resolved = path.resolve()
+        st = resolved.stat()
+    except OSError as e:
+        logger.debug("Could not stat %s: %s", path, e)
+        return ""
+
+    cache_key = (
+        str(resolved),
+        display_name,
+        truncate_label,
+        strip_frontmatter,
+        st.st_mtime_ns,
+        st.st_size,
+    )
+    with _CONTEXT_FILES_PROMPT_CACHE_LOCK:
+        cached = _CONTEXT_FILES_PROMPT_CACHE.get(cache_key)
+        if cached is not None:
+            _CONTEXT_FILES_PROMPT_CACHE.move_to_end(cache_key)
+            return cached
+
+    try:
+        content = resolved.read_text(encoding="utf-8").strip()
+        if not content:
+            return ""
+        if strip_frontmatter:
+            content = _strip_yaml_frontmatter(content)
+        content = _scan_context_content(content, display_name)
+        result = _truncate_content(f"## {display_name}\n\n{content}", truncate_label)
+    except Exception as e:
+        logger.debug("Could not read %s: %s", resolved, e)
+        return ""
+
+    with _CONTEXT_FILES_PROMPT_CACHE_LOCK:
+        _CONTEXT_FILES_PROMPT_CACHE[cache_key] = result
+        _CONTEXT_FILES_PROMPT_CACHE.move_to_end(cache_key)
+        while len(_CONTEXT_FILES_PROMPT_CACHE) > _CONTEXT_FILES_PROMPT_CACHE_MAX:
+            _CONTEXT_FILES_PROMPT_CACHE.popitem(last=False)
+    return result
+
+
+def _project_context_search_dirs(cwd_path: Path, include_ancestor_hints: bool) -> list[Path]:
+    """Return directories searched by find_project_context_file()."""
+    search_dirs = [cwd_path]
+    if not include_ancestor_hints:
+        return search_dirs
+
+    stop_at = _find_git_root(cwd_path)
+    walked = 0
+    for directory in cwd_path.parents:
+        search_dirs.append(directory)
+        walked += 1
+        if stop_at and directory == stop_at:
+            break
+        if not stop_at and walked >= CONTEXT_ANCESTOR_HINT_MAX_WALK:
+            break
+    return search_dirs
+
+
+def _stat_fingerprint(path: Path) -> tuple[str, int | None, int | None]:
+    """Return a stable stat fingerprint for cache invalidation."""
+    try:
+        st = path.stat()
+    except OSError:
+        return (str(path), None, None)
+    return (str(path), st.st_mtime_ns, st.st_size)
+
+
 def load_soul_md() -> Optional[str]:
     """Load SOUL.md from HERMES_HOME and return its content, or None.
 
@@ -904,18 +1001,16 @@ def load_soul_md() -> Optional[str]:
         logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)
 
     soul_path = get_hermes_home() / "SOUL.md"
-    if not soul_path.exists():
+    if not soul_path.is_file():
         return None
-    try:
-        content = soul_path.read_text(encoding="utf-8").strip()
-        if not content:
-            return None
-        content = _scan_context_content(content, "SOUL.md")
-        content = _truncate_content(content, "SOUL.md")
-        return content
-    except Exception as e:
-        logger.debug("Could not read SOUL.md from %s: %s", soul_path, e)
+    result = _read_cached_context_file(
+        soul_path,
+        display_name="SOUL.md",
+        truncate_label="SOUL.md",
+    )
+    if not result:
         return None
+    return result.removeprefix("## SOUL.md\n\n")
 
 
 def _load_hermes_md(cwd_path: Path) -> str:
@@ -923,37 +1018,29 @@ def _load_hermes_md(cwd_path: Path) -> str:
     hermes_md_path = _find_hermes_md(cwd_path)
     if not hermes_md_path:
         return ""
+    rel = hermes_md_path.name
     try:
-        content = hermes_md_path.read_text(encoding="utf-8").strip()
-        if not content:
-            return ""
-        content = _strip_yaml_frontmatter(content)
-        rel = hermes_md_path.name
-        try:
-            rel = str(hermes_md_path.relative_to(cwd_path))
-        except ValueError:
-            pass
-        content = _scan_context_content(content, rel)
-        result = f"## {rel}\n\n{content}"
-        return _truncate_content(result, ".hermes.md")
-    except Exception as e:
-        logger.debug("Could not read %s: %s", hermes_md_path, e)
-        return ""
+        rel = str(hermes_md_path.relative_to(cwd_path))
+    except ValueError:
+        pass
+    return _read_cached_context_file(
+        hermes_md_path,
+        display_name=rel,
+        truncate_label=".hermes.md",
+        strip_frontmatter=True,
+    )
 
 
 def _load_agents_md(cwd_path: Path) -> str:
     """AGENTS.md — top-level only (no recursive walk)."""
     for name in ["AGENTS.md", "agents.md"]:
         candidate = cwd_path / name
-        if candidate.exists():
-            try:
-                content = candidate.read_text(encoding="utf-8").strip()
-                if content:
-                    content = _scan_context_content(content, name)
-                    result = f"## {name}\n\n{content}"
-                    return _truncate_content(result, "AGENTS.md")
-            except Exception as e:
-                logger.debug("Could not read %s: %s", candidate, e)
+        if candidate.is_file():
+            return _read_cached_context_file(
+                candidate,
+                display_name=name,
+                truncate_label="AGENTS.md",
+            )
     return ""
 
 
@@ -961,15 +1048,12 @@ def _load_claude_md(cwd_path: Path) -> str:
     """CLAUDE.md / claude.md — cwd only."""
     for name in ["CLAUDE.md", "claude.md"]:
         candidate = cwd_path / name
-        if candidate.exists():
-            try:
-                content = candidate.read_text(encoding="utf-8").strip()
-                if content:
-                    content = _scan_context_content(content, name)
-                    result = f"## {name}\n\n{content}"
-                    return _truncate_content(result, "CLAUDE.md")
-            except Exception as e:
-                logger.debug("Could not read %s: %s", candidate, e)
+        if candidate.is_file():
+            return _read_cached_context_file(
+                candidate,
+                display_name=name,
+                truncate_label="CLAUDE.md",
+            )
     return ""
 
 
@@ -977,30 +1061,92 @@ def _load_cursorrules(cwd_path: Path) -> str:
     """.cursorrules + .cursor/rules/*.mdc — cwd only."""
     cursorrules_content = ""
     cursorrules_file = cwd_path / ".cursorrules"
-    if cursorrules_file.exists():
-        try:
-            content = cursorrules_file.read_text(encoding="utf-8").strip()
-            if content:
-                content = _scan_context_content(content, ".cursorrules")
-                cursorrules_content += f"## .cursorrules\n\n{content}\n\n"
-        except Exception as e:
-            logger.debug("Could not read .cursorrules: %s", e)
+    if cursorrules_file.is_file():
+        content = _read_cached_context_file(
+            cursorrules_file,
+            display_name=".cursorrules",
+            truncate_label=".cursorrules",
+        )
+        if content:
+            cursorrules_content += f"{content}\n\n"
 
     cursor_rules_dir = cwd_path / ".cursor" / "rules"
     if cursor_rules_dir.exists() and cursor_rules_dir.is_dir():
-        mdc_files = sorted(cursor_rules_dir.glob("*.mdc"))
+        mdc_files = sorted(path for path in cursor_rules_dir.glob("*.mdc") if path.is_file())
         for mdc_file in mdc_files:
-            try:
-                content = mdc_file.read_text(encoding="utf-8").strip()
-                if content:
-                    content = _scan_context_content(content, f".cursor/rules/{mdc_file.name}")
-                    cursorrules_content += f"## .cursor/rules/{mdc_file.name}\n\n{content}\n\n"
-            except Exception as e:
-                logger.debug("Could not read %s: %s", mdc_file, e)
+            content = _read_cached_context_file(
+                mdc_file,
+                display_name=f".cursor/rules/{mdc_file.name}",
+                truncate_label=".cursorrules",
+            )
+            if content:
+                cursorrules_content += f"{content}\n\n"
 
     if not cursorrules_content:
         return ""
     return _truncate_content(cursorrules_content, ".cursorrules")
+
+
+def find_project_context_file(
+    cwd: Optional[str] = None,
+    *,
+    include_ancestor_hints: bool = False,
+) -> Optional[Path]:
+    """Return the highest-priority project context file for *cwd*, if any.
+
+    Discovery order matches ``build_context_files_prompt()``. By default only
+    ``.hermes.md`` walks ancestors; other hint files stay cwd-only to preserve
+    startup prompt semantics. When ``include_ancestor_hints`` is True, AGENTS /
+    CLAUDE / .cursorrules are also searched in ancestors up to the git root.
+    """
+    if cwd is None:
+        cwd = os.getcwd()
+
+    cwd_path = Path(cwd).resolve()
+    search_dirs = _project_context_search_dirs(cwd_path, include_ancestor_hints)
+    discovery_signature = tuple(
+        fp
+        for directory in search_dirs
+        for fp in (
+            _stat_fingerprint(directory),
+            _stat_fingerprint(directory / ".cursor" / "rules"),
+        )
+    )
+    cache_key = (str(cwd_path), include_ancestor_hints, discovery_signature)
+    with _PROJECT_CONTEXT_DISCOVERY_CACHE_LOCK:
+        cached = _PROJECT_CONTEXT_DISCOVERY_CACHE.get(cache_key)
+        if cached is not None or cache_key in _PROJECT_CONTEXT_DISCOVERY_CACHE:
+            _PROJECT_CONTEXT_DISCOVERY_CACHE.move_to_end(cache_key)
+            return Path(cached) if cached else None
+
+    hermes_md_path = _find_hermes_md(cwd_path)
+    if hermes_md_path:
+        result = hermes_md_path
+    else:
+        result = None
+        for directory in search_dirs:
+            for name in ["AGENTS.md", "agents.md", "CLAUDE.md", "claude.md", ".cursorrules"]:
+                candidate = directory / name
+                if candidate.is_file():
+                    result = candidate
+                    break
+
+            if result is not None:
+                break
+
+            cursor_rules_dir = directory / ".cursor" / "rules"
+            if cursor_rules_dir.exists() and cursor_rules_dir.is_dir():
+                mdc_files = sorted(path for path in cursor_rules_dir.glob("*.mdc") if path.is_file())
+                if mdc_files:
+                    result = mdc_files[0]
+                    break
+
+    with _PROJECT_CONTEXT_DISCOVERY_CACHE_LOCK:
+        _PROJECT_CONTEXT_DISCOVERY_CACHE[cache_key] = str(result) if result else None
+        _PROJECT_CONTEXT_DISCOVERY_CACHE.move_to_end(cache_key)
+        while len(_PROJECT_CONTEXT_DISCOVERY_CACHE) > _PROJECT_CONTEXT_DISCOVERY_CACHE_MAX:
+            _PROJECT_CONTEXT_DISCOVERY_CACHE.popitem(last=False)
+    return result
 
 
 def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = False) -> str:

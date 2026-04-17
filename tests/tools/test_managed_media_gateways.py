@@ -213,6 +213,28 @@ def test_managed_fal_submit_reuses_cached_sync_client(monkeypatch):
     assert captured["http_client"] is first_client
 
 
+def test_image_generation_tool_import_does_not_require_fal_client(monkeypatch):
+    import builtins
+
+    _install_fake_tools_package()
+    original_import = builtins.__import__
+
+    def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "fal_client":
+            raise ModuleNotFoundError("simulated missing fal_client")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+    image_generation_tool = _load_tool_module(
+        "tools.image_generation_tool",
+        "image_generation_tool.py",
+    )
+
+    assert hasattr(image_generation_tool, "image_generate_tool")
+    assert image_generation_tool.check_image_generation_requirements() is False
+
+
 def test_openai_tts_uses_managed_audio_gateway_when_direct_key_absent(monkeypatch, tmp_path):
     captured = {}
     _install_fake_tools_package()

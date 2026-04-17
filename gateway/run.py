@@ -86,7 +86,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home
-from utils import atomic_yaml_write, is_truthy_value
+from utils import atomic_json_write, atomic_yaml_write, is_truthy_value
+from agent.prompt_builder import find_project_context_file
 _hermes_home = get_hermes_home()
 
 # Load environment variables from ~/.hermes/.env first.
@@ -333,6 +334,106 @@ def _expand_whatsapp_auth_aliases(identifier: str) -> set:
     return resolved
 
 logger = logging.getLogger(__name__)
+
+
+def _build_first_message_onboarding_note(
+    *, history: List[dict], has_any_sessions: bool, cwd: Optional[str]
+) -> str:
+    """Build the one-time onboarding system note for a user's first-ever message."""
+    if history or has_any_sessions:
+        return ""
+
+    note = (
+        "[System note: This is the user's very first message ever. Briefly introduce "
+        "yourself, mention that /help shows available commands, and mention /plan for "
+        "multi-step work."
+    )
+
+    if not find_project_context_file(cwd, include_ancestor_hints=True):
+        note += (
+            " If this is a project folder, suggest adding .hermes.md or AGENTS.md "
+            "for workspace-specific instructions."
+        )
+
+    note += " Keep the introduction concise -- one or two sentences max.]"
+    return note
+
+
+_PROJECT_ONBOARDING_STATE_VERSION = 1
+
+
+def _project_onboarding_state_path() -> Path:
+    return get_hermes_home() / ".project_onboarding_state.json"
+
+
+
+def _project_onboarding_key(cwd: Optional[str]) -> Optional[str]:
+    if not cwd:
+        return None
+    cwd_path = Path(cwd).resolve()
+    for parent in [cwd_path, *cwd_path.parents]:
+        if (parent / ".git").exists():
+            return str(parent)
+    ctx = find_project_context_file(str(cwd_path), include_ancestor_hints=True)
+    if ctx is not None:
+        return str(ctx.parent.resolve())
+    return str(cwd_path)
+
+
+
+def _load_project_onboarding_state() -> dict:
+    path = _project_onboarding_state_path()
+    if not path.exists():
+        return {"version": _PROJECT_ONBOARDING_STATE_VERSION, "seen_projects": []}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"version": _PROJECT_ONBOARDING_STATE_VERSION, "seen_projects": []}
+    if not isinstance(data, dict) or data.get("version") != _PROJECT_ONBOARDING_STATE_VERSION:
+        return {"version": _PROJECT_ONBOARDING_STATE_VERSION, "seen_projects": []}
+    seen = data.get("seen_projects")
+    if not isinstance(seen, list):
+        seen = []
+    return {"version": _PROJECT_ONBOARDING_STATE_VERSION, "seen_projects": [str(x) for x in seen]}
+
+
+
+def _mark_project_onboarding_seen(cwd: Optional[str]) -> None:
+    key = _project_onboarding_key(cwd)
+    if not key:
+        return
+    state = _load_project_onboarding_state()
+    seen = list(state.get("seen_projects") or [])
+    if key in seen:
+        return
+    seen.append(key)
+    try:
+        atomic_json_write(
+            _project_onboarding_state_path(),
+            {"version": _PROJECT_ONBOARDING_STATE_VERSION, "seen_projects": seen},
+        )
+    except Exception:
+        logger.debug("Could not persist project onboarding state", exc_info=True)
+
+
+
+def _build_project_onboarding_note(*, cwd: Optional[str]) -> str:
+    """Build a once-per-project onboarding hint for workspaces missing context files."""
+    if not cwd:
+        return ""
+    if find_project_context_file(cwd, include_ancestor_hints=True):
+        return ""
+    key = _project_onboarding_key(cwd)
+    if not key:
+        return ""
+    state = _load_project_onboarding_state()
+    if key in set(state.get("seen_projects") or []):
+        return ""
+    return (
+        "[System note: This looks like a project folder without workspace-specific "
+        "instructions. Suggest adding .hermes.md or AGENTS.md for project guidance. "
+        "Keep it concise -- one sentence max.]"
+    )
 
 # Sentinel placed into _running_agents immediately when a session starts
 # processing, *before* any await.  Prevents a second message for the same
@@ -3937,12 +4038,21 @@ class GatewayRunner:
                         )
 
         # First-message onboarding -- only on the very first interaction ever
-        if not history and not self.session_store.has_any_sessions():
-            context_prompt += (
-                "\n\n[System note: This is the user's very first message ever. "
-                "Briefly introduce yourself and mention that /help shows available commands. "
-                "Keep the introduction concise -- one or two sentences max.]"
-            )
+        _onboarding_cwd = os.getenv("TERMINAL_CWD") or str(Path.home())
+        first_message_onboarding_note = _build_first_message_onboarding_note(
+            history=history,
+            has_any_sessions=self.session_store.has_any_sessions(),
+            cwd=_onboarding_cwd,
+        )
+        if first_message_onboarding_note:
+            context_prompt += f"\n\n{first_message_onboarding_note}"
+            if not find_project_context_file(_onboarding_cwd, include_ancestor_hints=True):
+                _mark_project_onboarding_seen(_onboarding_cwd)
+        else:
+            project_onboarding_note = _build_project_onboarding_note(cwd=_onboarding_cwd)
+            if project_onboarding_note:
+                context_prompt += f"\n\n{project_onboarding_note}"
+                _mark_project_onboarding_seen(_onboarding_cwd)
         
         # One-time prompt if no home channel is set for this platform
         # Skip for webhooks - they deliver directly to configured targets (github_comment, etc.)
@@ -4559,6 +4669,15 @@ class GatewayRunner:
             except Exception:
                 title = None
 
+        todo_items = []
+        agent = self._running_agents.get(session_key)
+        todo_store = getattr(agent, "_todo_store", None) if agent not in (None, _AGENT_PENDING_SENTINEL) else None
+        if todo_store is not None:
+            try:
+                todo_items = todo_store.read() or []
+            except Exception:
+                todo_items = []
+
         lines = [
             "📊 **Hermes Gateway Status**",
             "",
@@ -4571,6 +4690,14 @@ class GatewayRunner:
             f"**Last Activity:** {session_entry.updated_at.strftime('%Y-%m-%d %H:%M')}",
             f"**Tokens:** {session_entry.total_tokens:,}",
             f"**Agent Running:** {'Yes ⚡' if is_running else 'No'}",
+        ])
+        in_progress = [item for item in todo_items if item.get("status") == "in_progress"]
+        pending = [item for item in todo_items if item.get("status") == "pending"]
+        if in_progress or pending:
+            lines.append(f"**Tasks:** {len(in_progress)} in progress, {len(pending)} pending")
+            if in_progress:
+                lines.append(f"**Current Task:** {in_progress[0].get('content', '(no description)')}")
+        lines.extend([
             "",
             f"**Connected Platforms:** {', '.join(connected_platforms)}",
         ])

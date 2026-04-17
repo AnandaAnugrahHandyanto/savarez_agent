@@ -24,12 +24,11 @@ import json
 import logging
 import os
 import datetime
+import importlib
 import threading
 import uuid
 from typing import Any, Dict, Optional, Union
 from urllib.parse import urlencode
-
-import fal_client
 
 from tools.debug_helpers import DebugSession
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
@@ -283,6 +282,12 @@ _managed_fal_client_lock = threading.Lock()
 # ---------------------------------------------------------------------------
 # Managed FAL gateway (Nous Subscription)
 # ---------------------------------------------------------------------------
+
+def _import_fal_client():
+    """Import fal_client lazily so the tool module stays importable without it."""
+    return importlib.import_module("fal_client")
+
+
 def _resolve_managed_fal_gateway():
     """Return managed fal-queue gateway config when the user prefers the gateway
     or direct FAL credentials are absent."""
@@ -302,6 +307,7 @@ class _ManagedFalSyncClient:
     """Small per-instance wrapper around fal_client.SyncClient for managed queue hosts."""
 
     def __init__(self, *, key: str, queue_run_origin: str):
+        fal_client = _import_fal_client()
         sync_client_class = getattr(fal_client, "SyncClient", None)
         if sync_client_class is None:
             raise RuntimeError("fal_client.SyncClient is required for managed FAL gateway mode")
@@ -399,9 +405,10 @@ def _get_managed_fal_client(managed_gateway):
 
 def _submit_fal_request(model: str, arguments: Dict[str, Any]):
     """Submit a FAL request using direct credentials or the managed queue gateway."""
-    request_headers = {"x-idempotency-key": str(uuid.uuid4())}
     managed_gateway = _resolve_managed_fal_gateway()
+    request_headers = {"x-idempotency-key": str(uuid.uuid4())}
     if managed_gateway is None:
+        fal_client = _import_fal_client()
         return fal_client.submit(model, arguments=arguments, headers=request_headers)
 
     managed_client = _get_managed_fal_client(managed_gateway)

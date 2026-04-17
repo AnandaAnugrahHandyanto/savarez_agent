@@ -1,5 +1,8 @@
 """Tests for the central command registry and autocomplete."""
 
+import re
+from pathlib import Path
+
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
@@ -103,6 +106,9 @@ class TestResolveCommand:
         assert resolve_command("set-home").name == "sethome"
         assert resolve_command("reload_mcp").name == "reload-mcp"
 
+    def test_plan_resolves(self):
+        assert resolve_command("plan").name == "plan"
+
     def test_leading_slash_stripped(self):
         assert resolve_command("/help").name == "help"
         assert resolve_command("/bg").name == "background"
@@ -115,6 +121,21 @@ class TestResolveCommand:
 # ---------------------------------------------------------------------------
 # Derived dicts (backwards compat)
 # ---------------------------------------------------------------------------
+
+class TestBuiltinDispatchConsistency:
+    def test_builtin_dispatch_branches_have_registry_entries(self):
+        repo_root = Path(__file__).resolve().parents[2]
+        branch_names: set[str] = set()
+        for rel_path in ("cli.py", "gateway/run.py"):
+            content = (repo_root / rel_path).read_text(encoding="utf-8")
+            branch_names.update(re.findall(r'canonical == \"([a-zA-Z0-9_-]+)\"', content))
+
+        registry_names = {cmd.name for cmd in COMMAND_REGISTRY}
+        assert branch_names <= registry_names, (
+            "Dispatch branches missing from COMMAND_REGISTRY: "
+            f"{sorted(branch_names - registry_names)}"
+        )
+
 
 class TestDerivedDicts:
     def test_commands_dict_excludes_gateway_only(self):
@@ -193,6 +214,16 @@ class TestGatewayHelpLines:
                 assert f"`/{cmd.name}" not in joined, \
                     f"cli_only command /{cmd.name} should not be in gateway help"
 
+    def test_includes_every_gateway_available_command(self):
+        lines = gateway_help_lines()
+        joined = "\n".join(lines)
+        from hermes_cli.commands import _is_gateway_available, _resolve_config_gates
+
+        overrides = _resolve_config_gates()
+        for cmd in COMMAND_REGISTRY:
+            if _is_gateway_available(cmd, overrides):
+                assert f"`/{cmd.name}" in joined, f"/{cmd.name} missing from gateway help"
+
     def test_includes_alias_note_for_bg(self):
         lines = gateway_help_lines()
         bg_line = [l for l in lines if "/background" in l]
@@ -227,6 +258,17 @@ class TestTelegramBotCommands:
                 tg_name = cmd.name.replace("-", "_")
                 assert tg_name not in names
 
+    def test_includes_every_gateway_available_canonical_command(self):
+        names = {name for name, _ in telegram_bot_commands()}
+        from hermes_cli.commands import _is_gateway_available, _resolve_config_gates, _sanitize_telegram_name
+
+        overrides = _resolve_config_gates()
+        for cmd in COMMAND_REGISTRY:
+            if _is_gateway_available(cmd, overrides):
+                tg_name = _sanitize_telegram_name(cmd.name)
+                if tg_name:
+                    assert tg_name in names, f"Telegram menu missing {cmd.name!r}"
+
 
 class TestSlackSubcommandMap:
     def test_returns_dict(self):
@@ -248,6 +290,17 @@ class TestSlackSubcommandMap:
         for cmd in COMMAND_REGISTRY:
             if cmd.cli_only and not cmd.gateway_config_gate:
                 assert cmd.name not in mapping
+
+    def test_includes_every_gateway_available_command_and_alias(self):
+        mapping = slack_subcommand_map()
+        from hermes_cli.commands import _is_gateway_available, _resolve_config_gates
+
+        overrides = _resolve_config_gates()
+        for cmd in COMMAND_REGISTRY:
+            if _is_gateway_available(cmd, overrides):
+                assert cmd.name in mapping, f"Slack map missing canonical command {cmd.name!r}"
+                for alias in cmd.aliases:
+                    assert alias in mapping, f"Slack map missing alias {alias!r} for {cmd.name!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -438,6 +491,26 @@ class TestSubcommands:
         """Commands with explicit subcommands on CommandDef are extracted."""
         assert "/skills" in SUBCOMMANDS
         assert "install" in SUBCOMMANDS["/skills"]
+
+    def test_every_explicit_subcommands_command_is_present(self):
+        expected = {f"/{cmd.name}" for cmd in COMMAND_REGISTRY if cmd.subcommands}
+        assert expected <= set(SUBCOMMANDS), (
+            "Commands with explicit subcommands missing from SUBCOMMANDS: "
+            f"{sorted(expected - set(SUBCOMMANDS))}"
+        )
+
+    def test_subcommands_extras_only_come_from_args_hint_pipe_extraction(self):
+        explicit = {f"/{cmd.name}" for cmd in COMMAND_REGISTRY if cmd.subcommands}
+        piped = {
+            f"/{cmd.name}"
+            for cmd in COMMAND_REGISTRY
+            if not cmd.subcommands and cmd.args_hint and "|" in cmd.args_hint
+        }
+        extras = set(SUBCOMMANDS) - explicit
+        assert extras <= piped, (
+            "Unexpected SUBCOMMANDS entries not backed by explicit subcommands or "
+            f"args_hint pipe extraction: {sorted(extras - piped)}"
+        )
 
     def test_reasoning_has_subcommands(self):
         assert "/reasoning" in SUBCOMMANDS
@@ -684,6 +757,18 @@ class TestTelegramMenuCommands:
             assert 1 <= len(name) <= _TG_NAME_LIMIT, (
                 f"Command '{name}' is {len(name)} chars (limit {_TG_NAME_LIMIT})"
             )
+
+    def test_includes_all_gateway_available_core_commands(self):
+        menu, _ = telegram_menu_commands(max_commands=100)
+        names = {name for name, _ in menu}
+        from hermes_cli.commands import _is_gateway_available, _resolve_config_gates, _sanitize_telegram_name
+
+        overrides = _resolve_config_gates()
+        for cmd in COMMAND_REGISTRY:
+            if _is_gateway_available(cmd, overrides):
+                tg_name = _sanitize_telegram_name(cmd.name)
+                if tg_name:
+                    assert tg_name in names, f"Telegram menu missing core command {cmd.name!r}"
 
     def test_excludes_telegram_disabled_skills(self, tmp_path, monkeypatch):
         """Skills disabled for telegram should not appear in the menu."""
