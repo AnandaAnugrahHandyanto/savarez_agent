@@ -2590,19 +2590,22 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
-def _expand_env_vars(obj):
-    """Recursively expand ``${VAR}`` references in config values.
+_ENV_REVERSE_MAP = {}
 
-    Only string values are processed; dict keys, numbers, booleans, and
-    None are left untouched.  Unresolved references (variable not in
-    ``os.environ``) are kept verbatim so callers can detect them.
-    """
+def _expand_env_vars(obj):
+    """Recursively expand ``${VAR}`` references in config values."""
     if isinstance(obj, str):
-        return re.sub(
-            r"\${([^}]+)}",
-            lambda m: os.environ.get(m.group(1), m.group(0)),
-            obj,
-        )
+        def replacer(m):
+            var_name = m.group(1)
+            placeholder = f"${{{var_name}}}"
+            val = os.environ.get(var_name, placeholder)
+            
+            if val != placeholder and val.strip():
+                _ENV_REVERSE_MAP[val] = placeholder
+                
+            return val
+            
+        return re.sub(r"\$\{([^}]+)\}", replacer, obj)
     if isinstance(obj, dict):
         return {k: _expand_env_vars(v) for k, v in obj.items()}
     if isinstance(obj, list):
@@ -2798,6 +2801,21 @@ _COMMENTED_SECTIONS = """
 #     model: google/gemini-2.5-flash
 """
 
+def _collapse_env_vars(obj):
+    """
+    Saves resolved secrets back to their ${ENV_VAR} placeholders before writing to disk.
+    Prevents leaking credentials into config.yaml.
+    """
+    if isinstance(obj, str):
+        for secret_val, placeholder in _ENV_REVERSE_MAP.items():
+            if secret_val in obj:
+                obj = obj.replace(secret_val, placeholder)
+        return obj
+    if isinstance(obj, dict):
+        return {k: _collapse_env_vars(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_collapse_env_vars(item) for item in obj]
+    return obj
 
 def save_config(config: Dict[str, Any]):
     """Save configuration to ~/.hermes/config.yaml."""
@@ -2809,7 +2827,8 @@ def save_config(config: Dict[str, Any]):
     ensure_hermes_home()
     config_path = get_config_path()
     normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
-
+    safe_normalized = _collapse_env_vars(normalized)
+    
     # Build optional commented-out sections for features that are off by
     # default or only relevant when explicitly configured.
     parts = []
@@ -2822,7 +2841,7 @@ def save_config(config: Dict[str, Any]):
 
     atomic_yaml_write(
         config_path,
-        normalized,
+        safe_normalized,
         extra_content="".join(parts) if parts else None,
     )
     _secure_file(config_path)
