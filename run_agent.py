@@ -1549,6 +1549,71 @@ class AIAgent:
                 "is_anthropic_oauth": self._is_anthropic_oauth,
             })
 
+    def _transition_context_engine_session(
+        self,
+        *,
+        old_session_id: str | None = None,
+        new_session_id: str | None = None,
+        previous_messages: list | None = None,
+        carry_over_context: bool = False,
+        reset_engine: bool = False,
+    ) -> None:
+        """Apply the host-side lifecycle contract for context-engine session boundaries."""
+        engine = getattr(self, "context_compressor", None)
+        if not engine:
+            return
+
+        target_session_id = new_session_id or getattr(self, "session_id", None) or ""
+        lifecycle_kwargs = {
+            "hermes_home": str(get_hermes_home()),
+            "platform": getattr(self, "platform", None) or "cli",
+            "model": getattr(self, "model", ""),
+            "context_length": getattr(engine, "context_length", 0),
+        }
+
+        if old_session_id and previous_messages is not None:
+            rollover = getattr(engine, "rollover_session", None)
+            if callable(rollover):
+                try:
+                    rollover(
+                        old_session_id,
+                        target_session_id,
+                        previous_messages=previous_messages,
+                        carry_over_context=carry_over_context,
+                        **lifecycle_kwargs,
+                    )
+                    return
+                except TypeError:
+                    try:
+                        rollover(old_session_id, target_session_id, previous_messages=previous_messages)
+                        return
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
+            try:
+                engine.on_session_end(old_session_id, previous_messages)
+            except Exception:
+                pass
+
+        if reset_engine:
+            try:
+                engine.on_session_reset()
+            except Exception:
+                pass
+
+        try:
+            engine.on_session_start(target_session_id, **lifecycle_kwargs)
+        except Exception:
+            pass
+
+        if carry_over_context and old_session_id and hasattr(engine, "carry_over_new_session_context"):
+            try:
+                engine.carry_over_new_session_context(old_session_id, target_session_id)
+            except Exception:
+                pass
+
     def reset_session_state(
         self,
         previous_messages: list | None = None,
@@ -1572,12 +1637,6 @@ class AIAgent:
         This keeps the counter reset logic DRY and maintainable in one place
         rather than scattering it across multiple methods.
         """
-        if hasattr(self, "context_compressor") and self.context_compressor and previous_messages is not None:
-            try:
-                self.context_compressor.on_session_end(old_session_id or self.session_id or "", previous_messages)
-            except Exception:
-                pass
-
         # Token usage counters
         self.session_total_tokens = 0
         self.session_input_tokens = 0
@@ -1597,22 +1656,13 @@ class AIAgent:
 
         # Context engine reset (works for both built-in compressor and plugins)
         if hasattr(self, "context_compressor") and self.context_compressor:
-            self.context_compressor.on_session_reset()
-            try:
-                self.context_compressor.on_session_start(
-                    self.session_id,
-                    hermes_home=str(get_hermes_home()),
-                    platform=self.platform or "cli",
-                    model=self.model,
-                    context_length=getattr(self.context_compressor, "context_length", 0),
-                )
-            except Exception:
-                pass
-            if carry_over_context and old_session_id and hasattr(self.context_compressor, "carry_over_new_session_context"):
-                try:
-                    self.context_compressor.carry_over_new_session_context(old_session_id, self.session_id)
-                except Exception:
-                    pass
+            self._transition_context_engine_session(
+                old_session_id=old_session_id,
+                new_session_id=getattr(self, "session_id", None),
+                previous_messages=previous_messages,
+                carry_over_context=carry_over_context,
+                reset_engine=True,
+            )
     
     def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
         """Switch the model/provider in-place for a live agent.
@@ -6923,6 +6973,13 @@ class AIAgent:
                     source=self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
                     model=self.model,
                     parent_session_id=old_session_id,
+                )
+                self._transition_context_engine_session(
+                    old_session_id=old_session_id,
+                    new_session_id=self.session_id,
+                    previous_messages=messages,
+                    carry_over_context=True,
+                    reset_engine=False,
                 )
                 # Auto-number the title for the continuation session
                 if old_title:

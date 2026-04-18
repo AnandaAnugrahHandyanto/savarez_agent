@@ -1851,6 +1851,7 @@ class HermesCLI:
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
+        self._last_session_boundary_thread: Optional[threading.Thread] = None
 
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
@@ -4096,6 +4097,32 @@ class HermesCLI:
         except Exception:
             pass
 
+    def _launch_session_boundary_memory_flush(self, history_snapshot: list) -> None:
+        """Kick old-session memory extraction off-thread so /new can feel immediate."""
+        self._last_session_boundary_thread = None
+        agent = getattr(self, "agent", None)
+        if not agent or not history_snapshot:
+            return
+
+        def _run_boundary_flush():
+            try:
+                agent.flush_memories(history_snapshot)
+            except (Exception, KeyboardInterrupt):
+                pass
+            if hasattr(agent, "commit_memory_session"):
+                try:
+                    agent.commit_memory_session(history_snapshot)
+                except (Exception, KeyboardInterrupt):
+                    pass
+
+        thread = threading.Thread(
+            target=_run_boundary_flush,
+            daemon=True,
+            name=f"session-boundary-flush-{(getattr(agent, 'session_id', '') or 'unknown')[:24]}",
+        )
+        self._last_session_boundary_thread = thread
+        thread.start()
+
     def new_session(self, silent=False):
         """Start a fresh session with a new session ID and cleared agent state."""
         _old_history = list(self.conversation_history)
@@ -4103,16 +4130,7 @@ class HermesCLI:
             getattr(self.agent, "session_id", None) if self.agent else None
         ) or self.session_id
         if self.agent and self.conversation_history:
-            try:
-                self.agent.flush_memories(self.conversation_history)
-            except (Exception, KeyboardInterrupt):
-                pass
-            # Trigger memory extraction on the old session before session_id rotates.
-            if hasattr(self.agent, "commit_memory_session"):
-                try:
-                    self.agent.commit_memory_session(self.conversation_history)
-                except (Exception, KeyboardInterrupt):
-                    pass
+            self._launch_session_boundary_memory_flush(_old_history)
             self._notify_session_boundary(
                 "on_session_finalize",
                 old_session_id=_boundary_old_session_id,
