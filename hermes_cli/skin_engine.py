@@ -347,7 +347,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "prompt_symbol": "❯ ",
             "help_header": "[?] Available Commands",
         },
-        "tool_prefix": "│",
+        "tool_prefix": "|",
     },
     "warm-lightmode": {
         "name": "warm-lightmode",
@@ -429,7 +429,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "prompt_symbol": "Ψ ❯ ",
             "help_header": "(Ψ) Available Commands",
         },
-        "tool_prefix": "│",
+        "tool_prefix": "|",
         "banner_logo": """[bold #B8E8FF]██████╗  ██████╗ ███████╗███████╗██╗██████╗  ██████╗ ███╗   ██╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
 [bold #97D6FF]██╔══██╗██╔═══██╗██╔════╝██╔════╝██║██╔══██╗██╔═══██╗████╗  ██║      ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
 [#75C1F6]██████╔╝██║   ██║███████╗█████╗  ██║██║  ██║██║   ██║██╔██╗ ██║█████╗███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║[/]
@@ -472,7 +472,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
         },
         "spinner": {
             "waiting_faces": ["(◉)", "(◌)", "(◬)", "(⬤)", "(::)"],
-            "thinking_faces": ["(◉)", "(◬)", "(◌)", "(○)", "(●)"],
+            "thinking_faces": ["(◉)", "(◬)", "(◌)", "(○)", "(*)"],
             "thinking_verbs": [
                 "finding traction", "measuring the grade", "resetting the boulder",
                 "counting the ascent", "testing leverage", "setting the shoulder",
@@ -493,7 +493,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "prompt_symbol": "◉ ❯ ",
             "help_header": "(◉) Available Commands",
         },
-        "tool_prefix": "│",
+        "tool_prefix": "|",
         "banner_logo": """[bold #F5F5F5]███████╗██╗███████╗██╗   ██╗██████╗ ██╗  ██╗██╗   ██╗███████╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
 [bold #E7E7E7]██╔════╝██║██╔════╝╚██╗ ██╔╝██╔══██╗██║  ██║██║   ██║██╔════╝      ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
 [#D7D7D7]███████╗██║███████╗ ╚████╔╝ ██████╔╝███████║██║   ██║███████╗█████╗███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║[/]
@@ -558,7 +558,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "prompt_symbol": "✦ ❯ ",
             "help_header": "(✦) Available Commands",
         },
-        "tool_prefix": "│",
+        "tool_prefix": "|",
         "banner_logo": """[bold #FFF0D4] ██████╗██╗  ██╗ █████╗ ██████╗ ██╗███████╗ █████╗ ██████╗ ██████╗        █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
 [bold #FFD39A]██╔════╝██║  ██║██╔══██╗██╔══██╗██║╚══███╔╝██╔══██╗██╔══██╗██╔══██╗      ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
 [#F29C38]██║     ███████║███████║██████╔╝██║  ███╔╝ ███████║██████╔╝██║  ██║█████╗███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║[/]

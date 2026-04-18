@@ -152,7 +152,7 @@ def _sweep_expired_pastes(now: Optional[float] = None) -> tuple[int, int]:
 # ---------------------------------------------------------------------------
 
 _PRIVACY_NOTICE = """\
-⚠️  This will upload the following to a public paste service:
+[WARN]️  This will upload the following to a public paste service:
   • System info (OS, Python version, Hermes version, provider, which API keys
     are configured — NOT the actual keys)
   • Recent log lines (agent.log, errors.log, gateway.log — may contain
@@ -164,7 +164,7 @@ Pastes auto-delete after 6 hours.
 """
 
 _GATEWAY_PRIVACY_NOTICE = (
-    "⚠️ **Privacy notice:** This uploads system info + recent log tails "
+    "[WARN]️ **Privacy notice:** This uploads system info + recent log tails "
     "(may contain conversation fragments) to a public paste service. "
     "Full logs are NOT included from the gateway — use `hermes debug share` "
     "from the CLI for full log uploads.\n"
@@ -424,7 +424,7 @@ def collect_debug_report(*, log_lines: int = 200, dump_text: str = "") -> str:
         dump_text = _capture_dump()
     buf.write(dump_text)
 
-    # ── Recent log tails (summary only) ──────────────────────────────────
+    # -- Recent log tails (summary only) ----------------------------------
     buf.write("\n\n")
     buf.write(f"--- agent.log (last {log_lines} lines) ---\n")
     buf.write(_read_log_tail("agent", log_lines))
@@ -542,13 +542,13 @@ def run_debug_delete(args):
         try:
             ok = delete_paste(url)
             if ok:
-                print(f"  ✓ Deleted: {url}")
+                print(f"  [OK] Deleted: {url}")
             else:
-                print(f"  ✗ Failed to delete: {url} (unexpected response)")
+                print(f"  [X] Failed to delete: {url} (unexpected response)")
         except ValueError as exc:
-            print(f"  ✗ {exc}")
+            print(f"  [X] {exc}")
         except Exception as exc:
-            print(f"  ✗ Could not delete {url}: {exc}")
+            print(f"  [X] Could not delete {url}: {exc}")
 
 
 def run_debug(args):

@@ -940,7 +940,7 @@ def _get_config_hint_for_unknown_provider(provider_name: str) -> str:
             # Show first line of hint
             first_hint = ci.hint.splitlines()[0] if ci.hint else ""
             if first_hint:
-                lines.append(f"    → {first_hint}")
+                lines.append(f"    -> {first_hint}")
         return "\n".join(lines)
     except Exception:
         return ""
@@ -1661,7 +1661,7 @@ def resolve_codex_runtime_credentials(
         cli_tokens = _import_codex_cli_tokens()
         if cli_tokens:
             logger.info("Migrating Codex credentials from ~/.codex/ to Hermes auth store")
-            print("⚠️  Migrating Codex credentials to Hermes's own auth store.")
+            print("[WARN]️  Migrating Codex credentials to Hermes's own auth store.")
             print("   This avoids conflicts with Codex CLI and VS Code.")
             print("   Run `hermes auth` to create a fully independent session.\n")
             _save_codex_tokens(cli_tokens)
@@ -2924,7 +2924,7 @@ def _prompt_model_selection(
             for mid in _unavailable:
                 print(f"{_DIM}     {_label(mid)}{_RESET}")
             print()
-            print(f"{_DIM}  ── Upgrade at {_upgrade_url} for paid models ──{_RESET}")
+            print(f"{_DIM}  -- Upgrade at {_upgrade_url} for paid models --{_RESET}")
             print()
             effective_title = "Available free models:"
         else:
@@ -2967,7 +2967,7 @@ def _prompt_model_selection(
     if _unavailable:
         _upgrade_url = (portal_url or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
         print()
-        print(f"  {_DIM}── Unavailable models (requires paid tier — upgrade at {_upgrade_url}) ──{_RESET}")
+        print(f"  {_DIM}-- Unavailable models (requires paid tier — upgrade at {_upgrade_url}) --{_RESET}")
         for mid in _unavailable:
             print(f"  {'':>{num_width}}  {_DIM}{_label(mid)}{_RESET}")
     print()
