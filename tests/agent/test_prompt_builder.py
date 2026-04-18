@@ -27,6 +27,7 @@ from agent.prompt_builder import (
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
     PLANNING_AND_SELF_REVIEW_GUIDANCE,
+    AUTONOMOUS_EXECUTION_GUIDANCE,
     MULTIMODAL_VERIFICATION_GUIDANCE,
     PLATFORM_HINTS,
     WSL_ENVIRONMENT_HINT,
@@ -64,6 +65,12 @@ class TestGuidanceConstants:
         assert "browser_vision" in MULTIMODAL_VERIFICATION_GUIDANCE
         assert "vision_analyze" in MULTIMODAL_VERIFICATION_GUIDANCE
         assert "verify" in MULTIMODAL_VERIFICATION_GUIDANCE
+
+    def test_autonomous_execution_guidance_content(self):
+        assert "act immediately" in AUTONOMOUS_EXECUTION_GUIDANCE
+        assert "execution over deliberation" in AUTONOMOUS_EXECUTION_GUIDANCE
+        assert "solvable obstacle" in AUTONOMOUS_EXECUTION_GUIDANCE
+        assert "safety rules" in AUTONOMOUS_EXECUTION_GUIDANCE
 
 
 # =========================================================================

@@ -181,6 +181,17 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
+AUTONOMOUS_EXECUTION_GUIDANCE = (
+    "When you have enough information to proceed, act immediately rather than "
+    "asking for permission or confirmation. Default to execution over deliberation. "
+    "If you encounter a solvable obstacle (missing directory, failed command, wrong path), "
+    "fix it and continue — don't stop to report the blocker unless you've exhausted "
+    "reasonable retry strategies. Keep the full task in mind: after completing a sub-step, "
+    "move on to the next one without waiting for direction. Only pause when you genuinely "
+    "cannot make progress without user input or when a destructive action requires explicit "
+    "approval per the safety rules."
+)
+
 MULTIMODAL_VERIFICATION_GUIDANCE = (
     "When your work involves visual content (web pages, images, diagrams, UIs, layouts), "
     "use browser_vision or vision_analyze to inspect the result before reporting completion. "

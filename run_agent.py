@@ -81,6 +81,7 @@ from agent.error_classifier import classify_api_error, FailoverReason
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, PLANNING_AND_SELF_REVIEW_GUIDANCE, SKILLS_GUIDANCE,
+    AUTONOMOUS_EXECUTION_GUIDANCE,
     MULTIMODAL_VERIFICATION_GUIDANCE,
     build_nous_subscription_prompt,
 )
@@ -3680,6 +3681,7 @@ class AIAgent:
             prompt_parts.append(" ".join(tool_guidance))
 
         prompt_parts.append(PLANNING_AND_SELF_REVIEW_GUIDANCE)
+        prompt_parts.append(AUTONOMOUS_EXECUTION_GUIDANCE)
 
         nous_subscription_prompt = build_nous_subscription_prompt(self.valid_tool_names)
         if nous_subscription_prompt:

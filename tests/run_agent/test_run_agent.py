@@ -20,7 +20,7 @@ import pytest
 import run_agent
 from run_agent import AIAgent
 from agent.error_classifier import FailoverReason
-from agent.prompt_builder import DEFAULT_AGENT_IDENTITY, PLANNING_AND_SELF_REVIEW_GUIDANCE, MULTIMODAL_VERIFICATION_GUIDANCE
+from agent.prompt_builder import DEFAULT_AGENT_IDENTITY, PLANNING_AND_SELF_REVIEW_GUIDANCE, AUTONOMOUS_EXECUTION_GUIDANCE, MULTIMODAL_VERIFICATION_GUIDANCE
 
 
 # ---------------------------------------------------------------------------
@@ -732,6 +732,10 @@ class TestBuildSystemPrompt:
     def test_includes_planning_and_self_review_guidance(self, agent):
         prompt = agent._build_system_prompt()
         assert PLANNING_AND_SELF_REVIEW_GUIDANCE in prompt
+
+    def test_includes_autonomous_execution_guidance(self, agent):
+        prompt = agent._build_system_prompt()
+        assert AUTONOMOUS_EXECUTION_GUIDANCE in prompt
 
     def test_includes_multimodal_verification_guidance_when_vision_tools_present(self, agent):
         """Multimodal verification guidance should appear when browser_vision is available."""
