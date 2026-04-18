@@ -82,12 +82,7 @@ class TestTranscriptHistoryOffset:
             {"role": "assistant", "content": "A programming language."},
         ]
 
-        # OLD behavior: len(history) = 3, skips too many
-        old_offset = len(history)
-        old_new = (agent_messages[old_offset:]
-                   if len(agent_messages) > old_offset
-                   else agent_messages)
-        assert len(old_new) == 1  # BUG: lost the user message
+        
 
         # FIXED behavior: history_offset = 2
         history_offset = len(agent_history)
