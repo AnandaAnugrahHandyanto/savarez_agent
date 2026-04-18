@@ -1882,7 +1882,16 @@ def resolve_vision_provider_client(
         main_provider = _read_main_provider()
         main_model = _read_main_model()
         if main_provider and main_provider not in ("auto", ""):
-            vision_model = _PROVIDER_VISION_MODELS.get(main_provider, main_model)
+            # _PROVIDER_VISION_MODELS keys are model-level providers (e.g.
+            # "xiaomi", "zai"), not API providers (e.g. "nous", "openrouter").
+            # When main_provider is an aggregator that wraps a model with a
+            # dedicated vision variant, extract the model's provider prefix
+            # and look up the override by that first.
+            _model_prefix = main_model.split("/")[0] if "/" in main_model else ""
+            vision_model = _PROVIDER_VISION_MODELS.get(
+                _model_prefix,
+                _PROVIDER_VISION_MODELS.get(main_provider, main_model),
+            )
             rpc_client, rpc_model = resolve_provider_client(
                 main_provider, vision_model,
                 api_mode=resolved_api_mode)
