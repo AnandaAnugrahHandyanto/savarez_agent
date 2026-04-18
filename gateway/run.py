@@ -3190,6 +3190,13 @@ class GatewayRunner:
         if canonical == "cc":
             return await self._handle_cc_command(event)
 
+        # While a session is in CC mode, ``/clear`` is redirected to the
+        # Claude Code session reset. Outside CC mode this command stays
+        # ``cli_only`` and falls through to the unknown-command notice as
+        # before, so non-CC users are unaffected.
+        if canonical == "clear" and self._session_key_for_source(event.source) in self._cc_mode:
+            return self._handle_cc_clear(event)
+
         if canonical == "plan":
             try:
                 from agent.skill_commands import build_plan_path, build_skill_invocation_message
@@ -6494,6 +6501,21 @@ class GatewayRunner:
             )
 
         return await self._run_cc_task(session_key, task, event)
+
+    def _handle_cc_clear(self, event: MessageEvent) -> str:
+        """Handle ``/clear`` while in CC mode.
+
+        Drops the cached Claude Code ``session_id`` for this gateway session
+        so the next ``/cc`` invocation starts a fresh Claude Code conversation
+        (no ``--resume``). ``claude -p`` is a one-shot print mode and has no
+        interactive ``/clear`` of its own, so we implement the equivalent by
+        clearing the bridge's own session cache.
+        """
+        session_key = self._session_key_for_source(event.source)
+        had_session = self._cc_sessions.pop(session_key, None) is not None
+        if had_session:
+            return "🧹 Claude Code session cleared — next message starts fresh."
+        return "🧹 No active Claude Code session to clear."
 
     async def _run_cc_task(self, session_key: str, task: str, event: MessageEvent) -> str:
         """Invoke ``claude -p`` as a subprocess and format the JSON response.
