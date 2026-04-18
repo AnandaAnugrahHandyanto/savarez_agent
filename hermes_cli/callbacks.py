@@ -192,7 +192,20 @@ def approval_callback(cli, command: str, description: str) -> str:
 
     Uses cli._approval_lock to serialize concurrent requests (e.g. from
     parallel delegation subtasks) so each prompt gets its own turn.
+
+    If no interactive TUI/app is attached, deny immediately with explicit
+    guidance instead of idling until the approval timeout expires.
     """
+    if not getattr(cli, "_app", None):
+        cprint(
+            "\n"
+            f"{_DIM}  Approval required but no interactive approval client is active. "
+            "Denying command immediately. Re-run from an interactive Hermes CLI/session "
+            "or use a safer non-destructive command path if possible." \
+            f"{_RST}"
+        )
+        return "deny"
+
     lock = getattr(cli, "_approval_lock", None)
     if lock is None:
         import threading
