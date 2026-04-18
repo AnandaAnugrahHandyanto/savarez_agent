@@ -248,6 +248,7 @@ async def _summarize_session(
 # Third-party integrations (Paperclip agents, etc.) tag their sessions with
 # HERMES_SESSION_SOURCE=tool so they don't clutter the user's session history.
 _HIDDEN_SESSION_SOURCES = ("tool",)
+SESSION_SEARCH_TOTAL_TIMEOUT_SECONDS = 60.0
 
 
 def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
@@ -433,11 +434,27 @@ def session_search(
         # throttling for integrations that trigger recall repeatedly, which can
         # turn one tool call into a long retry loop.
         async def _summarize_all() -> List[Union[str, Exception]]:
-            """Summarize prepared sessions one at a time for reliability."""
+            """Summarize prepared sessions one at a time within a bounded budget."""
             results: List[Union[str, Exception]] = []
-            for _, _, text, meta in tasks:
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + SESSION_SEARCH_TOTAL_TIMEOUT_SECONDS
+
+            for index, (_, _, text, meta) in enumerate(tasks):
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    timeout_exc = TimeoutError(
+                        f"Session summarization exceeded {SESSION_SEARCH_TOTAL_TIMEOUT_SECONDS:.0f}s budget"
+                    )
+                    results.append(timeout_exc)
+                    results.extend([timeout_exc] * (len(tasks) - index - 1))
+                    break
                 try:
-                    results.append(await _summarize_session(text, query, meta))
+                    results.append(
+                        await asyncio.wait_for(
+                            _summarize_session(text, query, meta),
+                            timeout=remaining,
+                        )
+                    )
                 except Exception as exc:
                     results.append(exc)
             return results
@@ -453,12 +470,15 @@ def session_search(
             results = _run_async(_summarize_all())
         except concurrent.futures.TimeoutError:
             logging.warning(
-                "Session summarization timed out after 60 seconds",
+                "Session summarization timed out after %.0f seconds",
+                SESSION_SEARCH_TOTAL_TIMEOUT_SECONDS,
                 exc_info=True,
             )
             return json.dumps({
                 "success": False,
-                "error": "Session summarization timed out. Try a more specific query or reduce the limit.",
+                "error": (
+                    "Session summarization timed out. Try a more specific query or reduce the limit."
+                ),
             }, ensure_ascii=False)
 
         summaries = []

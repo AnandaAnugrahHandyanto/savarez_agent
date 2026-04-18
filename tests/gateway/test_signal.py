@@ -749,11 +749,18 @@ class TestSignalTypingLoop:
         adapter = _make_signal_adapter(monkeypatch)
         calls = []
 
-        async def _fake_rpc(method, params, rpc_id=None, log_failures=True):
+        async def _fake_rpc(
+            method,
+            params,
+            rpc_id=None,
+            log_failures=True,
+            success_on_null_result=False,
+        ):
             calls.append({
                 "method": method,
                 "rpc_id": rpc_id,
                 "log_failures": log_failures,
+                "success_on_null_result": success_on_null_result,
             })
             return {"ok": True}
 
@@ -767,9 +774,35 @@ class TestSignalTypingLoop:
         assert len(calls) == 1
         assert calls[0]["method"] == "sendTyping"
         assert calls[0]["log_failures"] is False
+        assert calls[0]["success_on_null_result"] is True
 
         await adapter.stop_typing("+155****4567")
         assert "+155****4567" not in adapter._typing_tasks
+
+    @pytest.mark.asyncio
+    async def test_send_typing_treats_null_result_as_success(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        calls = []
+
+        async def _fake_rpc(
+            method,
+            params,
+            rpc_id=None,
+            log_failures=True,
+            success_on_null_result=False,
+        ):
+            calls.append(success_on_null_result)
+            return True if success_on_null_result else None
+
+        adapter._rpc = _fake_rpc
+
+        await adapter.send_typing("+155****4567")
+        await asyncio.sleep(0.01)
+
+        assert len(calls) == 1
+        assert "+155****4567" in adapter._typing_tasks
+
+        await adapter.stop_typing("+155****4567")
 
     @pytest.mark.asyncio
     async def test_send_typing_failure_holds_slot_for_refresh_window(self, monkeypatch):
@@ -777,11 +810,18 @@ class TestSignalTypingLoop:
         monkeypatch.setattr("gateway.platforms.signal.TYPING_INTERVAL", 0.05)
         calls = []
 
-        async def _fake_rpc(method, params, rpc_id=None, log_failures=True):
+        async def _fake_rpc(
+            method,
+            params,
+            rpc_id=None,
+            log_failures=True,
+            success_on_null_result=False,
+        ):
             calls.append({
                 "method": method,
                 "rpc_id": rpc_id,
                 "log_failures": log_failures,
+                "success_on_null_result": success_on_null_result,
             })
             return None
 

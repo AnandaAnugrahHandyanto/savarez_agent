@@ -555,6 +555,7 @@ class SignalAdapter(BasePlatformAdapter):
         rpc_id: str = None,
         *,
         log_failures: bool = True,
+        success_on_null_result: bool = False,
     ) -> Any:
         """Send a JSON-RPC 2.0 request to signal-cli daemon."""
         if not self.client:
@@ -587,7 +588,10 @@ class SignalAdapter(BasePlatformAdapter):
                     logger.debug("Signal RPC error (%s): %s", method, data["error"])
                 return None
 
-            return data.get("result")
+            result = data.get("result")
+            if result is None and success_on_null_result:
+                return True
+            return result
 
         except Exception as e:
             if log_failures:
@@ -662,6 +666,7 @@ class SignalAdapter(BasePlatformAdapter):
                         params,
                         rpc_id="typing",
                         log_failures=False,
+                        success_on_null_result=True,
                     )
                     if result is None:
                         # Hold the slot through one refresh window so the base

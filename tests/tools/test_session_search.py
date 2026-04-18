@@ -410,6 +410,37 @@ class TestSessionSearch:
         assert result["count"] == 2
         assert state["max"] == 1
 
+    def test_returns_partial_results_when_serial_summary_budget_expires(self, monkeypatch):
+        """Expired summary budget should fall back to previews instead of failing the whole tool."""
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        mock_db.search_messages.return_value = [
+            {"session_id": "s1", "content": "match", "source": "cli", "session_started": 1709500000, "model": "test"},
+            {"session_id": "s2", "content": "match", "source": "cli", "session_started": 1709400000, "model": "test"},
+        ]
+        mock_db.get_session.side_effect = lambda session_id: {"parent_session_id": None}
+        mock_db.get_messages_as_conversation.side_effect = lambda session_id: [
+            {"role": "user", "content": f"hello from {session_id}"},
+        ]
+        monkeypatch.setattr(
+            "tools.session_search_tool.SESSION_SEARCH_TOTAL_TIMEOUT_SECONDS",
+            0.01,
+        )
+
+        async def _slow_summarize(text, query, meta):
+            await asyncio.sleep(0.02)
+            return f"summary for {query}"
+
+        from unittest.mock import patch as _patch
+        with _patch("tools.session_search_tool._summarize_session", new=_slow_summarize):
+            result = json.loads(session_search(query="test", db=mock_db, limit=2))
+
+        assert result["success"] is True
+        assert result["count"] == 2
+        assert all("[Raw preview" in entry["summary"] for entry in result["results"])
+
 
 class TestSummarizeSession:
     @pytest.mark.asyncio
