@@ -59,3 +59,85 @@ def test_resolve_turn_route_falls_back_to_primary_when_route_runtime_cannot_be_r
     assert result["model"] == "anthropic/claude-sonnet-4"
     assert result["runtime"]["provider"] == "openrouter"
     assert result["label"] is None
+
+
+def test_resolve_turn_route_passes_inline_cheap_model_api_key(monkeypatch):
+    """Inline ``api_key`` on cheap_model must reach resolve_runtime_provider.
+
+    Regression: without this, short-query turns would drop the inline key,
+    fall through to ``OPENAI_API_KEY`` env var, and 400 on the first attempt
+    before the fallback chain recovered.
+    """
+    from agent.smart_model_routing import resolve_turn_route
+
+    captured: dict = {}
+
+    def _fake_resolve(**kwargs):
+        captured.update(kwargs)
+        return {
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": kwargs.get("explicit_base_url") or "",
+            "api_key": kwargs.get("explicit_api_key") or "",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", _fake_resolve
+    )
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    cfg = {
+        "enabled": True,
+        "cheap_model": {
+            "provider": "custom",
+            "model": "gemini-flash-latest",
+            "base_url": "https://example.com/v1/",
+            "api_key": "inline-cheap-key",
+        },
+    }
+    result = resolve_turn_route(
+        "what time is it in tokyo?",
+        cfg,
+        {"model": "primary", "provider": "custom"},
+    )
+    assert captured["explicit_api_key"] == "inline-cheap-key"
+    assert result["runtime"]["api_key"] == "inline-cheap-key"
+
+
+def test_resolve_turn_route_prefers_api_key_env_over_inline(monkeypatch):
+    """``api_key_env`` takes precedence over inline ``api_key`` when set."""
+    from agent.smart_model_routing import resolve_turn_route
+
+    captured: dict = {}
+
+    def _fake_resolve(**kwargs):
+        captured.update(kwargs)
+        return {
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": kwargs.get("explicit_base_url") or "",
+            "api_key": kwargs.get("explicit_api_key") or "",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", _fake_resolve
+    )
+    monkeypatch.setenv("CHEAP_MODEL_KEY", "env-wins")
+
+    cfg = {
+        "enabled": True,
+        "cheap_model": {
+            "provider": "custom",
+            "model": "gemini-flash-latest",
+            "base_url": "https://example.com/v1/",
+            "api_key": "inline-loses",
+            "api_key_env": "CHEAP_MODEL_KEY",
+        },
+    }
+    result = resolve_turn_route(
+        "what time is it in tokyo?",
+        cfg,
+        {"model": "primary", "provider": "custom"},
+    )
+    assert captured["explicit_api_key"] == "env-wins"
+    assert result["runtime"]["api_key"] == "env-wins"

@@ -142,6 +142,14 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
     api_key_env = str(route.get("api_key_env") or "").strip()
     if api_key_env:
         explicit_api_key = os.getenv(api_key_env) or None
+    # Fall back to the inline ``api_key`` on cheap_model. Without this,
+    # resolve_runtime_provider cannot see the inline key (explicit_base_url
+    # disables the use_config_base_url path) and drops through to
+    # OPENAI_API_KEY, which may be a stale placeholder.
+    if not explicit_api_key:
+        inline_api_key = str(route.get("api_key") or "").strip()
+        if inline_api_key:
+            explicit_api_key = inline_api_key
 
     try:
         runtime = resolve_runtime_provider(
