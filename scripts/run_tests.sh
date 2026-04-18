@@ -47,6 +47,28 @@ if ! "$PYTHON" -c "import pytest_split" 2>/dev/null; then
   "$PYTHON" -m pip install --quiet "pytest-split>=0.9,<1"
 fi
 
+# ── Ensure test extras are present ──────────────────────────────────────────
+# Local envs are frequently created with only `.[dev]`, but the default test
+# suite imports modules provided by extras like [web], [acp], and [matrix].
+# Bootstrap to the CI-equivalent env (.[all,dev]) when imports are missing.
+MISSING_EXTRAS=0
+if ! "$PYTHON" -c "import fastapi" >/dev/null 2>&1; then
+  MISSING_EXTRAS=1
+fi
+if ! "$PYTHON" -c "import acp" >/dev/null 2>&1; then
+  MISSING_EXTRAS=1
+fi
+if [[ "$(uname -s)" == "Linux" ]]; then
+  if ! "$PYTHON" -c "import mautrix" >/dev/null 2>&1; then
+    MISSING_EXTRAS=1
+  fi
+fi
+
+if [[ "$MISSING_EXTRAS" -eq 1 ]]; then
+  echo "→ missing test extras detected; syncing environment with .[all,dev]"
+  "$PYTHON" -m pip install --quiet -e ".[all,dev]"
+fi
+
 # ── Hermetic environment ────────────────────────────────────────────────────
 # Mirror what CI does in .github/workflows/tests.yml + what conftest.py does.
 # Unset every credential-shaped var currently in the environment.
