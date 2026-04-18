@@ -85,6 +85,7 @@ except ImportError:
     lark = None  # type: ignore[assignment]
     CallBackCard = None  # type: ignore[assignment]
     P2CardActionTriggerResponse = None  # type: ignore[assignment]
+    CallBackCard = None  # type: ignore[assignment]
     EventDispatcherHandler = None  # type: ignore[assignment]
     FeishuWSClient = None  # type: ignore[assignment]
     FEISHU_DOMAIN = None  # type: ignore[assignment]
@@ -1514,6 +1515,13 @@ class FeishuAdapter(BasePlatformAdapter):
                     "session_key": session_key,
                     "message_id": result.message_id or "",
                     "chat_id": chat_id,
+                    # Store original card content to preserve in callback response
+                    "original_elements": [
+                        {
+                            "tag": "markdown",
+                            "content": f"```\n{cmd_preview}\n```\n**Reason:** {description}",
+                        },
+                    ],
                 }
             return result
         except Exception as exc:
@@ -2043,9 +2051,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
 
         self._submit_on_loop(loop, self._handle_card_action_event(data))
-        if P2CardActionTriggerResponse is None:
-            return None
-        return P2CardActionTriggerResponse()
+        return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
     @staticmethod
     def _loop_accepts_callbacks(loop: Any) -> bool:
@@ -2168,14 +2174,29 @@ class FeishuAdapter(BasePlatformAdapter):
         self._card_action_tokens[token] = now
         return False
 
-    async def _handle_card_action_event(self, data: Any) -> None:
-        """Route Feishu interactive card button clicks as synthetic COMMAND events."""
+    async def _handle_card_action_event_async(self, data: Any) -> None:
+        """Async follow-up for Feishu card actions.
+
+        Approval resolution is done synchronously in _on_card_action_trigger
+        so the response card can be returned immediately. This handler only
+        handles non-approval card actions and duplicate-token dedup.
+        """
         event = getattr(data, "event", None)
         token = str(getattr(event, "token", "") or "")
         if token and self._is_card_action_duplicate(token):
             logger.debug("[Feishu] Dropping duplicate card action token: %s", token)
             return
 
+        action = getattr(event, "action", None)
+        action_value = getattr(action, "value", {}) or {}
+        hermes_action = action_value.get("hermes_action") if isinstance(action_value, dict) else None
+
+        # Approval buttons were already resolved synchronously — skip here
+        if hermes_action:
+            return
+
+        # Non-approval card actions: route as synthetic COMMAND events
+        action_tag = str(getattr(action, "tag", "") or "button")
         context = getattr(event, "context", None)
         chat_id = str(getattr(context, "open_chat_id", "") or "")
         operator = getattr(event, "operator", None)
@@ -2183,10 +2204,6 @@ class FeishuAdapter(BasePlatformAdapter):
         if not chat_id or not open_id:
             logger.debug("[Feishu] Card action missing chat_id or operator open_id, dropping")
             return
-
-        action = getattr(event, "action", None)
-        action_tag = str(getattr(action, "tag", "") or "button")
-        action_value = getattr(action, "value", {}) or {}
 
         synthetic_text = f"/card {action_tag}"
         if action_value:
