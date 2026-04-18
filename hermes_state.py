@@ -719,7 +719,7 @@ class SessionDB:
         """Find the latest leaf session in a compression split chain.
 
         Given a session_id, if its end_reason is 'compression', follows the
-        parent_session_id chain to find the latest non-compression leaf node.
+        child chain to find the latest non-compression leaf node.
         This is needed for /resume to show the actual latest content instead of
         a frozen compression parent.
 
@@ -728,10 +728,16 @@ class SessionDB:
 
         Compression chains can have multiple layers: A→B→C→D, so we traverse
         until we find a node with no children.
+
+        IMPORTANT: Only follows children whose end_reason is 'compression' or
+        NULL (active session). Stops at session_reset/session_switch boundaries
+        because those represent independent conversations, not continuations.
         """
         with self._lock:
             current_id = session_id
-            while True:
+            visited = set()
+            while current_id not in visited:
+                visited.add(current_id)
                 # First, check if current session exists and get its info
                 cursor = self._conn.execute(
                     "SELECT * FROM sessions WHERE id = ?", (current_id,)
@@ -741,21 +747,49 @@ class SessionDB:
                     return None
                 current = dict(current_row)
 
-                # Look for children of this session
-                # We want the latest child (by started_at DESC)
+                # Look for children of this session that are compression
+                # continuations (or active sessions). Skip session_reset/
+                # session_switch children — they are independent conversations.
                 cursor = self._conn.execute(
                     "SELECT * FROM sessions WHERE parent_session_id = ? "
+                    "AND (end_reason = 'compression' OR end_reason IS NULL) "
                     "ORDER BY started_at DESC LIMIT 1",
                     (current_id,)
                 )
                 child = cursor.fetchone()
 
                 if not child:
-                    # No more children - this is the leaf
+                    # No more compression-chain children — this is the leaf
                     return current
 
                 # Move to the child and continue
                 current_id = child["id"]
+
+            # Should not reach here, but return current as safety
+            return current
+
+    def _get_compression_chain_ids(self, session_id: str) -> Set[str]:
+        """Get all session IDs in the compression chain starting from session_id.
+
+        Returns the set of all chain members (compression children only),
+        used for deduplication so dead branches don't appear as separate entries.
+        """
+        chain_ids = set()
+        with self._lock:
+            stack = [session_id]
+            while stack:
+                current_id = stack.pop()
+                if current_id in chain_ids:
+                    continue
+                chain_ids.add(current_id)
+                cursor = self._conn.execute(
+                    "SELECT id FROM sessions WHERE parent_session_id = ? "
+                    "AND (end_reason = 'compression' OR end_reason IS NULL)",
+                    (current_id,)
+                )
+                for row in cursor.fetchall():
+                    stack.append(row["id"])
+        return chain_ids
 
     def get_ancestor_ids(self, session_id: str) -> Set[str]:
         """Get all ancestor session IDs for a given session (thread-safe).

@@ -6917,6 +6917,10 @@ class GatewayRunner:
                     end_reason = s.get("end_reason")
                     display_session = s
                     if end_reason == "compression":
+                        # Add ALL chain members to seen_ids for dedup
+                        chain_ids = self._session_db._get_compression_chain_ids(sid)
+                        seen_ids.update(chain_ids)
+
                         leaf = self._session_db._find_latest_leaf(sid)
                         if leaf and leaf.get("id") != sid:
                             leaf_id = leaf.get("id")
@@ -6924,6 +6928,8 @@ class GatewayRunner:
                                 continue
                             if not leaf.get("preview"):
                                 leaf["preview"] = s.get("preview", "")
+                            if not leaf.get("last_active"):
+                                leaf["last_active"] = s.get("last_active")
                             display_session = leaf
                             seen_ids.add(leaf_id)
 
@@ -6987,15 +6993,22 @@ class GatewayRunner:
                     end_reason = s.get("end_reason")
                     display_session = s
                     if end_reason == "compression":
+                        # Add ALL chain members to seen_ids for dedup
+                        chain_ids = self._session_db._get_compression_chain_ids(sid)
+                        seen_ids.update(chain_ids)
+
                         leaf = self._session_db._find_latest_leaf(sid)
                         if leaf and leaf.get("id") != sid:
                             leaf_id = leaf.get("id")
                             if leaf_id == current_sid or leaf_id in seen_ids:
                                 continue
                             # _find_latest_leaf returns raw DB rows without the
-                            # computed 'preview' field; carry it from the parent.
+                            # computed 'preview' and 'last_active' fields;
+                            # carry them from the parent.
                             if not leaf.get("preview"):
                                 leaf["preview"] = s.get("preview", "")
+                            if not leaf.get("last_active"):
+                                leaf["last_active"] = s.get("last_active")
                             display_session = leaf
                             seen_ids.add(leaf_id)
 
