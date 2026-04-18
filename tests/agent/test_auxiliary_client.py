@@ -697,7 +697,12 @@ class TestIsConnectionError:
 
 
 class TestKimiForCodingTemperature:
-    """kimi-for-coding now requires temperature=0.6 exactly."""
+    """Moonshot kimi-for-coding models require fixed temperatures.
+
+    k2.5 / k2-turbo-preview / k2-0905-preview → 0.6 (non-thinking lock).
+    k2-thinking / k2-thinking-turbo → 1.0 (thinking lock).
+    kimi-k2-instruct* and every other model preserve the caller's temperature.
+    """
 
     def test_build_call_kwargs_forces_fixed_temperature(self):
         from agent.auxiliary_client import _build_call_kwargs
@@ -800,12 +805,27 @@ class TestKimiForCodingTemperature:
 
         assert kwargs["temperature"] == expected
 
-    def test_non_kimi_model_still_preserves_temperature(self):
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "anthropic/claude-sonnet-4-6",
+            "gpt-5.4",
+            # kimi-k2-instruct is the non-coding K2 family — temperature is
+            # variable (recommended 0.6 but not enforced).  Must not clamp.
+            "kimi-k2-instruct",
+            "moonshotai/Kimi-K2-Instruct",
+            "moonshotai/Kimi-K2-Instruct-0905",
+            "kimi-k2-instruct-0905",
+            # Hypothetical future kimi name not in the whitelist.
+            "kimi-k2-experimental",
+        ],
+    )
+    def test_non_restricted_model_preserves_temperature(self, model):
         from agent.auxiliary_client import _build_call_kwargs
 
         kwargs = _build_call_kwargs(
             provider="openrouter",
-            model="anthropic/claude-sonnet-4-6",
+            model=model,
             messages=[{"role": "user", "content": "hello"}],
             temperature=0.3,
         )
