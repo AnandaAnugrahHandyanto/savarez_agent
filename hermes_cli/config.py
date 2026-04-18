@@ -203,7 +203,7 @@ def get_container_exec_info() -> Optional[dict]:
 # =============================================================================
 
 # Re-export from hermes_constants — canonical definition lives there.
-from hermes_constants import get_hermes_home  # noqa: F811,E402
+from hermes_constants import get_default_hermes_root, get_hermes_home  # noqa: F811,E402
 
 def get_config_path() -> Path:
     """Get the main config file path."""
@@ -216,6 +216,57 @@ def get_env_path() -> Path:
 def get_project_root() -> Path:
     """Get the project installation directory."""
     return Path(__file__).parent.parent.resolve()
+
+
+def _normalize_profile_local_path(value: Any) -> Any:
+    """Map legacy in-container profile paths onto the local Hermes root when safe.
+
+    Older profile files sometimes persisted paths like
+    ``/root/.hermes/profiles/<name>/workspace``. On a host install, the same
+    profile lives under the local Hermes root (for example
+    ``/Users/alice/.hermes/profiles/<name>/workspace``). Only rewrite when the
+    equivalent local target already exists, so we don't silently point users at
+    a guessed path.
+    """
+    if not isinstance(value, str):
+        return value
+
+    raw = value.strip()
+    if not raw.startswith("/root/.hermes/"):
+        return raw
+
+    try:
+        relative = Path(raw).relative_to(Path("/root/.hermes"))
+    except ValueError:
+        return raw
+
+    candidate = get_default_hermes_root() / relative
+    if candidate.exists() or candidate.parent.exists():
+        return str(candidate)
+    return raw
+
+
+def _normalize_profile_path_settings(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize known profile-local path settings without touching unrelated keys."""
+    normalized = dict(config)
+
+    terminal_cfg = normalized.get("terminal")
+    if isinstance(terminal_cfg, dict) and "cwd" in terminal_cfg:
+        updated_terminal = dict(terminal_cfg)
+        updated_terminal["cwd"] = _normalize_profile_local_path(updated_terminal.get("cwd"))
+        normalized["terminal"] = updated_terminal
+
+    skills_cfg = normalized.get("skills")
+    if isinstance(skills_cfg, dict):
+        external_dirs = skills_cfg.get("external_dirs")
+        if isinstance(external_dirs, list):
+            updated_skills = dict(skills_cfg)
+            updated_skills["external_dirs"] = [
+                _normalize_profile_local_path(item) for item in external_dirs
+            ]
+            normalized["skills"] = updated_skills
+
+    return normalized
 
 def _secure_dir(path):
     """Set directory to owner-only access (0700 by default). No-op on Windows.
@@ -346,6 +397,10 @@ DEFAULT_CONFIG = {
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},
+    "agents": {},
+    "categories": {},
+    "runtime_fallback": {"enabled": False},
+    "model_capabilities": {},
     "toolsets": ["hermes-cli"],
     "agent": {
         "max_turns": 90,
@@ -668,6 +723,10 @@ DEFAULT_CONFIG = {
     # so child agents can run on a different (cheaper/faster) provider and model.
     # Uses the same runtime provider resolution as CLI/gateway startup, so all
     # configured providers (OpenRouter, Nous, Z.ai, Kimi, etc.) are supported.
+    # Category profiles also serve as Hermes-native routing hints for the
+    # primary agent: the delegate_task schema and orchestration notes surface
+    # their names and routing_description values so the parent can choose the
+    # right category before spawning subagents.
     "delegation": {
         "model": "",       # e.g. "google/gemini-3-flash-preview" (empty = inherit parent model)
         "provider": "",    # e.g. "openrouter" (empty = inherit parent provider + credentials)
@@ -675,8 +734,52 @@ DEFAULT_CONFIG = {
         "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
         "max_iterations": 50,  # per-subagent iteration cap (each subagent gets its own budget,
                                # independent of the parent's max_iterations)
+        "max_concurrent_children": 3,
         "reasoning_effort": "",  # reasoning effort for subagents: "xhigh", "high", "medium",
                                  # "low", "minimal", "none" (empty = inherit parent's level)
+        "auto_decompose_large_tasks": True,  # prompt the primary agent to make a todo list on large requests
+        "auto_fanout_batch_mode": True,      # prefer one batched delegate_task call over many single-task calls
+        "auto_fanout_max_tasks": 3,          # soft cap for one delegated batch after routing/truncation logic
+        "default_category": "general",     # fallback routing label when the primary agent omits category
+        "categories": {
+            "general": {
+                "routing_description": "Default fallback for uncategorized delegated work.",
+                "max_concurrent_children": 3,
+            },
+            "research": {
+                "routing_description": "Audits, comparisons, investigation, and read-heavy research.",
+                "max_concurrent_children": 3,
+                "max_iterations": 25,
+                "enabled_tools": [
+                    "read_file",
+                    "search_files",
+                    "session_search",
+                    "skills_list",
+                    "skill_view",
+                    "web_search",
+                    "web_extract",
+                    "browser_navigate",
+                    "browser_snapshot",
+                    "browser_console",
+                    "browser_scroll",
+                    "browser_get_images",
+                    "vision_analyze",
+                    "browser_vision",
+                ],
+            },
+            "implementation": {
+                "routing_description": "Code changes, patches, refactors, and other write-heavy implementation work.",
+                "max_concurrent_children": 2,
+                "max_iterations": 35,
+                "toolsets": ["terminal", "file"],
+            },
+            "verification": {
+                "routing_description": "Tests, validation, regression checks, and review passes.",
+                "max_concurrent_children": 3,
+                "max_iterations": 20,
+                "toolsets": ["terminal", "file", "web"],
+            },
+        },
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts
@@ -788,7 +891,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 18,
+    "_config_version": 19,
 }
 
 # =============================================================================
@@ -1952,7 +2055,8 @@ def check_config_version() -> Tuple[int, int]:
 # Fields that are valid at root level of config.yaml
 _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
-    "fallback_providers", "credential_pool_strategies", "toolsets",
+    "fallback_providers", "credential_pool_strategies", "agents",
+    "categories", "runtime_fallback", "model_capabilities", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
 }
@@ -1991,6 +2095,38 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
             return [ConfigIssue("error", "Could not load config.yaml", "Run 'hermes setup' to create a valid config")]
 
     issues: List[ConfigIssue] = []
+
+    agents_cfg = config.get("agents")
+    if agents_cfg is not None and not isinstance(agents_cfg, dict):
+        issues.append(ConfigIssue(
+            "warning",
+            f"agents should be a mapping of named agent configs, got {type(agents_cfg).__name__}",
+            "Change to:\n  agents:\n    oracle:\n      model: openai/gpt-5.4",
+        ))
+
+    categories_cfg = config.get("categories")
+    if categories_cfg is not None and not isinstance(categories_cfg, dict):
+        issues.append(ConfigIssue(
+            "warning",
+            f"categories should be a mapping of named category configs, got {type(categories_cfg).__name__}",
+            "Change to:\n  categories:\n    research:\n      model: anthropic/claude-haiku-4-5",
+        ))
+
+    runtime_fallback_cfg = config.get("runtime_fallback")
+    if runtime_fallback_cfg is not None and not isinstance(runtime_fallback_cfg, (bool, dict)):
+        issues.append(ConfigIssue(
+            "warning",
+            f"runtime_fallback should be either a boolean or a config dict, got {type(runtime_fallback_cfg).__name__}",
+            "Use either 'runtime_fallback: true' or a mapping like runtime_fallback:\n  enabled: true",
+        ))
+
+    model_capabilities_cfg = config.get("model_capabilities")
+    if model_capabilities_cfg is not None and not isinstance(model_capabilities_cfg, dict):
+        issues.append(ConfigIssue(
+            "warning",
+            f"model_capabilities should be a config dict, got {type(model_capabilities_cfg).__name__}",
+            "Change to:\n  model_capabilities:\n    enabled: true",
+        ))
 
     # ── custom_providers must be a list, not a dict ──────────────────────
     cp = config.get("custom_providers")
@@ -2083,6 +2219,40 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
             "    default: your-model-name\n"
             "    base_url: https://...",
         ))
+
+    delegation_cfg = config.get("delegation")
+    if delegation_cfg is not None:
+        if not isinstance(delegation_cfg, dict):
+            issues.append(ConfigIssue(
+                "error",
+                f"delegation should be a dict, got {type(delegation_cfg).__name__}",
+                "Change to:\n  delegation:\n    max_iterations: 50\n    max_concurrent_children: 3",
+            ))
+        else:
+            categories = delegation_cfg.get("categories")
+            if categories is not None and not isinstance(categories, dict):
+                issues.append(ConfigIssue(
+                    "error",
+                    f"delegation.categories should be a dict of category profiles, got {type(categories).__name__}",
+                    "Change to:\n  delegation:\n    categories:\n      research:\n        enabled_tools:\n          - read_file",
+                ))
+            elif isinstance(categories, dict):
+                for name, entry in categories.items():
+                    if not isinstance(entry, dict):
+                        issues.append(ConfigIssue(
+                            "warning",
+                            f"delegation.categories.{name} should be a dict, got {type(entry).__name__}",
+                            "Each category should define keys like toolsets, enabled_tools, max_iterations, or max_concurrent_children",
+                        ))
+                        continue
+
+                    routing_description = entry.get("routing_description")
+                    if routing_description is not None and not isinstance(routing_description, str):
+                        issues.append(ConfigIssue(
+                            "warning",
+                            f"delegation.categories.{name}.routing_description should be a string, got {type(routing_description).__name__}",
+                            "Use a short sentence describing when the primary agent should route work into this category.",
+                        ))
 
     # ── Root-level keys that look misplaced ──────────────────────────────
     for key in config:
@@ -2762,6 +2932,56 @@ def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
     return config
 
 
+def _normalize_openagent_named_bucket(bucket: Any) -> Dict[str, Dict[str, Any]]:
+    """Normalize OpenAgent-style named agent/category mappings."""
+    if not isinstance(bucket, dict):
+        return {}
+
+    normalized: Dict[str, Dict[str, Any]] = {}
+    for raw_name, entry in bucket.items():
+        name = str(raw_name or "").strip()
+        if not name:
+            continue
+        if isinstance(entry, str):
+            model = entry.strip()
+            if model:
+                normalized[name] = {"model": model}
+        elif isinstance(entry, dict):
+            normalized[name] = dict(entry)
+    return normalized
+
+
+def _normalize_runtime_fallback_config(config: Any) -> Dict[str, Any]:
+    """Normalize runtime_fallback from bool-or-dict into dict form."""
+    if isinstance(config, bool):
+        return {"enabled": config}
+    if isinstance(config, dict):
+        return dict(config)
+    return {"enabled": False}
+
+
+def _normalize_model_capabilities_config(config: Any) -> Dict[str, Any]:
+    """Normalize model_capabilities to a mapping or empty dict."""
+    return dict(config) if isinstance(config, dict) else {}
+
+
+def _normalize_openagent_config_buckets(
+    config: Dict[str, Any], *, include_defaults: bool = True,
+) -> Dict[str, Any]:
+    """Normalize OpenAgent-style config buckets while preserving shorthand."""
+    config = dict(config)
+
+    if include_defaults or "agents" in config:
+        config["agents"] = _normalize_openagent_named_bucket(config.get("agents"))
+    if include_defaults or "categories" in config:
+        config["categories"] = _normalize_openagent_named_bucket(config.get("categories"))
+    if include_defaults or "runtime_fallback" in config:
+        config["runtime_fallback"] = _normalize_runtime_fallback_config(config.get("runtime_fallback"))
+    if include_defaults or "model_capabilities" in config:
+        config["model_capabilities"] = _normalize_model_capabilities_config(config.get("model_capabilities"))
+
+    return config
+
 
 def read_raw_config() -> Dict[str, Any]:
     """Read ~/.hermes/config.yaml as-is, without merging defaults or migrating.
@@ -2804,10 +3024,15 @@ def load_config() -> Dict[str, Any]:
         except Exception as e:
             print(f"Warning: Failed to load config: {e}")
 
-    normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
-    expanded = _expand_env_vars(normalized)
-    _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(expanded)
-    return expanded
+    normalized = _normalize_profile_path_settings(
+        _expand_env_vars(
+            _normalize_openagent_config_buckets(
+                _normalize_root_model_keys(_normalize_max_turns_config(config))
+            )
+        )
+    )
+    _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(normalized)
+    return normalized
 
 
 _SECURITY_COMMENT = """
@@ -2916,9 +3141,19 @@ def save_config(config: Dict[str, Any]):
 
     ensure_hermes_home()
     config_path = get_config_path()
-    current_normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
+    current_normalized = _normalize_profile_path_settings(
+        _normalize_openagent_config_buckets(
+            _normalize_root_model_keys(_normalize_max_turns_config(config)),
+            include_defaults=False,
+        )
+    )
     normalized = current_normalized
-    raw_existing = _normalize_root_model_keys(_normalize_max_turns_config(read_raw_config()))
+    raw_existing = _normalize_profile_path_settings(
+        _normalize_openagent_config_buckets(
+            _normalize_root_model_keys(_normalize_max_turns_config(read_raw_config())),
+            include_defaults=False,
+        )
+    )
     if raw_existing:
         normalized = _preserve_env_ref_templates(
             normalized,
@@ -2969,7 +3204,11 @@ def load_env() -> Dict[str, str]:
             line = line.strip()
             if line and not line.startswith('#') and '=' in line:
                 key, _, value = line.partition('=')
-                env_vars[key.strip()] = value.strip().strip('"\'')
+                parsed_key = key.strip()
+                parsed_value = value.strip().strip('"\'')
+                if parsed_key in {"MESSAGING_CWD", "TERMINAL_CWD"}:
+                    parsed_value = _normalize_profile_local_path(parsed_value)
+                env_vars[parsed_key] = parsed_value
     
     return env_vars
 
@@ -3119,6 +3358,8 @@ def save_env_value(key: str, value: str):
     if not _ENV_VAR_NAME_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
     value = value.replace("\n", "").replace("\r", "")
+    if key in {"MESSAGING_CWD", "TERMINAL_CWD"}:
+        value = _normalize_profile_local_path(value)
     # API keys / tokens must be ASCII — strip non-ASCII with a warning.
     value = _check_non_ascii_credential(key, value)
     ensure_hermes_home()

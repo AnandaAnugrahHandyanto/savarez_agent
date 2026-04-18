@@ -172,3 +172,17 @@ class TestConfigIssueDataclass:
         a = ConfigIssue("error", "msg", "hint")
         b = ConfigIssue("error", "msg", "hint")
         assert a == b
+
+
+class TestDelegationCategoryValidation:
+    def test_delegation_categories_must_be_dict(self):
+        issues = validate_config_structure({
+            "delegation": {"categories": ["research"]},
+        })
+        assert any("delegation.categories should be a dict" in i.message for i in issues)
+
+    def test_delegation_category_entries_warn_when_not_dict(self):
+        issues = validate_config_structure({
+            "delegation": {"categories": {"research": "read-only"}},
+        })
+        assert any("delegation.categories.research should be a dict" in i.message for i in issues)

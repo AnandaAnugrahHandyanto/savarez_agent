@@ -104,9 +104,11 @@ if _config_path.exists():
         import yaml as _yaml
         with open(_config_path, encoding="utf-8") as _f:
             _cfg = _yaml.safe_load(_f) or {}
-        # Expand ${ENV_VAR} references before bridging to env vars.
-        from hermes_cli.config import _expand_env_vars
-        _cfg = _expand_env_vars(_cfg)
+        # Expand ${ENV_VAR} references and normalize known profile-local paths
+        # before bridging values into env vars. This repairs legacy in-container
+        # paths like /root/.hermes/profiles/<name>/workspace on host installs.
+        from hermes_cli.config import _expand_env_vars, _normalize_profile_path_settings
+        _cfg = _normalize_profile_path_settings(_expand_env_vars(_cfg))
         # Top-level simple values (fallback only — don't override .env)
         for _key, _val in _cfg.items():
             if isinstance(_val, (str, int, float, bool)) and _key not in os.environ:

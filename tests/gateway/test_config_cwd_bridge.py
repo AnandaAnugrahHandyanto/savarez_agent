@@ -19,7 +19,10 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
 
     Returns the resulting env dict (only TERMINAL_* and MESSAGING_CWD keys).
     """
+    from hermes_cli.config import _normalize_profile_path_settings
+
     env = dict(initial_env or {})
+    cfg = _normalize_profile_path_settings(cfg)
 
     # --- Replicate lines 54-56: generic top-level bridge (for context) ---
     for key, val in cfg.items():
@@ -182,6 +185,17 @@ class TestNestedTerminalCwdPlaceholderSkip:
         cfg = {"terminal": {"cwd": "/explicit/path"}}
         result = _simulate_config_bridge(cfg, {"TERMINAL_CWD": "/old/value"})
         assert result["TERMINAL_CWD"] == "/explicit/path"
+
+    def test_legacy_in_container_profile_cwd_is_normalized(self, tmp_path, monkeypatch):
+        profile_home = tmp_path / "profiles" / "thindi"
+        workspace = profile_home / "workspace"
+        workspace.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+        cfg = {"terminal": {"cwd": "/root/.hermes/profiles/thindi/workspace"}}
+        result = _simulate_config_bridge(cfg)
+
+        assert result["TERMINAL_CWD"] == str(workspace)
 
     def test_terminal_dot_cwd_falls_back_to_messaging_cwd(self):
         """terminal.cwd: '.' with no TERMINAL_CWD should fall to MESSAGING_CWD."""
