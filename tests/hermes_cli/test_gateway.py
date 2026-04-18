@@ -35,16 +35,26 @@ class TestSystemdLingerStatus:
 
 def test_systemd_status_warns_when_linger_disabled(monkeypatch, tmp_path, capsys):
     unit_path = tmp_path / "hermes-gateway.service"
-    unit_path.write_text("[Unit]\n")
+    unit_path.write_text("[Unit]\n", encoding="utf-8")
 
-    monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
     monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda: (False, ""))
+    monkeypatch.setattr(
+        gateway,
+        "get_gateway_systemd_report",
+        lambda requested_scope=None: {
+            "installed": True,
+            "scope": "user",
+            "system": False,
+            "unit_name": gateway.get_service_name(),
+            "unit_path": str(unit_path),
+            "active": True,
+            "reachable": True,
+        },
+    )
 
     def fake_run(cmd, capture_output=False, text=False, check=False, **kwargs):
-        if cmd[:4] == ["systemctl", "--user", "status", gateway.get_service_name()]:
+        if cmd == ["systemctl", "--user", "status", gateway.get_service_name(), "--no-pager"]:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
-        if cmd[:3] == ["systemctl", "--user", "is-active"]:
-            return SimpleNamespace(returncode=0, stdout="active\n", stderr="")
         raise AssertionError(f"Unexpected command: {cmd}")
 
     monkeypatch.setattr(gateway.subprocess, "run", fake_run)
@@ -119,19 +129,8 @@ def test_systemd_install_system_scope_skips_linger_and_uses_systemctl(monkeypatc
     assert "System service installed and enabled" in out
 
 
-def test_conflicting_systemd_units_warning(monkeypatch, tmp_path, capsys):
-    user_unit = tmp_path / "user" / "hermes-gateway.service"
-    system_unit = tmp_path / "system" / "hermes-gateway.service"
-    user_unit.parent.mkdir(parents=True)
-    system_unit.parent.mkdir(parents=True)
-    user_unit.write_text("[Unit]\n", encoding="utf-8")
-    system_unit.write_text("[Unit]\n", encoding="utf-8")
-
-    monkeypatch.setattr(
-        gateway,
-        "get_systemd_unit_path",
-        lambda system=False: system_unit if system else user_unit,
-    )
+def test_conflicting_systemd_units_warning(monkeypatch, capsys):
+    monkeypatch.setattr(gateway, "get_installed_systemd_scopes", lambda: ["user", "system"])
 
     gateway.print_systemd_scope_conflict_warning()
 

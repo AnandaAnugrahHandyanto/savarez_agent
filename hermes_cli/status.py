@@ -79,6 +79,21 @@ def _effective_provider_label() -> str:
     return provider_label(effective)
 
 
+def _gateway_restart_command(system: bool = False, user: bool = False) -> str:
+    return f"{'sudo ' if system else ''}hermes gateway restart{' --system' if system else ' --user' if user else ''}"
+
+
+def _gateway_repair_preview_command(system: bool = False) -> str:
+    return f"hermes gateway repair{' --system' if system else ''}"
+
+
+def _gateway_repair_apply_command(system: bool = False, cleanup_legacy: bool = False) -> str:
+    command = f"{'sudo ' if system else ''}hermes gateway repair{' --system' if system else ''} --apply"
+    if cleanup_legacy:
+        command += " --cleanup-legacy"
+    return command
+
+
 def show_status(args):
     """Show status of all Hermes Agent components."""
     show_all = getattr(args, 'all', False)
@@ -309,22 +324,37 @@ def show_status(args):
     
     if sys.platform.startswith('linux'):
         try:
-            from hermes_cli.gateway import get_service_name
-            _gw_svc = get_service_name()
+            from hermes_cli.gateway import get_gateway_systemd_report, systemd_unit_path_is_current
+            gateway_report = get_gateway_systemd_report()
         except Exception:
-            _gw_svc = "hermes-gateway"
-        try:
-            result = subprocess.run(
-                ["systemctl", "--user", "is-active", _gw_svc],
-                capture_output=True,
-                text=True,
-                timeout=5
+            gateway_report = {"installed": False}
+            systemd_unit_path_is_current = None
+
+        is_active = gateway_report.get("active") is True
+        state_label = "running" if is_active else (gateway_report.get("state") or "stopped")
+        manager_label = f"systemd ({gateway_report.get('scope')})" if gateway_report.get("installed") else "systemd (user)"
+        print(f"  Status:       {check_mark(is_active)} {state_label}")
+        print(f"  Manager:      {manager_label}")
+        if gateway_report.get("installed"):
+            unit_name = gateway_report.get("unit_name")
+            active_system = bool(gateway_report.get("system"))
+            unit_path = Path(gateway_report.get("unit_path")) if gateway_report.get("unit_path") else None
+            outdated = bool(
+                unit_path
+                and unit_path.exists()
+                and systemd_unit_path_is_current is not None
+                and not systemd_unit_path_is_current(unit_path, system=active_system)
             )
-            is_active = result.stdout.strip() == "active"
-        except subprocess.TimeoutExpired:
-            is_active = False
-        print(f"  Status:       {check_mark(is_active)} {'running' if is_active else 'stopped'}")
-        print("  Manager:      systemd (user)")
+            if gateway_report.get("drifted"):
+                print(f"  Unit:         {unit_name} (legacy/non-canonical)")
+                print("  Drift:        yes")
+                print(f"  Preview:      {_gateway_repair_preview_command(system=active_system)}")
+                print(f"  Apply:        {_gateway_repair_apply_command(system=active_system, cleanup_legacy=True)}")
+            else:
+                print(f"  Unit:         {unit_name}")
+            if outdated:
+                print("  Definition:   outdated")
+                print(f"  Refresh:      {_gateway_restart_command(system=active_system)}")
         
     elif sys.platform == 'darwin':
         from hermes_cli.gateway import get_launchd_label
