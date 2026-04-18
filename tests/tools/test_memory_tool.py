@@ -4,6 +4,7 @@ import json
 import pytest
 from pathlib import Path
 
+from agent.memory_records import records_from_sidecar_payload
 from tools.memory_tool import (
     MemoryStore,
     memory_tool,
@@ -109,6 +110,20 @@ class TestMemoryStoreAdd:
         assert result["success"] is True
         assert result["target"] == "user"
 
+    def test_add_creates_record_sidecar_and_legacy_export(self, store, tmp_path):
+        result = store.add("user", "User prefers British spelling.")
+
+        assert result["success"] is True
+        assert result["records"][0]["topic_key"] == "preference:spelling"
+
+        sidecar = tmp_path / "records.json"
+        assert sidecar.exists()
+        payload = records_from_sidecar_payload(json.loads(sidecar.read_text(encoding="utf-8")))
+        assert [record.content for record in payload] == ["User prefers British spelling."]
+
+        user_file = tmp_path / "USER.md"
+        assert "User prefers British spelling." in user_file.read_text(encoding="utf-8")
+
     def test_add_empty_rejected(self, store):
         result = store.add("memory", "  ")
         assert result["success"] is False
@@ -139,6 +154,21 @@ class TestMemoryStoreReplace:
         assert result["success"] is True
         assert "Python 3.12 project" in result["entries"]
         assert "Python 3.11 project" not in result["entries"]
+
+    def test_replace_marks_old_record_superseded_instead_of_blind_string_swap(self, store, tmp_path):
+        store.add("user", "User prefers concise responses.")
+        result = store.replace("user", "concise", "User wants fuller replies for design work.")
+
+        assert result["success"] is True
+        statuses = {record["content"]: record["status"] for record in result["records"]}
+        assert statuses["User prefers concise responses."] == "superseded"
+        assert statuses["User wants fuller replies for design work."] == "active"
+
+        sidecar_records = records_from_sidecar_payload(json.loads((tmp_path / "records.json").read_text(encoding="utf-8")))
+        replacement = next(record for record in sidecar_records if record.content == "User wants fuller replies for design work.")
+        prior = next(record for record in sidecar_records if record.content == "User prefers concise responses.")
+        assert replacement.supersedes == prior.record_id
+        assert (tmp_path / "USER.md").read_text(encoding="utf-8").strip() == "User wants fuller replies for design work."
 
     def test_replace_no_match(self, store):
         store.add("memory", "fact A")
@@ -235,6 +265,19 @@ class TestMemoryToolDispatcher:
         result = json.loads(memory_tool(action="add", content="test"))
         assert result["success"] is False
         assert "not available" in result["error"]
+
+    def test_tool_response_includes_inspection_payload(self, store):
+        payload = json.loads(
+            memory_tool(
+                action="add",
+                target="memory",
+                content="Project deploys with make ship.",
+                store=store,
+            )
+        )
+        assert payload["success"] is True
+        assert "explanations" in payload
+        assert payload["explanations"][0]["reason"]
 
     def test_invalid_target(self, store):
         result = json.loads(memory_tool(action="add", target="invalid", content="x", store=store))

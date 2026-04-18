@@ -28,10 +28,23 @@ import logging
 import os
 import re
 import tempfile
+import uuid
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional
+
+from agent.memory_policy import WriteClass, assign_topic_key, classify_write_candidate, resolve_conflict
+from agent.memory_records import (
+    MemoryRecord,
+    MemoryScope,
+    MemoryType,
+    RecordStatus,
+    normalize_legacy_entry,
+    records_from_sidecar_payload,
+    records_to_sidecar_payload,
+)
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 msvcrt = None
@@ -102,6 +115,42 @@ def _scan_memory_content(content: str) -> Optional[str]:
     return None
 
 
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _explain_write(record: MemoryRecord, reason: str) -> Dict[str, Any]:
+    return {
+        "record_id": record.record_id,
+        "topic_key": record.topic_key,
+        "scope": record.scope.value,
+        "status": record.status.value,
+        "trust_tier": record.trust_tier.value,
+        "salience_tier": record.salience_tier.value,
+        "reason": reason,
+    }
+
+
+def _explain_conflict(conflict) -> Dict[str, Any]:
+    return {
+        "winner_record_id": conflict.winner.record_id,
+        "loser_record_id": conflict.loser.record_id,
+        "loser_status": conflict.loser_status.value,
+        "reason": conflict.reason,
+        "topic_key": conflict.winner.topic_key,
+    }
+
+
+def _explain_archive(record: MemoryRecord, reason: str) -> Dict[str, Any]:
+    return {
+        "record_id": record.record_id,
+        "topic_key": record.topic_key,
+        "scope": record.scope.value,
+        "status": record.status.value,
+        "reason": reason,
+    }
+
+
 class MemoryStore:
     """
     Bounded curated memory with file persistence. One instance per AIAgent.
@@ -109,31 +158,27 @@ class MemoryStore:
     Maintains two parallel states:
       - _system_prompt_snapshot: frozen at load time, used for system prompt injection.
         Never mutated mid-session. Keeps prefix cache stable.
-      - memory_entries / user_entries: live state, mutated by tool calls, persisted to disk.
-        Tool responses always reflect this live state.
+      - memory_entries / user_entries: live prompt-projected state derived from
+        the record store and legacy exports on disk.
     """
 
     def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+        self.records: List[MemoryRecord] = []
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
-        # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
 
     def load_from_disk(self):
-        """Load entries from MEMORY.md and USER.md, capture system prompt snapshot."""
+        """Load record-backed memory, project legacy exports, and capture the prompt snapshot."""
         mem_dir = get_memory_dir()
         mem_dir.mkdir(parents=True, exist_ok=True)
 
-        self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
-        self.user_entries = self._read_file(mem_dir / "USER.md")
+        self.records = self._deduplicate_records(self._load_records())
+        self._sync_live_entries()
+        self._render_legacy_exports()
 
-        # Deduplicate entries (preserves order, keeps first occurrence)
-        self.memory_entries = list(dict.fromkeys(self.memory_entries))
-        self.user_entries = list(dict.fromkeys(self.user_entries))
-
-        # Capture frozen snapshot for system prompt injection
         self._system_prompt_snapshot = {
             "memory": self._render_block("memory", self.memory_entries),
             "user": self._render_block("user", self.user_entries),
@@ -142,11 +187,7 @@ class MemoryStore:
     @staticmethod
     @contextmanager
     def _file_lock(path: Path):
-        """Acquire an exclusive file lock for read-modify-write safety.
-
-        Uses a separate .lock file so the memory file itself can still be
-        atomically replaced via os.replace().
-        """
+        """Acquire an exclusive file lock for read-modify-write safety."""
         lock_path = path.with_suffix(path.suffix + ".lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -183,19 +224,48 @@ class MemoryStore:
             return mem_dir / "USER.md"
         return mem_dir / "MEMORY.md"
 
-    def _reload_target(self, target: str):
-        """Re-read entries from disk into in-memory state.
+    def _records_path(self) -> Path:
+        return get_memory_dir() / "records.json"
 
-        Called under file lock to get the latest state before mutating.
-        """
-        fresh = self._read_file(self._path_for(target))
-        fresh = list(dict.fromkeys(fresh))  # deduplicate
-        self._set_entries(target, fresh)
+    def _load_records(self) -> List[MemoryRecord]:
+        path = self._records_path()
+        if path.exists():
+            try:
+                raw_payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, IOError, json.JSONDecodeError) as exc:
+                logger.warning("Failed to load memory sidecar %s: %s", path, exc)
+            else:
+                if isinstance(raw_payload, list):
+                    return records_from_sidecar_payload({"version": 1, "records": raw_payload})
+                if isinstance(raw_payload, dict):
+                    return records_from_sidecar_payload(raw_payload)
 
-    def save_to_disk(self, target: str):
-        """Persist entries to the appropriate file. Called after every mutation."""
-        get_memory_dir().mkdir(parents=True, exist_ok=True)
-        self._write_file(self._path_for(target), self._entries_for(target))
+        imported: List[MemoryRecord] = []
+        created_at = _utc_now_iso()
+        for target in ("memory", "user"):
+            for entry in self._read_file(self._path_for(target)):
+                record = normalize_legacy_entry(target=target, content=entry, created_at=created_at)
+                record.metadata["target"] = target
+                imported.append(record)
+        return imported
+
+    def _save_records(self, records: List[MemoryRecord]) -> None:
+        payload = records_to_sidecar_payload(records)
+        self._write_json_file(self._records_path(), payload)
+
+    def _reload_records(self) -> None:
+        self.records = self._deduplicate_records(self._load_records())
+        self._sync_live_entries()
+
+    def save_to_disk(self, target: str | None = None):
+        """Persist the record sidecar and projected legacy exports."""
+        del target
+        self._persist_state()
+
+    def _persist_state(self) -> None:
+        self._save_records(self.records)
+        self._sync_live_entries()
+        self._render_legacy_exports()
 
     def _entries_for(self, target: str) -> List[str]:
         if target == "user":
@@ -208,6 +278,54 @@ class MemoryStore:
         else:
             self.memory_entries = entries
 
+    def _records_for_target(self, target: str) -> List[MemoryRecord]:
+        return [record for record in self.records if self._target_for_record(record) == target]
+
+    def _active_records_for_target(self, target: str) -> List[MemoryRecord]:
+        return [record for record in self._records_for_target(target) if record.status is RecordStatus.ACTIVE]
+
+    def _active_contents_for_target(self, target: str) -> List[str]:
+        return self._project_contents_for_records(self._active_records_for_target(target))
+
+    def _project_contents_for_records(self, records: List[MemoryRecord]) -> List[str]:
+        contents: List[str] = []
+        seen: set[str] = set()
+        for record in records:
+            if record.content in seen:
+                continue
+            seen.add(record.content)
+            contents.append(record.content)
+        return contents
+
+    def _sync_live_entries(self) -> None:
+        self.memory_entries = self._active_contents_for_target("memory")
+        self.user_entries = self._active_contents_for_target("user")
+
+    def _target_for_record(self, record: MemoryRecord) -> str:
+        target = record.metadata.get("target")
+        if target in {"memory", "user"}:
+            return target
+        if record.scope in {MemoryScope.OPERATOR, MemoryScope.PROFILE}:
+            return "user"
+        return "memory"
+
+    def _deduplicate_records(self, records: List[MemoryRecord]) -> List[MemoryRecord]:
+        deduped: List[MemoryRecord] = []
+        seen: set[tuple[str, str, Optional[str], str, Optional[str]]] = set()
+        for record in records:
+            key = (
+                self._target_for_record(record),
+                record.content,
+                record.topic_key,
+                record.status.value,
+                record.supersedes,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(record)
+        return deduped
+
     def _char_count(self, target: str) -> int:
         entries = self._entries_for(target)
         if not entries:
@@ -219,53 +337,113 @@ class MemoryStore:
             return self.user_char_limit
         return self.memory_char_limit
 
+    def _scope_for_target(self, target: str) -> MemoryScope:
+        return MemoryScope.OPERATOR if target == "user" else MemoryScope.WORKSPACE
+
+    def _source_kind_for_target(self, target: str) -> str:
+        return "explicit_user_statement" if target == "user" else "tool_observation"
+
+    def _validate_char_limit(self, target: str, projected_records: List[MemoryRecord], added_content: str, mode: str) -> Optional[Dict[str, Any]]:
+        entries = self._project_contents_for_records(
+            [record for record in projected_records if self._target_for_record(record) == target and record.status is RecordStatus.ACTIVE]
+        )
+        total = len(ENTRY_DELIMITER.join(entries)) if entries else 0
+        limit = self._char_limit(target)
+        if total <= limit:
+            return None
+
+        current = self._char_count(target)
+        if mode == "add":
+            return {
+                "success": False,
+                "error": (
+                    f"Memory at {current:,}/{limit:,} chars. "
+                    f"Adding this entry ({len(added_content)} chars) would exceed the limit. "
+                    f"Replace or remove existing entries first."
+                ),
+                "current_entries": self._entries_for(target),
+                "usage": f"{current:,}/{limit:,}",
+            }
+
+        return {
+            "success": False,
+            "error": (
+                f"Replacement would put memory at {total:,}/{limit:,} chars. "
+                f"Shorten the new content or remove other entries first."
+            ),
+        }
+
+    def _resolve_single_match(self, target: str, old_text: str) -> Dict[str, Any] | MemoryRecord:
+        matches = [record for record in self._active_records_for_target(target) if old_text in record.content]
+        if not matches:
+            return {"success": False, "error": f"No entry matched '{old_text}'."}
+
+        if len(matches) > 1:
+            unique_texts = {record.content for record in matches}
+            if len(unique_texts) > 1:
+                previews = [content[:80] + ("..." if len(content) > 80 else "") for content in unique_texts]
+                return {
+                    "success": False,
+                    "error": f"Multiple entries matched '{old_text}'. Be more specific.",
+                    "matches": previews,
+                }
+
+        return matches[0]
+
     def add(self, target: str, content: str) -> Dict[str, Any]:
-        """Append a new entry. Returns error if it would exceed the char limit."""
+        """Append a new record-backed entry. Returns error if it would exceed the char limit."""
         content = content.strip()
         if not content:
             return {"success": False, "error": "Content cannot be empty."}
 
-        # Scan for injection/exfiltration before accepting
         scan_error = _scan_memory_content(content)
         if scan_error:
             return {"success": False, "error": scan_error}
 
-        with self._file_lock(self._path_for(target)):
-            # Re-read from disk under lock to pick up writes from other sessions
-            self._reload_target(target)
+        with self._file_lock(self._records_path()):
+            self._reload_records()
 
-            entries = self._entries_for(target)
-            limit = self._char_limit(target)
-
-            # Reject exact duplicates
-            if content in entries:
+            if any(record.content == content for record in self._active_records_for_target(target)):
                 return self._success_response(target, "Entry already exists (no duplicate added).")
 
-            # Calculate what the new total would be
-            new_entries = entries + [content]
-            new_total = len(ENTRY_DELIMITER.join(new_entries))
+            decision = classify_write_candidate(
+                target=target,
+                content=content,
+                source_kind=self._source_kind_for_target(target),
+                explicit_remember=content.lower().startswith("remember this:"),
+                explicit_correction=False,
+            )
+            if decision.write_class is WriteClass.DO_NOT_WRITE:
+                return {"success": False, "error": "Policy rejected this memory candidate as ephemeral or unsafe."}
 
-            if new_total > limit:
-                current = self._char_count(target)
-                return {
-                    "success": False,
-                    "error": (
-                        f"Memory at {current:,}/{limit:,} chars. "
-                        f"Adding this entry ({len(content)} chars) would exceed the limit. "
-                        f"Replace or remove existing entries first."
-                    ),
-                    "current_entries": entries,
-                    "usage": f"{current:,}/{limit:,}",
-                }
+            scope = self._scope_for_target(target)
+            record = MemoryRecord(
+                record_id=f"rec-{uuid.uuid4()}",
+                memory_type=MemoryType.PROFILE,
+                scope=scope,
+                topic_key=assign_topic_key(target=target, content=content, scope=scope),
+                content=content,
+                source="memory_tool:add",
+                source_kind=self._source_kind_for_target(target),
+                created_at=_utc_now_iso(),
+                trust_tier=decision.trust_tier,
+                salience_tier=decision.salience_tier,
+                status=RecordStatus.ACTIVE,
+                metadata={"target": target},
+            )
 
-            entries.append(content)
-            self._set_entries(target, entries)
-            self.save_to_disk(target)
+            limit_error = self._validate_char_limit(target, self.records + [record], content, mode="add")
+            if limit_error:
+                return limit_error
 
-        return self._success_response(target, "Entry added.")
+            self.records.append(record)
+            self.records = self._deduplicate_records(self.records)
+            self._persist_state()
+
+        return self._success_response(target, "Entry added.", explanations=[_explain_write(record, decision.reason)])
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
-        """Find entry containing old_text substring, replace it with new_content."""
+        """Supersede the record containing old_text with a new record-backed replacement."""
         old_text = old_text.strip()
         new_content = new_content.strip()
         if not old_text:
@@ -273,107 +451,110 @@ class MemoryStore:
         if not new_content:
             return {"success": False, "error": "new_content cannot be empty. Use 'remove' to delete entries."}
 
-        # Scan replacement content for injection/exfiltration
         scan_error = _scan_memory_content(new_content)
         if scan_error:
             return {"success": False, "error": scan_error}
 
-        with self._file_lock(self._path_for(target)):
-            self._reload_target(target)
+        with self._file_lock(self._records_path()):
+            self._reload_records()
 
-            entries = self._entries_for(target)
-            matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
+            match = self._resolve_single_match(target, old_text)
+            if isinstance(match, dict):
+                return match
+            old_record = match
 
-            if not matches:
-                return {"success": False, "error": f"No entry matched '{old_text}'."}
+            topic_key = old_record.topic_key or assign_topic_key(
+                target=target,
+                content=new_content,
+                scope=old_record.scope,
+            )
+            new_record = MemoryRecord(
+                record_id=f"rec-{uuid.uuid4()}",
+                memory_type=old_record.memory_type,
+                scope=old_record.scope,
+                topic_key=topic_key,
+                content=new_content,
+                source="memory_tool:replace",
+                source_kind=old_record.source_kind,
+                created_at=_utc_now_iso(),
+                trust_tier=old_record.trust_tier,
+                salience_tier=old_record.salience_tier,
+                status=RecordStatus.ACTIVE,
+                supersedes=old_record.record_id,
+                metadata=dict(old_record.metadata),
+            )
 
-            if len(matches) > 1:
-                # If all matches are identical (exact duplicates), operate on the first one
-                unique_texts = set(e for _, e in matches)
-                if len(unique_texts) > 1:
-                    previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
-                    return {
-                        "success": False,
-                        "error": f"Multiple entries matched '{old_text}'. Be more specific.",
-                        "matches": previews,
-                    }
-                # All identical -- safe to replace just the first
+            conflict = resolve_conflict(old_record, new_record, explicit_correction=True)
+            projected_records: List[MemoryRecord] = []
+            for record in self.records:
+                if record.record_id == old_record.record_id:
+                    if conflict.winner.record_id == old_record.record_id:
+                        projected_records.append(conflict.winner)
+                    elif conflict.loser.record_id == old_record.record_id:
+                        projected_records.append(conflict.loser)
+                    else:
+                        projected_records.append(record)
+                else:
+                    projected_records.append(record)
 
-            idx = matches[0][0]
-            limit = self._char_limit(target)
+            incoming_record = conflict.winner if conflict.winner.record_id == new_record.record_id else conflict.loser
+            projected_records.append(incoming_record)
 
-            # Check that replacement doesn't blow the budget
-            test_entries = entries.copy()
-            test_entries[idx] = new_content
-            new_total = len(ENTRY_DELIMITER.join(test_entries))
+            limit_error = self._validate_char_limit(target, projected_records, new_content, mode="replace")
+            if limit_error:
+                return limit_error
 
-            if new_total > limit:
-                return {
-                    "success": False,
-                    "error": (
-                        f"Replacement would put memory at {new_total:,}/{limit:,} chars. "
-                        f"Shorten the new content or remove other entries first."
-                    ),
-                }
+            self.records = self._deduplicate_records(projected_records)
+            self._persist_state()
 
-            entries[idx] = new_content
-            self._set_entries(target, entries)
-            self.save_to_disk(target)
-
-        return self._success_response(target, "Entry replaced.")
+        return self._success_response(target, "Entry replaced.", explanations=[_explain_conflict(conflict)])
 
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
-        """Remove the entry containing old_text substring."""
+        """Archive the record containing old_text."""
         old_text = old_text.strip()
         if not old_text:
             return {"success": False, "error": "old_text cannot be empty."}
 
-        with self._file_lock(self._path_for(target)):
-            self._reload_target(target)
+        with self._file_lock(self._records_path()):
+            self._reload_records()
 
-            entries = self._entries_for(target)
-            matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
+            match = self._resolve_single_match(target, old_text)
+            if isinstance(match, dict):
+                return match
+            record = match
 
-            if not matches:
-                return {"success": False, "error": f"No entry matched '{old_text}'."}
+            updated_records: List[MemoryRecord] = []
+            archived_record: Optional[MemoryRecord] = None
+            for existing in self.records:
+                if existing.record_id == record.record_id:
+                    archived_record = MemoryRecord.from_dict(existing.to_dict())
+                    archived_record.status = RecordStatus.ARCHIVED
+                    archived_record.revision = existing.revision + 1
+                    updated_records.append(archived_record)
+                else:
+                    updated_records.append(existing)
 
-            if len(matches) > 1:
-                # If all matches are identical (exact duplicates), remove the first one
-                unique_texts = set(e for _, e in matches)
-                if len(unique_texts) > 1:
-                    previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
-                    return {
-                        "success": False,
-                        "error": f"Multiple entries matched '{old_text}'. Be more specific.",
-                        "matches": previews,
-                    }
-                # All identical -- safe to remove just the first
+            self.records = self._deduplicate_records(updated_records)
+            self._persist_state()
 
-            idx = matches[0][0]
-            entries.pop(idx)
-            self._set_entries(target, entries)
-            self.save_to_disk(target)
-
-        return self._success_response(target, "Entry removed.")
+        return self._success_response(
+            target,
+            "Entry removed.",
+            explanations=[_explain_archive(archived_record or record, "operator_requested_archive")],
+        )
 
     def format_for_system_prompt(self, target: str) -> Optional[str]:
-        """
-        Return the frozen snapshot for system prompt injection.
-
-        This returns the state captured at load_from_disk() time, NOT the live
-        state. Mid-session writes do not affect this. This keeps the system
-        prompt stable across all turns, preserving the prefix cache.
-
-        Returns None if the snapshot is empty (no entries at load time).
-        """
         block = self._system_prompt_snapshot.get(target, "")
         return block if block else None
 
-    # -- Internal helpers --
-
-    def _success_response(self, target: str, message: str = None) -> Dict[str, Any]:
-        entries = self._entries_for(target)
-        current = self._char_count(target)
+    def _success_response(
+        self,
+        target: str,
+        message: str = None,
+        explanations: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        entries = self._active_contents_for_target(target)
+        current = len(ENTRY_DELIMITER.join(entries)) if entries else 0
         limit = self._char_limit(target)
         pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
 
@@ -381,15 +562,22 @@ class MemoryStore:
             "success": True,
             "target": target,
             "entries": entries,
+            "records": [record.to_dict() for record in self._records_for_target(target)],
             "usage": f"{pct}% — {current:,}/{limit:,} chars",
             "entry_count": len(entries),
+            "record_count": len(self._records_for_target(target)),
         }
+        if explanations:
+            resp["explanations"] = explanations
         if message:
             resp["message"] = message
         return resp
 
+    def _render_legacy_exports(self) -> None:
+        self._write_file(self._path_for("memory"), self.memory_entries)
+        self._write_file(self._path_for("user"), self.user_entries)
+
     def _render_block(self, target: str, entries: List[str]) -> str:
-        """Render a system prompt block with header and usage indicator."""
         if not entries:
             return ""
 
@@ -408,11 +596,6 @@ class MemoryStore:
 
     @staticmethod
     def _read_file(path: Path) -> List[str]:
-        """Read a memory file and split into entries.
-
-        No file locking needed: _write_file uses atomic rename, so readers
-        always see either the previous complete file or the new complete file.
-        """
         if not path.exists():
             return []
         try:
@@ -423,41 +606,37 @@ class MemoryStore:
         if not raw.strip():
             return []
 
-        # Use ENTRY_DELIMITER for consistency with _write_file. Splitting by "§"
-        # alone would incorrectly split entries that contain "§" in their content.
-        entries = [e.strip() for e in raw.split(ENTRY_DELIMITER)]
-        return [e for e in entries if e]
+        entries = [entry.strip() for entry in raw.split(ENTRY_DELIMITER)]
+        return [entry for entry in entries if entry]
+
+    @staticmethod
+    def _write_json_file(path: Path, payload: Dict[str, Any]) -> None:
+        MemoryStore._write_text_file(path, json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False))
 
     @staticmethod
     def _write_file(path: Path, entries: List[str]):
-        """Write entries to a memory file using atomic temp-file + rename.
-
-        Previous implementation used open("w") + flock, but "w" truncates the
-        file *before* the lock is acquired, creating a race window where
-        concurrent readers see an empty file. Atomic rename avoids this:
-        readers always see either the old complete file or the new one.
-        """
         content = ENTRY_DELIMITER.join(entries) if entries else ""
+        MemoryStore._write_text_file(path, content)
+
+    @staticmethod
+    def _write_text_file(path: Path, content: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            # Write to temp file in same directory (same filesystem for atomic rename)
-            fd, tmp_path = tempfile.mkstemp(
-                dir=str(path.parent), suffix=".tmp", prefix=".mem_"
-            )
+            fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix=".mem_")
             try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.write(content)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(tmp_path, str(path))  # Atomic on same filesystem
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    handle.write(content)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(tmp_path, str(path))
             except BaseException:
-                # Clean up temp file on any failure
                 try:
                     os.unlink(tmp_path)
                 except OSError:
                     pass
                 raise
-        except (OSError, IOError) as e:
-            raise RuntimeError(f"Failed to write memory file {path}: {e}")
+        except (OSError, IOError) as exc:
+            raise RuntimeError(f"Failed to write memory file {path}: {exc}")
 
 
 def memory_tool(
