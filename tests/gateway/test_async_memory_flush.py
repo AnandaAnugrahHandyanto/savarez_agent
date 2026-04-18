@@ -7,10 +7,11 @@ Verifies that:
 4. The background watcher can detect expired sessions
 """
 
+import threading
 import pytest
 from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import AsyncMock, patch, MagicMock
 
 from gateway.config import Platform, GatewayConfig, SessionResetPolicy
 from gateway.session import SessionSource, SessionStore, SessionEntry
@@ -247,3 +248,52 @@ class TestMemoryFlushedFlag:
         }
         entry = SessionEntry.from_dict(data)
         assert entry.memory_flushed is False
+
+
+@pytest.mark.asyncio
+async def test_session_expiry_watcher_finalizes_provider_memory_with_transcript():
+    """Expired sessions should use the transcript-aware finalization path."""
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._background_tasks = set()
+    runner._running_agents = {}
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
+    runner.hooks = MagicMock()
+
+    expired_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:123",
+        session_id="sess-expired",
+        created_at=datetime.now() - timedelta(hours=2),
+        updated_at=datetime.now() - timedelta(hours=2),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    lock = threading.Lock()
+    runner.session_store = MagicMock()
+    runner.session_store._entries = {expired_entry.session_key: expired_entry}
+    runner.session_store._lock = lock
+    runner.session_store._is_session_expired.return_value = True
+
+    runner._async_finalize_session_end = AsyncMock()
+
+    sleep_calls = {"count": 0}
+
+    async def _fake_sleep(_delay):
+        sleep_calls["count"] += 1
+        if sleep_calls["count"] >= 2:
+            runner._running = False
+
+    with patch("gateway.run.asyncio.sleep", new=_fake_sleep):
+        await runner._session_expiry_watcher(interval=1)
+
+    runner._async_finalize_session_end.assert_awaited_once_with(
+        "sess-expired",
+        "agent:main:telegram:dm:123",
+        close_agent=True,
+        evict_cached=True,
+    )
+    assert expired_entry.memory_flushed is True
+    runner.session_store._save.assert_called_once()

@@ -875,6 +875,91 @@ class GatewayRunner:
             session_key,
         )
 
+    def _get_cached_or_running_agent(self, session_key: Optional[str]) -> Any:
+        """Return the current agent instance for a session key, if any."""
+        if not session_key:
+            return None
+
+        agent = None
+        _cache_lock = getattr(self, "_agent_cache_lock", None)
+        _cache = getattr(self, "_agent_cache", None)
+        if _cache_lock is not None and _cache is not None:
+            with _cache_lock:
+                _cached = _cache.get(session_key)
+                agent = (
+                    _cached[0]
+                    if isinstance(_cached, tuple)
+                    else _cached
+                    if _cached
+                    else None
+                )
+
+        if agent is None:
+            _running_agents = getattr(self, "_running_agents", None) or {}
+            agent = _running_agents.get(session_key)
+
+        if agent is _AGENT_PENDING_SENTINEL:
+            return None
+        return agent
+
+    def _shutdown_session_memory_provider(
+        self,
+        session_id: str,
+        session_key: Optional[str] = None,
+        agent: Any = None,
+    ) -> Any:
+        """Dispatch transcript-aware session-end memory shutdown for one agent."""
+        target_agent = agent or self._get_cached_or_running_agent(session_key)
+        if target_agent is None:
+            return None
+
+        history = self.session_store.load_transcript(session_id) or []
+        try:
+            if hasattr(target_agent, "shutdown_memory_provider"):
+                target_agent.shutdown_memory_provider(history)
+        except Exception as e:
+            logger.debug(
+                "Session-end memory shutdown failed for %s: %s",
+                session_id,
+                e,
+            )
+        return target_agent
+
+    async def _async_finalize_session_end(
+        self,
+        session_id: str,
+        session_key: Optional[str] = None,
+        *,
+        agent: Any = None,
+        close_agent: bool = False,
+        evict_cached: bool = False,
+    ) -> None:
+        """Flush built-in memory, then finalize provider memory with transcript."""
+        await self._async_flush_memories(session_id, session_key)
+
+        loop = asyncio.get_running_loop()
+        target_agent = await loop.run_in_executor(
+            None,
+            self._shutdown_session_memory_provider,
+            session_id,
+            session_key,
+            agent,
+        )
+
+        if close_agent and target_agent is not None:
+            try:
+                if hasattr(target_agent, "close"):
+                    await loop.run_in_executor(None, target_agent.close)
+            except Exception as e:
+                logger.debug(
+                    "Session-end agent close failed for %s: %s",
+                    session_id,
+                    e,
+                )
+
+        if evict_cached and session_key:
+            self._evict_cached_agent(session_key)
+
     @property
     def should_exit_cleanly(self) -> bool:
         return self._exit_cleanly
@@ -2100,27 +2185,12 @@ class GatewayRunner:
 
                 for key, entry in _expired_entries:
                     try:
-                        await self._async_flush_memories(entry.session_id, key)
-                        # Shut down memory provider and close tool resources
-                        # on the cached agent.  Idle agents live in
-                        # _agent_cache (not _running_agents), so look there.
-                        _cached_agent = None
-                        _cache_lock = getattr(self, "_agent_cache_lock", None)
-                        if _cache_lock is not None:
-                            with _cache_lock:
-                                _cached = self._agent_cache.get(key)
-                                _cached_agent = _cached[0] if isinstance(_cached, tuple) else _cached if _cached else None
-                        # Fall back to _running_agents in case the agent is
-                        # still mid-turn when the expiry fires.
-                        if _cached_agent is None:
-                            _cached_agent = self._running_agents.get(key)
-                        if _cached_agent and _cached_agent is not _AGENT_PENDING_SENTINEL:
-                            self._cleanup_agent_resources(_cached_agent)
-                        # Drop the cache entry so the AIAgent (and its LLM
-                        # clients, tool schemas, memory provider refs) can
-                        # be garbage-collected.  Otherwise the cache grows
-                        # unbounded across the gateway's lifetime.
-                        self._evict_cached_agent(key)
+                        await self._async_finalize_session_end(
+                            entry.session_id,
+                            key,
+                            close_agent=True,
+                            evict_cached=True,
+                        )
                         # Mark as flushed and persist to disk so the flag
                         # survives gateway restarts.
                         with self.session_store._lock:
@@ -4528,6 +4598,8 @@ class GatewayRunner:
         
         # Get existing session key
         session_key = self._session_key_for_source(source)
+        _old_agent = self._get_cached_or_running_agent(session_key)
+        old_entry = None
         
         # Flush memories in the background (fire-and-forget) so the user
         # gets the "Session reset!" response immediately.
@@ -4535,22 +4607,19 @@ class GatewayRunner:
             old_entry = self.session_store._entries.get(session_key)
             if old_entry:
                 _flush_task = asyncio.create_task(
-                    self._async_flush_memories(old_entry.session_id, session_key)
+                    self._async_finalize_session_end(
+                        old_entry.session_id,
+                        session_key=session_key,
+                        agent=_old_agent,
+                        close_agent=True,
+                    )
                 )
                 self._background_tasks.add(_flush_task)
                 _flush_task.add_done_callback(self._background_tasks.discard)
         except Exception as e:
-            logger.debug("Gateway memory flush on reset failed: %s", e)
-        # Close tool resources on the old agent (terminal sandboxes, browser
-        # daemons, background processes) before evicting from cache.
-        # Guard with getattr because test fixtures may skip __init__.
-        _cache_lock = getattr(self, "_agent_cache_lock", None)
-        if _cache_lock is not None:
-            with _cache_lock:
-                _cached = self._agent_cache.get(session_key)
-                _old_agent = _cached[0] if isinstance(_cached, tuple) else _cached if _cached else None
-            if _old_agent is not None:
-                self._cleanup_agent_resources(_old_agent)
+            logger.debug("Gateway session finalization on reset failed: %s", e)
+        if old_entry is None and _old_agent is not None:
+            self._cleanup_agent_resources(_old_agent)
         self._evict_cached_agent(session_key)
 
         try:

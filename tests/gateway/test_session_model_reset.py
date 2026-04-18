@@ -1,4 +1,6 @@
 """Tests that /new (and its /reset alias) clears the session-scoped model override."""
+import asyncio
+import threading
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -124,3 +126,28 @@ async def test_new_command_only_clears_own_session():
 
     assert session_key not in runner._session_model_overrides
     assert other_key in runner._session_model_overrides
+
+
+@pytest.mark.asyncio
+async def test_new_command_schedules_transcript_aware_session_finalize():
+    """/new should finalize the old agent through the session-end helper."""
+    runner = _make_runner()
+    session_key = build_session_key(_make_source())
+    old_agent = MagicMock()
+    runner._agent_cache = {session_key: (old_agent, "sig")}
+    runner._agent_cache_lock = threading.Lock()
+    runner._async_finalize_session_end = AsyncMock()
+
+    await runner._handle_reset_command(_make_event("/new"))
+    if runner._background_tasks:
+        await asyncio.gather(*runner._background_tasks)
+
+    runner._async_finalize_session_end.assert_awaited_once_with(
+        "sess-1",
+        session_key=session_key,
+        agent=old_agent,
+        close_agent=True,
+    )
+    old_agent.close.assert_not_called()
+    with runner._agent_cache_lock:
+        assert session_key not in runner._agent_cache
