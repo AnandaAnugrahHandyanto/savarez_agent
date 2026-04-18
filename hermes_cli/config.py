@@ -343,6 +343,7 @@ def _ensure_hermes_home_managed(home: Path):
 
 DEFAULT_CONFIG = {
     "model": "",
+    "custom_headers": {},
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},
@@ -2808,6 +2809,23 @@ def load_config() -> Dict[str, Any]:
     expanded = _expand_env_vars(normalized)
     _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(expanded)
     return expanded
+
+
+def get_custom_headers() -> Dict[str, str]:
+    """Return user-defined custom HTTP headers from config.yaml.
+
+    Reads the top-level ``custom_headers`` mapping and returns a plain
+    ``dict[str, str]``.  Values are coerced to strings so callers can
+    safely merge them into HTTP header dicts.
+    """
+    try:
+        cfg = load_config()
+        raw = cfg.get("custom_headers", {})
+        if not isinstance(raw, dict):
+            return {}
+        return {str(k): str(v) for k, v in raw.items()}
+    except Exception:
+        return {}
 
 
 _SECURITY_COMMENT = """
