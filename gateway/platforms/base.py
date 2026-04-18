@@ -1412,19 +1412,38 @@ class BasePlatformAdapter(ABC):
         the agent is waiting for dangerous-command approval).  This is critical
         for Slack's Assistant API where ``assistant_threads_setStatus`` disables
         the compose box — pausing lets the user type ``/approve`` or ``/deny``.
+        
+        Resilient to transient errors — a failed send_typing doesn't kill the loop.
+        After 5 consecutive failures, stops trying (something is genuinely broken).
         """
+        MAX_CONSECUTIVE_ERRORS = 5
+        consecutive_errors = 0
         try:
             while True:
                 if chat_id not in self._typing_paused:
-                    await self.send_typing(chat_id, metadata=metadata)
+                    try:
+                        await self.send_typing(chat_id, metadata=metadata)
+                        consecutive_errors = 0  # Reset on success
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:
+                        consecutive_errors += 1
+                        if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                            logger.warning(
+                                "[%s] Typing indicator stopped after %d consecutive errors "
+                                "(last: %s). Agent will continue without typing.",
+                                self.name, consecutive_errors, e,
+                            )
+                            return
+                        logger.debug(
+                            "[%s] Typing indicator error (%d/%d): %s",
+                            self.name, consecutive_errors, MAX_CONSECUTIVE_ERRORS, e,
+                        )
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
             pass  # Normal cancellation when handler completes
         finally:
             # Ensure the underlying platform typing loop is stopped.
-            # _keep_typing may have called send_typing() after an outer
-            # stop_typing() cleared the task dict, recreating the loop.
-            # Cancelling _keep_typing alone won't clean that up.
             if hasattr(self, "stop_typing"):
                 try:
                     await self.stop_typing(chat_id)
