@@ -533,6 +533,43 @@ def _parse_session_key(session_key: str) -> "dict | None":
     return None
 
 
+def _prepend_restart_recovery_note(
+    message: str,
+    agent_history: list[dict],
+    *,
+    resume_pending: bool,
+) -> str:
+    """Prepend the appropriate interrupted-turn recovery note."""
+    has_tool_tail = bool(agent_history and agent_history[-1].get("role") == "tool")
+    if resume_pending:
+        if has_tool_tail:
+            note = (
+                "[System note: Your previous turn in this same session was interrupted by "
+                "a gateway restart. Continue from the existing transcript. There are "
+                "unfinished tool results in the conversation history, so process those "
+                "results first, summarize what was accomplished, then answer the user's "
+                "new message below.]"
+            )
+        else:
+            note = (
+                "[System note: Your previous turn in this same session was interrupted by "
+                "a gateway restart. Continue from the existing transcript and preserve "
+                "session continuity when answering the user's new message below.]"
+            )
+        return note + "\n\n" + message
+
+    if has_tool_tail:
+        return (
+            "[System note: Your previous turn was interrupted before you could "
+            "process the last tool result(s). The conversation history contains "
+            "tool outputs you haven't responded to yet. Please finish processing "
+            "those results and summarize what was accomplished, then address the "
+            "user's new message below.]\n\n"
+            + message
+        )
+    return message
+
+
 def _format_gateway_process_notification(evt: dict) -> "str | None":
     """Format a watch pattern event from completion_queue into a [SYSTEM:] message."""
     evt_type = evt.get("type", "completion")
@@ -1537,13 +1574,6 @@ class GatewayRunner:
             return
 
         action = "restarting" if self._restart_requested else "shutting down"
-        hint = (
-            "Your current task will be interrupted. "
-            "Send any message after restart to resume where it left off."
-            if self._restart_requested
-            else "Your current task will be interrupted."
-        )
-        msg = f"⚠️ Gateway {action} — {hint}"
 
         notified: set = set()
         for session_key in active:
@@ -1570,6 +1600,19 @@ class GatewayRunner:
                 # correct forum topic / thread.
                 thread_id = _parsed.get("thread_id")
                 metadata = {"thread_id": thread_id} if thread_id else None
+
+                if self._restart_requested:
+                    lane_hint = (
+                        "Send a message in this thread/topic to continue."
+                        if thread_id
+                        else "Send a message in this chat to continue."
+                    )
+                    msg = (
+                        f"⚠️ Gateway {action} — I'll try to resume this session "
+                        f"after restart. {lane_hint}"
+                    )
+                else:
+                    msg = f"⚠️ Gateway {action} — Your current task will be interrupted."
 
                 await adapter.send(chat_id, msg, metadata=metadata)
                 notified.add(dedup_key)
@@ -1670,6 +1713,8 @@ class GatewayRunner:
                 entry = self.session_store._entries.get(session_key)
                 if entry and not entry.suspended:
                     entry.suspended = True
+                    entry.resume_pending = False
+                    entry.resume_reason = None
                     suspended += 1
                     logger.warning(
                         "Auto-suspended stuck session %s (active across %d "
@@ -2368,11 +2413,25 @@ class GatewayRunner:
             timeout = self._restart_drain_timeout
             active_agents, timed_out = await self._drain_active_agents(timeout)
             if timed_out:
+                timed_out_session_keys = set(self._running_agents.keys())
                 logger.warning(
                     "Gateway drain timed out after %.1fs with %d active agent(s); interrupting remaining work.",
                     timeout,
                     self._running_agent_count(),
                 )
+                if timed_out_session_keys:
+                    for session_key in timed_out_session_keys:
+                        try:
+                            self.session_store.mark_resume_pending(
+                                session_key,
+                                reason="restart_timeout" if self._restart_requested else "shutdown_timeout",
+                            )
+                        except Exception as e:
+                            logger.debug(
+                                "Failed to mark session %s resume-pending during shutdown: %s",
+                                session_key[:30],
+                                e,
+                            )
                 self._interrupt_running_agents(
                     "Gateway restarting" if self._restart_requested else "Gateway shutting down"
                 )
@@ -2466,8 +2525,8 @@ class GatewayRunner:
             else:
                 logger.info(
                     "Skipping .clean_shutdown marker — drain timed out with "
-                    "interrupted agents; next startup will suspend recently "
-                    "active sessions."
+                    "interrupted agents; resumable recovery metadata was "
+                    "persisted for those sessions."
                 )
 
             # Track sessions that were active at shutdown for stuck-loop
@@ -3611,7 +3670,7 @@ class GatewayRunner:
         if getattr(session_entry, 'was_auto_reset', False):
             reset_reason = getattr(session_entry, 'auto_reset_reason', None) or 'idle'
             if reset_reason == "suspended":
-                context_note = "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]"
+                context_note = "[System note: The user's previous session was interrupted repeatedly during restart recovery, so Hermes started a fresh conversation to avoid getting stuck. This is a fresh conversation with no prior context.]"
             elif reset_reason == "daily":
                 context_note = "[System note: The user's session was automatically reset by the daily schedule. This is a fresh conversation with no prior context.]"
             else:
@@ -3640,20 +3699,30 @@ class GatewayRunner:
                     adapter = self.adapters.get(source.platform)
                     if adapter:
                         if reset_reason == "suspended":
-                            reason_text = "previous session was stopped or interrupted"
+                            notice = (
+                                "◐ This session was interrupted repeatedly during restart "
+                                "recovery, so Hermes started a fresh session to avoid "
+                                "getting stuck. Use /resume if you want the old transcript."
+                            )
                         elif reset_reason == "daily":
                             reason_text = f"daily schedule at {policy.at_hour}:00"
+                            notice = (
+                                f"◐ Session automatically reset ({reason_text}). "
+                                f"Conversation history cleared.\n"
+                                f"Use /resume to browse and restore a previous session.\n"
+                                f"Adjust reset timing in config.yaml under session_reset."
+                            )
                         else:
                             hours = policy.idle_minutes // 60
                             mins = policy.idle_minutes % 60
                             duration = f"{hours}h" if not mins else f"{hours}h {mins}m" if hours else f"{mins}m"
                             reason_text = f"inactive for {duration}"
-                        notice = (
-                            f"◐ Session automatically reset ({reason_text}). "
-                            f"Conversation history cleared.\n"
-                            f"Use /resume to browse and restore a previous session.\n"
-                            f"Adjust reset timing in config.yaml under session_reset."
-                        )
+                            notice = (
+                                f"◐ Session automatically reset ({reason_text}). "
+                                f"Conversation history cleared.\n"
+                                f"Use /resume to browse and restore a previous session.\n"
+                                f"Adjust reset timing in config.yaml under session_reset."
+                            )
                         try:
                             session_info = self._format_session_info()
                             if session_info:
@@ -4034,6 +4103,7 @@ class GatewayRunner:
                 source=source,
                 session_id=session_entry.session_id,
                 session_key=session_key,
+                session_entry=session_entry,
                 event_message_id=event.message_id,
                 channel_prompt=event.channel_prompt,
             )
@@ -4074,6 +4144,16 @@ class GatewayRunner:
             # restarts where the session was active (never completed).
             if session_key:
                 self._clear_restart_failure_count(session_key)
+                if getattr(session_entry, "resume_pending", False):
+                    try:
+                        if not agent_result.get("failed") and not agent_result.get("interrupted"):
+                            self.session_store.clear_resume_pending(session_key)
+                            session_entry.resume_pending = False
+                            session_entry.resume_reason = None
+                            session_entry.resume_attempts = 0
+                            session_entry.last_resume_marked_at = None
+                    except Exception as e:
+                        logger.debug("Failed to clear resume-pending state for %s: %s", session_key[:30], e)
 
             # Surface error details when the agent failed silently (final_response=None)
             if not response and agent_result.get("failed"):
@@ -8492,6 +8572,7 @@ class GatewayRunner:
         source: SessionSource,
         session_id: str,
         session_key: str = None,
+        session_entry: Any = None,
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
@@ -9251,20 +9332,11 @@ class GatewayRunner:
             if _msn:
                 message = _msn + "\n\n" + message
 
-            # Auto-continue: if the loaded history ends with a tool result,
-            # the previous agent turn was interrupted mid-work (gateway
-            # restart, crash, SIGTERM).  Prepend a system note so the model
-            # finishes processing the pending tool results before addressing
-            # the user's new message.  (#4493)
-            if agent_history and agent_history[-1].get("role") == "tool":
-                message = (
-                    "[System note: Your previous turn was interrupted before you could "
-                    "process the last tool result(s). The conversation history contains "
-                    "tool outputs you haven't responded to yet. Please finish processing "
-                    "those results and summarize what was accomplished, then address the "
-                    "user's new message below.]\n\n"
-                    + message
-                )
+            message = _prepend_restart_recovery_note(
+                message,
+                agent_history,
+                resume_pending=bool(getattr(session_entry, "resume_pending", False)),
+            )
 
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
@@ -9881,6 +9953,7 @@ class GatewayRunner:
                     source=next_source,
                     session_id=session_id,
                     session_key=session_key,
+                    session_entry=session_entry,
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,

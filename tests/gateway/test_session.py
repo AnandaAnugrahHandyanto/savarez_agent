@@ -604,6 +604,88 @@ class TestSessionStoreSwitchSession:
         db.close()
 
 
+class TestSessionStoreResumePending:
+    """Restart recovery state should preserve the current session lane."""
+
+    @pytest.fixture()
+    def store(self, tmp_path):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            s = SessionStore(sessions_dir=tmp_path, config=config)
+        s._db = None
+        s._loaded = True
+        return s
+
+    def test_mark_resume_pending_persists_across_reload(self, store):
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            chat_type="dm",
+            user_id="u1",
+        )
+        entry = store.get_or_create_session(source)
+
+        assert store.mark_resume_pending(entry.session_key, reason="restart_timeout") is True
+
+        reloaded = SessionStore(sessions_dir=store.sessions_dir, config=store.config)
+        resumed = reloaded.get_or_create_session(source)
+        assert resumed.session_id == entry.session_id
+        assert resumed.resume_pending is True
+        assert resumed.resume_reason == "restart_timeout"
+        assert resumed.resume_attempts == 1
+
+    def test_resume_pending_reuses_same_session_id(self, store):
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="456",
+            chat_type="dm",
+            user_id="u2",
+        )
+        entry = store.get_or_create_session(source)
+        store.mark_resume_pending(entry.session_key, reason="restart_timeout")
+
+        resumed = store.get_or_create_session(source)
+
+        assert resumed.session_id == entry.session_id
+        assert resumed.was_auto_reset is False
+        assert resumed.auto_reset_reason is None
+
+    def test_clear_resume_pending_keeps_session_active(self, store):
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="789",
+            chat_type="dm",
+            user_id="u3",
+        )
+        entry = store.get_or_create_session(source)
+        store.mark_resume_pending(entry.session_key, reason="restart_timeout")
+
+        assert store.clear_resume_pending(entry.session_key) is True
+
+        refreshed = store.get_or_create_session(source)
+        assert refreshed.session_id == entry.session_id
+        assert refreshed.resume_pending is False
+        assert refreshed.resume_reason is None
+
+    def test_suspend_recently_active_skips_resume_pending_sessions(self, store):
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="999",
+            chat_type="dm",
+            user_id="u4",
+        )
+        entry = store.get_or_create_session(source)
+        store.mark_resume_pending(entry.session_key, reason="restart_timeout")
+
+        count = store.suspend_recently_active()
+
+        assert count == 0
+        resumed = store.get_or_create_session(source)
+        assert resumed.session_id == entry.session_id
+        assert resumed.resume_pending is True
+        assert resumed.suspended is False
+
+
 class TestWhatsAppDMSessionKeyConsistency:
     """Regression: all session-key construction must go through build_session_key
     so DMs are isolated by chat_id across platforms."""

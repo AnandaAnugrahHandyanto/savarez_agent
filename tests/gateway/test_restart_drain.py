@@ -183,7 +183,7 @@ async def test_shutdown_notification_sent_to_active_sessions():
 
 @pytest.mark.asyncio
 async def test_shutdown_notification_says_restarting_when_restart_requested():
-    """When _restart_requested is True, the message says 'restarting' and mentions /retry."""
+    """Restart copy should promise attempted recovery, not guaranteed resume."""
     runner, adapter = make_restart_runner()
     runner._restart_requested = True
     session_key = "agent:main:telegram:dm:999"
@@ -193,7 +193,8 @@ async def test_shutdown_notification_says_restarting_when_restart_requested():
 
     assert len(adapter.sent) == 1
     assert "restarting" in adapter.sent[0]
-    assert "resume" in adapter.sent[0]
+    assert "I'll try to resume this session after restart." in adapter.sent[0]
+    assert "Send a message in this chat to continue." in adapter.sent[0]
 
 
 @pytest.mark.asyncio

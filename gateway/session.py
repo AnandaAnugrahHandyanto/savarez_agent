@@ -377,6 +377,14 @@ class SessionEntry:
     # this session (create a new session_id) so the user starts fresh.
     # Set by /stop to break stuck-resume loops (#7536).
     suspended: bool = False
+
+    # Restart/crash recovery state. Unlike `suspended`, this keeps the user
+    # on the same session_id for the next same-lane message so transcript
+    # reload and continuation can resume in place.
+    resume_pending: bool = False
+    resume_reason: Optional[str] = None
+    resume_attempts: int = 0
+    last_resume_marked_at: Optional[datetime] = None
     
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -397,6 +405,14 @@ class SessionEntry:
             "cost_status": self.cost_status,
             "memory_flushed": self.memory_flushed,
             "suspended": self.suspended,
+            "resume_pending": self.resume_pending,
+            "resume_reason": self.resume_reason,
+            "resume_attempts": self.resume_attempts,
+            "last_resume_marked_at": (
+                self.last_resume_marked_at.isoformat()
+                if self.last_resume_marked_at
+                else None
+            ),
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -434,6 +450,14 @@ class SessionEntry:
             cost_status=data.get("cost_status", "unknown"),
             memory_flushed=data.get("memory_flushed", False),
             suspended=data.get("suspended", False),
+            resume_pending=data.get("resume_pending", False),
+            resume_reason=data.get("resume_reason"),
+            resume_attempts=data.get("resume_attempts", 0),
+            last_resume_marked_at=(
+                datetime.fromisoformat(data["last_resume_marked_at"])
+                if data.get("last_resume_marked_at")
+                else None
+            ),
         )
 
 
@@ -713,6 +737,10 @@ class SessionStore:
                 # broke a stuck loop — #7536).
                 if entry.suspended:
                     reset_reason = "suspended"
+                elif entry.resume_pending:
+                    entry.updated_at = now
+                    self._save()
+                    return entry
                 else:
                     reset_reason = self._should_reset(entry, source)
                 if not reset_reason:
@@ -798,9 +826,52 @@ class SessionStore:
             self._ensure_loaded_locked()
             if session_key in self._entries:
                 self._entries[session_key].suspended = True
+                self._entries[session_key].resume_pending = False
+                self._entries[session_key].resume_reason = None
                 self._save()
                 return True
         return False
+
+    def mark_resume_pending(
+        self,
+        session_key: str,
+        *,
+        reason: str = "restart_timeout",
+        increment_attempts: bool = True,
+    ) -> bool:
+        """Mark a session as resumable after restart interruption."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if not entry:
+                return False
+            entry.resume_pending = True
+            entry.resume_reason = reason
+            entry.last_resume_marked_at = _now()
+            if increment_attempts:
+                entry.resume_attempts += 1
+            self._save()
+            return True
+
+    def clear_resume_pending(
+        self,
+        session_key: str,
+        *,
+        reset_attempts: bool = True,
+    ) -> bool:
+        """Clear resumable restart state after recovery succeeds."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if not entry:
+                return False
+            entry.resume_pending = False
+            entry.resume_reason = None
+            entry.last_resume_marked_at = None
+            if reset_attempts:
+                entry.resume_attempts = 0
+            self._save()
+            return True
 
     def prune_old_entries(self, max_age_days: int) -> int:
         """Drop SessionEntry records older than max_age_days.
@@ -869,7 +940,11 @@ class SessionStore:
         with self._lock:
             self._ensure_loaded_locked()
             for entry in self._entries.values():
-                if not entry.suspended and entry.updated_at >= cutoff:
+                if (
+                    not entry.suspended
+                    and not entry.resume_pending
+                    and entry.updated_at >= cutoff
+                ):
                     entry.suspended = True
                     count += 1
             if count:

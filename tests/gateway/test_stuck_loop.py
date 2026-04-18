@@ -58,12 +58,14 @@ class TestStuckLoopDetection:
         # Create a mock session entry
         mock_entry = MagicMock()
         mock_entry.suspended = False
+        mock_entry.resume_pending = True
         runner.session_store._entries = {"session:a": mock_entry}
         runner.session_store._save = MagicMock()
 
         suspended = runner._suspend_stuck_loop_sessions()
         assert suspended == 1
         assert mock_entry.suspended is True
+        assert mock_entry.resume_pending is False
 
     def test_no_suspend_below_threshold(self, runner_with_home):
         runner, home = runner_with_home

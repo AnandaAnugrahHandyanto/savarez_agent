@@ -8,6 +8,8 @@ finishes the interrupted work before addressing the new input.
 
 import pytest
 
+import gateway.run as gateway_run
+
 
 def _simulate_auto_continue(agent_history: list, user_message: str) -> str:
     """Reproduce the auto-continue injection logic from _run_agent().
@@ -93,3 +95,34 @@ class TestAutoDetection:
         note_end = result.index("]\n\n")
         user_msg_start = result.index("now do X")
         assert user_msg_start > note_end
+
+
+class TestRestartRecoveryNote:
+    def test_resume_pending_prepends_restart_note_even_without_tool_tail(self):
+        result = gateway_run._prepend_restart_recovery_note(
+            "pick up where you left off",
+            [],
+            resume_pending=True,
+        )
+
+        assert result.startswith("[System note:")
+        assert "gateway restart" in result
+        assert "pick up where you left off" in result
+
+    def test_resume_pending_with_tool_tail_uses_restart_specific_guidance(self):
+        history = [
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "call_1", "function": {"name": "terminal", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "done"},
+        ]
+
+        result = gateway_run._prepend_restart_recovery_note(
+            "continue",
+            history,
+            resume_pending=True,
+        )
+
+        assert "gateway restart" in result
+        assert "unfinished tool results" in result or "finish processing" in result
+        assert result.endswith("continue")

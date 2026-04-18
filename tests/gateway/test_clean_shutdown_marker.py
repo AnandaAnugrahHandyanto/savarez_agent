@@ -224,3 +224,64 @@ class TestCleanShutdownMarker:
             asyncio.get_event_loop().run_until_complete(runner.stop(restart=True))
 
         assert marker.exists(), ".clean_shutdown marker should exist after restart-stop too"
+
+    def test_timed_out_restart_marks_resume_pending_without_clean_marker(self, tmp_path, monkeypatch):
+        """Timed-out restart should preserve resumable state instead of immediate suspension."""
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        marker = tmp_path / ".clean_shutdown"
+
+        store = _make_store(tmp_path)
+        source = _make_source()
+        entry = store.get_or_create_session(source)
+        completed_source = _make_source(chat_id="completed")
+        completed_entry = store.get_or_create_session(completed_source)
+
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._restart_requested = False
+        runner._restart_detached = False
+        runner._restart_via_service = False
+        runner._restart_task_started = False
+        runner._running = True
+        runner._draining = False
+        runner._stop_task = None
+        runner._running_agents = {entry.session_key: MagicMock()}
+        runner._running_agents_ts = {}
+        runner._pending_messages = {}
+        runner._pending_approvals = {}
+        runner._background_tasks = set()
+        runner._shutdown_event = MagicMock()
+        runner._restart_drain_timeout = 5
+        runner._exit_code = None
+        runner._exit_reason = None
+        runner.adapters = {}
+        runner.config = GatewayConfig()
+        runner.session_store = store
+
+        active_agents = {
+            entry.session_key: MagicMock(),
+            completed_entry.session_key: MagicMock(),
+        }
+
+        with patch("gateway.run.GatewayRunner._drain_active_agents", new_callable=AsyncMock, return_value=(active_agents, True)), \
+             patch("gateway.run.GatewayRunner._finalize_shutdown_agents"), \
+             patch("gateway.run.GatewayRunner._update_runtime_status"), \
+             patch("gateway.status.remove_pid_file"), \
+             patch("tools.process_registry.process_registry") as mock_proc_reg, \
+             patch("tools.terminal_tool.cleanup_all_environments"), \
+             patch("tools.browser_tool.cleanup_all_browsers"):
+            mock_proc_reg.kill_all = MagicMock()
+
+            import asyncio
+            asyncio.get_event_loop().run_until_complete(runner.stop(restart=True))
+
+        refreshed = store.get_or_create_session(source)
+        completed_refreshed = store.get_or_create_session(completed_source)
+        assert marker.exists() is False
+        assert refreshed.session_id == entry.session_id
+        assert refreshed.resume_pending is True
+        assert refreshed.resume_reason == "restart_timeout"
+        assert refreshed.suspended is False
+        assert completed_refreshed.session_id == completed_entry.session_id
+        assert completed_refreshed.resume_pending is False
