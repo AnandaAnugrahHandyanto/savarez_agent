@@ -139,6 +139,20 @@ class ClaudeMemClient:
             )
         return data
 
+    @staticmethod
+    def _extract_mcp_text(payload: dict) -> str:
+        """Pull the rendered markdown out of an MCP `{content:[{type,text}]}` envelope.
+
+        Returns "" if the envelope is missing or malformed — never raises.
+        """
+        try:
+            content = payload.get("content") or []
+            if content and isinstance(content[0], dict):
+                return content[0].get("text") or ""
+        except Exception:
+            pass
+        return ""
+
     # ------------------------------------------------------------------
     # The nine endpoints
     # ------------------------------------------------------------------
@@ -251,8 +265,11 @@ class ClaudeMemClient:
     ) -> dict:
         """GET ``/api/search``.
 
-        Returns a dict like ``{"observations": [...], "total": N, ...}``.
-        Callers should NOT assume a flat list.
+        The worker returns an MCP envelope (``{"content":[{"type","text"}]}``)
+        whose ``text`` field is a rendered markdown block. This method
+        normalizes that shape into ``{"text": <markdown>, "raw": <envelope>}``
+        so callers work with the markdown directly and can still inspect
+        the original envelope when needed.
         """
         params: dict[str, Any] = {
             "query": query,
@@ -265,7 +282,8 @@ class ClaudeMemClient:
             "offset": offset,
             "orderBy": order_by,
         }
-        return self._get("/api/search", params=params, timeout=_READ_TIMEOUT)
+        raw = self._get("/api/search", params=params, timeout=_READ_TIMEOUT)
+        return {"text": self._extract_mcp_text(raw), "raw": raw}
 
     def timeline(
         self,
@@ -276,7 +294,14 @@ class ClaudeMemClient:
         depth_after: int = 3,
         project: str | None = None,
     ) -> dict:
-        """GET ``/api/timeline`` — observations around an anchor."""
+        """GET ``/api/timeline`` — observations around an anchor.
+
+        The worker returns an MCP envelope (``{"content":[{"type","text"}]}``)
+        whose ``text`` field is a rendered markdown timeline. This method
+        normalizes that shape into ``{"text": <markdown>, "raw": <envelope>}``
+        so callers work with the markdown directly and can still inspect
+        the original envelope when needed.
+        """
         params: dict[str, Any] = {
             "anchor": anchor,
             "query": query,
@@ -284,7 +309,8 @@ class ClaudeMemClient:
             "depth_after": depth_after,
             "project": project,
         }
-        return self._get("/api/timeline", params=params, timeout=_READ_TIMEOUT)
+        raw = self._get("/api/timeline", params=params, timeout=_READ_TIMEOUT)
+        return {"text": self._extract_mcp_text(raw), "raw": raw}
 
     def context_semantic(
         self,
