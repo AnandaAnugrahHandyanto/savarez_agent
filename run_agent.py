@@ -1035,46 +1035,51 @@ class AIAgent:
                 elif "portal.qwen.ai" in effective_base.lower():
                     client_kwargs["default_headers"] = _qwen_portal_headers()
             else:
-                # No explicit creds — use the centralized provider router
-                from agent.auxiliary_client import resolve_provider_client
-                _routed_client, _ = resolve_provider_client(
-                    self.provider or "auto", model=self.model, raw_codex=True)
-                if _routed_client is not None:
-                    client_kwargs = {
-                        "api_key": _routed_client.api_key,
-                        "base_url": str(_routed_client.base_url),
-                    }
-                    # Preserve any default_headers the router set
-                    if hasattr(_routed_client, '_default_headers') and _routed_client._default_headers:
-                        client_kwargs["default_headers"] = dict(_routed_client._default_headers)
+                if api_key:
+                    client_kwargs = {"api_key": api_key}
+                    if base_url:
+                        client_kwargs["base_url"] = base_url
                 else:
-                    # When the user explicitly chose a non-OpenRouter provider
-                    # but no credentials were found, fail fast with a clear
-                    # message instead of silently routing through OpenRouter.
-                    _explicit = (self.provider or "").strip().lower()
-                    if _explicit and _explicit not in ("auto", "openrouter", "custom"):
-                        # Look up the actual env var name from the provider
-                        # config — some providers use non-standard names
-                        # (e.g. alibaba → DASHSCOPE_API_KEY, not ALIBABA_API_KEY).
-                        _env_hint = f"{_explicit.upper()}_API_KEY"
-                        try:
-                            from hermes_cli.auth import PROVIDER_REGISTRY
-                            _pcfg = PROVIDER_REGISTRY.get(_explicit)
-                            if _pcfg and _pcfg.api_key_env_vars:
-                                _env_hint = _pcfg.api_key_env_vars[0]
-                        except Exception:
-                            pass
+                    # No explicit creds — use the centralized provider router
+                    from agent.auxiliary_client import resolve_provider_client
+                    _routed_client, _ = resolve_provider_client(
+                        self.provider or "auto", model=self.model, raw_codex=True)
+                    if _routed_client is not None:
+                        client_kwargs = {
+                            "api_key": _routed_client.api_key,
+                            "base_url": str(_routed_client.base_url),
+                        }
+                        # Preserve any default_headers the router set
+                        if hasattr(_routed_client, '_default_headers') and _routed_client._default_headers:
+                            client_kwargs["default_headers"] = dict(_routed_client._default_headers)
+                    else:
+                        # When the user explicitly chose a non-OpenRouter provider
+                        # but no credentials were found, fail fast with a clear
+                        # message instead of silently routing through OpenRouter.
+                        _explicit = (self.provider or "").strip().lower()
+                        if _explicit and _explicit not in ("auto", "openrouter", "custom"):
+                            # Look up the actual env var name from the provider
+                            # config — some providers use non-standard names
+                            # (e.g. alibaba → DASHSCOPE_API_KEY, not ALIBABA_API_KEY).
+                            _env_hint = f"{_explicit.upper()}_API_KEY"
+                            try:
+                                from hermes_cli.auth import PROVIDER_REGISTRY
+                                _pcfg = PROVIDER_REGISTRY.get(_explicit)
+                                if _pcfg and _pcfg.api_key_env_vars:
+                                    _env_hint = _pcfg.api_key_env_vars[0]
+                            except Exception:
+                                pass
+                            raise RuntimeError(
+                                f"Provider '{_explicit}' is set in config.yaml but no API key "
+                                f"was found. Set the {_env_hint} environment "
+                                f"variable, or switch to a different provider with `hermes model`."
+                            )
+                        # No provider configured — reject with a clear message.
                         raise RuntimeError(
-                            f"Provider '{_explicit}' is set in config.yaml but no API key "
-                            f"was found. Set the {_env_hint} environment "
-                            f"variable, or switch to a different provider with `hermes model`."
+                            "No LLM provider configured. Run `hermes model` to "
+                            "select a provider, or run `hermes setup` for first-time "
+                            "configuration."
                         )
-                    # No provider configured — reject with a clear message.
-                    raise RuntimeError(
-                        "No LLM provider configured. Run `hermes model` to "
-                        "select a provider, or run `hermes setup` for first-time "
-                        "configuration."
-                    )
             
             self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
 
@@ -1141,6 +1146,7 @@ class AIAgent:
         # Get available tools with filtering
         self.tools = get_tool_definitions(
             enabled_toolsets=enabled_toolsets,
+            enabled_tools=self.enabled_tools,
             disabled_toolsets=disabled_toolsets,
             quiet_mode=self.quiet_mode,
         )
@@ -1156,6 +1162,8 @@ class AIAgent:
                 # Show filtering info if applied
                 if enabled_toolsets:
                     print(f"   ✅ Enabled toolsets: {', '.join(enabled_toolsets)}")
+                if self.enabled_tools:
+                    print(f"   🎯 Enabled tools: {', '.join(self.enabled_tools)}")
                 if disabled_toolsets:
                     print(f"   ❌ Disabled toolsets: {', '.join(disabled_toolsets)}")
         elif not self.quiet_mode:
@@ -1251,6 +1259,7 @@ class AIAgent:
             _agent_cfg = _load_agent_config()
         except Exception:
             _agent_cfg = {}
+        self._delegation_cfg = _agent_cfg.get("delegation", {}) if isinstance(_agent_cfg.get("delegation", {}), dict) else {}
 
         # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
         self._memory_store = None

@@ -251,6 +251,41 @@ def test_cli_turn_routing_uses_cheap_model_when_simple(monkeypatch):
     assert result["label"] is not None
 
 
+def test_cli_turn_routing_uses_configured_primary_agent_when_prompt_is_complex(monkeypatch):
+    cli = _import_cli()
+
+    def _runtime_resolve(**kwargs):
+        assert kwargs["requested"] == "anthropic"
+        return {
+            "provider": "anthropic",
+            "api_mode": "anthropic_messages",
+            "base_url": "https://api.anthropic.com",
+            "api_key": "***",
+            "source": "env/config",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+
+    shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
+    shell.provider = "openrouter"
+    shell.api_mode = "chat_completions"
+    shell.base_url = "https://openrouter.ai/api/v1"
+    shell.api_key = "primary-key"
+    shell._smart_model_routing = {
+        "enabled": True,
+        "cheap_model": {"provider": "zai", "model": "glm-5-air"},
+        "primary_agent": {"provider": "anthropic", "model": "claude-sonnet-4.6"},
+        "max_simple_chars": 160,
+        "max_simple_words": 28,
+    }
+
+    result = shell._resolve_turn_agent_config("implement a patch for this docker error")
+
+    assert result["model"] == "claude-sonnet-4.6"
+    assert result["runtime"]["provider"] == "anthropic"
+    assert result["label"] == "smart route → primary claude-sonnet-4.6 (anthropic)"
+
+
 def test_cli_prefers_config_provider_over_stale_env_override(monkeypatch):
     cli = _import_cli()
 
