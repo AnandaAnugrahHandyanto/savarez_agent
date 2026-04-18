@@ -154,8 +154,10 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     }
     return [t for t in toolsets if t not in blocked_toolset_names]
 
+_CALLER_OMITTED = object()
 
-def _build_child_progress_callback(task_index: int, goal: str, parent_agent, task_count: int = 1) -> Optional[callable]:
+
+def _build_child_progress_callback(task_index: int, goal_or_parent=None, parent_agent=_CALLER_OMITTED, task_count: int = 1) -> Optional[callable]:
     """Build a callback that relays child agent tool calls to the parent display.
 
     Two display paths:
@@ -165,6 +167,25 @@ def _build_child_progress_callback(task_index: int, goal: str, parent_agent, tas
     Returns None if no display mechanism is available, in which case the
     child agent runs with no progress callback (identical to current behavior).
     """
+    # Backward-compat shim:
+    # legacy call style: _build_child_progress_callback(task_index, parent_agent, task_count=? )
+    # new call style:    _build_child_progress_callback(task_index, goal, parent_agent, task_count=?)
+    legacy_mode = False
+    if parent_agent is _CALLER_OMITTED:
+        legacy_mode = True
+        parent_agent = goal_or_parent
+        goal = ""
+    else:
+        goal = goal_or_parent or ""
+
+    if parent_agent is None:
+        raise TypeError("parent_agent is required")
+
+    if not hasattr(parent_agent, "_delegate_spinner") and not hasattr(parent_agent, "tool_progress_callback"):
+        raise TypeError(
+            "parent_agent must expose '_delegate_spinner' and/or 'tool_progress_callback'"
+        )
+
     spinner = getattr(parent_agent, '_delegate_spinner', None)
     parent_cb = getattr(parent_agent, 'tool_progress_callback', None)
 
@@ -180,7 +201,7 @@ def _build_child_progress_callback(task_index: int, goal: str, parent_agent, tas
     _batch: List[str] = []
 
     def _relay(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
-        if not parent_cb:
+        if parent_cb is None:
             return
         try:
             parent_cb(
@@ -196,6 +217,14 @@ def _build_child_progress_callback(task_index: int, goal: str, parent_agent, tas
         except Exception as e:
             logger.debug("Parent callback failed: %s", e)
 
+    def _relay_legacy_progress(summary: str):
+        if parent_cb is None:
+            return
+        try:
+            parent_cb("subagent.progress", summary)
+        except Exception as e:
+            logger.debug("Parent callback failed: %s", e)
+
     def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
         # event_type is one of: "tool.started", "tool.completed",
         # "reasoning.available", "_thinking", "subagent.*"
@@ -207,11 +236,13 @@ def _build_child_progress_callback(task_index: int, goal: str, parent_agent, tas
                     spinner.print_above(f" {prefix}├─ 🔀 {short}")
                 except Exception as e:
                     logger.debug("Spinner print_above failed: %s", e)
-            _relay("subagent.start", preview=preview or goal_label or "", **kwargs)
+            if not legacy_mode:
+                _relay("subagent.start", preview=preview or goal_label or "", **kwargs)
             return
 
         if event_type == "subagent.complete":
-            _relay("subagent.complete", preview=preview, **kwargs)
+            if not legacy_mode:
+                _relay("subagent.complete", preview=preview, **kwargs)
             return
 
         # "_thinking" / reasoning events
@@ -223,7 +254,8 @@ def _build_child_progress_callback(task_index: int, goal: str, parent_agent, tas
                     spinner.print_above(f" {prefix}├─ 💭 \"{short}\"")
                 except Exception as e:
                     logger.debug("Spinner print_above failed: %s", e)
-            _relay("subagent.thinking", preview=text)
+            if not legacy_mode:
+                _relay("subagent.thinking", preview=text)
             return
 
         # tool.completed — no display needed here (spinner shows on started)
@@ -243,19 +275,26 @@ def _build_child_progress_callback(task_index: int, goal: str, parent_agent, tas
             except Exception as e:
                 logger.debug("Spinner print_above failed: %s", e)
 
-        if parent_cb:
-            _relay("subagent.tool", tool_name, preview, args)
+        if parent_cb is not None:
             _batch.append(tool_name or "")
+            if not legacy_mode:
+                _relay("subagent.tool", tool_name, preview, args)
             if len(_batch) >= _BATCH_SIZE:
-                summary = ", ".join(_batch)
-                _relay("subagent.progress", preview=f"🔀 {prefix}{summary}")
+                summary = f"🔀 {prefix}{', '.join(_batch)}"
+                if legacy_mode:
+                    _relay_legacy_progress(summary)
+                else:
+                    _relay("subagent.progress", preview=summary)
                 _batch.clear()
 
     def _flush():
         """Flush remaining batched tool names to gateway on completion."""
-        if parent_cb and _batch:
-            summary = ", ".join(_batch)
-            _relay("subagent.progress", preview=f"🔀 {prefix}{summary}")
+        if parent_cb is not None and _batch:
+            summary = f"🔀 {prefix}{', '.join(_batch)}"
+            if legacy_mode:
+                _relay_legacy_progress(summary)
+            else:
+                _relay("subagent.progress", preview=summary)
             _batch.clear()
 
     _callback._flush = _flush
@@ -269,8 +308,8 @@ def _build_child_agent(
     toolsets: Optional[List[str]],
     model: Optional[str],
     max_iterations: int,
-    task_count: int,
-    parent_agent,
+    task_count: int = 1,
+    parent_agent=None,
     # Credential overrides from delegation config (provider:model resolution)
     override_provider: Optional[str] = None,
     override_base_url: Optional[str] = None,
@@ -284,12 +323,18 @@ def _build_child_agent(
     Build a child AIAgent on the main thread (thread-safe construction).
     Returns the constructed child agent without running it.
 
+    `parent_agent` is required. `task_count` defaults to 1 only for backward
+    compatibility with older direct unit-test call sites.
+
     When override_* params are set (from delegation config), the child uses
     those credentials instead of inheriting from the parent.  This enables
     routing subagents to a different provider:model pair (e.g. cheap/fast
     model on OpenRouter while the parent runs on Nous Portal).
     """
     from run_agent import AIAgent
+
+    if parent_agent is None:
+        raise TypeError("parent_agent is required")
 
     # When no explicit toolsets given, inherit from parent's enabled toolsets
     # so disabled tools (e.g. web) don't leak to subagents.

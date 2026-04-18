@@ -41,11 +41,58 @@ fi
 
 PYTHON="$VENV/bin/python"
 
+# Ensure selected interpreter is actually a venv python.
+if ! "$PYTHON" -c "import sys; raise SystemExit(0 if sys.prefix != sys.base_prefix else 1)" >/dev/null 2>&1; then
+  echo "error: selected python is not a virtualenv interpreter: $PYTHON" >&2
+  exit 1
+fi
+
 # ── Ensure pytest-split is installed (required for shard-equivalent runs) ──
 if ! "$PYTHON" -c "import pytest_split" 2>/dev/null; then
   echo "→ installing pytest-split into $VENV"
-  "$PYTHON" -m pip install --quiet "pytest-split>=0.9,<1"
+  if ! "$PYTHON" -m pip install --quiet "pytest-split>=0.9,<1"; then
+    echo "error: failed to install pytest-split into $VENV" >&2
+    exit 1
+  fi
 fi
+
+# ── Ensure test extras are present ──────────────────────────────────────────
+# Local envs are frequently created with only `.[dev]`, but the default test
+# suite imports modules provided by extras like [web], [acp], and [matrix].
+# Bootstrap to the CI-equivalent env (.[all,dev]) when imports are missing.
+MISSING_EXTRAS=0
+if ! "$PYTHON" -c "import fastapi" >/dev/null 2>&1; then
+  MISSING_EXTRAS=1
+fi
+if ! "$PYTHON" -c "import acp" >/dev/null 2>&1; then
+  MISSING_EXTRAS=1
+fi
+if [[ "$(uname -s)" == "Linux" ]]; then
+  if ! "$PYTHON" -c "import mautrix" >/dev/null 2>&1; then
+    MISSING_EXTRAS=1
+  fi
+fi
+
+if [[ "$MISSING_EXTRAS" -eq 1 ]]; then
+  echo "→ missing test extras detected; syncing environment with .[all,dev]"
+  if ! "$PYTHON" -m pip install --quiet -e ".[all,dev]"; then
+    echo "error: failed to install .[all,dev] extras (network/auth issue?)" >&2
+    exit 1
+  fi
+fi
+
+
+# Verify required imports even when pip exits successfully.
+_REQUIRED_IMPORTS=(pytest_split fastapi acp)
+if [[ "$(uname -s)" == "Linux" ]]; then
+  _REQUIRED_IMPORTS+=(mautrix)
+fi
+for mod in "${_REQUIRED_IMPORTS[@]}"; do
+  if ! "$PYTHON" -c "import ${mod}" >/dev/null 2>&1; then
+    echo "error: required test dependency '${mod}' is still missing after bootstrap" >&2
+    exit 1
+  fi
+done
 
 # ── Hermetic environment ────────────────────────────────────────────────────
 # Mirror what CI does in .github/workflows/tests.yml + what conftest.py does.
