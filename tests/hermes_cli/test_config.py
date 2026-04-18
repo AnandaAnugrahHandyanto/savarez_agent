@@ -639,7 +639,7 @@ class TestInterimAssistantMessageConfig:
             migrate_config(interactive=False, quiet=True)
             raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
-        assert raw["_config_version"] == 18
+        assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
         assert raw["display"]["still_working_interval"] == 600
         assert raw["display"]["still_working_overrides"] == {}
         assert raw["compression"]["target_ratio"] == 0.2
