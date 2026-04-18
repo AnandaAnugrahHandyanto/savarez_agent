@@ -72,6 +72,7 @@ Routes define how different webhook sources are handled. Each route is a named e
 | `skills` | No | List of skill names to load for the agent run. |
 | `deliver` | No | Where to send the response: `github_comment`, `telegram`, `discord`, `slack`, `signal`, `sms`, `whatsapp`, `matrix`, `mattermost`, `homeassistant`, `email`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`, or `log` (default). |
 | `deliver_extra` | No | Additional delivery config — keys depend on `deliver` type (e.g. `repo`, `pr_number`, `chat_id`). Values support the same `{dot.notation}` templates as `prompt`. |
+| `rate_limit` | No | Override the global `rate_limit` for this specific route (requests per minute). |
 
 ### Full example
 
@@ -316,7 +317,19 @@ Each route is rate-limited to **30 requests per minute** by default (fixed-windo
 platforms:
   webhook:
     extra:
-      rate_limit: 60  # requests per minute
+      rate_limit: 60  # global default: requests per minute
+```
+
+You can also override this for specific routes:
+
+```yaml
+platforms:
+  webhook:
+    extra:
+      routes:
+        my-route:
+          rate_limit: 5  # route override: requests per minute
+          # ... rest of route config
 ```
 
 Requests exceeding the limit receive a `429 Too Many Requests` response.
