@@ -35,7 +35,7 @@ PLATFORMS = {
     "webhook": "🔗 Webhook",
 }
 
-# ─── Config Helpers ───────────────────────────────────────────────────────────
+# --- Config Helpers -----------------------------------------------------------
 
 def get_disabled_skills(config: dict, platform: Optional[str] = None) -> Set[str]:
     """Return disabled skill names. Platform-specific list falls back to global."""
@@ -60,7 +60,7 @@ def save_disabled_skills(config: dict, disabled: Set[str], platform: Optional[st
     save_config(config)
 
 
-# ─── Skill Discovery ─────────────────────────────────────────────────────────
+# --- Skill Discovery ---------------------------------------------------------
 
 def _list_all_skills() -> List[dict]:
     """Return all installed skills (ignoring disabled state)."""
@@ -76,7 +76,7 @@ def _get_categories(skills: List[dict]) -> List[str]:
     return sorted({s["category"] or "uncategorized" for s in skills})
 
 
-# ─── Platform Selection ──────────────────────────────────────────────────────
+# --- Platform Selection ------------------------------------------------------
 
 def _select_platform() -> Optional[str]:
     """Ask user which platform to configure, or global."""
@@ -102,7 +102,7 @@ def _select_platform() -> Optional[str]:
     return None
 
 
-# ─── Category Toggle ─────────────────────────────────────────────────────────
+# --- Category Toggle ---------------------------------------------------------
 
 def _toggle_by_category(skills: List[dict], disabled: Set[str]) -> Set[str]:
     """Toggle all skills in a category at once."""
@@ -127,13 +127,13 @@ def _toggle_by_category(skills: List[dict], disabled: Set[str]) -> Set[str]:
     for i, cat in enumerate(categories):
         cat_skills = {s["name"] for s in skills if (s["category"] or "uncategorized") == cat}
         if i in chosen:
-            new_disabled -= cat_skills  # category enabled → remove from disabled
+            new_disabled -= cat_skills  # category enabled -> remove from disabled
         else:
-            new_disabled |= cat_skills  # category disabled → add to disabled
+            new_disabled |= cat_skills  # category disabled -> add to disabled
     return new_disabled
 
 
-# ─── Entry Point ──────────────────────────────────────────────────────────────
+# --- Entry Point --------------------------------------------------------------
 
 def skills_command(args=None):
     """Entry point for `hermes skills`."""
@@ -167,12 +167,12 @@ def skills_command(args=None):
     if mode == "2":
         new_disabled = _toggle_by_category(skills, disabled)
     else:
-        # Build labels and map indices → skill names
+        # Build labels and map indices -> skill names
         labels = [
             f"{s['name']}  ({s['category'] or 'uncategorized'})  —  {s['description'][:55]}"
             for s in skills
         ]
-        # "selected" = enabled (not disabled) — matches the [✓] convention
+        # "selected" = enabled (not disabled) — matches the [[OK]] convention
         pre_selected = {i for i, s in enumerate(skills) if s["name"] not in disabled}
         chosen = curses_checklist(
             f"Skills for {platform_label}",
@@ -187,4 +187,4 @@ def skills_command(args=None):
 
     save_disabled_skills(config, new_disabled, platform)
     enabled_count = len(skills) - len(new_disabled)
-    print(color(f"✓ Saved: {enabled_count} enabled, {len(new_disabled)} disabled ({platform_label}).", Colors.GREEN))
+    print(color(f"[OK] Saved: {enabled_count} enabled, {len(new_disabled)} disabled ({platform_label}).", Colors.GREEN))

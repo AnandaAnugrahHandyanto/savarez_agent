@@ -155,7 +155,7 @@ class ProviderDef:
 
 ALIASES: Dict[str, str] = {
     # openrouter
-    "openai": "openrouter",     # bare "openai" → route through aggregator
+    "openai": "openrouter",     # bare "openai" -> route through aggregator
 
     # zai
     "glm": "zai",
@@ -213,7 +213,7 @@ ALIASES: Dict[str, str] = {
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
 
-    # Local server aliases → virtual "local" concept (resolved via user config)
+    # Local server aliases -> virtual "local" concept (resolved via user config)
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
     "lm_studio": "lmstudio",
@@ -237,7 +237,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
 }
 
 
-# -- Transport → API mode mapping ---------------------------------------------
+# -- Transport -> API mode mapping ---------------------------------------------
 
 TRANSPORT_TO_API_MODE: Dict[str, str] = {
     "openai_chat": "chat_completions",
@@ -351,7 +351,7 @@ def determine_api_mode(provider: str, base_url: str = "") -> str:
     """Determine the API mode (wire protocol) for a provider/endpoint.
 
     Resolution order:
-      1. Known provider → transport → TRANSPORT_TO_API_MODE.
+      1. Known provider -> transport -> TRANSPORT_TO_API_MODE.
       2. URL heuristics for unknown / custom providers.
       3. Default: 'chat_completions'.
     """
@@ -470,7 +470,7 @@ def resolve_provider_full(
     user_providers: Optional[Dict[str, Any]] = None,
     custom_providers: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[ProviderDef]:
-    """Full resolution chain: built-in → models.dev → user config.
+    """Full resolution chain: built-in -> models.dev -> user config.
 
     This is the main entry point for --provider flag resolution.
 

@@ -557,7 +557,7 @@ DEFAULT_CONFIG = {
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
-        "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
+        "reactions": True,             # Add 👀/[OK]/[X] reactions to messages during processing
     },
 
     # WhatsApp platform settings (gateway mode)
@@ -565,7 +565,7 @@ DEFAULT_CONFIG = {
         # Reply prefix prepended to every outgoing WhatsApp message.
         # Default (None) uses the built-in "⚕ *Hermes Agent*" header.
         # Set to "" (empty string) to disable the header entirely.
-        # Supports \n for newlines, e.g. "🤖 *My Bot*\n──────\n"
+        # Supports \n for newlines, e.g. "🤖 *My Bot*\n------\n"
     },
 
     # Approval mode for dangerous commands:
@@ -641,7 +641,7 @@ REQUIRED_ENV_VARS = {}
 
 # Optional environment variables that enhance functionality
 OPTIONAL_ENV_VARS = {
-    # ── Provider (handled in provider selection, not shown in checklists) ──
+    # -- Provider (handled in provider selection, not shown in checklists) --
     "NOUS_BASE_URL": {
         "description": "Nous Portal base URL override",
         "prompt": "Nous Portal base URL (leave empty for default)",
@@ -848,7 +848,7 @@ OPTIONAL_ENV_VARS = {
         "advanced": True,
     },
 
-    # ── Tool API keys ──
+    # -- Tool API keys --
     "EXA_API_KEY": {
         "description": "Exa API key for AI-native web search and contents",
         "prompt": "Exa API key",
@@ -1007,7 +1007,7 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
     },
 
-    # ── Honcho ──
+    # -- Honcho --
     "HONCHO_API_KEY": {
         "description": "Honcho API key for AI-native persistent memory",
         "prompt": "Honcho API key",
@@ -1022,7 +1022,7 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
     },
 
-    # ── Messaging platforms ──
+    # -- Messaging platforms --
     "TELEGRAM_BOT_TOKEN": {
         "description": "Telegram bot token from @BotFather",
         "prompt": "Telegram bot token",
@@ -1068,7 +1068,7 @@ OPTIONAL_ENV_VARS = {
         "category": "messaging",
     },
     "SLACK_APP_TOKEN": {
-        "description": "Slack app-level token (xapp-) for Socket Mode. Get from Basic Information → "
+        "description": "Slack app-level token (xapp-) for Socket Mode. Get from Basic Information -> "
                        "App-Level Tokens. Also ensure Event Subscriptions include: message.im, "
                        "message.channels, message.groups, app_mention",
         "prompt": "Slack App Token (xapp-...)",
@@ -1179,7 +1179,7 @@ OPTIONAL_ENV_VARS = {
         "category": "messaging",
     },
     "BLUEBUBBLES_PASSWORD": {
-        "description": "BlueBubbles server password (from BlueBubbles Server → Settings → API)",
+        "description": "BlueBubbles server password (from BlueBubbles Server -> Settings -> API)",
         "prompt": "BlueBubbles server password",
         "url": None,
         "password": True,
@@ -1262,7 +1262,7 @@ OPTIONAL_ENV_VARS = {
         "category": "messaging",
     },
 
-    # ── Agent settings ──
+    # -- Agent settings --
     "MESSAGING_CWD": {
         "description": "Working directory for terminal commands via messaging",
         "prompt": "Messaging working directory (default: home)",
@@ -1488,7 +1488,7 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
 
     issues: List[ConfigIssue] = []
 
-    # ── custom_providers must be a list, not a dict ──────────────────────
+    # -- custom_providers must be a list, not a dict ----------------------
     cp = config.get("custom_providers")
     if cp is not None:
         if isinstance(cp, dict):
@@ -1533,7 +1533,7 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                         "Add the API endpoint URL, e.g.: base_url: https://api.example.com/v1",
                     ))
 
-    # ── fallback_model must be a top-level dict with provider + model ────
+    # -- fallback_model must be a top-level dict with provider + model ----
     fb = config.get("fallback_model")
     if fb is not None:
         if not isinstance(fb, dict):
@@ -1559,7 +1559,7 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                     "Add: model: anthropic/claude-sonnet-4 (or another model)",
                 ))
 
-    # ── Check for fallback_model accidentally nested inside custom_providers ──
+    # -- Check for fallback_model accidentally nested inside custom_providers --
     if isinstance(cp, dict) and "fallback_model" not in config and "fallback_model" in (cp or {}):
         issues.append(ConfigIssue(
             "error",
@@ -1567,7 +1567,7 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
             "Move fallback_model to the top level of config.yaml (no indentation)",
         ))
 
-    # ── model section: should exist when custom_providers is configured ──
+    # -- model section: should exist when custom_providers is configured --
     model_cfg = config.get("model")
     if cp and not model_cfg:
         issues.append(ConfigIssue(
@@ -1580,7 +1580,7 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
             "    base_url: https://...",
         ))
 
-    # ── Root-level keys that look misplaced ──────────────────────────────
+    # -- Root-level keys that look misplaced ------------------------------
     for key in config:
         if key.startswith("_"):
             continue
@@ -1609,9 +1609,9 @@ def print_config_warnings(config: Optional[Dict[str, Any]] = None) -> None:
         return
 
     import sys
-    lines = ["\033[33m⚠ Config issues detected in config.yaml:\033[0m"]
+    lines = ["\033[33m[WARN] Config issues detected in config.yaml:\033[0m"]
     for ci in issues:
-        marker = "\033[31m✗\033[0m" if ci.severity == "error" else "\033[33m⚠\033[0m"
+        marker = "\033[31m[X]\033[0m" if ci.severity == "error" else "\033[33m[WARN]\033[0m"
         lines.append(f"  {marker} {ci.message}")
     lines.append("  \033[2mRun 'hermes doctor' for fix suggestions.\033[0m")
     sys.stderr.write("\n".join(lines) + "\n\n")
@@ -1630,18 +1630,18 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     """
     results = {"env_added": [], "config_added": [], "warnings": []}
 
-    # ── Always: sanitize .env (split concatenated keys) ──
+    # -- Always: sanitize .env (split concatenated keys) --
     try:
         fixes = sanitize_env_file()
         if fixes and not quiet:
-            print(f"  ✓ Repaired .env file ({fixes} corrupted entries fixed)")
+            print(f"  [OK] Repaired .env file ({fixes} corrupted entries fixed)")
     except Exception:
         pass  # best-effort; don't block migration on sanitize failure
 
     # Check config version
     current_ver, latest_ver = check_config_version()
     
-    # ── Version 3 → 4: migrate tool progress from .env to config.yaml ──
+    # -- Version 3 -> 4: migrate tool progress from .env to config.yaml --
     if current_ver < 4:
         config = load_config()
         display = config.get("display", {})
@@ -1662,9 +1662,9 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             config["display"] = display
             save_config(config)
             if not quiet:
-                print(f"  ✓ Migrated tool progress to config.yaml: {display['tool_progress']}")
+                print(f"  [OK] Migrated tool progress to config.yaml: {display['tool_progress']}")
     
-    # ── Version 4 → 5: add timezone field ──
+    # -- Version 4 -> 5: add timezone field --
     if current_ver < 5:
         config = load_config()
         if "timezone" not in config:
@@ -1678,9 +1678,9 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             save_config(config)
             if not quiet:
                 tz_display = config["timezone"] or "(server-local)"
-                print(f"  ✓ Added timezone to config.yaml: {tz_display}")
+                print(f"  [OK] Added timezone to config.yaml: {tz_display}")
 
-    # ── Version 8 → 9: clear ANTHROPIC_TOKEN from .env ──
+    # -- Version 8 -> 9: clear ANTHROPIC_TOKEN from .env --
     # The new Anthropic auth flow no longer uses this env var.
     if current_ver < 9:
         try:
@@ -1688,11 +1688,11 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             if old_token:
                 save_env_value("ANTHROPIC_TOKEN", "")
                 if not quiet:
-                    print("  ✓ Cleared ANTHROPIC_TOKEN from .env (no longer used)")
+                    print("  [OK] Cleared ANTHROPIC_TOKEN from .env (no longer used)")
         except Exception:
             pass
 
-    # ── Version 11 → 12: migrate custom_providers list → providers dict ──
+    # -- Version 11 -> 12: migrate custom_providers list -> providers dict --
     if current_ver < 12:
         config = load_config()
         custom_list = config.get("custom_providers")
@@ -1750,12 +1750,12 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 del config["custom_providers"]
                 save_config(config)
                 if not quiet:
-                    print(f"  ✓ Migrated {migrated_count} custom provider(s) to providers: section")
+                    print(f"  [OK] Migrated {migrated_count} custom provider(s) to providers: section")
                     for key in list(providers_dict.keys())[-migrated_count:]:
                         ep = providers_dict[key]
-                        print(f"    → {key}: {ep.get('api', '')}")
+                        print(f"    -> {key}: {ep.get('api', '')}")
 
-    # ── Version 12 → 13: clear dead LLM_MODEL / OPENAI_MODEL from .env ──
+    # -- Version 12 -> 13: clear dead LLM_MODEL / OPENAI_MODEL from .env --
     # These env vars were written by the old setup wizard but nothing reads
     # them anymore (config.yaml is the sole source of truth since March 2026).
     # Stale entries cause user confusion — see issue report.
@@ -1766,11 +1766,11 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 if old_val:
                     save_env_value(dead_var, "")
                     if not quiet:
-                        print(f"  ✓ Cleared {dead_var} from .env (no longer used — config.yaml is source of truth)")
+                        print(f"  [OK] Cleared {dead_var} from .env (no longer used — config.yaml is source of truth)")
             except Exception:
                 pass
 
-    # ── Version 13 → 14: migrate legacy flat stt.model to provider section ──
+    # -- Version 13 -> 14: migrate legacy flat stt.model to provider section --
     # Old configs (and cli-config.yaml.example) had a flat `stt.model` key
     # that was provider-agnostic.  When the provider was "local" this caused
     # OpenAI model names (e.g. "whisper-1") to be fed to faster-whisper,
@@ -1818,16 +1818,16 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             config["stt"] = stt
             save_config(config)
             if not quiet:
-                print(f"  ✓ Migrated legacy stt.model to provider-specific config")
+                print(f"  [OK] Migrated legacy stt.model to provider-specific config")
 
     if current_ver < latest_ver and not quiet:
-        print(f"Config version: {current_ver} → {latest_ver}")
+        print(f"Config version: {current_ver} -> {latest_ver}")
     
     # Check for missing required env vars
     missing_env = get_missing_env_vars(required_only=True)
     
     if missing_env and not quiet:
-        print("\n⚠️  Missing required environment variables:")
+        print("\n[WARN]️  Missing required environment variables:")
         for var in missing_env:
             print(f"   • {var['name']}: {var['description']}")
     
@@ -1846,7 +1846,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             if value:
                 save_env_value(var["name"], value)
                 results["env_added"].append(var["name"])
-                print(f"  ✓ Saved {var['name']}")
+                print(f"  [OK] Saved {var['name']}")
             else:
                 results["warnings"].append(f"Skipped {var['name']} - some features may not work")
             print()
@@ -1897,7 +1897,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     if value:
                         save_env_value(name, value)
                         results["env_added"].append(name)
-                        print(f"  ✓ Saved {name}")
+                        print(f"  [OK] Saved {name}")
                     print()
             else:
                 print("  Set later with: hermes config set <key> <value>")
@@ -1915,7 +1915,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             _set_nested(config, key, default)
             results["config_added"].append(key)
             if not quiet:
-                print(f"  ✓ Added {key} = {default}")
+                print(f"  [OK] Added {key} = {default}")
         
         # Update version and save
         config["_config_version"] = latest_ver
@@ -1926,7 +1926,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         config["_config_version"] = latest_ver
         save_config(config)
 
-    # ── Skill-declared config vars ──────────────────────────────────────
+    # -- Skill-declared config vars --------------------------------------
     # Skills can declare config.yaml settings they need via
     # metadata.hermes.config in their SKILL.md frontmatter.
     # Prompt for any that are missing/empty.
@@ -1959,7 +1959,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     storage_key = f"{SKILL_CONFIG_PREFIX}.{var['key']}"
                     _set_nested(config, storage_key, value)
                     results["config_added"].append(var["key"])
-                    print(f"  ✓ Saved {var['key']} = {value}")
+                    print(f"  [OK] Saved {var['key']} = {value}")
                 else:
                     results["warnings"].append(
                         f"Skipped {var['key']} — skill '{var.get('skill', '?')}' may ask for it later"
@@ -2105,7 +2105,7 @@ def load_config() -> Dict[str, Any]:
 
 
 _SECURITY_COMMENT = """
-# ── Security ──────────────────────────────────────────────────────────
+# -- Security ----------------------------------------------------------
 # API keys, tokens, and passwords are redacted from tool output by default.
 # Set to false to see full values (useful for debugging auth issues).
 # tirith pre-exec scanning is enabled by default when the tirith binary
@@ -2121,7 +2121,7 @@ _SECURITY_COMMENT = """
 """
 
 _FALLBACK_COMMENT = """
-# ── Fallback Model ────────────────────────────────────────────────────
+# -- Fallback Model ----------------------------------------------------
 # Automatic provider failover when primary is unavailable.
 # Uncomment and configure to enable. Triggers on rate limits (429),
 # overload (529), service errors (503), or connection failures.
@@ -2141,7 +2141,7 @@ _FALLBACK_COMMENT = """
 #   provider: openrouter
 #   model: anthropic/claude-sonnet-4
 #
-# ── Smart Model Routing ────────────────────────────────────────────────
+# -- Smart Model Routing ------------------------------------------------
 # Optional cheap-vs-strong routing for simple turns.
 # Keeps the primary model for complex work, but can route short/simple
 # messages to a cheaper model across providers.
@@ -2157,14 +2157,14 @@ _FALLBACK_COMMENT = """
 
 
 _COMMENTED_SECTIONS = """
-# ── Security ──────────────────────────────────────────────────────────
+# -- Security ----------------------------------------------------------
 # API keys, tokens, and passwords are redacted from tool output by default.
 # Set to false to see full values (useful for debugging auth issues).
 #
 # security:
 #   redact_secrets: false
 
-# ── Fallback Model ────────────────────────────────────────────────────
+# -- Fallback Model ----------------------------------------------------
 # Automatic provider failover when primary is unavailable.
 # Uncomment and configure to enable. Triggers on rate limits (429),
 # overload (529), service errors (503), or connection failures.
@@ -2184,7 +2184,7 @@ _COMMENTED_SECTIONS = """
 #   provider: openrouter
 #   model: anthropic/claude-sonnet-4
 #
-# ── Smart Model Routing ────────────────────────────────────────────────
+# -- Smart Model Routing ------------------------------------------------
 # Optional cheap-vs-strong routing for simple turns.
 # Keeps the primary model for complex work, but can route short/simple
 # messages to a cheaper model across providers.
@@ -2510,9 +2510,9 @@ def show_config():
     config = load_config()
     
     print()
-    print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
-    print(color("│              ⚕ Hermes Configuration                    │", Colors.CYAN))
-    print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
+    print(color("+---------------------------------------------------------+", Colors.CYAN))
+    print(color("|              ⚕ Hermes Configuration                    |", Colors.CYAN))
+    print(color("+---------------------------------------------------------+", Colors.CYAN))
     
     # Paths
     print()
@@ -2658,7 +2658,7 @@ def show_config():
         pass
 
     print()
-    print(color("─" * 60, Colors.DIM))
+    print(color("-" * 60, Colors.DIM))
     print(color("  hermes config edit     # Edit config file", Colors.DIM))
     print(color("  hermes config set <key> <value>", Colors.DIM))
     print(color("  hermes setup           # Run setup wizard", Colors.DIM))
@@ -2718,7 +2718,7 @@ def set_config_value(key: str, value: str):
     
     if key.upper() in api_keys or key.upper().endswith(('_API_KEY', '_TOKEN')) or key.upper().startswith('TERMINAL_SSH'):
         save_env_value(key.upper(), value)
-        print(f"✓ Set {key} in {get_env_path()}")
+        print(f"[OK] Set {key} in {get_env_path()}")
         return
     
     # Otherwise it goes to config.yaml
@@ -2777,7 +2777,7 @@ def set_config_value(key: str, value: str):
     if key in _config_to_env_sync:
         save_env_value(_config_to_env_sync[key], str(value))
 
-    print(f"✓ Set {key} = {value} in {config_path}")
+    print(f"[OK] Set {key} = {value} in {config_path}")
 
 
 # =============================================================================
@@ -2824,13 +2824,13 @@ def config_command(args):
         current_ver, latest_ver = check_config_version()
         
         if not missing_env and not missing_config and current_ver >= latest_ver:
-            print(color("✓ Configuration is up to date!", Colors.GREEN))
+            print(color("[OK] Configuration is up to date!", Colors.GREEN))
             print()
             return
         
         # Show what needs to be updated
         if current_ver < latest_ver:
-            print(f"  Config version: {current_ver} → {latest_ver}")
+            print(f"  Config version: {current_ver} -> {latest_ver}")
         
         if missing_config:
             print(f"\n  {len(missing_config)} new config option(s) will be added with defaults")
@@ -2842,7 +2842,7 @@ def config_command(args):
         ]
         
         if required_missing:
-            print(f"\n  ⚠️  {len(required_missing)} required API key(s) missing:")
+            print(f"\n  [WARN]️  {len(required_missing)} required API key(s) missing:")
             for var in required_missing:
                 print(f"     • {var['name']}")
         
@@ -2860,12 +2860,12 @@ def config_command(args):
         
         print()
         if results["env_added"] or results["config_added"]:
-            print(color("✓ Configuration updated!", Colors.GREEN))
+            print(color("[OK] Configuration updated!", Colors.GREEN))
         
         if results["warnings"]:
             print()
             for warning in results["warnings"]:
-                print(color(f"  ⚠️  {warning}", Colors.YELLOW))
+                print(color(f"  [WARN]️  {warning}", Colors.YELLOW))
         
         print()
     
@@ -2877,26 +2877,26 @@ def config_command(args):
         
         current_ver, latest_ver = check_config_version()
         if current_ver >= latest_ver:
-            print(f"  Config version: {current_ver} ✓")
+            print(f"  Config version: {current_ver} [OK]")
         else:
-            print(color(f"  Config version: {current_ver} → {latest_ver} (update available)", Colors.YELLOW))
+            print(color(f"  Config version: {current_ver} -> {latest_ver} (update available)", Colors.YELLOW))
         
         print()
         print(color("  Required:", Colors.BOLD))
         for var_name in REQUIRED_ENV_VARS:
             if get_env_value(var_name):
-                print(f"    ✓ {var_name}")
+                print(f"    [OK] {var_name}")
             else:
-                print(color(f"    ✗ {var_name} (missing)", Colors.RED))
+                print(color(f"    [X] {var_name} (missing)", Colors.RED))
         
         print()
         print(color("  Optional:", Colors.BOLD))
         for var_name, info in OPTIONAL_ENV_VARS.items():
             if get_env_value(var_name):
-                print(f"    ✓ {var_name}")
+                print(f"    [OK] {var_name}")
             else:
                 tools = info.get("tools", [])
-                tools_str = f" → {', '.join(tools[:2])}" if tools else ""
+                tools_str = f" -> {', '.join(tools[:2])}" if tools else ""
                 print(color(f"    ○ {var_name}{tools_str}", Colors.DIM))
         
         missing_config = get_missing_config_fields()
