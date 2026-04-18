@@ -288,6 +288,177 @@ def test_on_session_end_fires_complete(provider):
 
 
 # ---------------------------------------------------------------------------
+# Plugin hooks: _on_post_tool_call / _on_post_llm_call /
+# _on_session_finalize / _on_session_reset
+# ---------------------------------------------------------------------------
+
+
+def _wait_for_mock_call(mock_method, timeout: float = 1.0) -> bool:
+    """Poll until mock_method has been called, or timeout elapses.
+
+    Returns True if the mock was called within the timeout. Used instead of
+    a bare time.sleep because the hooks spawn daemon threads and we don't
+    have a handle to join.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if mock_method.called:
+            return True
+        time.sleep(0.01)
+    return mock_method.called
+
+
+def test_on_post_tool_call_records_observation(provider):
+    """post_tool_call hook fires post_observation with the expected kwargs."""
+    provider._on_post_tool_call(
+        tool_name="Read", args={"path": "/x"}, result="ok", task_id="t1"
+    )
+    assert _wait_for_mock_call(provider._client.post_observation)
+
+    call_kwargs = provider._client.post_observation.call_args.kwargs
+    assert call_kwargs["content_session_id"] == "test-content-session-abc"
+    assert call_kwargs["tool_name"] == "Read"
+    assert call_kwargs["tool_input"] == {"path": "/x"}
+    assert call_kwargs["tool_response"] == {"result": "ok"}
+    assert call_kwargs["platform_source"] == "hermes-cli"
+    assert isinstance(call_kwargs["cwd"], str)
+
+
+def test_on_post_tool_call_skips_conversation_tool(provider):
+    """tool_name=='conversation' is already captured by sync_turn — skip."""
+    provider._on_post_tool_call(
+        tool_name="conversation", args={}, result="", task_id="t1"
+    )
+    # Give any stray thread a chance to (incorrectly) fire.
+    time.sleep(0.05)
+    provider._client.post_observation.assert_not_called()
+
+
+def test_on_post_tool_call_skips_when_uninitialized(provider_cls):
+    """Without a _client or _session_id, the hook must be a no-op."""
+    # Case 1: _client is None (never initialized in primary context).
+    provider_cls._client = None
+    provider_cls._session_id = "sess-1"
+    provider_cls._platform = "cli"
+    provider_cls._agent_context = "primary"
+    # Should not raise even though _client is None.
+    provider_cls._on_post_tool_call(
+        tool_name="Read", args={}, result="ok", task_id="t1"
+    )
+
+    # Case 2: _client is a mock but _session_id is falsy.
+    mock_client = MagicMock()
+    provider_cls._client = mock_client
+    provider_cls._session_id = None
+    provider_cls._on_post_tool_call(
+        tool_name="Read", args={}, result="ok", task_id="t1"
+    )
+    time.sleep(0.05)
+    mock_client.post_observation.assert_not_called()
+
+
+def test_on_post_llm_call_sends_summarize(provider):
+    """post_llm_call hook fires post_summarize with assistant_response trimmed to 4000 chars."""
+    long_response = "A" * 5000
+    provider._on_post_llm_call(
+        session_id="s",
+        user_message="u",
+        assistant_response=long_response,
+    )
+    assert _wait_for_mock_call(provider._client.post_summarize)
+
+    call_kwargs = provider._client.post_summarize.call_args.kwargs
+    assert call_kwargs["content_session_id"] == "test-content-session-abc"
+    assert call_kwargs["platform_source"] == "hermes-cli"
+    assert len(call_kwargs["last_assistant_message"]) == 4000
+
+
+def test_on_post_llm_call_skips_when_empty_response(provider):
+    """Empty / None assistant_response must not fire post_summarize."""
+    provider._on_post_llm_call(
+        session_id="s", user_message="u", assistant_response=None
+    )
+    provider._on_post_llm_call(
+        session_id="s", user_message="u", assistant_response=""
+    )
+    time.sleep(0.05)
+    provider._client.post_summarize.assert_not_called()
+
+
+def test_on_session_finalize_completes_and_clears(provider):
+    """_on_session_finalize fires complete_session and clears _session_id synchronously."""
+    assert provider._session_id == "test-content-session-abc"
+    provider._on_session_finalize(session_id="test-content-session-abc", platform="cli")
+
+    # _session_id is cleared BEFORE the background thread is spawned, so this
+    # is observable synchronously.
+    assert provider._session_id is None
+
+    assert _wait_for_mock_call(provider._client.complete_session)
+    call_kwargs = provider._client.complete_session.call_args.kwargs
+    assert call_kwargs["content_session_id"] == "test-content-session-abc"
+    assert call_kwargs["platform_source"] == "hermes-cli"
+
+
+def test_on_session_finalize_then_on_session_end_does_not_double_complete(provider):
+    """finalize + on_session_end must result in EXACTLY ONE complete_session call."""
+    provider._on_session_finalize(session_id="test-content-session-abc", platform="cli")
+    # Now on_session_end would previously have fired again; the guard should stop it.
+    provider.on_session_end([])
+
+    # Give both hypothetical threads a chance.
+    time.sleep(0.15)
+    assert provider._client.complete_session.call_count == 1
+    call_kwargs = provider._client.complete_session.call_args.kwargs
+    assert call_kwargs["content_session_id"] == "test-content-session-abc"
+
+
+def test_on_session_reset_completes_old_and_clears_state(provider):
+    """_on_session_reset completes the OLD session and clears per-session state."""
+    provider._session_id = "old-sess"
+    with provider._prefetch_lock:
+        provider._prefetch_result = "prior context"
+
+    provider._on_session_reset(session_id="new-sess", platform="cli")
+
+    # State clears happen synchronously, before the bg thread spawns.
+    assert provider._session_id is None
+    assert provider._prefetch_result == ""
+
+    assert _wait_for_mock_call(provider._client.complete_session)
+    assert provider._client.complete_session.call_count == 1
+    call_kwargs = provider._client.complete_session.call_args.kwargs
+    assert call_kwargs["content_session_id"] == "old-sess"
+
+
+def test_on_session_reset_without_prior_session_is_noop(provider):
+    """Reset with no prior _session_id must not fire complete_session."""
+    provider._session_id = None
+    provider._on_session_reset(session_id="new-sess", platform="cli")
+    time.sleep(0.05)
+    provider._client.complete_session.assert_not_called()
+
+
+def test_hooks_skip_when_agent_context_not_primary(provider):
+    """All four new hooks must no-op when agent_context != 'primary'."""
+    provider._agent_context = "subagent"
+
+    provider._on_post_tool_call(
+        tool_name="Read", args={}, result="ok", task_id="t1"
+    )
+    provider._on_post_llm_call(
+        session_id="s", user_message="u", assistant_response="hi"
+    )
+    provider._on_session_finalize(session_id="test-content-session-abc", platform="cli")
+    provider._on_session_reset(session_id="new-sess", platform="cli")
+
+    time.sleep(0.1)
+    provider._client.post_observation.assert_not_called()
+    provider._client.post_summarize.assert_not_called()
+    provider._client.complete_session.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # JSON-string contract
 # ---------------------------------------------------------------------------
 

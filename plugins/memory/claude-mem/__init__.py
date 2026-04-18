@@ -203,6 +203,8 @@ class ClaudeMemMemoryProvider(MemoryProvider):
         self._prefetch_thread.start()
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
+        if not self._session_id:
+            return
         if self._agent_context != "primary":
             return
 
@@ -240,6 +242,132 @@ class ClaudeMemMemoryProvider(MemoryProvider):
 
         threading.Thread(target=_bg, daemon=True, name="claude-mem-summarize").start()
         return ""  # we don't contribute to the compression prompt directly
+
+    # --- hermes plugin hooks ------------------------------------------------
+
+    def _on_post_tool_call(self, *, tool_name=None, args=None, result=None,
+                           task_id=None, **kwargs) -> None:
+        """Record every tool call as an observation (real-time capture)."""
+        if not getattr(self, "_client", None) or not getattr(self, "_session_id", None):
+            return
+        if self._agent_context != "primary":
+            return
+        # sync_turn already captures the user/assistant conversation pair;
+        # don't double-record it under the "conversation" tool name.
+        if tool_name == "conversation":
+            return
+
+        tool_input = args or {}
+        tool_response = {"result": str(result)[:4000] if result is not None else ""}
+        sid = self._session_id
+        platform_source = f"hermes-{self._platform}"
+        cwd = os.getcwd()
+
+        def _bg():
+            try:
+                self._client.post_observation(
+                    content_session_id=sid,
+                    tool_name=tool_name,
+                    tool_input=tool_input,
+                    tool_response=tool_response,
+                    cwd=cwd,
+                    platform_source=platform_source,
+                )
+            except Exception as e:
+                logger.debug("claude-mem post_tool_call failed: %s", e)
+
+        threading.Thread(
+            target=_bg, daemon=True, name="claude-mem-post-tool"
+        ).start()
+
+    def _on_post_llm_call(self, *, session_id=None, user_message=None,
+                          assistant_response=None, conversation_history=None,
+                          model=None, platform=None, **kwargs) -> None:
+        """Always-on per-turn summarize: sends the assistant response to the worker."""
+        if not getattr(self, "_client", None) or not getattr(self, "_session_id", None):
+            return
+        if self._agent_context != "primary":
+            return
+        if not assistant_response:
+            return
+
+        summary_text = assistant_response[:4000]
+        sid = self._session_id
+        platform_source = f"hermes-{self._platform}"
+
+        def _bg():
+            try:
+                self._client.post_summarize(
+                    content_session_id=sid,
+                    last_assistant_message=summary_text,
+                    platform_source=platform_source,
+                )
+            except Exception as e:
+                logger.debug("claude-mem post_llm_call summarize failed: %s", e)
+
+        threading.Thread(
+            target=_bg, daemon=True, name="claude-mem-post-llm"
+        ).start()
+
+    def _on_session_finalize(self, *, session_id=None, platform=None, **kwargs) -> None:
+        """Idempotent session completion; clears session id so on_session_end can't double-complete."""
+        if not getattr(self, "_client", None):
+            return
+        if self._agent_context != "primary":
+            return
+        sid = getattr(self, "_session_id", None)
+        if sid is None:
+            return
+
+        # Clear immediately so a subsequent on_session_end won't re-dispatch.
+        self._session_id = None
+        platform_source = f"hermes-{self._platform}"
+
+        def _bg():
+            try:
+                self._client.complete_session(
+                    content_session_id=sid,
+                    platform_source=platform_source,
+                )
+            except Exception as e:
+                logger.debug("claude-mem session_finalize failed: %s", e)
+
+        threading.Thread(
+            target=_bg, daemon=True, name="claude-mem-finalize"
+        ).start()
+
+    def _on_session_reset(self, *, session_id=None, platform=None, **kwargs) -> None:
+        """On reset: complete the OLD session in the background and clear per-session state."""
+        if not getattr(self, "_client", None):
+            return
+        if self._agent_context != "primary":
+            return
+
+        old_sid = getattr(self, "_session_id", None)
+        platform_source = f"hermes-{self._platform}"
+
+        # Clear per-session state so the next initialize() starts fresh.
+        # Do NOT clear _client itself.
+        self._session_id = None
+        if hasattr(self, "_prefetch_result"):
+            with self._prefetch_lock:
+                self._prefetch_result = ""
+
+        if old_sid is None:
+            return
+
+        def _bg():
+            try:
+                self._client.complete_session(
+                    content_session_id=old_sid,
+                    platform_source=platform_source,
+                )
+            except Exception as e:
+                logger.debug("claude-mem session_reset complete failed: %s", e)
+
+        threading.Thread(
+            target=_bg, daemon=True, name="claude-mem-reset"
+        ).start()
 
     def system_prompt_block(self) -> str:
         return (
@@ -319,4 +447,9 @@ class ClaudeMemMemoryProvider(MemoryProvider):
 
 def register(ctx) -> None:
     """Register claude-mem as a memory provider plugin."""
-    ctx.register_memory_provider(ClaudeMemMemoryProvider())
+    provider = ClaudeMemMemoryProvider()
+    ctx.register_memory_provider(provider)
+    ctx.register_hook("post_tool_call", provider._on_post_tool_call)
+    ctx.register_hook("post_llm_call", provider._on_post_llm_call)
+    ctx.register_hook("on_session_finalize", provider._on_session_finalize)
+    ctx.register_hook("on_session_reset", provider._on_session_reset)
