@@ -76,6 +76,14 @@ class TestGuidanceConstants:
         assert "verify" in EDITING_VERIFICATION_GUIDANCE
         assert "lint or tests" in EDITING_VERIFICATION_GUIDANCE
 
+    def test_memory_retrieval_guidance_content(self):
+        from agent.prompt_builder import MEMORY_RETRIEVAL_GUIDANCE
+        assert "proactively" in MEMORY_RETRIEVAL_GUIDANCE
+        assert "session_search" in MEMORY_RETRIEVAL_GUIDANCE
+        assert "search first" in MEMORY_RETRIEVAL_GUIDANCE
+        assert "prune" in MEMORY_RETRIEVAL_GUIDANCE or "replace" in MEMORY_RETRIEVAL_GUIDANCE
+        assert "search before asking" in MEMORY_RETRIEVAL_GUIDANCE
+
     def test_autonomous_execution_guidance_content(self):
         assert "act immediately" in AUTONOMOUS_EXECUTION_GUIDANCE
         assert "execution over deliberation" in AUTONOMOUS_EXECUTION_GUIDANCE

@@ -212,6 +212,17 @@ EDITING_VERIFICATION_GUIDANCE = (
     "the changed code. Do not assume an edit succeeded without verification."
 )
 
+MEMORY_RETRIEVAL_GUIDANCE = (
+    "When starting any task, proactively check whether you have relevant memory or "
+    "past session context before acting from scratch. Use session_search with specific "
+    "keywords when the task references prior work, tools, preferences, or conventions. "
+    "Use memory to save durable facts discovered during work — but first search existing "
+    "memory and session history to avoid duplicating or contradicting what you already "
+    "know. When a user's request seems familiar, search before asking them to re-explain. "
+    "Treat memory and session_search as your recall system: search first, then save, "
+    "and periodically prune outdated entries with memory(action='replace')."
+)
+
 
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"

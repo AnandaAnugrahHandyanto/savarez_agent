@@ -84,6 +84,7 @@ from agent.prompt_builder import (
     AUTONOMOUS_EXECUTION_GUIDANCE,
     MULTIMODAL_VERIFICATION_GUIDANCE,
     EDITING_VERIFICATION_GUIDANCE,
+    MEMORY_RETRIEVAL_GUIDANCE,
     build_nous_subscription_prompt,
 )
 from agent.model_metadata import (
@@ -3681,6 +3682,9 @@ class AIAgent:
         # Editing verification: gate on file-editing tools
         if any(t in self.valid_tool_names for t in ("patch", "write_file")):
             tool_guidance.append(EDITING_VERIFICATION_GUIDANCE)
+        # Memory retrieval: gate on both memory and session_search tools
+        if all(t in self.valid_tool_names for t in ("memory", "session_search")):
+            tool_guidance.append(MEMORY_RETRIEVAL_GUIDANCE)
         if tool_guidance:
             prompt_parts.append(" ".join(tool_guidance))
 
