@@ -789,15 +789,6 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 from hermes_cli.models import copilot_default_headers
 
                 extra["default_headers"] = copilot_default_headers()
-            elif "generativelanguage.googleapis.com" in base_url.lower():
-                # Google's OpenAI-compatible endpoint only accepts x-goog-api-key.
-                # Passing api_key= causes the SDK to inject Authorization: Bearer,
-                # which Google rejects with HTTP 400 "Multiple authentication
-                # credentials received". Use a placeholder for api_key and pass
-                # the real key via x-goog-api-key header instead.
-                # Fixes: https://github.com/NousResearch/hermes-agent/issues/7893
-                extra["default_headers"] = {"x-goog-api-key": api_key}
-                api_key = "not-used"
             return OpenAI(api_key=api_key, base_url=base_url, **extra), model
 
         creds = resolve_api_key_provider_credentials(provider_id)
@@ -820,15 +811,6 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             from hermes_cli.models import copilot_default_headers
 
             extra["default_headers"] = copilot_default_headers()
-        elif "generativelanguage.googleapis.com" in base_url.lower():
-            # Google's OpenAI-compatible endpoint only accepts x-goog-api-key.
-            # Passing api_key= causes the SDK to inject Authorization: Bearer,
-            # which Google rejects with HTTP 400 "Multiple authentication
-            # credentials received". Use a placeholder for api_key and pass
-            # the real key via x-goog-api-key header instead.
-            # Fixes: https://github.com/NousResearch/hermes-agent/issues/7893
-            extra["default_headers"] = {"x-goog-api-key": api_key}
-            api_key = "not-used"
         return OpenAI(api_key=api_key, base_url=base_url, **extra), model
 
     return None, None
@@ -1818,15 +1800,6 @@ def resolve_provider_client(
             from hermes_cli.models import copilot_default_headers
 
             headers.update(copilot_default_headers())
-        elif "generativelanguage.googleapis.com" in base_url.lower():
-            # Google's OpenAI-compatible endpoint only accepts x-goog-api-key.
-            # Passing api_key= causes the OpenAI SDK to inject Authorization: Bearer,
-            # which Google rejects with HTTP 400 "Multiple authentication credentials
-            # received". Use a placeholder for api_key and pass the real key via
-            # x-goog-api-key header instead.
-            # Fixes: https://github.com/NousResearch/hermes-agent/issues/7893
-            headers["x-goog-api-key"] = api_key
-            api_key = "not-used"
 
         client = OpenAI(
             api_key=api_key,
@@ -2585,42 +2558,22 @@ def _sanitize_message_content(content: Any) -> str:
         content = str(content) if content else ""
     sanitized = content
     for old, new in (
-        ("\\", "\\\\"),
-        ('"', '\\"'),
-        ("\n", "\\n"),
-        ("\r", "\\r"),
-        ("\t", "\\t"),
-    ):
+            ("\\", "\\\\"),
+            ('"', '\\"'),
+            ("\n", "\\n"),
+            ("\r", "\\r"),
+            ("\t", "\\t"),
+        ):
         sanitized = sanitized.replace(old, new)
     return sanitized
 
 
 def _validate_messages_json(messages: list) -> list:
     """Validate and sanitize messages for strict API endpoints.
-
-    Some APIs (StepFun, etc.) have stricter JSON validation than OpenRouter.
-    This ensures messages can be serialized without "Unterminated string"
-    errors by sanitizing problematic content.
-
-    Returns a sanitized copy of the messages list.
+    
+    Returns messages as-is - JSON truncation is now handled in context_compressor.py.
     """
-    sanitized_messages = []
-    for msg in messages:
-        if not isinstance(msg, dict):
-            continue
-        sanitized = dict(msg)
-        content = sanitized.get("content")
-        if content:
-            try:
-                json.dumps(content)
-            except (ValueError, TypeError):
-                logger.debug(
-                    "Auxiliary: sanitizing message content for strict API (content preview: %s)",
-                    str(content)[:100],
-                )
-                sanitized["content"] = _sanitize_message_content(content)
-        sanitized_messages.append(sanitized)
-    return sanitized_messages
+    return messages
 
 
 def _build_call_kwargs(

@@ -476,30 +476,44 @@ class ContextCompressor(ContextEngine):
                 result[i] = {**msg, "content": summary}
                 pruned += 1
 
-        # Pass 3: Truncate large tool_call arguments in assistant messages
-        # outside the protected tail. write_file with 50KB content, for
-        # example, survives pruning entirely without this.
+        # Pass 3: Truncate large tool_call arguments while keeping valid JSON
         for i in range(prune_boundary):
             msg = result[i]
             if msg.get("role") != "assistant" or not msg.get("tool_calls"):
                 continue
+            
             new_tcs = []
-            modified = False
-            for tc in msg["tool_calls"]:
-                if isinstance(tc, dict):
-                    args = tc.get("function", {}).get("arguments", "")
-                    if len(args) > 500:
-                        tc = {
-                            **tc,
-                            "function": {
-                                **tc["function"],
-                                "arguments": args[:200] + "...[truncated]",
-                            },
-                        }
+            for tc in msg.get("tool_calls", []):
+                if not isinstance(tc, dict):
+                    new_tcs.append(tc)
+                    continue
+                
+                func = tc.get("function", {})
+                args_str = func.get("arguments", "")
+                
+                if len(args_str) > 500:
+                    # Try to parse and truncate while keeping valid JSON
+                    try:
+                        import json
+                        args_obj = json.loads(args_str)
+                        
+                        # Truncate string values
+                        for key, value in args_obj.items():
+                            if isinstance(value, str) and len(value) > 200:
+                                args_obj[key] = value[:200] + "...[truncated]"
+                        
+                        # Re-serialize to valid JSON
+                        func["arguments"] = json.dumps(args_obj, ensure_ascii=False)
                         modified = True
-                new_tcs.append(tc)
+                    except json.JSONDecodeError:
+                        # If can't parse, drop this tool_call but keep message
+                        pruned.append(msg)
+                        break
+                else:
+                    new_tcs.append(tc)
+            
             if modified:
-                result[i] = {**msg, "tool_calls": new_tcs}
+                msg["tool_calls"] = new_tcs
 
         return result, pruned
 
