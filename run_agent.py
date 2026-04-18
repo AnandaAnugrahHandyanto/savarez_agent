@@ -11049,9 +11049,14 @@ class AIAgent:
                         self.iteration_budget.refund()
                     
                     # Use real token counts from the API response to decide
-                    # compression.  prompt_tokens + completion_tokens is the
-                    # actual context size the provider reported plus the
-                    # assistant turn — a tight lower bound for the next prompt.
+                    # compression.  Use only prompt_tokens — completion_tokens
+                    # (including reasoning tokens for thinking models) are
+                    # ephemeral output that don't consume context window space
+                    # for the next API call.  This prevents premature
+                    # compression for reasoning models like GLM-5.1, QwQ, etc.
+                    # where reasoning tokens inflate the apparent usage.
+                    # (Fixes #12026)
+                    #
                     # Tool results appended above aren't counted yet, but the
                     # threshold (default 50%) leaves ample headroom; if tool
                     # results push past it, the next API call will report the
@@ -11064,10 +11069,7 @@ class AIAgent:
                     # should_compress(0) never fires.  (#2153)
                     _compressor = self.context_compressor
                     if _compressor.last_prompt_tokens > 0:
-                        _real_tokens = (
-                            _compressor.last_prompt_tokens
-                            + _compressor.last_completion_tokens
-                        )
+                        _real_tokens = _compressor.last_prompt_tokens
                     else:
                         _real_tokens = estimate_messages_tokens_rough(messages)
 
