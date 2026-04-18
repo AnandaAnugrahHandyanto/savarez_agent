@@ -29,6 +29,7 @@ from agent.prompt_builder import (
     PLANNING_AND_SELF_REVIEW_GUIDANCE,
     AUTONOMOUS_EXECUTION_GUIDANCE,
     MULTIMODAL_VERIFICATION_GUIDANCE,
+    EDITING_VERIFICATION_GUIDANCE,
     PLATFORM_HINTS,
     WSL_ENVIRONMENT_HINT,
 )
@@ -67,6 +68,13 @@ class TestGuidanceConstants:
         assert "browser_vision" in MULTIMODAL_VERIFICATION_GUIDANCE
         assert "vision_analyze" in MULTIMODAL_VERIFICATION_GUIDANCE
         assert "verify" in MULTIMODAL_VERIFICATION_GUIDANCE
+
+    def test_editing_verification_guidance_content(self):
+        assert "patch" in EDITING_VERIFICATION_GUIDANCE
+        assert "write_file" in EDITING_VERIFICATION_GUIDANCE
+        assert "read_file" in EDITING_VERIFICATION_GUIDANCE
+        assert "verify" in EDITING_VERIFICATION_GUIDANCE
+        assert "lint or tests" in EDITING_VERIFICATION_GUIDANCE
 
     def test_autonomous_execution_guidance_content(self):
         assert "act immediately" in AUTONOMOUS_EXECUTION_GUIDANCE

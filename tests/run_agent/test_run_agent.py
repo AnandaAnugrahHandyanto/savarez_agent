@@ -20,7 +20,7 @@ import pytest
 import run_agent
 from run_agent import AIAgent
 from agent.error_classifier import FailoverReason
-from agent.prompt_builder import DEFAULT_AGENT_IDENTITY, PLANNING_AND_SELF_REVIEW_GUIDANCE, AUTONOMOUS_EXECUTION_GUIDANCE, MULTIMODAL_VERIFICATION_GUIDANCE
+from agent.prompt_builder import DEFAULT_AGENT_IDENTITY, PLANNING_AND_SELF_REVIEW_GUIDANCE, AUTONOMOUS_EXECUTION_GUIDANCE, MULTIMODAL_VERIFICATION_GUIDANCE, EDITING_VERIFICATION_GUIDANCE
 
 
 # ---------------------------------------------------------------------------
@@ -750,6 +750,18 @@ class TestBuildSystemPrompt:
         agent.valid_tool_names = agent.valid_tool_names - {"browser_vision", "vision_analyze", "image_gen"}
         prompt = agent._build_system_prompt()
         assert MULTIMODAL_VERIFICATION_GUIDANCE not in prompt
+
+    def test_includes_editing_verification_guidance_with_edit_tools(self, agent):
+        """Editing verification guidance should appear when patch or write_file tools are loaded."""
+        agent.valid_tool_names = agent.valid_tool_names | {"patch", "write_file"}
+        prompt = agent._build_system_prompt()
+        assert EDITING_VERIFICATION_GUIDANCE in prompt
+
+    def test_excludes_editing_verification_guidance_without_edit_tools(self, agent):
+        """Editing verification guidance should NOT appear when no editing tools are loaded."""
+        agent.valid_tool_names = agent.valid_tool_names - {"patch", "write_file"}
+        prompt = agent._build_system_prompt()
+        assert EDITING_VERIFICATION_GUIDANCE not in prompt
 
     def test_includes_nous_subscription_prompt(self, agent, monkeypatch):
         monkeypatch.setattr(run_agent, "build_nous_subscription_prompt", lambda tool_names: "NOUS SUBSCRIPTION BLOCK")

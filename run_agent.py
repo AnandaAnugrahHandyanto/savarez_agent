@@ -83,6 +83,7 @@ from agent.prompt_builder import (
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, PLANNING_AND_SELF_REVIEW_GUIDANCE, SKILLS_GUIDANCE,
     AUTONOMOUS_EXECUTION_GUIDANCE,
     MULTIMODAL_VERIFICATION_GUIDANCE,
+    EDITING_VERIFICATION_GUIDANCE,
     build_nous_subscription_prompt,
 )
 from agent.model_metadata import (
@@ -3677,6 +3678,9 @@ class AIAgent:
         # Multimodal verification: gate on vision/visual tools being available
         if any(t in self.valid_tool_names for t in ("browser_vision", "vision_analyze", "image_gen")):
             tool_guidance.append(MULTIMODAL_VERIFICATION_GUIDANCE)
+        # Editing verification: gate on file-editing tools
+        if any(t in self.valid_tool_names for t in ("patch", "write_file")):
+            tool_guidance.append(EDITING_VERIFICATION_GUIDANCE)
         if tool_guidance:
             prompt_parts.append(" ".join(tool_guidance))
 

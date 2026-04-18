@@ -203,6 +203,16 @@ MULTIMODAL_VERIFICATION_GUIDANCE = (
     "image to check for artifacts, correctness, and alignment with the prompt."
 )
 
+
+EDITING_VERIFICATION_GUIDANCE = (
+    "When you edit files using patch or write_file, verify the result before moving on: "
+    "(1) read the file back with read_file to confirm changes landed correctly, "
+    "(2) run lint or tests if available to check for regressions, and "
+    "(3) check for unintended side effects in other files that reference "
+    "the changed code. Do not assume an edit succeeded without verification."
+)
+
+
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do "
