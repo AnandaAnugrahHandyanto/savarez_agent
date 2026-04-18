@@ -158,8 +158,10 @@ def test_prefetch_returns_cached_context(provider):
 
 def test_prefetch_short_query_uses_search_fallback(provider):
     """Queries shorter than 20 chars should fall back to /api/search, not context_semantic."""
+    markdown = "- obs 1\n- obs 2"
     provider._client.search.return_value = {
-        "observations": [{"title": "t", "narrative": "n"}]
+        "text": markdown,
+        "raw": {"content": [{"type": "text", "text": markdown}]},
     }
     provider.queue_prefetch("short")  # 5 chars
     # Drain the background worker.
@@ -168,6 +170,10 @@ def test_prefetch_short_query_uses_search_fallback(provider):
 
     provider._client.search.assert_called_once()
     provider._client.context_semantic.assert_not_called()
+    # The prefetch worker wraps the markdown in "## Claude-Mem Recall\n...".
+    result = provider.prefetch("short")
+    assert "## Claude-Mem Recall" in result
+    assert markdown in result
 
 
 def test_prefetch_returns_empty_on_worker_down(provider, client_module):
@@ -187,16 +193,30 @@ def test_prefetch_returns_empty_on_worker_down(provider, client_module):
 
 
 def test_recall_tool_routes_to_search(provider):
+    markdown = "## Results\n- hit A\n- hit B"
     provider._client.search.return_value = {
-        "observations": [{"id": 1, "title": "x"}]
+        "text": markdown,
+        "raw": {"content": [{"type": "text", "text": markdown}]},
     }
     result_str = provider.handle_tool_call(
         "claude_mem_recall", {"query": "test", "limit": 5}
     )
     assert isinstance(result_str, str)
     result = json.loads(result_str)
-    assert result == {"results": [{"id": 1, "title": "x"}]}
+    assert result == {"results_markdown": markdown}
     provider._client.search.assert_called_once()
+
+
+def test_recall_tool_empty_text_returns_no_match_message(provider):
+    """When the worker returns no markdown, recall surfaces a human-friendly sentinel."""
+    provider._client.search.return_value = {
+        "text": "",
+        "raw": {"content": [{"type": "text", "text": ""}]},
+    }
+    result_str = provider.handle_tool_call(
+        "claude_mem_recall", {"query": "nothing matches", "limit": 5}
+    )
+    assert json.loads(result_str) == {"results_markdown": "No matching observations."}
 
 
 def test_save_tool_routes_to_memory_save(provider):
@@ -210,13 +230,17 @@ def test_save_tool_routes_to_memory_save(provider):
 
 
 def test_timeline_tool_routes_to_timeline(provider):
-    provider._client.timeline.return_value = {"observations": [{"id": 7}]}
+    markdown = "## Timeline around #7\n- #5 foo\n- #7 anchor\n- #9 bar"
+    provider._client.timeline.return_value = {
+        "text": markdown,
+        "raw": {"content": [{"type": "text", "text": markdown}]},
+    }
     result_str = provider.handle_tool_call(
         "claude_mem_timeline",
         {"anchor_id": 7, "depth_before": 2, "depth_after": 2},
     )
     assert isinstance(result_str, str)
-    assert json.loads(result_str) == {"observations": [{"id": 7}]}
+    assert json.loads(result_str) == {"timeline_markdown": markdown}
     provider._client.timeline.assert_called_once()
 
 
@@ -270,9 +294,15 @@ def test_on_session_end_fires_complete(provider):
 
 def test_handle_tool_call_returns_string(provider):
     """Every tool call result must be a string (per MemoryProvider ABC)."""
-    provider._client.search.return_value = {"observations": []}
+    provider._client.search.return_value = {
+        "text": "",
+        "raw": {"content": [{"type": "text", "text": ""}]},
+    }
     provider._client.memory_save.return_value = {}
-    provider._client.timeline.return_value = {}
+    provider._client.timeline.return_value = {
+        "text": "",
+        "raw": {"content": [{"type": "text", "text": ""}]},
+    }
 
     calls = [
         ("claude_mem_recall", {"query": "x"}),
@@ -285,3 +315,29 @@ def test_handle_tool_call_returns_string(provider):
         assert isinstance(result, str), f"{name} returned {type(result)}"
         # And it must be valid JSON.
         json.loads(result)
+
+
+# ---------------------------------------------------------------------------
+# _extract_mcp_text malformed-envelope handling
+# ---------------------------------------------------------------------------
+
+
+def test_extract_mcp_text_handles_malformed_envelopes(client_module):
+    """_extract_mcp_text must never raise on bad envelopes — it returns '' instead."""
+    ClaudeMemClient = client_module.ClaudeMemClient
+
+    # Missing content key.
+    assert ClaudeMemClient._extract_mcp_text({}) == ""
+    # Empty content list.
+    assert ClaudeMemClient._extract_mcp_text({"content": []}) == ""
+    # Non-dict element inside content.
+    assert ClaudeMemClient._extract_mcp_text({"content": ["not a dict"]}) == ""
+    # Dict element missing the text key.
+    assert ClaudeMemClient._extract_mcp_text({"content": [{"type": "text"}]}) == ""
+    # Happy path: text is extracted verbatim.
+    assert (
+        ClaudeMemClient._extract_mcp_text(
+            {"content": [{"type": "text", "text": "hi"}]}
+        )
+        == "hi"
+    )
