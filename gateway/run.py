@@ -2389,9 +2389,10 @@ class GatewayRunner:
 
             self._finalize_shutdown_agents(active_agents)
 
+            adapter_task_end_reason = "gateway_restart" if self._restart_requested else "gateway_shutdown"
             for platform, adapter in list(self.adapters.items()):
                 try:
-                    await adapter.cancel_background_tasks()
+                    await adapter.cancel_background_tasks(end_reason=adapter_task_end_reason)
                 except Exception as e:
                     logger.debug("✗ %s background-task cancel error: %s", platform.value, e)
                 try:

@@ -1990,18 +1990,27 @@ class BasePlatformAdapter(ABC):
             if session_key in self._active_sessions:
                 del self._active_sessions[session_key]
     
-    async def cancel_background_tasks(self) -> None:
+    async def cancel_background_tasks(self, *, end_reason: str = "gateway_shutdown") -> None:
         """Cancel any in-flight background message-processing tasks.
 
         Used during gateway shutdown/replacement so active sessions from the old
         process do not keep running after adapters are being torn down.
         """
+        active_session_keys = list(self._active_sessions)
         tasks = [task for task in self._background_tasks if not task.done()]
         for task in tasks:
             self._expected_cancelled_tasks.add(task)
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        if active_session_keys:
+            session_store = getattr(self, "_session_store", None)
+            close_sessions = getattr(session_store, "close_sessions", None)
+            if close_sessions is not None:
+                try:
+                    close_sessions(active_session_keys, end_reason=end_reason)
+                except Exception as e:
+                    logger.debug("[%s] Session close during shutdown failed: %s", self.name, e)
         self._background_tasks.clear()
         self._expected_cancelled_tasks.clear()
         self._pending_messages.clear()

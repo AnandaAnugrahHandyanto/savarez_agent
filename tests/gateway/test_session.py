@@ -604,6 +604,38 @@ class TestSessionStoreSwitchSession:
         db.close()
 
 
+class TestSessionStoreCloseSessions:
+    """Regression coverage for shutdown-time session DB cleanup."""
+
+    def test_close_sessions_ends_db_record_and_marks_suspended(self, tmp_path):
+        from hermes_state import SessionDB
+
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+        db = SessionDB(db_path=tmp_path / "state.db")
+        store._db = db
+        store._loaded = True
+
+        source = SessionSource(
+            platform=Platform.FEISHU,
+            chat_id="chat-1",
+            chat_type="dm",
+            user_id="user-1",
+            user_name="tester",
+        )
+        entry = store.get_or_create_session(source)
+
+        closed = store.close_sessions([entry.session_key], "gateway_restart")
+
+        assert closed == 1
+        assert store._entries[entry.session_key].suspended is True
+        db_entry = db.get_session(entry.session_id)
+        assert db_entry["ended_at"] is not None
+        assert db_entry["end_reason"] == "gateway_restart"
+        db.close()
+
+
 class TestWhatsAppDMSessionKeyConsistency:
     """Regression: all session-key construction must go through build_session_key
     so DMs are isolated by chat_id across platforms."""

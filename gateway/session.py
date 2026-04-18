@@ -17,7 +17,7 @@ import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Any
+from typing import Dict, Iterable, List, Optional, Any
 
 logger = logging.getLogger(__name__)
 
@@ -875,6 +875,39 @@ class SessionStore:
             if count:
                 self._save()
         return count
+
+    def close_sessions(self, session_keys: Iterable[str], end_reason: str) -> int:
+        """Close active sessions in the SQLite DB and suspend them for reset.
+
+        Used by gateway shutdown when in-flight adapter tasks are cancelled.
+        The in-memory entry remains as the session key mapping, but is marked
+        suspended so the next incoming message starts a fresh session instead
+        of appending to a DB record that has been ended.
+        """
+        session_ids: List[str] = []
+        seen: set[str] = set()
+        with self._lock:
+            self._ensure_loaded_locked()
+            for session_key in session_keys:
+                if session_key in seen:
+                    continue
+                seen.add(session_key)
+                entry = self._entries.get(session_key)
+                if entry is None:
+                    continue
+                entry.suspended = True
+                entry.updated_at = _now()
+                session_ids.append(entry.session_id)
+            if session_ids:
+                self._save()
+
+        if self._db:
+            for session_id in session_ids:
+                try:
+                    self._db.end_session(session_id, end_reason)
+                except Exception as e:
+                    logger.debug("Session DB end_session failed: %s", e)
+        return len(session_ids)
 
     def reset_session(self, session_key: str) -> Optional[SessionEntry]:
         """Force reset a session, creating a new session ID."""
