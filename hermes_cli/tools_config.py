@@ -336,6 +336,13 @@ TOOL_CATEGORIES = {
                 "browser_provider": "camofox",
                 "post_setup": "camofox",
             },
+            {
+                "name": "Patchright",
+                "tag": "Local anti-detection browser (Chromium/Patchright)",
+                "env_vars": [],
+                "browser_provider": "patchright",
+                "post_setup": "patchright",
+            },
         ],
     },
     "homeassistant": {
@@ -421,6 +428,30 @@ def _run_post_setup(post_setup_key: str):
         elif not shutil.which("npm"):
             _print_warning("    Node.js not found. Install Camofox via Docker:")
             _print_info("      docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
+
+    elif post_setup_key == "patchright":
+        patchright_dir = PROJECT_ROOT / "node_modules" / "patchright"
+        pw_core_dir = PROJECT_ROOT / "node_modules" / "playwright-core"
+        if not patchright_dir.exists() and shutil.which("npm"):
+            _print_info("    Installing Patchright...")
+            import subprocess
+            result = subprocess.run(
+                ["npm", "install", "--save", "patchright"],
+                capture_output=True, text=True, cwd=str(PROJECT_ROOT)
+            )
+            if result.returncode == 0:
+                # Create symlink: playwright-core -> patchright
+                if pw_core_dir.exists() and not pw_core_dir.is_symlink():
+                    shutil.rmtree(str(pw_core_dir))
+                if not pw_core_dir.exists():
+                    pw_core_dir.symlink_to(patchright_dir)
+                _print_success("    Patchright installed and playwright-core symlinked")
+            else:
+                _print_warning("    npm install failed - run manually: npm install patchright")
+        elif not shutil.which("npm"):
+            _print_warning("    Node.js not found. Install Node.js first, then re-run setup.")
+        if pw_core_dir.is_symlink() and patchright_dir.exists():
+            _print_success("    Patchright is active (playwright-core -> patchright)")
 
     elif post_setup_key == "rl_training":
         try:

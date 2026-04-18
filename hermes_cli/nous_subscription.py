@@ -133,6 +133,7 @@ def _browser_label(current_provider: str) -> str:
         "browser-use": "Browser Use",
         "firecrawl": "Firecrawl",
         "camofox": "Camofox",
+        "patchright": "Patchright",
         "local": "Local browser",
     }
     return mapping.get(current_provider or "local", current_provider or "Local browser")
@@ -188,6 +189,8 @@ def _resolve_browser_feature_state(
             active = bool(browser_tool_enabled and available)
             return current_provider, available, active, False
         if current_provider == "camofox":
+            return current_provider, False, False, False
+        if current_provider == "patchright":
             return current_provider, False, False, False
 
         current_provider = "local"

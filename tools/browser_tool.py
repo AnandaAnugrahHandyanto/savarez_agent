@@ -91,6 +91,36 @@ try:
 except ImportError:
     _is_camofox_mode = lambda: False  # noqa: E731
 
+# Patchright local anti-detection browser backend (optional).
+# When cloud_provider is set to "patchright" in config, the browser
+# uses the Patchright (patched Playwright) instead of the standard
+# agent-browser CLI.
+try:
+    from tools.tool_backend_helpers import normalize_browser_cloud_provider
+    _PATCHRIGHT_PROVIDER = "patchright"
+
+    def _is_patchright_mode() -> bool:
+        if not _is_local_mode():
+            return False
+        try:
+            hermes_home = get_hermes_home()
+            config_path = hermes_home / "config.yaml"
+            if config_path.exists():
+                import yaml
+                with open(config_path) as f:
+                    cfg = yaml.safe_load(f) or {}
+                browser_cfg = cfg.get("browser", {})
+                if isinstance(browser_cfg, dict) and "cloud_provider" in browser_cfg:
+                    provider_key = normalize_browser_cloud_provider(
+                        browser_cfg.get("cloud_provider")
+                    )
+                    return provider_key == _PATCHRIGHT_PROVIDER
+        except Exception:
+            pass
+        return False
+except ImportError:
+    _is_patchright_mode = lambda: False  # noqa: E731
+
 logger = logging.getLogger(__name__)
 
 # Standard PATH entries for environments with minimal PATH (e.g. systemd services).
@@ -381,12 +411,12 @@ def _is_local_backend() -> bool:
 
     SSRF protection is only meaningful for cloud backends (Browserbase,
     BrowserUse) where the agent could reach internal resources on a remote
-    machine.  For local backends — Camofox, or the built-in headless
-    Chromium without a cloud provider — the user already has full terminal
-    and network access on the same machine, so the check adds no security
-    value.
+    machine.  For local backends — Camofox, Patchright, or the built-in
+    headless Chromium without a cloud provider — the user already has full
+    terminal and network access on the same machine, so the check adds no
+    security value.
     """
-    return _is_camofox_mode() or _get_cloud_provider() is None
+    return _is_camofox_mode() or _is_patchright_mode() or _get_cloud_provider() is None
 
 
 def _allow_private_urls() -> bool:
@@ -1180,6 +1210,9 @@ def _run_browser_command(
         # used during CLI discovery.
         browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
         browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
+
+        if _is_patchright_mode():
+            browser_env["AGENT_BROWSER_HEADED"] = "1"
         
         # Use temp files for stdout/stderr instead of pipes.
         # agent-browser starts a background daemon that inherits file
