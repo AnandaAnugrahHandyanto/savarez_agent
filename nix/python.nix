@@ -35,8 +35,35 @@ let
       };
     };
 
-  pythonPackageOverrides = final: _prev:
-    if isAarch64Darwin then {
+  pythonPackageOverrides = final: prev:
+    let
+      # Several alibabacloud sdists miss explicit build backend dependencies.
+      # Patch the whole vendor family to keep uv2nix isolated builds stable.
+      alibabacloudPackageNames = [
+        "alibabacloud-credentials"
+        "alibabacloud-credentials-api"
+        "alibabacloud-dingtalk"
+        "alibabacloud-endpoint-util"
+        "alibabacloud-gateway-dingtalk"
+        "alibabacloud-gateway-spi"
+        "alibabacloud-openapi-util"
+        "alibabacloud-tea"
+        "alibabacloud-tea-openapi"
+        "alibabacloud-tea-util"
+      ];
+
+      alibabacloudSetuptoolsOverrides =
+        lib.genAttrs
+          (builtins.filter (name: builtins.hasAttr name prev) alibabacloudPackageNames)
+          (name:
+            prev.${name}.overrideAttrs
+              (old: {
+                nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ final.setuptools ];
+              }));
+
+      commonOverrides = alibabacloudSetuptoolsOverrides;
+    in
+    if isAarch64Darwin then commonOverrides // {
       numpy = mkPrebuiltOverride final python311.pkgs.numpy { };
 
       av = mkPrebuiltOverride final python311.pkgs.av { };
@@ -66,7 +93,7 @@ let
         tokenizers = [ ];
         tqdm = [ ];
       };
-    } else {};
+    } else commonOverrides;
 
   pythonSet =
     (callPackage pyproject-nix.build.packages {
