@@ -40,6 +40,7 @@ except ImportError:
     AIOHTTP_AVAILABLE = False
     web = None  # type: ignore[assignment]
 
+from gateway.authority_snapshot import get_authority_snapshot
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -486,6 +487,23 @@ class APIServerAdapter(BasePlatformAdapter):
             {"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}},
             status=401,
         )
+
+    async def _handle_authority_snapshot(self, request: "web.Request") -> "web.Response":
+        """GET /api/authority/snapshot — return a profile-scoped authority snapshot."""
+        auth_err = self._check_auth(request)
+        if auth_err is not None:
+            return auth_err
+
+        try:
+            snapshot = get_authority_snapshot(
+                profile_id=request.query.get("profile_id"),
+                search=request.query.get("search"),
+                session_id=request.query.get("session_id"),
+            )
+            return web.json_response(snapshot)
+        except Exception as e:
+            logger.exception("Authority snapshot request failed")
+            return web.json_response({"error": str(e)}, status=500)
 
     # ------------------------------------------------------------------
     # Session DB helper
@@ -2315,6 +2333,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app["api_server_adapter"] = self
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get("/health/detailed", self._handle_health_detailed)
+            self._app.router.add_get("/api/authority/snapshot", self._handle_authority_snapshot)
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
