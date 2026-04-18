@@ -1987,9 +1987,22 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
                  hasn't fully exited yet.
     """
     sys.path.insert(0, str(PROJECT_ROOT))
-    
+
+    # On Windows, the default console encoding is cp1252 (or similar), which
+    # cannot encode the Unicode box-drawing characters and emoji used in the
+    # gateway's output.  Reconfigure stdout/stderr to UTF-8 so these characters
+    # are always displayed correctly.  We do this before any print() calls.
+    if sys.platform == "win32":
+        try:
+            if hasattr(sys.stdout, "reconfigure"):
+                sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+            if hasattr(sys.stderr, "reconfigure"):
+                sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass  # Best-effort; don't crash if reconfigure is unavailable
+
     from gateway.run import start_gateway
-    
+
     print("┌─────────────────────────────────────────────────────────┐")
     print("│           ⚕ Hermes Gateway Starting...                 │")
     print("├─────────────────────────────────────────────────────────┤")
@@ -2001,9 +2014,110 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     # Exit with code 1 if gateway fails to connect any platform,
     # so systemd Restart=on-failure will retry on transient errors
     verbosity = None if quiet else verbose
-    success = asyncio.run(start_gateway(replace=replace, verbosity=verbosity))
-    if not success:
-        sys.exit(1)
+
+    import signal as _signal
+    import sys as _sys
+    import time as _time
+
+    # --- Phantom SIGINT protection -------------------------------------------
+    # On Windows/Git Bash, CTRL_C_EVENT is broadcast to every process in the
+    # console group.  This reaches the process at TWO levels:
+    #   1. The C runtime level: can interrupt blocking socket calls (WSAEINTR)
+    #   2. Python's signal level: asyncio's Runner cancels the main task
+    #
+    # To block BOTH, on Windows we install a SetConsoleCtrlHandler that returns
+    # TRUE ("I handled it") for CTRL_C_EVENT.  This prevents the event from
+    # ever reaching CPython's signal machinery — no SIGINT, no socket
+    # interruption, nothing.  Only a deliberate double-press (within 3 s)
+    # raises KeyboardInterrupt so the gateway can stop cleanly.
+    #
+    # On non-Windows we fall back to signal.signal(), which at least prevents
+    # asyncio from installing its own handler.
+    _sigint_last = [0.0]  # list so the closure can mutate it
+
+    _win_ctrl_handler_ref = None  # keep ctypes callback alive
+
+    if _sys.platform == "win32":
+        try:
+            import ctypes as _ctypes
+            import ctypes.wintypes as _wt
+
+            _CTRL_C_EVENT = 0
+            _HandlerRoutine = _ctypes.WINFUNCTYPE(_wt.BOOL, _wt.DWORD)
+
+            def _win_ctrl_c(event_type):
+                """Win32 console control handler — called by Windows directly."""
+                if event_type != _CTRL_C_EVENT:
+                    return False  # let other handlers (CTRL_BREAK, CLOSE…) run
+                now = _time.monotonic()
+                if now - _sigint_last[0] < 3.0:
+                    # Deliberate double-press: raise in the main Python thread.
+                    # _ctypes.pythonapi.PyErr_SetInterrupt() sets the SIGINT
+                    # flag so Python raises KeyboardInterrupt at the next check.
+                    _ctypes.pythonapi.PyErr_SetInterrupt()
+                    return True
+                _sigint_last[0] = now
+                # Single / phantom press — silently absorbed.
+                # Returning TRUE tells Windows we handled it; CPython's own
+                # console handler is never called, so no SIGINT and no
+                # socket-level WSAEINTR interruption.
+                return True
+
+            _win_ctrl_handler_ref = _HandlerRoutine(_win_ctrl_c)
+            # Add our handler BEFORE Python's default one (prepend = add at top)
+            _ctypes.windll.kernel32.SetConsoleCtrlHandler(
+                _win_ctrl_handler_ref, True
+            )
+            # Also prevent asyncio from re-adding its own SIGINT handler.
+            def _gateway_sigint(sig, frame): pass  # noqa: E704
+            try:
+                _signal.signal(_signal.SIGINT, _gateway_sigint)
+            except (OSError, ValueError):
+                pass
+        except Exception:
+            # ctypes unavailable or unexpected error — fall through to POSIX path
+            _win_ctrl_handler_ref = None
+
+    if _win_ctrl_handler_ref is None:
+        # POSIX (or Windows ctypes setup failed): use signal.signal().
+        # This at least prevents asyncio from installing its own handler that
+        # would cancel the main task on the first SIGINT.
+        def _gateway_sigint(sig, frame):  # noqa: ARG001
+            now = _time.monotonic()
+            if now - _sigint_last[0] < 3.0:
+                raise KeyboardInterrupt()
+            _sigint_last[0] = now
+
+        try:
+            _signal.signal(_signal.SIGINT, _gateway_sigint)
+        except (OSError, ValueError):
+            pass
+
+        _sigbreak = getattr(_signal, "SIGBREAK", None)
+        if _sigbreak is not None:
+            try:
+                _signal.signal(_sigbreak, _gateway_sigint)
+            except (OSError, ValueError):
+                pass
+    # -------------------------------------------------------------------------
+
+    # Restart loop: auto-restart the gateway on unexpected crashes.  Since
+    # phantom SIGINTs are now absorbed by _gateway_sigint, the only way
+    # KeyboardInterrupt reaches here is via a deliberate double-press.
+    while True:
+        try:
+            success = asyncio.run(start_gateway(replace=replace, verbosity=verbosity))
+            if not success:
+                sys.exit(1)
+            break  # clean exit requested by gateway itself
+        except KeyboardInterrupt:
+            print("\nGateway stopped.")
+            break
+        except Exception as _exc:  # noqa: BLE001
+            print(f"\n[Hermes] Gateway crashed: {_exc!r}. Restarting in 3 s…", flush=True)
+            _time.sleep(3)
+            # Reset first-start flag so --replace is only done on the first run
+            replace = False
 
 
 # =============================================================================
