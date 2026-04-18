@@ -4042,6 +4042,12 @@ def cmd_auth(args):
     auth_command(args)
 
 
+def cmd_project(args):
+    """Project OS management."""
+    from hermes_cli.projects import project_command
+    project_command(args)
+
+
 def cmd_status(args):
     """Show status of all components."""
     from hermes_cli.status import show_status
@@ -6648,6 +6654,35 @@ For more help on a command:
     )
     auth_reset.add_argument("provider", help="Provider id")
     auth_parser.set_defaults(func=cmd_auth)
+
+    # =========================================================================
+    # project command
+    # =========================================================================
+    project_parser = subparsers.add_parser(
+        "project",
+        help="Manage local project cells",
+        description="List, initialize, inspect, and refresh Hermes Project OS cells",
+    )
+    project_subparsers = project_parser.add_subparsers(dest="project_action")
+
+    project_subparsers.add_parser("list", help="List known projects")
+
+    project_init = project_subparsers.add_parser("init", help="Initialize a new project cell")
+    project_init.add_argument("project_id", help="Project id (lowercase, alphanumeric, '_' and '-')")
+    project_init.add_argument("name", help="Human-readable project name")
+    project_init.add_argument("summary", help="Short project summary")
+    project_init.add_argument("--repo-path", default=None, help="Optional git repository path to associate")
+
+    project_show = project_subparsers.add_parser("show", help="Show project metadata")
+    project_show.add_argument("project_id", help="Project id")
+
+    project_digest = project_subparsers.add_parser("digest", help="Generate a status digest report")
+    project_digest.add_argument("project_id", help="Project id")
+
+    project_status = project_subparsers.add_parser("status", help="Alias for generating a status digest")
+    project_status.add_argument("project_id", help="Project id")
+
+    project_parser.set_defaults(func=cmd_project, project_action="list")
 
     # =========================================================================
     # status command
