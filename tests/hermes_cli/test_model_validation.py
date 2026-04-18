@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from hermes_cli.models import (
     copilot_model_api_mode,
+    detect_provider_for_model,
     fetch_github_model_catalog,
     curated_models_for_provider,
     fetch_api_models,
@@ -154,6 +155,7 @@ class TestNormalizeProvider:
         assert normalize_provider("glm") == "zai"
         assert normalize_provider("kimi") == "kimi-coding"
         assert normalize_provider("moonshot") == "kimi-coding"
+        assert normalize_provider("kimi-for-coding") == "kimi-coding"
         assert normalize_provider("github-copilot") == "copilot"
 
     def test_case_insensitive(self):
@@ -540,3 +542,35 @@ class TestValidateCodexAutoCorrection:
         assert result["recognized"] is False
         assert result.get("corrected_model") is None
         assert "not found" in result["message"]
+
+
+# -- detect_provider_for_model -----------------------------------------------
+
+class TestDetectProviderForModel:
+    def test_kimi_for_coding_from_openrouter(self):
+        """kimi-for-coding typed from openrouter should switch to kimi-coding provider."""
+        result = detect_provider_for_model("kimi-for-coding", "openrouter")
+        assert result is not None
+        assert result[0] == "kimi-coding"
+        assert result[1] == "kimi-for-coding"
+
+    def test_kimi_for_coding_already_on_kimi_coding(self):
+        """kimi-for-coding when already on kimi-coding should return None."""
+        result = detect_provider_for_model("kimi-for-coding", "kimi-coding")
+        assert result is None
+
+    def test_kimi_for_coding_not_replaced_with_default_model(self):
+        """The guard should prevent step 0 from replacing kimi-for-coding with the default model."""
+        result = detect_provider_for_model("kimi-for-coding", "nous")
+        assert result is not None
+        assert result[0] == "kimi-coding"
+        # Must preserve the exact model name, not swap to the provider's default
+        assert result[1] == "kimi-for-coding"
+        assert result[1] != "kimi-k2.5"
+
+    def test_bare_provider_alias_still_works(self):
+        """Typing a bare provider alias like 'kimi' should still switch to default model."""
+        result = detect_provider_for_model("kimi", "openrouter")
+        assert result is not None
+        assert result[0] == "kimi-coding"
+        assert result[1] == "kimi-k2.5"

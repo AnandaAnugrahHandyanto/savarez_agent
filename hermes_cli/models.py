@@ -592,6 +592,7 @@ _PROVIDER_ALIASES = {
     "google-ai-studio": "gemini",
     "kimi": "kimi-coding",
     "moonshot": "kimi-coding",
+    "kimi-for-coding": "kimi-coding",
     "kimi-cn": "kimi-coding-cn",
     "moonshot-cn": "kimi-coding-cn",
     "arcee-ai": "arcee",
@@ -1056,13 +1057,24 @@ def detect_provider_for_model(
 
     name_lower = name.lower()
 
+    # --- Guard: if input is an exact model name in any provider's catalog,
+    # don't let step 0 treat it as a provider alias. Prevents e.g.
+    # `/model kimi-for-coding` from being misresolved to the default model
+    # of the `kimi-coding` provider because that model name happens to be
+    # in the provider alias table.
+    _is_exact_model_name = False
+    for _pid, _models in _PROVIDER_MODELS.items():
+        if any(name_lower == _m.lower() for _m in _models):
+            _is_exact_model_name = True
+            break
+
     # --- Step 0: bare provider name typed as model ---
     # If someone types `/model nous` or `/model anthropic`, treat it as a
     # provider switch and pick the first model from that provider's catalog.
     # Skip "custom" and "openrouter" — custom has no model catalog, and
     # openrouter requires an explicit model name to be useful.
     resolved_provider = _PROVIDER_ALIASES.get(name_lower, name_lower)
-    if resolved_provider not in {"custom", "openrouter"}:
+    if not _is_exact_model_name and resolved_provider not in {"custom", "openrouter"}:
         default_models = _PROVIDER_MODELS.get(resolved_provider, [])
         if (
             resolved_provider in _PROVIDER_LABELS

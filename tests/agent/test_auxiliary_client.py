@@ -978,3 +978,24 @@ class TestAnthropicCompatImageConversion:
         }]
         result = _convert_openai_images_to_anthropic(messages)
         assert result[0]["content"][0]["source"]["media_type"] == "image/jpeg"
+
+
+# -- Provider alias normalization --------------------------------------------
+
+class TestNormalizeAuxProvider:
+    def test_kimi_for_coding_alias(self):
+        from agent.auxiliary_client import _normalize_aux_provider
+        assert _normalize_aux_provider("kimi-for-coding") == "kimi-coding"
+
+    def test_kimi_alias(self):
+        from agent.auxiliary_client import _normalize_aux_provider
+        assert _normalize_aux_provider("kimi") == "kimi-coding"
+
+    def test_moonshot_alias(self):
+        from agent.auxiliary_client import _normalize_aux_provider
+        assert _normalize_aux_provider("moonshot") == "kimi-coding"
+
+    def test_no_alias_unchanged(self):
+        from agent.auxiliary_client import _normalize_aux_provider
+        assert _normalize_aux_provider("openrouter") == "openrouter"
+        assert _normalize_aux_provider("anthropic") == "anthropic"
