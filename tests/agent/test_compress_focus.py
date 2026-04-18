@@ -30,6 +30,7 @@ def _make_compressor():
     compressor.base_url = "http://localhost"
     compressor.api_key = "test-key"
     compressor.api_mode = "chat_completions"
+    compressor.user_message_max_tokens = 20000  # Codex-style user message preservation
     return compressor
 
 
