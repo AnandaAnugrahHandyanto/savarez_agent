@@ -247,6 +247,35 @@ class TestMemoryStorePersistence:
         assert "persistent fact" in store2.memory_entries
         assert "Alice, developer" in store2.user_entries
 
+    def test_load_skips_malformed_sidecar_records(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+
+        seed_store = MemoryStore()
+        seed_store.load_from_disk()
+        seed_store.add("memory", "persistent fact")
+
+        sidecar = tmp_path / "records.json"
+        payload = json.loads(sidecar.read_text(encoding="utf-8"))
+        payload["records"].append(
+            {
+                "memory_type": "profile",
+                "scope": "workspace",
+                "content": "broken record missing record_id",
+                "source": "legacy_import",
+                "source_kind": "tool_observation",
+            }
+        )
+        sidecar.write_text(json.dumps(payload), encoding="utf-8")
+
+        store = MemoryStore()
+        store.load_from_disk()
+        assert store.memory_entries == ["persistent fact"]
+        assert [record.content for record in store.records] == ["persistent fact"]
+
+        store._reload_records()
+        assert store.memory_entries == ["persistent fact"]
+        assert [record.content for record in store.records] == ["persistent fact"]
+
     def test_deduplication_on_load(self, tmp_path, monkeypatch):
         monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
         # Write file with duplicates

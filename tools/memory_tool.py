@@ -227,6 +227,49 @@ class MemoryStore:
     def _records_path(self) -> Path:
         return get_memory_dir() / "records.json"
 
+    def _load_sidecar_records(self, raw_payload: Any, path: Path) -> Optional[List[MemoryRecord]]:
+        if isinstance(raw_payload, list):
+            payload = {"version": 1, "records": raw_payload}
+        elif isinstance(raw_payload, dict):
+            payload = raw_payload
+        else:
+            logger.warning("Ignoring memory sidecar %s with unsupported payload type %s", path, type(raw_payload).__name__)
+            return None
+
+        raw_records = payload.get("records", [])
+        if not isinstance(raw_records, list):
+            logger.warning(
+                "Ignoring memory sidecar %s because 'records' is %s instead of a list",
+                path,
+                type(raw_records).__name__,
+            )
+            return None
+
+        records: List[MemoryRecord] = []
+        skipped_records = 0
+        version = payload.get("version", 1)
+        for index, item in enumerate(raw_records):
+            if not isinstance(item, dict):
+                logger.warning(
+                    "Skipping malformed memory sidecar record %s[%d]: expected object, got %s",
+                    path,
+                    index,
+                    type(item).__name__,
+                )
+                skipped_records += 1
+                continue
+            try:
+                records.extend(records_from_sidecar_payload({"version": version, "records": [item]}))
+            except (KeyError, TypeError, ValueError) as exc:
+                logger.warning("Skipping malformed memory sidecar record %s[%d]: %s", path, index, exc)
+                skipped_records += 1
+
+        if skipped_records and raw_records and not records:
+            logger.warning("Falling back to legacy memory exports because %s contained no usable records", path)
+            return None
+
+        return records
+
     def _load_records(self) -> List[MemoryRecord]:
         path = self._records_path()
         if path.exists():
@@ -235,10 +278,9 @@ class MemoryStore:
             except (OSError, IOError, json.JSONDecodeError) as exc:
                 logger.warning("Failed to load memory sidecar %s: %s", path, exc)
             else:
-                if isinstance(raw_payload, list):
-                    return records_from_sidecar_payload({"version": 1, "records": raw_payload})
-                if isinstance(raw_payload, dict):
-                    return records_from_sidecar_payload(raw_payload)
+                sidecar_records = self._load_sidecar_records(raw_payload, path)
+                if sidecar_records is not None:
+                    return sidecar_records
 
         imported: List[MemoryRecord] = []
         created_at = _utc_now_iso()
