@@ -273,6 +273,83 @@ class TestSendMessageTool:
             media_files=[],
         )
 
+    def test_current_discord_target_uses_active_session_chat_and_thread(self):
+        discord_cfg = SimpleNamespace(enabled=True, token="***", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.DISCORD: discord_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "HERMES_SESSION_PLATFORM": "discord",
+                "HERMES_SESSION_CHAT_ID": "123456789012345678",
+                "HERMES_SESSION_THREAD_ID": "987654321098765432",
+            },
+            clear=False,
+        ), \
+             patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "discord:current",
+                        "message": "batch 1",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            Platform.DISCORD,
+            discord_cfg,
+            "123456789012345678",
+            "batch 1",
+            thread_id="987654321098765432",
+            media_files=[],
+        )
+        mirror_mock.assert_called_once_with(
+            "discord",
+            "123456789012345678",
+            "batch 1",
+            source_label="discord",
+            thread_id="987654321098765432",
+        )
+
+    def test_current_target_errors_without_active_session_chat(self):
+        discord_cfg = SimpleNamespace(enabled=True, token="***", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.DISCORD: discord_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "HERMES_SESSION_PLATFORM": "discord",
+            },
+            clear=False,
+        ), \
+             patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "discord:current",
+                        "message": "batch 1",
+                    }
+                )
+            )
+
+        assert "error" in result
+        assert "active session chat_id" in result["error"].lower()
+
     def test_media_only_message_uses_placeholder_for_mirroring(self):
         config, telegram_cfg = _make_config()
 

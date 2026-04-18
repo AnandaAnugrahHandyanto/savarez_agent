@@ -113,7 +113,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org'"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:current' (uses the active gateway session channel/thread), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:current', 'telegram:-1001234567890:17585', 'discord:current', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org'"
             },
             "message": {
                 "type": "string",
@@ -157,7 +157,14 @@ def _handle_send(args):
     chat_id = None
     thread_id = None
 
-    if target_ref:
+    if target_ref and target_ref.lower() in {"current", "__session__"}:
+        session_error = _resolve_current_session_target(platform_name)
+        if "error" in session_error:
+            return json.dumps(session_error)
+        chat_id = session_error["chat_id"]
+        thread_id = session_error.get("thread_id")
+        is_explicit = True
+    elif target_ref:
         chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
     else:
         is_explicit = False
@@ -286,7 +293,7 @@ def _handle_send(args):
             try:
                 from gateway.mirror import mirror_to_session
                 from gateway.session_context import get_session_env
-                source_label = get_session_env("HERMES_SESSION_PLATFORM", "cli")
+                source_label = get_session_env("HERMES_SESSION_PLATFORM", "cli") or "cli"
                 if mirror_to_session(platform_name, chat_id, mirror_text, source_label=source_label, thread_id=thread_id):
                     result["mirrored"] = True
             except Exception:
@@ -297,6 +304,31 @@ def _handle_send(args):
         return json.dumps(result)
     except Exception as e:
         return json.dumps(_error(f"Send failed: {e}"))
+
+
+def _resolve_current_session_target(platform_name: str) -> dict:
+    """Resolve platform:current / platform:__session__ to the active session target."""
+    from gateway.session_context import get_session_env
+
+    session_platform = get_session_env("HERMES_SESSION_PLATFORM", "").strip().lower()
+    chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "").strip()
+    thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "").strip() or None
+
+    if session_platform and session_platform != platform_name:
+        return _error(
+            f"Current session target is for {session_platform}, not {platform_name}. "
+            f"Use '{session_platform}:current' or an explicit {platform_name} target instead."
+        )
+
+    if not chat_id:
+        return _error(
+            "No active session chat_id available. Use an explicit channel target instead."
+        )
+
+    return {
+        "chat_id": chat_id,
+        "thread_id": thread_id,
+    }
 
 
 def _parse_target_ref(platform_name: str, target_ref: str):
