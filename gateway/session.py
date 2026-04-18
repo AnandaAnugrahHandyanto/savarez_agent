@@ -12,7 +12,6 @@ import hashlib
 import logging
 import os
 import json
-import re
 import threading
 import uuid
 from pathlib import Path
@@ -83,6 +82,7 @@ class SessionSource:
     chat_topic: Optional[str] = None  # Channel topic/description (Discord, Slack)
     user_id_alt: Optional[str] = None  # Signal UUID (alternative to phone number)
     chat_id_alt: Optional[str] = None  # Signal group internal ID
+    is_bot: bool = False  # True when the message author is a bot/webhook (Discord)
     
     @property
     def description(self) -> str:
@@ -302,6 +302,8 @@ def build_session_context_prompt(
     lines.append("")
     lines.append("**Delivery options for scheduled tasks:**")
     
+    from hermes_constants import display_hermes_home
+
     # Origin delivery
     if context.source.platform == Platform.LOCAL:
         lines.append("- `\"origin\"` → Local output (saved to files)")
@@ -310,9 +312,11 @@ def build_session_context_prompt(
             _hash_chat_id(context.source.chat_id) if redact_pii else context.source.chat_id
         )
         lines.append(f"- `\"origin\"` → Back to this chat ({_origin_label})")
-    
+
     # Local always available
-    lines.append("- `\"local\"` → Save to local files only (~/.hermes/cron/output/)")
+    lines.append(
+        f"- `\"local\"` → Save to local files only ({display_hermes_home()}/cron/output/)"
+    )
     
     # Platform home channels
     for platform, home in context.home_channels.items():
@@ -368,6 +372,11 @@ class SessionEntry:
     # survives gateway restarts (the old in-memory _pre_flushed_sessions
     # set was lost on restart, causing redundant re-flushes).
     memory_flushed: bool = False
+
+    # When True the next call to get_or_create_session() will auto-reset
+    # this session (create a new session_id) so the user starts fresh.
+    # Set by /stop to break stuck-resume loops (#7536).
+    suspended: bool = False
     
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -387,6 +396,7 @@ class SessionEntry:
             "estimated_cost_usd": self.estimated_cost_usd,
             "cost_status": self.cost_status,
             "memory_flushed": self.memory_flushed,
+            "suspended": self.suspended,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -423,6 +433,7 @@ class SessionEntry:
             estimated_cost_usd=data.get("estimated_cost_usd", 0.0),
             cost_status=data.get("cost_status", "unknown"),
             memory_flushed=data.get("memory_flushed", False),
+            suspended=data.get("suspended", False),
         )
 
 
@@ -698,7 +709,12 @@ class SessionStore:
             if session_key in self._entries and not force_new:
                 entry = self._entries[session_key]
 
-                reset_reason = self._should_reset(entry, source)
+                # Auto-reset sessions marked as suspended (e.g. after /stop
+                # broke a stuck loop — #7536).
+                if entry.suspended:
+                    reset_reason = "suspended"
+                else:
+                    reset_reason = self._should_reset(entry, source)
                 if not reset_reason:
                     entry.updated_at = now
                     self._save()
@@ -771,6 +787,95 @@ class SessionStore:
                     entry.last_prompt_tokens = last_prompt_tokens
                 self._save()
 
+    def suspend_session(self, session_key: str) -> bool:
+        """Mark a session as suspended so it auto-resets on next access.
+
+        Used by ``/stop`` to prevent stuck sessions from being resumed
+        after a gateway restart (#7536).  Returns True if the session
+        existed and was marked.
+        """
+        with self._lock:
+            self._ensure_loaded_locked()
+            if session_key in self._entries:
+                self._entries[session_key].suspended = True
+                self._save()
+                return True
+        return False
+
+    def prune_old_entries(self, max_age_days: int) -> int:
+        """Drop SessionEntry records older than max_age_days.
+
+        Pruning is based on ``updated_at`` (last activity), not ``created_at``.
+        A session that's been active within the window is kept regardless of
+        how old it is.  Entries marked ``suspended`` are kept — the user
+        explicitly paused them for later resume.  Entries held by an active
+        process (via has_active_processes_fn) are also kept so long-running
+        background work isn't orphaned.
+
+        Pruning is functionally identical to a natural reset-policy expiry:
+        the transcript in SQLite stays, but the session_key → session_id
+        mapping is dropped and the user starts a fresh session on return.
+
+        ``max_age_days <= 0`` disables pruning; returns 0 immediately.
+        Returns the number of entries removed.
+        """
+        if max_age_days is None or max_age_days <= 0:
+            return 0
+        from datetime import timedelta
+
+        cutoff = _now() - timedelta(days=max_age_days)
+        removed_keys: list[str] = []
+
+        with self._lock:
+            self._ensure_loaded_locked()
+            for key, entry in list(self._entries.items()):
+                if entry.suspended:
+                    continue
+                # Never prune sessions with an active background process
+                # attached — the user may still be waiting on output.
+                if self._has_active_processes_fn is not None:
+                    try:
+                        if self._has_active_processes_fn(entry.session_id):
+                            continue
+                    except Exception:
+                        pass
+                if entry.updated_at < cutoff:
+                    removed_keys.append(key)
+            for key in removed_keys:
+                self._entries.pop(key, None)
+            if removed_keys:
+                self._save()
+
+        if removed_keys:
+            logger.info(
+                "SessionStore pruned %d entries older than %d days",
+                len(removed_keys), max_age_days,
+            )
+        return len(removed_keys)
+
+    def suspend_recently_active(self, max_age_seconds: int = 120) -> int:
+        """Mark recently-active sessions as suspended.
+
+        Called on gateway startup to prevent sessions that were likely
+        in-flight when the gateway last exited from being blindly resumed
+        (#7536).  Only suspends sessions updated within *max_age_seconds*
+        to avoid resetting long-idle sessions that are harmless to resume.
+        Returns the number of sessions that were suspended.
+        """
+        from datetime import timedelta
+
+        cutoff = _now() - timedelta(seconds=max_age_seconds)
+        count = 0
+        with self._lock:
+            self._ensure_loaded_locked()
+            for entry in self._entries.values():
+                if not entry.suspended and entry.updated_at >= cutoff:
+                    entry.suspended = True
+                    count += 1
+            if count:
+                self._save()
+        return count
+
     def reset_session(self, session_key: str) -> Optional[SessionEntry]:
         """Force reset a session, creating a new session ID."""
         db_end_session_id = None
@@ -828,7 +933,8 @@ class SessionStore:
         Used by ``/resume`` to restore a previously-named session.
         Ends the current session in SQLite (like reset), but instead of
         generating a fresh session ID, re-uses ``target_session_id`` so the
-        old transcript is loaded on the next message.
+        old transcript is loaded on the next message. If the target session was
+        previously ended, re-open it so gateway resume semantics match the CLI.
         """
         db_end_session_id = None
         new_entry = None
@@ -867,6 +973,12 @@ class SessionStore:
                 self._db.end_session(db_end_session_id, "session_switch")
             except Exception as e:
                 logger.debug("Session DB end_session failed: %s", e)
+
+        if self._db:
+            try:
+                self._db.reopen_session(target_session_id)
+            except Exception as e:
+                logger.debug("Session DB reopen_session failed: %s", e)
 
         return new_entry
 
