@@ -4195,35 +4195,56 @@ class HermesCLI:
         flush_tool_summary()
         print()
     
-    def _notify_session_boundary(self, event_type: str) -> None:
+    def _notify_session_boundary(self, event_type: str, **extra_context) -> None:
         """Fire a session-boundary plugin hook (on_session_finalize or on_session_reset).
 
-        Non-blocking — errors are caught and logged.  Safe to call from any
-        lifecycle point (shutdown, /new, /reset).
+        Non-blocking — errors are caught and logged. Safe to call from any
+        lifecycle point (shutdown, /new, /reset). Extra keyword context is
+        passed through verbatim so external plugins can observe richer session
+        boundary metadata without affecting the default built-in behavior.
         """
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
-            _invoke_hook(
-                event_type,
-                session_id=self.agent.session_id if self.agent else None,
-                platform=getattr(self, "platform", None) or "cli",
-            )
+            payload = {
+                "session_id": self.agent.session_id if self.agent else None,
+                "platform": getattr(self, "platform", None) or "cli",
+            }
+            payload.update(extra_context)
+            _invoke_hook(event_type, **payload)
         except Exception:
             pass
 
     def new_session(self, silent=False):
         """Start a fresh session with a new session ID and cleared agent state."""
+        _old_history = list(self.conversation_history)
+        _boundary_old_session_id = (
+            getattr(self.agent, "session_id", None) if self.agent else None
+        ) or self.session_id
         if self.agent and self.conversation_history:
             try:
                 self.agent.flush_memories(self.conversation_history)
             except (Exception, KeyboardInterrupt):
                 pass
             # Trigger memory extraction on the old session before session_id rotates.
-            self.agent.commit_memory_session(self.conversation_history)
-            self._notify_session_boundary("on_session_finalize")
+            if hasattr(self.agent, "commit_memory_session"):
+                try:
+                    self.agent.commit_memory_session(self.conversation_history)
+                except (Exception, KeyboardInterrupt):
+                    pass
+            self._notify_session_boundary(
+                "on_session_finalize",
+                old_session_id=_boundary_old_session_id,
+                previous_messages=_old_history,
+                previous_message_count=len(_old_history),
+            )
         elif self.agent:
             # First session or empty history — still finalize the old session
-            self._notify_session_boundary("on_session_finalize")
+            self._notify_session_boundary(
+                "on_session_finalize",
+                old_session_id=_boundary_old_session_id,
+                previous_messages=[],
+                previous_message_count=0,
+            )
 
         old_session_id = self.session_id
         if self._session_db and old_session_id:
@@ -4232,6 +4253,7 @@ class HermesCLI:
             except Exception:
                 pass
 
+        _old_history = list(self.conversation_history)
         self.session_start = datetime.now()
         timestamp_str = self.session_start.strftime("%Y%m%d_%H%M%S")
         short_uuid = uuid.uuid4().hex[:6]
@@ -4243,7 +4265,11 @@ class HermesCLI:
         if self.agent:
             self.agent.session_id = self.session_id
             self.agent.session_start = self.session_start
-            self.agent.reset_session_state()
+            self.agent.reset_session_state(
+                previous_messages=_old_history,
+                old_session_id=old_session_id,
+                carry_over_context=True,
+            )
             if hasattr(self.agent, "_last_flushed_db_idx"):
                 self.agent._last_flushed_db_idx = 0
             if hasattr(self.agent, "_todo_store"):
@@ -4268,7 +4294,12 @@ class HermesCLI:
                     )
                 except Exception:
                     pass
-            self._notify_session_boundary("on_session_reset")
+            self._notify_session_boundary(
+                "on_session_reset",
+                old_session_id=_boundary_old_session_id,
+                new_session_id=self.session_id,
+                carry_over_context=True,
+            )
 
         if not silent:
             print("(^_^)v New session started!")
@@ -4311,6 +4342,8 @@ class HermesCLI:
             pass
 
         # Switch to the target session
+        _old_history = list(self.conversation_history)
+        _old_agent_session_id = getattr(self.agent, "session_id", None) if self.agent else None
         self.session_id = target_id
         self._resumed = True
         self._pending_title = None
@@ -4329,7 +4362,11 @@ class HermesCLI:
         # Sync the agent if already initialised
         if self.agent:
             self.agent.session_id = target_id
-            self.agent.reset_session_state()
+            self.agent.reset_session_state(
+                previous_messages=_old_history,
+                old_session_id=_old_agent_session_id,
+                carry_over_context=False,
+            )
             if hasattr(self.agent, "_last_flushed_db_idx"):
                 self.agent._last_flushed_db_idx = len(self.conversation_history)
             if hasattr(self.agent, "_todo_store"):
@@ -4434,6 +4471,8 @@ class HermesCLI:
             pass
 
         # Switch to the new session
+        _old_history = list(self.conversation_history)
+        _old_agent_session_id = getattr(self.agent, "session_id", None) if self.agent else None
         self.session_id = new_session_id
         self.session_start = now
         self._pending_title = None
@@ -4443,7 +4482,11 @@ class HermesCLI:
         if self.agent:
             self.agent.session_id = new_session_id
             self.agent.session_start = now
-            self.agent.reset_session_state()
+            self.agent.reset_session_state(
+                previous_messages=_old_history,
+                old_session_id=_old_agent_session_id,
+                carry_over_context=False,
+            )
             if hasattr(self.agent, "_last_flushed_db_idx"):
                 self.agent._last_flushed_db_idx = len(self.conversation_history)
             if hasattr(self.agent, "_todo_store"):
