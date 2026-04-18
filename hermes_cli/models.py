@@ -1280,6 +1280,27 @@ def _resolve_copilot_catalog_api_key() -> str:
         return ""
 
 
+def _resolve_openai_catalog_credentials(provider_id: str) -> tuple[str, str]:
+    """Best-effort OpenAI credentials for provider model catalog probing."""
+    try:
+        from hermes_cli.auth import resolve_api_key_provider_credentials
+
+        creds = resolve_api_key_provider_credentials(provider_id)
+        api_key = str(creds.get("api_key") or "").strip()
+        base_url = str(creds.get("base_url") or "").strip()
+        if base_url:
+            return api_key, base_url
+    except Exception:
+        pass
+
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if provider_id == "openai-direct":
+        base_url = "https://api.openai.com/v1"
+    else:
+        base_url = os.getenv("OPENAI_BASE_URL", "").strip() or "https://api.openai.com/v1"
+    return api_key, base_url.rstrip("/")
+
+
 def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
     """Return the best known model catalog for a provider.
 
@@ -1293,6 +1314,11 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         from hermes_cli.codex_models import get_codex_model_ids
 
         return get_codex_model_ids()
+    if normalized in {"openai", "openai-direct"}:
+        api_key, base_url = _resolve_openai_catalog_credentials(normalized)
+        live = fetch_api_models(api_key, base_url)
+        if live:
+            return live
     if normalized in {"copilot", "copilot-acp"}:
         try:
             live = _fetch_github_models(_resolve_copilot_catalog_api_key())

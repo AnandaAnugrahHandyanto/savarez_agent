@@ -211,6 +211,26 @@ class TestProviderModelIds:
         assert "gpt-5.4" in ids
         assert "copilot-acp" not in ids
 
+    def test_openai_prefers_live_catalog(self):
+        with patch(
+            "hermes_cli.models._resolve_openai_catalog_credentials",
+            return_value=("test-openai-key", "https://api.openai.com/v1"),
+        ), patch(
+            "hermes_cli.models.fetch_api_models",
+            return_value=["gpt-5.4", "gpt-5.4-mini"],
+        ):
+            assert provider_model_ids("openai") == ["gpt-5.4", "gpt-5.4-mini"]
+
+    def test_openai_direct_prefers_live_catalog(self):
+        with patch(
+            "hermes_cli.models._resolve_openai_catalog_credentials",
+            return_value=("test-openai-key", "https://api.openai.com/v1"),
+        ), patch(
+            "hermes_cli.models.fetch_api_models",
+            return_value=["gpt-5.4", "gpt-5.4-mini"],
+        ):
+            assert provider_model_ids("openai-direct") == ["gpt-5.4", "gpt-5.4-mini"]
+
 
 # -- fetch_api_models --------------------------------------------------------
 
