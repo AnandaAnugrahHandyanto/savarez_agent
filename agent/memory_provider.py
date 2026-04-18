@@ -185,6 +185,10 @@ class MemoryProvider(ABC):
         child_session_id: the subagent's session_id
         """
 
+    def get_memory_capabilities(self) -> Dict[str, Any]:
+        """Optional introspection hook for memory features exposed by this provider."""
+        return {}
+
     def get_config_schema(self) -> List[Dict[str, Any]]:
         """Return config fields this provider needs for setup.
 

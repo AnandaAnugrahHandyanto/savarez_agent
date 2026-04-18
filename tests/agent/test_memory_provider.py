@@ -106,6 +106,10 @@ class TestMemoryProviderABC:
         p.sync_turn("user", "assistant")
         p.shutdown()
 
+    def test_default_memory_capabilities_hook_is_empty(self):
+        p = FakeMemoryProvider()
+        assert p.get_memory_capabilities() == {}
+
 
 # ---------------------------------------------------------------------------
 # MemoryManager tests
@@ -120,6 +124,18 @@ class TestMemoryManager:
         assert mgr.get_all_tool_schemas() == []
         assert mgr.build_system_prompt() == ""
         assert mgr.prefetch_all("test") == ""
+
+    def test_manager_collects_provider_capabilities_without_breaking_old_providers(self):
+        mgr = MemoryManager()
+        builtin = FakeMemoryProvider("builtin")
+        ext = FakeMemoryProvider("external")
+        ext.get_memory_capabilities = lambda: {"semantic_memory": True, "inspection": False}
+        mgr.add_provider(builtin)
+        mgr.add_provider(ext)
+
+        caps = mgr.get_memory_capabilities()
+        assert caps["builtin"] == {}
+        assert caps["external"]["semantic_memory"] is True
 
     def test_add_provider(self):
         mgr = MemoryManager()

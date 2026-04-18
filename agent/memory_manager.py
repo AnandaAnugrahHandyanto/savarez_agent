@@ -226,6 +226,16 @@ class MemoryManager:
                 )
         return schemas
 
+    def get_memory_capabilities(self) -> Dict[str, Dict[str, Any]]:
+        """Collect optional capability metadata from all providers."""
+        result: Dict[str, Dict[str, Any]] = {}
+        for provider in self._providers:
+            try:
+                result[provider.name] = dict(provider.get_memory_capabilities())
+            except Exception:
+                result[provider.name] = {}
+        return result
+
     def get_all_tool_names(self) -> set:
         """Return set of all tool names across all providers."""
         return set(self._tool_to_provider.keys())

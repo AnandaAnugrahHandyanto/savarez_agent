@@ -19,6 +19,17 @@ Two files make up the agent's memory:
 
 Both are stored in `~/.hermes/memories/` and are injected into the system prompt as a frozen snapshot at session start. The agent manages its own memory via the `memory` tool — it can add, replace, or remove entries.
 
+## Memory V2 phase 1
+
+Built-in memory now keeps structured metadata alongside the existing `MEMORY.md` and `USER.md` exports. The prompt-facing files remain human-readable and bounded, while the structured sidecar data drives:
+
+- write classification
+- topic-aware replacement and supersession
+- freshness states
+- operator-visible inspection payloads
+
+`session_search` remains separate. It is transcript recall, not canonical built-in memory.
+
 :::info
 Character limits keep memory focused. When memory is full, the agent consolidates or replaces entries to make room for new information.
 :::

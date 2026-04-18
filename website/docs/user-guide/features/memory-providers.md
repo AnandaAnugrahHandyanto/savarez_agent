@@ -38,6 +38,11 @@ When a memory provider is active, Hermes automatically:
 
 The built-in memory (MEMORY.md / USER.md) continues to work exactly as before. The external provider is additive.
 
+## Memory V2 phase 1 compatibility
+
+External providers remain additive in phase 1. Memory V2 does not require provider migration.
+Built-in prompt memory and transcript recall continue to work even if provider adaptation stays partial.
+
 ## Available Providers
 
 ### Honcho
