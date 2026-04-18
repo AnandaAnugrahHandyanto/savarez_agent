@@ -22,6 +22,7 @@ class TestMemorySchema:
         description = MEMORY_SCHEMA["description"]
         assert "Do NOT save task progress" in description
         assert "session_search" in description
+        assert "list (browse current entries)" in description
         assert "like a diary" not in description
         assert "temporary task state" in description
         assert ">80%" not in description
@@ -248,6 +249,14 @@ class TestMemoryToolDispatcher:
         result = json.loads(memory_tool(action="add", target="memory", content="via tool", store=store))
         assert result["success"] is True
 
+    def test_list_via_tool(self, store):
+        store.add("memory", "listed fact")
+        result = json.loads(memory_tool(action="list", target="memory", store=store))
+        assert result["success"] is True
+        assert result["entry_count"] == 1
+        assert "listed fact" in result["entries"]
+        assert "listed" in result["message"].lower()
+
     def test_replace_requires_old_text(self, store):
         result = json.loads(memory_tool(action="replace", content="new", store=store))
         assert result["success"] is False
@@ -255,3 +264,10 @@ class TestMemoryToolDispatcher:
     def test_remove_requires_old_text(self, store):
         result = json.loads(memory_tool(action="remove", store=store))
         assert result["success"] is False
+
+    def test_list_accepts_user_target(self, store):
+        store.add("user", "Alice")
+        result = json.loads(memory_tool(action="list", target="user", store=store))
+        assert result["success"] is True
+        assert result["target"] == "user"
+        assert result["entry_count"] == 1

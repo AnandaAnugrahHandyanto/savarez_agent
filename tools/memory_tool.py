@@ -17,7 +17,7 @@ Entry delimiter: § (section sign). Entries can be multiline.
 Character limits (not tokens) because char counts are model-independent.
 
 Design:
-- Single `memory` tool with action parameter: add, replace, remove, read
+- Single `memory` tool with action parameter: add, replace, remove, list
 - replace/remove use short unique substring matching (not full text or IDs)
 - Behavioral guidance lives in the tool schema description
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
@@ -201,6 +201,22 @@ class MemoryStore:
         if target == "user":
             return self.user_entries
         return self.memory_entries
+
+    def list_entries(self, target: str) -> Dict[str, Any]:
+        """Return the current entries without mutating anything."""
+        entries = self._entries_for(target)
+        current = self._char_count(target)
+        limit = self._char_limit(target)
+        pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
+
+        return {
+            "success": True,
+            "target": target,
+            "entries": entries,
+            "usage": f"{pct}% — {current:,}/{limit:,} chars",
+            "entry_count": len(entries),
+            "message": "Entries listed.",
+        }
 
     def _set_entries(self, target: str, entries: List[str]):
         if target == "user":
@@ -495,8 +511,14 @@ def memory_tool(
             return tool_error("old_text is required for 'remove' action.", success=False)
         result = store.remove(target, old_text)
 
+    elif action == "list":
+        result = store.list_entries(target)
+
     else:
-        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
+        return tool_error(
+            f"Unknown action '{action}'. Use: add, replace, remove, list",
+            success=False,
+        )
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -532,7 +554,7 @@ MEMORY_SCHEMA = {
         "- 'user': who the user is -- name, role, preferences, communication style, pet peeves\n"
         "- 'memory': your notes -- environment facts, project conventions, tool quirks, lessons learned\n\n"
         "ACTIONS: add (new entry), replace (update existing -- old_text identifies it), "
-        "remove (delete -- old_text identifies it).\n\n"
+        "remove (delete -- old_text identifies it), list (browse current entries).\n\n"
         "SKIP: trivial/obvious info, things easily re-discovered, raw data dumps, and temporary task state."
     ),
     "parameters": {
@@ -540,7 +562,7 @@ MEMORY_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "replace", "remove"],
+                "enum": ["add", "replace", "remove", "list"],
                 "description": "The action to perform."
             },
             "target": {
@@ -578,7 +600,6 @@ registry.register(
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
 
 
 
