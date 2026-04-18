@@ -734,6 +734,26 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         except Exception as e:
             return json.dumps({"error": f"Send failed: {e}"})
 
+    # -- lovart_send ------------------------------------------------------
+
+    @mcp.tool()
+    def lovart_send(prompt: str) -> str:
+        """Send a prompt to Lovart.ai using the local persistent browser session.
+
+        Args:
+            prompt: The design prompt to submit to Lovart.ai
+        """
+        if not prompt:
+            return json.dumps({"error": "prompt is required"})
+
+        try:
+            from tools.lovart_automation_tool import lovart_send_prompt
+            return lovart_send_prompt(prompt)
+        except ImportError as e:
+            return json.dumps({"error": f"Lovart tool unavailable: {e}"})
+        except Exception as e:
+            return json.dumps({"error": f"Lovart send failed: {e}"})
+
     # -- channels_list -----------------------------------------------------
 
     @mcp.tool()
