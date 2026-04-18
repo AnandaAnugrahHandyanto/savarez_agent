@@ -12,6 +12,7 @@ import contextvars
 import logging
 import os
 import re
+import shlex
 import sys
 import threading
 import time
@@ -199,10 +200,22 @@ def detect_dangerous_command(command: str) -> tuple:
     normalized = _normalize_command_for_detection(command)
     command_lower = normalized.lower()
 
-    # Skip approval for user-configured trusted script paths
-    for trusted in _trusted_script_dirs:
-        if trusted and trusted.lower() in command_lower:
-            return (False, None, None)
+    # Skip approval for user-configured trusted script paths.
+    # Extract actual file paths from the command via shlex, then check
+    # prefix membership — avoids substring bypasses like
+    #   python3 /tmp/evil.py --cfg=/opt/trusted/
+    # where "/opt/trusted/" would falsely match a naive substring check.
+    if _trusted_script_dirs:
+        try:
+            parts = shlex.split(normalized)
+        except ValueError:
+            parts = normalized.split()
+        for part in parts:
+            # Expand ~ in the token to match against expanded trusted paths
+            part_lower = os.path.expanduser(part).lower()
+            for trusted in _trusted_script_dirs:
+                if part_lower.startswith(trusted):
+                    return (False, None, None)
 
     for pattern, description in DANGEROUS_PATTERNS:
         if re.search(pattern, command_lower, re.IGNORECASE | re.DOTALL):
