@@ -13,7 +13,7 @@ source venv/bin/activate  # ALWAYS activate before running Python
 ```
 hermes-agent/
 ├── run_agent.py          # AIAgent class — core conversation loop
-├── model_tools.py        # Tool orchestration, _discover_tools(), handle_function_call()
+├── model_tools.py        # Tool orchestration, discover_builtin_tools(), handle_function_call()
 ├── toolsets.py           # Toolset definitions, _HERMES_CORE_TOOLS list
 ├── cli.py                # HermesCLI class — interactive CLI orchestrator
 ├── hermes_state.py       # SessionDB — SQLite session store (FTS5 search)
@@ -55,7 +55,20 @@ hermes-agent/
 ├── gateway/              # Messaging platform gateway
 │   ├── run.py            # Main loop, slash commands, message dispatch
 │   ├── session.py        # SessionStore — conversation persistence
-│   └── platforms/        # Adapters: telegram, discord, slack, whatsapp, homeassistant, signal
+│   └── platforms/        # Adapters: telegram, discord, slack, whatsapp, homeassistant, signal, qqbot
+├── ui-tui/               # Ink (React) terminal UI — `hermes --tui`
+│   ├── src/entry.tsx        # TTY gate + render()
+│   ├── src/app.tsx          # Main state machine and UI
+│   ├── src/gatewayClient.ts # Child process + JSON-RPC bridge
+│   ├── src/app/             # Decomposed app logic (event handler, slash handler, stores, hooks)
+│   ├── src/components/      # Ink components (branding, markdown, prompts, pickers, etc.)
+│   ├── src/hooks/           # useCompletion, useInputHistory, useQueue, useVirtualHistory
+│   └── src/lib/             # Pure helpers (history, osc52, text, rpc, messages)
+├── tui_gateway/          # Python JSON-RPC backend for the TUI
+│   ├── entry.py             # stdio entrypoint
+│   ├── server.py            # RPC handlers and session logic
+│   ├── render.py            # Optional rich/ANSI bridge
+│   └── slash_worker.py      # Persistent HermesCLI subprocess for slash commands
 ├── acp_adapter/          # ACP server (VS Code / Zed / JetBrains integration)
 ├── cron/                 # Scheduler (jobs.py, scheduler.py)
 ├── environments/         # RL training environments (Atropos)
@@ -179,9 +192,62 @@ if canonical == "mycommand":
 
 ---
 
+## TUI Architecture (ui-tui + tui_gateway)
+
+The TUI is a full replacement for the classic (prompt_toolkit) CLI, activated via `hermes --tui` or `HERMES_TUI=1`.
+
+### Process Model
+
+```
+hermes --tui
+  └─ Node (Ink)  ──stdio JSON-RPC──  Python (tui_gateway)
+       │                                  └─ AIAgent + tools + sessions
+       └─ renders transcript, composer, prompts, activity
+```
+
+TypeScript owns the screen. Python owns sessions, tools, model calls, and slash command logic.
+
+### Transport
+
+Newline-delimited JSON-RPC over stdio. Requests from Ink, events from Python. See `tui_gateway/server.py` for the full method/event catalog.
+
+### Key Surfaces
+
+| Surface | Ink component | Gateway method |
+|---------|---------------|----------------|
+| Chat streaming | `app.tsx` + `messageLine.tsx` | `prompt.submit` → `message.delta/complete` |
+| Tool activity | `thinking.tsx` | `tool.start/progress/complete` |
+| Approvals | `prompts.tsx` | `approval.respond` ← `approval.request` |
+| Clarify/sudo/secret | `prompts.tsx`, `maskedPrompt.tsx` | `clarify/sudo/secret.respond` |
+| Session picker | `sessionPicker.tsx` | `session.list/resume` |
+| Slash commands | Local handler + fallthrough | `slash.exec` → `_SlashWorker`, `command.dispatch` |
+| Completions | `useCompletion` hook | `complete.slash`, `complete.path` |
+| Theming | `theme.ts` + `branding.tsx` | `gateway.ready` with skin data |
+
+### Slash Command Flow
+
+1. Built-in client commands (`/help`, `/quit`, `/clear`, `/resume`, `/copy`, `/paste`, etc.) handled locally in `app.tsx`
+2. Everything else → `slash.exec` (runs in persistent `_SlashWorker` subprocess) → `command.dispatch` fallback
+
+### Dev Commands
+
+```bash
+cd ui-tui
+npm install       # first time
+npm run dev       # watch mode (rebuilds hermes-ink + tsx --watch)
+npm start         # production
+npm run build     # full build (hermes-ink + tsc)
+npm run type-check # typecheck only (tsc --noEmit)
+npm run lint      # eslint
+npm run fmt       # prettier
+npm test          # vitest
+```
+
+---
+
 ## Adding New Tools
 
-Requires changes in **3 files**:
+Requires changes in **2 files**:
 
 **1. Create `tools/your_tool.py`:**
 ```python
@@ -204,11 +270,15 @@ registry.register(
 )
 ```
 
-**2. Add import** in `model_tools.py` `_discover_tools()` list.
+**2. Add to `toolsets.py`** — either `_HERMES_CORE_TOOLS` (all platforms) or a new toolset.
 
-**3. Add to `toolsets.py`** — either `_HERMES_CORE_TOOLS` (all platforms) or a new toolset.
+Auto-discovery: any `tools/*.py` file with a top-level `registry.register()` call is imported automatically — no manual import list to maintain.
 
 The registry handles schema collection, dispatch, availability checking, and error wrapping. All handlers MUST return a JSON string.
+
+**Path references in tool schemas**: If the schema description mentions file paths (e.g. default output directories), use `display_hermes_home()` to make them profile-aware. The schema is generated at import time, which is after `_apply_profile_override()` sets `HERMES_HOME`.
+
+**State files**: If a tool stores persistent state (caches, logs, checkpoints), use `get_hermes_home()` for the base directory — never `Path.home() / ".hermes"`. This ensures each profile gets its own state.
 
 **Agent-level tools** (todo, memory): intercepted by `run_agent.py` before `handle_function_call()`. See `todo_tool.py` for the pattern.
 
@@ -347,8 +417,9 @@ Cache-breaking forces dramatically higher costs. The ONLY time we alter context 
 
 ### Background Process Notifications (Gateway)
 
-When `terminal(background=true, check_interval=...)` is used, the gateway runs a watcher that
-pushes status updates to the user's chat. Control verbosity with `display.background_process_notifications`
+When `terminal(background=true, notify_on_complete=true)` is used, the gateway runs a watcher that
+detects process completion and triggers a new agent turn. Control verbosity of background process
+messages with `display.background_process_notifications`
 in config.yaml (or `HERMES_BACKGROUND_NOTIFICATIONS` env var):
 
 - `all` — running-output updates + final message (default)
@@ -358,7 +429,68 @@ in config.yaml (or `HERMES_BACKGROUND_NOTIFICATIONS` env var):
 
 ---
 
+## Profiles: Multi-Instance Support
+
+Hermes supports **profiles** — multiple fully isolated instances, each with its own
+`HERMES_HOME` directory (config, API keys, memory, sessions, skills, gateway, etc.).
+
+The core mechanism: `_apply_profile_override()` in `hermes_cli/main.py` sets
+`HERMES_HOME` before any module imports. All 119+ references to `get_hermes_home()`
+automatically scope to the active profile.
+
+### Rules for profile-safe code
+
+1. **Use `get_hermes_home()` for all HERMES_HOME paths.** Import from `hermes_constants`.
+   NEVER hardcode `~/.hermes` or `Path.home() / ".hermes"` in code that reads/writes state.
+   ```python
+   # GOOD
+   from hermes_constants import get_hermes_home
+   config_path = get_hermes_home() / "config.yaml"
+
+   # BAD — breaks profiles
+   config_path = Path.home() / ".hermes" / "config.yaml"
+   ```
+
+2. **Use `display_hermes_home()` for user-facing messages.** Import from `hermes_constants`.
+   This returns `~/.hermes` for default or `~/.hermes/profiles/<name>` for profiles.
+   ```python
+   # GOOD
+   from hermes_constants import display_hermes_home
+   print(f"Config saved to {display_hermes_home()}/config.yaml")
+
+   # BAD — shows wrong path for profiles
+   print("Config saved to ~/.hermes/config.yaml")
+   ```
+
+3. **Module-level constants are fine** — they cache `get_hermes_home()` at import time,
+   which is AFTER `_apply_profile_override()` sets the env var. Just use `get_hermes_home()`,
+   not `Path.home() / ".hermes"`.
+
+4. **Tests that mock `Path.home()` must also set `HERMES_HOME`** — since code now uses
+   `get_hermes_home()` (reads env var), not `Path.home() / ".hermes"`:
+   ```python
+   with patch.object(Path, "home", return_value=tmp_path), \
+        patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}):
+       ...
+   ```
+
+5. **Gateway platform adapters should use token locks** — if the adapter connects with
+   a unique credential (bot token, API key), call `acquire_scoped_lock()` from
+   `gateway.status` in the `connect()`/`start()` method and `release_scoped_lock()` in
+   `disconnect()`/`stop()`. This prevents two profiles from using the same credential.
+   See `gateway/platforms/telegram.py` for the canonical pattern.
+
+6. **Profile operations are HOME-anchored, not HERMES_HOME-anchored** — `_get_profiles_root()`
+   returns `Path.home() / ".hermes" / "profiles"`, NOT `get_hermes_home() / "profiles"`.
+   This is intentional — it lets `hermes -p coder profile list` see all profiles regardless
+   of which one is active.
+
 ## Known Pitfalls
+
+### DO NOT hardcode `~/.hermes` paths
+Use `get_hermes_home()` from `hermes_constants` for code paths. Use `display_hermes_home()`
+for user-facing print/log messages. Hardcoding `~/.hermes` breaks profiles — each profile
+has its own `HERMES_HOME` directory. This was the source of 5 bugs fixed in PR #3575.
 
 ### DO NOT use `simple_term_menu` for interactive menus
 Rendering bugs in tmux/iTerm2 — ghosting on scroll. Use `curses` (stdlib) instead. See `hermes_cli/tools_config.py` for the pattern.
@@ -375,17 +507,62 @@ Tool schema descriptions must not mention tools from other toolsets by name (e.g
 ### Tests must not write to `~/.hermes/`
 The `_isolate_hermes_home` autouse fixture in `tests/conftest.py` redirects `HERMES_HOME` to a temp dir. Never hardcode `~/.hermes/` paths in tests.
 
+**Profile tests**: When testing profile features, also mock `Path.home()` so that
+`_get_profiles_root()` and `_get_default_hermes_home()` resolve within the temp dir.
+Use the pattern from `tests/hermes_cli/test_profiles.py`:
+```python
+@pytest.fixture
+def profile_env(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    return home
+```
+
 ---
 
 ## Testing
 
+**ALWAYS use `scripts/run_tests.sh`** — do not call `pytest` directly. The script enforces
+hermetic environment parity with CI (unset credential vars, TZ=UTC, LANG=C.UTF-8,
+4 xdist workers matching GHA ubuntu-latest). Direct `pytest` on a 16+ core
+developer machine with API keys set diverges from CI in ways that have caused
+multiple "works locally, fails in CI" incidents (and the reverse).
+
+```bash
+scripts/run_tests.sh                                  # full suite, CI-parity
+scripts/run_tests.sh tests/gateway/                   # one directory
+scripts/run_tests.sh tests/agent/test_foo.py::test_x  # one test
+scripts/run_tests.sh -v --tb=long                     # pass-through pytest flags
+```
+
+### Why the wrapper (and why the old "just call pytest" doesn't work)
+
+Five real sources of local-vs-CI drift the script closes:
+
+| | Without wrapper | With wrapper |
+|---|---|---|
+| Provider API keys | Whatever is in your env (auto-detects pool) | All `*_API_KEY`/`*_TOKEN`/etc. unset |
+| HOME / `~/.hermes/` | Your real config+auth.json | Temp dir per test |
+| Timezone | Local TZ (PDT etc.) | UTC |
+| Locale | Whatever is set | C.UTF-8 |
+| xdist workers | `-n auto` = all cores (20+ on a workstation) | `-n 4` matching CI |
+
+`tests/conftest.py` also enforces points 1-4 as an autouse fixture so ANY pytest
+invocation (including IDE integrations) gets hermetic behavior — but the wrapper
+is belt-and-suspenders.
+
+### Running without the wrapper (only if you must)
+
+If you can't use the wrapper (e.g. on Windows or inside an IDE that shells
+pytest directly), at minimum activate the venv and pass `-n 4`:
+
 ```bash
 source venv/bin/activate
-python -m pytest tests/ -q          # Full suite (~3000 tests, ~3 min)
-python -m pytest tests/test_model_tools.py -q   # Toolset resolution
-python -m pytest tests/test_cli_init.py -q       # CLI config loading
-python -m pytest tests/gateway/ -q               # Gateway tests
-python -m pytest tests/tools/ -q                 # Tool-level tests
+python -m pytest tests/ -q -n 4
 ```
+
+Worker count above 4 will surface test-ordering flakes that CI never sees.
 
 Always run the full suite before pushing changes.
