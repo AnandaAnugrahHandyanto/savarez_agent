@@ -46,6 +46,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from openai import OpenAI
 
 from agent.credential_pool import load_pool
+from agent.rate_limiter import rate_limiter as _rate_limiter
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
 
@@ -1123,8 +1124,86 @@ def _is_payment_error(exc: Exception) -> bool:
     if status in (402, 429, None):
         if any(kw in err_lower for kw in ("credits", "insufficient funds",
                                            "can only afford", "billing",
-                                           "payment required")):
+                                           "payment required",
+                                           # z.ai returns 429 code 1311 when
+                                           # the plan lacks access — permanent,
+                                           # not transient.
+                                           "subscription plan",
+                                           "does not yet include",
+                                           "plan does not include")):
             return True
+    return False
+
+
+def _message_content_shape(messages: list) -> str:
+    """Summarise message shape for diagnostics without logging image bytes."""
+    if not messages:
+        return "empty"
+    parts = []
+    for m in messages:
+        role = m.get("role", "?") if isinstance(m, dict) else "?"
+        content = m.get("content") if isinstance(m, dict) else None
+        if isinstance(content, list):
+            block_types = [
+                b.get("type", "?") if isinstance(b, dict) else "?"
+                for b in content
+            ]
+            parts.append(f"{role}:[{','.join(block_types)}]")
+        elif isinstance(content, str):
+            parts.append(f"{role}:str({len(content)})")
+        else:
+            parts.append(f"{role}:{type(content).__name__}")
+    return " ".join(parts)
+
+
+def _log_400_diag(
+    exc: Exception,
+    task: Optional[str],
+    provider: Optional[str],
+    model: Optional[str],
+    kwargs: dict,
+) -> None:
+    """On HTTP 400, log request shape so the next regression is diagnosable.
+
+    Logs key names only — never message content (image data URLs would bloat
+    the log).  Quiet on non-400 errors.
+    """
+    status = getattr(exc, "status_code", None)
+    if status != 400:
+        return
+    try:
+        key_list = sorted(kwargs.keys())
+        shape = _message_content_shape(kwargs.get("messages") or [])
+        logger.warning(
+            "400 from %s task=%s provider=%s model=%s kwargs=%s msgs=%s err=%s",
+            getattr(exc, "__class__", type(exc)).__name__,
+            task or "call", provider, model, key_list, shape,
+            str(exc)[:300],
+        )
+    except Exception:
+        pass
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    """Detect transient rate-limit / overload errors (429 that aren't billing).
+
+    Distinct from ``_is_payment_error``: payment errors won't recover with a
+    cooldown, rate-limit errors will.
+    """
+    if _is_payment_error(exc):
+        return False
+    status = getattr(exc, "status_code", None)
+    if status == 429:
+        return True
+    from openai import RateLimitError  # imported lazily to avoid cycles
+    if isinstance(exc, RateLimitError):
+        return True
+    err_lower = str(exc).lower()
+    if any(kw in err_lower for kw in (
+        "rate limit", "rate-limit", "too many requests",
+        "temporarily overloaded",
+    )):
+        return True
     return False
 
 
@@ -2500,11 +2579,24 @@ def call_llm(
     if _is_anthropic_compat_endpoint(resolved_provider, _client_base):
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
 
+    # Honour any active per-model cooldown before issuing the request.
+    # Prevents flooding a rate-limited model with repeated aux calls
+    # (e.g. vision_analyze fired once per message while still cooling down).
+    _rl_remaining = _rate_limiter.check_rate_limit(final_model or "unknown")
+    if _rl_remaining > 0:
+        raise RuntimeError(
+            f"rate_limit_cooldown: {final_model} cooling down, "
+            f"{_rl_remaining:.0f}s remaining"
+        )
+
     # Handle max_tokens vs max_completion_tokens retry, then payment fallback.
     try:
         return _validate_llm_response(
             client.chat.completions.create(**kwargs), task)
     except Exception as first_err:
+        if _is_rate_limit_error(first_err):
+            _rate_limiter.record_rate_limit(final_model or "unknown")
+        _log_400_diag(first_err, task, resolved_provider, final_model, kwargs)
         err_str = str(first_err)
         if "max_tokens" in err_str or "unsupported_parameter" in err_str:
             kwargs.pop("max_tokens", None)
@@ -2513,6 +2605,8 @@ def call_llm(
                 return _validate_llm_response(
                     client.chat.completions.create(**kwargs), task)
             except Exception as retry_err:
+                if _is_rate_limit_error(retry_err):
+                    _rate_limiter.record_rate_limit(final_model or "unknown")
                 # If the max_tokens retry also hits a payment or connection
                 # error, fall through to the fallback chain below.
                 if not (_is_payment_error(retry_err) or _is_connection_error(retry_err)):
@@ -2693,10 +2787,20 @@ async def async_call_llm(
     if _is_anthropic_compat_endpoint(resolved_provider, _client_base):
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
 
+    _rl_remaining = _rate_limiter.check_rate_limit(final_model or "unknown")
+    if _rl_remaining > 0:
+        raise RuntimeError(
+            f"rate_limit_cooldown: {final_model} cooling down, "
+            f"{_rl_remaining:.0f}s remaining"
+        )
+
     try:
         return _validate_llm_response(
             await client.chat.completions.create(**kwargs), task)
     except Exception as first_err:
+        if _is_rate_limit_error(first_err):
+            _rate_limiter.record_rate_limit(final_model or "unknown")
+        _log_400_diag(first_err, task, resolved_provider, final_model, kwargs)
         err_str = str(first_err)
         if "max_tokens" in err_str or "unsupported_parameter" in err_str:
             kwargs.pop("max_tokens", None)
@@ -2705,6 +2809,8 @@ async def async_call_llm(
                 return _validate_llm_response(
                     await client.chat.completions.create(**kwargs), task)
             except Exception as retry_err:
+                if _is_rate_limit_error(retry_err):
+                    _rate_limiter.record_rate_limit(final_model or "unknown")
                 # If the max_tokens retry also hits a payment or connection
                 # error, fall through to the fallback chain below.
                 if not (_is_payment_error(retry_err) or _is_connection_error(retry_err)):

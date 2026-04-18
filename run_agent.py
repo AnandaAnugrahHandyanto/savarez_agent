@@ -77,6 +77,7 @@ from hermes_constants import OPENROUTER_BASE_URL
 # Agent internals extracted to agent/ package for modularity
 from agent.memory_manager import build_memory_context_block, sanitize_context
 from agent.retry_utils import jittered_backoff
+from agent.rate_limiter import rate_limiter as _rate_limiter
 from agent.error_classifier import classify_api_error, FailoverReason
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
@@ -10463,7 +10464,28 @@ class AIAgent:
                                     _retry_after = min(int(_ra_raw), 120)  # Cap at 2 minutes
                                 except (TypeError, ValueError):
                                     pass
-                    wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
+                    # When we're rate-limited and the provider didn't supply a
+                    # Retry-After header, use the per-model stepped cooldown
+                    # (30s → 60s → 5min) instead of generic jittered backoff.
+                    # Generic backoff tops out at 60s and burns through retries
+                    # quickly on transient overloads — the stepped cooldown
+                    # gives the provider a real chance to recover.
+                    _stepped_cooldown = None
+                    if is_rate_limited and _retry_after is None:
+                        _rl_model = getattr(self, "model", "unknown") or "unknown"
+                        _stepped_cooldown = _rate_limiter.record_rate_limit(_rl_model)
+                        _rl_step = _rate_limiter.get_step(_rl_model)
+                        _rl_max_step = len(_rate_limiter._cooldown_steps)
+                        logging.warning(
+                            "%sRate limited on %s — stepped cooldown %ss (step %s/%s)",
+                            self.log_prefix, _rl_model, _stepped_cooldown,
+                            _rl_step, _rl_max_step,
+                        )
+                    wait_time = (
+                        _retry_after
+                        if _retry_after
+                        else (_stepped_cooldown or jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0))
+                    )
                     if is_rate_limited:
                         self._emit_status(f"⏱️ Rate limited. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries})...")
                     else:
