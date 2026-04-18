@@ -170,7 +170,10 @@ class DirectAlias(NamedTuple):
 
 
 # Built-in direct aliases (can be extended via config.yaml model_aliases:)
-_BUILTIN_DIRECT_ALIASES: dict[str, DirectAlias] = {}
+_BUILTIN_DIRECT_ALIASES: dict[str, DirectAlias] = {
+    "kimi": DirectAlias("kimi-for-coding", "kimi-coding", "https://api.kimi.com/coding"),
+    "kimi-for-coding": DirectAlias("kimi-for-coding", "kimi-coding", "https://api.kimi.com/coding"),
+}
 
 # Merged dict (builtins + user config); populated by _load_direct_aliases()
 DIRECT_ALIASES: dict[str, DirectAlias] = {}
