@@ -6,6 +6,7 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 
 import asyncio
 import os
+import pwd
 import shutil
 import signal
 import subprocess
@@ -752,8 +753,58 @@ def systemd_status(deep: bool = False, system: bool = False):
 # Launchd (macOS)
 # =============================================================================
 
+def get_launchd_wrapper_path() -> Path:
+    """Return the helper script used by launchd to start the gateway reliably."""
+    return get_hermes_home() / "bin" / "launchd-gateway.sh"
+
+
+def _write_launchd_wrapper() -> Path:
+    """Write a small wrapper so launchd starts Hermes with explicit env vars."""
+    wrapper_path = get_launchd_wrapper_path()
+    wrapper_path.parent.mkdir(parents=True, exist_ok=True)
+    home_dir = str(Path.home())
+    username = os.environ.get("USER") or pwd.getpwuid(os.getuid()).pw_name
+
+    lines = [
+        "#!/bin/zsh",
+        "set -euo pipefail",
+        f'export HOME="{home_dir}"',
+        f'export USER="{username}"',
+        f'export LOGNAME="{username}"',
+        f'export PATH="{Path.home() / ".local" / "bin"}:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin:${{PATH:-}}"',
+    ]
+
+    proxy_keys = (
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "no_proxy",
+    )
+    for key in proxy_keys:
+        value = get_env_value(key)
+        if value:
+            escaped = value.replace('"', '\\"')
+            lines.append(f'export {key}="{escaped}"')
+
+    working_dir = str(PROJECT_ROOT)
+    hermes_bin = str(Path.home() / ".local" / "bin" / "hermes")
+    lines.extend([
+        f'cd "{working_dir}"',
+        f'exec "{hermes_bin}" gateway run --replace',
+        "",
+    ])
+
+    wrapper_path.write_text("\n".join(lines), encoding="utf-8")
+    wrapper_path.chmod(0o755)
+    return wrapper_path
+
+
 def generate_launchd_plist() -> str:
-    python_path = get_python_path()
+    wrapper_path = _write_launchd_wrapper()
     working_dir = str(PROJECT_ROOT)
     log_dir = get_hermes_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -767,12 +818,8 @@ def generate_launchd_plist() -> str:
     
     <key>ProgramArguments</key>
     <array>
-        <string>{python_path}</string>
-        <string>-m</string>
-        <string>hermes_cli.main</string>
-        <string>gateway</string>
-        <string>run</string>
-        <string>--replace</string>
+        <string>/bin/zsh</string>
+        <string>{wrapper_path}</string>
     </array>
     
     <key>WorkingDirectory</key>

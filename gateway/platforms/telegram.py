@@ -153,6 +153,14 @@ class TelegramAdapter(BasePlatformAdapter):
         return parse_fallback_ip_env(",".join(str(v) for v in configured) if configured else None)
 
     @staticmethod
+    def _has_proxy_env() -> bool:
+        """Return True when standard proxy environment variables are configured."""
+        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
+            if os.getenv(key, "").strip():
+                return True
+        return False
+
+    @staticmethod
     def _looks_like_polling_conflict(error: Exception) -> bool:
         text = str(error).lower()
         return (
@@ -490,12 +498,17 @@ class TelegramAdapter(BasePlatformAdapter):
             # Build the application
             builder = Application.builder().token(self.config.token)
             fallback_ips = self._fallback_ips()
-            if not fallback_ips:
+            if not fallback_ips and not self._has_proxy_env():
                 fallback_ips = await discover_fallback_ips()
                 logger.info(
                     "[%s] Auto-discovered Telegram fallback IPs: %s",
                     self.name,
                     ", ".join(fallback_ips),
+                )
+            elif not fallback_ips:
+                logger.info(
+                    "[%s] Proxy environment detected; skipping Telegram fallback IP discovery",
+                    self.name,
                 )
             if fallback_ips:
                 logger.warning(

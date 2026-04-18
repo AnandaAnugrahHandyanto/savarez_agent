@@ -127,6 +127,34 @@ class TestGatewayStopCleanup:
 
 
 class TestLaunchdServiceRecovery:
+    def test_generate_launchd_plist_uses_wrapper_script(self):
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "<string>/bin/zsh</string>" in plist
+        assert "launchd-gateway.sh" in plist
+        assert "-m</string>" not in plist
+        assert "hermes_cli.main" not in plist
+
+    def test_generate_launchd_wrapper_sets_core_env(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr(gateway_cli, "get_env_value", lambda key: {
+            "https_proxy": "http://127.0.0.1:7890",
+            "NO_PROXY": "localhost,127.0.0.1",
+        }.get(key))
+
+        wrapper_path = gateway_cli._write_launchd_wrapper()
+        wrapper = wrapper_path.read_text(encoding="utf-8")
+
+        assert wrapper_path == hermes_home / "bin" / "launchd-gateway.sh"
+        assert 'export HOME="' in wrapper
+        assert 'export USER="' in wrapper
+        assert 'export LOGNAME="' in wrapper
+        assert 'export PATH="' in wrapper
+        assert 'export https_proxy="http://127.0.0.1:7890"' in wrapper
+        assert 'export NO_PROXY="localhost,127.0.0.1"' in wrapper
+        assert 'gateway run --replace' in wrapper
+
     def test_launchd_install_repairs_outdated_plist_without_force(self, tmp_path, monkeypatch):
         plist_path = tmp_path / "ai.hermes.gateway.plist"
         plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
@@ -143,7 +171,9 @@ class TestLaunchdServiceRecovery:
 
         gateway_cli.launchd_install()
 
-        assert "--replace" in plist_path.read_text(encoding="utf-8")
+        installed = plist_path.read_text(encoding="utf-8")
+        assert "launchd-gateway.sh" in installed
+        assert "<string>/bin/zsh</string>" in installed
         assert calls[:2] == [
             ["launchctl", "unload", str(plist_path)],
             ["launchctl", "load", str(plist_path)],
