@@ -786,7 +786,9 @@ class AIAgent:
             api_mode is None
             and self.api_mode == "chat_completions"
             and self.provider != "copilot-acp"
+            and self.provider != "claude-code-acp"
             and not str(self.base_url or "").lower().startswith("acp://copilot")
+            and not str(self.base_url or "").lower().startswith("acp://claude-code")
             and not str(self.base_url or "").lower().startswith("acp+tcp://")
             and (
                 self._is_direct_openai_url()
@@ -1034,7 +1036,7 @@ class AIAgent:
                 # Explicit credentials from CLI/gateway — construct directly.
                 # The runtime provider resolver already handled auth for us.
                 client_kwargs = {"api_key": api_key, "base_url": base_url}
-                if self.provider == "copilot-acp":
+                if self.provider in ("copilot-acp", "claude-code-acp"):
                     client_kwargs["command"] = self.acp_command
                     client_kwargs["args"] = self.acp_args
                 effective_base = base_url
@@ -2481,16 +2483,35 @@ class AIAgent:
         def _run_review():
             import contextlib, os as _os
             review_agent = None
+            # Claude Code ACP costs the user OAuth quota — never recurse into
+            # it for background overhead. Prefer Anthropic direct, then
+            # OpenRouter, then skip (let the nudge fire again next cycle).
+            _review_provider = self.provider
+            _review_model = self.model
+            if self.provider == "claude-code-acp":
+                if _os.getenv("ANTHROPIC_API_KEY"):
+                    _review_provider = "anthropic"
+                elif _os.getenv("OPENROUTER_API_KEY"):
+                    _review_provider = "openrouter"
+                    # OpenRouter wants vendor-prefixed slugs.
+                    if _review_model and "/" not in _review_model:
+                        _review_model = f"anthropic/{_review_model}"
+                else:
+                    logger.info(
+                        "Skipping background review — claude-code-acp active "
+                        "and no Anthropic/OpenRouter fallback key configured."
+                    )
+                    return
             try:
                 with open(_os.devnull, "w") as _devnull, \
                      contextlib.redirect_stdout(_devnull), \
                      contextlib.redirect_stderr(_devnull):
                     review_agent = AIAgent(
-                        model=self.model,
+                        model=_review_model,
                         max_iterations=8,
                         quiet_mode=True,
                         platform=self.platform,
-                        provider=self.provider,
+                        provider=_review_provider,
                     )
                     review_agent._memory_store = self._memory_store
                     review_agent._memory_enabled = self._memory_enabled
@@ -4663,6 +4684,33 @@ class AIAgent:
             client = CopilotACPClient(**client_kwargs)
             logger.info(
                 "Copilot ACP client created (%s, shared=%s) %s",
+                reason,
+                shared,
+                self._client_log_context(),
+            )
+            return client
+        if self.provider == "claude-code-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://claude-code"):
+            from agent.claude_code_acp_client import ClaudeCodeACPClient
+
+            cc_kwargs = dict(client_kwargs)
+            # Pipe the agent's live callbacks into the ACP client so tool events
+            # stream into the CLI/gateway UI as they happen.
+            cc_kwargs.setdefault("agent", self)
+            cc_kwargs.setdefault(
+                "stream_delta_callback", getattr(self, "stream_delta_callback", None)
+            )
+            cc_kwargs.setdefault(
+                "thinking_callback", getattr(self, "thinking_callback", None)
+            )
+            cc_kwargs.setdefault(
+                "tool_progress_callback", getattr(self, "tool_progress_callback", None)
+            )
+            hsid = getattr(self, "session_id", None) or getattr(self, "_session_id", None)
+            if hsid:
+                cc_kwargs.setdefault("hermes_session_id", str(hsid))
+            client = ClaudeCodeACPClient(**cc_kwargs)
+            logger.info(
+                "Claude Code ACP client created (%s, shared=%s) %s",
                 reason,
                 shared,
                 self._client_log_context(),
@@ -8747,6 +8795,12 @@ class AIAgent:
         # calls so that nudge logic accumulates correctly in CLI mode.
         self.iteration_budget = IterationBudget(self.max_iterations)
 
+        # Claude Code ACP delegates tool execution to its own loop. Each
+        # response carries a `hermes_tool_trace` with the calls it ran; we
+        # accumulate them per turn so auto-skill-creation can reconstruct a
+        # hermes-shape `messages_snapshot` from the trace.
+        self._claude_code_turn_trace: list = []
+
         # Log conversation turn start for debugging/observability
         _msg_preview = (user_message[:80] + "...") if len(user_message) > 80 else user_message
         _msg_preview = _msg_preview.replace("\n", " ")
@@ -9343,6 +9397,12 @@ class AIAgent:
                     # session instead of re-failing every retry.
                     if getattr(self, "_disable_streaming", False):
                         _use_streaming = False
+                    elif self.provider in ("copilot-acp", "claude-code-acp"):
+                        # ACP clients stream internally via callbacks and
+                        # return a SimpleNamespace, not an iterable chunk
+                        # stream — OpenAI-style `for chunk in stream` would
+                        # raise TypeError.
+                        _use_streaming = False
                     elif not self._has_stream_consumers():
                         # No display/TTS consumer. Still prefer streaming for
                         # health checking, but skip for Mock clients in tests
@@ -9357,7 +9417,18 @@ class AIAgent:
                         )
                     else:
                         response = self._interruptible_api_call(api_kwargs)
-                    
+
+                    # Claude Code ACP runs tools inside its own loop; harvest
+                    # the trace so auto-skill-creation sees every call + result.
+                    _cc_trace = getattr(response, "hermes_tool_trace", None)
+                    if _cc_trace:
+                        self._claude_code_turn_trace.extend(_cc_trace)
+                        if (
+                            self._skill_nudge_interval > 0
+                            and "skill_manage" in self.valid_tool_names
+                        ):
+                            self._iters_since_skill += max(0, len(_cc_trace) - 1)
+
                     api_duration = time.time() - api_start_time
                     
                     # Stop thinking spinner silently -- the response box or tool
@@ -11796,13 +11867,35 @@ class AIAgent:
         # so it never competes with the user's task for model attention.
         if final_response and not interrupted and (_should_review_memory or _should_review_skills):
             try:
+                _snapshot = list(messages)
+                # Claude Code ACP: recover the internal tool calls from the
+                # trace so the synthesizer can see what actually happened.
+                if self._claude_code_turn_trace:
+                    try:
+                        from agent.claude_code_acp_client import (
+                            trace_to_messages_snapshot,
+                        )
+
+                        _trace_msgs = trace_to_messages_snapshot(
+                            self._claude_code_turn_trace
+                        )
+                        if _trace_msgs:
+                            # Insert the tool-call pairs right before the
+                            # final assistant answer so the sequence reads
+                            # naturally: user → tool_use/tool_result … →
+                            # assistant text.
+                            _snapshot = list(messages) + _trace_msgs
+                    except Exception:
+                        pass
                 self._spawn_background_review(
-                    messages_snapshot=list(messages),
+                    messages_snapshot=_snapshot,
                     review_memory=_should_review_memory,
                     review_skills=_should_review_skills,
                 )
             except Exception:
                 pass  # Background review is best-effort
+        # Release the per-turn trace so the next turn starts clean.
+        self._claude_code_turn_trace = []
 
         # Note: Memory provider on_session_end() + shutdown_all() are NOT
         # called here — run_conversation() is called once per user message in
