@@ -2581,9 +2581,37 @@ class TestAdapterBehavior(unittest.TestCase):
         card = json.loads(_build_markdown_card_payload(content))
         table_elem = next(e for e in card["body"]["elements"] if e["tag"] == "table")
         row = table_elem["rows"][0]
-        # Cell text is stored verbatim; Feishu's text cell renders **bold**/`code`.
+        # Cell text is stored verbatim so Feishu can render the inline markdown.
         self.assertEqual(row["col_0"], "**粗体**")
         self.assertEqual(row["col_1"], "`code`")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_card_table_promotes_columns_with_markdown_to_lark_md(self):
+        from gateway.platforms.feishu import _build_markdown_card_payload
+
+        # col_0 has plain text, col_1 mixes plain and **bold** cells — col_1
+        # must become lark_md so Feishu renders the bold instead of showing
+        # literal `**` characters.
+        content = (
+            "| 区服 | DAU |\n"
+            "| --- | --- |\n"
+            "| 国际服 | **13,316** |\n"
+            "| null | 1,047 |\n"
+        )
+        card = json.loads(_build_markdown_card_payload(content))
+        table_elem = next(e for e in card["body"]["elements"] if e["tag"] == "table")
+        self.assertEqual(table_elem["columns"][0]["data_type"], "text")
+        self.assertEqual(table_elem["columns"][1]["data_type"], "lark_md")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_card_table_stays_text_when_no_markdown(self):
+        from gateway.platforms.feishu import _build_markdown_card_payload
+
+        content = "| A | B |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |"
+        card = json.loads(_build_markdown_card_payload(content))
+        table_elem = next(e for e in card["body"]["elements"] if e["tag"] == "table")
+        for col in table_elem["columns"]:
+            self.assertEqual(col["data_type"], "text")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_uses_interactive_card_for_table_markdown(self):

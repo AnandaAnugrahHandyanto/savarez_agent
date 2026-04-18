@@ -128,6 +128,14 @@ _TABLE_SEPARATOR_RE = re.compile(r"^\s*\|[:\-| ]+\|\s*$")
 _TABLE_HINT_RE = re.compile(r"^\s*\|[:\- ]+\|", re.MULTILINE)
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*$", re.MULTILINE)
 _HTML_BR_RE = re.compile(r"<br\s*/?\s*>", re.IGNORECASE)
+# Detects inline markdown (bold/italic/code/link) in a table cell so the
+# column can be promoted from plain ``text`` to ``lark_md`` for rendering.
+_INLINE_MD_IN_CELL_RE = re.compile(
+    r"\*\*[^*\n]+\*\*"
+    r"|__[^_\n]+__"
+    r"|`[^`\n]+`"
+    r"|\[[^\]]+\]\([^)]+\)"
+)
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -501,17 +509,29 @@ def _split_markdown_for_feishu(content: str) -> list[dict]:
 
 
 def _build_feishu_table_element(headers: list[str], rows: list[list[str]]) -> dict:
-    """Build a Feishu card v2 ``table`` component from parsed GFM table data."""
-    columns = [
-        {
+    """Build a Feishu card v2 ``table`` component from parsed GFM table data.
+
+    A column is emitted with ``data_type: "lark_md"`` when any cell in that
+    column contains inline markdown (``**bold**``, ``*italic*``, ``` `code` ```,
+    ``[text](url)``) so Feishu renders the formatting instead of showing
+    literal ``**`` / backticks. Columns of pure plain text stay on the
+    safer ``text`` type.
+    """
+    columns: list[dict] = []
+    for idx, header in enumerate(headers):
+        column_cells = [row[idx] if idx < len(row) else "" for row in rows]
+        data_type = (
+            "lark_md"
+            if any(_INLINE_MD_IN_CELL_RE.search(cell) for cell in column_cells)
+            else "text"
+        )
+        columns.append({
             "name": f"col_{idx}",
             "display_name": header,
-            "data_type": "text",
+            "data_type": data_type,
             "width": "auto",
             "horizontal_align": "left",
-        }
-        for idx, header in enumerate(headers)
-    ]
+        })
     row_data = [
         {f"col_{idx}": cell for idx, cell in enumerate(row)}
         for row in rows
