@@ -33,6 +33,63 @@ def _load_config() -> dict:
     return cfg
 
 
+RECALL_SCHEMA = {
+    "name": "claude_mem_recall",
+    "description": (
+        "Search claude-mem's cross-session memory for past observations, decisions, "
+        "and session summaries relevant to the query. Returns a ranked list. "
+        "Use when the user references something from a past session, or when you need "
+        "to check whether a problem has been solved before."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Natural language search query."},
+            "limit": {"type": "integer", "default": 10, "minimum": 1, "maximum": 50},
+            "obs_type": {
+                "type": "string",
+                "description": "Filter by observation type: bugfix, feature, decision, discovery, change, refactor.",
+            },
+        },
+        "required": ["query"],
+    },
+}
+
+SAVE_SCHEMA = {
+    "name": "claude_mem_save",
+    "description": (
+        "Manually save a durable fact or decision to claude-mem. Use sparingly — "
+        "claude-mem captures observations automatically from tool use. Only call this "
+        "when the user explicitly asks you to remember something that wasn't captured."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "text": {"type": "string", "description": "The fact or decision to store."},
+            "title": {"type": "string", "description": "Short title (optional)."},
+        },
+        "required": ["text"],
+    },
+}
+
+TIMELINE_SCHEMA = {
+    "name": "claude_mem_timeline",
+    "description": (
+        "Get context around a specific observation ID. Use after claude_mem_recall "
+        "to pull surrounding work (what led up to a decision, what came after)."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "anchor_id": {"type": "integer", "description": "Observation ID to anchor on."},
+            "depth_before": {"type": "integer", "default": 3},
+            "depth_after": {"type": "integer", "default": 3},
+        },
+        "required": ["anchor_id"],
+    },
+}
+
+
 class ClaudeMemMemoryProvider(MemoryProvider):
     @property
     def name(self) -> str:
@@ -197,8 +254,71 @@ class ClaudeMemMemoryProvider(MemoryProvider):
             "claude_mem_save(text) to store a durable fact."
         )
 
-    def get_tool_schemas(self):
-        return []  # filled in Phase 4
+    def get_tool_schemas(self) -> List[Dict[str, Any]]:
+        return [RECALL_SCHEMA, SAVE_SCHEMA, TIMELINE_SCHEMA]
+
+    def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
+        from .client import ClaudeMemUnavailable
+
+        try:
+            if tool_name == "claude_mem_recall":
+                res = self._client.search(
+                    query=args["query"],
+                    project=self._project,
+                    limit=min(int(args.get("limit", 10)), 50),
+                    obs_type=args.get("obs_type"),
+                    order_by="relevance",
+                )
+                return json.dumps({"results": res.get("observations", [])})
+
+            if tool_name == "claude_mem_save":
+                res = self._client.memory_save(
+                    text=args["text"],
+                    title=args.get("title"),
+                    project=self._project,
+                )
+                return json.dumps(res)
+
+            if tool_name == "claude_mem_timeline":
+                res = self._client.timeline(
+                    anchor=int(args["anchor_id"]),
+                    depth_before=int(args.get("depth_before", 3)),
+                    depth_after=int(args.get("depth_after", 3)),
+                    project=self._project,
+                )
+                return json.dumps(res)
+
+            return json.dumps({"error": f"unknown tool: {tool_name}"})
+
+        except ClaudeMemUnavailable as e:
+            return json.dumps({"error": "claude-mem worker unavailable", "detail": str(e)})
+        except Exception as e:
+            logger.exception("claude-mem tool call failed")
+            return json.dumps({"error": str(e)})
+
+    def get_config_schema(self) -> List[Dict[str, Any]]:
+        return [
+            {
+                "key": "base_url",
+                "description": "Claude-mem worker URL",
+                "default": _DEFAULT_BASE_URL,
+                "required": False,
+            },
+            {
+                "key": "default_project",
+                "description": "Default project name for scoping (auto-detected from cwd if empty)",
+                "default": "",
+                "required": False,
+            },
+        ]
+
+    def save_config(self, values: Dict[str, Any], hermes_home: str) -> None:
+        cfg_path = Path(hermes_home) / "claude-mem.json"
+        payload = {
+            "base_url": values.get("base_url") or _DEFAULT_BASE_URL,
+            "default_project": values.get("default_project") or "",
+        }
+        cfg_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def register(ctx) -> None:
