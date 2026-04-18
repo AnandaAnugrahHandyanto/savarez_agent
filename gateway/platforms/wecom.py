@@ -754,6 +754,19 @@ class WeComAdapter(BasePlatformAdapter):
         return base64.b64decode(payload)
 
     @staticmethod
+    def _decode_aes_key(aes_key: str) -> bytes:
+        payload = str(aes_key).strip()
+        if not payload:
+            raise ValueError("aes_key is required")
+        padding = (-len(payload)) % 4
+        if padding:
+            payload += "=" * padding
+        try:
+            return base64.urlsafe_b64decode(payload)
+        except Exception as exc:
+            raise ValueError("Invalid WeCom aes_key encoding") from exc
+
+    @staticmethod
     def _detect_image_ext(data: bytes) -> str:
         if data.startswith(b"\x89PNG\r\n\x1a\n"):
             return ".png"
@@ -972,7 +985,7 @@ class WeComAdapter(BasePlatformAdapter):
         if not aes_key:
             raise ValueError("aes_key is required")
 
-        key = base64.b64decode(aes_key)
+        key = WeComAdapter._decode_aes_key(aes_key)
         if len(key) != 32:
             raise ValueError(f"Invalid WeCom AES key length: expected 32 bytes, got {len(key)}")
 
