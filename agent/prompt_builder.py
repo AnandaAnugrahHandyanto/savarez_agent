@@ -167,9 +167,11 @@ SESSION_SEARCH_GUIDANCE = (
 PLANNING_AND_SELF_REVIEW_GUIDANCE = (
     "Before starting non-trivial work, create a concise plan with the smallest "
     "useful next steps. While working, keep the plan current if new information "
-    "changes the approach. Before finalizing, self-review the result: confirm the "
-    "requirements were met, verify important outputs with tools when possible, and "
-    "call out any remaining uncertainty or follow-up work."
+    "changes the approach. Before finalizing, self-review the result: (1) re-read "
+    "the original request to confirm nothing was missed, (2) verify important "
+    "outputs with tools when possible (read files back, run tests, check screenshots), "
+    "(3) flag any remaining uncertainty or follow-up work explicitly rather than "
+    "silently omitting it."
 )
 
 SKILLS_GUIDANCE = (

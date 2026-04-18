@@ -58,7 +58,9 @@ class TestGuidanceConstants:
     def test_planning_and_self_review_guidance_mentions_plan_and_verify(self):
         assert "concise plan" in PLANNING_AND_SELF_REVIEW_GUIDANCE
         assert "self-review" in PLANNING_AND_SELF_REVIEW_GUIDANCE
-        assert "verify important outputs" in PLANNING_AND_SELF_REVIEW_GUIDANCE
+        assert "re-read" in PLANNING_AND_SELF_REVIEW_GUIDANCE
+        assert "read files back" in PLANNING_AND_SELF_REVIEW_GUIDANCE
+        assert "flag any remaining uncertainty" in PLANNING_AND_SELF_REVIEW_GUIDANCE
 
     def test_multimodal_verification_guidance_content(self):
         assert "visual content" in MULTIMODAL_VERIFICATION_GUIDANCE
