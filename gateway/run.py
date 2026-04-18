@@ -3406,9 +3406,9 @@ class GatewayRunner:
         if _cc_session_key in self._cc_mode and not command:
             msg_text = (event.text or "").strip()
             if msg_text:
-                if msg_text.lower() in ("退出", "quit", "exit", "stop"):
+                if msg_text.lower() in ("quit", "exit", "stop"):
                     self._cc_mode.discard(_cc_session_key)
-                    return "📤 已退出 Claude Code 模式，回到 Hermes。"
+                    return "📤 Left Claude Code mode — back to Hermes."
                 return await self._run_cc_task(_cc_session_key, msg_text, event)
 
         # ── Claim this session before any await ───────────────────────
@@ -6486,9 +6486,12 @@ class GatewayRunner:
         if not task:
             if session_key in self._cc_mode:
                 self._cc_mode.discard(session_key)
-                return "📤 已退出 Claude Code 模式，回到 Hermes。"
+                return "📤 Left Claude Code mode — back to Hermes."
             self._cc_mode.add(session_key)
-            return "🤖 已进入 Claude Code 模式（Max 订阅）。直接发消息即可，输入 /cc 退出。"
+            return (
+                "🤖 Claude Code mode ON (Max subscription). "
+                "Send messages directly; type /cc (or quit/exit/stop) to leave."
+            )
 
         return await self._run_cc_task(session_key, task, event)
 
@@ -6525,18 +6528,18 @@ class GatewayRunner:
                 env={**os.environ},
             )
         except subprocess.TimeoutExpired:
-            return "❌ Claude Code 执行超时（300秒）"
+            return "❌ Claude Code timed out (300 s)."
         except FileNotFoundError:
-            return "❌ claude CLI 未安装。运行: npm i -g @anthropic-ai/claude-code"
+            return "❌ claude CLI not installed. Run: npm i -g @anthropic-ai/claude-code"
 
         if result.returncode != 0:
-            error = result.stderr.strip()[:500] or "未知错误"
+            error = result.stderr.strip()[:500] or "unknown error"
             logger.error("/cc error (exit %d): %s", result.returncode, error)
-            return f"❌ Claude Code 错误:\n{error}"
+            return f"❌ Claude Code error:\n{error}"
 
         try:
             data = json.loads(result.stdout.strip())
-            response = data.get("result", "（无输出）")
+            response = data.get("result", "(no output)")
             new_session_id = data.get("session_id", "")
             turns = data.get("num_turns", 0)
             cost = data.get("total_cost_usd", 0)
@@ -6547,7 +6550,7 @@ class GatewayRunner:
             footer = f"\n\n---\n⏱ {turns} turns | 💰 ${cost:.4f}"
             return response + footer
         except (json.JSONDecodeError, KeyError):
-            return result.stdout.strip() or "（无输出）"
+            return result.stdout.strip() or "(no output)"
 
     async def _handle_yolo_command(self, event: MessageEvent) -> str:
         """Handle /yolo — toggle dangerous command approval bypass for this session only."""
