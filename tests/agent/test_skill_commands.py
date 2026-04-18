@@ -45,6 +45,7 @@ class TestScanSkillCommands:
             result = scan_skill_commands()
         assert "/my-skill" in result
         assert result["/my-skill"]["name"] == "my-skill"
+        assert result["/my-skill"]["zh_description"] == "做什麼：整理、安裝或管理技能系統；適合：你要我處理技能本身、安裝包或技能策略時"
 
     def test_empty_dir(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
@@ -100,6 +101,54 @@ class TestScanSkillCommands:
             result = scan_skill_commands()
         assert "/enabled-skill" in result
         assert "/disabled-skill" not in result
+
+    def test_prefers_explicit_zh_description(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "hound-mode",
+                frontmatter_extra="zh_description: 思維獵犬模式（規劃／執行節奏控制）\n",
+                category="software-development",
+            )
+            result = scan_skill_commands()
+        assert result["/hound-mode"]["zh_description"] == "思維獵犬模式（規劃／執行節奏控制）"
+        assert result["/hound-mode"]["category"] == "software-development"
+
+    def test_curated_skill_hint_overrides_generic_generation(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "gstack",
+                body="",
+                frontmatter_extra="description: Some generic description.\n",
+                category="openclaw-transfer",
+            )
+            result = scan_skill_commands()
+        assert result["/gstack"]["zh_description"].startswith("做什麼：Garry Tan 的 AI software factory 方法包")
+
+    def test_self_improving_agent_has_curated_hint(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "self-improving-agent",
+                body="",
+                frontmatter_extra="description: Some generic description.\n",
+                category="openclaw-transfer",
+            )
+            result = scan_skill_commands()
+        assert result["/self-improving-agent"]["zh_description"].startswith("做什麼：來自 peterskoett/self-improving-agent 的自我進化方法")
+
+    def test_generates_traditional_chinese_hint_from_english_description(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "github-helper",
+                body="",
+                frontmatter_extra="description: Manage GitHub PRs and CI workflows.\n",
+                category="github",
+            )
+            result = scan_skill_commands()
+        assert result["/github-helper"]["zh_description"] == "做什麼：處理 GitHub PR、review、issue 或 CI 工作；適合：你要我推進 repo 協作與 PR 時"
 
 
     def test_special_chars_stripped_from_cmd_key(self, tmp_path):
