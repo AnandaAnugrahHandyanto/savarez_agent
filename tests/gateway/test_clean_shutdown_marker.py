@@ -261,7 +261,6 @@ class TestCleanShutdownMarker:
 
         active_agents = {
             entry.session_key: MagicMock(),
-            completed_entry.session_key: MagicMock(),
         }
 
         with patch("gateway.run.GatewayRunner._drain_active_agents", new_callable=AsyncMock, return_value=(active_agents, True)), \

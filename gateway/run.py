@@ -538,14 +538,16 @@ def _prepend_restart_recovery_note(
     agent_history: list[dict],
     *,
     resume_pending: bool,
+    resume_reason: str | None = None,
 ) -> str:
     """Prepend the appropriate interrupted-turn recovery note."""
     has_tool_tail = bool(agent_history and agent_history[-1].get("role") == "tool")
     if resume_pending:
+        interruption = "a gateway shutdown" if resume_reason == "shutdown_timeout" else "a gateway restart"
         if has_tool_tail:
             note = (
                 "[System note: Your previous turn in this same session was interrupted by "
-                "a gateway restart. Continue from the existing transcript. There are "
+                f"{interruption}. Continue from the existing transcript. There are "
                 "unfinished tool results in the conversation history, so process those "
                 "results first, summarize what was accomplished, then answer the user's "
                 "new message below.]"
@@ -553,7 +555,7 @@ def _prepend_restart_recovery_note(
         else:
             note = (
                 "[System note: Your previous turn in this same session was interrupted by "
-                "a gateway restart. Continue from the existing transcript and preserve "
+                f"{interruption}. Continue from the existing transcript and preserve "
                 "session continuity when answering the user's new message below.]"
             )
         return note + "\n\n" + message
@@ -2413,7 +2415,7 @@ class GatewayRunner:
             timeout = self._restart_drain_timeout
             active_agents, timed_out = await self._drain_active_agents(timeout)
             if timed_out:
-                timed_out_session_keys = set(self._running_agents.keys())
+                timed_out_session_keys = set(active_agents.keys())
                 logger.warning(
                     "Gateway drain timed out after %.1fs with %d active agent(s); interrupting remaining work.",
                     timeout,
@@ -9336,6 +9338,7 @@ class GatewayRunner:
                 message,
                 agent_history,
                 resume_pending=bool(getattr(session_entry, "resume_pending", False)),
+                resume_reason=getattr(session_entry, "resume_reason", None),
             )
 
             _approval_session_key = session_key or ""

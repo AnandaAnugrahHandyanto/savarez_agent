@@ -27,6 +27,10 @@ def _now() -> datetime:
     return datetime.now()
 
 
+_RESUME_RECOVERY_WINDOW = timedelta(minutes=5)
+_RESUME_ATTEMPT_SUSPEND_THRESHOLD = 3
+
+
 # ---------------------------------------------------------------------------
 # PII redaction helpers
 # ---------------------------------------------------------------------------
@@ -685,6 +689,14 @@ class SessionStore:
                 return "daily"
         
         return None
+
+    def _resume_pending_is_active(
+        self, entry: SessionEntry, now: datetime
+    ) -> bool:
+        """Return True while a restart-recovery handoff is still fresh."""
+        if not entry.last_resume_marked_at:
+            return False
+        return (now - entry.last_resume_marked_at) <= _RESUME_RECOVERY_WINDOW
     
     def has_any_sessions(self) -> bool:
         """Check if any sessions have ever been created (across all platforms).
@@ -738,9 +750,14 @@ class SessionStore:
                 if entry.suspended:
                     reset_reason = "suspended"
                 elif entry.resume_pending:
-                    entry.updated_at = now
-                    self._save()
-                    return entry
+                    if self._resume_pending_is_active(entry, now):
+                        entry.updated_at = now
+                        self._save()
+                        return entry
+                    entry.resume_pending = False
+                    entry.resume_reason = None
+                    entry.last_resume_marked_at = None
+                    reset_reason = self._should_reset(entry, source)
                 else:
                     reset_reason = self._should_reset(entry, source)
                 if not reset_reason:
@@ -845,11 +862,18 @@ class SessionStore:
             entry = self._entries.get(session_key)
             if not entry:
                 return False
-            entry.resume_pending = True
-            entry.resume_reason = reason
-            entry.last_resume_marked_at = _now()
+            marked_at = _now()
             if increment_attempts:
                 entry.resume_attempts += 1
+            if entry.resume_attempts >= _RESUME_ATTEMPT_SUSPEND_THRESHOLD:
+                entry.suspended = True
+                entry.resume_pending = False
+                entry.resume_reason = None
+                entry.last_resume_marked_at = None
+            else:
+                entry.resume_pending = True
+                entry.resume_reason = reason
+                entry.last_resume_marked_at = marked_at
             self._save()
             return True
 
