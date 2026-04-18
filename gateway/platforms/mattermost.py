@@ -263,15 +263,19 @@ class MattermostAdapter(BasePlatformAdapter):
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, MAX_POST_LENGTH)
 
+        # Thread support: prefer explicit reply_to, fall back to metadata thread_id
+        effective_root_id = reply_to
+        if not effective_root_id and metadata and metadata.get("thread_id"):
+            effective_root_id = metadata["thread_id"]
+
         last_id = None
         for chunk in chunks:
             payload: Dict[str, Any] = {
                 "channel_id": chat_id,
                 "message": chunk,
             }
-            # Thread support: reply_to is the root post ID.
-            if reply_to and self._reply_mode == "thread":
-                payload["root_id"] = reply_to
+            if effective_root_id and self._reply_mode == "thread":
+                payload["root_id"] = effective_root_id
 
             data = await self._api_post("posts", payload)
             if not data or "id" not in data:
@@ -654,7 +658,19 @@ class MattermostAdapter(BasePlatformAdapter):
         sender_name = data.get("sender_name", "").lstrip("@") or sender_id
 
         # Thread support: if the post is in a thread, use root_id.
-        thread_id = post.get("root_id") or None
+        # When reply_mode is "thread", top-level messages (no root_id) use
+        # the post's own id so each starts a fresh session — matching Slack
+        # channel behavior (slack.py:1022).  Replies in the resulting thread
+        # carry root_id == this post's id, so they join the same session key.
+        # When reply_mode is "off", replies are flat (no threads), so we must
+        # fall back to None to preserve the single channel-level session.
+        root_id = post.get("root_id") or None
+        if root_id:
+            thread_id = root_id
+        elif self._reply_mode == "thread":
+            thread_id = post.get("id")
+        else:
+            thread_id = None
 
         # Determine message type.
         file_ids = post.get("file_ids") or []
