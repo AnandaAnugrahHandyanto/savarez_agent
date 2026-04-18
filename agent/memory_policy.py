@@ -170,17 +170,18 @@ def transition_freshness(record: MemoryRecord, *, now: str) -> MemoryRecord:
     review_after_dt = _parse_timestamp(updated.review_after)
     status_changed = False
 
-    if updated.status is RecordStatus.ACTIVE and review_after_dt and now_dt > review_after_dt:
+    if updated.status is RecordStatus.ACTIVE and now_dt and review_after_dt and now_dt > review_after_dt:
         if not _is_reconfirmed_since(updated, review_after_dt):
             updated.status = RecordStatus.STALE
             status_changed = True
     elif updated.status is RecordStatus.STALE:
-        if review_after_dt and (_is_reconfirmed_since(updated, review_after_dt) or _is_reused_since(updated, review_after_dt)):
+        reactivation_threshold = review_after_dt or _parse_timestamp(updated.created_at)
+        if _has_reactivation_signal(updated, threshold=reactivation_threshold):
             updated.status = RecordStatus.ACTIVE
             status_changed = True
         else:
             expires_at_dt = _parse_timestamp(updated.expires_at)
-            if expires_at_dt and now_dt > expires_at_dt and not _is_reused_since(updated, expires_at_dt):
+            if expires_at_dt and now_dt and now_dt > expires_at_dt and not _is_reused_since(updated, expires_at_dt):
                 updated.status = RecordStatus.EXPIRED
                 status_changed = True
     elif updated.status is RecordStatus.EXPIRED and updated.metadata.get("archive_on_review"):
@@ -354,7 +355,11 @@ def _is_scoped_refinement(old_content: str, new_content: str) -> bool:
     new_qualifier = _extract_scope_qualifier(new_content)
     if not new_qualifier:
         return False
-    return old_qualifier != new_qualifier
+    if old_qualifier == new_qualifier:
+        return False
+    old_claim = _scope_claim_signature(old_content)
+    new_claim = _scope_claim_signature(new_content)
+    return bool(old_claim) and old_claim == new_claim
 
 
 def _extract_scope_qualifier(content: str) -> Optional[str]:
@@ -362,6 +367,14 @@ def _extract_scope_qualifier(content: str) -> Optional[str]:
     if match is None:
         return None
     return match.group(0)
+
+
+def _scope_claim_signature(content: str) -> tuple[str, ...]:
+    normalized = _normalize_text(content)
+    qualifier = _extract_scope_qualifier(normalized)
+    if qualifier:
+        normalized = normalized.replace(qualifier, " ", 1)
+    return tuple(re.findall(r"[a-z0-9]+", normalized))
 
 
 def _bounded_supersedes_target(*, predecessor: MemoryRecord, successor: MemoryRecord) -> Optional[str]:
@@ -397,6 +410,12 @@ def _is_reused_since(record: MemoryRecord, threshold: datetime) -> bool:
     return used_at is not None and used_at >= threshold
 
 
+def _has_reactivation_signal(record: MemoryRecord, *, threshold: Optional[datetime]) -> bool:
+    if threshold is None:
+        return _parse_timestamp(record.last_confirmed_at) is not None or _parse_timestamp(record.last_used_at) is not None
+    return _is_reconfirmed_since(record, threshold) or _is_reused_since(record, threshold)
+
+
 def _parse_timestamp(timestamp: Optional[str]) -> Optional[datetime]:
     if not timestamp:
         return None
@@ -405,7 +424,10 @@ def _parse_timestamp(timestamp: Optional[str]) -> Optional[datetime]:
         return None
     if normalized.endswith("Z"):
         normalized = normalized[:-1] + "+00:00"
-    parsed = datetime.fromisoformat(normalized)
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except (TypeError, ValueError):
+        return None
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)

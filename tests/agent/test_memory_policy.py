@@ -105,6 +105,70 @@ def test_stale_transition_after_review_deadline():
     assert updated.status is RecordStatus.STALE
 
 
+def test_malformed_review_after_does_not_crash_transition_freshness():
+    record = make_record(
+        "User prefers concise replies.",
+        topic_key="preference:reply-style",
+        trust_tier=TrustTier.USER_ASSERTED,
+        created_at="2026-01-01T00:00:00Z",
+    )
+    record.review_after = "not-a-timestamp"
+
+    updated = transition_freshness(record, now="2026-03-01T00:00:00Z")
+
+    assert updated.status is RecordStatus.ACTIVE
+    assert updated.revision == record.revision
+
+
+def test_malformed_now_does_not_crash_transition_freshness():
+    record = make_record(
+        "User prefers concise replies.",
+        topic_key="preference:reply-style",
+        trust_tier=TrustTier.USER_ASSERTED,
+        created_at="2026-01-01T00:00:00Z",
+    )
+    record.review_after = "2026-02-01T00:00:00Z"
+
+    updated = transition_freshness(record, now="not-a-timestamp")
+
+    assert updated.status is RecordStatus.ACTIVE
+    assert updated.revision == record.revision
+
+
+def test_stale_record_reactivates_when_reconfirmed_without_review_after():
+    record = make_record(
+        "User prefers concise replies.",
+        topic_key="preference:reply-style",
+        trust_tier=TrustTier.USER_ASSERTED,
+        created_at="2026-01-01T00:00:00Z",
+    )
+    record.status = RecordStatus.STALE
+    record.review_after = None
+    record.last_confirmed_at = "2026-03-02T00:00:00Z"
+
+    updated = transition_freshness(record, now="2026-03-03T00:00:00Z")
+
+    assert updated.status is RecordStatus.ACTIVE
+    assert updated.revision == record.revision + 1
+
+
+def test_stale_record_reactivates_when_reused_without_review_after():
+    record = make_record(
+        "User prefers concise replies.",
+        topic_key="preference:reply-style",
+        trust_tier=TrustTier.USER_ASSERTED,
+        created_at="2026-01-01T00:00:00Z",
+    )
+    record.status = RecordStatus.STALE
+    record.review_after = None
+    record.last_used_at = "2026-03-02T00:00:00Z"
+
+    updated = transition_freshness(record, now="2026-03-03T00:00:00Z")
+
+    assert updated.status is RecordStatus.ACTIVE
+    assert updated.revision == record.revision + 1
+
+
 def test_newer_explicit_correction_supersedes_older_equal_trust_record():
     old = make_record(
         "User prefers concise replies.",
@@ -125,7 +189,56 @@ def test_newer_explicit_correction_supersedes_older_equal_trust_record():
     assert result.loser_status is RecordStatus.SUPERSEDED
 
 
+def test_malformed_created_at_does_not_crash_conflict_resolution():
+    old = make_record(
+        "User prefers concise replies.",
+        topic_key="preference:reply-style",
+        trust_tier=TrustTier.USER_ASSERTED,
+        created_at="not-a-timestamp",
+    )
+    new = make_record(
+        "User wants fuller replies.",
+        topic_key="preference:reply-style",
+        trust_tier=TrustTier.USER_ASSERTED,
+        created_at="2026-03-01T00:00:00Z",
+    )
+
+    result = resolve_conflict(old, new, explicit_correction=True)
+
+    assert result.winner.record_id == new.record_id
+    assert result.reason == "newer_explicit_correction"
+
+
 def test_scoped_refinement_keeps_both_records_and_marks_newer_scope_narrowed():
+    old = make_record(
+        "Project deploys with make ship.",
+        topic_key="workspace:deploy-command",
+        trust_tier=TrustTier.OBSERVED,
+        created_at="2026-01-01T00:00:00Z",
+    )
+    new = make_record(
+        "Project deploys with make ship for staging.",
+        topic_key="workspace:deploy-command",
+        trust_tier=TrustTier.OBSERVED,
+        created_at="2026-03-01T00:00:00Z",
+    )
+    old.scope = MemoryScope.WORKSPACE
+    new.scope = MemoryScope.WORKSPACE
+
+    result = resolve_conflict(old, new, explicit_correction=False)
+
+    assert result.reason == "scoped_refinement_keep_both"
+    assert result.winner.record_id == new.record_id
+    assert result.winner.status is RecordStatus.ACTIVE
+    assert result.winner.supersedes is None
+    assert result.winner.metadata["scope_narrowed"] is True
+    assert result.winner.metadata["scope_refinement_of"] == old.record_id
+    assert result.loser.record_id == old.record_id
+    assert result.loser_status is RecordStatus.ACTIVE
+    assert result.loser.status is RecordStatus.ACTIVE
+
+
+def test_contradictory_fact_with_qualifier_is_not_treated_as_scoped_refinement():
     old = make_record(
         "User prefers concise replies.",
         topic_key="preference:reply-style",
@@ -141,15 +254,11 @@ def test_scoped_refinement_keeps_both_records_and_marks_newer_scope_narrowed():
 
     result = resolve_conflict(old, new, explicit_correction=False)
 
-    assert result.reason == "scoped_refinement_keep_both"
+    assert result.reason == "unresolved_conflict_prefer_none"
     assert result.winner.record_id == new.record_id
-    assert result.winner.status is RecordStatus.ACTIVE
-    assert result.winner.supersedes is None
-    assert result.winner.metadata["scope_narrowed"] is True
-    assert result.winner.metadata["scope_refinement_of"] == old.record_id
+    assert result.winner.status is RecordStatus.DISPUTED
     assert result.loser.record_id == old.record_id
-    assert result.loser_status is RecordStatus.ACTIVE
-    assert result.loser.status is RecordStatus.ACTIVE
+    assert result.loser_status is RecordStatus.DISPUTED
 
 
 def test_lower_trust_conflict_is_disputed_instead_of_auto_superseding():
