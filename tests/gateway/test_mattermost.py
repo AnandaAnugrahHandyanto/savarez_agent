@@ -241,6 +241,129 @@ class TestMattermostSend:
 
         assert result.success is False
 
+    # ------------------------------------------------------------------
+    # Regression for #12063 — thread routing via metadata["thread_id"]
+    # ------------------------------------------------------------------
+    # ``gateway/delivery.py`` injects thread context into ``metadata``,
+    # not into the ``reply_to`` argument.  Before the fix,
+    # ``MattermostAdapter.send()`` only honored ``reply_to``, so delivery-
+    # path replies silently landed at the channel root even when
+    # ``reply_mode == 'thread'`` and a valid thread_id was present.
+
+    def _stub_ok_post(self, post_id: str = "post_x") -> AsyncMock:
+        """Install a 200-OK stub on ``self.adapter._session.post`` and
+        return the mocked response for inspection."""
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": post_id})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+        return mock_resp
+
+    @pytest.mark.asyncio
+    async def test_send_metadata_thread_id_sets_root_id(self):
+        """metadata['thread_id'] must route to root_id under thread mode."""
+        self.adapter._reply_mode = "thread"
+        self._stub_ok_post("post_a")
+
+        result = await self.adapter.send(
+            "channel_1", "reply via delivery path",
+            metadata={"thread_id": "root_abc"},
+        )
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert payload["root_id"] == "root_abc"
+
+    @pytest.mark.asyncio
+    async def test_send_reply_to_takes_precedence_over_metadata_thread_id(self):
+        """Explicit ``reply_to`` wins when both are supplied — preserves
+        the pre-fix contract for callers who already use reply_to."""
+        self.adapter._reply_mode = "thread"
+        self._stub_ok_post("post_b")
+
+        result = await self.adapter.send(
+            "channel_1", "mixed",
+            reply_to="explicit_root",
+            metadata={"thread_id": "metadata_root"},
+        )
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert payload["root_id"] == "explicit_root"
+
+    @pytest.mark.asyncio
+    async def test_send_metadata_thread_id_ignored_when_reply_mode_off(self):
+        """When threading is disabled, metadata.thread_id must NOT route.
+        Matches the existing ``reply_to`` semantics under ``reply_mode='off'``."""
+        self.adapter._reply_mode = "off"
+        self._stub_ok_post("post_c")
+
+        result = await self.adapter.send(
+            "channel_1", "root post",
+            metadata={"thread_id": "root_xyz"},
+        )
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert "root_id" not in payload
+
+    @pytest.mark.asyncio
+    async def test_send_without_thread_metadata_no_root_id(self):
+        """When neither reply_to nor metadata.thread_id is set, root_id
+        must not appear.  Canary for the post-fix default path."""
+        self.adapter._reply_mode = "thread"
+        self._stub_ok_post("post_d")
+
+        result = await self.adapter.send("channel_1", "plain top-level post")
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert "root_id" not in payload
+
+    @pytest.mark.asyncio
+    async def test_send_metadata_thread_id_non_string_is_ignored(self):
+        """A malformed ``metadata.thread_id`` (non-string / empty) must
+        not be forwarded as ``root_id``.  Mattermost's posts API rejects
+        non-string ``root_id`` with 400; we fail closed locally instead."""
+        self.adapter._reply_mode = "thread"
+        self._stub_ok_post("post_e")
+
+        for bad in (None, "", 12345, ["root_list"], {"inner": "root"}):
+            self.adapter._session.post.reset_mock()
+            result = await self.adapter.send(
+                "channel_1", "guard",
+                metadata={"thread_id": bad},
+            )
+            assert result.success is True
+            payload = self.adapter._session.post.call_args[1]["json"]
+            assert "root_id" not in payload, (
+                f"thread_id={bad!r} was forwarded unexpectedly"
+            )
+
+    @pytest.mark.asyncio
+    async def test_send_all_chunks_carry_root_id_from_metadata(self):
+        """Multi-chunk replies must keep the metadata-resolved root_id on
+        every chunk (not just the first)."""
+        self.adapter._reply_mode = "thread"
+        self._stub_ok_post("post_f")
+
+        # Force chunking by exceeding MAX_POST_LENGTH.
+        from gateway.platforms.mattermost import MAX_POST_LENGTH
+        long_content = "x" * (MAX_POST_LENGTH * 2 + 7)
+
+        await self.adapter.send(
+            "channel_1", long_content,
+            metadata={"thread_id": "root_multi"},
+        )
+
+        calls = self.adapter._session.post.call_args_list
+        assert len(calls) >= 2, f"expected multi-chunk, got {len(calls)} call(s)"
+        for call in calls:
+            assert call[1]["json"]["root_id"] == "root_multi"
+
 
 # ---------------------------------------------------------------------------
 # WebSocket event parsing

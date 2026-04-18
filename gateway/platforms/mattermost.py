@@ -263,15 +263,31 @@ class MattermostAdapter(BasePlatformAdapter):
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, MAX_POST_LENGTH)
 
+        # Resolve the Mattermost root post id for thread routing from either
+        # the explicit ``reply_to`` argument or ``metadata["thread_id"]``.
+        # ``gateway/delivery.py`` injects the delivery target's thread via
+        # ``metadata`` rather than ``reply_to`` — without the metadata
+        # fallback, delivery-side replies silently land at the channel root
+        # instead of inside the intended thread.  ``reply_to`` still wins
+        # when both are present, preserving the explicit-argument contract.
+        # See issue #12063.
+        root_post_id: Optional[str] = None
+        if self._reply_mode == "thread":
+            if reply_to:
+                root_post_id = reply_to
+            elif metadata and isinstance(metadata, dict):
+                md_thread = metadata.get("thread_id")
+                if isinstance(md_thread, str) and md_thread:
+                    root_post_id = md_thread
+
         last_id = None
         for chunk in chunks:
             payload: Dict[str, Any] = {
                 "channel_id": chat_id,
                 "message": chunk,
             }
-            # Thread support: reply_to is the root post ID.
-            if reply_to and self._reply_mode == "thread":
-                payload["root_id"] = reply_to
+            if root_post_id:
+                payload["root_id"] = root_post_id
 
             data = await self._api_post("posts", payload)
             if not data or "id" not in data:
