@@ -1803,10 +1803,79 @@ class GatewayRunner:
             )
         asyncio.create_task(self._platform_reconnect_watcher())
 
+        # Start agent-bus watchdogs (slow for timeouts/nudges, fast for outbox)
+        asyncio.create_task(self._agent_bus_timeout_watcher())
+        asyncio.create_task(self._agent_bus_outbox_watcher())
+
         logger.info("Press Ctrl+C to stop")
         
         return True
     
+    async def _agent_bus_outbox_watcher(self, interval: int = 5):
+        """Fast watcher for agent_bus outbox intents.
+
+        OpenClaw's workspace-write sandbox can't call Slack directly. It
+        writes intent files to `~/.openclaw/workspace/.agent-bus/outbox/`
+        and this loop picks them up every few seconds and does the Slack
+        post from Hermes's unsandboxed side. Real-time feel, no polling
+        lag of the slower 120s watchdog.
+        """
+        await asyncio.sleep(5)
+        while self._running:
+            try:
+                from agent_bus import core as _bus_core
+                n = await asyncio.to_thread(_bus_core.process_outbox)
+                if n:
+                    logger.info("agent_bus: processed %d outbox intent(s)", n)
+            except Exception as exc:
+                logger.warning("agent_bus outbox watcher error: %s", exc)
+            await asyncio.sleep(interval)
+
+    async def _agent_bus_timeout_watcher(self, interval: int = 120):
+        """Periodic agent_bus watchdog.
+
+        Runs every `interval` seconds. Two jobs:
+        - `check_timeouts()`: mark past-deadline tasks as timed out + Slack alert.
+        - `nudge_stale_pending()`: re-push any pending/ack task idle >3 min,
+          so a missed initial push (agent was down) doesn't silently orphan
+          the task.
+        """
+        await asyncio.sleep(30)  # let gateway settle
+        while self._running:
+            try:
+                from agent_bus import core as _bus_core
+                timed_out = await asyncio.to_thread(_bus_core.check_timeouts)
+                if timed_out:
+                    logger.info(
+                        "agent_bus: timed out %d task(s): %s",
+                        len(timed_out),
+                        ", ".join(t["task_id"] for t in timed_out),
+                    )
+                nudged = await asyncio.to_thread(_bus_core.nudge_stale_pending)
+                if nudged:
+                    logger.info(
+                        "agent_bus: re-nudged %d stale task(s): %s",
+                        len(nudged),
+                        ", ".join(t["task_id"] for t in nudged),
+                    )
+                # Courier any Slack/wiki side-effects that the other agent's
+                # sandbox couldn't perform (OpenClaw sandbox blocks network +
+                # writes outside its workspace).
+                side = await asyncio.to_thread(_bus_core.ensure_side_effects)
+                if side.get("slack_posted") or side.get("wiki_written"):
+                    logger.info(
+                        "agent_bus: relayed side-effects: slack=%d wiki=%d",
+                        side.get("slack_posted", 0),
+                        side.get("wiki_written", 0),
+                    )
+                # Proactive user pings on terminal outcomes Hermes dispatched.
+                n = await asyncio.to_thread(_bus_core.ensure_user_notifications)
+                if n:
+                    logger.info("agent_bus: user-notified for %d task(s)", n)
+            except Exception as exc:
+                logger.warning("agent_bus watchdog error: %s", exc)
+            await asyncio.sleep(interval)
+
     async def _session_expiry_watcher(self, interval: int = 300):
         """Background task that proactively flushes memories for expired sessions.
         
@@ -4272,20 +4341,21 @@ class GatewayRunner:
         """Handle /help command - list available commands."""
         from hermes_cli.commands import gateway_help_lines
         lines = [
-            "📖 **Hermes Commands**\n",
+            "📖 **Hermes 指令**\n",
             *gateway_help_lines(),
         ]
         try:
             from agent.skill_commands import get_skill_commands
             skill_cmds = get_skill_commands()
             if skill_cmds:
-                lines.append(f"\n⚡ **Skill Commands** ({len(skill_cmds)} active):")
+                lines.append(f"\n⚡ **技能指令**（啟用中：{len(skill_cmds)}）:")
                 # Show first 10, then point to /commands for the rest
                 sorted_cmds = sorted(skill_cmds)
                 for cmd in sorted_cmds[:10]:
-                    lines.append(f"`{cmd}` — {skill_cmds[cmd]['description']}")
+                    desc = skill_cmds[cmd].get("zh_description") or skill_cmds[cmd].get("description", "")
+                    lines.append(f"`{cmd}` — {desc}")
                 if len(sorted_cmds) > 10:
-                    lines.append(f"\n... and {len(sorted_cmds) - 10} more. Use `/commands` for the full paginated list.")
+                    lines.append(f"\n... 另外還有 {len(sorted_cmds) - 10} 個。完整分頁列表請用 `/commands`。")
         except Exception:
             pass
         return "\n".join(lines)
@@ -4299,7 +4369,7 @@ class GatewayRunner:
             try:
                 requested_page = int(raw_args)
             except ValueError:
-                return "Usage: `/commands [page]`"
+                return "用法：`/commands [page]`"
         else:
             requested_page = 1
 
@@ -4310,15 +4380,15 @@ class GatewayRunner:
             skill_cmds = get_skill_commands()
             if skill_cmds:
                 entries.append("")
-                entries.append("⚡ **Skill Commands**:")
+                entries.append("⚡ **技能指令**:")
                 for cmd in sorted(skill_cmds):
-                    desc = skill_cmds[cmd].get("description", "").strip() or "Skill command"
+                    desc = skill_cmds[cmd].get("zh_description") or skill_cmds[cmd].get("description", "").strip() or "技能指令"
                     entries.append(f"`{cmd}` — {desc}")
         except Exception:
             pass
 
         if not entries:
-            return "No commands available."
+            return "目前沒有可用指令。"
 
         from gateway.config import Platform
         page_size = 15 if event.source.platform == Platform.TELEGRAM else 20
@@ -4328,19 +4398,19 @@ class GatewayRunner:
         page_entries = entries[start:start + page_size]
 
         lines = [
-            f"📚 **Commands** ({len(entries)} total, page {page}/{total_pages})",
+            f"📚 **指令列表**（共 {len(entries)} 項，第 {page}/{total_pages} 頁）",
             "",
             *page_entries,
         ]
         if total_pages > 1:
             nav_parts = []
             if page > 1:
-                nav_parts.append(f"`/commands {page - 1}` ← prev")
+                nav_parts.append(f"`/commands {page - 1}` ← 上一頁")
             if page < total_pages:
-                nav_parts.append(f"next → `/commands {page + 1}`")
+                nav_parts.append(f"下一頁 → `/commands {page + 1}`")
             lines.extend(["", " | ".join(nav_parts)])
         if page != requested_page:
-            lines.append(f"_(Requested page {requested_page} was out of range, showing page {page}.)_")
+            lines.append(f"_（你要求的第 {requested_page} 頁超出範圍，已改顯示第 {page} 頁。）_")
         return "\n".join(lines)
     
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
@@ -7815,9 +7885,13 @@ class GatewayRunner:
         # in chat platforms while opting into concise mid-turn updates.
         interim_assistant_messages_enabled = (
             source.platform != Platform.WEBHOOK
-            and is_truthy_value(
-                display_config.get("interim_assistant_messages"),
-                default=True,
+            and bool(
+                resolve_display_setting(
+                    user_config,
+                    platform_key,
+                    "interim_assistant_messages",
+                    True,
+                )
             )
         )
         
