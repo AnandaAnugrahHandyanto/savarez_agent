@@ -1073,7 +1073,13 @@ class DiscordAdapter(BasePlatformAdapter):
         content: str,
         finalize: bool = False,
     ) -> SendResult:
-        """Edit a previously sent Discord message."""
+        """Edit a previously sent Discord message.
+
+        ``GatewayStreamConsumer`` passes a ``finalize`` flag to adapters that
+        need an explicit final edit to close a streaming UI state. Discord does
+        not use that signal, but it accepts the kwarg here so the shared
+        streaming path does not raise when progressive edit streaming is enabled.
+        """
         if not self._client:
             return SendResult(success=False, error="Not connected")
         try:
