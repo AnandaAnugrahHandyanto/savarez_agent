@@ -1044,9 +1044,9 @@ def _load_config() -> dict:
     that caused ``delegation.model`` / ``delegation.provider`` changes
     made after startup to be silently ignored — see issue #11999.  The
     short-circuit also misfired on startup configs that only contained
-    the built-in defaults (empty-string ``model``/``provider`` and a
-    ``max_iterations`` float): those produced a truthy-but-empty dict
-    that bypassed the persistent read entirely.
+    the built-in defaults (empty-string ``model``/``provider`` alongside
+    an integer ``max_iterations``): those produced a truthy-but-empty
+    dict that bypassed the persistent read entirely.
 
     The persistent ``load_config()`` pipeline is cheap (single YAML
     parse over a deep-merged deepcopy of ``DEFAULT_CONFIG``) and is the

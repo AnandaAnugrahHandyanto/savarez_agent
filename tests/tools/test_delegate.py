@@ -1462,7 +1462,13 @@ class TestLoadConfigFreshReads(unittest.TestCase):
         ``_resolve_delegation_credentials(_load_config(), parent)`` picks
         up the post-startup override and produces non-None model/provider
         in the credential bundle, so ``_build_child_agent`` subsequently
-        overrides the parent model."""
+        overrides the parent model.
+
+        Patches ``hermes_cli.runtime_provider.resolve_runtime_provider``
+        with a fixed credential bundle so the test is hermetic — does
+        not depend on a real ``ANTHROPIC_API_KEY`` / OAuth token or any
+        network-side behaviour of the runtime provider pipeline.
+        """
         import tempfile, os
         from tools.delegate_tool import _load_config, _resolve_delegation_credentials
 
@@ -1478,11 +1484,19 @@ class TestLoadConfigFreshReads(unittest.TestCase):
             with open(os.path.join(hhome, "config.yaml"), "w") as fh:
                 import yaml as _yaml
                 _yaml.safe_dump({"model": "claude-opus-4-6"}, fh)
-            prev_home = os.environ.get("HERMES_HOME")
-            prev_key = os.environ.get("ANTHROPIC_API_KEY")
-            os.environ["HERMES_HOME"] = hhome
-            os.environ.setdefault("ANTHROPIC_API_KEY", "sk-test")
-            try:
+            with patch.dict(
+                os.environ,
+                {"HERMES_HOME": hhome, "ANTHROPIC_API_KEY": "sk-test"},
+                clear=False,
+            ), patch(
+                "hermes_cli.runtime_provider.resolve_runtime_provider",
+                return_value={
+                    "provider": "anthropic",
+                    "base_url": "https://api.anthropic.com",
+                    "api_key": "sk-test",
+                    "api_mode": "anthropic_messages",
+                },
+            ):
                 # User adds override
                 with open(os.path.join(hhome, "config.yaml"), "w") as fh:
                     import yaml as _yaml
@@ -1501,15 +1515,6 @@ class TestLoadConfigFreshReads(unittest.TestCase):
                 # which must now land on the delegation model, not parent's.
                 effective = creds["model"] or parent.model
                 self.assertEqual(effective, "claude-sonnet-4-20250514")
-            finally:
-                if prev_home is None:
-                    os.environ.pop("HERMES_HOME", None)
-                else:
-                    os.environ["HERMES_HOME"] = prev_home
-                if prev_key is None:
-                    os.environ.pop("ANTHROPIC_API_KEY", None)
-                else:
-                    os.environ["ANTHROPIC_API_KEY"] = prev_key
 
 
 if __name__ == "__main__":
