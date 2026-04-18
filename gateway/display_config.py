@@ -101,6 +101,33 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     "api_server":      {**_TIER_HIGH, "tool_preview_length": 0},
 }
 
+
+def resolve_session_reset_message(
+    config: dict[str, Any] | None,
+    default: str,
+) -> Optional[str]:
+    """Return the configured /new banner, or the provided default.
+
+    ``display.session_reset_message`` is intentionally not per-platform. A blank
+    or whitespace-only value disables the banner entirely.
+    """
+    if not isinstance(config, dict):
+        config = {}
+    display = config.get("display") or {}
+    if not isinstance(display, dict):
+        display = {}
+
+    if "session_reset_message" in display:
+        value = display.get("session_reset_message")
+        if value is None:
+            return None
+        message = str(value).strip()
+        return message or None
+
+    message = str(default).strip()
+    return message or None
+
+
 # Canonical set of per-platform overrideable keys (for validation).
 OVERRIDEABLE_KEYS = frozenset(_GLOBAL_DEFAULTS.keys())
 

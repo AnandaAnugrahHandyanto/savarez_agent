@@ -561,6 +561,7 @@ DEFAULT_CONFIG = {
         "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch, skill_manage)
         "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
+        "session_reset_message": None,  # Optional custom banner for /new and /reset (None = default text)
         "interim_assistant_messages": True,  # Gateway: show natural mid-turn assistant status messages
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
         "tool_progress_overrides": {},  # DEPRECATED — use display.platforms instead

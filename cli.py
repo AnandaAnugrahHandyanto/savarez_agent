@@ -4213,6 +4213,7 @@ class HermesCLI:
 
     def new_session(self, silent=False):
         """Start a fresh session with a new session ID and cleared agent state."""
+        had_history = bool(self.conversation_history)
         if self.agent and self.conversation_history:
             try:
                 self.agent.flush_memories(self.conversation_history)
@@ -4271,7 +4272,12 @@ class HermesCLI:
             self._notify_session_boundary("on_session_reset")
 
         if not silent:
-            print("(^_^)v New session started!")
+            from gateway.display_config import resolve_session_reset_message
+
+            banner_default = "✨ Session reset! Starting fresh." if had_history else "(^_^)v New session started!"
+            banner = resolve_session_reset_message(self.config, default=banner_default)
+            if banner:
+                print(banner)
 
     def _handle_resume_command(self, cmd_original: str) -> None:
         """Handle /resume <session_id_or_title> — switch to a previous session mid-conversation."""
