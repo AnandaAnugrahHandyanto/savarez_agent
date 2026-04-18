@@ -1353,6 +1353,24 @@ class AIAgent:
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
         compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
 
+        # max_context_tokens: hardware speed cap for local LLM GPUs where
+        # PP/TG degrades above ~60K tokens. None = no cap (default).
+        # E.g. 65000 means compressor fires at 65K tokens regardless of
+        # the model's 202K context window.
+        _max_ctx_tokens_cfg = _compression_cfg.get("max_context_tokens")
+        max_context_tokens = None
+        if _max_ctx_tokens_cfg is not None:
+            try:
+                max_context_tokens = int(_max_ctx_tokens_cfg)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Invalid compression.max_context_tokens: %r — "
+                    "must be int or null. Ignoring.",
+                    _max_ctx_tokens_cfg,
+                )
+                max_context_tokens = None
+        self._max_context_tokens = max_context_tokens
+
         # Read explicit context_length override from model config
         _model_cfg = _agent_cfg.get("model", {})
         if isinstance(_model_cfg, dict):
@@ -1475,6 +1493,8 @@ class AIAgent:
                 base_url=self.base_url,
                 api_key=getattr(self, "api_key", ""),
                 provider=self.provider,
+                api_mode=self.api_mode,
+                max_context_tokens=max_context_tokens,
             )
             if not self.quiet_mode:
                 logger.info("Using context engine: %s", _selected_engine.name)
@@ -1492,6 +1512,7 @@ class AIAgent:
                 config_context_length=_config_context_length,
                 provider=self.provider,
                 api_mode=self.api_mode,
+                max_context_tokens=max_context_tokens,
             )
         self.compression_enabled = compression_enabled
 
@@ -1580,7 +1601,8 @@ class AIAgent:
 
         if not self.quiet_mode:
             if compression_enabled:
-                print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (compress at {int(compression_threshold*100)}% = {self.context_compressor.threshold_tokens:,})")
+                _cap_str = f", cap {max_context_tokens:,}" if max_context_tokens else ""
+                print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (compress at {int(compression_threshold*100)}% = {self.context_compressor.threshold_tokens:,}{_cap_str})")
             else:
                 print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (auto-compression disabled)")
 
@@ -1749,6 +1771,7 @@ class AIAgent:
                 api_key=getattr(self, "api_key", ""),
                 provider=self.provider,
                 api_mode=self.api_mode,
+                max_context_tokens=getattr(self, "_max_context_tokens", None),
             )
 
         # ── Invalidate cached system prompt so it rebuilds next turn ──
@@ -6058,6 +6081,8 @@ class AIAgent:
                     base_url=self.base_url,
                     api_key=getattr(self, "api_key", ""),
                     provider=self.provider,
+                    api_mode=self.api_mode,
+                    max_context_tokens=getattr(self, "_max_context_tokens", None),
                 )
 
             self._emit_status(
