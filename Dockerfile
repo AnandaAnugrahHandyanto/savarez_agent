@@ -32,8 +32,8 @@ COPY web/package.json web/package-lock.json web/
 
 RUN npm install --prefer-offline --no-audit && \
     npx playwright install --with-deps chromium --only-shell && \
-    cd scripts/whatsapp-bridge && npm install --prefer-offline --no-audit && cd ../.. && \
-    cd web && npm install --prefer-offline --no-audit && cd .. && \
+    (cd scripts/whatsapp-bridge && npm install --prefer-offline --no-audit) && \
+    (cd web && npm install --prefer-offline --no-audit) && \
     npm cache clean --force
 
 # ---------- Source code ----------
