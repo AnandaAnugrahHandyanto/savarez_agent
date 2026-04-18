@@ -768,6 +768,7 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
     dim = skin.get_color("banner_dim", "#555555")
     label = skin.get_color("ui_label", title)
     warn = skin.get_color("ui_warn", "#FF8C00")
+    success = skin.get_color("ui_success", "#4CAF50")
     error = skin.get_color("ui_error", "#FF6B6B")
     status_bg = skin.get_color("status_bar_bg", "#1a1a2e")
     voice_bg = skin.get_color("voice_status_bg", status_bg)
@@ -813,8 +814,8 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
         "approval-cmd": f"{dim} italic",
         "approval-choice": dim,
         "approval-selected": f"{title} bold",
-        "approval-confirmed": "#4CAF50 bold",
-        "approval-dimmed": "#555555",
+        "approval-confirmed": f"{success} bold",
+        "approval-dimmed": dim,
         "voice-status": f"bg:{voice_bg} {label}",
         "voice-status-recording": f"bg:{voice_bg} {error} bold",
     }
