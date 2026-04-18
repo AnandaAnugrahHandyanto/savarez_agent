@@ -20,6 +20,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 
+from agent.immune_system import scan_and_wrap as _immune_scan_and_wrap
 from model_tools import handle_function_call
 from tools.terminal_tool import get_active_env
 from tools.tool_result_storage import maybe_persist_tool_result, enforce_turn_budget
@@ -462,6 +463,7 @@ class HermesAgentLoop:
                         env=get_active_env(self.task_id),
                         config=self.budget_config,
                     )
+                    tool_result = _immune_scan_and_wrap(tool_result, tool_name=tool_name)
 
                     messages.append(
                         {

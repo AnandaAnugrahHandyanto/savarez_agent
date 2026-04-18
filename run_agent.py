@@ -70,6 +70,7 @@ from tools.terminal_tool import cleanup_vm, get_active_env, is_persistent_env
 from tools.tool_result_storage import maybe_persist_tool_result, enforce_turn_budget
 from tools.interrupt import set_interrupt as _set_interrupt
 from tools.browser_tool import cleanup_browser
+from agent.immune_system import scan_and_wrap as _immune_scan_and_wrap
 
 
 from hermes_constants import OPENROUTER_BASE_URL
@@ -7793,6 +7794,7 @@ class AIAgent:
                 tool_use_id=tc.id,
                 env=get_active_env(effective_task_id),
             )
+            function_result = _immune_scan_and_wrap(function_result, tool_name=name)
 
             subdir_hints = self._subdirectory_hints.check_tool_call(name, args)
             if subdir_hints:
@@ -8148,6 +8150,7 @@ class AIAgent:
                 tool_use_id=tool_call.id,
                 env=get_active_env(effective_task_id),
             )
+            function_result = _immune_scan_and_wrap(function_result, tool_name=function_name)
 
             # Discover subdirectory context files from tool arguments
             subdir_hints = self._subdirectory_hints.check_tool_call(function_name, function_args)
