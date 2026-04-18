@@ -317,7 +317,15 @@ class ResponseStore:
 
 _CORS_HEADERS = {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key",
+    # Includes the X-Hermes-* multi-tenant headers so browsers can pass them
+    # through preflight without hitting "request header field not allowed".
+    "Access-Control-Allow-Headers": (
+        "Authorization, Content-Type, Idempotency-Key, "
+        "X-Hermes-Session-Id, X-Hermes-Merchant-Id, X-Hermes-Active-Skill"
+    ),
+    # SSE clients need to read X-Hermes-Session-Id to chain follow-up requests
+    # to the same conversation; expose it on cross-origin responses too.
+    "Access-Control-Expose-Headers": "X-Hermes-Session-Id",
 }
 
 
