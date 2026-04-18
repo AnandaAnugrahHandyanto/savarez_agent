@@ -572,6 +572,10 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["reply_prefix"] = platform_cfg["reply_prefix"]
                 if "require_mention" in platform_cfg:
                     bridged["require_mention"] = platform_cfg["require_mention"]
+                # Per-group require_mention overrides: {group_id: bool}
+                _rmo = platform_cfg.get("require_mention_overrides")
+                if isinstance(_rmo, dict):
+                    bridged["require_mention_overrides"] = _rmo
                 if "free_response_channels" in platform_cfg:
                     bridged["free_response_channels"] = platform_cfg["free_response_channels"]
                 if "mention_patterns" in platform_cfg:

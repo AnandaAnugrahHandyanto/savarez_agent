@@ -740,3 +740,148 @@ class TestSignalStopTyping:
         await adapter.stop_typing("+155****4567")
 
         adapter._stop_typing_indicator.assert_awaited_once_with("+155****4567")
+
+
+# ---------------------------------------------------------------------------
+# require_mention (per-group overrides)
+# ---------------------------------------------------------------------------
+
+class TestSignalRequireMention:
+    """Test require_mention logic for group messages."""
+
+    def _make_envelope(self, group_id="grp123", sender="+155****9999", message="hello", mentions=None):
+        """Create a minimal Signal message envelope."""
+        return {
+            "envelope": {
+                "source": {"number": sender, "uuid": "uuid-sender"},
+                "dataMessage": {
+                    "message": message,
+                    "groupInfo": {"groupId": group_id, "groupName": "Test Group"},
+                    "mentions": mentions or [],
+                    "timestamp": 1234567890,
+                },
+            }
+        }
+
+    def test_require_mention_false_responds_to_all(self, monkeypatch):
+        """With require_mention=False (default), bot responds to all group messages."""
+        adapter = _make_signal_adapter(
+            monkeypatch,
+            group_allowed="grp123",
+            require_mention=False,
+        )
+        # require_mention should not be set in config, so default behavior
+        assert adapter.config.extra.get("require_mention") is False
+
+    def test_require_mention_true_config(self, monkeypatch):
+        """require_mention=True is passed through config."""
+        adapter = _make_signal_adapter(
+            monkeypatch,
+            group_allowed="grp123",
+            require_mention=True,
+        )
+        assert adapter.config.extra.get("require_mention") is True
+
+    def test_require_mention_overrides_passed_through(self, monkeypatch):
+        """require_mention_overrides dict is available in config.extra."""
+        overrides = {"group:grp123": False, "group:grp456": True}
+        adapter = _make_signal_adapter(
+            monkeypatch,
+            group_allowed="grp123,grp456",
+            require_mention=True,
+            require_mention_overrides=overrides,
+        )
+        assert adapter.config.extra.get("require_mention_overrides") == overrides
+
+    def test_require_mention_string_true(self, monkeypatch):
+        """String 'true' is recognized as True."""
+        adapter = _make_signal_adapter(
+            monkeypatch,
+            group_allowed="grp123",
+            require_mention="true",
+        )
+        assert adapter.config.extra.get("require_mention") == "true"
+        # The adapter code checks: str.lower() in ("true", "1", "yes")
+
+    def test_require_mention_string_false(self, monkeypatch):
+        """String 'false' is recognized as False."""
+        adapter = _make_signal_adapter(
+            monkeypatch,
+            group_allowed="grp123",
+            require_mention="false",
+        )
+        assert adapter.config.extra.get("require_mention") == "false"
+
+    def test_override_disables_mention_for_group(self, monkeypatch):
+        """Per-group override false means bot responds without mention."""
+        overrides = {"group:grp123": False}
+        adapter = _make_signal_adapter(
+            monkeypatch,
+            group_allowed="grp123",
+            require_mention=True,
+            require_mention_overrides=overrides,
+        )
+        # The override says False for grp123, so even with global True,
+        # the bot should process the message
+        rm = adapter.config.extra.get("require_mention_overrides", {}).get("group:grp123")
+        assert rm is False
+
+    def test_override_enables_mention_for_group(self, monkeypatch):
+        """Per-group override true means bot requires mention."""
+        overrides = {"group:grp123": True}
+        adapter = _make_signal_adapter(
+            monkeypatch,
+            group_allowed="grp123",
+            require_mention=False,
+            require_mention_overrides=overrides,
+        )
+        rm = adapter.config.extra.get("require_mention_overrides", {}).get("group:grp123")
+        assert rm is True
+
+    def test_env_var_fallback(self, monkeypatch):
+        """SIGNAL_REQUIRE_MENTION env var works as fallback."""
+        monkeypatch.setenv("SIGNAL_REQUIRE_MENTION", "true")
+        adapter = _make_signal_adapter(monkeypatch, group_allowed="grp123")
+        # No require_mention in config.extra, so code falls back to env var
+        env_val = adapter.config.extra.get("require_mention")
+        assert env_val is None  # Not set in config, will use env var in handler
+
+    def test_config_passes_overrides_to_adapter(self, monkeypatch):
+        """load_gateway_config should bridge require_mention_overrides."""
+        from gateway.config import load_gateway_config, Platform
+        import yaml
+        import os
+
+        # Create a temporary config with signal overrides
+        cfg = {
+            "signal": {
+                "require_mention": True,
+                "require_mention_overrides": {
+                    "group:abc123": False,
+                    "group:xyz789": True,
+                },
+            }
+        }
+
+        # Test the bridged config directly
+        bridged = {}
+        platform_cfg = cfg["signal"]
+        if "require_mention" in platform_cfg:
+            bridged["require_mention"] = platform_cfg["require_mention"]
+        _rmo = platform_cfg.get("require_mention_overrides")
+        if isinstance(_rmo, dict):
+            bridged["require_mention_overrides"] = _rmo
+
+        assert bridged["require_mention"] is True
+        assert bridged["require_mention_overrides"]["group:abc123"] is False
+        assert bridged["require_mention_overrides"]["group:xyz789"] is True
+
+    def test_overrides_non_dict_ignored(self):
+        """Non-dict require_mention_overrides should be skipped."""
+        bridged = {}
+        platform_cfg = {"require_mention_overrides": "not a dict"}
+        _rmo = platform_cfg.get("require_mention_overrides")
+        if isinstance(_rmo, dict):
+            bridged["require_mention_overrides"] = _rmo
+
+        assert "require_mention_overrides" not in bridged

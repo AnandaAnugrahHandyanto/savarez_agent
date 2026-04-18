@@ -141,6 +141,45 @@ Group access is controlled by the `SIGNAL_GROUP_ALLOWED_USERS` env var:
 | Set with group IDs | Only listed groups are monitored (e.g., `groupId1,groupId2`). |
 | Set to `*` | The bot responds in any group it's a member of. |
 
+### Require Mention in Groups
+
+By default, the bot responds to all messages in allowed groups. To require users to @mention the bot before it responds, use the `require_mention` setting in `config.yaml`:
+
+```yaml
+signal:
+  require_mention: true
+```
+
+Or via environment variable:
+
+```
+SIGNAL_REQUIRE_MENTION=true
+```
+
+When enabled, the bot ignores group messages unless it is @mentioned (by phone number or UUID).
+
+#### Per-Group Overrides
+
+Override the global `require_mention` setting for specific groups using `require_mention_overrides` in `config.yaml`:
+
+```yaml
+signal:
+  require_mention: true              # Global default: must @mention
+  group_mappings:
+    group:ABC123...: work             # Mapped to 'work' profile
+    group:XYZ789...: side-business    # Mapped to 'side-business' profile
+  require_mention_overrides:
+    group:ABC123...: false            # Work group: always respond
+    group:XYZ789...: false            # Side-business group: always respond
+    # Other groups inherit global require_mention: true
+```
+
+| Priority | Source |
+|----------|--------|
+| 1 (highest) | `require_mention_overrides` for the specific group |
+| 2 | Global `require_mention` in `config.yaml` |
+| 3 (lowest) | `SIGNAL_REQUIRE_MENTION` env var (default: `false`) |
+
 ---
 
 ## Features
@@ -237,3 +276,4 @@ The adapter monitors the SSE connection and automatically reconnects if:
 | `SIGNAL_GROUP_ALLOWED_USERS` | No | — | Group IDs to monitor, or `*` for all (omit to disable groups) |
 | `SIGNAL_ALLOW_ALL_USERS` | No | `false` | Allow any user to interact (skip allowlist) |
 | `SIGNAL_HOME_CHANNEL` | No | — | Default delivery target for cron jobs |
+| `SIGNAL_REQUIRE_MENTION` | No | `false` | Require @mention in groups before responding |
