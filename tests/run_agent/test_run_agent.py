@@ -938,6 +938,14 @@ class TestBuildApiKwargs:
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs["max_tokens"] == 4096
 
+    def test_kimi_coding_route_uses_provider_default_temperature(self, agent):
+        agent.provider = "kimi-coding"
+        agent.model = "kimi-for-coding"
+        agent.base_url = "https://api.kimi.com/coding/v1"
+        agent._base_url_lower = agent.base_url.lower()
+
+        assert agent._should_omit_temperature() is True
+
 
     def test_qwen_portal_formats_messages_and_metadata(self, agent):
         agent.base_url = "https://portal.qwen.ai/v1"
@@ -2631,6 +2639,74 @@ class TestFlushSentinelNotLeaked:
             assert "_flush_sentinel" not in msg, (
                 f"_flush_sentinel leaked to API in message: {msg}"
             )
+
+    def test_flush_memories_via_auxiliary_kimi_omits_temperature(self, agent_with_memory_tool):
+        agent = agent_with_memory_tool
+        agent.provider = "kimi-coding"
+        agent.model = "kimi-for-coding"
+        agent.base_url = "https://api.kimi.com/coding/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent._memory_store = MagicMock()
+        agent._memory_flush_min_turns = 1
+        agent._user_turn_count = 10
+        agent._cached_system_prompt = "system"
+
+        messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": "remember this"},
+        ]
+
+        mock_msg = SimpleNamespace(content="OK", tool_calls=None)
+        mock_choice = SimpleNamespace(message=mock_msg)
+        mock_response = SimpleNamespace(choices=[mock_choice])
+
+        with patch("agent.auxiliary_client.call_llm", return_value=mock_response) as mock_call:
+            agent.flush_memories(messages, min_turns=0)
+
+        kwargs = mock_call.call_args.kwargs
+        assert kwargs["temperature"] == 0.6
+
+        from agent.auxiliary_client import _build_call_kwargs
+        built = _build_call_kwargs(
+            provider=agent.provider,
+            model=agent.model,
+            messages=kwargs["messages"],
+            temperature=kwargs["temperature"],
+            max_tokens=kwargs["max_tokens"],
+            tools=kwargs["tools"],
+            base_url=agent.base_url,
+        )
+        assert built["temperature"] == 0.6
+
+    def test_flush_memories_fallback_chat_kimi_omits_temperature(self, agent_with_memory_tool):
+        agent = agent_with_memory_tool
+        agent.provider = "kimi-coding"
+        agent.model = "kimi-for-coding"
+        agent.base_url = "https://api.kimi.com/coding/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.api_mode = "chat_completions"
+        agent._memory_store = MagicMock()
+        agent._memory_flush_min_turns = 1
+        agent._user_turn_count = 10
+        agent._cached_system_prompt = "system"
+
+        messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": "remember this"},
+        ]
+
+        mock_msg = SimpleNamespace(content="OK", tool_calls=None)
+        mock_choice = SimpleNamespace(message=mock_msg)
+        mock_response = SimpleNamespace(choices=[mock_choice])
+        agent.client.chat.completions.create.return_value = mock_response
+
+        with patch("agent.auxiliary_client.call_llm", side_effect=RuntimeError("no provider")):
+            agent.flush_memories(messages, min_turns=0)
+
+        call_kwargs = agent.client.chat.completions.create.call_args.kwargs
+        assert "temperature" not in call_kwargs
 
 
 # ---------------------------------------------------------------------------

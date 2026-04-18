@@ -2317,6 +2317,21 @@ def _convert_openai_images_to_anthropic(messages: list) -> list:
 
 
 
+def _should_omit_temperature(provider: str, model: str, base_url: Optional[str] = None) -> bool:
+    """Return True when a route/model should rely on provider-default temperature."""
+    provider_lower = (provider or "").strip().lower()
+    model_lower = (model or "").strip().lower()
+    base_lower = (base_url or "").strip().lower()
+
+    if provider_lower in {"kimi-coding", "kimi-coding-cn"}:
+        return True
+    if model_lower == "kimi-for-coding":
+        return True
+    if "api.kimi.com" in base_lower or "api.moonshot.cn" in base_lower:
+        return True
+    return False
+
+
 def _build_call_kwargs(
     provider: str,
     model: str,
@@ -2338,6 +2353,8 @@ def _build_call_kwargs(
     fixed_temperature = _fixed_temperature_for_model(model)
     if fixed_temperature is not None:
         temperature = fixed_temperature
+    elif _should_omit_temperature(provider, model, base_url):
+        temperature = None
 
     # Opus 4.7+ rejects any non-default temperature/top_p/top_k — silently
     # drop here so auxiliary callers that hardcode temperature (e.g. 0.3 on

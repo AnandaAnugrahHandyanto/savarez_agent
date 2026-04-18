@@ -75,6 +75,18 @@ def test_check_for_updates_no_git_dir(tmp_path, monkeypatch):
     mock_run.assert_not_called()
 
 
+def test_check_for_updates_disabled_by_env(monkeypatch):
+    """Returns None without calling git when update checks are disabled."""
+    from hermes_cli.banner import check_for_updates
+
+    monkeypatch.setenv("HERMES_DISABLE_UPDATE_CHECK", "1")
+    with patch("hermes_cli.banner.subprocess.run") as mock_run:
+        result = check_for_updates()
+
+    assert result is None
+    mock_run.assert_not_called()
+
+
 def test_check_for_updates_fallback_to_project_root(tmp_path, monkeypatch):
     """Dev install: falls back to Path(__file__).parent.parent when HERMES_HOME has no git repo."""
     import hermes_cli.banner as banner
@@ -111,6 +123,23 @@ def test_prefetch_non_blocking():
         # Wait for the background thread to finish
         banner._update_check_done.wait(timeout=5)
         assert banner._update_result == 5
+
+
+def test_prefetch_update_check_disabled_sets_done(monkeypatch):
+    """Disabled update checks should short-circuit without spawning a git check."""
+    import hermes_cli.banner as banner
+
+    banner._update_result = "stale"
+    banner._update_check_done = threading.Event()
+    monkeypatch.setenv("HERMES_DISABLE_UPDATE_CHECK", "1")
+
+    with patch.object(banner, "check_for_updates") as mock_check:
+        banner.prefetch_update_check()
+        banner._update_check_done.wait(timeout=1)
+
+    assert banner._update_check_done.is_set()
+    assert banner._update_result is None
+    mock_check.assert_not_called()
 
 
 def test_get_update_result_timeout():

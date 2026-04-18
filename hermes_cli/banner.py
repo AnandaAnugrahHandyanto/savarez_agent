@@ -5,6 +5,7 @@ Pure display functions with no HermesCLI state dependency.
 
 import json
 import logging
+import os
 import shutil
 import subprocess
 import threading
@@ -121,6 +122,11 @@ def get_available_skills() -> Dict[str, List[str]]:
 
 # Cache update check results for 6 hours to avoid repeated git fetches
 _UPDATE_CHECK_CACHE_SECONDS = 6 * 3600
+_DISABLE_UPDATE_CHECK_VALUES = {"1", "true", "yes", "on"}
+
+
+def _update_check_disabled() -> bool:
+    return os.environ.get("HERMES_DISABLE_UPDATE_CHECK", "").strip().lower() in _DISABLE_UPDATE_CHECK_VALUES
 
 
 def check_for_updates() -> Optional[int]:
@@ -130,6 +136,9 @@ def check_for_updates() -> Optional[int]:
     ``~/.hermes/.update_check``).  Returns the number of commits behind,
     or ``None`` if the check fails or isn't applicable.
     """
+    if _update_check_disabled():
+        return None
+
     hermes_home = get_hermes_home()
     repo_dir = hermes_home / "hermes-agent"
     cache_file = hermes_home / ".update_check"
@@ -266,6 +275,12 @@ _update_check_done = threading.Event()
 
 def prefetch_update_check():
     """Kick off update check in a background daemon thread."""
+    global _update_result
+    if _update_check_disabled():
+        _update_result = None
+        _update_check_done.set()
+        return
+
     def _run():
         global _update_result
         _update_result = check_for_updates()

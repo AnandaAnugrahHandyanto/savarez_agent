@@ -36,7 +36,15 @@ logger = logging.getLogger(__name__)
 _DEFAULT_API_URL = "https://api.hindsight.vectorize.io"
 _DEFAULT_LOCAL_URL = "http://localhost:8888"
 _MIN_CLIENT_VERSION = "0.4.22"
+_DISABLE_AUTO_UPGRADE_VALUES = {"1", "true", "yes", "on"}
 _VALID_BUDGETS = {"low", "mid", "high"}
+
+
+def _auto_upgrade_disabled() -> bool:
+    return (
+        os.environ.get("HERMES_DISABLE_AUTO_UPGRADES", "").strip().lower() in _DISABLE_AUTO_UPGRADE_VALUES
+        or os.environ.get("HINDSIGHT_DISABLE_AUTO_UPGRADE", "").strip().lower() in _DISABLE_AUTO_UPGRADE_VALUES
+    )
 _PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
     "anthropic": "claude-haiku-4-5",
@@ -475,23 +483,30 @@ class HindsightMemoryProvider(MemoryProvider):
             from packaging.version import Version
             installed = pkg_version("hindsight-client")
             if Version(installed) < Version(_MIN_CLIENT_VERSION):
-                logger.warning("hindsight-client %s is outdated (need >=%s), attempting upgrade...",
-                               installed, _MIN_CLIENT_VERSION)
-                import shutil, subprocess, sys
-                uv_path = shutil.which("uv")
-                if uv_path:
-                    try:
-                        subprocess.run(
-                            [uv_path, "pip", "install", "--python", sys.executable,
-                             "--quiet", "--upgrade", f"hindsight-client>={_MIN_CLIENT_VERSION}"],
-                            check=True, timeout=120, capture_output=True,
-                        )
-                        logger.info("hindsight-client upgraded to >=%s", _MIN_CLIENT_VERSION)
-                    except Exception as e:
-                        logger.warning("Auto-upgrade failed: %s. Run: uv pip install 'hindsight-client>=%s'",
-                                       e, _MIN_CLIENT_VERSION)
+                if _auto_upgrade_disabled():
+                    logger.info(
+                        "hindsight-client %s is outdated (need >=%s), auto-upgrade disabled",
+                        installed,
+                        _MIN_CLIENT_VERSION,
+                    )
                 else:
-                    logger.warning("uv not found. Run: pip install 'hindsight-client>=%s'", _MIN_CLIENT_VERSION)
+                    logger.warning("hindsight-client %s is outdated (need >=%s), attempting upgrade...",
+                                   installed, _MIN_CLIENT_VERSION)
+                    import shutil, subprocess, sys
+                    uv_path = shutil.which("uv")
+                    if uv_path:
+                        try:
+                            subprocess.run(
+                                [uv_path, "pip", "install", "--python", sys.executable,
+                                 "--quiet", "--upgrade", f"hindsight-client>={_MIN_CLIENT_VERSION}"],
+                                check=True, timeout=120, capture_output=True,
+                            )
+                            logger.info("hindsight-client upgraded to >=%s", _MIN_CLIENT_VERSION)
+                        except Exception as e:
+                            logger.warning("Auto-upgrade failed: %s. Run: uv pip install 'hindsight-client>=%s'",
+                                           e, _MIN_CLIENT_VERSION)
+                    else:
+                        logger.warning("uv not found. Run: pip install 'hindsight-client>=%s'", _MIN_CLIENT_VERSION)
         except Exception:
             pass  # packaging not available or other issue — proceed anyway
 

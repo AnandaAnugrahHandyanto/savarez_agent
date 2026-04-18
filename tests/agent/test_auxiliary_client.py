@@ -21,6 +21,7 @@ from agent.auxiliary_client import (
     _is_payment_error,
     _try_payment_fallback,
     _resolve_auto,
+    _build_call_kwargs,
 )
 
 
@@ -579,6 +580,41 @@ class TestTryPaymentFallback:
         assert client is mock_codex
         assert model == "gpt-5.2-codex"
         assert label == "openai-codex"
+
+
+class TestBuildCallKwargs:
+    def test_kimi_coding_uses_fixed_temperature(self):
+        kwargs = _build_call_kwargs(
+            provider="kimi-coding",
+            model="kimi-for-coding",
+            messages=[{"role": "user", "content": "hello"}],
+            temperature=0.3,
+            base_url="https://api.kimi.com/coding/v1",
+        )
+
+        assert kwargs["temperature"] == 0.6
+
+    def test_kimi_coding_other_model_omits_temperature(self):
+        kwargs = _build_call_kwargs(
+            provider="kimi-coding",
+            model="kimi-k2.5",
+            messages=[{"role": "user", "content": "hello"}],
+            temperature=0.3,
+            base_url="https://api.kimi.com/coding/v1",
+        )
+
+        assert "temperature" not in kwargs
+
+    def test_non_kimi_provider_keeps_temperature(self):
+        kwargs = _build_call_kwargs(
+            provider="openrouter",
+            model="google/gemini-3-flash-preview",
+            messages=[{"role": "user", "content": "hello"}],
+            temperature=0.3,
+            base_url="https://openrouter.ai/api/v1",
+        )
+
+        assert kwargs["temperature"] == 0.3
 
 
 class TestCallLlmPaymentFallback:

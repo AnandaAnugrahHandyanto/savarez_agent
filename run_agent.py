@@ -6773,6 +6773,20 @@ class AIAgent:
         """Return True when the base URL targets Qwen Portal."""
         return "portal.qwen.ai" in self._base_url_lower
 
+    def _should_omit_temperature(self) -> bool:
+        """Return True when this route/model should rely on provider-default temperature."""
+        provider_lower = (self.provider or "").strip().lower()
+        model_lower = (self.model or "").strip().lower()
+        base_lower = (self.base_url or "").strip().lower()
+
+        if provider_lower in {"kimi-coding", "kimi-coding-cn"}:
+            return True
+        if model_lower == "kimi-for-coding":
+            return True
+        if "api.kimi.com" in base_lower or "api.moonshot.cn" in base_lower:
+            return True
+        return False
+
     def _qwen_prepare_chat_messages(self, api_messages: list) -> list:
         prepared = copy.deepcopy(api_messages)
         if not prepared:
@@ -7482,7 +7496,8 @@ class AIAgent:
                 # No auxiliary client -- use the Codex Responses path directly
                 codex_kwargs = self._build_api_kwargs(api_messages)
                 codex_kwargs["tools"] = self._responses_tools([memory_tool_def])
-                codex_kwargs["temperature"] = _flush_temperature
+                if not self._should_omit_temperature():
+                    codex_kwargs["temperature"] = _flush_temperature
                 if "max_output_tokens" in codex_kwargs:
                     codex_kwargs["max_output_tokens"] = 5120
                 response = self._run_codex_stream(codex_kwargs)
@@ -7501,9 +7516,10 @@ class AIAgent:
                     "model": self.model,
                     "messages": api_messages,
                     "tools": [memory_tool_def],
-                    "temperature": _flush_temperature,
                     **self._max_tokens_param(5120),
                 }
+                if not self._should_omit_temperature():
+                    api_kwargs["temperature"] = _flush_temperature
                 from agent.auxiliary_client import _get_task_timeout
                 response = self._ensure_primary_openai_client(reason="flush_memories").chat.completions.create(
                     **api_kwargs, timeout=_get_task_timeout("flush_memories")

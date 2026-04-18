@@ -32,6 +32,7 @@ def _clean_env(monkeypatch):
     for key in (
         "HINDSIGHT_API_KEY", "HINDSIGHT_API_URL", "HINDSIGHT_BANK_ID",
         "HINDSIGHT_BUDGET", "HINDSIGHT_MODE", "HINDSIGHT_LLM_API_KEY",
+        "HINDSIGHT_DISABLE_AUTO_UPGRADE", "HERMES_DISABLE_AUTO_UPGRADES",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -157,6 +158,31 @@ class TestConfig:
         assert provider._bank_mission == ""
         assert provider._bank_retain_mission is None
         assert provider._retain_context == "conversation between Hermes Agent and the User"
+
+    def test_initialize_skips_auto_upgrade_when_disabled(self, tmp_path, monkeypatch):
+        config = {
+            "mode": "cloud",
+            "apiKey": "***",
+            "api_url": "http://localhost:9999",
+            "bank_id": "test-bank",
+            "budget": "mid",
+            "memory_mode": "hybrid",
+        }
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config))
+
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
+        )
+        monkeypatch.setenv("HERMES_DISABLE_AUTO_UPGRADES", "1")
+
+        with patch("importlib.metadata.version", return_value="0.1.0"), \
+             patch("subprocess.run") as mock_run:
+            p = HindsightMemoryProvider()
+            p.initialize(session_id="test-session", hermes_home=str(tmp_path), platform="cli")
+
+        mock_run.assert_not_called()
 
     def test_custom_config_values(self, provider_with_config):
         p = provider_with_config(
