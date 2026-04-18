@@ -35,6 +35,12 @@ class TestSessionSearchSchema:
         assert "past conversations" in description
         assert "recent turns of the current session" not in description
 
+    def test_schema_describes_transcript_recall_not_canonical_memory(self):
+        description = SESSION_SEARCH_SCHEMA["description"]
+        assert "past conversations" in description
+        assert "transcript recall" in description.lower()
+        assert "canonical truth" not in description.lower()
+
 
 # =========================================================================
 # _format_timestamp

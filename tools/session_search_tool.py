@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Session Search Tool - Long-Term Conversation Recall
+Session Search Tool - Transcript Recall
 
 Searches past session transcripts in SQLite via FTS5, then summarizes the top
 matching sessions using a cheap/fast model (same pattern as web_extract).
-Returns focused summaries of past conversations rather than raw transcripts,
-keeping the main model's context window clean.
+Returns focused transcript-recall summaries of past conversations rather than
+raw transcripts, keeping the main model's context window clean.
 
 Flow:
   1. FTS5 search finds matching messages ranked by relevance
@@ -302,7 +302,7 @@ def session_search(
     current_session_id: str = None,
 ) -> str:
     """
-    Search past sessions and return focused summaries of matching conversations.
+    Search past sessions and return focused transcript-recall summaries.
 
     Uses FTS5 to find matches, then summarizes the top sessions with Gemini Flash.
     The current session is excluded from results since the agent already has that context.
@@ -492,23 +492,24 @@ def check_session_search_requirements() -> bool:
 SESSION_SEARCH_SCHEMA = {
     "name": "session_search",
     "description": (
-        "Search your long-term memory of past conversations, or browse recent sessions. This is your recall -- "
-        "every past session is searchable, and this tool summarizes what happened.\n\n"
+        "Search past conversations across prior sessions and return transcript recall summaries, or browse recent sessions. "
+        "Use this for broad historical lookup, not canonical durable memory. Every past session is searchable, and this "
+        "tool summarizes what happened.\n\n"
         "TWO MODES:\n"
         "1. Recent sessions (no query): Call with no arguments to see what was worked on recently. "
         "Returns titles, previews, and timestamps. Zero LLM cost, instant. "
         "Start here when the user asks what were we working on or what did we do recently.\n"
         "2. Keyword search (with query): Search for specific topics across all past sessions. "
-        "Returns LLM-generated summaries of matching sessions.\n\n"
+        "Returns transcript-recall summaries of matching sessions.\n\n"
         "USE THIS PROACTIVELY when:\n"
         "- The user says 'we did this before', 'remember when', 'last time', 'as I mentioned'\n"
         "- The user asks about a topic you worked on before but don't have in current context\n"
-        "- The user references a project, person, or concept that seems familiar but isn't in memory\n"
+        "- The user references a project, person, or concept that seems familiar but isn't in durable prompt memory\n"
         "- You want to check if you've solved a similar problem before\n"
         "- The user asks 'what did we do about X?' or 'how did we fix Y?'\n\n"
-        "Don't hesitate to search when it is actually cross-session -- it's fast and cheap. "
+        "Don't hesitate to use transcript recall when it is actually cross-session -- it's fast and cheap. "
         "Better to search and confirm than to guess or ask the user to repeat themselves.\n\n"
-        "Search syntax: keywords joined with OR for broad recall (elevenlabs OR baseten OR funding), "
+        "Search syntax: keywords joined with OR for broad transcript recall (elevenlabs OR baseten OR funding), "
         "phrases for exact match (\"docker networking\"), boolean (python NOT java), prefix (deploy*). "
         "IMPORTANT: Use OR between keywords for best results — FTS5 defaults to AND which misses "
         "sessions that only mention some terms. If a broad OR query returns nothing, try individual "
@@ -519,7 +520,7 @@ SESSION_SEARCH_SCHEMA = {
         "properties": {
             "query": {
                 "type": "string",
-                "description": "Search query — keywords, phrases, or boolean expressions to find in past sessions. Omit this parameter entirely to browse recent sessions instead (returns titles, previews, timestamps with no LLM cost).",
+                "description": "Search query for transcript recall — keywords, phrases, or boolean expressions to find in past session transcripts. Omit this parameter entirely to browse recent sessions instead (returns titles, previews, timestamps with no LLM cost).",
             },
             "role_filter": {
                 "type": "string",
