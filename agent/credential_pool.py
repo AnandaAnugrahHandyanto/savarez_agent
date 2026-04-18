@@ -395,10 +395,40 @@ class CredentialPool:
                 return
 
     def _persist(self) -> None:
-        write_credential_pool(
-            self.provider,
-            [entry.to_dict() for entry in self._entries],
-        )
+        with _auth_store_lock():
+            auth_store = _load_auth_store()
+            pool = auth_store.get("credential_pool")
+            if not isinstance(pool, dict):
+                pool = {}
+                auth_store["credential_pool"] = pool
+            disk_entries = pool.get(self.provider, [])
+            if not isinstance(disk_entries, list):
+                disk_entries = []
+
+            mem_by_id = {entry.id: entry.to_dict() for entry in self._entries}
+
+            merged: List[Dict[str, Any]] = []
+            seen_ids: Set[str] = set()
+
+            for disk_entry in disk_entries:
+                if not isinstance(disk_entry, dict):
+                    continue
+                entry_id = str(disk_entry.get("id", "") or "")
+                if entry_id and entry_id in mem_by_id:
+                    merged.append(mem_by_id[entry_id])
+                    seen_ids.add(entry_id)
+                else:
+                    # Preserve unknown entries that may have been added concurrently.
+                    merged.append(disk_entry)
+                    if entry_id:
+                        seen_ids.add(entry_id)
+
+            for entry_id, entry_dict in mem_by_id.items():
+                if entry_id not in seen_ids:
+                    merged.append(entry_dict)
+
+            pool[self.provider] = merged
+            _save_auth_store(auth_store)
 
     def _mark_exhausted(
         self,
@@ -467,6 +497,9 @@ class CredentialPool:
         """
         if self.provider != "openai-codex":
             return entry
+        # Skip manual entries - they use Hermes-native tokens, not CLI tokens.
+        if entry.source == SOURCE_MANUAL:
+            return entry
         try:
             cli_tokens = _import_codex_cli_tokens()
             if not cli_tokens:
@@ -475,14 +508,18 @@ class CredentialPool:
             cli_access = cli_tokens.get("access_token", "")
             if cli_refresh and cli_refresh != entry.refresh_token:
                 logger.debug("Pool entry %s: syncing tokens from ~/.codex/auth.json (refresh token changed)", entry.id)
-                updated = replace(
-                    entry,
-                    access_token=cli_access,
-                    refresh_token=cli_refresh,
-                    last_status=None,
-                    last_status_at=None,
-                    last_error_code=None,
-                )
+                kwargs: Dict[str, Any] = {
+                    "access_token": cli_access,
+                    "refresh_token": cli_refresh,
+                }
+                # Fresh tokens do not imply provider rate-limit/billing reset.
+                if entry.last_status != STATUS_EXHAUSTED:
+                    kwargs.update(
+                        last_status=None,
+                        last_status_at=None,
+                        last_error_code=None,
+                    )
+                updated = replace(entry, **kwargs)
                 self._replace_entry(entry, updated)
                 self._persist()
                 return updated
