@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import time
+from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli.config import (
@@ -30,7 +31,167 @@ logger = logging.getLogger(__name__)
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
-_MCP_PRESETS: Dict[str, Dict[str, Any]] = {}
+_MCP_PRESET_CONFIG_KEYS = frozenset({
+    "url",
+    "command",
+    "args",
+    "env",
+    "headers",
+    "auth",
+    "timeout",
+    "connect_timeout",
+    "sampling",
+    "tools",
+})
+
+_MCP_PRESETS: Dict[str, Dict[str, Any]] = {
+    "fetch": {
+        "display_name": "Fetch",
+        "description": "Fetch and convert remote web content to agent-friendly text.",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-fetch"],
+    },
+    "github": {
+        "display_name": "GitHub",
+        "description": "Read and mutate GitHub issues, PRs, repos, and code search.",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-github"],
+        "env": {
+            "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_PERSONAL_ACCESS_TOKEN}",
+        },
+    },
+    "ink": {
+        "display_name": "Ink",
+        "description": "Hosted remote MCP endpoint for Ink deployment workflows.",
+        "url": "https://mcp.ml.ink/mcp",
+    },
+    "memory": {
+        "display_name": "Memory",
+        "description": "Lightweight knowledge graph + memory primitives.",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-memory"],
+    },
+    "sequential-thinking": {
+        "display_name": "Sequential Thinking",
+        "description": "Stepwise planning and reasoning helper tools.",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+    },
+    "time": {
+        "display_name": "Time",
+        "description": "Time and timezone helper tools.",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-time"],
+    },
+}
+
+_MCP_BUNDLES: Dict[str, Dict[str, Any]] = {
+    "developer": {
+        "display_name": "Developer Essentials",
+        "description": "Common coding and repo helpers for day-to-day development work.",
+        "servers": [
+            {"name": "github", "preset": "github"},
+            {"name": "fetch", "preset": "fetch"},
+            {"name": "sequential-thinking", "preset": "sequential-thinking"},
+        ],
+    },
+    "research": {
+        "display_name": "Research Starter",
+        "description": "Web retrieval plus structured reasoning helpers.",
+        "servers": [
+            {"name": "fetch", "preset": "fetch"},
+            {"name": "sequential-thinking", "preset": "sequential-thinking"},
+            {"name": "time", "preset": "time"},
+        ],
+    },
+}
+
+_ENV_VAR_INTERPOLATION_RE = re.compile(r"\$\{([^}]+)\}")
+
+
+def _canonical_catalog_name(name: Optional[str]) -> str:
+    return str(name or "").strip().lower().replace("_", "-")
+
+
+def _resolve_mcp_preset(preset_name: str) -> Dict[str, Any]:
+    preset = _MCP_PRESETS.get(_canonical_catalog_name(preset_name))
+    if not preset:
+        raise ValueError(f"Unknown MCP preset: {preset_name}")
+    return preset
+
+
+def _resolve_mcp_bundle(bundle_name: str) -> Dict[str, Any]:
+    bundle = _MCP_BUNDLES.get(_canonical_catalog_name(bundle_name))
+    if not bundle:
+        raise ValueError(f"Unknown MCP bundle: {bundle_name}")
+    return bundle
+
+
+def _iter_required_env_vars(value: Any) -> set[str]:
+    found: set[str] = set()
+    if isinstance(value, str):
+        found.update(_ENV_VAR_INTERPOLATION_RE.findall(value))
+    elif isinstance(value, dict):
+        for item in value.values():
+            found.update(_iter_required_env_vars(item))
+    elif isinstance(value, list):
+        for item in value:
+            found.update(_iter_required_env_vars(item))
+    return found
+
+
+def _materialize_mcp_preset(
+    preset_name: str,
+    *,
+    overrides: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    preset = _resolve_mcp_preset(preset_name)
+    config: Dict[str, Any] = {}
+    for key in _MCP_PRESET_CONFIG_KEYS:
+        if key in preset:
+            config[key] = deepcopy(preset[key])
+
+    for key, value in (overrides or {}).items():
+        if key not in _MCP_PRESET_CONFIG_KEYS:
+            continue
+        if key in {"env", "headers"} and isinstance(value, dict):
+            merged = dict(config.get(key) or {})
+            merged.update(deepcopy(value))
+            if merged:
+                config[key] = merged
+        else:
+            config[key] = deepcopy(value)
+    return config
+
+
+def _expand_mcp_bundle(bundle_name: str) -> Dict[str, Dict[str, Any]]:
+    bundle = _resolve_mcp_bundle(bundle_name)
+    entries: Dict[str, Dict[str, Any]] = {}
+    for entry in bundle.get("servers") or []:
+        if not isinstance(entry, dict):
+            raise ValueError(f"Invalid MCP bundle entry in '{bundle_name}'")
+        server_name = str(entry.get("name") or "").strip()
+        preset_name = str(entry.get("preset") or "").strip()
+        if not server_name or not preset_name:
+            raise ValueError(f"Invalid MCP bundle entry in '{bundle_name}'")
+        overrides = {
+            key: entry[key]
+            for key in _MCP_PRESET_CONFIG_KEYS
+            if key in entry
+        }
+        entries[server_name] = _materialize_mcp_preset(preset_name, overrides=overrides)
+        entries[server_name].setdefault("enabled", True)
+    return entries
+
+
+def _preset_transport_summary(config: Dict[str, Any]) -> str:
+    if config.get("url"):
+        return f"http {config['url']}"
+    if config.get("command"):
+        args = config.get("args") or []
+        preview = " ".join(str(arg) for arg in args[:2])
+        return f"stdio {config['command']} {preview}".strip()
+    return "custom"
 
 
 # ─── UI Helpers ───────────────────────────────────────────────────────────────
@@ -134,25 +295,111 @@ def _apply_mcp_preset(
     if not preset_name:
         return url, command, cmd_args, False
 
-    preset = _MCP_PRESETS.get(preset_name)
-    if not preset:
-        raise ValueError(f"Unknown MCP preset: {preset_name}")
-
     if url or command:
         return url, command, cmd_args, False
 
-    url = preset.get("url")
-    command = preset.get("command")
-    cmd_args = list(preset.get("args") or [])
+    preset_config = _materialize_mcp_preset(preset_name)
+    url = preset_config.get("url")
+    command = preset_config.get("command")
+    cmd_args = list(preset_config.get("args") or [])
 
-    if url:
-        server_config["url"] = url
-    if command:
-        server_config["command"] = command
-    if cmd_args:
-        server_config["args"] = cmd_args
+    for key, value in preset_config.items():
+        if key == "args":
+            if cmd_args:
+                server_config["args"] = cmd_args
+            continue
+        server_config[key] = value
 
     return url, command, cmd_args, True
+
+
+def cmd_mcp_catalog(args=None):
+    """List the built-in MCP preset and bundle catalog."""
+    print()
+    print(color("  Built-in MCP Presets:", Colors.CYAN + Colors.BOLD))
+    print()
+    for preset_name in sorted(_MCP_PRESETS):
+        preset = _MCP_PRESETS[preset_name]
+        display_name = preset.get("display_name") or preset_name
+        transport = _preset_transport_summary(preset)
+        required_env = sorted(_iter_required_env_vars(_materialize_mcp_preset(preset_name)))
+        env_suffix = f" [env: {', '.join(required_env)}]" if required_env else ""
+        print(f"  {preset_name:<22} {display_name}")
+        print(f"    {preset.get('description', '').strip()}")
+        print(f"    {transport}{env_suffix}")
+    if _MCP_BUNDLES:
+        print()
+        print(color("  Built-in MCP Bundles:", Colors.CYAN + Colors.BOLD))
+        print()
+        for bundle_name in sorted(_MCP_BUNDLES):
+            bundle = _MCP_BUNDLES[bundle_name]
+            display_name = bundle.get("display_name") or bundle_name
+            members = ", ".join(entry.get("name", "?") for entry in (bundle.get("servers") or []))
+            print(f"  {bundle_name:<22} {display_name}")
+            print(f"    {bundle.get('description', '').strip()}")
+            print(f"    installs: {members}")
+    print()
+    _info("Install one with: hermes mcp install <preset-or-bundle>")
+    _info("Or discovery-install a single server with: hermes mcp add <name> --preset <preset>")
+
+
+def cmd_mcp_install(args):
+    """Install a built-in MCP preset or bundle into plain mcp_servers config."""
+    catalog_name = getattr(args, "catalog_name", None) or getattr(args, "name", None)
+    alias = str(getattr(args, "as_name", None) or "").strip() or None
+    yes = bool(getattr(args, "yes", False))
+
+    if not catalog_name:
+        _error("Missing MCP preset or bundle name")
+        return
+
+    catalog_key = _canonical_catalog_name(catalog_name)
+
+    try:
+        if catalog_key in _MCP_PRESETS:
+            server_name = alias or catalog_key
+            installs = {
+                server_name: _materialize_mcp_preset(catalog_key)
+            }
+            installs[server_name].setdefault("enabled", True)
+            installed_kind = "preset"
+        elif catalog_key in _MCP_BUNDLES:
+            if alias:
+                _error("--as is only supported when installing a single MCP preset")
+                return
+            installs = _expand_mcp_bundle(catalog_key)
+            installed_kind = "bundle"
+        else:
+            _error(f"Unknown MCP preset or bundle: {catalog_name}")
+            return
+    except ValueError as exc:
+        _error(str(exc))
+        return
+
+    existing = _get_mcp_servers()
+    conflicts = sorted(name for name in installs if name in existing)
+    if conflicts and not yes:
+        if not _confirm(
+            f"Overwrite existing MCP server(s): {', '.join(conflicts)}?",
+            default=False,
+        ):
+            _info("Cancelled.")
+            return
+
+    config = load_config()
+    config.setdefault("mcp_servers", {}).update(installs)
+    save_config(config)
+
+    print()
+    _success(
+        f"Installed MCP {installed_kind} '{catalog_key}' to {display_hermes_home()}/config.yaml"
+    )
+    for server_name, server_config in installs.items():
+        required_env = sorted(_iter_required_env_vars(server_config))
+        env_suffix = f" [env: {', '.join(required_env)}]" if required_env else ""
+        _info(f"{server_name}: {_preset_transport_summary(server_config)}{env_suffix}")
+    _info("These entries were expanded into normal mcp_servers config entries.")
+    _info("Run `hermes mcp test <name>` to verify each server, or `hermes mcp list` to review them.")
 
 
 # ─── Discovery (temporary connect) ───────────────────────────────────────────
@@ -237,6 +484,7 @@ def cmd_mcp_add(args):
             cmd_args=list(cmd_args),
             server_config=server_config,
         )
+        auth_type = auth_type or server_config.get("auth")
     except ValueError as exc:
         _error(str(exc))
         return
@@ -269,7 +517,13 @@ def cmd_mcp_add(args):
         if cmd_args:
             server_config["args"] = cmd_args
         if explicit_env:
-            server_config["env"] = explicit_env
+            merged_env = dict(server_config.get("env") or {})
+            merged_env.update(explicit_env)
+            server_config["env"] = merged_env
+
+    required_env = sorted(_iter_required_env_vars(server_config))
+    if required_env:
+        _info(f"Required environment variables: {', '.join(required_env)}")
 
 
     # ── Authentication ────────────────────────────────────────────────
@@ -748,6 +1002,8 @@ def mcp_command(args):
 
     handlers = {
         "add": cmd_mcp_add,
+        "catalog": cmd_mcp_catalog,
+        "install": cmd_mcp_install,
         "remove": cmd_mcp_remove,
         "rm": cmd_mcp_remove,
         "list": cmd_mcp_list,
@@ -766,6 +1022,8 @@ def mcp_command(args):
         cmd_mcp_list()
         print(color("  Commands:", Colors.CYAN))
         _info("hermes mcp serve                              Run as MCP server")
+        _info("hermes mcp catalog                            Browse built-in presets and bundles")
+        _info("hermes mcp install <preset-or-bundle>         Install built-in catalog entries")
         _info("hermes mcp add <name> --url <endpoint>        Add an MCP server")
         _info("hermes mcp add <name> --command <cmd>         Add a stdio server")
         _info("hermes mcp add <name> --preset <preset>       Add from a known preset")

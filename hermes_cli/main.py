@@ -7540,6 +7540,16 @@ Examples:
         help="Environment variables for stdio servers (KEY=VALUE)",
     )
 
+    mcp_sub.add_parser("catalog", help="Browse built-in MCP presets and bundles")
+
+    mcp_install_p = mcp_sub.add_parser(
+        "install",
+        help="Install a built-in MCP preset or bundle into config.yaml",
+    )
+    mcp_install_p.add_argument("catalog_name", help="Built-in MCP preset or bundle name")
+    mcp_install_p.add_argument("--as", dest="as_name", help="Custom server name when installing a single preset")
+    mcp_install_p.add_argument("--yes", "-y", action="store_true", help="Skip overwrite confirmation")
+
     mcp_rm_p = mcp_sub.add_parser("remove", aliases=["rm"], help="Remove an MCP server")
     mcp_rm_p.add_argument("name", help="Server name to remove")
 

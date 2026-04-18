@@ -48,6 +48,9 @@ def _make_args(**kwargs):
         "auth": None,
         "preset": None,
         "env": None,
+        "catalog_name": None,
+        "as_name": None,
+        "yes": False,
         "mcp_action": None,
     }
     defaults.update(kwargs)
@@ -409,6 +412,139 @@ class TestMcpAdd:
         cmd_mcp_add(_make_args(name="foo", preset="nonexistent"))
         out = capsys.readouterr().out
         assert "Unknown MCP preset" in out
+
+    def test_add_preset_merges_preset_env_with_cli_env(self, tmp_path, capsys, monkeypatch):
+        """Preset-provided env placeholders are preserved and merged with --env."""
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._MCP_PRESETS",
+            {
+                "github": {
+                    "command": "npx",
+                    "args": ["-y", "test-mcp-server"],
+                    "env": {"TOKEN": "${TOKEN}"},
+                    "display_name": "GitHub",
+                }
+            },
+        )
+        fake_tools = [FakeTool("search", "Search repos")]
+
+        def mock_probe(name, config, **kw):
+            assert config["command"] == "npx"
+            assert config["args"] == ["-y", "test-mcp-server"]
+            assert config["env"] == {"TOKEN": "${TOKEN}", "DEBUG": "true"}
+            return [(t.name, t.description) for t in fake_tools]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+        from hermes_cli.config import read_raw_config
+
+        cmd_mcp_add(_make_args(
+            name="github-local",
+            preset="github",
+            env=["DEBUG=true"],
+        ))
+        out = capsys.readouterr().out
+        assert "Required environment variables: TOKEN" in out
+
+        config = read_raw_config()
+        srv = config["mcp_servers"]["github-local"]
+        assert srv["env"] == {"TOKEN": "${TOKEN}", "DEBUG": "true"}
+
+
+class TestMcpCatalogInstall:
+    def test_catalog_lists_builtin_presets_and_bundles(self, capsys):
+        from hermes_cli.mcp_config import cmd_mcp_catalog
+
+        cmd_mcp_catalog()
+        out = capsys.readouterr().out
+        assert "Built-in MCP Presets" in out
+        assert "github" in out
+        assert "developer" in out
+        assert "Install one with: hermes mcp install" in out
+
+    def test_install_single_preset_with_alias(self, tmp_path, capsys, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._MCP_PRESETS",
+            {
+                "fetch": {
+                    "command": "npx",
+                    "args": ["-y", "test-fetch"],
+                    "display_name": "Fetch",
+                }
+            },
+        )
+
+        from hermes_cli.mcp_config import cmd_mcp_install
+        from hermes_cli.config import read_raw_config
+
+        cmd_mcp_install(_make_args(catalog_name="fetch", as_name="web", yes=True))
+        out = capsys.readouterr().out
+        assert "Installed MCP preset 'fetch'" in out
+
+        config = read_raw_config()
+        assert config["mcp_servers"]["web"] == {
+            "command": "npx",
+            "args": ["-y", "test-fetch"],
+            "enabled": True,
+        }
+
+    def test_install_bundle_expands_to_plain_mcp_servers(self, tmp_path, capsys, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._MCP_PRESETS",
+            {
+                "github": {
+                    "command": "npx",
+                    "args": ["-y", "test-github"],
+                    "env": {"TOKEN": "${TOKEN}"},
+                    "display_name": "GitHub",
+                },
+                "fetch": {
+                    "command": "npx",
+                    "args": ["-y", "test-fetch"],
+                    "display_name": "Fetch",
+                },
+            },
+        )
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._MCP_BUNDLES",
+            {
+                "starter": {
+                    "display_name": "Starter",
+                    "description": "Starter bundle",
+                    "servers": [
+                        {"name": "github", "preset": "github"},
+                        {"name": "fetch", "preset": "fetch"},
+                    ],
+                }
+            },
+        )
+
+        from hermes_cli.mcp_config import cmd_mcp_install
+        from hermes_cli.config import read_raw_config
+
+        cmd_mcp_install(_make_args(catalog_name="starter", yes=True))
+        out = capsys.readouterr().out
+        assert "Installed MCP bundle 'starter'" in out
+        assert "expanded into normal mcp_servers config entries" in out
+
+        config = read_raw_config()
+        assert config["mcp_servers"] == {
+            "github": {
+                "command": "npx",
+                "args": ["-y", "test-github"],
+                "env": {"TOKEN": "${TOKEN}"},
+                "enabled": True,
+            },
+            "fetch": {
+                "command": "npx",
+                "args": ["-y", "test-fetch"],
+                "enabled": True,
+            },
+        }
 
 
 # ---------------------------------------------------------------------------
