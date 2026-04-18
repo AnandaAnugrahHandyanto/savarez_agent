@@ -4559,10 +4559,12 @@ class AIAgent:
         # every 10s, give up after 3 → dead peer detected within ~60s.
         #
         # Proxy interaction (#11609): handing httpx an explicit ``transport=``
-        # makes it skip env-proxy mount construction, so HTTPS_PROXY / system
-        # proxy users silently direct-connect. Rather than reimplement httpx's
-        # trust_env proxy resolution, skip keepalive injection whenever a proxy
-        # is configured and let the SDK build its default proxy-aware client.
+        # makes it skip env-proxy mount construction, so proxied users can
+        # silently direct-connect. Delegate to the SDK/httpx default client
+        # only when the current target host would actually route through the
+        # configured proxy. Hosts bypassed by NO_PROXY should keep the direct
+        # path keepalive transport, or we regress the local-provider hang fix
+        # from #10324.
         #
         # Safety against #10933: the ``client_kwargs = dict(client_kwargs)``
         # above means this injection only lands in the local per-call copy,
@@ -4574,7 +4576,7 @@ class AIAgent:
         # constructs a fresh one — no stale closed transport can be reused.
         # Tests in ``tests/run_agent/test_create_openai_client_reuse.py`` and
         # ``tests/run_agent/test_sequential_chats_live.py`` pin this invariant.
-        if "http_client" not in client_kwargs and not self._has_proxy_configured():
+        if "http_client" not in client_kwargs and not self._should_delegate_proxy_routing(client_kwargs.get("base_url")):
             try:
                 import httpx as _httpx
                 import socket as _socket
@@ -4602,18 +4604,37 @@ class AIAgent:
         return client
 
     @staticmethod
-    def _has_proxy_configured() -> bool:
-        """Return True when any outbound HTTP proxy is configured."""
+    def _should_delegate_proxy_routing(base_url: Any) -> bool:
+        """Return True when httpx should own proxy routing for this target."""
         try:
             import urllib.request as _urlreq
+            from urllib.parse import urlparse
 
             proxies = _urlreq.getproxies()
         except Exception:
             return False
-        return any(
+        has_proxy = any(
             str(proxies.get(key) or "").strip()
             for key in ("http", "https", "all")
         )
+        if not has_proxy:
+            return False
+
+        candidate = str(base_url or "").strip()
+        if not candidate:
+            return True
+
+        try:
+            hostname = urlparse(candidate).hostname
+        except Exception:
+            return True
+        if not hostname:
+            return True
+
+        try:
+            return not _urlreq.proxy_bypass(hostname)
+        except Exception:
+            return True
 
     @staticmethod
     def _iter_client_sockets(http_client: Any):

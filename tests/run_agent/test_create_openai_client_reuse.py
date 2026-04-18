@@ -188,11 +188,16 @@ def test_replace_primary_openai_client_survives_repeated_rebuilds():
     )
 
 
-def _stub_proxies(monkeypatch, proxies):
+def _stub_proxies(monkeypatch, proxies, *, bypass_hosts=()):
     """Stub urllib's proxy discovery so tests stay hermetic."""
     import urllib.request
 
     monkeypatch.setattr(urllib.request, "getproxies", lambda: dict(proxies))
+    monkeypatch.setattr(
+        urllib.request,
+        "proxy_bypass",
+        lambda host: host in set(bypass_hosts),
+    )
     for name in (
         "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
         "http_proxy", "https_proxy", "all_proxy", "no_proxy",
@@ -275,18 +280,18 @@ def test_create_openai_client_keepalive_direct_path_when_no_proxy(monkeypatch):
     )
 
 
-def test_has_proxy_configured_matches_urllib_getproxies(monkeypatch):
+def test_should_delegate_proxy_routing_matches_proxy_resolution(monkeypatch):
     _stub_proxies(monkeypatch, {})
-    assert AIAgent._has_proxy_configured() is False
+    assert AIAgent._should_delegate_proxy_routing("https://api.example.com/v1") is False
 
     _stub_proxies(monkeypatch, {"https": "http://10.0.0.1:8080"})
-    assert AIAgent._has_proxy_configured() is True
+    assert AIAgent._should_delegate_proxy_routing("https://api.example.com/v1") is True
 
     _stub_proxies(monkeypatch, {})
-    assert AIAgent._has_proxy_configured() is False
+    assert AIAgent._should_delegate_proxy_routing("https://api.example.com/v1") is False
 
     _stub_proxies(monkeypatch, {"no": "localhost"})
-    assert AIAgent._has_proxy_configured() is False
+    assert AIAgent._should_delegate_proxy_routing("https://api.example.com/v1") is False
 
 
 def test_create_openai_client_skips_injection_for_system_proxy(monkeypatch):
@@ -309,6 +314,34 @@ def test_create_openai_client_skips_injection_for_system_proxy(monkeypatch):
         "System-level proxy config should also suppress keepalive transport "
         "injection."
     )
+
+
+def test_create_openai_client_keeps_keepalive_when_no_proxy_bypasses_localhost(monkeypatch):
+    agent = _make_agent()
+    constructed: list = []
+    fake_openai = _make_fake_openai_factory(constructed)
+    _stub_proxies(
+        monkeypatch,
+        {"http": "http://10.0.0.1:8080", "no": "localhost,127.0.0.1"},
+        bypass_hosts={"localhost", "127.0.0.1"},
+    )
+
+    with patch("run_agent.OpenAI", fake_openai):
+        agent._create_openai_client(
+            {
+                "api_key": "test-key-value",
+                "base_url": "http://localhost:1234/v1",
+            },
+            reason="no_proxy_localhost",
+            shared=False,
+        )
+
+    http_client = constructed[0]._http_client
+    assert http_client is not None, (
+        "NO_PROXY-bypassed localhost targets should keep the direct-path "
+        "keepalive transport."
+    )
+    assert _has_keepalive(http_client._transport)
 
 
 def _fake_httpx_client_with_mock_sockets(default_sock, mount_sock):
