@@ -102,6 +102,7 @@ from agent.display import (
     _detect_tool_failure,
     get_tool_emoji as _get_tool_emoji,
 )
+from agent.codex_model_params import get_openai_codex_responses_model_defaults
 from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
@@ -4328,7 +4329,7 @@ class AIAgent:
 
         allowed_keys = {
             "model", "instructions", "input", "tools", "store",
-            "reasoning", "include", "max_output_tokens", "temperature",
+            "reasoning", "include", "max_output_tokens", "temperature", "text",
             "tool_choice", "parallel_tool_calls", "prompt_cache_key", "service_tier",
             "extra_headers",
         }
@@ -4348,6 +4349,9 @@ class AIAgent:
         include = api_kwargs.get("include")
         if isinstance(include, list):
             normalized["include"] = include
+        text = api_kwargs.get("text")
+        if isinstance(text, dict):
+            normalized["text"] = text
         service_tier = api_kwargs.get("service_tier")
         if isinstance(service_tier, str) and service_tier.strip():
             normalized["service_tier"] = service_tier.strip()
@@ -6899,6 +6903,10 @@ class AIAgent:
                 self.provider == "openai-codex"
                 or "chatgpt.com/backend-api/codex" in self.base_url.lower()
             )
+            codex_model_defaults = get_openai_codex_responses_model_defaults(
+                self.provider,
+                self.model,
+            ) or {}
 
             # Resolve reasoning effort: config > default (medium)
             reasoning_effort = "medium"
@@ -6942,10 +6950,15 @@ class AIAgent:
                     if github_reasoning is not None:
                         kwargs["reasoning"] = github_reasoning
                 else:
-                    kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
+                    reasoning_summary = codex_model_defaults.get("reasoning_summary", "auto")
+                    kwargs["reasoning"] = {"effort": reasoning_effort, "summary": reasoning_summary}
                     kwargs["include"] = ["reasoning.encrypted_content"]
             elif not is_github_responses and not is_xai_responses:
                 kwargs["include"] = []
+
+            text_settings = codex_model_defaults.get("text")
+            if isinstance(text_settings, dict) and text_settings:
+                kwargs["text"] = dict(text_settings)
 
             if self.request_overrides:
                 kwargs.update(self.request_overrides)
