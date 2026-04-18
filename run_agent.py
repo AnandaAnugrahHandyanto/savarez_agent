@@ -1235,6 +1235,11 @@ class AIAgent:
         # SQLite session store (optional -- provided by CLI or gateway)
         self._session_db = session_db
         self._parent_session_id = parent_session_id
+        # Most agents own their session row and should finalize it on close().
+        # Some temporary helper agents (manual compression/session-hygiene) rotate
+        # the session forward to a continuation row that must remain open after the
+        # helper is torn down; those callers explicitly override this flag.
+        self._end_session_on_close = True
         self._last_flushed_db_idx = 0  # tracks DB-write cursor to prevent duplicate writes
         if self._session_db:
             try:
@@ -3407,6 +3412,7 @@ class AIAgent:
         - Browser daemon sessions
         - Active child agents (subagent delegation)
         - OpenAI/httpx client connections
+        - Owned SQLite session rows for fully-finished agent lifecycles
 
         Safe to call multiple times (idempotent).  Each cleanup step is
         independently guarded so a failure in one does not prevent the rest.
@@ -3453,6 +3459,19 @@ class AIAgent:
             if client is not None:
                 self._close_openai_client(client, reason="agent_close", shared=True)
                 self.client = None
+        except Exception:
+            pass
+
+        # 6. Finalize the owned SQLite session row unless this agent is only a
+        # temporary helper that deliberately handed session ownership forward
+        # (for example manual compression helpers that rotate to a continuation
+        # session_id and must leave that new row open for the caller).
+        try:
+            if getattr(self, "_end_session_on_close", True):
+                session_db = getattr(self, "_session_db", None)
+                session_id = getattr(self, "session_id", None)
+                if session_db and session_id:
+                    session_db.end_session(session_id, "agent_close")
         except Exception:
             pass
 

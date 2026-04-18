@@ -157,6 +157,44 @@ class TestAgentCloseMethod:
             child_2.close.assert_called_once()
             assert agent._active_children == []
 
+    def test_close_ends_owned_session_row(self):
+        """close() should finalize the agent's owned SQLite session row."""
+        from unittest.mock import MagicMock, patch
+
+        with patch("run_agent.AIAgent.__init__", return_value=None):
+            from run_agent import AIAgent
+            agent = AIAgent.__new__(AIAgent)
+            agent.session_id = "test-close-session-row"
+            agent._active_children = []
+            agent._active_children_lock = threading.Lock()
+            agent.client = None
+            agent._end_session_on_close = True
+            agent._session_db = MagicMock()
+
+            agent.close()
+
+            agent._session_db.end_session.assert_called_once_with(
+                "test-close-session-row", "agent_close"
+            )
+
+    def test_close_skips_session_end_for_forwarded_continuation_agents(self):
+        """Temporary helper agents can opt out when they handed session ownership forward."""
+        from unittest.mock import MagicMock, patch
+
+        with patch("run_agent.AIAgent.__init__", return_value=None):
+            from run_agent import AIAgent
+            agent = AIAgent.__new__(AIAgent)
+            agent.session_id = "test-close-forwarded-session"
+            agent._active_children = []
+            agent._active_children_lock = threading.Lock()
+            agent.client = None
+            agent._end_session_on_close = False
+            agent._session_db = MagicMock()
+
+            agent.close()
+
+            agent._session_db.end_session.assert_not_called()
+
     def test_close_survives_partial_failures(self):
         """close() continues cleanup even if one step fails."""
         from unittest.mock import patch

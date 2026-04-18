@@ -291,3 +291,47 @@ class TestBusySessionAck:
 
         result = await runner._handle_active_session_busy_message(event, sk)
         assert result is False  # not handled, let default path try
+
+
+class TestLongRunningNotificationOwnership:
+    def test_notification_stops_after_session_ownership_moves(self):
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._running_agents = {}
+
+        original_agent = MagicMock()
+        replacement_agent = MagicMock()
+        runner._running_agents["sess"] = replacement_agent
+
+        assert runner._should_emit_long_running_notification(
+            "sess", original_agent, executor_task=None
+        ) is False
+
+    def test_notification_stops_after_executor_finishes(self):
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        agent = MagicMock()
+        runner._running_agents = {"sess": agent}
+
+        done_task = MagicMock()
+        done_task.done.return_value = True
+
+        assert runner._should_emit_long_running_notification(
+            "sess", agent, executor_task=done_task
+        ) is False
+
+    def test_notification_continues_for_live_active_run(self):
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        agent = MagicMock()
+        runner._running_agents = {"sess": agent}
+
+        live_task = MagicMock()
+        live_task.done.return_value = False
+
+        assert runner._should_emit_long_running_notification(
+            "sess", agent, executor_task=live_task
+        ) is True

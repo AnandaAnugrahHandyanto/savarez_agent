@@ -1614,6 +1614,21 @@ class GatewayRunner:
         except Exception:
             pass
 
+    def _should_emit_long_running_notification(
+        self,
+        session_key: Optional[str],
+        agent: Any,
+        executor_task: Optional[asyncio.Future],
+    ) -> bool:
+        """Only notify while this task still owns the live run for the session."""
+        if agent is None:
+            return False
+        if executor_task is not None and executor_task.done():
+            return False
+        if session_key and self._running_agents.get(session_key) is not agent:
+            return False
+        return True
+
     _STUCK_LOOP_THRESHOLD = 3  # restarts while active before auto-suspend
     _STUCK_LOOP_FILE = ".restart_failure_counts"
 
@@ -3923,6 +3938,7 @@ class GatewayRunner:
                                     session_id=session_entry.session_id,
                                 )
                                 try:
+                                    _hyg_agent._end_session_on_close = False
                                     _hyg_agent._print_fn = lambda *a, **kw: None
 
                                     loop = asyncio.get_running_loop()
@@ -6582,6 +6598,7 @@ class GatewayRunner:
                 session_id=session_entry.session_id,
             )
             try:
+                tmp_agent._end_session_on_close = False
                 tmp_agent._print_fn = lambda *a, **kw: None
 
                 compressor = tmp_agent.context_compressor
@@ -9597,6 +9614,7 @@ class GatewayRunner:
         _NOTIFY_INTERVAL_RAW = float(os.getenv("HERMES_AGENT_NOTIFY_INTERVAL", 600))
         _NOTIFY_INTERVAL = _NOTIFY_INTERVAL_RAW if _NOTIFY_INTERVAL_RAW > 0 else None
         _notify_start = time.time()
+        _executor_task = None
 
         async def _notify_long_running():
             if _NOTIFY_INTERVAL is None:
@@ -9606,17 +9624,22 @@ class GatewayRunner:
                 return
             while True:
                 await asyncio.sleep(_NOTIFY_INTERVAL)
+                if _executor_task is not None and _executor_task.done():
+                    break
                 _elapsed_mins = int((time.time() - _notify_start) // 60)
-                # Include agent activity context if available.
                 _agent_ref = agent_holder[0]
+                if not self._should_emit_long_running_notification(
+                    session_key, _agent_ref, _executor_task
+                ):
+                    break
                 _status_detail = ""
-                if _agent_ref and hasattr(_agent_ref, "get_activity_summary"):
+                if hasattr(_agent_ref, "get_activity_summary"):
                     try:
                         _a = _agent_ref.get_activity_summary()
                         _parts = [f"iteration {_a['api_call_count']}/{_a['max_iterations']}"]
                         if _a.get("current_tool"):
                             _parts.append(f"running: {_a['current_tool']}")
-                        else:
+                        elif _a.get("last_activity_desc"):
                             _parts.append(_a.get("last_activity_desc", ""))
                         _status_detail = " — " + ", ".join(_parts)
                     except Exception:
