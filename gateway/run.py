@@ -4127,6 +4127,51 @@ class GatewayRunner:
             if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
                 session_entry.session_id = agent_result["session_id"]
 
+            orchestration = agent_result.get("orchestration")
+            if not isinstance(orchestration, dict):
+                orchestration = {}
+            active_todos = orchestration.get("activeTodos") or orchestration.get("todoItems") or []
+            if not isinstance(active_todos, list):
+                active_todos = []
+            status = str(orchestration.get("outcomeStatus") or "").strip().lower()
+            if not status:
+                if agent_result.get("interrupted"):
+                    status = "interrupted"
+                elif agent_result.get("failed"):
+                    status = "failed"
+                elif agent_result.get("completed", True):
+                    status = "completed"
+                else:
+                    status = "interrupted" if active_todos else "completed"
+            response_preview = (
+                orchestration.get("responsePreview")
+                or response
+                or agent_result.get("final_response")
+                or agent_result.get("error")
+                or ""
+            )
+            if not orchestration:
+                orchestration = {
+                    "sessionId": session_entry.session_id,
+                    "outcomeStatus": status,
+                    "activeTodos": active_todos,
+                    "responsePreview": str(response_preview or "").strip(),
+                }
+                agent_result["orchestration"] = orchestration
+            try:
+                from agent.continuation_enforcer import reconcile_session_continuation
+
+                continuation = reconcile_session_continuation(
+                    str(session_entry.session_id or orchestration.get("sessionId") or "").strip(),
+                    outcome_status=status,
+                    todos=active_todos,
+                    response_preview=str(response_preview or "").strip(),
+                )
+                if continuation is not None:
+                    agent_result["continuation"] = continuation
+            except Exception as exc:
+                logger.debug("Failed to reconcile continuation state: %s", exc)
+
             # Prepend reasoning/thinking if display is enabled (per-platform)
             try:
                 from gateway.display_config import resolve_display_setting as _rds
@@ -4154,6 +4199,8 @@ class GatewayRunner:
             await self.hooks.emit("agent:end", {
                 **hook_ctx,
                 "response": (response or "")[:500],
+                "status": status,
+                "orchestration": orchestration,
             })
             
             # Check for pending process watchers (check_interval on background processes)
@@ -4382,6 +4429,104 @@ class GatewayRunner:
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
     
+    def _build_auto_resume_message(self, continuation: Dict[str, Any]) -> str:
+        reason = str(continuation.get("reason") or "interrupted").strip() or "interrupted"
+        todos = continuation.get("openTodos") or continuation.get("activeTodos") or []
+        todo_lines = []
+        for item in todos:
+            if isinstance(item, dict):
+                content = str(item.get("content") or item.get("id") or "pending work").strip()
+                status = str(item.get("status") or "pending").strip()
+                todo_lines.append(f"- [{status}] {content}")
+        todo_block = "\n".join(todo_lines) if todo_lines else "- Continue the interrupted task"
+        return (
+            "[System note: Auto-resume the previously interrupted task. "
+            f"Previous outcome: {reason}. Finish the remaining work before anything else.]\n\n"
+            "Open work:\n"
+            f"{todo_block}"
+        )
+
+    async def _process_retry_requested_continuations_once(self) -> int:
+        from agent.continuation_enforcer import (
+            append_continuation_event,
+            claim_retry_requested_continuation,
+            reconcile_session_continuation,
+            release_continuation_claim,
+        )
+
+        worker_id = getattr(self, "_auto_resume_worker_id", None) or f"gateway-auto-resume:{os.getpid()}"
+        self._auto_resume_worker_id = worker_id
+        continuation = claim_retry_requested_continuation(worker_id)
+        if not continuation:
+            return 0
+
+        session_id = str(continuation.get("sessionId") or "").strip()
+        session_entry = next(
+            (
+                entry
+                for entry in self.session_store.list_sessions()
+                if getattr(entry, "session_id", None) == session_id
+            ),
+            None,
+        )
+        if session_entry is None or session_entry.origin is None:
+            release_continuation_claim(session_id, worker_id, reason="session_missing")
+            return 0
+
+        if self._running_agents.get(session_entry.session_key):
+            release_continuation_claim(session_id, worker_id, reason="session_busy")
+            return 0
+
+        result = await self._run_agent(
+            message=self._build_auto_resume_message(continuation),
+            context_prompt="",
+            history=self.session_store.load_transcript(session_entry.session_id),
+            source=session_entry.origin,
+            session_id=session_entry.session_id,
+            session_key=session_entry.session_key,
+        )
+
+        orchestration = result.get("orchestration") if isinstance(result, dict) else {}
+        if not isinstance(orchestration, dict):
+            orchestration = {}
+        status = str(orchestration.get("outcomeStatus") or "").strip().lower()
+        if not status:
+            if result.get("interrupted"):
+                status = "interrupted"
+            elif result.get("failed"):
+                status = "failed"
+            elif result.get("completed", True):
+                status = "completed"
+            else:
+                status = "interrupted"
+        active_todos = orchestration.get("activeTodos") or orchestration.get("todoItems") or []
+        if not isinstance(active_todos, list):
+            active_todos = []
+        response_preview = (
+            orchestration.get("responsePreview")
+            or result.get("final_response")
+            or result.get("error")
+            or ""
+        )
+        reconcile_session_continuation(
+            session_entry.session_id,
+            outcome_status=status,
+            todos=active_todos,
+            response_preview=str(response_preview or "").strip(),
+        )
+
+        adapter = self.adapters.get(session_entry.origin.platform)
+        if adapter is not None and result.get("final_response"):
+            metadata = {"thread_id": session_entry.origin.thread_id} if session_entry.origin.thread_id else None
+            await adapter.send(session_entry.origin.chat_id, result.get("final_response"), metadata=metadata)
+            append_continuation_event(
+                session_entry.session_id,
+                "auto_resume_delivered",
+                result.get("final_response"),
+                metadata={"worker_id": worker_id},
+            )
+        return 1
+
     def _format_session_info(self) -> str:
         """Resolve current model config and return a formatted info block.
 
@@ -9294,6 +9439,12 @@ class GatewayRunner:
                 unregister_gateway_notify(_approval_session_key)
                 reset_current_session_key(_approval_session_token)
             result_holder[0] = result
+            _orchestration = result.get("orchestration") if isinstance(result, dict) else None
+            if not isinstance(_orchestration, dict) and agent is not None and hasattr(agent, "get_orchestration_continuation_snapshot"):
+                try:
+                    _orchestration = agent.get_orchestration_continuation_snapshot(result)
+                except Exception:
+                    _orchestration = None
 
             # Signal the stream consumer that the agent is done
             if _stream_consumer is not None:
@@ -9319,6 +9470,8 @@ class GatewayRunner:
                     "final_response": error_msg,
                     "messages": result.get("messages", []),
                     "api_calls": result.get("api_calls", 0),
+                    "completed": result.get("completed", False),
+                    "interrupted": result.get("interrupted", False),
                     "failed": result.get("failed", False),
                     "compression_exhausted": result.get("compression_exhausted", False),
                     "tools": tools_holder[0] or [],
@@ -9327,6 +9480,8 @@ class GatewayRunner:
                     "input_tokens": _input_toks,
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
+                    "session_id": getattr(_agent, "session_id", session_id) if _agent else session_id,
+                    "orchestration": _orchestration,
                 }
             
             # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -9410,6 +9565,9 @@ class GatewayRunner:
                 "last_reasoning": result.get("last_reasoning"),
                 "messages": result_holder[0].get("messages", []) if result_holder[0] else [],
                 "api_calls": result_holder[0].get("api_calls", 0) if result_holder[0] else 0,
+                "completed": result.get("completed", False),
+                "interrupted": result.get("interrupted", False),
+                "failed": result.get("failed", False),
                 "tools": tools_holder[0] or [],
                 "history_offset": _effective_history_offset,
                 "last_prompt_tokens": _last_prompt_toks,
@@ -9418,6 +9576,7 @@ class GatewayRunner:
                 "model": _resolved_model,
                 "session_id": effective_session_id,
                 "response_previewed": result.get("response_previewed", False),
+                "orchestration": _orchestration,
             }
         
         # Start progress message sender if enabled
@@ -9805,7 +9964,24 @@ class GatewayRunner:
                         merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
                     elif adapter and hasattr(adapter, 'queue_message'):
                         adapter.queue_message(session_key, pending)
-                    return result_holder[0] or {"final_response": response, "messages": history}
+                    payload = result_holder[0] or {"final_response": response, "messages": history}
+                    if not isinstance(payload, dict):
+                        payload = {"final_response": response, "messages": history}
+                    orchestration = payload.get("orchestration")
+                    _agent_for_orchestration = agent_holder[0]
+                    if not isinstance(orchestration, dict) and _agent_for_orchestration is not None and hasattr(_agent_for_orchestration, "get_orchestration_continuation_snapshot"):
+                        try:
+                            orchestration = _agent_for_orchestration.get_orchestration_continuation_snapshot(payload)
+                        except Exception:
+                            orchestration = None
+                    if not isinstance(orchestration, dict):
+                        orchestration = {}
+                    if not orchestration.get("outcomeStatus"):
+                        orchestration["outcomeStatus"] = "interrupted"
+                    payload["interrupted"] = True
+                    payload["completed"] = False
+                    payload["orchestration"] = orchestration
+                    return payload
 
                 was_interrupted = result.get("interrupted")
                 if not was_interrupted:
