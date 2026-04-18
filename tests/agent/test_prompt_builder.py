@@ -27,6 +27,7 @@ from agent.prompt_builder import (
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
     PLANNING_AND_SELF_REVIEW_GUIDANCE,
+    MULTIMODAL_VERIFICATION_GUIDANCE,
     PLATFORM_HINTS,
     WSL_ENVIRONMENT_HINT,
 )
@@ -57,6 +58,12 @@ class TestGuidanceConstants:
         assert "concise plan" in PLANNING_AND_SELF_REVIEW_GUIDANCE
         assert "self-review" in PLANNING_AND_SELF_REVIEW_GUIDANCE
         assert "verify important outputs" in PLANNING_AND_SELF_REVIEW_GUIDANCE
+
+    def test_multimodal_verification_guidance_content(self):
+        assert "visual content" in MULTIMODAL_VERIFICATION_GUIDANCE
+        assert "browser_vision" in MULTIMODAL_VERIFICATION_GUIDANCE
+        assert "vision_analyze" in MULTIMODAL_VERIFICATION_GUIDANCE
+        assert "verify" in MULTIMODAL_VERIFICATION_GUIDANCE
 
 
 # =========================================================================

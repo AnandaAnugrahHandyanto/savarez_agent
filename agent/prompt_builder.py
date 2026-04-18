@@ -181,6 +181,15 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
+MULTIMODAL_VERIFICATION_GUIDANCE = (
+    "When your work involves visual content (web pages, images, diagrams, UIs, layouts), "
+    "use browser_vision or vision_analyze to inspect the result before reporting completion. "
+    "Don't assume a visual change worked — verify it. After editing code that affects "
+    "rendering, styling, or layout, take a screenshot or analyze the output to confirm "
+    "the visual result matches the intent. For image generation tasks, review the output "
+    "image to check for artifacts, correctness, and alignment with the prompt."
+)
+
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do "

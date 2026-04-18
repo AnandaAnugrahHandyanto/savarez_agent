@@ -20,7 +20,7 @@ import pytest
 import run_agent
 from run_agent import AIAgent
 from agent.error_classifier import FailoverReason
-from agent.prompt_builder import DEFAULT_AGENT_IDENTITY, PLANNING_AND_SELF_REVIEW_GUIDANCE
+from agent.prompt_builder import DEFAULT_AGENT_IDENTITY, PLANNING_AND_SELF_REVIEW_GUIDANCE, MULTIMODAL_VERIFICATION_GUIDANCE
 
 
 # ---------------------------------------------------------------------------
@@ -732,6 +732,20 @@ class TestBuildSystemPrompt:
     def test_includes_planning_and_self_review_guidance(self, agent):
         prompt = agent._build_system_prompt()
         assert PLANNING_AND_SELF_REVIEW_GUIDANCE in prompt
+
+    def test_includes_multimodal_verification_guidance_when_vision_tools_present(self, agent):
+        """Multimodal verification guidance should appear when browser_vision is available."""
+        # Add browser_vision to valid_tool_names to trigger the guidance
+        agent.valid_tool_names = agent.valid_tool_names | {"browser_vision"}
+        prompt = agent._build_system_prompt()
+        assert MULTIMODAL_VERIFICATION_GUIDANCE in prompt
+
+    def test_excludes_multimodal_verification_guidance_without_vision_tools(self, agent):
+        """Multimodal verification guidance should NOT appear when no vision tools are loaded."""
+        # Remove all vision tools from valid_tool_names
+        agent.valid_tool_names = agent.valid_tool_names - {"browser_vision", "vision_analyze", "image_gen"}
+        prompt = agent._build_system_prompt()
+        assert MULTIMODAL_VERIFICATION_GUIDANCE not in prompt
 
     def test_includes_nous_subscription_prompt(self, agent, monkeypatch):
         monkeypatch.setattr(run_agent, "build_nous_subscription_prompt", lambda tool_names: "NOUS SUBSCRIPTION BLOCK")
