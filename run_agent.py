@@ -1290,6 +1290,9 @@ class AIAgent:
         self._memory_flush_min_turns = 6
         self._turns_since_memory = 0
         self._iters_since_skill = 0
+        _mem_provider_name = ""
+        _using_honcho_memory = False
+        _auto_detected_honcho = False
         if not skip_memory:
             try:
                 mem_config = _agent_cfg.get("memory", {})
@@ -1297,6 +1300,26 @@ class AIAgent:
                 self._user_profile_enabled = mem_config.get("user_profile_enabled", False)
                 self._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
                 self._memory_flush_min_turns = int(mem_config.get("flush_min_turns", 6))
+                _mem_provider_name = (mem_config.get("provider", "") or "").strip().lower()
+
+                # Auto-migrate Honcho into the provider slot when it is clearly
+                # configured, even if config.yaml hasn't been updated yet.
+                if not _mem_provider_name:
+                    try:
+                        from plugins.memory.honcho.client import HonchoClientConfig as _HCC
+
+                        _hcfg = _HCC.from_global_config()
+                        if _hcfg.enabled and (_hcfg.api_key or _hcfg.base_url):
+                            _mem_provider_name = "honcho"
+                            _auto_detected_honcho = True
+                    except Exception:
+                        pass
+
+                _using_honcho_memory = _mem_provider_name == "honcho"
+
+                # Prefer Honcho when it actually activates, but do not disable
+                # the built-in store preemptively. If provider init fails, the
+                # flat-file memory path should remain available as a fallback.
                 if self._memory_enabled or self._user_profile_enabled:
                     from tools.memory_tool import MemoryStore
                     self._memory_store = MemoryStore(
@@ -1314,32 +1337,24 @@ class AIAgent:
         self._memory_manager = None
         if not skip_memory:
             try:
-                _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
-
                 # Auto-migrate: if Honcho was actively configured (enabled +
                 # credentials) but memory.provider is not set, activate the
                 # honcho plugin automatically.  Just having the config file
                 # is not enough — the user may have disabled Honcho or the
                 # file may be from a different tool.
-                if not _mem_provider_name:
+                if _auto_detected_honcho:
                     try:
-                        from plugins.memory.honcho.client import HonchoClientConfig as _HCC
-                        _hcfg = _HCC.from_global_config()
-                        if _hcfg.enabled and (_hcfg.api_key or _hcfg.base_url):
-                            _mem_provider_name = "honcho"
-                            # Persist so this only auto-migrates once
-                            try:
-                                from hermes_cli.config import load_config as _lc, save_config as _sc
-                                _cfg = _lc()
-                                _cfg.setdefault("memory", {})["provider"] = "honcho"
-                                _sc(_cfg)
-                            except Exception:
-                                pass
-                            if not self.quiet_mode:
-                                print("  ✓ Auto-migrated Honcho to memory provider plugin.")
-                                print("    Your config and data are preserved.\n")
+                        # Persist so this only auto-migrates once
+                        from hermes_cli.config import load_config as _lc, save_config as _sc
+
+                        _cfg = _lc()
+                        _cfg.setdefault("memory", {})["provider"] = "honcho"
+                        _sc(_cfg)
                     except Exception:
                         pass
+                    if not self.quiet_mode:
+                        print("  ✓ Auto-migrated Honcho to memory provider plugin.")
+                        print("    Your config and data are preserved.\n")
 
                 if _mem_provider_name:
                     from agent.memory_manager import MemoryManager as _MemoryManager
@@ -1387,6 +1402,20 @@ class AIAgent:
             except Exception as _mpe:
                 logger.warning("Memory provider plugin init failed: %s", _mpe)
                 self._memory_manager = None
+
+        _honcho_memory_active = bool(
+            _using_honcho_memory
+            and self._memory_manager
+            and getattr(self._memory_manager, "providers", None)
+        )
+        if _honcho_memory_active:
+            self._memory_store = None
+            if self.tools:
+                self.tools = [
+                    t for t in self.tools
+                    if t.get("function", {}).get("name") != "memory"
+                ]
+            self.valid_tool_names.discard("memory")
 
         # Inject memory provider tool schemas into the tool surface.
         # Skip tools whose names already exist (plugins may register the
@@ -3666,7 +3695,7 @@ class AIAgent:
 
         # Tool-aware behavioral guidance: only inject when the tools are loaded
         tool_guidance = []
-        if "memory" in self.valid_tool_names:
+        if "memory" in self.valid_tool_names and self._memory_store:
             tool_guidance.append(MEMORY_GUIDANCE)
         if "session_search" in self.valid_tool_names:
             tool_guidance.append(SESSION_SEARCH_GUIDANCE)

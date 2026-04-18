@@ -1010,3 +1010,49 @@ class TestHonchoCadenceTracking:
         p.on_turn_start(2, "second message")
         should_skip = p._injection_frequency == "first-turn" and p._turn_count > 1
         assert should_skip, "Second turn (turn 2) SHOULD be skipped"
+
+
+class TestHonchoContextHygiene:
+    def test_format_first_turn_context_strips_think_and_compacts_card(self):
+        from plugins.memory.honcho import HonchoMemoryProvider
+
+        p = HonchoMemoryProvider()
+        ctx = {
+            "summary": "Visible summary <think>private reasoning blob</think> still here",
+            "representation": "Useful rep <think>hide me</think>",
+            "card": [f"Fact {i}" for i in range(1, 12)],
+        }
+
+        formatted = p._format_first_turn_context(ctx)
+
+        assert "private reasoning blob" not in formatted
+        assert "hide me" not in formatted
+        assert "Visible summary" in formatted
+        assert "- Fact 1" in formatted
+        assert "… and 3 more facts" in formatted
+
+    def test_honcho_context_tool_strips_think_and_formats_card_cleanly(self):
+        from plugins.memory.honcho import HonchoMemoryProvider
+
+        p = HonchoMemoryProvider()
+        p._session_key = "test-session"
+        p._session_initialized = True
+        p._manager = MagicMock()
+        p._manager.get_session_context.return_value = {
+            "summary": "Hello <think>secret</think> world",
+            "representation": "Rep <think>internal</think> visible",
+            "card": ["alpha", "beta", "gamma"],
+            "recent_messages": [
+                {"role": "assistant", "content": "<think>hidden</think>shown"},
+                {"role": "user", "content": "plain"},
+            ],
+        }
+
+        result = json.loads(p.handle_tool_call("honcho_context", {}))["result"]
+
+        assert "secret" not in result
+        assert "internal" not in result
+        assert "hidden" not in result
+        assert "Hello world" in result
+        assert "## Card\n- alpha\n- beta\n- gamma" in result
+        assert "[assistant] shown" in result
