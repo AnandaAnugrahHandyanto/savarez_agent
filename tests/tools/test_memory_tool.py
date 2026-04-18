@@ -276,6 +276,25 @@ class TestMemoryStorePersistence:
         assert store.memory_entries == ["persistent fact"]
         assert [record.content for record in store.records] == ["persistent fact"]
 
+    def test_load_falls_back_to_legacy_exports_when_dict_sidecar_has_no_records_key(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+
+        (tmp_path / "MEMORY.md").write_text("legacy memory fact", encoding="utf-8")
+        (tmp_path / "USER.md").write_text("legacy user fact", encoding="utf-8")
+        (tmp_path / "records.json").write_text(json.dumps({"version": 1}), encoding="utf-8")
+
+        store = MemoryStore()
+        store.load_from_disk()
+
+        assert store.memory_entries == ["legacy memory fact"]
+        assert store.user_entries == ["legacy user fact"]
+        assert [record.content for record in store.records] == ["legacy memory fact", "legacy user fact"]
+
+        store._reload_records()
+        assert store.memory_entries == ["legacy memory fact"]
+        assert store.user_entries == ["legacy user fact"]
+        assert [record.content for record in store.records] == ["legacy memory fact", "legacy user fact"]
+
     def test_deduplication_on_load(self, tmp_path, monkeypatch):
         monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
         # Write file with duplicates

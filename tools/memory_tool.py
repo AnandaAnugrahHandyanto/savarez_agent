@@ -232,6 +232,9 @@ class MemoryStore:
             payload = {"version": 1, "records": raw_payload}
         elif isinstance(raw_payload, dict):
             payload = raw_payload
+            if "records" not in payload:
+                logger.warning("Ignoring memory sidecar %s because dict payload is missing required 'records' key", path)
+                return None
         else:
             logger.warning("Ignoring memory sidecar %s with unsupported payload type %s", path, type(raw_payload).__name__)
             return None
