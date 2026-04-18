@@ -101,9 +101,21 @@ _FIXED_TEMPERATURE_MODELS: Dict[str, float] = {
 
 
 def _fixed_temperature_for_model(model: Optional[str]) -> Optional[float]:
-    """Return a required temperature override for models with strict contracts."""
+    """Return a required temperature override for models with strict contracts.
+
+    Moonshot's kimi-for-coding endpoint (api.kimi.com/coding) and some
+    aggregators reject any non-approved temperature on the kimi-k2.* family.
+    Non-thinking variants require exactly 0.6; thinking variants require 1.0.
+    """
     normalized = (model or "").strip().lower()
-    return _FIXED_TEMPERATURE_MODELS.get(normalized)
+    fixed = _FIXED_TEMPERATURE_MODELS.get(normalized)
+    if fixed is not None:
+        return fixed
+    # Strip an optional vendor prefix, e.g. "moonshotai/kimi-k2.5".
+    bare = normalized.rsplit("/", 1)[-1]
+    if bare.startswith("kimi-k2"):
+        return 1.0 if "thinking" in bare else 0.6
+    return None
 
 # Default auxiliary models for direct API-key providers (cheap/fast for side tasks)
 _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {

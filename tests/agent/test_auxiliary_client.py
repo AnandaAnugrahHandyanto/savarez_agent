@@ -772,12 +772,40 @@ class TestKimiForCodingTemperature:
         assert kwargs["model"] == "kimi-for-coding"
         assert kwargs["temperature"] == 0.6
 
-    def test_non_kimi_model_still_preserves_temperature(self):
+    @pytest.mark.parametrize(
+        "model,expected",
+        [
+            ("kimi-k2.5", 0.6),
+            ("kimi-k2-turbo-preview", 0.6),
+            ("kimi-k2-0905-preview", 0.6),
+            ("kimi-k2-thinking", 1.0),
+            ("kimi-k2-thinking-turbo", 1.0),
+            ("moonshotai/kimi-k2.5", 0.6),
+            ("moonshotai/Kimi-K2-Thinking", 1.0),
+        ],
+    )
+    def test_kimi_k2_family_temperature_override(self, model, expected):
+        """Moonshot kimi-k2.* models only accept fixed temperatures.
+
+        Non-thinking models → 0.6, thinking-mode models → 1.0.
+        """
         from agent.auxiliary_client import _build_call_kwargs
 
         kwargs = _build_call_kwargs(
             provider="kimi-coding",
-            model="kimi-k2.5",
+            model=model,
+            messages=[{"role": "user", "content": "hello"}],
+            temperature=0.3,
+        )
+
+        assert kwargs["temperature"] == expected
+
+    def test_non_kimi_model_still_preserves_temperature(self):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="openrouter",
+            model="anthropic/claude-sonnet-4-6",
             messages=[{"role": "user", "content": "hello"}],
             temperature=0.3,
         )
