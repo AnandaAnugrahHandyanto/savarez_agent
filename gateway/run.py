@@ -10416,18 +10416,25 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         name="cron-ticker",
     )
     cron_thread.start()
-    
+
     # Wait for shutdown
     await runner.wait_for_shutdown()
 
+    _failure = False
     if runner.should_exit_with_failure:
         if runner.exit_reason:
             logger.error("Gateway exiting with failure: %s", runner.exit_reason)
+        _failure = True
+
+    try:
+        pass
+    finally:
+        # Stop cron ticker cleanly (always, even on failure)
+        cron_stop.set()
+        cron_thread.join(timeout=5)
+
+    if _failure:
         return False
-    
-    # Stop cron ticker cleanly
-    cron_stop.set()
-    cron_thread.join(timeout=5)
 
     # Close MCP server connections
     try:
