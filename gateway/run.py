@@ -4209,7 +4209,8 @@ class GatewayRunner:
                         display_reasoning += f"\n_... ({len(lines) - 15} more lines)_"
                     else:
                         display_reasoning = last_reasoning.strip()
-                    response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
+                    quoted = "\n".join(f"> {l}" for l in display_reasoning.splitlines())
+                    response = f"💭 **Reasoning:**\n{quoted}\n\n{response}"
 
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
@@ -8854,6 +8855,12 @@ class GatewayRunner:
                 try:
                     raw = progress_queue.get_nowait()
 
+                    # Handle new-group sentinel: reset so next tools get a fresh message
+                    if raw == "__new_group__":
+                        progress_lines = []
+                        progress_msg_id = None
+                        continue
+
                     # Handle dedup messages: update last line with repeat counter
                     if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                         _, base_msg, count = raw
@@ -8925,6 +8932,8 @@ class GatewayRunner:
                                 _, base_msg, count = raw
                                 if progress_lines:
                                     progress_lines[-1] = f"{base_msg} (×{count + 1})"
+                            elif raw == "__new_group__":
+                                pass  # Skip sentinels during drain
                             else:
                                 progress_lines.append(raw)
                         except Exception:
@@ -9123,19 +9132,27 @@ class GatewayRunner:
                     logger.debug("Could not set up stream consumer: %s", _sc_err)
 
             def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
+                # Thinking text appeared — next tool batch needs a fresh message
+                # so tools don't edit into a message that precedes this thinking.
+                if progress_queue:
+                    progress_queue.put("__new_group__")
+
                 if _stream_consumer is not None:
                     if already_streamed:
                         _stream_consumer.on_segment_break()
                     else:
-                        _stream_consumer.on_commentary(text)
+                        # Format as block quote for visual distinction from replies
+                        quoted = "\n".join(f"> {l}" for l in text.splitlines())
+                        _stream_consumer.on_commentary(f"💭\n{quoted}")
                     return
                 if already_streamed or not _status_adapter or not str(text or "").strip():
                     return
                 try:
+                    quoted = "\n".join(f"> {l}" for l in text.splitlines())
                     asyncio.run_coroutine_threadsafe(
                         _status_adapter.send(
                             _status_chat_id,
-                            text,
+                            f"💭\n{quoted}",
                             metadata=_status_thread_metadata,
                         ),
                         _loop_for_step,
