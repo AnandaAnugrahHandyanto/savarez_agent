@@ -5735,7 +5735,8 @@ class AIAgent:
                             entry["id"] = tc_delta.id
                         if tc_delta.function:
                             if tc_delta.function.name:
-                                entry["function"]["name"] += tc_delta.function.name
+                                if not entry["function"]["name"]:
+                                    entry["function"]["name"] = tc_delta.function.name
                             if tc_delta.function.arguments:
                                 entry["function"]["arguments"] += tc_delta.function.arguments
                         extra = getattr(tc_delta, "extra_content", None)
@@ -5868,7 +5869,11 @@ class AIAgent:
                                     _fire_first_delta()
                                     self._fire_reasoning_delta(thinking_text)
 
-                # Return the native Anthropic Message for downstream processing
+                # Return the native Anthropic Message for downstream processing.
+                # If the stream was interrupted, don't call get_final_message()
+                # — it may hang draining the stream or return a corrupt message.
+                if self._interrupt_requested:
+                    return None
                 return stream.get_final_message()
 
         def _call():
@@ -6492,9 +6497,15 @@ class AIAgent:
                 return True
         return False
 
+    # 20 MB base64 ≈ 15 MB decoded image – generous but prevents OOM.
+    _MAX_DATA_URL_BASE64_BYTES = 20 * 1024 * 1024
+
     @staticmethod
     def _materialize_data_url_for_vision(image_url: str) -> tuple[str, Optional[Path]]:
         header, _, data = str(image_url or "").partition(",")
+        if len(data) > AgentRunner._MAX_DATA_URL_BASE64_BYTES:
+            logger.warning("data-URL payload too large (%d bytes), skipping", len(data))
+            return "", None
         mime = "image/jpeg"
         if header.startswith("data:"):
             mime_part = header[len("data:"):].split(";", 1)[0].strip()
