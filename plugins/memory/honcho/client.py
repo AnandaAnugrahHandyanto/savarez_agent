@@ -349,6 +349,13 @@ class HonchoClientConfig:
             host_block.get("apiKey")
             or raw.get("apiKey")
             or os.environ.get("HONCHO_API_KEY")
+            # Sub-profiles (hermes.bob, hermes.ares, etc.) don't have their own
+            # apiKey — inherit from the default 'hermes' host block.
+            or (
+                (raw.get("hosts") or {}).get("hermes", {}).get("apiKey")
+                if resolved_host != HOST
+                else None
+            )
         )
 
         environment = (
