@@ -119,6 +119,11 @@ unset HERMES_YOLO_MODE HERMES_INTERACTIVE HERMES_QUIET HERMES_TOOL_PROGRESS \
       HERMES_REDACT_SECRETS HERMES_BACKGROUND_NOTIFICATIONS HERMES_EXEC_ASK \
       HERMES_HOME_MODE 2>/dev/null || true
 
+# Keep local messaging/security env from making tests non-deterministic.
+unset TELEGRAM_ALLOWED_USERS TELEGRAM_ALLOWED_CHAT_IDS 2>/dev/null || true
+# Default to disabled during tests to avoid live binary downloads/timeouts.
+export TIRITH_ENABLED=0
+
 # Pin deterministic runtime.
 export TZ=UTC
 export LANG=C.UTF-8
