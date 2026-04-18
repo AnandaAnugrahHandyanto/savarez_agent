@@ -22,6 +22,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+from pathlib import Path
+import yaml
 
 logger = logging.getLogger(__name__)
 
@@ -384,8 +386,22 @@ def get_provider(name: str) -> Optional[ProviderDef]:
             source="hermes",
         )
 
-    return None
+    
+    # Phase 4: Resolve from user-defined providers in config.yaml
+    try:
+        config_path = Path.home() / ".hermes" / "config.yaml"
+        if config_path.exists():
+            with open(config_path, "r") as f:
+                user_config = yaml.safe_load(f) or {}
+                user_providers = user_config.get("providers", {})
+                if canonical in user_providers:
+                    p_data = user_providers[canonical]
+                    from agent.models_dev import ProviderDef
+                    return ProviderDef(**p_data)
+    except Exception as e:
+        logger.warning(f"User provider resolution failed for {canonical}: {e}")
 
+    return None
 
 def get_label(provider_id: str) -> str:
     """Get a human-readable display name for a provider."""
