@@ -426,6 +426,13 @@ class BaseEnvironment(ABC):
         Fires the ``activity_callback`` (if set on this instance) every 10s
         while the process is running so the gateway's inactivity timeout
         doesn't kill long-running commands.
+
+        Also wraps the poll loop in a ``try/finally`` that guarantees we
+        call ``self._kill_process(proc)`` if we exit via ``KeyboardInterrupt``
+        or ``SystemExit``.  Without this, the local backend (which spawns
+        subprocesses with ``os.setsid`` into their own process group) leaves
+        an orphan with ``PPID=1`` when python is shut down mid-tool — the
+        ``sleep 300``-survives-30-min bug Physikal and I both hit.
         """
         output_chunks: list[str] = []
 
@@ -469,60 +476,82 @@ class BaseEnvironment(ABC):
                 is_interrupted(),
             )
 
-        while proc.poll() is None:
-            _iter_count += 1
-            if is_interrupted():
-                if _DEBUG_INTERRUPT:
-                    logger.info(
-                        "[interrupt-debug] _wait_for_process INTERRUPT DETECTED "
-                        "tid=%s pid=%s iter=%d elapsed=%.1fs — killing process group",
-                        _tid, _pid, _iter_count, time.monotonic() - _activity_state["start"],
-                    )
-                self._kill_process(proc)
-                drain_thread.join(timeout=2)
-                return {
-                    "output": "".join(output_chunks) + "\n[Command interrupted]",
-                    "returncode": 130,
-                }
-            if time.monotonic() > deadline:
-                if _DEBUG_INTERRUPT:
-                    logger.info(
-                        "[interrupt-debug] _wait_for_process TIMEOUT "
-                        "tid=%s pid=%s iter=%d timeout=%ss",
-                        _tid, _pid, _iter_count, timeout,
-                    )
-                self._kill_process(proc)
-                drain_thread.join(timeout=2)
-                partial = "".join(output_chunks)
-                timeout_msg = f"\n[Command timed out after {timeout}s]"
-                return {
-                    "output": partial + timeout_msg
-                    if partial
-                    else timeout_msg.lstrip(),
-                    "returncode": 124,
-                }
-            # Periodic activity touch so the gateway knows we're alive
-            touch_activity_if_due(_activity_state, "terminal command running")
+        try:
+            while proc.poll() is None:
+                _iter_count += 1
+                if is_interrupted():
+                    if _DEBUG_INTERRUPT:
+                        logger.info(
+                            "[interrupt-debug] _wait_for_process INTERRUPT DETECTED "
+                            "tid=%s pid=%s iter=%d elapsed=%.1fs — killing process group",
+                            _tid, _pid, _iter_count, time.monotonic() - _activity_state["start"],
+                        )
+                    self._kill_process(proc)
+                    drain_thread.join(timeout=2)
+                    return {
+                        "output": "".join(output_chunks) + "\n[Command interrupted]",
+                        "returncode": 130,
+                    }
+                if time.monotonic() > deadline:
+                    if _DEBUG_INTERRUPT:
+                        logger.info(
+                            "[interrupt-debug] _wait_for_process TIMEOUT "
+                            "tid=%s pid=%s iter=%d timeout=%ss",
+                            _tid, _pid, _iter_count, timeout,
+                        )
+                    self._kill_process(proc)
+                    drain_thread.join(timeout=2)
+                    partial = "".join(output_chunks)
+                    timeout_msg = f"\n[Command timed out after {timeout}s]"
+                    return {
+                        "output": partial + timeout_msg
+                        if partial
+                        else timeout_msg.lstrip(),
+                        "returncode": 124,
+                    }
+                # Periodic activity touch so the gateway knows we're alive
+                touch_activity_if_due(_activity_state, "terminal command running")
 
-            # Heartbeat every ~30s: proves the loop is alive and reports
-            # the activity-callback state (thread-local, can get clobbered
-            # by nested tool calls or executor thread reuse).
-            if _DEBUG_INTERRUPT and time.monotonic() - _last_heartbeat >= 30.0:
-                _cb_now_none = _get_activity_callback() is None
+                # Heartbeat every ~30s: proves the loop is alive and reports
+                # the activity-callback state (thread-local, can get clobbered
+                # by nested tool calls or executor thread reuse).
+                if _DEBUG_INTERRUPT and time.monotonic() - _last_heartbeat >= 30.0:
+                    _cb_now_none = _get_activity_callback() is None
+                    logger.info(
+                        "[interrupt-debug] _wait_for_process HEARTBEAT "
+                        "tid=%s pid=%s iter=%d elapsed=%.0fs "
+                        "interrupt=%s activity_cb=%s%s",
+                        _tid, _pid, _iter_count,
+                        time.monotonic() - _activity_state["start"],
+                        is_interrupted(),
+                        "set" if not _cb_now_none else "MISSING",
+                        " (LOST during run)" if _cb_now_none and not _cb_was_none else "",
+                    )
+                    _last_heartbeat = time.monotonic()
+                    _cb_was_none = _cb_now_none
+
+                time.sleep(0.2)
+        except (KeyboardInterrupt, SystemExit):
+            # Signal arrived (SIGTERM/SIGHUP/SIGINT) or sys.exit() was called
+            # while we were polling.  The local backend spawns subprocesses
+            # with os.setsid, which puts them in their own process group — so
+            # if we let the interrupt propagate without killing the child,
+            # python exits and the child is reparented to init (PPID=1) and
+            # keeps running as an orphan.  Killing the process group here
+            # guarantees the tool's side effects stop when the agent stops.
+            if _DEBUG_INTERRUPT:
                 logger.info(
-                    "[interrupt-debug] _wait_for_process HEARTBEAT "
-                    "tid=%s pid=%s iter=%d elapsed=%.0fs "
-                    "interrupt=%s activity_cb=%s%s",
+                    "[interrupt-debug] _wait_for_process EXCEPTION_EXIT "
+                    "tid=%s pid=%s iter=%d elapsed=%.1fs — killing subprocess group before re-raise",
                     _tid, _pid, _iter_count,
                     time.monotonic() - _activity_state["start"],
-                    is_interrupted(),
-                    "set" if not _cb_now_none else "MISSING",
-                    " (LOST during run)" if _cb_now_none and not _cb_was_none else "",
                 )
-                _last_heartbeat = time.monotonic()
-                _cb_was_none = _cb_now_none
-
-            time.sleep(0.2)
+            try:
+                self._kill_process(proc)
+                drain_thread.join(timeout=2)
+            except Exception:
+                pass  # cleanup is best-effort
+            raise
 
         drain_thread.join(timeout=5)
 
