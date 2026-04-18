@@ -668,6 +668,97 @@ def has_conflicting_systemd_units() -> bool:
     return len(get_installed_systemd_scopes()) > 1
 
 
+# Legacy service names from older Hermes installs that predate the
+# hermes-gateway rename. Kept as an explicit allowlist (NOT a glob) so
+# profile units (hermes-gateway-*.service) and unrelated third-party
+# "hermes" units are never matched.
+_LEGACY_SERVICE_NAMES: tuple[str, ...] = ("hermes.service",)
+
+# ExecStart content markers that identify a unit as running our gateway.
+# A legacy unit is only flagged when its file contains one of these.
+_LEGACY_UNIT_EXECSTART_MARKERS: tuple[str, ...] = (
+    "hermes_cli.main gateway",
+    "hermes_cli/main.py gateway",
+    "gateway/run.py",
+    " hermes gateway ",
+    "/hermes gateway ",
+)
+
+
+def _legacy_unit_search_paths() -> list[tuple[bool, Path]]:
+    """Return ``[(is_system, base_dir), ...]`` — directories to scan for legacy units.
+
+    Factored out so tests can monkeypatch the search roots without touching
+    real filesystem paths.
+    """
+    return [
+        (False, Path.home() / ".config" / "systemd" / "user"),
+        (True, Path("/etc/systemd/system")),
+    ]
+
+
+def _find_legacy_hermes_units() -> list[tuple[str, Path, bool]]:
+    """Return ``[(unit_name, unit_path, is_system)]`` for legacy Hermes gateway units.
+
+    Detects unit files installed by older Hermes versions that used a
+    different service name (e.g. ``hermes.service`` before the rename to
+    ``hermes-gateway.service``). When both a legacy unit and the current
+    ``hermes-gateway.service`` are active, they fight over the same bot
+    token — the PR #5646 signal-recovery change turns this into a 30-second
+    SIGTERM flap loop.
+
+    Safety guards:
+
+    * Explicit allowlist of legacy names (no globbing). Profile units such
+      as ``hermes-gateway-coder.service`` and unrelated third-party
+      ``hermes-*`` services are never matched.
+    * ExecStart content check — only flag units that invoke our gateway
+      entrypoint. A user-created ``hermes.service`` running an unrelated
+      binary is left untouched.
+    * Results are returned purely for caller inspection; this function
+      never mutates or removes anything.
+    """
+    results: list[tuple[str, Path, bool]] = []
+    for is_system, base in _legacy_unit_search_paths():
+        for name in _LEGACY_SERVICE_NAMES:
+            unit_path = base / name
+            try:
+                if not unit_path.exists():
+                    continue
+                text = unit_path.read_text(encoding="utf-8", errors="ignore")
+            except (OSError, PermissionError):
+                continue
+            if not any(marker in text for marker in _LEGACY_UNIT_EXECSTART_MARKERS):
+                # Not our gateway — leave alone
+                continue
+            results.append((name, unit_path, is_system))
+    return results
+
+
+def has_legacy_hermes_units() -> bool:
+    """Return True when any legacy Hermes gateway unit files exist."""
+    return bool(_find_legacy_hermes_units())
+
+
+def print_legacy_unit_warning() -> None:
+    """Warn about legacy Hermes gateway unit files if any are installed.
+
+    Idempotent: prints nothing when no legacy units are detected. Safe to
+    call from any status/install/setup path.
+    """
+    legacy = _find_legacy_hermes_units()
+    if not legacy:
+        return
+    print_warning("Legacy Hermes gateway unit(s) detected from an older install:")
+    for name, path, is_system in legacy:
+        scope = "system" if is_system else "user"
+        print_info(f"    {path}  ({scope} scope)")
+    print_info("  These run alongside the current hermes-gateway service and")
+    print_info("  cause SIGTERM flap loops — both try to use the same bot token.")
+    print_info("  Remove them with:")
+    print_info("    hermes gateway migrate-legacy")
+
+
 def print_systemd_scope_conflict_warning() -> None:
     scopes = get_installed_systemd_scopes()
     if len(scopes) < 2:
@@ -1239,6 +1330,7 @@ def systemd_install(force: bool = False, system: bool = False, run_as_user: str 
         _ensure_linger_enabled()
 
     print_systemd_scope_conflict_warning()
+    print_legacy_unit_warning()
 
 
 def systemd_uninstall(system: bool = False):
@@ -1360,6 +1452,10 @@ def systemd_status(deep: bool = False, system: bool = False):
 
     if has_conflicting_systemd_units():
         print_systemd_scope_conflict_warning()
+        print()
+
+    if has_legacy_hermes_units():
+        print_legacy_unit_warning()
         print()
 
     if not systemd_unit_is_current(system=system):
@@ -3116,6 +3212,10 @@ def gateway_setup():
 
     if supports_systemd_services() and has_conflicting_systemd_units():
         print_systemd_scope_conflict_warning()
+        print()
+
+    if supports_systemd_services() and has_legacy_hermes_units():
+        print_legacy_unit_warning()
         print()
 
     if service_installed and service_running:

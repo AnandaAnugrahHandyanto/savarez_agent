@@ -1177,3 +1177,190 @@ class TestDockerAwareGateway:
         out = capsys.readouterr().out
         assert "docker" in out.lower()
         assert "hermes gateway run" in out
+
+
+class TestLegacyHermesUnitDetection:
+    """Tests for _find_legacy_hermes_units / has_legacy_hermes_units.
+
+    These guard against the scenario that tripped Luis in April 2026: an
+    older install left a ``hermes.service`` unit behind when the service was
+    renamed to ``hermes-gateway.service``. After PR #5646 (signal recovery
+    via systemd), the two services began SIGTERM-flapping over the same
+    Telegram bot token in a 30-second cycle.
+
+    The detector must flag ``hermes.service`` ONLY when it actually runs our
+    gateway, and must NEVER flag profile units
+    (``hermes-gateway-<profile>.service``) or unrelated third-party services.
+    """
+
+    # Minimal ExecStart that looks like our gateway
+    _OUR_UNIT_TEXT = (
+        "[Unit]\nDescription=Hermes Gateway\n[Service]\n"
+        "ExecStart=/usr/bin/python -m hermes_cli.main gateway run --replace\n"
+    )
+
+    @staticmethod
+    def _setup_search_paths(tmp_path, monkeypatch):
+        """Redirect the legacy search to user_dir + system_dir under tmp_path."""
+        user_dir = tmp_path / "user"
+        system_dir = tmp_path / "system"
+        user_dir.mkdir()
+        system_dir.mkdir()
+        monkeypatch.setattr(
+            gateway_cli,
+            "_legacy_unit_search_paths",
+            lambda: [(False, user_dir), (True, system_dir)],
+        )
+        return user_dir, system_dir
+
+    def test_detects_legacy_hermes_service_in_user_scope(self, tmp_path, monkeypatch):
+        user_dir, _ = self._setup_search_paths(tmp_path, monkeypatch)
+        legacy = user_dir / "hermes.service"
+        legacy.write_text(self._OUR_UNIT_TEXT, encoding="utf-8")
+
+        results = gateway_cli._find_legacy_hermes_units()
+
+        assert len(results) == 1
+        name, path, is_system = results[0]
+        assert name == "hermes.service"
+        assert path == legacy
+        assert is_system is False
+        assert gateway_cli.has_legacy_hermes_units() is True
+
+    def test_detects_legacy_hermes_service_in_system_scope(self, tmp_path, monkeypatch):
+        _, system_dir = self._setup_search_paths(tmp_path, monkeypatch)
+        legacy = system_dir / "hermes.service"
+        legacy.write_text(self._OUR_UNIT_TEXT, encoding="utf-8")
+
+        results = gateway_cli._find_legacy_hermes_units()
+
+        assert len(results) == 1
+        name, path, is_system = results[0]
+        assert name == "hermes.service"
+        assert path == legacy
+        assert is_system is True
+
+    def test_ignores_profile_unit_hermes_gateway_coder(self, tmp_path, monkeypatch):
+        """CRITICAL: profile units must NOT be flagged as legacy.
+
+        Teknium's concern — ``hermes-gateway-coder.service`` is our standard
+        naming for the ``coder`` profile. The legacy detector is an explicit
+        allowlist, not a glob, so profile units are safe.
+        """
+        user_dir, system_dir = self._setup_search_paths(tmp_path, monkeypatch)
+        # Drop profile units in BOTH scopes with our ExecStart
+        for base in (user_dir, system_dir):
+            (base / "hermes-gateway-coder.service").write_text(
+                self._OUR_UNIT_TEXT, encoding="utf-8"
+            )
+            (base / "hermes-gateway-orcha.service").write_text(
+                self._OUR_UNIT_TEXT, encoding="utf-8"
+            )
+            (base / "hermes-gateway.service").write_text(
+                self._OUR_UNIT_TEXT, encoding="utf-8"
+            )
+
+        results = gateway_cli._find_legacy_hermes_units()
+
+        assert results == []
+        assert gateway_cli.has_legacy_hermes_units() is False
+
+    def test_ignores_unrelated_hermes_service(self, tmp_path, monkeypatch):
+        """Third-party ``hermes.service`` that isn't ours stays untouched.
+
+        If a user has some other package named ``hermes`` installed as a
+        service, we must not flag it.
+        """
+        user_dir, _ = self._setup_search_paths(tmp_path, monkeypatch)
+        (user_dir / "hermes.service").write_text(
+            "[Unit]\nDescription=Some Other Hermes\n[Service]\n"
+            "ExecStart=/opt/other-hermes/bin/daemon --foreground\n",
+            encoding="utf-8",
+        )
+
+        results = gateway_cli._find_legacy_hermes_units()
+
+        assert results == []
+        assert gateway_cli.has_legacy_hermes_units() is False
+
+    def test_returns_empty_when_no_legacy_files_exist(self, tmp_path, monkeypatch):
+        self._setup_search_paths(tmp_path, monkeypatch)
+
+        assert gateway_cli._find_legacy_hermes_units() == []
+        assert gateway_cli.has_legacy_hermes_units() is False
+
+    def test_detects_both_scopes_simultaneously(self, tmp_path, monkeypatch):
+        """When a user has BOTH user-scope and system-scope legacy units,
+        both are reported so the migration step can remove them together."""
+        user_dir, system_dir = self._setup_search_paths(tmp_path, monkeypatch)
+        (user_dir / "hermes.service").write_text(self._OUR_UNIT_TEXT, encoding="utf-8")
+        (system_dir / "hermes.service").write_text(self._OUR_UNIT_TEXT, encoding="utf-8")
+
+        results = gateway_cli._find_legacy_hermes_units()
+
+        scopes = sorted(is_system for _, _, is_system in results)
+        assert scopes == [False, True]
+
+    def test_accepts_alternate_execstart_formats(self, tmp_path, monkeypatch):
+        """Older installs may have used different python invocations.
+
+        ExecStart variants we've seen in the wild:
+          - python -m hermes_cli.main gateway run
+          - python path/to/hermes_cli/main.py gateway run
+          - hermes gateway run   (direct binary)
+          - python path/to/gateway/run.py
+        """
+        user_dir, _ = self._setup_search_paths(tmp_path, monkeypatch)
+        variants = [
+            "ExecStart=/venv/bin/python -m hermes_cli.main gateway run --replace",
+            "ExecStart=/venv/bin/python /opt/hermes/hermes_cli/main.py gateway run",
+            "ExecStart=/usr/local/bin/hermes gateway run --replace",
+            "ExecStart=/venv/bin/python /opt/hermes/gateway/run.py",
+        ]
+        for i, execstart in enumerate(variants):
+            name = f"hermes.service" if i == 0 else f"hermes.service"  # same name
+            # Test each variant fresh
+            (user_dir / "hermes.service").write_text(
+                f"[Unit]\nDescription=Old Hermes\n[Service]\n{execstart}\n",
+                encoding="utf-8",
+            )
+            results = gateway_cli._find_legacy_hermes_units()
+            assert len(results) == 1, f"Variant {i} not detected: {execstart!r}"
+
+    def test_print_legacy_unit_warning_is_noop_when_empty(self, tmp_path, monkeypatch, capsys):
+        self._setup_search_paths(tmp_path, monkeypatch)
+
+        gateway_cli.print_legacy_unit_warning()
+        out = capsys.readouterr().out
+
+        assert out == ""
+
+    def test_print_legacy_unit_warning_shows_migration_hint(self, tmp_path, monkeypatch, capsys):
+        user_dir, _ = self._setup_search_paths(tmp_path, monkeypatch)
+        (user_dir / "hermes.service").write_text(self._OUR_UNIT_TEXT, encoding="utf-8")
+
+        gateway_cli.print_legacy_unit_warning()
+        out = capsys.readouterr().out
+
+        assert "Legacy" in out
+        assert "hermes.service" in out
+        assert "hermes gateway migrate-legacy" in out
+
+    def test_handles_unreadable_unit_file_gracefully(self, tmp_path, monkeypatch):
+        """A permission error reading a unit file must not crash detection."""
+        user_dir, _ = self._setup_search_paths(tmp_path, monkeypatch)
+        unreadable = user_dir / "hermes.service"
+        unreadable.write_text(self._OUR_UNIT_TEXT, encoding="utf-8")
+        # Simulate a read failure — monkeypatch Path.read_text to raise
+        original_read_text = gateway_cli.Path.read_text
+
+        def raising_read_text(self, *args, **kwargs):
+            if self == unreadable:
+                raise PermissionError("simulated")
+            return original_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(gateway_cli.Path, "read_text", raising_read_text)
+
+        # Should not raise
+        results = gateway_cli._find_legacy_hermes_units()
+        assert results == []
