@@ -35,3 +35,31 @@ def test_create_openai_client_does_not_mutate_input_kwargs(mock_openai):
     assert kwargs == snapshot, (
         f"_create_openai_client mutated input kwargs; expected {snapshot}, got {kwargs}"
     )
+
+
+@patch("run_agent.OpenAI")
+def test_create_openai_client_respects_proxy_env(mock_openai, monkeypatch):
+    mock_openai.return_value = MagicMock()
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://chatgpt.com/backend-api/codex",
+        model="gpt-5.4",
+        provider="openai-codex",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7890")
+
+    agent._create_openai_client(
+        {"api_key": "test-key", "base_url": "https://chatgpt.com/backend-api/codex"},
+        reason="test",
+        shared=False,
+    )
+
+    assert "http_client" not in mock_openai.call_args.kwargs, (
+        "_create_openai_client injected a custom http_client even though proxy "
+        "environment variables were present; that bypasses env proxy handling "
+        "and breaks providers that require a local proxy path."
+    )

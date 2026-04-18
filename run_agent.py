@@ -4512,7 +4512,14 @@ class AIAgent:
         # constructs a fresh one — no stale closed transport can be reused.
         # Tests in ``tests/run_agent/test_create_openai_client_reuse.py`` and
         # ``tests/run_agent/test_sequential_chats_live.py`` pin this invariant.
-        if "http_client" not in client_kwargs:
+        _proxy_env_present = any(
+            os.getenv(name)
+            for name in (
+                "http_proxy", "https_proxy", "all_proxy",
+                "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+            )
+        )
+        if "http_client" not in client_kwargs and not _proxy_env_present:
             try:
                 import httpx as _httpx
                 import socket as _socket
