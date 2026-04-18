@@ -2155,6 +2155,8 @@ def validate_requested_model(
     # api_models is None — couldn't reach API.  Accept and persist,
     # but warn so typos don't silently break things.
 
+    provider_label = _PROVIDER_LABELS.get(normalized, normalized)
+
     # Bedrock: use our own discovery instead of HTTP /models endpoint.
     # Bedrock's bedrock-runtime URL doesn't support /models — it uses the
     # AWS SDK control plane (ListFoundationModels + ListInferenceProfiles).
@@ -2190,7 +2192,34 @@ def validate_requested_model(
         except Exception:
             pass  # Fall through to generic warning
 
-    provider_label = _PROVIDER_LABELS.get(normalized, normalized)
+    # DashScope coding endpoint does not expose a /models endpoint (returns
+    # 404).  For alibaba, fall back to the models.dev catalog instead of
+    # hard-rejecting — otherwise /model Qwen will always fail for coding-plan
+    # users who set providers.alibaba.base_url to the coding endpoint.
+    if normalized == "alibaba":
+        known = provider_model_ids("alibaba")
+        if requested in known:
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": True,
+                "message": None,
+            }
+        suggestions = get_close_matches(requested, known, n=3, cutoff=0.5)
+        suggestion_text = ""
+        if suggestions:
+            suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+        return {
+            "accepted": True,
+            "persist": True,
+            "recognized": False,
+            "message": (
+                f"Note: `{requested}` was not found in the models.dev catalog for "
+                f"{provider_label}, but it may still work on your coding plan."
+                f"{suggestion_text}"
+            ),
+        }
+
     return {
         "accepted": False,
         "persist": False,
