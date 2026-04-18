@@ -617,6 +617,12 @@ DEFAULT_CONFIG = {
     # always goes to ~/.hermes/skills/.
     "skills": {
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+        # Skills block size in system prompt:
+        # - auto: full index on CLI, minimal block on gateway platforms
+        # - full: full <available_skills> index every turn
+        # - minimal: tiny guidance block (use skills_list/skill_view as needed)
+        # - off: do not inject skills guidance
+        "system_prompt_mode": "auto",
     },
 
     # Honcho AI-native memory -- reads ~/.honcho/config.json as single source of truth.
@@ -700,7 +706,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 17,
+    "_config_version": 18,
 }
 
 # =============================================================================
