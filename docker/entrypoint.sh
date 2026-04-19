@@ -60,12 +60,26 @@ fi
 
 # SOUL.md
 if [ ! -f "$HERMES_HOME/SOUL.md" ]; then
-    cp "$INSTALL_DIR/docker/SOUL.md" "$HERMES_HOME/SOUL.md"
+    if [ -f "$INSTALL_DIR/docker/SOUL.md" ]; then
+        cp "$INSTALL_DIR/docker/SOUL.md" "$HERMES_HOME/SOUL.md"
+    else
+        cat > "$HERMES_HOME/SOUL.md" << 'SOUL_EOF'
+# Hermes Agent Persona
+
+This file customizes Hermes' personality and high-level behavior.
+Edit it to add persistent instructions that should apply to all sessions
+running inside this Hermes home.
+SOUL_EOF
+    fi
 fi
 
 # Sync bundled skills (manifest-based so user edits are preserved)
 if [ -d "$INSTALL_DIR/skills" ]; then
-    python3 "$INSTALL_DIR/tools/skills_sync.py"
+    if [ -x "$INSTALL_DIR/.venv/bin/python" ]; then
+        "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py"
+    else
+        python3 "$INSTALL_DIR/tools/skills_sync.py"
+    fi
 fi
 
 exec hermes "$@"
