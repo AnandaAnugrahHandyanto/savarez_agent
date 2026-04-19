@@ -384,6 +384,32 @@ def _reset_module_state():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _isolate_claude_keychain(monkeypatch):
+    """Prevent tests from reading Claude Code's real macOS Keychain entries.
+
+    ``agent.anthropic_adapter.read_claude_code_credentials`` was extended to
+    read the ``Claude Code-credentials`` service from the login keychain
+    before falling back to ``~/.claude/.credentials.json``.  On developer
+    machines with Claude Code already authenticated, that would leak the
+    real user's OAuth token into every test that patches ``Path.home()``
+    but not the keychain.  Neutralise the keychain lookup by default; tests
+    that need to exercise the Keychain path can re-override these within
+    their own scope.
+    """
+    try:
+        from agent import claude_keychain as _ck
+    except Exception:
+        return
+    # Neutralise the *public* discovery API at the adapter boundary — tests
+    # of the internal helpers (``_find_keychain_services`` et al.) remain
+    # free to exercise the raw subprocess-parsing logic with their own
+    # mocks.  Adapter code never touches the internals directly.
+    monkeypatch.setattr(_ck, "read_all_accounts", lambda: [])
+    monkeypatch.setattr(_ck, "read_primary_account", lambda: None)
+    monkeypatch.setattr(_ck, "read_selected_account", lambda *a, **kw: None)
+
+
 @pytest.fixture()
 def tmp_dir(tmp_path):
     """Provide a temporary directory that is cleaned up automatically."""

@@ -79,12 +79,20 @@ class AnthropicTransport(ProviderTransport):
         """Normalize Anthropic response to NormalizedResponse.
 
         kwargs:
-            strip_tool_prefix: bool — strip 'mcp_mcp_' prefixes from tool names.
+            strip_tool_prefix: bool — strip 'mcp_' prefixes from tool names.
+            tool_name_map: Optional[Dict[str, str]] — map ``mcp_<PascalCase>``
+                back to the original snake_case name (OAuth Claude Code
+                roundtrip; the PascalCase transform is lossy).
         """
         from agent.anthropic_adapter import normalize_anthropic_response_v2
 
         strip_tool_prefix = kwargs.get("strip_tool_prefix", False)
-        return normalize_anthropic_response_v2(response, strip_tool_prefix=strip_tool_prefix)
+        tool_name_map = kwargs.get("tool_name_map")
+        return normalize_anthropic_response_v2(
+            response,
+            strip_tool_prefix=strip_tool_prefix,
+            tool_name_map=tool_name_map,
+        )
 
     def validate_response(self, response: Any) -> bool:
         """Check Anthropic response structure is valid."""

@@ -165,10 +165,39 @@ _FAST_MODE_BETA = "fast-mode-2026-02-01"
 
 # Additional beta headers required for OAuth/subscription auth.
 # Matches what Claude Code (and pi-ai / OpenCode) send.
+#
+# The last three (``prompt-caching-scope``, ``context-management``,
+# ``interleaved-thinking`` when not already in COMMON_BETAS) are what
+# Claude Code itself ships with — Anthropic's OAuth routing treats traffic
+# without these as "not Claude Code" and falls back to per-token billing.
+# See griffinmartin/opencode-claude-auth src/model-config.ts.
 _OAUTH_ONLY_BETAS = [
     "claude-code-20250219",
     "oauth-2025-04-20",
+    "prompt-caching-scope-2026-01-05",
+    "context-management-2025-06-27",
 ]
+
+# Per-model beta additions (OAuth traffic only).  Matches Claude Code's
+# ``modelOverrides`` — Opus 4.6/4.7 require ``effort-2025-11-24`` before
+# they accept ``output_config.effort``; older models reject it.
+_MODEL_BETA_ADD = {
+    "4-6": ("effort-2025-11-24",),
+    "4.6": ("effort-2025-11-24",),
+    "4-7": ("effort-2025-11-24",),
+    "4.7": ("effort-2025-11-24",),
+}
+
+# Per-model beta exclusions (OAuth traffic only).  Haiku does not support
+# interleaved thinking — sending the beta returns a 400.
+_MODEL_BETA_EXCLUDE = {
+    "haiku": ("interleaved-thinking-2025-05-14",),
+}
+
+# Opt-in long-context beta (1M-token window, Opus 4.6+ only).  Enabling
+# this on a Claude Pro plan causes "Extra usage is required" errors, so it
+# stays off unless the user opts in via config/env.
+_LONG_CONTEXT_1M_BETA = "context-1m-2025-08-07"
 
 # Claude Code identity — required for OAuth requests to be routed correctly.
 # Without these, Anthropic's infrastructure intermittently 500s OAuth traffic.
@@ -205,6 +234,86 @@ def _detect_claude_code_version() -> str:
 
 _CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
 _MCP_TOOL_PREFIX = "mcp_"
+
+
+def _snake_to_pascal(name: str) -> str:
+    """Convert ``read_file``/``read-file``/``readFile`` → ``ReadFile``.
+
+    Claude Code's OAuth routing requires PascalCase tool names in the
+    ``mcp_<Name>`` format.  We accept all three input styles so every
+    existing Hermes tool (and any MCP-server-provided tool whose name is
+    already ``mcp_foo``) converts cleanly.
+    """
+    if not name:
+        return name
+    # Already PascalCase (starts with uppercase and contains no separators)?
+    if name[0].isupper() and "_" not in name and "-" not in name:
+        return name
+    # Split on underscore/hyphen, then capitalize each segment; preserve
+    # existing internal capitals (camelCase → PascalCase).
+    parts = []
+    for chunk in name.replace("-", "_").split("_"):
+        if not chunk:
+            continue
+        # Preserve existing camelCase: capitalize only the first char.
+        parts.append(chunk[0].upper() + chunk[1:])
+    return "".join(parts) if parts else name
+
+
+def _mcp_prefix_tool_name(name: str) -> str:
+    """Return the ``mcp_<PascalCase>`` form of a tool name.
+
+    Idempotent: if ``name`` already starts with ``mcp_`` we leave it alone.
+    """
+    if not isinstance(name, str) or not name:
+        return name
+    if name.startswith(_MCP_TOOL_PREFIX):
+        return name
+    return _MCP_TOOL_PREFIX + _snake_to_pascal(name)
+
+
+def build_mcp_tool_name_map(tools: Optional[List[Dict]]) -> Dict[str, str]:
+    """Build ``{mcp_PascalCase: original_name}`` for the current tool set.
+
+    Call this once per request with the same ``tools`` list that is passed to
+    :func:`build_anthropic_kwargs`, and hand the result to
+    :func:`normalize_anthropic_response` as ``tool_name_map``.  Without the
+    map, Hermes's tool dispatcher has no reliable way to recover the original
+    snake_case name from the PascalCase form the OAuth transform produces.
+    """
+    mapping: Dict[str, str] = {}
+    if not tools:
+        return mapping
+    for tool in tools:
+        # Hermes-internal OpenAI-style tool schema nests the name under
+        # ``function``; Anthropic-native schemas put it at top level.
+        name = None
+        if isinstance(tool, dict):
+            fn = tool.get("function")
+            if isinstance(fn, dict):
+                name = fn.get("name")
+            if not name:
+                name = tool.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        mapping[_mcp_prefix_tool_name(name)] = name
+    return mapping
+
+
+def _unmcp_prefix_tool_name(name: str, original_names: Optional[Dict[str, str]] = None) -> str:
+    """Reverse :func:`_mcp_prefix_tool_name`.
+
+    If *original_names* is supplied and contains the prefixed name, the
+    original (pre-transform) name is returned verbatim — this is the only
+    way to recover an exact snake_case name (the PascalCase step is lossy).
+    Without the mapping we fall back to stripping the prefix and returning
+    the PascalCase segment as-is; Hermes's tool dispatcher accepts both.
+    """
+    if not isinstance(name, str) or not name.startswith(_MCP_TOOL_PREFIX):
+        return name
+    if original_names and name in original_names:
+        return original_names[name]
+    return name[len(_MCP_TOOL_PREFIX):]
 
 
 def _get_claude_code_version() -> str:
@@ -301,6 +410,74 @@ def _common_betas_for_base_url(base_url: str | None) -> list[str]:
     return _COMMON_BETAS
 
 
+def _oauth_betas_for_model(
+    model: str | None,
+    *,
+    enable_1m_context: bool = False,
+    exclude: Optional[set[str]] = None,
+) -> list[str]:
+    """Return OAuth-only betas tailored for a specific Claude model.
+
+    Starts from :data:`_OAUTH_ONLY_BETAS`, applies per-model add/exclude
+    rules (``effort-2025-11-24`` on Opus 4.6/4.7; drop
+    ``interleaved-thinking`` on Haiku), and optionally opts into the 1M
+    long-context tier.
+
+    *exclude* is a runtime-caller-provided set used by long-context retry
+    to drop a beta that the server rejected (``context-1m`` 400s on free
+    Pro plans).
+    """
+    model_lc = (model or "").lower()
+    betas: list[str] = list(_OAUTH_ONLY_BETAS)
+
+    for substr, adds in _MODEL_BETA_ADD.items():
+        if substr in model_lc:
+            for b in adds:
+                if b not in betas:
+                    betas.append(b)
+
+    drop: set[str] = set()
+    for substr, rm in _MODEL_BETA_EXCLUDE.items():
+        if substr in model_lc:
+            drop.update(rm)
+    if exclude:
+        drop.update(exclude)
+    betas = [b for b in betas if b not in drop]
+
+    if enable_1m_context and ("4-6" in model_lc or "4.6" in model_lc
+                              or "4-7" in model_lc or "4.7" in model_lc):
+        if _LONG_CONTEXT_1M_BETA not in betas:
+            betas.append(_LONG_CONTEXT_1M_BETA)
+
+    return betas
+
+
+def _is_long_context_1m_enabled() -> bool:
+    """Config/env gate for the opt-in 1M-token context tier.
+
+    Precedence: HERMES_ANTHROPIC_1M_CONTEXT env var ("1"/"true"/"yes") →
+    ``model.anthropic.enable_1m_context`` config key → False.
+    """
+    env = os.getenv("HERMES_ANTHROPIC_1M_CONTEXT", "").strip().lower()
+    if env in ("1", "true", "yes", "on"):
+        return True
+    if env in ("0", "false", "no", "off"):
+        return False
+    try:
+        from hermes_cli.config import load_config  # pragma: no cover (lazy)
+        cfg = load_config()
+    except Exception:
+        return False
+    if not isinstance(cfg, dict):
+        return False
+    model_cfg = cfg.get("model")
+    if isinstance(model_cfg, dict):
+        ant = model_cfg.get("anthropic")
+        if isinstance(ant, dict):
+            return bool(ant.get("enable_1m_context", False))
+    return False
+
+
 def build_anthropic_client(api_key: str, base_url: str = None, timeout: float = None):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
 
@@ -362,12 +539,21 @@ def build_anthropic_client(api_key: str, base_url: str = None, timeout: float = 
         # OAuth access token / setup-token → Bearer auth + Claude Code identity.
         # Anthropic routes OAuth requests based on user-agent and headers;
         # without Claude Code's fingerprint, requests get intermittent 500s.
+        #
+        # Note: the per-model beta overrides (effort, haiku exclusions) are
+        # applied at request time in ``build_anthropic_kwargs`` via the
+        # ``extra_headers`` mechanism — the client-level ``anthropic-beta``
+        # header is a base set that the SDK merges with per-request overrides.
         all_betas = common_betas + _OAUTH_ONLY_BETAS
         kwargs["auth_token"] = api_key
+        from agent.anthropic_signing import get_session_id as _get_sess_id
         kwargs["default_headers"] = {
             "anthropic-beta": ",".join(all_betas),
             "user-agent": f"claude-cli/{_get_claude_code_version()} (external, cli)",
             "x-app": "cli",
+            # Stable per-process UUID — Anthropic correlates requests from
+            # the same editor session for tracing/billing.
+            "X-Claude-Code-Session-Id": _get_sess_id(),
         }
     else:
         # Regular API key → x-api-key header + common betas
@@ -406,15 +592,44 @@ def build_anthropic_bedrock_client(region: str):
 
 
 def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
-    """Read refreshable Claude Code OAuth credentials from ~/.claude/.credentials.json.
+    """Read refreshable Claude Code OAuth credentials.
 
-    This intentionally excludes ~/.claude.json primaryApiKey. Opencode's
-    subscription flow is OAuth/setup-token based with refreshable credentials,
-    and native direct Anthropic provider usage should follow that path rather
-    than auto-detecting Claude's first-party managed key.
+    Preferred source order:
+      1. macOS Keychain (``Claude Code-credentials[-<hex>]``) via
+         :mod:`agent.claude_keychain`.  Claude Code writes to Keychain first
+         on Darwin — the JSON file is a Linux/Windows fallback.
+      2. ``~/.claude/.credentials.json`` on every platform.
 
-    Returns dict with {accessToken, refreshToken?, expiresAt?} or None.
+    This intentionally excludes ``~/.claude.json``'s ``primaryApiKey``.
+    Claude Code's subscription flow is OAuth/setup-token-based with
+    refreshable credentials, and native direct Anthropic provider usage
+    should follow that path rather than auto-detecting Claude's first-party
+    managed key.
+
+    Returns a dict shaped ``{accessToken, refreshToken, expiresAt, source}``
+    or None.  The ``source`` field is used for write-back routing: "file" or
+    "keychain:<service>".
     """
+    # 1. macOS Keychain (primary store on Darwin)
+    try:
+        from agent import claude_keychain
+        account = claude_keychain.read_selected_account()
+    except Exception as exc:  # pragma: no cover — Keychain errors are non-fatal
+        logger.debug("Keychain read failed: %s", exc)
+        account = None
+    if account is not None:
+        creds = account.credentials
+        return {
+            "accessToken": creds.access_token,
+            "refreshToken": creds.refresh_token,
+            "expiresAt": creds.expires_at,
+            "source": account.source,
+            "scopes": list(creds.scopes) if creds.scopes else None,
+            "subscriptionType": creds.subscription_type,
+            "accountName": account.account_name,
+        }
+
+    # 2. File fallback
     cred_path = Path.home() / ".claude" / ".credentials.json"
     if cred_path.exists():
         try:
@@ -427,7 +642,9 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
                         "accessToken": access_token,
                         "refreshToken": oauth_data.get("refreshToken", ""),
                         "expiresAt": oauth_data.get("expiresAt", 0),
-                        "source": "claude_code_credentials_file",
+                        "source": "file",
+                        "scopes": oauth_data.get("scopes"),
+                        "subscriptionType": oauth_data.get("subscriptionType"),
                     }
         except (json.JSONDecodeError, OSError, IOError) as e:
             logger.debug("Failed to read ~/.claude/.credentials.json: %s", e)
@@ -537,10 +754,22 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
 
     try:
         refreshed = refresh_anthropic_oauth_pure(refresh_token, use_json=False)
+        # Route the write-back to the SAME source this credential came from
+        # (Keychain → Keychain, file → file).  Anthropic rotates refresh
+        # tokens on use, so writing to the wrong store leaves the original
+        # entry with a stale refresh_token and the credentials become
+        # unusable on the next cycle.
+        scopes_val = creds.get("scopes")
+        if not isinstance(scopes_val, list):
+            scopes_val = None
         _write_claude_code_credentials(
             refreshed["access_token"],
             refreshed["refresh_token"],
             refreshed["expires_at_ms"],
+            scopes=scopes_val,
+            source=creds.get("source"),
+            account_name=creds.get("accountName"),
+            subscription_type=creds.get("subscriptionType"),
         )
         logger.debug("Successfully refreshed Claude Code OAuth token")
         return refreshed["access_token"]
@@ -555,14 +784,103 @@ def _write_claude_code_credentials(
     expires_at_ms: int,
     *,
     scopes: Optional[list] = None,
+    source: Optional[str] = None,
+    account_name: Optional[str] = None,
+    subscription_type: Optional[str] = None,
 ) -> None:
-    """Write refreshed credentials back to ~/.claude/.credentials.json.
+    """Write refreshed credentials back to their original source.
+
+    Routing:
+      * ``source`` None / ``"file"`` / ``"claude_code_credentials_file"`` →
+        write the JSON file at ``~/.claude/.credentials.json``.
+      * ``source`` starts with ``"keychain:"`` → route through
+        :func:`agent.claude_keychain.write_credentials` so the macOS Keychain
+        entry the token came from gets the rotated refresh token.
+
+    Anthropic rotates refresh tokens on use; writing the new refresh token
+    back to the wrong store leaves the original entry with a stale token and
+    locks the user out on the next refresh.
 
     The optional *scopes* list (e.g. ``["user:inference", "user:profile", ...]``)
     is persisted so that Claude Code's own auth check recognises the credential
     as valid.  Claude Code >=2.1.81 gates on the presence of ``"user:inference"``
-    in the stored scopes before it will use the token.
+    in the stored scopes before it will use the token.  When *scopes* is not
+    supplied we preserve whatever was previously stored in the target entry.
     """
+    # Normalize file-source aliases so the routing check below is simple.
+    if source in (None, "file", "claude_code_credentials_file"):
+        _write_claude_code_credentials_file(
+            access_token,
+            refresh_token,
+            expires_at_ms,
+            scopes=scopes,
+            subscription_type=subscription_type,
+        )
+        return
+
+    if isinstance(source, str) and source.startswith("keychain:"):
+        # Lazy import — keychain module does subprocess work and only makes
+        # sense on Darwin; avoid any import-time cost on other platforms.
+        try:
+            from agent import claude_keychain
+        except Exception as exc:  # pragma: no cover — import should not fail
+            logger.debug("claude_keychain import failed: %s", exc)
+            return
+
+        # Look up the existing raw_blob (to preserve scopes / subscriptionType
+        # when the refresh response omits them) and the account name.
+        raw_blob: Dict[str, Any] = {}
+        existing_scopes: Optional[list] = None
+        existing_sub: Optional[str] = None
+        resolved_account_name = account_name
+        try:
+            for acct in claude_keychain.read_all_accounts():
+                if acct.source == source:
+                    raw_blob = dict(acct.raw_blob or {})
+                    if acct.credentials.scopes is not None:
+                        existing_scopes = list(acct.credentials.scopes)
+                    existing_sub = acct.credentials.subscription_type
+                    if resolved_account_name is None:
+                        resolved_account_name = acct.account_name
+                    break
+        except Exception as exc:
+            logger.debug("Keychain lookup for %s failed: %s", source, exc)
+
+        effective_scopes = scopes if scopes is not None else existing_scopes
+        effective_sub = subscription_type if subscription_type is not None else existing_sub
+
+        creds_obj = claude_keychain.ClaudeCredentials(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_at=expires_at_ms,
+            subscription_type=effective_sub,
+            scopes=effective_scopes,
+        )
+        try:
+            ok = claude_keychain.write_credentials(
+                source,
+                creds_obj,
+                raw_blob=raw_blob,
+                account_name=resolved_account_name,
+            )
+            if not ok:
+                logger.debug("Keychain write_credentials returned False for %s", source)
+        except Exception as exc:
+            logger.debug("Keychain write_credentials raised for %s: %s", source, exc)
+        return
+
+    logger.debug("_write_claude_code_credentials: unknown source %s", source)
+
+
+def _write_claude_code_credentials_file(
+    access_token: str,
+    refresh_token: str,
+    expires_at_ms: int,
+    *,
+    scopes: Optional[list] = None,
+    subscription_type: Optional[str] = None,
+) -> None:
+    """Write refreshed credentials back to ~/.claude/.credentials.json."""
     cred_path = Path.home() / ".claude" / ".credentials.json"
     try:
         # Read existing file to preserve other fields
@@ -581,6 +899,18 @@ def _write_claude_code_credentials(
             # Preserve previously-stored scopes when the refresh response
             # does not include a scope field.
             oauth_data["scopes"] = existing["claudeAiOauth"]["scopes"]
+
+        # Preserve subscriptionType if supplied or previously present — it
+        # has no effect on refresh but is a useful marker for account
+        # labelling (Claude Pro / Claude Max) when the credential is later
+        # re-read.
+        if subscription_type is not None:
+            oauth_data["subscriptionType"] = subscription_type
+        elif (
+            "claudeAiOauth" in existing
+            and "subscriptionType" in existing["claudeAiOauth"]
+        ):
+            oauth_data["subscriptionType"] = existing["claudeAiOauth"]["subscriptionType"]
 
         existing["claudeAiOauth"] = oauth_data
 
@@ -1357,35 +1687,123 @@ def build_anthropic_kwargs(
     if context_length and effective_max_tokens > context_length:
         effective_max_tokens = max(context_length - 1, 1)
 
-    # ── OAuth: Claude Code identity ──────────────────────────────────
+    # ── OAuth: Claude Code identity + Claude Code fingerprinting ─────
+    #
+    # Anthropic's OAuth / Claude Pro / Max billing validator rejects requests
+    # that do not look exactly like Claude Code traffic.  We mirror the
+    # transform pipeline used by the official Claude Code CLI (see
+    # griffinmartin/opencode-claude-auth src/transforms.ts):
+    #
+    #   1. Prepend a synthesized ``x-anthropic-billing-header`` system block
+    #      (NOT an HTTP header — a system message entry) with signed cc_version
+    #      / cch fields derived from the first user message.
+    #   2. Prepend the Claude Code identity string as a STANDALONE system
+    #      entry (split it out if concatenated with anything else).
+    #   3. Relocate any remaining system text (Hermes's own system prompt,
+    #      user-supplied instructions, etc.) into the first user message as a
+    #      text block.  Anthropic rejects third-party system content alongside
+    #      the Claude Code identity.
+    #   4. Prefix every tool name with ``mcp_`` + PascalCase the original
+    #      snake_case / camelCase name (``read_file`` → ``mcp_ReadFile``).  The
+    #      reverse transform is applied to responses in normalize_anthropic_response.
     if is_oauth:
-        # 1. Prepend Claude Code system prompt identity
-        cc_block = {"type": "text", "text": _CLAUDE_CODE_SYSTEM_PREFIX}
+        from agent.anthropic_signing import (
+            build_billing_header_value,
+            is_billing_header_text,
+        )
+
+        # 1. Synthesize the billing header system block first, BEFORE we
+        #    mutate messages, so the cch is computed from the *original*
+        #    first user message text.
+        billing_text = build_billing_header_value(
+            anthropic_messages,
+            _get_claude_code_version(),
+            entrypoint=os.getenv("CLAUDE_CODE_ENTRYPOINT", "cli"),
+        )
+        billing_block = {"type": "text", "text": billing_text}
+
+        # 2. Collect existing system entries as a list of dict blocks.
         if isinstance(system, list):
-            system = [cc_block] + system
+            existing_blocks = [
+                (b if isinstance(b, dict) else {"type": "text", "text": str(b)})
+                for b in system
+            ]
         elif isinstance(system, str) and system:
-            system = [cc_block, {"type": "text", "text": system}]
+            existing_blocks = [{"type": "text", "text": system}]
         else:
-            system = [cc_block]
+            existing_blocks = []
 
-        # 2. Sanitize system prompt — replace product name references
-        #    to avoid Anthropic's server-side content filters.
-        for block in system:
-            if isinstance(block, dict) and block.get("type") == "text":
-                text = block.get("text", "")
-                text = text.replace("Hermes Agent", "Claude Code")
-                text = text.replace("Hermes agent", "Claude Code")
-                text = text.replace("hermes-agent", "claude-code")
-                text = text.replace("Nous Research", "Anthropic")
-                block["text"] = text
+        # 3. Defensive split: if any block starts with the Claude Code
+        #    identity followed by more text, split it.  Then partition the
+        #    remaining blocks into "kept" (identity/billing) vs "moved"
+        #    (third-party system prose).
+        identity_block: Optional[dict] = None
+        moved_texts: list[str] = []
+        for b in existing_blocks:
+            txt = b.get("text", "") if isinstance(b, dict) else ""
+            if not isinstance(txt, str):
+                txt = str(txt)
+            if is_billing_header_text(txt):
+                # Skip any pre-existing billing block — we regenerate it.
+                continue
+            if txt.startswith(_CLAUDE_CODE_SYSTEM_PREFIX):
+                # Split: the identity becomes a standalone block; remainder
+                # goes into the user-message relocation bucket.
+                if identity_block is None:
+                    # Preserve cache_control etc. on the identity entry, minus
+                    # cache_control which Anthropic forbids on this block.
+                    ident = {k: v for k, v in b.items() if k != "cache_control"}
+                    ident["text"] = _CLAUDE_CODE_SYSTEM_PREFIX
+                    identity_block = ident
+                rest = txt[len(_CLAUDE_CODE_SYSTEM_PREFIX):].lstrip("\n")
+                if rest:
+                    moved_texts.append(rest)
+            elif txt:
+                moved_texts.append(txt)
 
-        # 3. Prefix tool names with mcp_ (Claude Code convention)
+        if identity_block is None:
+            identity_block = {"type": "text", "text": _CLAUDE_CODE_SYSTEM_PREFIX}
+
+        # 4. Rebuild system[] as exactly [billing, identity].
+        system = [billing_block, identity_block]
+
+        # 5. Relocate third-party system content into the first user message.
+        #    Anthropic's OAuth billing validator 400s requests that have
+        #    third-party system entries alongside the Claude Code identity.
+        if moved_texts:
+            prefix_text = "\n\n".join(moved_texts)
+            user_idx = next(
+                (i for i, m in enumerate(anthropic_messages) if m.get("role") == "user"),
+                None,
+            )
+            if user_idx is None:
+                # No user message yet — create one so the relocated prompt
+                # still reaches the model.  Claude Code does the same.
+                anthropic_messages.insert(
+                    0,
+                    {"role": "user", "content": [{"type": "text", "text": prefix_text}]},
+                )
+            else:
+                msg = anthropic_messages[user_idx]
+                content = msg.get("content")
+                if isinstance(content, str):
+                    msg["content"] = prefix_text + "\n\n" + content
+                elif isinstance(content, list):
+                    msg["content"] = [{"type": "text", "text": prefix_text}] + list(content)
+                else:
+                    msg["content"] = [{"type": "text", "text": prefix_text}]
+
+        # 6. Prefix tool names with ``mcp_`` + PascalCase the original.
+        #    Anthropic's OAuth validator rejects lowercase/snake_case tool
+        #    names when multiple tools are present.  The reverse transform
+        #    is applied to responses in normalize_anthropic_response().
         if anthropic_tools:
             for tool in anthropic_tools:
-                if "name" in tool:
-                    tool["name"] = _MCP_TOOL_PREFIX + tool["name"]
+                if "name" in tool and isinstance(tool["name"], str):
+                    tool["name"] = _mcp_prefix_tool_name(tool["name"])
 
-        # 4. Prefix tool names in message history (tool_use and tool_result blocks)
+        # 7. Apply the same name transform to historical tool_use blocks so
+        #    the model sees consistent names across turns.
         for msg in anthropic_messages:
             content = msg.get("content")
             if isinstance(content, list):
@@ -1393,9 +1811,7 @@ def build_anthropic_kwargs(
                     if isinstance(block, dict):
                         if block.get("type") == "tool_use" and "name" in block:
                             if not block["name"].startswith(_MCP_TOOL_PREFIX):
-                                block["name"] = _MCP_TOOL_PREFIX + block["name"]
-                        elif block.get("type") == "tool_result" and "tool_use_id" in block:
-                            pass  # tool_result uses ID, not name
+                                block["name"] = _mcp_prefix_tool_name(block["name"])
 
     kwargs: Dict[str, Any] = {
         "model": model,
@@ -1462,6 +1878,33 @@ def build_anthropic_kwargs(
         for _sampling_key in ("temperature", "top_p", "top_k"):
             kwargs.pop(_sampling_key, None)
 
+    # ── OAuth: per-request headers + model-specific beta overrides ───
+    # Claude Code generates a fresh ``x-client-request-id`` on every request
+    # and merges model-specific betas (``effort-2025-11-24`` for Opus 4.6/4.7,
+    # haiku exclusions, opt-in 1M context) into the per-request
+    # ``anthropic-beta`` header.  Per-request ``extra_headers`` override the
+    # client-level defaults, so we build the full beta list here.
+    if is_oauth and not _is_third_party_anthropic_endpoint(base_url):
+        from agent.anthropic_signing import new_request_id
+        betas = list(_common_betas_for_base_url(base_url))
+        betas.extend(
+            _oauth_betas_for_model(model, enable_1m_context=_is_long_context_1m_enabled())
+        )
+        # Deduplicate while preserving order.
+        seen: set[str] = set()
+        ordered = []
+        for b in betas:
+            if b not in seen:
+                seen.add(b)
+                ordered.append(b)
+        extra_headers = {
+            "anthropic-beta": ",".join(ordered),
+            "x-client-request-id": new_request_id(),
+        }
+        # Merge into any existing extra_headers set by other paths.
+        kwargs.setdefault("extra_headers", {})
+        kwargs["extra_headers"].update(extra_headers)
+
     # ── Fast mode (Opus 4.6 only) ────────────────────────────────────
     # Adds extra_body.speed="fast" + the fast-mode beta header for ~2.5x
     # output speed. Only for native Anthropic endpoints — third-party
@@ -1472,9 +1915,19 @@ def build_anthropic_kwargs(
         # extra_headers override the client-level anthropic-beta header).
         betas = list(_common_betas_for_base_url(base_url))
         if is_oauth:
-            betas.extend(_OAUTH_ONLY_BETAS)
+            betas.extend(
+                _oauth_betas_for_model(model, enable_1m_context=_is_long_context_1m_enabled())
+            )
         betas.append(_FAST_MODE_BETA)
-        kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
+        # Deduplicate.
+        seen_fm: set[str] = set()
+        ordered_fm = []
+        for b in betas:
+            if b not in seen_fm:
+                seen_fm.add(b)
+                ordered_fm.append(b)
+        kwargs.setdefault("extra_headers", {})
+        kwargs["extra_headers"]["anthropic-beta"] = ",".join(ordered_fm)
 
     return kwargs
 
@@ -1482,6 +1935,7 @@ def build_anthropic_kwargs(
 def normalize_anthropic_response(
     response,
     strip_tool_prefix: bool = False,
+    tool_name_map: Optional[Dict[str, str]] = None,
 ) -> Tuple[SimpleNamespace, str]:
     """Normalize Anthropic response to match the shape expected by AIAgent.
 
@@ -1489,7 +1943,10 @@ def normalize_anthropic_response(
     .content, .tool_calls, and .reasoning attributes.
 
     When *strip_tool_prefix* is True, removes the ``mcp_`` prefix that was
-    added to tool names for OAuth Claude Code compatibility.
+    added to tool names for OAuth Claude Code compatibility.  If
+    *tool_name_map* is provided it maps ``mcp_<PascalCase>`` back to the
+    original snake_case name (the PascalCase transform is lossy —
+    ``readFile`` and ``read_file`` both become ``mcp_ReadFile``).
     """
     text_parts = []
     reasoning_parts = []
@@ -1507,7 +1964,7 @@ def normalize_anthropic_response(
         elif block.type == "tool_use":
             name = block.name
             if strip_tool_prefix and name.startswith(_MCP_TOOL_PREFIX):
-                name = name[len(_MCP_TOOL_PREFIX):]
+                name = _unmcp_prefix_tool_name(name, tool_name_map)
             tool_calls.append(
                 SimpleNamespace(
                     id=block.id,
@@ -1551,16 +2008,25 @@ def normalize_anthropic_response(
 def normalize_anthropic_response_v2(
     response,
     strip_tool_prefix: bool = False,
+    tool_name_map: Optional[Dict[str, str]] = None,
 ) -> "NormalizedResponse":
     """Normalize Anthropic response to NormalizedResponse.
 
     Wraps the existing normalize_anthropic_response() and maps its output
     to the shared transport types.  This allows incremental migration —
     one call site at a time — without changing the original function.
+
+    *tool_name_map* is forwarded to :func:`normalize_anthropic_response` and
+    is used by OAuth Claude Code to map ``mcp_<PascalCase>`` tool names
+    back to the original snake_case name.
     """
     from agent.transports.types import NormalizedResponse, build_tool_call
 
-    assistant_msg, finish_reason = normalize_anthropic_response(response, strip_tool_prefix)
+    assistant_msg, finish_reason = normalize_anthropic_response(
+        response,
+        strip_tool_prefix=strip_tool_prefix,
+        tool_name_map=tool_name_map,
+    )
 
     tool_calls = None
     if assistant_msg.tool_calls:

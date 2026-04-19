@@ -611,7 +611,15 @@ class _AnthropicCompletionsAdapter:
                 anthropic_kwargs["temperature"] = temperature
 
         response = self._client.messages.create(**anthropic_kwargs)
-        assistant_message, finish_reason = normalize_anthropic_response(response)
+        # For OAuth traffic, recover original tool names from the
+        # ``mcp_<PascalCase>`` transform so downstream dispatchers work.
+        from agent.anthropic_adapter import build_mcp_tool_name_map
+        _tool_name_map = build_mcp_tool_name_map(tools) if self._is_oauth else None
+        assistant_message, finish_reason = normalize_anthropic_response(
+            response,
+            strip_tool_prefix=self._is_oauth,
+            tool_name_map=_tool_name_map,
+        )
 
         usage = None
         if hasattr(response, "usage") and response.usage:

@@ -10851,9 +10851,16 @@ class AIAgent:
                     )
                     finish_reason = _cnr.finish_reason
                 elif self.api_mode == "anthropic_messages":
+                    from agent.anthropic_adapter import build_mcp_tool_name_map
+                    _tool_name_map = (
+                        build_mcp_tool_name_map(self.tools)
+                        if self._is_anthropic_oauth else None
+                    )
                     _transport = self._get_anthropic_transport()
                     _nr = _transport.normalize_response(
-                        response, strip_tool_prefix=self._is_anthropic_oauth
+                        response,
+                        strip_tool_prefix=self._is_anthropic_oauth,
+                        tool_name_map=_tool_name_map,
                     )
                     # Back-compat shim: downstream code expects SimpleNamespace with
                     # .content, .tool_calls, .reasoning, .reasoning_content,

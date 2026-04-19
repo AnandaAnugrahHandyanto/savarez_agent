@@ -132,7 +132,11 @@ class TestReadClaudeCodeCredentials:
         assert creds is not None
         assert creds["accessToken"] == "sk-ant-oat01-token"
         assert creds["refreshToken"] == "sk-ant-oat01-refresh"
-        assert creds["source"] == "claude_code_credentials_file"
+        # After the Keychain-aware refactor, file-backed creds report
+        # source="file" (was "claude_code_credentials_file").  The new
+        # value matches claude_keychain.SOURCE_FILE and is what
+        # write_credentials() routes on.
+        assert creds["source"] == "file"
 
     def test_ignores_primary_api_key_for_native_anthropic_resolution(self, tmp_path, monkeypatch):
         claude_json = tmp_path / ".claude.json"

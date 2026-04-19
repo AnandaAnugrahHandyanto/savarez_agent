@@ -2979,10 +2979,101 @@ def _save_model_choice(model_id: str) -> None:
 
 
 def login_command(args) -> None:
-    """Deprecated: use 'hermes model' or 'hermes setup' instead."""
-    print("The 'hermes login' command has been removed.")
-    print("Use 'hermes auth' to manage credentials,")
-    print("'hermes model' to select a provider, or 'hermes setup' for full setup.")
+    """Provider login entry point.
+
+    ``hermes login --provider anthropic`` runs Hermes's pure-Python PKCE flow
+    (``run_hermes_oauth_login_pure``) for Claude Pro/Max subscriptions and
+    persists the tokens both in ``~/.hermes/.anthropic_oauth.json`` and the
+    credential pool — matching what ``hermes auth add anthropic`` does.
+
+    For all other providers, this stub defers to the canonical entry points
+    (``hermes auth``, ``hermes model``, ``hermes setup``).
+    """
+    provider = (getattr(args, "provider", "") or "").strip().lower()
+    if provider == "anthropic":
+        from agent import anthropic_adapter as _ant
+        from hermes_cli.auth_commands import _provider_base_url
+
+        creds = _ant.run_hermes_oauth_login_pure()
+        if not creds:
+            print("Anthropic OAuth login was cancelled or failed.")
+            raise SystemExit(1)
+
+        access_token = creds.get("access_token") or ""
+        refresh_token = creds.get("refresh_token") or ""
+        expires_at_ms = int(creds.get("expires_at_ms") or 0)
+
+        # Mirror web_server._save_anthropic_oauth_creds / auth_commands.add:
+        # persist to ``_HERMES_OAUTH_FILE`` AND credential pool so both the
+        # runtime resolver and `hermes auth list` see the new entry.
+        try:
+            payload = {
+                "accessToken": access_token,
+                "refreshToken": refresh_token,
+                "expiresAt": expires_at_ms,
+            }
+            _ant._HERMES_OAUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
+            _ant._HERMES_OAUTH_FILE.write_text(
+                json.dumps(payload, indent=2), encoding="utf-8"
+            )
+        except Exception as e:
+            logger.warning("Writing Hermes OAuth file failed: %s", e)
+
+        try:
+            from agent.credential_pool import (
+                PooledCredential,
+                load_pool,
+                AUTH_TYPE_OAUTH,
+                SOURCE_MANUAL,
+            )
+            from hermes_cli.auth_commands import label_from_token, _oauth_default_label
+
+            pool = load_pool("anthropic")
+            label = label_from_token(
+                access_token,
+                _oauth_default_label("anthropic", len(pool.entries()) + 1),
+            )
+            entry = PooledCredential(
+                provider="anthropic",
+                id=uuid.uuid4().hex[:6],
+                label=label,
+                auth_type=AUTH_TYPE_OAUTH,
+                priority=0,
+                source=f"{SOURCE_MANUAL}:hermes_login",
+                access_token=access_token,
+                refresh_token=refresh_token,
+                expires_at_ms=expires_at_ms,
+                base_url=_provider_base_url("anthropic"),
+            )
+            pool.add_entry(entry)
+        except Exception as e:
+            logger.warning("Anthropic pool insert failed: %s", e)
+
+        # Activate the credential file path in ``.env`` (clears static
+        # ANTHROPIC_TOKEN so refresh can proceed).
+        try:
+            from hermes_cli.config import (
+                save_env_value,
+                use_anthropic_claude_code_credentials,
+            )
+            use_anthropic_claude_code_credentials(save_fn=save_env_value)
+        except Exception as e:
+            logger.debug("Activating Anthropic credential file path failed: %s", e)
+
+        print()
+        print("Anthropic OAuth login successful.")
+        from hermes_constants import display_hermes_home as _dhh
+        print(f"  Credentials saved: {_dhh()}/.anthropic_oauth.json")
+        print(f"  Pool entry added:  provider=anthropic label={label!r}")
+        print()
+        print("Run 'hermes model' to choose a Claude model.")
+        raise SystemExit(0)
+
+    print("The 'hermes login' command now only handles OAuth flows that do")
+    print("not have a dedicated wizard. For this provider use:")
+    print("  • 'hermes auth add <provider>' — add a pooled credential")
+    print("  • 'hermes model'               — pick a provider + model")
+    print("  • 'hermes setup'               — full interactive setup")
     raise SystemExit(0)
 
 

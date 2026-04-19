@@ -3900,97 +3900,237 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         print("No change.")
 
 
+# Stores the user-selected Claude Code account ``source`` string (e.g.
+# "keychain:Claude Code-credentials" or "file").  Consumed by
+# ``agent.claude_keychain.read_selected_account`` so the runtime uses the
+# same account the user picked during ``hermes model``.
+_CLAUDE_ACCOUNT_SOURCE_FILE = get_hermes_home() / "claude_account_source.txt"
+
+
+def _save_anthropic_oauth_creds_cli(access_token: str, refresh_token: str, expires_at_ms: int) -> None:
+    """Persist Anthropic PKCE creds to both the Hermes OAuth file AND the credential pool.
+
+    Mirrors ``hermes_cli.web_server._save_anthropic_oauth_creds`` so the CLI
+    login flow leaves the system in the same state as the dashboard flow.
+    """
+    import json as _json
+
+    from agent.anthropic_adapter import _HERMES_OAUTH_FILE
+
+    payload = {
+        "accessToken": access_token,
+        "refreshToken": refresh_token,
+        "expiresAt": expires_at_ms,
+    }
+    _HERMES_OAUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _HERMES_OAUTH_FILE.write_text(_json.dumps(payload, indent=2), encoding="utf-8")
+
+    try:
+        import uuid as _uuid
+
+        from agent.credential_pool import (
+            AUTH_TYPE_OAUTH,
+            PooledCredential,
+            SOURCE_MANUAL,
+            load_pool,
+        )
+        from hermes_cli.auth_commands import label_from_token
+
+        pool = load_pool("anthropic")
+        # Avoid duplicate entries: drop any prior CLI-issued OAuth entry.
+        existing = [
+            e for e in pool.entries()
+            if getattr(e, "source", "").startswith(f"{SOURCE_MANUAL}:hermes_pkce_cli")
+        ]
+        for e in existing:
+            try:
+                pool.remove_entry(getattr(e, "id", ""))
+            except Exception:
+                pass
+        label = label_from_token(access_token, f"anthropic-oauth-{len(pool.entries()) + 1}")
+        entry = PooledCredential(
+            provider="anthropic",
+            id=_uuid.uuid4().hex[:6],
+            label=label,
+            auth_type=AUTH_TYPE_OAUTH,
+            priority=0,
+            source=f"{SOURCE_MANUAL}:hermes_pkce_cli",
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_at_ms=expires_at_ms,
+        )
+        pool.add_entry(entry)
+    except Exception as exc:
+        logger.warning("anthropic pool add (cli pkce) failed: %s", exc)
+
+
 def _run_anthropic_oauth_flow(save_env_value):
-    """Run the Claude OAuth setup-token flow. Returns True if credentials were saved."""
+    """Run the Claude OAuth login flow. Returns True if credentials were saved.
+
+    Offers three paths:
+      1. Hermes-native PKCE browser login (no external dependencies).
+      2. Paste an existing Claude Code setup-token.
+      3. Legacy ``claude setup-token`` npm CLI.
+    """
     from agent.anthropic_adapter import (
+        run_hermes_oauth_login_pure,
         run_oauth_setup_token,
-        read_claude_code_credentials,
-        is_claude_code_token_valid,
     )
     from hermes_cli.config import (
         save_anthropic_oauth_token,
         use_anthropic_claude_code_credentials,
     )
 
-    def _activate_claude_code_credentials_if_available() -> bool:
-        try:
-            creds = read_claude_code_credentials()
-        except Exception:
-            creds = None
-        if creds and (
-            is_claude_code_token_valid(creds) or bool(creds.get("refreshToken"))
-        ):
-            use_anthropic_claude_code_credentials(save_fn=save_env_value)
-            print("  ✓ Claude Code credentials linked.")
-            from hermes_constants import display_hermes_home as _dhh_fn
-
-            print(
-                f"    Hermes will use Claude's credential store directly instead of copying a setup-token into {_dhh_fn()}/.env."
-            )
-            return True
-        return False
-
+    print()
+    print("  Choose how to sign in:")
+    print()
+    print("    1. Hermes browser login (recommended — no extra tools required)")
+    print("    2. Paste an existing Claude Code setup-token (sk-ant-oat-...)")
+    print("    3. Run 'claude setup-token' via npm CLI (legacy — only if you already have Claude Code installed)")
+    print("    4. Cancel")
+    print()
     try:
+        raw = input("  Choice [1/2/3/4] (default 1): ").strip()
+    except (KeyboardInterrupt, EOFError):
         print()
-        print("  Running 'claude setup-token' — follow the prompts below.")
-        print("  A browser window will open for you to authorize access.")
-        print()
-        token = run_oauth_setup_token()
-        if token:
-            if _activate_claude_code_credentials_if_available():
-                return True
-            save_anthropic_oauth_token(token, save_fn=save_env_value)
-            print("  ✓ OAuth credentials saved.")
-            return True
+        return False
+    choice = raw or "1"
 
-        # Subprocess completed but no token auto-detected — ask user to paste
+    if choice == "1":
+        try:
+            creds = run_hermes_oauth_login_pure()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return False
+        if not creds or not creds.get("access_token"):
+            print("  ⚠ Login did not complete.")
+            return False
+        _save_anthropic_oauth_creds_cli(
+            creds["access_token"],
+            creds.get("refresh_token", "") or "",
+            int(creds.get("expires_at_ms") or 0),
+        )
+        use_anthropic_claude_code_credentials(save_fn=save_env_value)
+        print("  ✓ Signed in — OAuth credentials saved.")
+        return True
+
+    if choice == "2":
         print()
-        print("  If the setup-token was displayed above, paste it here:")
+        print("  Paste your Claude Code setup-token (starts with sk-ant-oat-).")
         print()
         try:
             import getpass
 
             manual_token = getpass.getpass(
-                "  Paste setup-token (or Enter to cancel): "
+                "  Setup-token (or Enter to cancel): "
             ).strip()
         except (KeyboardInterrupt, EOFError):
             print()
             return False
-        if manual_token:
-            save_anthropic_oauth_token(manual_token, save_fn=save_env_value)
-            print("  ✓ Setup-token saved.")
-            return True
-
-        print("  ⚠ Could not detect saved credentials.")
-        return False
-
-    except FileNotFoundError:
-        # Claude CLI not installed — guide user through manual setup
-        print()
-        print("  The 'claude' CLI is required for OAuth login.")
-        print()
-        print("  To install and authenticate:")
-        print()
-        print("    1. Install Claude Code:  npm install -g @anthropic-ai/claude-code")
-        print("    2. Run:                  claude setup-token")
-        print("    3. Follow the browser prompts to authorize")
-        print("    4. Re-run:               hermes model")
-        print()
-        print("  Or paste an existing setup-token now (sk-ant-oat-...):")
-        print()
-        try:
-            import getpass
-
-            token = getpass.getpass("  Setup-token (or Enter to cancel): ").strip()
-        except (KeyboardInterrupt, EOFError):
-            print()
+        if not manual_token:
+            print("  Cancelled.")
             return False
-        if token:
-            save_anthropic_oauth_token(token, save_fn=save_env_value)
-            print("  ✓ Setup-token saved.")
-            return True
-        print("  Cancelled — install Claude Code and try again.")
-        return False
+        save_anthropic_oauth_token(manual_token, save_fn=save_env_value)
+        print("  ✓ Setup-token saved.")
+        return True
+
+    if choice == "3":
+        from agent.anthropic_adapter import (
+            is_claude_code_token_valid,
+            read_claude_code_credentials,
+        )
+
+        def _activate_claude_code_credentials_if_available() -> bool:
+            """Prefer Claude Code's refreshable credential file over static env token.
+
+            Claude Code stores refreshable OAuth creds in ``~/.claude/.credentials.json``
+            (or macOS Keychain).  If the subprocess populated that store, route
+            Hermes through the credential file so refresh keeps working —
+            otherwise the static setup-token embedded in ``.env`` decays after
+            expiry.
+            """
+            try:
+                creds = read_claude_code_credentials()
+            except Exception:
+                creds = None
+            if creds and (
+                is_claude_code_token_valid(creds) or bool(creds.get("refreshToken"))
+            ):
+                use_anthropic_claude_code_credentials(save_fn=save_env_value)
+                print("  ✓ Claude Code credentials linked.")
+                from hermes_constants import display_hermes_home as _dhh_fn
+
+                print(
+                    f"    Hermes will use Claude's credential store directly instead of copying a setup-token into {_dhh_fn()}/.env."
+                )
+                return True
+            return False
+
+        try:
+            print()
+            print("  Running 'claude setup-token' — follow the prompts below.")
+            print("  A browser window will open for you to authorize access.")
+            print()
+            token = run_oauth_setup_token()
+            if token:
+                if _activate_claude_code_credentials_if_available():
+                    return True
+                save_anthropic_oauth_token(token, save_fn=save_env_value)
+                print("  ✓ OAuth credentials saved.")
+                return True
+
+            # Subprocess completed but no token auto-detected — ask user to paste
+            print()
+            print("  If the setup-token was displayed above, paste it here:")
+            print()
+            try:
+                import getpass
+
+                manual_token = getpass.getpass(
+                    "  Paste setup-token (or Enter to cancel): "
+                ).strip()
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return False
+            if manual_token:
+                save_anthropic_oauth_token(manual_token, save_fn=save_env_value)
+                print("  ✓ Setup-token saved.")
+                return True
+
+            print("  ⚠ Could not detect saved credentials.")
+            return False
+
+        except FileNotFoundError:
+            # Claude CLI not installed — guide user through manual setup
+            print()
+            print("  The 'claude' CLI is required for this legacy flow.")
+            print()
+            print("  To install and authenticate:")
+            print()
+            print("    1. Install Claude Code:  npm install -g @anthropic-ai/claude-code")
+            print("    2. Run:                  claude setup-token")
+            print("    3. Follow the browser prompts to authorize")
+            print("    4. Re-run:               hermes model")
+            print()
+            print("  Or paste an existing setup-token now (sk-ant-oat-...):")
+            print()
+            try:
+                import getpass
+
+                token = getpass.getpass("  Setup-token (or Enter to cancel): ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return False
+            if token:
+                save_anthropic_oauth_token(token, save_fn=save_env_value)
+                print("  ✓ Setup-token saved.")
+                return True
+            print("  Cancelled — install Claude Code and try again.")
+            return False
+
+    # choice == "4" or anything else
+    print("  Cancelled.")
+    return False
 
 
 def _model_flow_anthropic(config, current_model=""):
@@ -4024,6 +4164,104 @@ def _model_flow_anthropic(config, current_model=""):
             cc_available = True
     except Exception:
         pass
+
+    # Multi-account / single-account Claude Code detection.  If the user has
+    # one or more Claude Code accounts (Keychain or file), offer to use them
+    # directly before falling through to the legacy prompts.  We only take
+    # this branch when there is no explicit Anthropic API key in the env —
+    # an API key is a stronger signal of user intent.
+    if not existing_key:
+        try:
+            from agent import claude_keychain
+
+            cc_accounts = claude_keychain.read_all_accounts()
+        except Exception:
+            cc_accounts = []
+
+        if cc_accounts:
+            from hermes_cli.config import use_anthropic_claude_code_credentials
+
+            selected_account = None
+            if len(cc_accounts) == 1:
+                acct = cc_accounts[0]
+                try:
+                    ans = input(f"  Detected: {acct.label} — use it? [Y/n]: ").strip().lower()
+                except (KeyboardInterrupt, EOFError):
+                    print()
+                    return
+                if ans in ("", "y", "yes"):
+                    selected_account = acct
+            else:
+                print()
+                print("  Multiple Claude Code accounts detected:")
+                print()
+                for i, acct in enumerate(cc_accounts, start=1):
+                    preview = (acct.credentials.access_token or "")[:10]
+                    src = "keychain" if acct.source.startswith("keychain:") else "file"
+                    print(f"    {i}. {acct.label:<22} ({preview}...)  {src}")
+                extra_idx = len(cc_accounts) + 1
+                cancel_idx = len(cc_accounts) + 2
+                print(f"    {extra_idx}. Sign in with a different account")
+                print(f"    {cancel_idx}. Cancel")
+                print()
+                try:
+                    raw = input(f"  Choice [1-{cancel_idx}]: ").strip()
+                except (KeyboardInterrupt, EOFError):
+                    print()
+                    return
+                try:
+                    pick = int(raw)
+                except ValueError:
+                    pick = 0
+                if 1 <= pick <= len(cc_accounts):
+                    selected_account = cc_accounts[pick - 1]
+                elif pick == extra_idx:
+                    # Fall through to the normal auth prompt below.
+                    pass
+                else:
+                    print("  Cancelled.")
+                    return
+
+            if selected_account is not None:
+                try:
+                    _CLAUDE_ACCOUNT_SOURCE_FILE.parent.mkdir(parents=True, exist_ok=True)
+                    _CLAUDE_ACCOUNT_SOURCE_FILE.write_text(
+                        selected_account.source, encoding="utf-8"
+                    )
+                except OSError as exc:
+                    logger.debug("Failed to persist selected account: %s", exc)
+                use_anthropic_claude_code_credentials(save_fn=save_env_value)
+                print(f"  ✓ Using {selected_account.label}.")
+                print()
+                # Skip auth — proceed straight to model selection.
+                model_list = _PROVIDER_MODELS.get("anthropic", [])
+                if model_list:
+                    selected = _prompt_model_selection(
+                        model_list, current_model=current_model
+                    )
+                else:
+                    try:
+                        selected = input(
+                            "Model name (e.g., claude-sonnet-4-20250514): "
+                        ).strip()
+                    except (KeyboardInterrupt, EOFError):
+                        selected = None
+
+                if selected:
+                    _save_model_choice(selected)
+                    cfg = load_config()
+                    model = cfg.get("model")
+                    if not isinstance(model, dict):
+                        model = {"default": model} if model else {}
+                        cfg["model"] = model
+                    model["provider"] = "anthropic"
+                    model.pop("base_url", None)
+                    save_config(cfg)
+                    deactivate_provider()
+                    print(f"Default model set to: {selected} (via Anthropic)")
+                else:
+                    print("No change.")
+                return
 
     has_creds = bool(existing_key) or cc_available
     needs_auth = not has_creds
@@ -6862,7 +7100,7 @@ For more help on a command:
     )
     login_parser.add_argument(
         "--provider",
-        choices=["nous", "openai-codex"],
+        choices=["nous", "openai-codex", "anthropic"],
         default=None,
         help="Provider to authenticate with (default: nous)",
     )
