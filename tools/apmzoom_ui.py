@@ -162,23 +162,75 @@ UI_COMPONENTS: Dict[str, Dict[str, Any]] = {
             "turn; do not end the turn with text. "
             "Pre-fills vision_analyze results; merchant confirms or edits. "
             "On submit the frontend returns the full addgoods payload. "
-            "Use after vision + goodsclasslist in upload-image-and-publish-product."
+            "Use after vision + goodsclasslist in upload-image-and-publish-product. "
+            "Props carry EVERY required addgoods field so the merchant isn't "
+            "stuck on a form missing make_address_id / goods_detail / "
+            "stock_count."
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "preview_url": {"type": "string"},
+                "preview_url": {
+                    "type": "string",
+                    "description": "CDN URL of the main product image",
+                },
                 "vision_fields": {
                     "type": "object",
-                    "description": "Category, color, material, suggested_price, selling_points…",
+                    "description": (
+                        "Vision extraction: {category, color, material, "
+                        "size_range[], suggested_price, selling_points[]}. "
+                        "null when vision refused."
+                    ),
                 },
-                "recommended_class_id": {"type": "integer"},
+                "recommended_goods_name": {
+                    "type": "string",
+                    "description": "LLM-suggested goods_name (can be vision's category + color)",
+                },
+                "recommended_class_cascade_id": {
+                    "type": "string",
+                    "description": (
+                        "Cascade path like '1-6-7' built by walking the class tree "
+                        "(top → sub → leaf).  addgoods accepts ONLY this cascade "
+                        "format, not a single class_id."
+                    ),
+                },
                 "class_options": {
                     "type": "array",
-                    "description": "Full [{id, name}] list from goodsclasslist so user can override",
+                    "description": (
+                        "Full class tree flattened to [{cascade_id:'1-6-7', name:'女装-上衣-毛衣'}] "
+                        "so the merchant can pick a different leaf from the dropdown."
+                    ),
+                },
+                "make_address_options": {
+                    "type": "array",
+                    "description": (
+                        "Origin options, e.g. [{id:1,name:'韩国'}, {id:2,name:'中国'}, "
+                        "{id:3,name:'其他'}].  make_address_id is REQUIRED for addgoods."
+                    ),
+                },
+                "recommended_make_address_id": {
+                    "type": "integer",
+                    "description": "Default origin (usually 1 韩国 for apmzoom merchants)",
+                },
+                "suggested_stock": {
+                    "type": "integer",
+                    "description": "Default stock_count to prefill (e.g. 10).  Merchant can override.",
+                },
+                "suggested_detail": {
+                    "type": "string",
+                    "description": (
+                        "Draft goods_detail (简介) — build from vision's selling_points joined "
+                        "with newlines.  goods_detail is REQUIRED for addgoods."
+                    ),
                 },
             },
-            "required": ["preview_url", "vision_fields"],
+            "required": [
+                "preview_url",
+                "vision_fields",
+                "recommended_class_cascade_id",
+                "class_options",
+                "make_address_options",
+            ],
         },
     },
     "ui_batch_editor": {
