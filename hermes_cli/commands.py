@@ -650,13 +650,19 @@ def discord_skill_commands_by_category(
     The same filtering as :func:`discord_skill_commands` is applied: hub
     skills excluded, per-platform disabled excluded, names clamped.
 
+    Discord also enforces an aggregate serialized-size cap for each top-level
+    command payload. A single ``/skill`` command that includes dozens of rich
+    skill descriptions can exceed this limit even when it stays within the
+    documented 25 groups × 25 subcommands structure. To keep sync reliable,
+    this helper aggressively shortens skill descriptions and caps the total
+    number of registered subcommands.
+
     Returns:
         ``(categories, uncategorized, hidden_count)``
 
         - *categories*: ``{category_name: [(name, description, cmd_key), ...]}``
         - *uncategorized*: ``[(name, description, cmd_key), ...]``
-        - *hidden_count*: skills dropped due to Discord group limits
-          (25 subcommand groups, 25 subcommands per group)
+        - *hidden_count*: skills dropped due to Discord structural or payload-size limits
     """
     from pathlib import Path as _P
 
@@ -703,9 +709,14 @@ def discord_skill_commands_by_category(
                 continue
             _names_used.add(discord_name)
 
-            desc = info.get("description", "")
-            if len(desc) > 100:
-                desc = desc[:97] + "..."
+            desc = (info.get("description", "") or "").strip()
+            # Keep descriptions intentionally terse to stay well below Discord's
+            # aggregate 8k serialized command-size ceiling for a single /skill group.
+            if not desc:
+                desc = f"Run {discord_name}"
+            desc = desc.splitlines()[0].strip()
+            if len(desc) > 44:
+                desc = desc[:41].rstrip() + "..."
 
             # Determine category from the relative path within SKILLS_DIR.
             # e.g. creative/ascii-art/SKILL.md → parts = ("creative", "ascii-art")
@@ -725,23 +736,43 @@ def discord_skill_commands_by_category(
     # Enforce Discord limits: 25 subcommand groups, 25 subcommands each ------
     _MAX_GROUPS = 25
     _MAX_PER_GROUP = 25
+    # Practical cap to avoid Discord's aggregate serialized-size limit on the
+    # /skill command definition. This still preserves broad coverage while
+    # keeping sync stable for large skill libraries.
+    _MAX_TOTAL_SKILLS = 60
 
     trimmed_categories: dict[str, list[tuple[str, str, str]]] = {}
     group_count = 0
+    total_registered = 0
     for cat in sorted(categories):
         if group_count >= _MAX_GROUPS:
             hidden += len(categories[cat])
             continue
+        remaining_skill_budget = _MAX_TOTAL_SKILLS - total_registered
+        if remaining_skill_budget <= 0:
+            hidden += len(categories[cat])
+            continue
         entries = categories[cat][:_MAX_PER_GROUP]
+        if len(entries) > remaining_skill_budget:
+            hidden += len(entries) - remaining_skill_budget
+            entries = entries[:remaining_skill_budget]
         hidden += max(0, len(categories[cat]) - _MAX_PER_GROUP)
+        if not entries:
+            continue
         trimmed_categories[cat] = entries
         group_count += 1
+        total_registered += len(entries)
 
-    # Uncategorized skills also count against the 25 top-level limit
+    # Uncategorized skills also count against the 25 top-level limit and total skill budget
     remaining_slots = _MAX_GROUPS - group_count
-    if len(uncategorized) > remaining_slots:
-        hidden += len(uncategorized) - remaining_slots
-        uncategorized = uncategorized[:remaining_slots]
+    original_uncategorized_count = len(uncategorized)
+    remaining_skill_budget = _MAX_TOTAL_SKILLS - total_registered
+    uncategorized = uncategorized[: max(0, remaining_slots)]
+    if original_uncategorized_count > remaining_slots:
+        hidden += original_uncategorized_count - remaining_slots
+    if len(uncategorized) > remaining_skill_budget:
+        hidden += len(uncategorized) - remaining_skill_budget
+        uncategorized = uncategorized[:remaining_skill_budget]
 
     return trimmed_categories, uncategorized, hidden
 

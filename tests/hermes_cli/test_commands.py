@@ -1043,6 +1043,67 @@ from hermes_cli.commands import discord_skill_commands_by_category  # noqa: E402
 class TestDiscordSkillCommandsByCategory:
     """Tests for discord_skill_commands_by_category() — /skill group registration."""
 
+    def test_trims_descriptions_for_discord_payload_budget(self, tmp_path, monkeypatch):
+        """Discord skill descriptions should be shortened aggressively."""
+        from unittest.mock import patch
+
+        fake_skills_dir = str(tmp_path / "skills")
+        (tmp_path / "skills" / "creative" / "long-skill").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "skills" / "creative" / "long-skill" / "SKILL.md").write_text("")
+
+        fake_cmds = {
+            "/long-skill": {
+                "name": "long-skill",
+                "description": "This description is intentionally much longer than Discord should keep for payload safety.",
+                "skill_md_path": f"{fake_skills_dir}/creative/long-skill/SKILL.md",
+            },
+        }
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+        ):
+            categories, uncategorized, hidden = discord_skill_commands_by_category(
+                reserved_names=set(),
+            )
+
+        assert uncategorized == []
+        assert hidden == 0
+        assert categories["creative"][0][0] == "long-skill"
+        assert categories["creative"][0][1] == "This description is intentionally much lo..."
+
+    def test_caps_total_registered_skills_for_discord_payload_budget(self, tmp_path, monkeypatch):
+        """Large skill libraries should be trimmed below Discord's practical payload limit."""
+        from unittest.mock import patch
+
+        fake_skills_dir = str(tmp_path / "skills")
+        fake_cmds = {}
+        for idx in range(70):
+            skill_name = f"skill-{idx:02d}"
+            category_name = f"cat-{idx % 3:02d}"
+            skill_dir = tmp_path / "skills" / category_name / skill_name
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            (skill_dir / "SKILL.md").write_text("")
+            fake_cmds[f"/{skill_name}"] = {
+                "name": skill_name,
+                "description": f"Description for {skill_name}",
+                "skill_md_path": f"{fake_skills_dir}/{category_name}/{skill_name}/SKILL.md",
+            }
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+        ):
+            categories, uncategorized, hidden = discord_skill_commands_by_category(
+                reserved_names=set(),
+            )
+
+        total_registered = sum(len(v) for v in categories.values()) + len(uncategorized)
+        assert total_registered == 60
+        assert hidden == 10
+        assert uncategorized == []
+
     def test_groups_skills_by_category(self, tmp_path, monkeypatch):
         """Skills nested 2+ levels deep should be grouped by top-level category."""
         from unittest.mock import patch
