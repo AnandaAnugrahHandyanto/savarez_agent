@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Internal Knowledge Bot Pro — Governance-Grade AI for Teams</title>
+  <meta name="description" content="Internal Knowledge Bot Pro: role + group access controls, policy engine, hybrid retrieval, citations, handoff workflow, and audit logs." />
+  <style>
+    :root {
+      --bg: #061420;
+      --panel: #0d2438;
+      --text: #ebf6ff;
+      --muted: #9fc3df;
+      --brand: #46cfff;
+      --brand2: #1ce2ba;
+      --line: rgba(255,255,255,.12);
+      --ok: #65e8ad;
+      --warn: #ffd27a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, system-ui, Arial, sans-serif;
+      color: var(--text);
+      background: radial-gradient(circle at 18% -10%, #123754 0%, transparent 43%), var(--bg);
+      line-height: 1.56;
+    }
+    .wrap { width: min(1160px, 93vw); margin: 0 auto; }
+    .nav {
+      position: sticky; top: 0; z-index: 30;
+      background: rgba(6,20,32,.75);
+      backdrop-filter: blur(8px);
+      border-bottom: 1px solid var(--line);
+    }
+    .navin { display: flex; justify-content: space-between; align-items: center; padding: 14px 0; }
+    .logo { font-weight: 800; }
+    .btn {
+      display: inline-block;
+      text-decoration: none;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 10px 16px;
+      font-weight: 800;
+      background: linear-gradient(120deg, var(--brand), var(--brand2));
+      color: #032433;
+    }
+    .btn.ghost { background: transparent; color: var(--text); }
+    .hero { padding: 82px 0 56px; }
+    .badge {
+      display: inline-block;
+      padding: 6px 10px;
+      border: 1px solid rgba(70,207,255,.45);
+      color: var(--brand);
+      border-radius: 999px;
+      font-size: 12px;
+      margin-bottom: 14px;
+    }
+    h1 { margin: 0 0 14px; line-height: 1.08; font-size: clamp(2rem, 6vw, 3.4rem); }
+    .sub { max-width: 780px; color: var(--muted); }
+    .ctas { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 20px; }
+    section { padding: 56px 0; border-top: 1px solid var(--line); }
+    h2 { margin: 0 0 12px; font-size: clamp(1.45rem, 4vw, 2.1rem); }
+    .muted { color: var(--muted); }
+    .g3 { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 14px; }
+    .g2 { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px; }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 16px;
+      background: linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.012));
+    }
+    .kpi { font-size: 1.95rem; font-weight: 800; }
+    .price { font-size: 1.75rem; font-weight: 800; margin: 6px 0; }
+    .pill { display: inline-block; border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; font-size: .78rem; margin-right: 6px; }
+    .faq details {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px 14px;
+      margin-bottom: 10px;
+      background: rgba(255,255,255,.02);
+    }
+    .faq summary { cursor: pointer; font-weight: 700; }
+    .ctabox {
+      border: 1px solid rgba(70,207,255,.35);
+      border-radius: 16px;
+      padding: 24px;
+      background: linear-gradient(120deg, rgba(70,207,255,.12), rgba(28,226,186,.12));
+    }
+    footer { padding: 26px 0 42px; color: var(--muted); font-size: .95rem; }
+    @media (max-width: 980px) { .g3, .g2 { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <nav class="nav">
+    <div class="wrap navin">
+      <div class="logo">Internal Knowledge Bot <span class="pill">Pro</span></div>
+      <a class="btn" href="#book">Book strategy call</a>
+    </div>
+  </nav>
+
+  <header class="hero wrap">
+    <span class="badge">Governance-Grade Internal AI</span>
+    <h1>Private team knowledge, now searchable <br/>with policy controls and audit trails.</h1>
+    <p class="sub">Internal Knowledge Bot Pro gives your team grounded, citation-backed answers from private SOPs and docs, with role + group permissions, policy-driven escalations, and full audit visibility.</p>
+    <div class="ctas">
+      <a class="btn" href="#book">Book strategy call</a>
+      <a class="btn ghost" href="#pricing">See pricing</a>
+    </div>
+  </header>
+
+  <section>
+    <div class="wrap">
+      <h2>What’s advanced in Pro</h2>
+      <div class="g3">
+        <div class="card"><h3>Group + role access</h3><p>Not just role filtering — document access can be restricted by team groups (e.g., Finance, HR, Legal).</p></div>
+        <div class="card"><h3>Policy engine</h3><p>Set confidence thresholds, force-handoff keywords, PII redaction, and citation limits per tenant.</p></div>
+        <div class="card"><h3>Hybrid retrieval</h3><p>Answers rank by semantic similarity + keyword overlap + source freshness for stronger relevance.</p></div>
+        <div class="card"><h3>Handoff workflow</h3><p>Low-confidence or sensitive prompts route into a human queue for controlled resolution.</p></div>
+        <div class="card"><h3>Audit events</h3><p>Governance-ready logs: policy changes, escalations, integrations, and key admin actions.</p></div>
+        <div class="card"><h3>Operational analytics</h3><p>Track answer rate, confidence distributions, unresolved handoffs, and escalation causes.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <h2>Outcomes teams care about</h2>
+      <div class="g3">
+        <div class="card"><div class="kpi">-35%</div><p class="muted">repeat internal questions to senior staff</p></div>
+        <div class="card"><div class="kpi">&lt;5s</div><p class="muted">time to first grounded answer</p></div>
+        <div class="card"><div class="kpi">+Trust</div><p class="muted">higher adoption because answers are cited and policy-safe</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <h2>How we deploy it</h2>
+      <div class="g2">
+        <div class="card"><h3>Week 1 — Discovery + Controls</h3><p>Map use-cases, define access model, set policy baseline, and configure high-risk escalation rules.</p></div>
+        <div class="card"><h3>Week 2 — Go-Live + Governance</h3><p>Ingest knowledge, launch team workflows, enable audit dashboards, and start optimization loop.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="pricing">
+    <div class="wrap">
+      <h2>Productized plans</h2>
+      <div class="g3">
+        <div class="card">
+          <h3>Starter Ops</h3>
+          <p class="price">€2,500 + €790/mo</p>
+          <p class="muted">Small team • core retrieval • basic policy controls</p>
+        </div>
+        <div class="card">
+          <h3>Growth Governance</h3>
+          <p class="price">€5,000 + €1,590/mo</p>
+          <p class="muted">Group ACLs • policy engine • handoff workflows • analytics</p>
+        </div>
+        <div class="card">
+          <h3>Scale Compliance</h3>
+          <p class="price">€9,500 + €3,490/mo</p>
+          <p class="muted">Advanced governance • integration depth • SLA + dedicated optimization</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="faq">
+    <div class="wrap">
+      <h2>FAQ</h2>
+      <details><summary>Can we enforce who sees what?</summary><p>Yes. Access checks support both role and group restrictions before retrieval and answer generation.</p></details>
+      <details><summary>What happens on sensitive questions?</summary><p>Policy engine can force handoff by keyword or low confidence threshold; those actions are logged.</p></details>
+      <details><summary>Can you provide audit traceability?</summary><p>Yes. Key actions are captured via audit events for governance and review.</p></details>
+      <details><summary>Is this just a chatbot?</summary><p>No. It is an operational knowledge system with governance controls, escalation workflows, and measurable outcomes.</p></details>
+    </div>
+  </section>
+
+  <section id="book">
+    <div class="wrap ctabox">
+      <h2>Want the advanced build in your org?</h2>
+      <p class="muted">Book a strategy call and we’ll map your top 3 workflows, risk controls, and rollout architecture.</p>
+      <a class="btn" href="mailto:hello@helmies.ai?subject=Internal%20Knowledge%20Bot%20Pro%20Strategy%20Call">Book via email</a>
+    </div>
+  </section>
+
+  <footer>
+    <div class="wrap">Internal Knowledge Bot Pro • Confidentiality-first • Governance-ready</div>
+  </footer>
+</body>
+</html>

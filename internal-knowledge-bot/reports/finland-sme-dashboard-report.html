@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang='en'>
+<head>
+  <meta charset='utf-8'>
+  <meta name='viewport' content='width=device-width, initial-scale=1'>
+  <title>Finland SME AI Dashboard Report</title>
+  <link rel='preconnect' href='https://fonts.googleapis.com'>
+  <link rel='preconnect' href='https://fonts.gstatic.com' crossorigin>
+  <link href='https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap' rel='stylesheet'>
+  <style>
+    :root { --bg:#081321; --panel:#0f243b; --panel2:#12304c; --text:#ecf4ff; --muted:#9db9d6; --line:rgba(255,255,255,.14); --accent:#46d0ff; --accent2:#1de2bd; --good:#6ce7b1; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font-family:Inter,system-ui,Arial,sans-serif; }
+    .hero { background:linear-gradient(180deg, rgba(6,16,27,.55), rgba(8,19,33,.9)), url('https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=1800&q=80') center/cover; padding:72px 0 58px; border-bottom:1px solid var(--line); }
+    .wrap { width:min(1200px,94vw); margin:0 auto; }
+    h1 { margin:0 0 10px; font-size:clamp(2rem,4vw,3rem); }
+    .sub { color:#d4e9ff; max-width:840px; }
+    .chips { display:flex; flex-wrap:wrap; gap:10px; margin-top:16px; }
+    .chip { border:1px solid var(--line); background:rgba(255,255,255,.06); padding:7px 12px; border-radius:999px; font-size:.9rem; }
+    .section { padding:24px 0; }
+    .grid { display:grid; gap:14px; grid-template-columns:repeat(4,minmax(0,1fr)); }
+    .card { background:linear-gradient(180deg,var(--panel2),var(--panel)); border:1px solid var(--line); border-radius:14px; padding:14px; }
+    .k { color:var(--muted); font-size:.85rem; }
+    .v { font-size:1.55rem; font-weight:800; margin-top:4px; }
+    .layout { display:grid; grid-template-columns:1fr 320px; gap:16px; }
+    .panel { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:14px; }
+    h2 { margin:2px 0 10px; font-size:1.2rem; }
+    .muted { color:var(--muted); }
+    .table-wrap { border:1px solid var(--line); border-radius:12px; overflow:auto; max-height:760px; }
+    table { width:100%; border-collapse:collapse; font-size:.9rem; }
+    th,td { padding:10px 8px; border-bottom:1px solid rgba(255,255,255,.12); vertical-align:top; }
+    th { text-align:left; background:#112842; position:sticky; top:0; }
+    .company { display:flex; gap:10px; align-items:center; }
+    .company img { width:24px; height:24px; border-radius:6px; object-fit:contain; background:#fff; }
+    .name { font-weight:700; }
+    .sector { color:var(--muted); font-size:.8rem; }
+    ul { margin:8px 0 0 18px; color:var(--muted); }
+    .email { white-space:pre-wrap; font-family:ui-monospace, Menlo, monospace; background:#0b1b2d; border:1px solid var(--line); border-radius:10px; padding:12px; color:#d5ebff; font-size:.88rem; }
+    @media (max-width:1020px) { .grid {grid-template-columns:1fr 1fr;} .layout {grid-template-columns:1fr;} }
+    @media (max-width:700px) { .grid {grid-template-columns:1fr;} }
+  </style>
+</head>
+<body>
+  <section class='hero'>
+    <div class='wrap'>
+      <h1>Finland SME AI Dashboard Report</h1>
+      <div class='sub'>Refined target list focused on small-to-medium organizations and realistic budgets. Built from company site browsing + practical sales packaging.</div>
+      <div class='chips'>
+        <div class='chip'>15 SME/Scale-up Targets</div>
+        <div class='chip'>SME-Friendly Pricing</div>
+        <div class='chip'>Dashboard-First Implementation</div>
+        <div class='chip'>Prepared: 2026-04-15</div>
+      </div>
+    </div>
+  </section>
+
+  <section class='section'>
+    <div class='wrap grid'>
+      <div class='card'><div class='k'>Avg setup midpoint</div><div class='v'>€14,233</div></div>
+      <div class='card'><div class='k'>Avg monthly midpoint</div><div class='v'>€2,793</div></div>
+      <div class='card'><div class='k'>Avg delivery cost/mo</div><div class='v'>€1,806</div></div>
+      <div class='card'><div class='k'>Avg gross profit/mo/client</div><div class='v' style='color:var(--good)'>€987</div></div>
+    </div>
+  </section>
+
+  <section class='section'>
+    <div class='wrap layout'>
+      <div class='panel'>
+        <h2>Target Organizations + Dashboard Concepts</h2>
+        <div class='table-wrap'>
+          <table>
+            <thead>
+              <tr><th>#</th><th>Company</th><th>Dashboard concept</th><th>Package</th><th>Tokens/mo</th><th>AI cost</th><th>Delivery cost</th><th>Commercial range</th></tr>
+            </thead>
+            <tbody>
+              
+    <tr>
+      <td>1</td>
+      <td>
+        <div class='company'>
+          <img src='https://logo.clearbit.com/varjo.com' alt='Varjo logo' onerror='this.style.display="none"'>
+          <div>
+            <div class='name'>Varjo</div>
+            <div class='sector'>XR Hardware &amp; Software</div>
+          </div>
+        </div>
+      </td>
+      <td>Sales Pipeline + Demo Ops Dashboard</td>
+      <td>Pro Dashboard</td>
+      <td>8.75M</td>
+      <td>€4.08</td>
+      <td>€2454.08</td>
+      <td>€16,000–€26,000<br><span class='muted'>+ €3,200–€5,200/mo</span></td>
+    </tr>
+    
+    <tr>
+      <td>2</td>
+      <td>
+        <div class='company'>
+          <img src='https://logo.clearbit.com/oura.com' alt='Oura logo' onerror='this.style.display="none"'>
+          <div>
+            <div class='name'>Oura</div>
+            <div class='sector'>Wearable Health Tech</div>
+          </div>
+        </div>
+      </td>
+      <td>Customer Success + Subscription Health Dashboard</td>
+      <td>Pro Dashboard</td>
+      <td>8.75M</td>
+      <td>€4.08</td>
+      <td>€2454.08</td>
+      <td>€16,000–€26,000<br><span class='muted'>+ €3,200–€5,200/mo</span></td>
+    </tr>
+    
+    <tr>
+      <td>3</td>
+      <td>
+        <div class='company'>
+          <img src='https://logo.clearbit.com/happy-or-not.com' alt='HappyOrNot logo' onerror='this.style.display="none"'>
+          <div>
+            <div class='name'>HappyOrNot</div>
+            <div class='sector'>Customer Experience SaaS</div>
+          </div>
+        </div>
+      </td>
+      <td>Client Feedback Intelligence Dashboard</td>
+      <td>Growth Dashboard</td>
+      <td>5.25M</td>
+      <td>€2.45</td>
+      <td>€1602.45</td>
+      <td>€9,000–€15,000<br><span class='muted'>+ €1,700–€2,900/mo</span></td>
+    </tr>
+    
+    <tr>
+      <td>4</td>
+      <td>
+        <div class='company'>
+          <img src='https://logo.clearbit.com/haltian.com' alt='Haltian logo' onerror='this.style.display="none"'>
+          <div>
+            <div class='name'>Haltian</div>
+            <div class='sector'>IoT Solutions</div>
+          </div>
+        </div>
+      </td>
+      <td>Device Fleet + Support Triage Dashboard</td>
+      <td>Growth Dashboard</td>
+      <td>5.25M</td>
+      <td>€2.45</td>
+      <td>€1602.45</td>
+      <td>€9,000–€15,000<br><span class='muted'>+ €1,700–€2,900/mo</span></td>
+    </tr>
+    
+    <tr>
+      <td>5</td>
+      <td>
+        <div class='company'>
+          <img src='https://logo.clearbit.com/sulapac.com' alt='Sulapac logo' onerror='this.style.display="none"'>
+          <div>
+            <div class='name'>Sulapac</div>
+            <div class='sector'>Sustainable Materials</div>
+          </div>
+        </div>
+      </td>
+      <td>B2B Leads + Regulatory Documentation Dashboard</td>
+      <td>Growth Dashboard</td>
+      <td>5.25M</td>
+      <td>€2.45</td>
+      <td>€1602.45</td>
+      <td>€9,000–€15,000<br><span class='muted'>+ €1,700–€2,900/mo</span></td>
+    </tr>
+    
+    <tr>
+      <td>6</td>
+      <td>
+        <div class='company'>
+          <img src='https://logo.clearbit.com/vapaus.io' alt='Vapaus logo' onerror='this.style.display="none"'>
+          <div>
+            <div class='name'>Vapaus</div>
+            <div class='sector'>Employee Mobility Benefits</div>
+          </div>
+        </div>
+      </td>
+      <td>Employer Onboarding + Support Automation Dashboard</td>
+      <td>Growth Dashboard</td>
+      <td>5.25M</td>
+      <td>€2.45</td>
+      <td>€1602.45</td>
+      <td>€9,000–€15,000<br><span class='muted'>+ €1,700–€2,900/mo</span></td>
+    </tr>
+    
+    <tr>
+      <td>7</td>
+      <td>
+        <div class='company'>
+          <img src='https://logo.clearbit.com/swappie.com' alt='Swappie logo' onerror='this.style.display="none"'>
+          <div>
+            <div class='name'>Swappie</div>
+            <div class='sector'>Refurbished Electronics E-commerce</div>
+          </div>
+        </div>
+      </td>
+      <td>Order Exceptions + Returns Resolution Dashboard</td>
+      <td>Pro Dashboard</td>
+      <td>8.75M</td>
+      <td>€4.08</td>
+      <td>€2454.08</td>
+      <td>€16,000–€26,000<br><span class='muted'>+ €3,200–€5,200/mo</span></td>
+    </tr>
+    
+    <tr>
+      <td>8</td>
+      <td>
+        <div class='company'>
+          <img src='https://logo.clearbit.com/gubbe.com' alt='Gubbe logo' onerror='this.style.display="none"'>
+          <div>
+            <div class='name'>Gubbe</div>
+            <div class='sector'>Elderly Home-Care Platform</div>
+          </div>
+        </div>
+      </td>
+      <td>Care Matching + Escalation Dashboard</td>
+      <td>Growth Dashboard</td>
+      <td>5.25M</td>
+      <td>€2.45</td>
+      <td>€1602.45</td>
+      <td>€9,000–€15,000<br><span class='muted'>+ €1,700–€2,900/mo</span></td>
+    </tr>
+    
+    <tr>
+      <td>9</td>
+      <td>
+        <div class='company'>
+          <img src='https://logo.clearbit.com/freska.fi' alt='Freska logo' onerror='this.style.display="none"'>
+          <div>
+            <div class='name'>Freska</div>
+            <div class='sector'>Home Cleaning Services</div>
+          </div>
+        </div>
+      </td>
+      <td>Booking Support + Staff Dispatch Dashboard</td>
+      <td>Starter Dashboard</td>
+      <td>2.6M</td>
+      <td>€1.19</td>
+      <td>€1001.19</td>
+      <td>€4,500–€8,000<br><span class='muted'>+ €900–€1,600/mo</span></td>
+    </tr>
+    
+    <tr>
+      <td>10</td>
+      <td>
+        <div class='company'>
+          <img src='https://logo.clearbit.com/fiksuruoka.fi' alt='Fiksuruoka logo' onerror='this.style.display="none"'>
+          <div>
+            <div class='name'>Fiksuruoka</div>
+            <div class='sector'>Discount Grocery E-commerce</div>
+          </div>
+        </div>
+      </td>
+      <td>Inventory Promotion + Customer Support Dashboard</td>
+      <td>Starter Dashboard</td>
+      <td>2.6M</td>
+      <td>€1.19</td>
+      <td>€1001.19</td>
+      <td>€4,500–€8,000<br><span class='muted'>+ €900–€1,600/mo</span></td>
+    </tr>
+    
+    <tr>
+      <td>11</td>
+      <td>
+        <div class='company'>
+          <img src='https://logo.clearbit.com/framery.com' alt='Framery logo' onerror='this.style.display="none"'>
+          <div>
+            <div class='name'>Framery</div>
+            <div class='sector'>Office Pod Manufacturing</div>
+          </div>
+        </div>
+      </td>
+      <td>Dealer Enablement + Warranty Support Dashboard</td>
+      <td>Growth Dashboard</td>
+      <td>5.25M</td>
+      <td>€2.45</td>
+      <td>€1602.45</td>
+      <td>€9,000–€15,000<br><span class='muted'>+ €1,700–€2,900/mo</span></td>
+    </tr>
+    
+    <tr>
+      <td>12</td>
+      <td>
+        <div class='company'>
+          <img src='https://logo.clearbit.com/meetiqm.com' alt='IQM Quantum Computers logo' onerror='this.style.display="none"'>
+          <div>
+            <div class='name'>IQM Quantum Computers</div>
+            <div class='sector'>Quantum Technology</div>
+          </div>
+        </div>
+      </td>
+      <td>Partnership Pipeline + Technical Request Dashboard</td>
+      <td>Pro Dashboard</td>
+      <td>8.75M</td>
+      <td>€4.08</td>
+      <td>€2454.08</td>
+      <td>€16,000–€26,000<br><span class='muted'>+ €3,200–€5,200/mo</span></td>
+    </tr>
+    
+    <tr>
+      <td>13</td>
+      <td>
+        <div class='company'>
+          <img src='https://logo.clearbit.com/supermetrics.com' alt='Supermetrics logo' onerror='this.style.display="none"'>
+          <div>
+            <div class='name'>Supermetrics</div>
+            <div class='sector'>Marketing Data Software</div>
+          </div>
+        </div>
+      </td>
+      <td>Customer Expansion + Churn Risk Dashboard</td>
+      <td>Pro Dashboard</td>
+      <td>8.75M</td>
+      <td>€4.08</td>
+      <td>€2454.08</td>
+      <td>€16,000–€26,000<br><span class='muted'>+ €3,200–€5,200/mo</span></td>
+    </tr>
+    
+    <tr>
+      <td>14</td>
+      <td>
+        <div class='company'>
+          <img src='https://logo.clearbit.com/lyyti.com' alt='Lyyti logo' onerror='this.style.display="none"'>
+          <div>
+            <div class='name'>Lyyti</div>
+            <div class='sector'>Event Management Software</div>
+          </div>
+        </div>
+      </td>
+      <td>Event Ops + Attendee Support Dashboard</td>
+      <td>Growth Dashboard</td>
+      <td>5.25M</td>
+      <td>€2.45</td>
+      <td>€1602.45</td>
+      <td>€9,000–€15,000<br><span class='muted'>+ €1,700–€2,900/mo</span></td>
+    </tr>
+    
+    <tr>
+      <td>15</td>
+      <td>
+        <div class='company'>
+          <img src='https://logo.clearbit.com/genelec.com' alt='Genelec logo' onerror='this.style.display="none"'>
+          <div>
+            <div class='name'>Genelec</div>
+            <div class='sector'>Professional Audio Manufacturing</div>
+          </div>
+        </div>
+      </td>
+      <td>Dealer Support + Product Knowledge Dashboard</td>
+      <td>Growth Dashboard</td>
+      <td>5.25M</td>
+      <td>€2.45</td>
+      <td>€1602.45</td>
+      <td>€9,000–€15,000<br><span class='muted'>+ €1,700–€2,900/mo</span></td>
+    </tr>
+    
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class='panel'>
+        <h2>How to make this sell</h2>
+        <ul>
+          <li>14-day pilot with one KPI target.</li>
+          <li>Show live dashboard modules in demo (not chat UI only).</li>
+          <li>Start with one team workflow, expand after proof.</li>
+          <li>Bundle governance (handoff + audit + redaction) by default.</li>
+          <li>Weekly ROI snapshots for decision-makers.</li>
+        </ul>
+
+        <h2 style='margin-top:16px'>Pipeline scenarios</h2>
+        <ul>
+          <li><b>Conservative (2 closes):</b> €28,467 setup + €5,587 MRR</li>
+          <li><b>Base (4 closes):</b> €56,933 setup + €11,173 MRR</li>
+          <li><b>Aggressive (6 closes):</b> €85,400 setup + €16,760 MRR</li>
+        </ul>
+
+        <h2 style='margin-top:16px'>Standard stack</h2>
+        <ul>
+          <li>FI/EN/SV multilingual</li>
+          <li>RAG + knowledge dashboard</li>
+          <li>Role/group permissions</li>
+          <li>Escalation workflows</li>
+          <li>KPI & ops analytics</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class='section'>
+    <div class='wrap panel'>
+      <h2>Pitch Email</h2>
+      <div class='email'>Subject: AI operations dashboard idea for {company} to reduce {pain_point} in 30 days
+
+Hi {first_name},
+
+I looked through {company} and saw a practical opportunity to automate {process}.
+
+We build AI Operations Dashboards for small-to-medium organizations that:
+- combine support triage, knowledge answers, and escalation workflows,
+- provide a KPI dashboard (response time, resolution rate, workload saved),
+- keep human control for sensitive cases,
+- integrate with your current stack (email, CRM/helpdesk, Slack/Teams).
+
+For {company}, I'd start with:
+{dashboard_use_case}
+
+Typical first-month outcomes:
+- fewer repetitive support tasks,
+- faster response and routing,
+- clear visibility of unresolved cases.
+
+If useful, I can send a 1-page pilot scope with timeline, security controls, and ROI estimate for {company}.
+
+Would Tuesday or Wednesday work for a 20-minute call?
+
+Best,
+Wael Helmi</div>
+    </div>
+  </section>
+</body>
+</html>

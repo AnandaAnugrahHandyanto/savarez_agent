@@ -1,0 +1,514 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Finland AI Bot Sales Report — 20 Organizations</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg:#07111f; --panel:#0f2238; --panel2:#132b46; --text:#ecf4ff; --muted:#9ab7d6;
+      --brand:#4ccfff; --brand2:#21e2bc; --line:rgba(255,255,255,.14); --ok:#6be7b0;
+    }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font-family:Inter,system-ui,Arial,sans-serif; line-height:1.5; }
+    .hero {
+      background: linear-gradient(180deg, rgba(0,0,0,.45), rgba(7,17,31,.92)), url('https://images.unsplash.com/photo-1551867633-194f125bddfa?auto=format&fit=crop&w=1800&q=80') center/cover;
+      padding:72px 0 60px; border-bottom:1px solid var(--line);
+    }
+    .wrap { width:min(1200px, 94vw); margin:0 auto; }
+    h1 { margin:0 0 8px; font-size:clamp(1.8rem, 4vw, 3rem); }
+    .sub { color:#d9ebff; max-width:860px; }
+    .chips { display:flex; gap:10px; flex-wrap:wrap; margin-top:16px; }
+    .chip { background:rgba(255,255,255,.08); border:1px solid var(--line); border-radius:999px; padding:7px 12px; font-size:.9rem; }
+
+    .section { padding:28px 0; }
+    .grid { display:grid; gap:14px; grid-template-columns:repeat(4,minmax(0,1fr)); }
+    .card { background:linear-gradient(180deg,var(--panel2),var(--panel)); border:1px solid var(--line); border-radius:14px; padding:14px; }
+    .k { color:var(--muted); font-size:.86rem; }
+    .v { font-size:1.6rem; font-weight:800; margin-top:4px; }
+
+    .content-grid { display:grid; grid-template-columns:1fr 320px; gap:16px; }
+    .panel { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:14px; }
+    h2 { margin:4px 0 12px; font-size:1.2rem; }
+    ul { margin:8px 0 0 18px; color:var(--muted); }
+
+    table { width:100%; border-collapse:collapse; font-size:.9rem; }
+    th, td { border-bottom:1px solid rgba(255,255,255,.12); padding:10px 8px; vertical-align:top; }
+    th { text-align:left; color:#cfe6ff; font-weight:700; position:sticky; top:0; background:#10253d; }
+    .table-wrap { max-height:720px; overflow:auto; border:1px solid var(--line); border-radius:12px; }
+    .company-cell { display:flex; gap:10px; align-items:center; }
+    .company-cell img { width:24px; height:24px; border-radius:6px; background:#fff; object-fit:contain; }
+    .company-name { font-weight:700; }
+    .sector { color:var(--muted); font-size:.8rem; }
+    .margin { color:var(--ok); font-weight:700; }
+
+    .email { white-space:pre-wrap; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; background:#0b1a2b; border:1px solid var(--line); padding:12px; border-radius:10px; color:#d8ebff; }
+    .note { color:var(--muted); font-size:.86rem; }
+
+    @media (max-width: 1050px) {
+      .grid { grid-template-columns:1fr 1fr; }
+      .content-grid { grid-template-columns:1fr; }
+    }
+    @media (max-width: 700px) {
+      .grid { grid-template-columns:1fr; }
+    }
+  </style>
+</head>
+<body>
+  <section class="hero">
+    <div class="wrap">
+      <h1>Finland AI Bot Sales Report</h1>
+      <div class="sub">20 target organizations • implementation concepts • token/cost/profit model • competitive strategy • sales execution • pitch email</div>
+      <div class="chips">
+        <div class="chip">Prepared for: Wael Helmi</div>
+        <div class="chip">Date: 2026-04-15</div>
+        <div class="chip">Market: Finland</div>
+        <div class="chip">Model: Setup + MRR</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="wrap">
+      <div class="grid">
+        <div class="card"><div class="k">Target Companies</div><div class="v">20</div></div>
+        <div class="card"><div class="k">Avg Setup Fee</div><div class="v">€22,900</div></div>
+        <div class="card"><div class="k">Avg Monthly Fee</div><div class="v">€6,495</div></div>
+        <div class="card"><div class="k">Avg Gross Margin / Month</div><div class="v">€4,468</div></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="wrap content-grid">
+      <div class="panel">
+        <h2>20-Company Opportunity Matrix</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th><th>Company</th><th>Bot Implementation</th><th>Tokens/mo</th><th>AI Cost/mo</th><th>Delivery Cost/mo</th><th>Offer</th><th>Gross Margin/mo</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+      <td>1</td>
+      <td>
+        <div class="company-cell">
+          <img src="https://logo.clearbit.com/kone.com" alt="KONE logo" onerror="this.style.display='none'" />
+          <div>
+            <div class="company-name">KONE</div>
+            <div class="sector">Elevators &amp; Escalators</div>
+          </div>
+        </div>
+      </td>
+      <td>Field Service Copilot + Maintenance Knowledge Bot</td>
+      <td>11.6M</td>
+      <td>€5.34</td>
+      <td>€1,605.34</td>
+      <td>€5,200 + €18,000 setup</td>
+      <td class="margin">€3,594.66</td>
+    </tr><tr>
+      <td>2</td>
+      <td>
+        <div class="company-cell">
+          <img src="https://logo.clearbit.com/nokia.com" alt="Nokia logo" onerror="this.style.display='none'" />
+          <div>
+            <div class="company-name">Nokia</div>
+            <div class="sector">Telecom Networks</div>
+          </div>
+        </div>
+      </td>
+      <td>Network Ops Assistant + RFP/Proposal Bot</td>
+      <td>22.0M</td>
+      <td>€10.01</td>
+      <td>€2,810.01</td>
+      <td>€8,900 + €32,000 setup</td>
+      <td class="margin">€6,089.99</td>
+    </tr><tr>
+      <td>3</td>
+      <td>
+        <div class="company-cell">
+          <img src="https://logo.clearbit.com/wartsila.com" alt="Wärtsilä logo" onerror="this.style.display='none'" />
+          <div>
+            <div class="company-name">Wärtsilä</div>
+            <div class="sector">Marine &amp; Energy Tech</div>
+          </div>
+        </div>
+      </td>
+      <td>Fleet Performance &amp; Technical Support Bot</td>
+      <td>22.0M</td>
+      <td>€10.01</td>
+      <td>€2,810.01</td>
+      <td>€8,900 + €32,000 setup</td>
+      <td class="margin">€6,089.99</td>
+    </tr><tr>
+      <td>4</td>
+      <td>
+        <div class="company-cell">
+          <img src="https://logo.clearbit.com/neste.com" alt="Neste logo" onerror="this.style.display='none'" />
+          <div>
+            <div class="company-name">Neste</div>
+            <div class="sector">Renewable Fuels</div>
+          </div>
+        </div>
+      </td>
+      <td>Sustainability Reporting Bot + Plant Ops Q&amp;A</td>
+      <td>22.0M</td>
+      <td>€10.01</td>
+      <td>€2,810.01</td>
+      <td>€8,900 + €32,000 setup</td>
+      <td class="margin">€6,089.99</td>
+    </tr><tr>
+      <td>5</td>
+      <td>
+        <div class="company-cell">
+          <img src="https://logo.clearbit.com/upm.com" alt="UPM-Kymmene logo" onerror="this.style.display='none'" />
+          <div>
+            <div class="company-name">UPM-Kymmene</div>
+            <div class="sector">Forestry &amp; Bioproducts</div>
+          </div>
+        </div>
+      </td>
+      <td>Procurement + Mill Operations Knowledge Bot</td>
+      <td>11.6M</td>
+      <td>€5.34</td>
+      <td>€1,605.34</td>
+      <td>€5,200 + €18,000 setup</td>
+      <td class="margin">€3,594.66</td>
+    </tr><tr>
+      <td>6</td>
+      <td>
+        <div class="company-cell">
+          <img src="https://logo.clearbit.com/storaenso.com" alt="Stora Enso logo" onerror="this.style.display='none'" />
+          <div>
+            <div class="company-name">Stora Enso</div>
+            <div class="sector">Packaging &amp; Biomaterials</div>
+          </div>
+        </div>
+      </td>
+      <td>Sales Quote Assistant + Product Compliance Bot</td>
+      <td>11.6M</td>
+      <td>€5.34</td>
+      <td>€1,605.34</td>
+      <td>€5,200 + €18,000 setup</td>
+      <td class="margin">€3,594.66</td>
+    </tr><tr>
+      <td>7</td>
+      <td>
+        <div class="company-cell">
+          <img src="https://logo.clearbit.com/kesko.fi" alt="Kesko logo" onerror="this.style.display='none'" />
+          <div>
+            <div class="company-name">Kesko</div>
+            <div class="sector">Retail</div>
+          </div>
+        </div>
+      </td>
+      <td>Store Operations Bot + Supplier Ticket Bot</td>
+      <td>11.6M</td>
+      <td>€5.34</td>
+      <td>€1,605.34</td>
+      <td>€5,200 + €18,000 setup</td>
+      <td class="margin">€3,594.66</td>
+    </tr><tr>
+      <td>8</td>
+      <td>
+        <div class="company-cell">
+          <img src="https://logo.clearbit.com/s-ryhma.fi" alt="S Group (SOK) logo" onerror="this.style.display='none'" />
+          <div>
+            <div class="company-name">S Group (SOK)</div>
+            <div class="sector">Retail &amp; Hospitality Cooperative</div>
+          </div>
+        </div>
+      </td>
+      <td>Customer Service + Loyalty Campaign Bot</td>
+      <td>11.6M</td>
+      <td>€5.34</td>
+      <td>€1,605.34</td>
+      <td>€5,200 + €18,000 setup</td>
+      <td class="margin">€3,594.66</td>
+    </tr><tr>
+      <td>9</td>
+      <td>
+        <div class="company-cell">
+          <img src="https://logo.clearbit.com/fortum.com" alt="Fortum logo" onerror="this.style.display='none'" />
+          <div>
+            <div class="company-name">Fortum</div>
+            <div class="sector">Energy Utility</div>
+          </div>
+        </div>
+      </td>
+      <td>Customer Self-Service Bot + Incident Comms Bot</td>
+      <td>11.6M</td>
+      <td>€5.34</td>
+      <td>€1,605.34</td>
+      <td>€5,200 + €18,000 setup</td>
+      <td class="margin">€3,594.66</td>
+    </tr><tr>
+      <td>10</td>
+      <td>
+        <div class="company-cell">
+          <img src="https://logo.clearbit.com/finnair.com" alt="Finnair logo" onerror="this.style.display='none'" />
+          <div>
+            <div class="company-name">Finnair</div>
+            <div class="sector">Airline</div>
+          </div>
+        </div>
+      </td>
+      <td>Passenger Disruption Assistant + Internal Ops Bot</td>
+      <td>11.6M</td>
+      <td>€5.34</td>
+      <td>€1,605.34</td>
+      <td>€5,200 + €18,000 setup</td>
+      <td class="margin">€3,594.66</td>
+    </tr><tr>
+      <td>11</td>
+      <td>
+        <div class="company-cell">
+          <img src="https://logo.clearbit.com/vrgroup.fi" alt="VR Group logo" onerror="this.style.display='none'" />
+          <div>
+            <div class="company-name">VR Group</div>
+            <div class="sector">Rail Transport</div>
+          </div>
+        </div>
+      </td>
+      <td>Passenger Info Bot + Maintenance Dispatch Assistant</td>
+      <td>11.6M</td>
+      <td>€5.34</td>
+      <td>€1,605.34</td>
+      <td>€5,200 + €18,000 setup</td>
+      <td class="margin">€3,594.66</td>
+    </tr><tr>
+      <td>12</td>
+      <td>
+        <div class="company-cell">
+          <img src="https://logo.clearbit.com/posti.com" alt="Posti logo" onerror="this.style.display='none'" />
+          <div>
+            <div class="company-name">Posti</div>
+            <div class="sector">Postal &amp; Logistics</div>
+          </div>
+        </div>
+      </td>
+      <td>Shipment Exception Bot + Warehouse SOP Bot</td>
+      <td>11.6M</td>
+      <td>€5.34</td>
+      <td>€1,605.34</td>
+      <td>€5,200 + €18,000 setup</td>
+      <td class="margin">€3,594.66</td>
+    </tr><tr>
+      <td>13</td>
+      <td>
+        <div class="company-cell">
+          <img src="https://logo.clearbit.com/terveystalo.com" alt="Terveystalo logo" onerror="this.style.display='none'" />
+          <div>
+            <div class="company-name">Terveystalo</div>
+            <div class="sector">Healthcare Services</div>
+          </div>
+        </div>
+      </td>
+      <td>Patient Triage Assistant + Clinic Ops Bot</td>
+      <td>22.0M</td>
+      <td>€10.01</td>
+      <td>€2,810.01</td>
+      <td>€8,900 + €32,000 setup</td>
+      <td class="margin">€6,089.99</td>
+    </tr><tr>
+      <td>14</td>
+      <td>
+        <div class="company-cell">
+          <img src="https://logo.clearbit.com/mehilainen.fi" alt="Mehiläinen logo" onerror="this.style.display='none'" />
+          <div>
+            <div class="company-name">Mehiläinen</div>
+            <div class="sector">Healthcare &amp; Social Care</div>
+          </div>
+        </div>
+      </td>
+      <td>Appointment &amp; Care Navigation Bot</td>
+      <td>22.0M</td>
+      <td>€10.01</td>
+      <td>€2,810.01</td>
+      <td>€8,900 + €32,000 setup</td>
+      <td class="margin">€6,089.99</td>
+    </tr><tr>
+      <td>15</td>
+      <td>
+        <div class="company-cell">
+          <img src="https://logo.clearbit.com/op.fi" alt="OP Financial Group logo" onerror="this.style.display='none'" />
+          <div>
+            <div class="company-name">OP Financial Group</div>
+            <div class="sector">Banking &amp; Insurance</div>
+          </div>
+        </div>
+      </td>
+      <td>Secure Customer Support Bot + Advisor Copilot</td>
+      <td>22.0M</td>
+      <td>€10.01</td>
+      <td>€2,810.01</td>
+      <td>€8,900 + €32,000 setup</td>
+      <td class="margin">€6,089.99</td>
+    </tr><tr>
+      <td>16</td>
+      <td>
+        <div class="company-cell">
+          <img src="https://logo.clearbit.com/nordea.com" alt="Nordea Finland logo" onerror="this.style.display='none'" />
+          <div>
+            <div class="company-name">Nordea Finland</div>
+            <div class="sector">Banking</div>
+          </div>
+        </div>
+      </td>
+      <td>Mortgage Pre-Qualification Bot + KYC Support Bot</td>
+      <td>22.0M</td>
+      <td>€10.01</td>
+      <td>€2,810.01</td>
+      <td>€8,900 + €32,000 setup</td>
+      <td class="margin">€6,089.99</td>
+    </tr><tr>
+      <td>17</td>
+      <td>
+        <div class="company-cell">
+          <img src="https://logo.clearbit.com/elisa.fi" alt="Elisa logo" onerror="this.style.display='none'" />
+          <div>
+            <div class="company-name">Elisa</div>
+            <div class="sector">Telecom Operator</div>
+          </div>
+        </div>
+      </td>
+      <td>Churn Prevention Bot + Service Desk Copilot</td>
+      <td>11.6M</td>
+      <td>€5.34</td>
+      <td>€1,605.34</td>
+      <td>€5,200 + €18,000 setup</td>
+      <td class="margin">€3,594.66</td>
+    </tr><tr>
+      <td>18</td>
+      <td>
+        <div class="company-cell">
+          <img src="https://logo.clearbit.com/dna.fi" alt="DNA Plc logo" onerror="this.style.display='none'" />
+          <div>
+            <div class="company-name">DNA Plc</div>
+            <div class="sector">Telecom Operator</div>
+          </div>
+        </div>
+      </td>
+      <td>SME Sales Assistant + Support Resolution Bot</td>
+      <td>11.6M</td>
+      <td>€5.34</td>
+      <td>€1,605.34</td>
+      <td>€5,200 + €18,000 setup</td>
+      <td class="margin">€3,594.66</td>
+    </tr><tr>
+      <td>19</td>
+      <td>
+        <div class="company-cell">
+          <img src="https://logo.clearbit.com/yitgroup.com" alt="YIT logo" onerror="this.style.display='none'" />
+          <div>
+            <div class="company-name">YIT</div>
+            <div class="sector">Construction &amp; Urban Development</div>
+          </div>
+        </div>
+      </td>
+      <td>Project Documentation Bot + Site Safety Assistant</td>
+      <td>11.6M</td>
+      <td>€5.34</td>
+      <td>€1,605.34</td>
+      <td>€5,200 + €18,000 setup</td>
+      <td class="margin">€3,594.66</td>
+    </tr><tr>
+      <td>20</td>
+      <td>
+        <div class="company-cell">
+          <img src="https://logo.clearbit.com/konecranes.com" alt="Konecranes logo" onerror="this.style.display='none'" />
+          <div>
+            <div class="company-name">Konecranes</div>
+            <div class="sector">Industrial Lifting</div>
+          </div>
+        </div>
+      </td>
+      <td>Service Contract Assistant + Spare Parts Bot</td>
+      <td>11.6M</td>
+      <td>€5.34</td>
+      <td>€1,605.34</td>
+      <td>€5,200 + €18,000 setup</td>
+      <td class="margin">€3,594.66</td>
+    </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Visual Market Snapshot</h2>
+        <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/b/bc/Finland_in_Europe.svg/640px-Finland_in_Europe.svg.png" alt="Finland map" style="width:100%;border-radius:10px;border:1px solid var(--line);background:white;" />
+        <p class="note" style="margin-top:10px;">Use this as your outreach priority map for Finland-focused vertical selling.</p>
+
+        <h2 style="margin-top:18px;">Pipeline Scenarios</h2>
+        <ul>
+          <li><b>Conservative (2 closes):</b> €45,800 setup + €12,990 MRR</li>
+          <li><b>Base (3 closes):</b> €68,700 setup + €19,485 MRR</li>
+          <li><b>Aggressive (5 closes):</b> €114,500 setup + €32,475 MRR</li>
+        </ul>
+
+        <h2 style="margin-top:18px;">Universal Feature Stack</h2>
+        <ul>
+          <li>FI/EN/SV multilingual support</li>
+          <li>RAG from SOPs/policies/docs</li>
+          <li>Role + group access controls</li>
+          <li>Policy engine + human handoff</li>
+          <li>Audit logs + analytics dashboard</li>
+          <li>CRM/helpdesk integrations</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="wrap panel">
+      <h2>How to Win Deals in Finland (Practical)</h2>
+      <ul>
+        <li>Sell outcomes (ticket reduction, faster resolution), not “AI bot” features.</li>
+        <li>Offer 14-day paid pilot with one KPI commitment.</li>
+        <li>Show governance up front: redaction, escalation, auditability.</li>
+        <li>Run account-specific demos with each company’s terminology.</li>
+        <li>Land one function first (ops/support), then expand to more teams.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="wrap panel">
+      <h2>Pitch Email Template</h2>
+      <div class="email">Subject: Practical AI operations bot for {{company}} to reduce {{pain_point}} in 30 days
+
+Hi {{first_name}},
+
+I reviewed {{company}} and noticed a clear automation opportunity around {{process}}.
+
+We build governance-ready AI operations bots (not generic chatbots) that:
+- answer using your internal knowledge base with citations,
+- escalate low-confidence or sensitive cases to humans,
+- keep full audit logs for compliance,
+- integrate into your current workflow (Slack/Teams/CRM/helpdesk).
+
+For {{company}}, the most practical starting point is:
+{{bot_use_case}}
+
+Expected impact in the first 30–60 days:
+- {{kpi_1}}
+- {{kpi_2}}
+- {{kpi_3}}
+
+If useful, I can send a 1-page pilot plan with scope, architecture, security controls and ROI estimate tailored to {{company}}.
+
+Would Tuesday or Wednesday work for a 20-minute call?
+
+Best,
+Wael Helmi</div>
+      <p class="note" style="margin-top:10px;">Tip: personalize {company}, {process}, and 3 KPI bullets for each account before sending.</p>
+    </div>
+  </section>
+</body>
+</html>

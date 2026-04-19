@@ -1,0 +1,42 @@
+from sqlalchemy import create_engine, text
+
+from app.migration_bootstrap import run_startup_schema_bootstrap
+
+
+def test_bootstrap_adds_missing_policy_columns(tmp_path):
+    db_path = tmp_path / "legacy.db"
+    engine = create_engine(f"sqlite:///{db_path}", future=True)
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE tenant_policies (
+                    id INTEGER PRIMARY KEY,
+                    tenant_id INTEGER NOT NULL,
+                    min_confidence FLOAT NOT NULL DEFAULT 0.22,
+                    force_handoff_keywords_json TEXT NOT NULL DEFAULT '[]',
+                    pii_redaction_enabled BOOLEAN NOT NULL DEFAULT 1,
+                    max_citations INTEGER NOT NULL DEFAULT 5,
+                    created_at DATETIME,
+                    updated_at DATETIME
+                )
+                """
+            )
+        )
+
+    summary = run_startup_schema_bootstrap(engine)
+    assert summary["dialect"] == "sqlite"
+    assert int(summary["applied"]) >= 1
+
+    with engine.begin() as conn:
+        rows = conn.execute(text("PRAGMA table_info('tenant_policies')")).fetchall()
+    cols = {r[1] for r in rows}
+
+    assert "policy_rules_json" in cols
+    assert "policy_pack" in cols
+    assert "daily_query_budget" in cols
+    assert "daily_run_budget" in cols
+    assert "daily_cost_budget_usd" in cols
+    assert "max_top_k" in cols
+    assert "max_question_chars" in cols

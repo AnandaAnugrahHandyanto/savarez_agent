@@ -1,0 +1,252 @@
+{
+  "Varjo": {
+    "root": {
+      "url": "https://varjo.com",
+      "final_url": "https://varjo.com",
+      "status": 200,
+      "title": "",
+      "meta_description": "",
+      "snippet": "Military-Grade VR/XR Headsets and Solutions for Simulation Training – Varjo window.dataLayer = window.dataLayer || []; function gtag() { dataLayer.push(arguments) } gtag(\"consent\", \"default\", { ad_personalization: \"denied\", ad_storage: \"denied\", ad_user_data: \"denied\", analytics_storage: \"denied\", functionality_storage: \"granted\", personalization_storage: \"denied\", security_storage: \"granted\", wait_for_update: 500 })"
+    },
+    "secondary": {
+      "url": "https://varjo.com/about",
+      "final_url": "https://varjo.com/company",
+      "status": 200,
+      "title": "",
+      "meta_description": "",
+      "snippet": "About Us | Varjo | World Leader in Industrial-Grade VR and XR window.dataLayer = window.dataLayer || []; function gtag() { dataLayer.push(arguments) } gtag(\"consent\", \"default\", { ad_personalization: \"denied\", ad_storage: \"denied\", ad_user_data: \"denied\", analytics_storage: \"denied\", functionality_storage: \"granted\", personalization_storage: \"denied\", security_storage: \"granted\", wait_for_update: 500 }); gtag(\"set\", "
+    }
+  },
+  "Oura": {
+    "root": {
+      "url": "https://ouraring.com",
+      "final_url": "https://ouraring.com",
+      "status": 200,
+      "title": "",
+      "meta_description": "",
+      "snippet": "Oura Ring. Smart Ring for Fitness, Stress, Sleep & Health. @font-face { font-family: 'AkkuratLL'; font-style: normal; font-weight: 400; src: url('/assets/fonts/AkkuratLL-Regular.woff2') format('woff2'); } @font-face { font-family: 'AkkuratLL'; font-style: normal; font-weight: 300; src: url('/assets/fonts/AkkuratLL-Light.woff2') format('woff2'); } @font-face { font-family: 'Editorial New'; font-style: normal; font-wei"
+    },
+    "secondary": {
+      "url": null,
+      "note": "No reliable secondary page scraped automatically."
+    }
+  },
+  "HappyOrNot": {
+    "root": {
+      "url": "https://www.happy-or-not.com",
+      "final_url": "https://www.happy-or-not.com/en/",
+      "status": 200,
+      "title": "",
+      "meta_description": "",
+      "snippet": "Customer Feedback Platform That Works | HappyOrNot® {\"@context\":\"https://schema.org\",\"@graph\":[{\"@type\":\"WebPage\",\"@id\":\"https://www.happy-or-not.com/en/\",\"url\":\"https://www.happy-or-not.com/en/\",\"name\":\"Customer Feedback Platform That Works | HappyOrNot®\",\"isPartOf\":{\"@id\":\"https://www.happy-or-not.com/en/#website\"},\"about\":{\"@id\":\"https://www.happy-or-not.com/en/#organization\"},\"primaryImageOfPage\":{\"@id\":\"https://"
+    },
+    "secondary": {
+      "url": "https://www.happy-or-not.com/about",
+      "final_url": "https://www.happy-or-not.com/en/about-us/",
+      "status": 200,
+      "title": "",
+      "meta_description": "",
+      "snippet": "The Pioneers of Smiley-Faced Feedback Solution | HappyOrNot® {\"@context\":\"https://schema.org\",\"@graph\":[{\"@type\":[\"WebPage\",\"AboutPage\"],\"@id\":\"https://www.happy-or-not.com/en/about-us/\",\"url\":\"https://www.happy-or-not.com/en/about-us/\",\"name\":\"The Pioneers of Smiley-Faced Feedback Solution | HappyOrNot®\",\"isPartOf\":{\"@id\":\"https://www.happy-or-not.com/en/#website\"},\"primaryImageOfPage\":{\"@id\":\"https://www.happy-or-n"
+    }
+  },
+  "Haltian": {
+    "root": {
+      "url": "https://haltian.com",
+      "final_url": "https://haltian.com",
+      "status": 200,
+      "title": "",
+      "meta_description": "",
+      "snippet": "window.dataLayer = window.dataLayer || []; function gtag() { dataLayer.push(arguments); } gtag(\"consent\", \"default\", { ad_personalization: \"denied\", ad_storage: \"denied\", ad_user_data: \"denied\", analytics_storage: \"denied\", functionality_storage: \"denied\", personalization_storage: \"denied\", security_storage: \"granted\", wait_for_update: 500, }); gtag(\"set\", \"ads_data_redaction\", true); (function (w, d, s, l, i) { w[l]"
+    },
+    "secondary": {
+      "url": "https://haltian.com/about",
+      "final_url": "https://haltian.com/about-haltian/",
+      "status": 200,
+      "title": "",
+      "meta_description": "",
+      "snippet": "window.dataLayer = window.dataLayer || []; function gtag() { dataLayer.push(arguments); } gtag(\"consent\", \"default\", { ad_personalization: \"denied\", ad_storage: \"denied\", ad_user_data: \"denied\", analytics_storage: \"denied\", functionality_storage: \"denied\", personalization_storage: \"denied\", security_storage: \"granted\", wait_for_update: 500, }); gtag(\"set\", \"ads_data_redaction\", true); (function (w, d, s, l, i) { w[l]"
+    }
+  },
+  "Sulapac": {
+    "root": {
+      "url": "https://sulapac.com",
+      "final_url": "https://www.sulapac.com/",
+      "status": 200,
+      "title": "",
+      "meta_description": "",
+      "snippet": "function OptanonWrapper() { } (function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src='https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);})(window,document,'script','dataLayer','GTM-MCVR374'); Plastic alternative | Bio-based premium materials | "
+    },
+    "secondary": {
+      "url": "https://www.sulapac.com/about",
+      "final_url": "https://www.sulapac.com/about/",
+      "status": 200,
+      "title": "",
+      "meta_description": "",
+      "snippet": "function OptanonWrapper() { } (function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src='https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);})(window,document,'script','dataLayer','GTM-MCVR374'); Sustainable solutions for replacing plastics – Sulap"
+    }
+  },
+  "Vapaus": {
+    "root": {
+      "url": "https://vapaus.io",
+      "final_url": "https://www.vapaus.io/",
+      "status": 200,
+      "title": "",
+      "meta_description": "",
+      "snippet": "Joustavin ja vastuullisin työsuhdepyöräetu - Vapaus a.cta_button{-moz-box-sizing:content-box !important;-webkit-box-sizing:content-box !important;box-sizing:content-box !important;vertical-align:middle}.hs-breadcrumb-menu{list-style-type:none;margin:0px 0px 0px 0px;padding:0px 0px 0px 0px}.hs-breadcrumb-menu-item{float:left;padding:10px 0px 10px 10px}.hs-breadcrumb-menu-divider:before{content:'›';padding-left:10px}.h"
+    },
+    "secondary": {
+      "url": null,
+      "note": "No reliable secondary page scraped automatically."
+    }
+  },
+  "Swappie": {
+    "root": {
+      "url": "https://swappie.com",
+      "final_url": "https://swappie.com",
+      "status": 200,
+      "title": "",
+      "meta_description": "",
+      "snippet": "Swappie | Refurbished and affordable iPhones with a 12-month warranty /* Disable horizontal scroll on mobiles and tablet */ @media (max-width: 575px) { html, .page-wrapper { max-width: 100%; } } *, ::after, ::before { box-sizing: border-box; } html { direction: ltr; box-shadow: none !important; font-family: sans-serif; line-height: 1.15; -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; -ms-overflow-style: "
+    },
+    "secondary": {
+      "url": null,
+      "note": "No reliable secondary page scraped automatically."
+    }
+  },
+  "Gubbe": {
+    "root": {
+      "url": "https://gubbe.com",
+      "final_url": "https://www.gubbe.com/fi",
+      "status": 200,
+      "title": "",
+      "meta_description": "",
+      "snippet": "Gubbe - Tutkitusti vaikuttava hoivapalvelu! !function(o,c){var n=c.documentElement,t=\" w-mod-\";n.className+=t+\"js\",(\"ontouchstart\"in o||o.DocumentTouch&&c instanceof DocumentTouch)&&(n.className+=t+\"touch\")}(window,document); (function(w,i,g){w[g]=w[g]||[];if(typeof w[g].push=='function')w[g].push.apply(w[g],Array.isArray(i)?i:[i]);})(window,['G-M4SMDMK084'],'google_tags_first_party'); window.dataLayer = window.dataL"
+    },
+    "secondary": {
+      "url": "https://www.gubbe.com/en/about",
+      "final_url": "https://www.gubbe.com/en/about",
+      "status": 200,
+      "title": "",
+      "meta_description": "",
+      "snippet": "About us !function(o,c){var n=c.documentElement,t=\" w-mod-\";n.className+=t+\"js\",(\"ontouchstart\"in o||o.DocumentTouch&&c instanceof DocumentTouch)&&(n.className+=t+\"touch\")}(window,document); (function(w,i,g){w[g]=w[g]||[];if(typeof w[g].push=='function')w[g].push.apply(w[g],Array.isArray(i)?i:[i]);})(window,['G-M4SMDMK084'],'google_tags_first_party'); window.dataLayer = window.dataLayer || [];function gtag(){dataLaye"
+    }
+  },
+  "Freska": {
+    "root": {
+      "url": "https://freska.fi",
+      "final_url": "https://www.freska.fi/",
+      "status": 200,
+      "title": "",
+      "meta_description": "",
+      "snippet": "Suomen suosituin kotisiivous | Freska {\"@context\":\"https://schema.org\",\"@type\":\"Organization\",\"name\":\"Freska\",\"url\":\"https://www.freska.fi\",\"logo\":\"https://www.freska.fi/images/freska-logo.svg\",\"sameAs\":[\"https://www.facebook.com/freska.fi/\",\"https://www.instagram.com/freska.fi/\",\"https://www.linkedin.com/company/10164941/\",\"https://www.youtube.com/@freskafinlandoy9692\"]} html{-webkit-font-smoothing:antialiased;-moz-"
+    },
+    "secondary": {
+      "url": null,
+      "note": "No reliable secondary page scraped automatically."
+    }
+  },
+  "Fiksuruoka": {
+    "root": {
+      "url": "https://www.fiksuruoka.fi",
+      "final_url": "https://www.fiksuruoka.fi",
+      "status": 200,
+      "title": "",
+      "meta_description": "",
+      "snippet": "Fiksua ruokaa jopa 80% alennuksella vertailuhinnoista - Fiksuruoka.fi {\"@context\":\"https://schema.org\",\"@type\":\"Organization\",\"name\":\"Fiksuruoka.fi\",\"logo\":\"https://www.fiksuruoka.fi/_nuxt/logo-fiksuruoka-secondary-forest.tBVygSid.png\",\"url\":\"https://www.fiksuruoka.fi\",\"foundingDate\":\"2016\",\"slogan\":\"Enemmän alennuksia. Vähemmän hävikkiä.\",\"sameAs\":[\"https://www.facebook.com/fiksuruoka\",\"https://www.instagram.com/fik"
+    },
+    "secondary": {
+      "url": "https://www.fiksuruoka.fi/products",
+      "final_url": "https://www.fiksuruoka.fi/",
+      "status": 200,
+      "title": "",
+      "meta_description": "",
+      "snippet": "Fiksua ruokaa jopa 80% alennuksella vertailuhinnoista - Fiksuruoka.fi {\"@context\":\"https://schema.org\",\"@type\":\"Organization\",\"name\":\"Fiksuruoka.fi\",\"logo\":\"https://www.fiksuruoka.fi/_nuxt/logo-fiksuruoka-secondary-forest.tBVygSid.png\",\"url\":\"https://www.fiksuruoka.fi\",\"foundingDate\":\"2016\",\"slogan\":\"Enemmän alennuksia. Vähemmän hävikkiä.\",\"sameAs\":[\"https://www.facebook.com/fiksuruoka\",\"https://www.instagram.com/fik"
+    }
+  },
+  "Framery": {
+    "root": {
+      "url": "https://www.framery.com",
+      "final_url": "https://framery.com/en/",
+      "status": 200,
+      "title": "",
+      "meta_description": "",
+      "snippet": "var gform;gform||(document.addEventListener(\"gform_main_scripts_loaded\",function(){gform.scriptsLoaded=!0}),document.addEventListener(\"gform/theme/scripts_loaded\",function(){gform.themeScriptsLoaded=!0}),window.addEventListener(\"DOMContentLoaded\",function(){gform.domLoaded=!0}),gform={domLoaded:!1,scriptsLoaded:!1,themeScriptsLoaded:!1,isFormEditor:()=>\"function\"==typeof InitializeEditor,callIfLoaded:function(o){retu"
+    },
+    "secondary": {
+      "url": "https://framery.com/about",
+      "final_url": "https://framery.com/en/menus/about/",
+      "status": 200,
+      "title": "",
+      "meta_description": "",
+      "snippet": "// Create dataLayer. window.dataLayer = window.dataLayer || []; var dataLayer_site = { 'event': 'agtm4wp_pageview', 'wp_title': 'About - Framery', 'wp_lang': 'en', 'wp_loggedin': false, 'wp_posttype': 'fr_menu', 'geo_countrycode': false, 'wp_poststatus': 'publish', 'wp_author': 'Henri Tikka', 'wp_postdate': '01.03.2023', 'wp_moddate': '20.05.2025', } dataLayer.push( dataLayer_site ); var gtm4wp_datalayer_name = \"data"
+    }
+  },
+  "IQM Quantum Computers": {
+    "root": {
+      "url": "https://meetiqm.com",
+      "final_url": "https://meetiqm.com",
+      "status": 200,
+      "title": "",
+      "meta_description": "",
+      "snippet": "window.dataLayer = window.dataLayer || []; function gtag() { dataLayer.push(arguments); } gtag(\"consent\", \"default\", { ad_personalization: \"denied\", ad_storage: \"denied\", ad_user_data: \"denied\", analytics_storage: \"denied\", functionality_storage: \"denied\", personalization_storage: \"denied\", security_storage: \"granted\", wait_for_update: 500, }); gtag(\"set\", \"ads_data_redaction\", true); IQM Quantum Computers - Built fo"
+    },
+    "secondary": {
+      "url": "https://meetiqm.com/about",
+      "final_url": "https://meetiqm.com/company/about-iqm/",
+      "status": 200,
+      "title": "",
+      "meta_description": "",
+      "snippet": "window.dataLayer = window.dataLayer || []; function gtag() { dataLayer.push(arguments); } gtag(\"consent\", \"default\", { ad_personalization: \"denied\", ad_storage: \"denied\", ad_user_data: \"denied\", analytics_storage: \"denied\", functionality_storage: \"denied\", personalization_storage: \"denied\", security_storage: \"granted\", wait_for_update: 500, }); gtag(\"set\", \"ads_data_redaction\", true); About IQM - Leader in Quantum Co"
+    }
+  },
+  "Supermetrics": {
+    "root": {
+      "url": "https://supermetrics.com",
+      "final_url": "https://supermetrics.com",
+      "status": 200,
+      "title": "",
+      "meta_description": "",
+      "snippet": "Marketing Intelligence Platform: Supermetrics window._vwo_code || (function () { var w = window, d = document; var account_id = 611975, version = 2.2, settings_tolerance = 2000, hide_element = 'body', hide_element_style = 'opacity:0 !important;filter:alpha(opacity=0) !important;background:none !important'; /* DO NOT EDIT BELOW THIS LINE */ if (((f = !1), (v = d.querySelector('#vwoCode')), (cc = {}), -1 (function(){co"
+    },
+    "secondary": {
+      "url": "https://supermetrics.com/about",
+      "final_url": "https://supermetrics.com/about",
+      "status": 200,
+      "title": "",
+      "meta_description": "",
+      "snippet": "About Supermetrics window._vwo_code || (function () { var w = window, d = document; var account_id = 611975, version = 2.2, settings_tolerance = 2000, hide_element = 'body', hide_element_style = 'opacity:0 !important;filter:alpha(opacity=0) !important;background:none !important'; /* DO NOT EDIT BELOW THIS LINE */ if (((f = !1), (v = d.querySelector('#vwoCode')), (cc = {}), -1 (function(){const gtmUrl = \"https://www.g"
+    }
+  },
+  "Lyyti": {
+    "root": {
+      "url": "https://www.lyyti.com",
+      "final_url": "https://www.lyyti.com/en/",
+      "status": 200,
+      "title": "",
+      "meta_description": "",
+      "snippet": "window.dataLayer = window.dataLayer || []; function gtag(){dataLayer.push(arguments);} gtag('consent', 'default', { 'analytics_storage': 'denied', 'ad_storage': 'denied', 'ad_user_data': 'denied', 'ad_personalization': 'denied', 'wait_for_update': \"500\" }); (function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start': new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0], j=d.createElement(s),dl=l!='d"
+    },
+    "secondary": {
+      "url": null,
+      "note": "No reliable secondary page scraped automatically."
+    }
+  },
+  "Genelec": {
+    "root": {
+      "url": "https://www.genelec.com",
+      "final_url": "https://www.genelec.com",
+      "status": 200,
+      "title": "",
+      "meta_description": "",
+      "snippet": "World Leader in Studio Monitors - Genelec.com // // .sidenav-box-light a { z-index: 1; } #p_p_id_cmscontent_INSTANCE_2jjlhjQAZxe3_ .portlet-content { }\n.gradient-layer-black-left {opacity:0.8!important;}\n#portlet_cmscontent_INSTANCE_2jjlhjQAZxe3 .background {min-height:calc(88vh - 80px)!important;} #p_p_id_cmscontent_INSTANCE_cgZG6kRQSQ3I_ .portlet-content { } #p_p_id_cmscontent_INSTANCE_0NBYP7uEPs7v_ .portlet-conten"
+    },
+    "secondary": {
+      "url": "https://www.genelec.com/company",
+      "final_url": "https://www.genelec.com/company",
+      "status": 200,
+      "title": "",
+      "meta_description": "",
+      "snippet": "Company - Genelec.com // // .sidenav-box-light a { z-index: 1; } if (window.Analytics) { window._com_liferay_document_library_analytics_isViewFileEntry = false; } // var _mtm = window._mtm = window._mtm || []; _mtm.push({'mtm.startTime': (new Date().getTime()), 'event': 'mtm.Start'}); (function() { var d=document, g=d.createElement('script'), s=d.getElementsByTagName('script')[0]; g.async=true; g.src='https://cdn.mat"
+    }
+  }
+}

@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Internal Knowledge Bot — Operator Console v2.2</title>
+  <style>
+    :root {
+      --bg: #081423;
+      --panel: #102238;
+      --panel-2: #0c1c2f;
+      --line: rgba(255,255,255,.14);
+      --text: #eaf3ff;
+      --muted: #9cb8d4;
+      --brand: #45cbff;
+      --brand-2: #19e1b9;
+      --danger: #ff7f7f;
+      --ok: #53e3a6;
+      --warn: #ffd27a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, system-ui, Arial, sans-serif;
+      background: radial-gradient(circle at 15% -10%, #14314a 0%, transparent 45%), var(--bg);
+      color: var(--text);
+    }
+    .wrap { width: min(1300px, 95vw); margin: 20px auto 40px; }
+    .title { margin: 4px 0 6px; }
+    .muted { color: var(--muted); }
+    .ok { color: var(--ok); }
+    .warn { color: var(--warn); }
+    .danger { color: var(--danger); }
+
+    .grid { display: grid; gap: 12px; }
+    .g2 { grid-template-columns: 1fr 1fr; }
+    .g3 { grid-template-columns: 1fr 1fr 1fr; }
+    .g4 { grid-template-columns: repeat(4, 1fr); }
+
+    .row { display: grid; gap: 10px; }
+    .row2 { grid-template-columns: 1fr 1fr; }
+    .row3 { grid-template-columns: 1fr 1fr 1fr; }
+    .row4 { grid-template-columns: 1fr 1fr 1fr 1fr; }
+
+    .panel {
+      background: linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.01));
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px;
+    }
+    .panel h3 { margin: 0 0 10px; font-size: 1.02rem; }
+
+    input, textarea, select, button {
+      width: 100%;
+      border: 1px solid rgba(255,255,255,.22);
+      background: var(--panel-2);
+      color: var(--text);
+      border-radius: 9px;
+      padding: 10px;
+    }
+    button {
+      cursor: pointer;
+      font-weight: 700;
+      background: linear-gradient(120deg, var(--brand), var(--brand-2));
+      color: #052435;
+      border: none;
+    }
+    .btn-secondary {
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--line);
+    }
+    .btn-danger {
+      background: linear-gradient(120deg, #ff8f8f, #ff6f6f);
+      color: #3b0909;
+    }
+
+    .kpi { font-size: 1.8rem; font-weight: 800; }
+
+    pre {
+      white-space: pre-wrap;
+      background: #0a1625;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      max-height: 320px;
+      overflow: auto;
+      margin: 8px 0 0;
+    }
+
+    .hidden { display: none; }
+
+    .tag {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: .78rem;
+      border: 1px solid var(--line);
+      margin-right: 6px;
+    }
+
+    .tiny { font-size: .85rem; }
+
+    @media (max-width: 1000px) {
+      .g2, .g3, .g4, .row2, .row3, .row4 { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h1 class="title">Internal Knowledge Bot — Operator Console v2.2</h1>
+  <p class="muted">Manage policy packs, budgets, grounded answers, run traces, replay, and audit exports.</p>
+
+  <div class="panel">
+    <div class="row row3">
+      <div>
+        <label>API Base URL</label>
+        <input id="apiBase" value="http://localhost:8787" />
+      </div>
+      <div>
+        <label>Current session</label>
+        <div id="sessionState" class="muted">Not logged in</div>
+      </div>
+      <div>
+        <label>Quick actions</label>
+        <div class="row row2">
+          <button id="whoamiBtn" class="btn-secondary">Who am I</button>
+          <button id="logoutBtn" class="btn-danger">Logout</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid g2" style="margin-top:12px">
+    <div class="panel" id="authPanel">
+      <h3>Auth — Register Admin</h3>
+      <div class="row row3">
+        <input id="companyName" placeholder="Company Name" />
+        <input id="registerName" placeholder="Your Name" />
+        <input id="registerEmail" placeholder="Email" />
+      </div>
+      <div class="row row2" style="margin-top:8px">
+        <input id="registerPassword" type="password" placeholder="Password" />
+        <button id="registerBtn">Register + Login</button>
+      </div>
+
+      <h3 style="margin-top:16px">Auth — Login</h3>
+      <div class="row row2">
+        <input id="loginEmail" placeholder="Email" />
+        <input id="loginPassword" type="password" placeholder="Password" />
+      </div>
+      <button id="loginBtn" style="margin-top:8px">Login</button>
+      <p id="authState" class="muted"></p>
+    </div>
+
+    <div class="panel" id="usersPanel">
+      <h3>Admin — Create User</h3>
+      <div class="row row4">
+        <input id="newUserName" placeholder="Name" />
+        <input id="newUserEmail" placeholder="Email" />
+        <input id="newUserPassword" type="password" placeholder="Password" />
+        <select id="newUserRole">
+          <option value="manager">manager</option>
+          <option value="employee">employee</option>
+          <option value="viewer">viewer</option>
+          <option value="admin">admin</option>
+        </select>
+      </div>
+      <button id="createUserBtn" style="margin-top:8px">Create user</button>
+      <pre id="createUserOut"></pre>
+    </div>
+  </div>
+
+  <div id="appPanel" class="hidden" style="margin-top:12px">
+    <div class="grid g4">
+      <div class="panel"><div class="muted">Queries</div><div id="kpiQueries" class="kpi">0</div></div>
+      <div class="panel"><div class="muted">Answer Rate</div><div id="kpiAnswerRate" class="kpi">0%</div></div>
+      <div class="panel"><div class="muted">Avg Confidence</div><div id="kpiConfidence" class="kpi">0</div></div>
+      <div class="panel"><div class="muted">Open Handoffs</div><div id="kpiHandoffs" class="kpi">0</div></div>
+    </div>
+
+    <div class="grid g2" style="margin-top:12px">
+      <div class="panel">
+        <h3>Groups (RBAC by team)</h3>
+        <div class="row row2">
+          <input id="groupName" placeholder="Group name (e.g. Finance)" />
+          <input id="groupDescription" placeholder="Description" />
+        </div>
+        <button id="createGroupBtn" style="margin-top:8px">Create group</button>
+
+        <div class="row row2" style="margin-top:10px">
+          <input id="memberGroupId" placeholder="Group ID" />
+          <input id="memberEmail" placeholder="User email to add" />
+        </div>
+        <button id="addMemberBtn" style="margin-top:8px">Add member by email</button>
+
+        <button id="listGroupsBtn" class="btn-secondary" style="margin-top:10px">Refresh groups</button>
+        <pre id="groupsOut"></pre>
+      </div>
+
+      <div class="panel">
+        <h3>Tenant Policy + Budgets</h3>
+
+        <div class="row row3">
+          <select id="policyPack">
+            <option value="balanced">balanced</option>
+            <option value="safe">safe</option>
+            <option value="aggressive">aggressive</option>
+          </select>
+          <input id="policyMinConfidence" type="number" step="0.01" min="0" max="1" placeholder="Min confidence (0-1)" />
+          <input id="policyMaxCitations" type="number" min="1" max="10" placeholder="Max citations" />
+        </div>
+
+        <div class="row row3" style="margin-top:8px">
+          <input id="policyDailyQueryBudget" type="number" min="1" placeholder="Daily query budget" />
+          <input id="policyDailyRunBudget" type="number" min="1" placeholder="Daily run budget" />
+          <input id="policyDailyCostBudget" type="number" min="0.01" step="0.01" placeholder="Daily cost budget USD" />
+        </div>
+
+        <div class="row row2" style="margin-top:8px">
+          <input id="policyMaxTopK" type="number" min="1" max="20" placeholder="Max top_k" />
+          <input id="policyMaxQuestionChars" type="number" min="32" max="16000" placeholder="Max question chars" />
+        </div>
+
+        <div class="row row2" style="margin-top:8px">
+          <input id="policyKeywords" placeholder="Force-handoff keywords (comma separated)" />
+          <select id="policyPii"><option value="true">PII redaction enabled</option><option value="false">PII redaction disabled</option></select>
+        </div>
+
+        <div class="row row4" style="margin-top:8px">
+          <button id="getPolicyBtn" class="btn-secondary">Get policy</button>
+          <button id="updatePolicyBtn">Update policy</button>
+          <button id="usageBtn" class="btn-secondary">Usage snapshot</button>
+          <button id="usageExportBtn" class="btn-secondary">Export usage JSON</button>
+        </div>
+
+        <pre id="policyOut"></pre>
+        <pre id="usageOut"></pre>
+      </div>
+    </div>
+
+    <div class="grid g2" style="margin-top:12px">
+      <div class="panel">
+        <h3>Document Ingestion (Advanced Metadata)</h3>
+        <input id="docTitle" placeholder="Document title" />
+        <textarea id="docText" rows="5" placeholder="Paste SOP / policy text..."></textarea>
+
+        <div class="row row2" style="margin-top:8px">
+          <input id="docRoles" value='["admin","manager","employee","viewer"]' placeholder='roles_allowed JSON' />
+          <input id="docGroups" value='[]' placeholder='groups_allowed JSON (e.g. [1,2])' />
+        </div>
+
+        <div class="row row3" style="margin-top:8px">
+          <input id="docTags" value='["ops"]' placeholder='tags JSON' />
+          <input id="docClassification" value="internal" placeholder="classification" />
+          <input id="docFreshness" type="number" min="0" max="1" step="0.01" value="0.5" placeholder="freshness 0-1" />
+        </div>
+
+        <input id="docSourceUrl" style="margin-top:8px" placeholder="source_url" />
+
+        <button id="ingestBtn" style="margin-top:8px">Ingest text document</button>
+        <button id="docsBtn" class="btn-secondary" style="margin-top:8px">Refresh documents</button>
+        <pre id="docsOut"></pre>
+      </div>
+
+      <div class="panel">
+        <h3>Ask + Retrieval Diagnostics + Idempotency</h3>
+        <textarea id="question" rows="4" placeholder="Ask question from internal knowledge..."></textarea>
+
+        <div class="row row3" style="margin-top:8px">
+          <input id="askTopK" type="number" min="1" max="20" value="8" />
+          <input id="askIdempotency" placeholder="idempotency key (optional)" />
+          <button id="askBtn">Ask</button>
+        </div>
+
+        <pre id="answerOut"></pre>
+        <div id="citationsOut"></div>
+        <button id="handoffBtn" class="hidden" style="margin-top:8px">Create handoff ticket from last ask</button>
+      </div>
+    </div>
+
+    <div class="grid g2" style="margin-top:12px">
+      <div class="panel">
+        <h3>Handoffs + Analytics</h3>
+        <div class="row row2">
+          <button id="handoffsBtn" class="btn-secondary">Refresh handoffs</button>
+          <button id="analyticsBtn" class="btn-secondary">Refresh analytics</button>
+        </div>
+
+        <div class="row row2" style="margin-top:8px">
+          <input id="resolveTicketId" placeholder="Ticket ID to resolve" />
+          <input id="resolveText" placeholder="Resolution text" />
+        </div>
+        <button id="resolveBtn" style="margin-top:8px">Resolve ticket</button>
+
+        <pre id="handoffsOut"></pre>
+        <pre id="analyticsOut"></pre>
+      </div>
+
+      <div class="panel">
+        <h3>Run Ledger + Replay</h3>
+        <div class="row row4">
+          <input id="runsLimit" type="number" min="1" max="200" value="20" />
+          <button id="runsBtn" class="btn-secondary">Load runs</button>
+          <button id="runsRefreshBtn" class="btn-secondary">Refresh + usage</button>
+          <button id="runsExportBtn" class="btn-secondary">Export runs JSON</button>
+        </div>
+
+        <div class="row row2" style="margin-top:8px">
+          <input id="replayRunId" placeholder="Run ID to replay" />
+          <button id="replayBtn">Replay run</button>
+        </div>
+
+        <pre id="runsOut"></pre>
+      </div>
+    </div>
+
+    <div class="grid g2" style="margin-top:12px">
+      <div class="panel">
+        <h3>Audit + Exports</h3>
+        <div class="row row2">
+          <button id="auditBtn" class="btn-secondary">Load audit events</button>
+          <button id="bucketBtn" class="btn-secondary">Load confidence buckets</button>
+        </div>
+
+        <div class="row row2" style="margin-top:8px">
+          <button id="auditJsonBtn" class="btn-secondary">Export audit JSON</button>
+          <button id="auditCsvBtn" class="btn-secondary">Export audit CSV</button>
+        </div>
+
+        <pre id="auditOut"></pre>
+        <pre id="bucketOut"></pre>
+      </div>
+
+      <div class="panel">
+        <h3>Notes</h3>
+        <p class="tiny muted">- Policy pack changes can overwrite previous defaults. Then you can fine-tune fields manually.</p>
+        <p class="tiny muted">- Use idempotency key when your client might retry same ask request.</p>
+        <p class="tiny muted">- Replay creates a new run using the original request payload.</p>
+        <p class="tiny muted">- CSV export includes metadata_json for compliance audit handoff.</p>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="./app.js"></script>
+</body>
+</html>

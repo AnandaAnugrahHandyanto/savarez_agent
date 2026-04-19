@@ -1,0 +1,13 @@
+# Python cache
+__pycache__/
+**/__pycache__/
+*.pyc
+
+# Local DB and env
+backend/*.db
+backend/.env
+backend/.venv/
+
+# Test/temp artifacts
+backend/.pytest_cache/
+backend/.mypy_cache/
