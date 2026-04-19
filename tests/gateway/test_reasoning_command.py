@@ -33,7 +33,6 @@ def _make_runner():
     runner._ephemeral_system_prompt = ""
     runner._prefill_messages = []
     runner._reasoning_config = None
-    runner._show_reasoning = False
     runner._provider_routing = {}
     runner._fallback_model = None
     runner._running_agents = {}
@@ -90,14 +89,12 @@ class TestReasoningCommand:
 
         runner = _make_runner()
         runner._reasoning_config = {"enabled": True, "effort": "xhigh"}
-        runner._show_reasoning = False
 
         result = await runner._handle_reasoning_command(_make_event("/reasoning"))
 
         assert "**Effort:** `none (disabled)`" in result
         assert "**Display:** on ✓" in result
         assert runner._reasoning_config == {"enabled": False}
-        assert runner._show_reasoning is True
 
     @pytest.mark.asyncio
     async def test_load_show_reasoning_resolves_per_platform(self, tmp_path, monkeypatch):
