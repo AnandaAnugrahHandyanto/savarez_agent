@@ -6936,6 +6936,7 @@ class GatewayRunner:
             pass
 
         # Handle /resume last or /resume - shortcuts (resume most recent session)
+        target_id = None  # Will be set by last/-, numeric index, or title resolve
         if name in ("last", "-"):
             try:
                 candidates = tree.get_resume_candidates(
@@ -6955,7 +6956,7 @@ class GatewayRunner:
                 logger.debug("Failed to resolve /resume last: %s", e)
                 name = ""  # Fall back to list display on error
 
-        if not name:
+        if not name and not target_id:
             # List recent sessions with >= 3 messages for user selection
             try:
                 candidates = tree.get_resume_candidates(
@@ -7029,8 +7030,8 @@ class GatewayRunner:
                 return f"Could not list sessions: {e}"
 
         # Resolve the name to a session ID — support numeric index from list
-        target_id = None
-        if name.isdigit():
+        # (target_id may already be set by /resume last above)
+        if not target_id and name.isdigit():
             idx = int(name)
             candidates_map = getattr(self, "_resume_candidates_map", {})
             candidates = candidates_map.get(session_key) if candidates_map else None
