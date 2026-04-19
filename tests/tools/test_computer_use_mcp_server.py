@@ -1,5 +1,6 @@
 """Tests for the Hermes Codex-style computer-use MCP adapter."""
 
+from pathlib import Path
 from unittest.mock import patch
 
 import computer_use_mcp_server as adapter
@@ -18,7 +19,10 @@ class TestListApps:
 
 
 class TestGetAppState:
-    def test_get_app_state_activates_requested_app_then_screenshots(self, monkeypatch):
+    def test_get_app_state_activates_requested_app_then_screenshots(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+        adapter.approve_app_impl("Safari")
         calls = []
 
         def fake_cc(**kwargs):
@@ -37,6 +41,8 @@ class TestGetAppState:
         result = adapter.get_app_state_impl(app_name="Safari")
 
         assert result["success"] is True
+        assert result["approved"] is True
+        assert result["approval_required"] is False
         assert result["app_name"] == "Safari"
         assert result["window_title"] == "Docs"
         assert result["screenshot_path"] == "/tmp/shot.png"
@@ -57,6 +63,73 @@ class TestGetAppState:
 
         assert result["success"] is False
         assert "screen capture blocked" in result["error"]
+
+
+class TestApprovalAndSessions:
+    def test_approve_list_and_revoke_apps_persist_in_store(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+
+        assert adapter.list_approved_apps_impl()["approved_apps"] == []
+
+        approved = adapter.approve_app_impl("Safari")
+        assert approved["success"] is True
+        assert approved["approved_apps"] == ["Safari"]
+        assert store_path.exists() is True
+
+        listed = adapter.list_approved_apps_impl()
+        assert listed["approved_apps"] == ["Safari"]
+
+        revoked = adapter.revoke_app_impl("Safari")
+        assert revoked["success"] is True
+        assert revoked["approved_apps"] == []
+
+    def test_get_app_state_requires_explicit_approval_for_requested_app(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+        calls = []
+
+        def fake_cc(**kwargs):
+            calls.append(kwargs)
+            return '{"success": true}'
+
+        monkeypatch.setattr(adapter, "computer_control", fake_cc)
+
+        result = adapter.get_app_state_impl(app_name="Safari")
+
+        assert result["success"] is False
+        assert result["approval_required"] is True
+        assert result["app_name"] == "Safari"
+        assert calls == []
+
+    def test_get_app_state_returns_stable_session_ids_for_approved_app(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+        monkeypatch.setattr(adapter, "_SESSION_ID", "session-test")
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {})
+        adapter.approve_app_impl("Safari")
+
+        def fake_cc(**kwargs):
+            action = kwargs["action"]
+            if action == "activate_app":
+                return '{"success": true}'
+            if action == "frontmost_app":
+                return '{"success": true, "app_name": "Safari", "window_title": "Docs"}'
+            if action == "screenshot":
+                return '{"success": true, "path": "/tmp/shot.png", "media_tag": "MEDIA:/tmp/shot.png"}'
+            raise AssertionError(action)
+
+        monkeypatch.setattr(adapter, "computer_control", fake_cc)
+
+        first = adapter.get_app_state_impl(app_name="Safari")
+        second = adapter.get_app_state_impl(app_name="Safari")
+
+        assert first["success"] is True
+        assert first["approval_required"] is False
+        assert first["session_id"] == "session-test"
+        assert first["session_id"] == second["session_id"]
+        assert first["app_session_id"] == second["app_session_id"]
+        assert first["app_name"] == "Safari"
 
 
 class TestKeyboardTools:

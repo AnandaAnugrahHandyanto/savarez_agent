@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,7 @@ try:
 except Exception:  # pragma: no cover - runtime import guard
     FastMCP = None  # type: ignore[assignment]
 
+from hermes_constants import get_hermes_home
 from tools.computer_control_tool import computer_control
 
 
@@ -25,6 +27,99 @@ def _decode(payload: str) -> dict[str, Any]:
     data = json.loads(payload)
     assert isinstance(data, dict)
     return data
+
+
+_SESSION_ID = f"session-{uuid.uuid4().hex}"
+_APP_SESSIONS: dict[str, str] = {}
+
+
+def _normalize_app_name(app_name: str | None) -> str:
+    return str(app_name or "").strip()
+
+
+def _approval_store_path() -> Path:
+    root = get_hermes_home() / "computer-use"
+    root.mkdir(parents=True, exist_ok=True)
+    return root / "ComputerUseAppApprovals.json"
+
+
+def _load_approved_apps() -> list[str]:
+    path = _approval_store_path()
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text())
+    except Exception:
+        return []
+    if isinstance(payload, dict):
+        raw_apps = payload.get("approved_apps") or payload.get("approvedBundleIdentifiers") or []
+    elif isinstance(payload, list):
+        raw_apps = payload
+    else:
+        raw_apps = []
+    return sorted({_normalize_app_name(app) for app in raw_apps if _normalize_app_name(app)})
+
+
+def _save_approved_apps(apps: list[str]) -> None:
+    path = _approval_store_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"approved_apps": sorted({_normalize_app_name(app) for app in apps if _normalize_app_name(app)})}))
+
+
+def _is_app_approved(app_name: str | None) -> bool:
+    wanted = _normalize_app_name(app_name).casefold()
+    if not wanted:
+        return False
+    return any(app.casefold() == wanted for app in _load_approved_apps())
+
+
+def _app_session_id(app_name: str | None) -> str:
+    normalized = _normalize_app_name(app_name) or "desktop"
+    key = normalized.casefold()
+    session_id = _APP_SESSIONS.get(key)
+    if session_id:
+        return session_id
+    session_id = f"app-{uuid.uuid4().hex}"
+    _APP_SESSIONS[key] = session_id
+    return session_id
+
+
+def list_approved_apps_impl() -> dict[str, Any]:
+    return {
+        "success": True,
+        "approved_apps": _load_approved_apps(),
+        "approval_store_path": str(_approval_store_path()),
+    }
+
+
+def approve_app_impl(app_name: str) -> dict[str, Any]:
+    normalized = _normalize_app_name(app_name)
+    if not normalized:
+        return {"success": False, "error": "app_name is required"}
+    apps = _load_approved_apps()
+    if not any(existing.casefold() == normalized.casefold() for existing in apps):
+        apps.append(normalized)
+        _save_approved_apps(apps)
+    return {
+        "success": True,
+        "app_name": normalized,
+        "approved_apps": _load_approved_apps(),
+        "approval_store_path": str(_approval_store_path()),
+    }
+
+
+def revoke_app_impl(app_name: str) -> dict[str, Any]:
+    normalized = _normalize_app_name(app_name)
+    if not normalized:
+        return {"success": False, "error": "app_name is required"}
+    remaining = [app for app in _load_approved_apps() if app.casefold() != normalized.casefold()]
+    _save_approved_apps(remaining)
+    return {
+        "success": True,
+        "app_name": normalized,
+        "approved_apps": remaining,
+        "approval_store_path": str(_approval_store_path()),
+    }
 
 
 def _running_apps() -> list[str]:
@@ -60,8 +155,22 @@ def list_apps_impl(limit: int = 100) -> dict[str, Any]:
 
 
 def get_app_state_impl(app_name: str | None = None) -> dict[str, Any]:
-    if app_name:
-        activated = _decode(computer_control(action="activate_app", app_name=app_name))
+    requested_app = _normalize_app_name(app_name)
+    if requested_app and not _is_app_approved(requested_app):
+        return {
+            "success": False,
+            "approval_required": True,
+            "approved": False,
+            "app_name": requested_app,
+            "session_id": _SESSION_ID,
+            "app_session_id": _app_session_id(requested_app),
+            "approved_apps": _load_approved_apps(),
+            "approval_store_path": str(_approval_store_path()),
+            "error": f"{requested_app} is not approved for Hermes computer-use yet.",
+        }
+
+    if requested_app:
+        activated = _decode(computer_control(action="activate_app", app_name=requested_app))
         if activated.get("error"):
             return {"success": False, "error": activated["error"]}
 
@@ -73,13 +182,20 @@ def get_app_state_impl(app_name: str | None = None) -> dict[str, Any]:
     if screenshot.get("error"):
         return {"success": False, "error": screenshot["error"]}
 
+    frontmost_app_name = _normalize_app_name(frontmost.get("app_name"))
     return {
         "success": True,
-        "app_name": frontmost.get("app_name", ""),
+        "app_name": frontmost_app_name,
         "window_title": frontmost.get("window_title", ""),
         "screenshot_path": screenshot.get("path", ""),
         "media_tag": screenshot.get("media_tag"),
         "accessibility_tree": [],
+        "session_id": _SESSION_ID,
+        "app_session_id": _app_session_id(frontmost_app_name or requested_app),
+        "approved": _is_app_approved(frontmost_app_name or requested_app),
+        "approval_required": False,
+        "approved_apps": _load_approved_apps(),
+        "approval_store_path": str(_approval_store_path()),
         "note": "Hermes adapter currently returns screenshot + frontmost window metadata, but not a full accessibility tree.",
     }
 
@@ -131,6 +247,21 @@ if mcp:
     def list_apps(limit: int = 100) -> dict[str, Any]:
         """List running apps and a sample of installed apps visible to the Hermes adapter."""
         return list_apps_impl(limit=limit)
+
+    @mcp.tool()
+    def list_approved_apps() -> dict[str, Any]:
+        """List apps explicitly approved for Hermes computer-use control."""
+        return list_approved_apps_impl()
+
+    @mcp.tool()
+    def approve_app(app_name: str) -> dict[str, Any]:
+        """Approve an app for Hermes computer-use control and persist the allowlist locally."""
+        return approve_app_impl(app_name)
+
+    @mcp.tool()
+    def revoke_app(app_name: str) -> dict[str, Any]:
+        """Revoke a previously approved app from Hermes computer-use control."""
+        return revoke_app_impl(app_name)
 
     @mcp.tool()
     def get_app_state(app_name: str | None = None) -> dict[str, Any]:
