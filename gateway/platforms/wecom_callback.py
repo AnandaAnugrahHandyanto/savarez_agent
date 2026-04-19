@@ -469,7 +469,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
                 audio_path = await self._download_voice_media(app, media_id)
                 if audio_path:
                     media_urls.append(audio_path)
-                    media_types.append("audio/amr")
+                    media_types.append("audio/wav")
                     message_type = MessageType.VOICE
             content = ""
         else:
@@ -499,10 +499,11 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         )
 
     async def _download_voice_media(self, app: Dict[str, Any], media_id: str) -> Optional[str]:
-        """Download voice file from WeCom media store and cache locally.
+        """Download voice file from WeCom media store, convert AMR→WAV, and cache.
 
-        Returns local file path or None on failure.
-        WeCom voice messages are in AMR format.
+        Returns local WAV file path or None on failure.
+        WeCom voice messages are in AMR format which most STT engines don't support,
+        so we convert to WAV (16kHz mono) via ffmpeg.
         """
         try:
             token = await self._get_access_token(app)
@@ -517,12 +518,45 @@ class WecomCallbackAdapter(BasePlatformAdapter):
                 logger.warning("[WecomCallback] Voice download failed: %s", data)
                 return None
 
-            audio_bytes = resp.content
-            if not audio_bytes:
+            amr_bytes = resp.content
+            if not amr_bytes:
                 logger.warning("[WecomCallback] Voice download returned empty content")
                 return None
 
-            return cache_audio_from_bytes(audio_bytes, ext=".amr")
+            # Convert AMR → WAV for STT compatibility
+            ffmpeg = shutil.which("ffmpeg")
+            if ffmpeg:
+                amr_path = None
+                wav_path = None
+                try:
+                    fd_amr, amr_path = tempfile.mkstemp(suffix=".amr", prefix="wecom_dl_")
+                    os.close(fd_amr)
+                    with open(amr_path, "wb") as f:
+                        f.write(amr_bytes)
+
+                    fd_wav, wav_path = tempfile.mkstemp(suffix=".wav", prefix="wecom_dl_")
+                    os.close(fd_wav)
+
+                    result = subprocess.run(
+                        [ffmpeg, "-i", amr_path, "-ar", "16000", "-ac", "1", "-y", wav_path],
+                        capture_output=True, timeout=30,
+                    )
+                    if result.returncode == 0 and os.path.exists(wav_path) and os.path.getsize(wav_path) > 0:
+                        cached = cache_audio_from_bytes(open(wav_path, "rb").read(), ext=".wav")
+                        return cached
+                    logger.warning("[WecomCallback] AMR→WAV convert failed (rc=%d): %s",
+                                   result.returncode, result.stderr.decode()[:200])
+                finally:
+                    for p in (amr_path, wav_path):
+                        if p and os.path.exists(p):
+                            try:
+                                os.remove(p)
+                            except OSError:
+                                pass
+
+            # Fallback: cache as AMR if ffmpeg unavailable
+            logger.info("[WecomCallback] ffmpeg not found, caching voice as AMR")
+            return cache_audio_from_bytes(amr_bytes, ext=".amr")
         except Exception as exc:
             logger.warning("[WecomCallback] Voice download error: %s", exc)
             return None
