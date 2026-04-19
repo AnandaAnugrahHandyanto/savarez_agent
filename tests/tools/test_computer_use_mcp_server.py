@@ -47,6 +47,7 @@ class TestGetAppState:
         assert result["window_title"] == "Docs"
         assert result["screenshot_path"] == "/tmp/shot.png"
         assert result["accessibility_tree"] == []
+        assert result["virtual_cursor"] == {"x": None, "y": None, "detached": True, "visible": True}
         assert [c["action"] for c in calls] == ["activate_app", "frontmost_app", "screenshot"]
 
     def test_get_app_state_propagates_capture_error(self, monkeypatch):
@@ -244,7 +245,61 @@ class TestKeyboardTools:
 
 
 class TestUnsupportedActions:
-    def test_click_stub_is_explicit(self):
+    def test_click_requires_active_session(self, monkeypatch):
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {})
+
+        result = adapter.click_impl(x=10, y=20)
+
+        assert result["success"] is False
+        assert result["session_required"] is True
+
+    def test_click_updates_virtual_cursor_preview_for_active_session(self, monkeypatch):
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "safari": {
+                "app_name": "Safari",
+                "app_session_id": "app-1",
+                "active": True,
+                "approved": True,
+                "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True},
+            }
+        })
+
+        result = adapter.click_impl(x=10, y=20)
+
+        assert result["success"] is False
+        assert result["supported"] is False
+        assert result["preview_only"] is True
+        assert result["app_session_id"] == "app-1"
+        assert result["virtual_cursor"] == {"x": 10, "y": 20, "detached": True, "visible": True}
+
+    def test_drag_updates_virtual_cursor_to_end_position(self, monkeypatch):
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "safari": {
+                "app_name": "Safari",
+                "app_session_id": "app-1",
+                "active": True,
+                "approved": True,
+                "virtual_cursor": {"x": 10, "y": 20, "detached": True, "visible": True},
+            }
+        })
+
+        result = adapter.drag_impl(start_x=10, start_y=20, end_x=30, end_y=40)
+
+        assert result["success"] is False
+        assert result["preview_only"] is True
+        assert result["virtual_cursor"] == {"x": 30, "y": 40, "detached": True, "visible": True}
+
+    def test_click_stub_is_explicit(self, monkeypatch):
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "safari": {
+                "app_name": "Safari",
+                "app_session_id": "app-1",
+                "active": True,
+                "approved": True,
+                "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True},
+            }
+        })
+
         result = adapter.click_impl(x=10, y=20)
         assert result["success"] is False
         assert result["supported"] is False

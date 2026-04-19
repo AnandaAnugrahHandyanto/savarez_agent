@@ -49,12 +49,18 @@ def _approval_store_path() -> Path:
 
 
 def _session_payload(record: dict[str, Any]) -> dict[str, Any]:
+    cursor = dict(record.get("virtual_cursor") or {"x": None, "y": None, "detached": True, "visible": True})
     return {
         "app_name": record["app_name"],
         "app_session_id": record["app_session_id"],
         "active": bool(record.get("active")),
         "approved": bool(record.get("approved")),
+        "virtual_cursor": cursor,
     }
+
+
+def _fresh_virtual_cursor() -> dict[str, Any]:
+    return {"x": None, "y": None, "detached": True, "visible": True}
 
 
 def _ensure_app_session(app_name: str | None, *, active: bool) -> dict[str, Any]:
@@ -65,12 +71,14 @@ def _ensure_app_session(app_name: str | None, *, active: bool) -> dict[str, Any]
     if existing and (not active or existing.get("active")):
         existing["app_name"] = normalized
         existing["approved"] = approved
+        existing.setdefault("virtual_cursor", _fresh_virtual_cursor())
         return existing
     record = {
         "app_name": normalized,
         "app_session_id": f"app-{uuid.uuid4().hex}",
         "active": active,
         "approved": approved,
+        "virtual_cursor": _fresh_virtual_cursor(),
     }
     _APP_SESSIONS[key] = record
     return record
@@ -136,6 +144,26 @@ def _current_active_session() -> dict[str, Any] | None:
     if not active_records:
         return None
     return active_records[-1]
+
+
+def _session_required_error(action: str) -> dict[str, Any]:
+    return {
+        "success": False,
+        "session_required": True,
+        "session_id": _SESSION_ID,
+        "error": f"No active app session. Call get_app_state(app_name=...) before {action}.",
+    }
+
+
+def _preview_pointer_response(action: str, session: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "success": False,
+        "supported": False,
+        "preview_only": True,
+        "session_id": _SESSION_ID,
+        **_session_payload(session),
+        "error": f"{action} is not implemented in the Hermes computer-use adapter yet.",
+    }
 
 
 def stop_app_session_impl(app_name: str | None = None, app_session_id: str | None = None) -> dict[str, Any]:
@@ -310,7 +338,15 @@ def _unsupported(action: str) -> dict[str, Any]:
 
 def click_impl(*, index: int | None = None, x: int | None = None, y: int | None = None,
                button: str = "left", click_count: int = 1) -> dict[str, Any]:
-    return _unsupported("click")
+    session = _current_active_session()
+    if not session:
+        return _session_required_error("clicking")
+    cursor = session.setdefault("virtual_cursor", _fresh_virtual_cursor())
+    if x is not None:
+        cursor["x"] = x
+    if y is not None:
+        cursor["y"] = y
+    return _preview_pointer_response("click", session)
 
 
 def perform_secondary_action_impl(index: int, action_name: str) -> dict[str, Any]:
@@ -319,11 +355,29 @@ def perform_secondary_action_impl(index: int, action_name: str) -> dict[str, Any
 
 def scroll_impl(index: int | None = None, x: int | None = None, y: int | None = None,
                 delta_y: int = 0) -> dict[str, Any]:
-    return _unsupported("scroll")
+    session = _current_active_session()
+    if not session:
+        return _session_required_error("scrolling")
+    cursor = session.setdefault("virtual_cursor", _fresh_virtual_cursor())
+    if x is not None:
+        cursor["x"] = x
+    if y is not None:
+        cursor["y"] = y
+    response = _preview_pointer_response("scroll", session)
+    response["delta_y"] = delta_y
+    return response
 
 
 def drag_impl(start_x: int, start_y: int, end_x: int, end_y: int) -> dict[str, Any]:
-    return _unsupported("drag")
+    session = _current_active_session()
+    if not session:
+        return _session_required_error("dragging")
+    cursor = session.setdefault("virtual_cursor", _fresh_virtual_cursor())
+    cursor["x"] = end_x
+    cursor["y"] = end_y
+    response = _preview_pointer_response("drag", session)
+    response["drag_path"] = {"start_x": start_x, "start_y": start_y, "end_x": end_x, "end_y": end_y}
+    return response
 
 
 def set_value_impl(index: int, value: str) -> dict[str, Any]:
