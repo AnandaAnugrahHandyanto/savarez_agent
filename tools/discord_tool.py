@@ -6,6 +6,23 @@ with the bot token — no dependency on the gateway adapter's client.
 
 Only included in the hermes-discord toolset, so it has zero cost
 for users on other platforms.
+
+The schema exposed to the model is filtered by two gates:
+
+1. Privileged intents detected from GET /applications/@me at schema
+   build time. Actions that require an intent the bot doesn't have
+   (search_members / member_info → GUILD_MEMBERS intent) are hidden.
+   fetch_messages is kept regardless of MESSAGE_CONTENT intent, but
+   its description is annotated when the intent is missing.
+
+2. User config allowlist at ``discord.server_actions``. If the user
+   sets a comma-separated list (or YAML list) of action names, only
+   those appear in the schema. Empty/unset means all intent-available
+   actions are exposed.
+
+Per-guild permissions (MANAGE_ROLES etc.) are NOT pre-checked — Discord
+returns a 403 at call time and :func:`_enrich_403` maps it to
+actionable guidance the model can relay to the user.
 """
 
 import json
@@ -14,13 +31,20 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from tools.registry import registry
 
 logger = logging.getLogger(__name__)
 
 DISCORD_API_BASE = "https://discord.com/api/v10"
+
+# Application flag bits (from GET /applications/@me → "flags").
+# Source: https://discord.com/developers/docs/resources/application#application-object-application-flags
+_FLAG_GATEWAY_GUILD_MEMBERS = 1 << 14
+_FLAG_GATEWAY_GUILD_MEMBERS_LIMITED = 1 << 15
+_FLAG_GATEWAY_MESSAGE_CONTENT = 1 << 18
+_FLAG_GATEWAY_MESSAGE_CONTENT_LIMITED = 1 << 19
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -37,6 +61,7 @@ def _discord_request(
     token: str,
     params: Optional[Dict[str, str]] = None,
     body: Optional[Dict[str, Any]] = None,
+    timeout: int = 15,
 ) -> Any:
     """Make a request to the Discord REST API."""
     url = f"{DISCORD_API_BASE}{path}"
@@ -59,7 +84,7 @@ def _discord_request(
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             if resp.status == 204:
                 return None
             return json.loads(resp.read().decode("utf-8"))
@@ -103,6 +128,61 @@ def _channel_type_name(type_id: int) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Capability detection (application intents)
+# ---------------------------------------------------------------------------
+
+# Module-level cache so the app/me endpoint is hit at most once per process.
+_capability_cache: Optional[Dict[str, Any]] = None
+
+
+def _detect_capabilities(token: str, *, force: bool = False) -> Dict[str, Any]:
+    """Detect the bot's app-wide capabilities via GET /applications/@me.
+
+    Returns a dict with keys:
+
+    - ``has_members_intent``: GUILD_MEMBERS intent is enabled
+    - ``has_message_content``: MESSAGE_CONTENT intent is enabled
+    - ``detected``: detection succeeded (False means exposing everything
+      and letting runtime errors handle it)
+
+    Cached in a module-global. Pass ``force=True`` to re-fetch.
+    """
+    global _capability_cache
+    if _capability_cache is not None and not force:
+        return _capability_cache
+
+    caps: Dict[str, Any] = {
+        "has_members_intent": True,
+        "has_message_content": True,
+        "detected": False,
+    }
+
+    try:
+        app = _discord_request("GET", "/applications/@me", token, timeout=5)
+        flags = int(app.get("flags", 0) or 0)
+        caps["has_members_intent"] = bool(
+            flags & (_FLAG_GATEWAY_GUILD_MEMBERS | _FLAG_GATEWAY_GUILD_MEMBERS_LIMITED)
+        )
+        caps["has_message_content"] = bool(
+            flags & (_FLAG_GATEWAY_MESSAGE_CONTENT | _FLAG_GATEWAY_MESSAGE_CONTENT_LIMITED)
+        )
+        caps["detected"] = True
+    except Exception as exc:  # nosec — detection is best-effort
+        logger.info(
+            "Discord capability detection failed (%s); exposing all actions.", exc,
+        )
+
+    _capability_cache = caps
+    return caps
+
+
+def _reset_capability_cache() -> None:
+    """Test hook: clear the detection cache."""
+    global _capability_cache
+    _capability_cache = None
+
+
+# ---------------------------------------------------------------------------
 # Action implementations
 # ---------------------------------------------------------------------------
 
@@ -136,7 +216,6 @@ def _server_info(token: str, guild_id: str, **_kwargs: Any) -> str:
         "premium_tier": g.get("premium_tier"),
         "premium_subscription_count": g.get("premium_subscription_count"),
         "verification_level": g.get("verification_level"),
-        "created_at": g.get("id"),  # Snowflake encodes timestamp
     })
 
 
@@ -374,7 +453,7 @@ def _remove_role(token: str, guild_id: str, user_id: str, role_id: str, **_kwarg
 
 
 # ---------------------------------------------------------------------------
-# Action dispatch
+# Action dispatch + metadata
 # ---------------------------------------------------------------------------
 
 _ACTIONS = {
@@ -393,6 +472,297 @@ _ACTIONS = {
     "add_role": _add_role,
     "remove_role": _remove_role,
 }
+
+# Single-source-of-truth manifest: action → (signature, one-line description).
+# Consumed by :func:`_build_schema` so the schema's top-level description
+# always matches the registered action set.
+_ACTION_MANIFEST: List[Tuple[str, str, str]] = [
+    ("list_guilds", "()", "list servers the bot is in"),
+    ("server_info", "(guild_id)", "server details + member counts"),
+    ("list_channels", "(guild_id)", "all channels grouped by category"),
+    ("channel_info", "(channel_id)", "single channel details"),
+    ("list_roles", "(guild_id)", "roles sorted by position"),
+    ("member_info", "(guild_id, user_id)", "lookup a specific member"),
+    ("search_members", "(guild_id, query)", "find members by name prefix"),
+    ("fetch_messages", "(channel_id)", "recent messages; optional before/after snowflakes"),
+    ("list_pins", "(channel_id)", "pinned messages in a channel"),
+    ("pin_message", "(channel_id, message_id)", "pin a message"),
+    ("unpin_message", "(channel_id, message_id)", "unpin a message"),
+    ("create_thread", "(channel_id, name)", "create a public thread; optional message_id anchor"),
+    ("add_role", "(guild_id, user_id, role_id)", "assign a role"),
+    ("remove_role", "(guild_id, user_id, role_id)", "remove a role"),
+]
+
+# Actions that require the GUILD_MEMBERS privileged intent.
+_INTENT_GATED_MEMBERS = frozenset({"member_info", "search_members"})
+
+# Per-action required params for runtime validation.
+_REQUIRED_PARAMS: Dict[str, List[str]] = {
+    "server_info": ["guild_id"],
+    "list_channels": ["guild_id"],
+    "list_roles": ["guild_id"],
+    "member_info": ["guild_id", "user_id"],
+    "search_members": ["guild_id", "query"],
+    "channel_info": ["channel_id"],
+    "fetch_messages": ["channel_id"],
+    "list_pins": ["channel_id"],
+    "pin_message": ["channel_id", "message_id"],
+    "unpin_message": ["channel_id", "message_id"],
+    "create_thread": ["channel_id", "name"],
+    "add_role": ["guild_id", "user_id", "role_id"],
+    "remove_role": ["guild_id", "user_id", "role_id"],
+}
+
+
+# ---------------------------------------------------------------------------
+# Config-based action allowlist
+# ---------------------------------------------------------------------------
+
+def _load_allowed_actions_config() -> Optional[List[str]]:
+    """Read ``discord.server_actions`` from user config.
+
+    Returns a list of allowed action names, or ``None`` if the user
+    hasn't restricted the set (default: all actions allowed).
+
+    Accepts either a comma-separated string or a YAML list.
+    Unknown action names are dropped with a log warning.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+    except Exception as exc:
+        logger.debug("discord_server: could not load config (%s); allowing all actions.", exc)
+        return None
+
+    raw = (cfg.get("discord") or {}).get("server_actions")
+    if raw is None or raw == "":
+        return None
+
+    if isinstance(raw, str):
+        names = [n.strip() for n in raw.split(",") if n.strip()]
+    elif isinstance(raw, (list, tuple)):
+        names = [str(n).strip() for n in raw if str(n).strip()]
+    else:
+        logger.warning(
+            "discord.server_actions: unexpected type %s; ignoring.", type(raw).__name__,
+        )
+        return None
+
+    valid = [n for n in names if n in _ACTIONS]
+    invalid = [n for n in names if n not in _ACTIONS]
+    if invalid:
+        logger.warning(
+            "discord.server_actions: unknown action(s) ignored: %s. "
+            "Known: %s",
+            ", ".join(invalid), ", ".join(_ACTIONS.keys()),
+        )
+    return valid
+
+
+def _available_actions(
+    caps: Dict[str, Any],
+    allowlist: Optional[List[str]],
+) -> List[str]:
+    """Compute the visible action list from intents + config allowlist.
+
+    Preserves the canonical order from :data:`_ACTIONS`.
+    """
+    actions: List[str] = []
+    for name in _ACTIONS:
+        # Intent filter
+        if not caps.get("has_members_intent", True) and name in _INTENT_GATED_MEMBERS:
+            continue
+        # Config allowlist filter
+        if allowlist is not None and name not in allowlist:
+            continue
+        actions.append(name)
+    return actions
+
+
+# ---------------------------------------------------------------------------
+# Schema construction
+# ---------------------------------------------------------------------------
+
+def _build_schema(
+    actions: List[str],
+    caps: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build the tool schema for the given filtered action list."""
+    caps = caps or {}
+    if not actions:
+        # Tool shouldn't be registered when empty, but guard anyway.
+        actions = list(_ACTIONS.keys())
+
+    # Action manifest lines (action-first, parameter-scoped).
+    manifest_lines = [
+        f"  {name}{sig}  — {desc}"
+        for name, sig, desc in _ACTION_MANIFEST
+        if name in actions
+    ]
+    manifest_block = "\n".join(manifest_lines)
+
+    content_note = ""
+    if caps.get("detected") and caps.get("has_message_content") is False:
+        content_note = (
+            "\n\nNOTE: Bot does NOT have the MESSAGE_CONTENT privileged intent. "
+            "fetch_messages and list_pins will return message metadata (author, "
+            "timestamps, attachments, reactions, pin state) but `content` will be "
+            "empty for messages not sent as a direct mention to the bot or in DMs. "
+            "Enable the intent in the Discord Developer Portal to see all content."
+        )
+
+    description = (
+        "Query and manage a Discord server via the REST API.\n\n"
+        "Available actions:\n"
+        f"{manifest_block}\n\n"
+        "Call list_guilds first to discover guild_ids, then list_channels for "
+        "channel_ids. Runtime errors will tell you if the bot lacks a specific "
+        "per-guild permission (e.g. MANAGE_ROLES for add_role)."
+        f"{content_note}"
+    )
+
+    properties: Dict[str, Any] = {
+        "action": {
+            "type": "string",
+            "enum": actions,
+        },
+        "guild_id": {
+            "type": "string",
+            "description": "Discord server (guild) ID.",
+        },
+        "channel_id": {
+            "type": "string",
+            "description": "Discord channel ID.",
+        },
+        "user_id": {
+            "type": "string",
+            "description": "Discord user ID.",
+        },
+        "role_id": {
+            "type": "string",
+            "description": "Discord role ID.",
+        },
+        "message_id": {
+            "type": "string",
+            "description": "Discord message ID.",
+        },
+        "query": {
+            "type": "string",
+            "description": "Member name prefix to search for (search_members).",
+        },
+        "name": {
+            "type": "string",
+            "description": "New thread name (create_thread).",
+        },
+        "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Max results (default 50). Applies to fetch_messages, search_members.",
+        },
+        "before": {
+            "type": "string",
+            "description": "Snowflake ID for reverse pagination (fetch_messages).",
+        },
+        "after": {
+            "type": "string",
+            "description": "Snowflake ID for forward pagination (fetch_messages).",
+        },
+        "auto_archive_duration": {
+            "type": "integer",
+            "enum": [60, 1440, 4320, 10080],
+            "description": "Thread archive duration in minutes (create_thread, default 1440).",
+        },
+    }
+
+    return {
+        "name": "discord_server",
+        "description": description,
+        "parameters": {
+            "type": "object",
+            "properties": properties,
+            "required": ["action"],
+        },
+    }
+
+
+def get_dynamic_schema() -> Optional[Dict[str, Any]]:
+    """Return a schema filtered by current intents + config allowlist.
+
+    Called by ``model_tools.get_tool_definitions`` as a post-processing
+    step so the schema the model sees always reflects reality. Returns
+    ``None`` when no actions are available (tool should be removed from
+    the schema list entirely).
+    """
+    token = _get_bot_token()
+    if not token:
+        return None
+
+    caps = _detect_capabilities(token)
+    allowlist = _load_allowed_actions_config()
+    actions = _available_actions(caps, allowlist)
+    if not actions:
+        logger.warning(
+            "discord_server: config allowlist/intents left zero available actions; "
+            "hiding tool from this session."
+        )
+        return None
+    return _build_schema(actions, caps)
+
+
+# ---------------------------------------------------------------------------
+# 403 error enrichment
+# ---------------------------------------------------------------------------
+
+_ACTION_403_HINT = {
+    "pin_message": (
+        "Bot lacks MANAGE_MESSAGES permission in this channel. "
+        "Ask the server admin to grant the bot a role that has MANAGE_MESSAGES, "
+        "or a per-channel overwrite."
+    ),
+    "unpin_message": (
+        "Bot lacks MANAGE_MESSAGES permission in this channel."
+    ),
+    "create_thread": (
+        "Bot lacks CREATE_PUBLIC_THREADS in this channel, or cannot view it."
+    ),
+    "add_role": (
+        "Either the bot lacks MANAGE_ROLES, or the target role sits higher "
+        "than the bot's highest role. Roles can only be assigned below the "
+        "bot's own position in the role hierarchy."
+    ),
+    "remove_role": (
+        "Either the bot lacks MANAGE_ROLES, or the target role sits higher "
+        "than the bot's highest role."
+    ),
+    "fetch_messages": (
+        "Bot cannot view this channel (missing VIEW_CHANNEL or READ_MESSAGE_HISTORY)."
+    ),
+    "list_pins": (
+        "Bot cannot view this channel (missing VIEW_CHANNEL or READ_MESSAGE_HISTORY)."
+    ),
+    "channel_info": (
+        "Bot cannot view this channel (missing VIEW_CHANNEL)."
+    ),
+    "search_members": (
+        "Likely missing the Server Members privileged intent — enable it in the "
+        "Discord Developer Portal under your bot's settings."
+    ),
+    "member_info": (
+        "Bot cannot see this guild member (missing Server Members intent or "
+        "insufficient permissions)."
+    ),
+}
+
+
+def _enrich_403(action: str, body: str) -> str:
+    """Return a user-friendly guidance string for a 403 on ``action``."""
+    hint = _ACTION_403_HINT.get(action)
+    base = f"Discord API 403 (forbidden) on '{action}'."
+    if hint:
+        return f"{base} {hint} (Raw: {body})"
+    return f"{base} (Raw: {body})"
+
 
 # ---------------------------------------------------------------------------
 # Check function
@@ -434,22 +804,17 @@ def discord_server(
             "available_actions": list(_ACTIONS.keys()),
         })
 
-    # Validate required params per action
-    required: Dict[str, List[str]] = {
-        "server_info": ["guild_id"],
-        "list_channels": ["guild_id"],
-        "list_roles": ["guild_id"],
-        "member_info": ["guild_id", "user_id"],
-        "search_members": ["guild_id", "query"],
-        "channel_info": ["channel_id"],
-        "fetch_messages": ["channel_id"],
-        "list_pins": ["channel_id"],
-        "pin_message": ["channel_id", "message_id"],
-        "unpin_message": ["channel_id", "message_id"],
-        "create_thread": ["channel_id", "name"],
-        "add_role": ["guild_id", "user_id", "role_id"],
-        "remove_role": ["guild_id", "user_id", "role_id"],
-    }
+    # Config-level allowlist gate (defense in depth — schema already filtered,
+    # but a stale cached schema from a prior config should not let denied
+    # actions through).
+    allowlist = _load_allowed_actions_config()
+    if allowlist is not None and action not in allowlist:
+        return json.dumps({
+            "error": (
+                f"Action '{action}' is disabled by config (discord.server_actions). "
+                f"Allowed: {', '.join(allowlist) if allowlist else '<none>'}"
+            ),
+        })
 
     local_vars = {
         "guild_id": guild_id,
@@ -461,7 +826,7 @@ def discord_server(
         "name": name,
     }
 
-    missing = [p for p in required.get(action, []) if not local_vars.get(p)]
+    missing = [p for p in _REQUIRED_PARAMS.get(action, []) if not local_vars.get(p)]
     if missing:
         return json.dumps({
             "error": f"Missing required parameters for '{action}': {', '.join(missing)}",
@@ -484,6 +849,8 @@ def discord_server(
         )
     except DiscordAPIError as e:
         logger.warning("Discord API error in action '%s': %s", action, e)
+        if e.status == 403:
+            return json.dumps({"error": _enrich_403(action, e.body)})
         return json.dumps({"error": str(e)})
     except Exception as e:
         logger.exception("Unexpected error in discord_server action '%s'", action)
@@ -494,80 +861,16 @@ def discord_server(
 # Tool registration
 # ---------------------------------------------------------------------------
 
-_ACTION_NAMES = list(_ACTIONS.keys())
+# Register with the full unfiltered schema. ``model_tools.get_tool_definitions``
+# rebuilds this per-session via ``get_dynamic_schema`` so the model only ever
+# sees intent-available, config-allowed actions. The static registration is a
+# safe baseline for tools that inspect the registry directly.
+_STATIC_SCHEMA = _build_schema(list(_ACTIONS.keys()), caps={"detected": False})
 
 registry.register(
     name="discord_server",
     toolset="discord",
-    schema={
-        "name": "discord_server",
-        "description": (
-            "Interact with the Discord server. Query server structure (channels, roles, members), "
-            "read messages, pin/unpin messages, create threads, and manage roles. "
-            "Start with list_guilds to discover available servers, then use the guild_id for other actions."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": _ACTION_NAMES,
-                    "description": (
-                        "The action to perform. "
-                        "Introspection: list_guilds, server_info, list_channels, channel_info, "
-                        "list_roles, member_info, search_members. "
-                        "Messages: fetch_messages, list_pins, pin_message, unpin_message. "
-                        "Management: create_thread, add_role, remove_role."
-                    ),
-                },
-                "guild_id": {
-                    "type": "string",
-                    "description": "Discord server (guild) ID. Required for server_info, list_channels, list_roles, member_info, search_members, add_role, remove_role.",
-                },
-                "channel_id": {
-                    "type": "string",
-                    "description": "Discord channel ID. Required for channel_info, fetch_messages, list_pins, pin_message, unpin_message, create_thread.",
-                },
-                "user_id": {
-                    "type": "string",
-                    "description": "Discord user ID. Required for member_info, add_role, remove_role.",
-                },
-                "role_id": {
-                    "type": "string",
-                    "description": "Discord role ID. Required for add_role, remove_role.",
-                },
-                "message_id": {
-                    "type": "string",
-                    "description": "Discord message ID. Required for pin_message, unpin_message. Optional for create_thread (creates thread from that message).",
-                },
-                "query": {
-                    "type": "string",
-                    "description": "Search query. Required for search_members.",
-                },
-                "name": {
-                    "type": "string",
-                    "description": "Name for the new thread. Required for create_thread.",
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Max results to return (default 50, max 100). Used by fetch_messages, search_members.",
-                },
-                "before": {
-                    "type": "string",
-                    "description": "Fetch messages before this message ID (pagination). Used by fetch_messages.",
-                },
-                "after": {
-                    "type": "string",
-                    "description": "Fetch messages after this message ID (pagination). Used by fetch_messages.",
-                },
-                "auto_archive_duration": {
-                    "type": "integer",
-                    "description": "Thread auto-archive duration in minutes (60, 1440, 4320, 10080). Default 1440 (24h). Used by create_thread.",
-                },
-            },
-            "required": ["action"],
-        },
-    },
+    schema=_STATIC_SCHEMA,
     handler=lambda args, **kw: discord_server(
         action=args.get("action", ""),
         guild_id=args.get("guild_id", ""),

@@ -10,11 +10,19 @@ import pytest
 
 from tools.discord_tool import (
     DiscordAPIError,
+    _ACTIONS,
+    _available_actions,
+    _build_schema,
     _channel_type_name,
+    _detect_capabilities,
     _discord_request,
+    _enrich_403,
     _get_bot_token,
+    _load_allowed_actions_config,
+    _reset_capability_cache,
     check_discord_tool_requirements,
     discord_server,
+    get_dynamic_schema,
 )
 
 
@@ -510,6 +518,8 @@ class TestRegistration:
         assert entry.requires_env == ["DISCORD_BOT_TOKEN"]
 
     def test_schema_actions(self):
+        """Static schema should list all actions (the model_tools post-processing
+        narrows this per-session; static registration is the superset)."""
         from tools.registry import registry
         entry = registry._tools["discord_server"]
         actions = entry.schema["parameters"]["properties"]["action"]["enum"]
@@ -519,7 +529,28 @@ class TestRegistration:
             "list_pins", "pin_message", "unpin_message", "create_thread",
             "add_role", "remove_role",
         ]
-        assert actions == expected
+        assert set(actions) == set(expected)
+        assert set(_ACTIONS.keys()) == set(expected)
+
+    def test_schema_parameter_bounds(self):
+        from tools.registry import registry
+        entry = registry._tools["discord_server"]
+        props = entry.schema["parameters"]["properties"]
+        assert props["limit"]["minimum"] == 1
+        assert props["limit"]["maximum"] == 100
+        assert props["auto_archive_duration"]["enum"] == [60, 1440, 4320, 10080]
+
+    def test_schema_description_is_action_manifest(self):
+        """The top-level description should include the action manifest
+        (one-line signatures per action) so the model can find required
+        params without re-reading every parameter description."""
+        from tools.registry import registry
+        entry = registry._tools["discord_server"]
+        desc = entry.schema["description"]
+        # Spot-check a few entries
+        assert "list_guilds()" in desc
+        assert "fetch_messages(channel_id)" in desc
+        assert "add_role(guild_id, user_id, role_id)" in desc
 
     def test_handler_callable(self):
         from tools.registry import registry
@@ -551,3 +582,398 @@ class TestToolsetInclusion:
             assert "discord_server" not in ts.get("tools", []), (
                 f"discord_server should not be in toolset '{name}'"
             )
+
+
+# ---------------------------------------------------------------------------
+# Capability detection (privileged intents)
+# ---------------------------------------------------------------------------
+
+class TestCapabilityDetection:
+    def setup_method(self):
+        _reset_capability_cache()
+
+    def teardown_method(self):
+        _reset_capability_cache()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_both_intents_enabled(self, mock_req):
+        # flags: GUILD_MEMBERS (1<<14) + MESSAGE_CONTENT (1<<18) = 278528
+        mock_req.return_value = {"flags": (1 << 14) | (1 << 18)}
+        caps = _detect_capabilities("tok")
+        assert caps["has_members_intent"] is True
+        assert caps["has_message_content"] is True
+        assert caps["detected"] is True
+
+    @patch("tools.discord_tool._discord_request")
+    def test_no_intents(self, mock_req):
+        mock_req.return_value = {"flags": 0}
+        caps = _detect_capabilities("tok")
+        assert caps["has_members_intent"] is False
+        assert caps["has_message_content"] is False
+        assert caps["detected"] is True
+
+    @patch("tools.discord_tool._discord_request")
+    def test_limited_intent_variants_counted(self, mock_req):
+        # GUILD_MEMBERS_LIMITED (1<<15), MESSAGE_CONTENT_LIMITED (1<<19)
+        mock_req.return_value = {"flags": (1 << 15) | (1 << 19)}
+        caps = _detect_capabilities("tok")
+        assert caps["has_members_intent"] is True
+        assert caps["has_message_content"] is True
+
+    @patch("tools.discord_tool._discord_request")
+    def test_only_members_intent(self, mock_req):
+        mock_req.return_value = {"flags": 1 << 14}
+        caps = _detect_capabilities("tok")
+        assert caps["has_members_intent"] is True
+        assert caps["has_message_content"] is False
+
+    @patch("tools.discord_tool._discord_request")
+    def test_detection_failure_is_permissive(self, mock_req):
+        """If detection fails (network/401/revoked token), expose everything
+        and let runtime errors surface. Silent failure should never hide
+        actions the bot actually has."""
+        mock_req.side_effect = DiscordAPIError(401, "unauthorized")
+        caps = _detect_capabilities("tok")
+        assert caps["detected"] is False
+        assert caps["has_members_intent"] is True
+        assert caps["has_message_content"] is True
+
+    @patch("tools.discord_tool._discord_request")
+    def test_detection_is_cached(self, mock_req):
+        mock_req.return_value = {"flags": 0}
+        _detect_capabilities("tok")
+        _detect_capabilities("tok")
+        _detect_capabilities("tok")
+        assert mock_req.call_count == 1
+
+    @patch("tools.discord_tool._discord_request")
+    def test_force_refresh(self, mock_req):
+        mock_req.return_value = {"flags": 0}
+        _detect_capabilities("tok")
+        _detect_capabilities("tok", force=True)
+        assert mock_req.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Config allowlist
+# ---------------------------------------------------------------------------
+
+class TestConfigAllowlist:
+    def test_empty_string_returns_none(self, monkeypatch):
+        """Empty config means no allowlist — all actions visible."""
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": ""}},
+        )
+        assert _load_allowed_actions_config() is None
+
+    def test_missing_key_returns_none(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {}},
+        )
+        assert _load_allowed_actions_config() is None
+
+    def test_comma_separated_string(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": "list_guilds,list_channels,fetch_messages"}},
+        )
+        result = _load_allowed_actions_config()
+        assert result == ["list_guilds", "list_channels", "fetch_messages"]
+
+    def test_yaml_list(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": ["list_guilds", "server_info"]}},
+        )
+        result = _load_allowed_actions_config()
+        assert result == ["list_guilds", "server_info"]
+
+    def test_unknown_names_dropped(self, monkeypatch, caplog):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": "list_guilds,bogus_action,fetch_messages"}},
+        )
+        with caplog.at_level("WARNING"):
+            result = _load_allowed_actions_config()
+        assert result == ["list_guilds", "fetch_messages"]
+        assert "bogus_action" in caplog.text
+
+    def test_config_load_failure_is_permissive(self, monkeypatch):
+        """If config can't be loaded at all, fall back to None (all allowed)."""
+        def bad_load():
+            raise RuntimeError("disk gone")
+        monkeypatch.setattr("hermes_cli.config.load_config", bad_load)
+        assert _load_allowed_actions_config() is None
+
+    def test_unexpected_type_ignored(self, monkeypatch, caplog):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": {"unexpected": "dict"}}},
+        )
+        with caplog.at_level("WARNING"):
+            result = _load_allowed_actions_config()
+        assert result is None
+        assert "unexpected type" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Action filtering combines intents + allowlist
+# ---------------------------------------------------------------------------
+
+class TestAvailableActions:
+    def test_all_available_when_unrestricted(self):
+        caps = {"detected": True, "has_members_intent": True, "has_message_content": True}
+        assert _available_actions(caps, None) == list(_ACTIONS.keys())
+
+    def test_no_members_intent_hides_member_actions(self):
+        caps = {"detected": True, "has_members_intent": False, "has_message_content": True}
+        actions = _available_actions(caps, None)
+        assert "search_members" not in actions
+        assert "member_info" not in actions
+        # fetch_messages stays — MESSAGE_CONTENT affects content field but action works
+        assert "fetch_messages" in actions
+
+    def test_no_message_content_keeps_fetch_messages(self):
+        """MESSAGE_CONTENT affects the content field, not the action.
+        Hiding fetch_messages would lose author/timestamp/attachments access."""
+        caps = {"detected": True, "has_members_intent": True, "has_message_content": False}
+        actions = _available_actions(caps, None)
+        assert "fetch_messages" in actions
+        assert "list_pins" in actions
+
+    def test_allowlist_intersects_with_intents(self):
+        """Allowlist can only narrow — not re-enable intent-gated actions."""
+        caps = {"detected": True, "has_members_intent": False, "has_message_content": True}
+        allowlist = ["list_guilds", "search_members", "fetch_messages"]
+        actions = _available_actions(caps, allowlist)
+        # search_members gated by intent → stripped even though allowlisted
+        assert actions == ["list_guilds", "fetch_messages"]
+
+    def test_empty_allowlist_yields_empty(self):
+        caps = {"detected": True, "has_members_intent": True, "has_message_content": True}
+        assert _available_actions(caps, []) == []
+
+    def test_allowlist_preserves_canonical_order(self):
+        caps = {"detected": True, "has_members_intent": True, "has_message_content": True}
+        # Pass allowlist out of canonical order
+        allowlist = ["fetch_messages", "list_guilds", "server_info"]
+        assert _available_actions(caps, allowlist) == ["list_guilds", "server_info", "fetch_messages"]
+
+
+# ---------------------------------------------------------------------------
+# Dynamic schema build (integration of intents + config)
+# ---------------------------------------------------------------------------
+
+class TestDynamicSchema:
+    def setup_method(self):
+        _reset_capability_cache()
+
+    def teardown_method(self):
+        _reset_capability_cache()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_no_token_returns_none(self, mock_req, monkeypatch):
+        monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+        assert get_dynamic_schema() is None
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_full_intents_full_schema(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": ""}},
+        )
+        mock_req.return_value = {"flags": (1 << 14) | (1 << 18)}
+        schema = get_dynamic_schema()
+        actions = schema["parameters"]["properties"]["action"]["enum"]
+        assert set(actions) == set(_ACTIONS.keys())
+        # No content warning
+        assert "MESSAGE_CONTENT" not in schema["description"]
+
+    @patch("tools.discord_tool._discord_request")
+    def test_no_members_intent_removes_member_actions_from_schema(
+        self, mock_req, monkeypatch,
+    ):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": ""}},
+        )
+        mock_req.return_value = {"flags": 1 << 18}  # only MESSAGE_CONTENT
+        schema = get_dynamic_schema()
+        actions = schema["parameters"]["properties"]["action"]["enum"]
+        assert "search_members" not in actions
+        assert "member_info" not in actions
+        # Manifest description should also not advertise them
+        assert "search_members" not in schema["description"]
+        assert "member_info" not in schema["description"]
+
+    @patch("tools.discord_tool._discord_request")
+    def test_no_message_content_adds_warning_note(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": ""}},
+        )
+        mock_req.return_value = {"flags": 1 << 14}  # only GUILD_MEMBERS
+        schema = get_dynamic_schema()
+        assert "MESSAGE_CONTENT" in schema["description"]
+        # But fetch_messages is still available
+        actions = schema["parameters"]["properties"]["action"]["enum"]
+        assert "fetch_messages" in actions
+
+    @patch("tools.discord_tool._discord_request")
+    def test_config_allowlist_narrows_schema(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": "list_guilds,list_channels"}},
+        )
+        mock_req.return_value = {"flags": (1 << 14) | (1 << 18)}
+        schema = get_dynamic_schema()
+        actions = schema["parameters"]["properties"]["action"]["enum"]
+        assert actions == ["list_guilds", "list_channels"]
+        # Manifest description should only show allowed ones (check for
+        # the signature marker, which is specific to manifest lines)
+        assert "list_guilds()" in schema["description"]
+        assert "add_role(" not in schema["description"]
+        assert "create_thread(" not in schema["description"]
+
+    @patch("tools.discord_tool._discord_request")
+    def test_empty_allowlist_with_valid_values_hides_tool(self, mock_req, monkeypatch):
+        """If the allowlist resolves to zero valid actions (e.g. all names
+        were typos), get_dynamic_schema returns None so the tool is dropped
+        entirely rather than showing an empty enum."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": "typo_one,typo_two"}},
+        )
+        mock_req.return_value = {"flags": (1 << 14) | (1 << 18)}
+        assert get_dynamic_schema() is None
+
+
+# ---------------------------------------------------------------------------
+# Runtime allowlist enforcement (defense in depth — schema already filtered)
+# ---------------------------------------------------------------------------
+
+class TestRuntimeAllowlistEnforcement:
+    @patch("tools.discord_tool._discord_request")
+    def test_denied_action_blocked_at_runtime(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": "list_guilds"}},
+        )
+        result = json.loads(discord_server(action="add_role", guild_id="1", user_id="2", role_id="3"))
+        assert "error" in result
+        assert "disabled by config" in result["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_allowed_action_proceeds(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": "list_guilds"}},
+        )
+        mock_req.return_value = []
+        result = json.loads(discord_server(action="list_guilds"))
+        assert "guilds" in result
+
+
+# ---------------------------------------------------------------------------
+# 403 enrichment
+# ---------------------------------------------------------------------------
+
+class Test403Enrichment:
+    def test_enrich_known_action(self):
+        msg = _enrich_403("add_role", '{"message":"Missing Permissions"}')
+        assert "MANAGE_ROLES" in msg
+        assert "Missing Permissions" in msg  # Raw body preserved
+
+    def test_enrich_unknown_action_includes_body(self):
+        msg = _enrich_403("some_new_action", '{"message":"weird"}')
+        assert "some_new_action" in msg
+        assert "weird" in msg
+
+    @patch("tools.discord_tool._discord_request")
+    def test_403_in_runtime_is_enriched(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": ""}},
+        )
+        mock_req.side_effect = DiscordAPIError(403, '{"message":"Missing Permissions"}')
+        result = json.loads(discord_server(
+            action="add_role", guild_id="1", user_id="2", role_id="3",
+        ))
+        assert "error" in result
+        assert "MANAGE_ROLES" in result["error"]
+
+    @patch("tools.discord_tool._discord_request")
+    def test_non_403_errors_are_not_enriched(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": ""}},
+        )
+        mock_req.side_effect = DiscordAPIError(500, "server error")
+        result = json.loads(discord_server(action="list_guilds"))
+        assert "500" in result["error"]
+        assert "MANAGE_ROLES" not in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# model_tools integration — dynamic schema replaces static
+# ---------------------------------------------------------------------------
+
+class TestModelToolsIntegration:
+    def setup_method(self):
+        _reset_capability_cache()
+
+    def teardown_method(self):
+        _reset_capability_cache()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_discord_server_schema_rebuilt_by_get_tool_definitions(
+        self, mock_req, monkeypatch,
+    ):
+        """When model_tools.get_tool_definitions runs with discord_server
+        available, it should replace the static schema with the dynamic one."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": "list_guilds,server_info"}},
+        )
+        # Bot without GUILD_MEMBERS intent
+        mock_req.return_value = {"flags": 0}
+
+        from model_tools import get_tool_definitions
+        tools = get_tool_definitions(enabled_toolsets=["hermes-discord"], quiet_mode=True)
+        discord_tool = next(
+            (t for t in tools if t.get("function", {}).get("name") == "discord_server"),
+            None,
+        )
+        assert discord_tool is not None, "discord_server should be in the schema"
+        actions = discord_tool["function"]["parameters"]["properties"]["action"]["enum"]
+        assert actions == ["list_guilds", "server_info"]
+
+    @patch("tools.discord_tool._discord_request")
+    def test_discord_server_dropped_when_allowlist_empties_it(
+        self, mock_req, monkeypatch,
+    ):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": "all_bogus_names"}},
+        )
+        mock_req.return_value = {"flags": 0}
+
+        from model_tools import get_tool_definitions
+        tools = get_tool_definitions(enabled_toolsets=["hermes-discord"], quiet_mode=True)
+        names = [t.get("function", {}).get("name") for t in tools]
+        assert "discord_server" not in names
