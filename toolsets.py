@@ -44,6 +44,8 @@ _HERMES_CORE_TOOLS = [
     "browser_type", "browser_scroll", "browser_back",
     "browser_press", "browser_get_images",
     "browser_vision", "browser_console", "browser_cdp",
+    # Local computer control (macOS-gated)
+    "computer_control",
     # Text-to-speech
     "text_to_speech",
     # Planning & memory
@@ -117,6 +119,12 @@ TOOLSETS = {
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "web_search"
         ],
+        "includes": []
+    },
+
+    "computer": {
+        "description": "Local desktop control on macOS: screenshot, activate apps, open files/URLs, keystrokes, and frontmost-app inspection",
+        "tools": ["computer_control"],
         "includes": []
     },
     
