@@ -2003,11 +2003,12 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
 
     from gateway.run import start_gateway
 
+    stop_hint = "Ctrl+Break or 'hermes gateway stop'" if _sys.platform == "win32" else "Ctrl+C"
     print("┌─────────────────────────────────────────────────────────┐")
     print("│           ⚕ Hermes Gateway Starting...                 │")
     print("├─────────────────────────────────────────────────────────┤")
     print("│  Messaging platforms + cron scheduler                    │")
-    print("│  Press Ctrl+C to stop                                   │")
+    print(f"│  {stop_hint} to stop" + " " * (47 - len(stop_hint)) + "│")
     print("└─────────────────────────────────────────────────────────┘")
     print()
     
@@ -2019,20 +2020,26 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     import sys as _sys
     import time as _time
 
-    # --- Phantom SIGINT protection -------------------------------------------
-    # On Windows/Git Bash, CTRL_C_EVENT is broadcast to every process in the
-    # console group.  This reaches the process at TWO levels:
-    #   1. The C runtime level: can interrupt blocking socket calls (WSAEINTR)
-    #   2. Python's signal level: asyncio's Runner cancels the main task
+    # --- Console signal isolation -------------------------------------------
+    # On Windows/Git Bash, CTRL_C_EVENT is broadcast to every process sharing
+    # the same console process group.  This means pressing Ctrl+C in the CLI
+    # (when the gateway is backgrounded in the same terminal) reaches the
+    # gateway too — at TWO levels:
+    #   1. The C runtime: can interrupt blocking socket calls (WSAEINTR)
+    #   2. Python's signal machinery: asyncio's Runner cancels the main task
     #
-    # To block BOTH, on Windows we install a SetConsoleCtrlHandler that returns
-    # TRUE ("I handled it") for CTRL_C_EVENT.  This prevents the event from
-    # ever reaching CPython's signal machinery — no SIGINT, no socket
-    # interruption, nothing.  Only a deliberate double-press (within 3 s)
-    # raises KeyboardInterrupt so the gateway can stop cleanly.
+    # Windows fix (two-layer defence):
+    #   A. SetConsoleCtrlHandler(NULL, TRUE) — disables CTRL_C at the process
+    #      level so it NEVER reaches any handler.  The gateway becomes immune
+    #      to Ctrl+C from the CLI or any other process in the same group.
+    #   B. signal.signal(SIGINT, no-op) — prevents asyncio from installing its
+    #      own SIGINT handler that would cancel the main task.
     #
-    # On non-Windows we fall back to signal.signal(), which at least prevents
-    # asyncio from installing its own handler.
+    # CTRL_BREAK is NOT affected by (A) and still reaches the custom handler,
+    # which returns False → Python's default → KeyboardInterrupt → clean stop.
+    # Instruct the user to press Ctrl+Break (or run 'hermes gateway stop').
+    #
+    # POSIX fallback: single SIGINT absorbed, double within 3 s stops gateway.
     _sigint_last = [0.0]  # list so the closure can mutate it
 
     _win_ctrl_handler_ref = None  # keep ctypes callback alive
@@ -2064,11 +2071,18 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
                 return True
 
             _win_ctrl_handler_ref = _HandlerRoutine(_win_ctrl_c)
-            # Add our handler BEFORE Python's default one (prepend = add at top)
+            # Add our handler (handles CTRL_BREAK → KeyboardInterrupt via False return)
             _ctypes.windll.kernel32.SetConsoleCtrlHandler(
                 _win_ctrl_handler_ref, True
             )
-            # Also prevent asyncio from re-adding its own SIGINT handler.
+            # Disable CTRL_C at the process level so it never reaches any handler.
+            # This makes the gateway immune to CTRL_C from the CLI (or any other
+            # process) sharing the same Windows console process group — the root
+            # cause of "CLI kills gateway" when both run in the same terminal.
+            # CTRL_BREAK is NOT affected by this flag and still reaches our handler,
+            # which returns False → Python's default → KeyboardInterrupt → clean stop.
+            _ctypes.windll.kernel32.SetConsoleCtrlHandler(None, True)
+            # Prevent asyncio from re-adding its own SIGINT handler.
             def _gateway_sigint(sig, frame): pass  # noqa: E704
             try:
                 _signal.signal(_signal.SIGINT, _gateway_sigint)
@@ -2101,9 +2115,9 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
                 pass
     # -------------------------------------------------------------------------
 
-    # Restart loop: auto-restart the gateway on unexpected crashes.  Since
-    # phantom SIGINTs are now absorbed by _gateway_sigint, the only way
-    # KeyboardInterrupt reaches here is via a deliberate double-press.
+    # Restart loop: auto-restart the gateway on unexpected crashes.
+    # On Windows, KeyboardInterrupt only reaches here via Ctrl+Break.
+    # On POSIX, a deliberate double Ctrl+C (within 3 s) also stops it.
     while True:
         try:
             success = asyncio.run(start_gateway(replace=replace, verbosity=verbosity))

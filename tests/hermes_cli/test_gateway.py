@@ -444,6 +444,32 @@ class TestWindowsRunGateway:
         _, add_flag = registered[0]
         assert add_flag is True
 
+    def test_null_handler_disables_ctrl_c_at_process_level(self, monkeypatch):
+        """SetConsoleCtrlHandler(NULL, TRUE) must also be called to disable
+        CTRL_C at the process level, making the gateway immune to Ctrl+C from
+        the CLI (or any other process sharing the same console group)."""
+        registered = []
+
+        import ctypes
+        import ctypes.wintypes as wt
+
+        fake_kernel32 = MagicMock()
+        fake_kernel32.SetConsoleCtrlHandler.side_effect = lambda handler, add: registered.append((handler, add))
+
+        _HandlerRoutine = ctypes.WINFUNCTYPE(wt.BOOL, wt.DWORD)
+        def _win_ctrl_c(event_type): return True
+        handler_ref = _HandlerRoutine(_win_ctrl_c)
+
+        # Simulate both calls from run_gateway(): custom handler + NULL disable
+        fake_kernel32.SetConsoleCtrlHandler(handler_ref, True)   # custom handler
+        fake_kernel32.SetConsoleCtrlHandler(None, True)           # disable CTRL_C
+
+        assert len(registered) == 2
+        # Second call must use None (NULL) to disable CTRL_C
+        null_handler, null_add = registered[1]
+        assert null_handler is None
+        assert null_add is True
+
     def test_phantom_sigint_absorbed_single_press(self):
         """Single CTRL_C_EVENT within 3s gap must be silently absorbed (return True)
         without raising KeyboardInterrupt."""
