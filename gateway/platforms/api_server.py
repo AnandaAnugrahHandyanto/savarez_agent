@@ -1043,6 +1043,20 @@ class APIServerAdapter(BasePlatformAdapter):
                     "label": label,
                 }))
 
+            # Wire the ui_* synthetic-tool emitter to push frontend render
+            # instructions onto the same stream queue.  Tool handlers run in
+            # the executor thread; _stream_q is thread-safe so we can push
+            # from either side.  Cleared after the request completes to
+            # avoid leaking into the next request's queue.
+            def _on_ui_prompt(payload):
+                _stream_q.put(("__ui_prompt__", payload))
+
+            try:
+                from tools import apmzoom_ui as _apmzoom_ui
+                _apmzoom_ui.set_ui_emitter(_on_ui_prompt)
+            except Exception as e:
+                logger.debug("[apmzoom_ui] emitter setup skipped: %s", e)
+
             # Start agent in background.  agent_ref is a mutable container
             # so the SSE writer can interrupt the agent on client disconnect.
             agent_ref = [None]
@@ -1179,6 +1193,14 @@ class APIServerAdapter(BasePlatformAdapter):
                     event_data = json.dumps(item[1])
                     await response.write(
                         f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
+                    )
+                elif isinstance(item, tuple) and len(item) == 2 and item[0] == "__ui_prompt__":
+                    # Synthetic ui_* tool result — payload describes which
+                    # React component the frontend should render inline in
+                    # the current assistant message.  See tools/apmzoom_ui.py.
+                    event_data = json.dumps(item[1], ensure_ascii=False)
+                    await response.write(
+                        f"event: hermes.ui.prompt\ndata: {event_data}\n\n".encode()
                     )
                 else:
                     content_chunk = {
