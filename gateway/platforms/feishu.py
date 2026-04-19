@@ -1492,30 +1492,28 @@ class FeishuAdapter(BasePlatformAdapter):
                     "tag": "button",
                     "text": {"tag": "plain_text", "content": label},
                     "type": btn_type,
-                    "value": {"hermes_action": action_name, "approval_id": approval_id},
+                    "behaviors": [{"type": "callback", "value": {"hermes_action": action_name, "approval_id": approval_id}}],
                 }
 
             card = {
-                "config": {"wide_screen_mode": True},
+                "schema": "2.0",
+                "config": {"width_mode": "fill"},
                 "header": {
                     "title": {"content": "⚠️ Command Approval Required", "tag": "plain_text"},
                     "template": "orange",
                 },
-                "elements": [
-                    {
-                        "tag": "markdown",
-                        "content": f"```\n{cmd_preview}\n```\n**Reason:** {description}",
-                    },
-                    {
-                        "tag": "action",
-                        "actions": [
-                            _btn("✅ Allow Once", "approve_once", "primary"),
-                            _btn("✅ Session", "approve_session"),
-                            _btn("✅ Always", "approve_always"),
-                            _btn("❌ Deny", "deny", "danger"),
-                        ],
-                    },
-                ],
+                "body": {
+                    "elements": [
+                        {
+                            "tag": "markdown",
+                            "content": f"```\n{cmd_preview}\n```\n**Reason:** {description}",
+                        },
+                        _btn("✅ Allow Once", "approve_once", "primary"),
+                        _btn("✅ Session", "approve_session"),
+                        _btn("✅ Always", "approve_always"),
+                        _btn("❌ Deny", "deny", "danger"),
+                    ],
+                },
             }
 
             payload = json.dumps(card, ensure_ascii=False)
@@ -1545,17 +1543,20 @@ class FeishuAdapter(BasePlatformAdapter):
         icon = "❌" if choice == "deny" else "✅"
         label = _APPROVAL_LABEL_MAP.get(choice, "Resolved")
         return {
-            "config": {"wide_screen_mode": True},
+            "schema": "2.0",
+            "config": {"width_mode": "fill"},
             "header": {
                 "title": {"content": f"{icon} {label}", "tag": "plain_text"},
                 "template": "red" if choice == "deny" else "green",
             },
-            "elements": [
-                {
-                    "tag": "markdown",
-                    "content": f"{icon} **{label}** by {user_name}",
-                },
-            ],
+            "body": {
+                "elements": [
+                    {
+                        "tag": "markdown",
+                        "content": f"{icon} **{label}** by {user_name}",
+                    },
+                ],
+            },
         }
 
     async def send_voice(
