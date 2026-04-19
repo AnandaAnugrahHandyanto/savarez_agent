@@ -72,6 +72,18 @@ def _make_agent(monkeypatch):
         def _has_stream_consumers(self):
             return False
 
+        def _apply_pending_steer_to_tool_results(self, messages, num_tool_msgs):
+            # Real AIAgent method (run_agent.py:3339) mutates ``messages`` to
+            # append any pending ``/steer`` text to the last tool-result.
+            # These interrupt tests never set ``_pending_steer``, so the
+            # real implementation would early-exit anyway — we stub it as a
+            # no-op to avoid dragging in ``_drain_pending_steer`` +
+            # ``_pending_steer`` / ``_pending_steer_lock`` state that isn't
+            # under test here.  Required since ``_execute_tool_calls_concurrent``
+            # (run_agent.py:8092) unconditionally calls this at the end of
+            # each tool batch.
+            return None
+
     stub = _Stub()
     # Bind the real methods under test
     stub._execute_tool_calls_concurrent = _ra.AIAgent._execute_tool_calls_concurrent.__get__(stub)
