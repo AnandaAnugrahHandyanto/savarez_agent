@@ -25,6 +25,8 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 
 
+DEFAULT_MAX_ITERATIONS = 150
+
 _IS_WINDOWS = platform.system() == "Windows"
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}

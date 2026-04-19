@@ -47,7 +47,7 @@ from hermes_constants import get_hermes_home
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
-from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli.config import DEFAULT_MAX_ITERATIONS, load_hermes_dotenv
 
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
@@ -613,7 +613,7 @@ class AIAgent:
         command: str = None,
         args: list[str] | None = None,
         model: str = "",
-        max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
+        max_iterations: int | None = None,  # Default tool-calling iterations (shared with subagents)
         tool_delay: float = 1.0,
         enabled_toolsets: List[str] = None,
         disabled_toolsets: List[str] = None,
@@ -706,6 +706,21 @@ class AIAgent:
         _install_safe_stdio()
 
         self.model = model
+        # Resolve max_iterations: if None, read from HERMES_MAX_ITERATIONS env var.
+        # If unset or invalid, fall back to DEFAULT_MAX_ITERATIONS (150).
+        if max_iterations is None:
+            _env_val = os.getenv("HERMES_MAX_ITERATIONS")
+            if _env_val:
+                try:
+                    _parsed = int(_env_val)
+                    if _parsed <= 0:
+                        raise ValueError("must be positive")
+                    max_iterations = _parsed
+                except (ValueError, TypeError):
+                    max_iterations = DEFAULT_MAX_ITERATIONS
+                    print(f"⚠️  HERMES_MAX_ITERATIONS='{_env_val}' is invalid; using default {DEFAULT_MAX_ITERATIONS}.")
+            else:
+                max_iterations = DEFAULT_MAX_ITERATIONS
         self.max_iterations = max_iterations
         # Shared iteration budget — parent creates, children inherit.
         # Consumed by every LLM turn across parent + all subagents.
