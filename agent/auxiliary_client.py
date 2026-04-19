@@ -99,6 +99,28 @@ _FIXED_TEMPERATURE_MODELS: Dict[str, float] = {
     "kimi-for-coding": 0.6,
 }
 
+# Runtime-learned set of model IDs that 400 with "`temperature` is deprecated
+# for this model."  The static `_forbids_sampling_params` list in
+# `anthropic_adapter` is the fast path, but it lags whenever Anthropic adds
+# another restricted family (Haiku 4.5, Opus 4.6, …).  On a rejection we retry
+# once without the param and record the model here so future calls skip it
+# pre-emptively — one 30ms retry per (model, process) pair and no maintenance
+# burden as new models ship.
+_TEMP_UNSUPPORTED_MODELS: set = set()
+
+
+def _is_temperature_deprecated_error(exc: BaseException) -> bool:
+    """Return True if `exc` is the Anthropic 400 signalling that the model
+    no longer accepts a `temperature` value."""
+    try:
+        import anthropic
+    except ImportError:
+        return False
+    if not isinstance(exc, anthropic.BadRequestError):
+        return False
+    msg = str(exc).lower()
+    return "temperature" in msg and "deprecated" in msg
+
 # Moonshot's kimi-for-coding endpoint (api.kimi.com/coding) documents:
 # "k2.5 model will use a fixed value 1.0, non-thinking mode will use a fixed
 # value 0.6.  Any other value will result in an error."  The same lock applies
@@ -569,12 +591,26 @@ class _AnthropicCompletionsAdapter:
         # Opus 4.7+ rejects any non-default temperature/top_p/top_k; only set
         # temperature for models that still accept it. build_anthropic_kwargs
         # additionally strips these keys as a safety net — keep both layers.
+        # A third layer below (retry + memoize) catches restricted models that
+        # aren't yet in the static substring list (e.g. Haiku 4.5, Opus 4.6).
         if temperature is not None:
             from agent.anthropic_adapter import _forbids_sampling_params
-            if not _forbids_sampling_params(model):
+            if not _forbids_sampling_params(model) and model not in _TEMP_UNSUPPORTED_MODELS:
                 anthropic_kwargs["temperature"] = temperature
 
-        response = self._client.messages.create(**anthropic_kwargs)
+        try:
+            response = self._client.messages.create(**anthropic_kwargs)
+        except Exception as e:
+            if _is_temperature_deprecated_error(e) and "temperature" in anthropic_kwargs:
+                _TEMP_UNSUPPORTED_MODELS.add(model)
+                logger.info(
+                    "Model %s rejects `temperature`; retrying without it and "
+                    "memoizing for the life of this process.", model,
+                )
+                anthropic_kwargs.pop("temperature", None)
+                response = self._client.messages.create(**anthropic_kwargs)
+            else:
+                raise
         assistant_message, finish_reason = normalize_anthropic_response(response)
 
         usage = None
