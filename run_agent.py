@@ -7711,6 +7711,21 @@ class AIAgent:
             if messages and messages[-1].get("_flush_sentinel") == _sentinel:
                 messages.pop()
 
+    def _compressor_info(self) -> str:
+        """Return a human-readable string describing the active compressor.
+
+        Examples:
+            Built-in:   "compressor"
+            Smart:      "ironin-compressor (keep>=6, drop<5)"
+        """
+        cc = self.context_compressor
+        name = getattr(cc, "name", "compressor")
+        keep = getattr(cc, "_keep_threshold", None)
+        drop = getattr(cc, "_drop_threshold", None)
+        if keep is not None and drop is not None:
+            return f"{name} (keep>={keep}, drop<{drop})"
+        return name
+
     def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default", focus_topic: str = None) -> tuple:
         """Compress conversation context and split the session in SQLite.
 
@@ -11413,7 +11428,8 @@ class AIAgent:
                         _real_tokens = estimate_messages_tokens_rough(messages)
 
                     if self.compression_enabled and _compressor.should_compress(_real_tokens):
-                        self._safe_print("  ⟳ compacting context…")
+                        _comp_info = self._compressor_info()
+                        self._safe_print(f"  🗜️  {_comp_info} -- compacting {len(messages)} messages (~{_real_tokens:,} tokens)...")
                         messages, active_system_prompt = self._compress_context(
                             messages, system_message,
                             approx_tokens=self.context_compressor.last_prompt_tokens,
