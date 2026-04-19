@@ -2190,11 +2190,11 @@ def validate_requested_model(
 
     provider_label = _PROVIDER_LABELS.get(normalized, normalized)
     return {
-        "accepted": False,
-        "persist": False,
+        "accepted": True,
+        "persist": True,
         "recognized": False,
         "message": (
-            f"Could not reach the {provider_label} API to validate `{requested}`. "
-            f"If the service isn't down, this model may not be valid."
+            f"Warning: could not reach the {provider_label} API to validate `{requested}`. "
+            f"If the service isn't down, this model may not be valid. Switching anyway."
         ),
     }
