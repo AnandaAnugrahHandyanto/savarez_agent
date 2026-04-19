@@ -442,6 +442,12 @@ class TestHomeChannelEnvOverrides:
                 {"SMS_HOME_CHANNEL": "+15559876543", "SMS_HOME_CHANNEL_NAME": "My Phone"},
                 ("+15559876543", "My Phone"),
             ),
+            (
+                Platform.WHATSAPP,
+                PlatformConfig(enabled=True),
+                {"WHATSAPP_HOME_CHANNEL": "555555555555555@lid", "WHATSAPP_HOME_CHANNEL_NAME": "Home"},
+                ("555555555555555@lid", "Home"),
+            ),
         ]
 
         for platform, platform_config, env, expected in cases:
