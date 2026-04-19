@@ -2614,11 +2614,21 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
                 _compress_session_history(session, arg)
             _emit("session.info", sid, _session_info(agent))
         elif name == "fast" and agent:
+            from hermes_cli.models import resolve_fast_mode_overrides
+
             mode = arg.lower()
             if mode in {"fast", "on"}:
                 agent.service_tier = "priority"
             elif mode in {"normal", "off"}:
                 agent.service_tier = None
+            try:
+                agent.request_overrides = (
+                    resolve_fast_mode_overrides(getattr(agent, "model", None))
+                    if agent.service_tier
+                    else {}
+                )
+            except Exception:
+                agent.request_overrides = {}
             _emit("session.info", sid, _session_info(agent))
         elif name == "reload-mcp" and agent and hasattr(agent, "reload_mcp_tools"):
             agent.reload_mcp_tools()

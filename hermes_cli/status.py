@@ -79,6 +79,33 @@ def _effective_provider_label() -> str:
     return provider_label(effective)
 
 
+def _service_tier_mode(config: dict) -> str | None:
+    raw = str(config.get("agent", {}).get("service_tier", "") or "").strip().lower()
+    if not raw or raw in {"normal", "default", "standard", "off", "none"}:
+        return None
+    if raw in {"fast", "priority", "on"}:
+        return "fast"
+    return None
+
+
+def _fast_mode_status_line(config: dict) -> str | None:
+    from hermes_cli.models import _is_anthropic_fast_model, model_supports_fast_mode
+
+    model = _configured_model_label(config)
+    if not model or model == "(not set)":
+        return None
+
+    mode = _service_tier_mode(config)
+    if not model_supports_fast_mode(model):
+        if mode == "fast":
+            return "Fast Mode:    configured as fast, but current model does not support it"
+        return None
+
+    feature_name = "Anthropic Fast Mode" if _is_anthropic_fast_model(model) else "Priority Processing"
+    current = "fast" if mode == "fast" else "normal"
+    return f"Fast Mode:    {current} ({feature_name})"
+
+
 from hermes_constants import is_termux as _is_termux
 
 
@@ -110,6 +137,9 @@ def show_status(args):
 
     print(f"  Model:        {_configured_model_label(config)}")
     print(f"  Provider:     {_effective_provider_label()}")
+    fast_mode_line = _fast_mode_status_line(config)
+    if fast_mode_line:
+        print(f"  {fast_mode_line}")
     
     # =========================================================================
     # API Keys

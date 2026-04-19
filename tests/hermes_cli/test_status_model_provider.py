@@ -47,6 +47,72 @@ def test_show_status_displays_configured_dict_model_and_provider_label(monkeypat
     assert "Provider:     Anthropic" in out
 
 
+def test_show_status_displays_anthropic_fast_mode_when_supported(monkeypatch, capsys, tmp_path):
+    from hermes_cli import status as status_mod
+
+    _patch_common_status_deps(monkeypatch, status_mod, tmp_path)
+    monkeypatch.setattr(
+        status_mod,
+        "load_config",
+        lambda: {
+            "model": {"default": "anthropic/claude-opus-4.6", "provider": "anthropic"},
+            "agent": {"service_tier": "fast"},
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(status_mod, "resolve_requested_provider", lambda requested=None: "anthropic", raising=False)
+    monkeypatch.setattr(status_mod, "resolve_provider", lambda requested=None, **kwargs: "anthropic", raising=False)
+    monkeypatch.setattr(status_mod, "provider_label", lambda provider: "Anthropic", raising=False)
+
+    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+
+    out = capsys.readouterr().out
+    assert "Fast Mode:    fast (Anthropic Fast Mode)" in out
+
+
+def test_show_status_hides_fast_mode_for_unsupported_model_without_override(monkeypatch, capsys, tmp_path):
+    from hermes_cli import status as status_mod
+
+    _patch_common_status_deps(monkeypatch, status_mod, tmp_path)
+    monkeypatch.setattr(
+        status_mod,
+        "load_config",
+        lambda: {"model": {"default": "anthropic/claude-sonnet-4", "provider": "anthropic"}},
+        raising=False,
+    )
+    monkeypatch.setattr(status_mod, "resolve_requested_provider", lambda requested=None: "anthropic", raising=False)
+    monkeypatch.setattr(status_mod, "resolve_provider", lambda requested=None, **kwargs: "anthropic", raising=False)
+    monkeypatch.setattr(status_mod, "provider_label", lambda provider: "Anthropic", raising=False)
+
+    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+
+    out = capsys.readouterr().out
+    assert "Fast Mode:" not in out
+
+
+def test_show_status_flags_unsupported_fast_mode_override(monkeypatch, capsys, tmp_path):
+    from hermes_cli import status as status_mod
+
+    _patch_common_status_deps(monkeypatch, status_mod, tmp_path)
+    monkeypatch.setattr(
+        status_mod,
+        "load_config",
+        lambda: {
+            "model": {"default": "anthropic/claude-sonnet-4", "provider": "anthropic"},
+            "agent": {"service_tier": "fast"},
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(status_mod, "resolve_requested_provider", lambda requested=None: "anthropic", raising=False)
+    monkeypatch.setattr(status_mod, "resolve_provider", lambda requested=None, **kwargs: "anthropic", raising=False)
+    monkeypatch.setattr(status_mod, "provider_label", lambda provider: "Anthropic", raising=False)
+
+    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+
+    out = capsys.readouterr().out
+    assert "Fast Mode:    configured as fast, but current model does not support it" in out
+
+
 def test_show_status_displays_legacy_string_model_and_custom_endpoint(monkeypatch, capsys, tmp_path):
     from hermes_cli import status as status_mod
 

@@ -3153,6 +3153,10 @@ class HermesCLI:
             bool: True if successful, False otherwise
         """
         if self.agent is not None:
+            # These are per-turn request knobs, not part of the frozen prompt/
+            # tool schema cache key, so keep the cached agent but refresh them.
+            self.agent.service_tier = self.service_tier
+            self.agent.request_overrides = dict(request_overrides or {})
             return True
 
         if not self._ensure_runtime_credentials():

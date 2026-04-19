@@ -1,12 +1,12 @@
-"""Tests for gateway /fast support and Priority Processing routing."""
+"""Tests for gateway /fast support and model-aware messaging."""
 
+import asyncio
 import sys
 import threading
 import types
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-import pytest
 import yaml
 
 import gateway.run as gateway_run
@@ -121,15 +121,14 @@ def test_turn_route_skips_priority_processing_for_unsupported_models():
     assert route["request_overrides"] is None
 
 
-@pytest.mark.asyncio
-async def test_handle_fast_command_persists_config(monkeypatch, tmp_path):
+def test_handle_fast_command_persists_config(monkeypatch, tmp_path):
     runner = _make_runner()
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
     monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4")
 
-    response = await runner._handle_fast_command(_make_event("/fast fast"))
+    response = asyncio.run(runner._handle_fast_command(_make_event("/fast fast")))
 
     assert "FAST" in response
     assert runner._service_tier == "priority"
@@ -138,8 +137,33 @@ async def test_handle_fast_command_persists_config(monkeypatch, tmp_path):
     assert saved["agent"]["service_tier"] == "fast"
 
 
-@pytest.mark.asyncio
-async def test_run_agent_passes_priority_processing_to_gateway_agent(monkeypatch, tmp_path):
+def test_handle_fast_command_uses_anthropic_feature_name(monkeypatch, tmp_path):
+    runner = _make_runner()
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "anthropic/claude-opus-4.6")
+
+    response = asyncio.run(runner._handle_fast_command(_make_event("/fast status")))
+
+    assert "Anthropic Fast Mode" in response
+    assert "Current mode: `normal`" in response
+
+
+def test_handle_fast_command_reports_generic_unsupported_message(monkeypatch, tmp_path):
+    runner = _make_runner()
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "anthropic/claude-sonnet-4.6")
+
+    response = asyncio.run(runner._handle_fast_command(_make_event("/fast")))
+
+    assert "OpenAI Priority Processing" in response
+    assert "Anthropic Fast Mode" in response
+
+
+def test_run_agent_passes_priority_processing_to_gateway_agent(monkeypatch, tmp_path):
     _install_fake_agent(monkeypatch)
     runner = _make_runner()
 
@@ -164,13 +188,15 @@ async def test_run_agent_passes_priority_processing_to_gateway_agent(monkeypatch
     monkeypatch.setattr(tools_config, "_get_platform_tools", lambda user_config, platform_key: {"core"})
 
     _CapturingAgent.last_init = None
-    result = await runner._run_agent(
-        message="hi",
-        context_prompt="",
-        history=[],
-        source=_make_source(),
-        session_id="session-1",
-        session_key="agent:main:telegram:dm:12345",
+    result = asyncio.run(
+        runner._run_agent(
+            message="hi",
+            context_prompt="",
+            history=[],
+            source=_make_source(),
+            session_id="session-1",
+            session_key="agent:main:telegram:dm:12345",
+        )
     )
 
     assert result["final_response"] == "ok"

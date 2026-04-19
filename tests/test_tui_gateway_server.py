@@ -307,6 +307,27 @@ def test_config_set_personality_resets_history_and_returns_info(monkeypatch):
     assert ("session.info", "sid", {"model": "x"}) in emits
 
 
+def test_mirror_fast_side_effects_syncs_live_request_overrides():
+    emits = []
+    agent = types.SimpleNamespace(
+        model="claude-opus-4-6",
+        service_tier="priority",
+        request_overrides={"speed": "fast"},
+    )
+    server._sessions["sid"] = _session(agent=agent)
+
+    try:
+        with patch("tui_gateway.server._emit", lambda *args: emits.append(args)):
+            server._mirror_slash_side_effects("sid", server._sessions["sid"], "/fast normal")
+
+        assert agent.service_tier is None
+        assert agent.request_overrides == {}
+        assert emits
+        assert emits[-1][0] == "session.info"
+    finally:
+        server._sessions.clear()
+
+
 def test_session_compress_uses_compress_helper(monkeypatch):
     agent = types.SimpleNamespace()
     server._sessions["sid"] = _session(agent=agent)

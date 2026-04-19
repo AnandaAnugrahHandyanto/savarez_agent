@@ -108,6 +108,19 @@ class TestHandleFastCommand(unittest.TestCase):
         self.assertTrue(mock_cprint.called)
 
 
+class TestInitAgentRuntimeSync(unittest.TestCase):
+    def test_cached_agent_updates_request_overrides(self):
+        cli_mod = _import_cli()
+        agent = SimpleNamespace(service_tier=None, request_overrides={"speed": "fast"})
+        stub = SimpleNamespace(agent=agent, service_tier=None)
+
+        result = cli_mod.HermesCLI._init_agent(stub, request_overrides=None)
+
+        assert result is True
+        assert agent.service_tier is None
+        assert agent.request_overrides == {}
+
+
 class TestPriorityProcessingModels(unittest.TestCase):
     """Verify the expanded Priority Processing model registry."""
 
