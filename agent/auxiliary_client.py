@@ -165,6 +165,7 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
 _PROVIDER_VISION_MODELS: Dict[str, str] = {
     "xiaomi": "mimo-v2-omni",
     "zai": "glm-5v-turbo",
+    "nous": "xiaomi/mimo-v2-omni",
 }
 
 # OpenRouter app attribution headers
