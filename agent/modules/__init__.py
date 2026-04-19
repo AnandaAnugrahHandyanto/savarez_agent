@@ -68,3 +68,12 @@ __all__.extend([
     "UpstreamResult", "ResponseShape", "select_response_mode",
     "ResultPackage", "CompanyKPIs", "ExecutiveSummary", "summarize",
 ])
+
+# ------ C§1.9 central turn handler ------
+from agent.modules.turn_handler import TurnInput, TurnResult, run_turn
+
+__all__.extend([
+    "TurnInput",
+    "TurnResult",
+    "run_turn",
+])
