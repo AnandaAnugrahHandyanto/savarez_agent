@@ -302,31 +302,29 @@ class TestCmdRemove:
 class TestCmdList:
     """Test the list command."""
 
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
-    def test_list_empty_plugins_dir(self, mock_plugins_dir):
+    @patch("hermes_cli.plugins_cmd._discover_general_plugins", return_value=[])
+    def test_list_empty_plugins_dir(self, _mock_discover):
         from hermes_cli.plugins_cmd import cmd_list
-
-        mock_plugins_dir_val = MagicMock()
-        mock_plugins_dir_val.iterdir.return_value = []
-        mock_plugins_dir.return_value = mock_plugins_dir_val
 
         cmd_list()
 
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
-    @patch("hermes_cli.plugins_cmd._read_manifest")
-    def test_list_with_plugins(self, mock_read_manifest, mock_plugins_dir):
+    @patch(
+        "hermes_cli.plugins_cmd._discover_general_plugins",
+        return_value=[
+            {
+                "name": "plur",
+                "version": "0.8.0",
+                "description": "PLUR persistent memory plugin",
+                "source": "entrypoint",
+                "enabled": True,
+                "tools": 21,
+                "hooks": 4,
+                "error": None,
+            }
+        ],
+    )
+    def test_list_with_plugins(self, _mock_discover):
         from hermes_cli.plugins_cmd import cmd_list
-
-        mock_plugins_dir_val = MagicMock()
-        mock_plugin_dir = MagicMock()
-        mock_plugin_dir.name = "test-plugin"
-        mock_plugin_dir.is_dir.return_value = True
-        mock_plugin_dir.__truediv__ = lambda self, x: MagicMock(
-            exists=MagicMock(return_value=False)
-        )
-        mock_plugins_dir_val.iterdir.return_value = [mock_plugin_dir]
-        mock_plugins_dir.return_value = mock_plugins_dir_val
-        mock_read_manifest.return_value = {"name": "test-plugin", "version": "1.0.0"}
 
         cmd_list()
 

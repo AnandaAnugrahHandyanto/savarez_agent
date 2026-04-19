@@ -98,9 +98,10 @@ class TestPluginDiscovery:
         _make_plugin_dir(plugins_dir, "once_plugin")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
 
-        mgr = PluginManager()
-        mgr.discover_and_load()
-        mgr.discover_and_load()  # second call should no-op
+        with patch.object(PluginManager, "_scan_entry_points", return_value=[]):
+            mgr = PluginManager()
+            mgr.discover_and_load()
+            mgr.discover_and_load()  # second call should no-op
 
         assert len(mgr._plugins) == 1
 
@@ -110,8 +111,9 @@ class TestPluginDiscovery:
         (plugins_dir / "no_manifest").mkdir(parents=True)
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
 
-        mgr = PluginManager()
-        mgr.discover_and_load()
+        with patch.object(PluginManager, "_scan_entry_points", return_value=[]):
+            mgr = PluginManager()
+            mgr.discover_and_load()
 
         assert len(mgr._plugins) == 0
 
@@ -731,8 +733,9 @@ class TestPluginCommands:
         )
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
 
-        mgr = PluginManager()
-        mgr.discover_and_load()
+        with patch.object(PluginManager, "_scan_entry_points", return_value=[]):
+            mgr = PluginManager()
+            mgr.discover_and_load()
 
         info = mgr.list_plugins()
         assert len(info) == 1

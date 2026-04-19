@@ -488,16 +488,31 @@ def _save_disabled_set(disabled: set) -> None:
     save_config(config)
 
 
+def _discover_general_plugins() -> list[dict]:
+    """Return all discovered general plugins, including entry-point plugins."""
+    try:
+        from hermes_cli.plugins import get_plugin_manager
+
+        manager = get_plugin_manager()
+        manager.discover_and_load()
+        return manager.list_plugins()
+    except Exception as exc:
+        logger.warning("Failed to discover plugins for CLI: %s", exc)
+        return []
+
+
+def _known_general_plugin(name: str) -> bool:
+    """Return True if *name* matches any discovered plugin name."""
+    return any(plugin.get("name") == name for plugin in _discover_general_plugins())
+
+
 def cmd_enable(name: str) -> None:
     """Enable a previously disabled plugin."""
     from rich.console import Console
 
     console = Console()
-    plugins_dir = _plugins_dir()
 
-    # Verify the plugin exists
-    target = plugins_dir / name
-    if not target.is_dir():
+    if not _known_general_plugin(name):
         console.print(f"[red]Plugin '{name}' is not installed.[/red]")
         sys.exit(1)
 
@@ -516,11 +531,8 @@ def cmd_disable(name: str) -> None:
     from rich.console import Console
 
     console = Console()
-    plugins_dir = _plugins_dir()
 
-    # Verify the plugin exists
-    target = plugins_dir / name
-    if not target.is_dir():
+    if not _known_general_plugin(name):
         console.print(f"[red]Plugin '{name}' is not installed.[/red]")
         sys.exit(1)
 
@@ -539,21 +551,12 @@ def cmd_list() -> None:
     from rich.console import Console
     from rich.table import Table
 
-    try:
-        import yaml
-    except ImportError:
-        yaml = None
-
     console = Console()
-    plugins_dir = _plugins_dir()
-
-    dirs = sorted(d for d in plugins_dir.iterdir() if d.is_dir())
-    if not dirs:
+    plugins = _discover_general_plugins()
+    if not plugins:
         console.print("[dim]No plugins installed.[/dim]")
-        console.print("[dim]Install with:[/dim] hermes plugins install owner/repo")
+        console.print("[dim]Install with:[/dim] hermes plugins install owner/repo or pip install <package>")
         return
-
-    disabled = _get_disabled_set()
 
     table = Table(title="Installed Plugins", show_lines=False)
     table.add_column("Name", style="bold")
@@ -561,31 +564,22 @@ def cmd_list() -> None:
     table.add_column("Version", style="dim")
     table.add_column("Description")
     table.add_column("Source", style="dim")
+    table.add_column("Tools", justify="right", style="dim")
+    table.add_column("Hooks", justify="right", style="dim")
+    table.add_column("Error", style="red")
 
-    for d in dirs:
-        manifest_file = d / "plugin.yaml"
-        name = d.name
-        version = ""
-        description = ""
-        source = "local"
-
-        if manifest_file.exists() and yaml:
-            try:
-                with open(manifest_file) as f:
-                    manifest = yaml.safe_load(f) or {}
-                name = manifest.get("name", d.name)
-                version = manifest.get("version", "")
-                description = manifest.get("description", "")
-            except Exception:
-                pass
-
-        # Check if it's a git repo (installed via hermes plugins install)
-        if (d / ".git").exists():
-            source = "git"
-
-        is_disabled = name in disabled or d.name in disabled
-        status = "[red]disabled[/red]" if is_disabled else "[green]enabled[/green]"
-        table.add_row(name, status, str(version), description, source)
+    for plugin in plugins:
+        status = "[green]enabled[/green]" if plugin.get("enabled") else "[red]disabled[/red]"
+        table.add_row(
+            str(plugin.get("name", "")),
+            status,
+            str(plugin.get("version", "") or ""),
+            str(plugin.get("description", "") or ""),
+            str(plugin.get("source", "") or ""),
+            str(plugin.get("tools", 0)),
+            str(plugin.get("hooks", 0)),
+            str(plugin.get("error", "") or ""),
+        )
 
     console.print()
     console.print(table)
