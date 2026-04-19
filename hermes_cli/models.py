@@ -1526,18 +1526,22 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     return list(_PROVIDER_MODELS.get(normalized, []))
 
 
-def _fetch_anthropic_models(timeout: float = 5.0) -> Optional[list[str]]:
+def _fetch_anthropic_models(
+    api_key: Optional[str] = None,
+    timeout: float = 5.0,
+) -> Optional[list[str]]:
     """Fetch available models from the Anthropic /v1/models endpoint.
 
-    Uses resolve_anthropic_token() to find credentials (env vars or
-    Claude Code auto-discovery).  Returns sorted model IDs or None.
+    Uses the explicitly provided *api_key* when present; otherwise falls back
+    to ``resolve_anthropic_token()`` (env vars, Hermes PKCE creds, Claude Code
+    auto-discovery).  Returns sorted model IDs or None.
     """
     try:
         from agent.anthropic_adapter import resolve_anthropic_token, _is_oauth_token
     except ImportError:
         return None
 
-    token = resolve_anthropic_token()
+    token = (api_key or "").strip() or resolve_anthropic_token()
     if not token:
         return None
 
@@ -2344,8 +2348,18 @@ def validate_requested_model(
                 ),
             }
 
-    # Probe the live API to check if the model actually exists
-    api_models = fetch_api_models(api_key, base_url)
+    # Probe the live API to check if the model actually exists.
+    # Anthropic's native ``/v1/models`` endpoint is NOT OpenAI-compatible:
+    # it needs ``anthropic-version`` and uses ``x-api-key`` for regular API
+    # keys, while OAuth/setup tokens use Bearer auth.  The gateway /model path
+    # passes Anthropic credentials/base_url into this validator, so routing the
+    # request through the generic ``fetch_api_models()`` probe incorrectly
+    # treats Anthropic as an OpenAI-compatible endpoint and reports valid
+    # Claude models as unreachable.  Use the provider-specific fetcher.
+    if normalized == "anthropic":
+        api_models = _fetch_anthropic_models(api_key=api_key)
+    else:
+        api_models = fetch_api_models(api_key, base_url)
 
     if api_models is not None:
         if requested_for_lookup in set(api_models):
@@ -2388,8 +2402,41 @@ def validate_requested_model(
             ),
         }
 
-    # api_models is None — couldn't reach API.  Accept and persist,
-    # but warn so typos don't silently break things.
+    # api_models is None — couldn't reach API.
+
+    if normalized == "anthropic":
+        # Anthropic's /model inline switch is often used with Claude Max / Pro
+        # OAuth tokens.  If the live catalog probe is temporarily unavailable,
+        # still allow exact matches from Hermes's built-in Anthropic catalog so
+        # known-good models like ``claude-opus-4-7`` continue to switch.
+        known_models = list(_PROVIDER_MODELS.get("anthropic", []))
+        known_set = set(known_models)
+        if requested_for_lookup in known_set:
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": True,
+                "message": (
+                    f"Could not reach the Anthropic API to validate `{requested}`, "
+                    f"but Hermes recognizes it as a known Anthropic model."
+                ),
+            }
+
+        suggestions = get_close_matches(requested, known_models, n=3, cutoff=0.5)
+        suggestion_text = ""
+        if suggestions:
+            suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+
+        return {
+            "accepted": False,
+            "persist": False,
+            "recognized": False,
+            "message": (
+                f"Could not reach the Anthropic API to validate `{requested}`. "
+                f"If the service isn't down, this model may not be valid."
+                f"{suggestion_text}"
+            ),
+        }
 
     # Bedrock: use our own discovery instead of HTTP /models endpoint.
     # Bedrock's bedrock-runtime URL doesn't support /models — it uses the

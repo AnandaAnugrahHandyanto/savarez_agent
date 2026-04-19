@@ -3,6 +3,7 @@
 from unittest.mock import patch
 
 from hermes_cli.models import (
+    _fetch_anthropic_models,
     copilot_model_api_mode,
     fetch_github_model_catalog,
     curated_models_for_provider,
@@ -286,6 +287,50 @@ class TestFetchApiModels:
         assert [item["id"] for item in catalog] == ["gpt-5.4"]
 
 
+class TestFetchAnthropicModels:
+    def test_regular_api_key_uses_x_api_key_header(self):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"data": [{"id": "claude-opus-4-7"}]}'
+
+        with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()) as mock_urlopen:
+            models = _fetch_anthropic_models(api_key="sk-ant-api03-test")
+
+        assert models == ["claude-opus-4-7"]
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url == "https://api.anthropic.com/v1/models"
+        assert req.headers.get("X-api-key") == "sk-ant-api03-test"
+        assert req.headers.get("Anthropic-version") == "2023-06-01"
+        assert req.headers.get("Authorization") is None
+
+    def test_oauth_token_uses_bearer_and_beta_headers(self):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"data": [{"id": "claude-opus-4-7"}]}'
+
+        with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()) as mock_urlopen:
+            models = _fetch_anthropic_models(api_key="sk-ant-oat01-test")
+
+        assert models == ["claude-opus-4-7"]
+        req = mock_urlopen.call_args[0][0]
+        assert req.headers.get("Authorization") == "Bearer sk-ant-oat01-test"
+        assert req.headers.get("Anthropic-version") == "2023-06-01"
+        assert req.headers.get("Anthropic-beta")
+        assert req.headers.get("X-api-key") is None
+
+
 class TestGithubReasoningEfforts:
     def test_gpt5_supports_minimal_to_high(self):
         catalog = [{
@@ -513,6 +558,48 @@ class TestValidateApiFallback:
         assert result["persist"] is True
         assert result["recognized"] is False
         assert "note" in result["message"].lower()
+
+    def test_anthropic_uses_provider_specific_catalog_fetch_not_generic_probe(self):
+        with patch("hermes_cli.models._fetch_anthropic_models", return_value=["claude-opus-4-7"]) as mock_fetch, \
+             patch("hermes_cli.models.fetch_api_models", side_effect=AssertionError("generic probe should not be used for anthropic")):
+            result = validate_requested_model(
+                "claude-opus-4-7",
+                "anthropic",
+                api_key="sk-ant-oat01-test",
+                base_url="https://api.anthropic.com",
+            )
+
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        mock_fetch.assert_called_once_with(api_key="sk-ant-oat01-test")
+
+    def test_known_anthropic_model_allowed_when_live_catalog_unreachable(self):
+        with patch("hermes_cli.models._fetch_anthropic_models", return_value=None):
+            result = validate_requested_model(
+                "claude-opus-4-7",
+                "anthropic",
+                api_key="sk-ant-oat01-test",
+                base_url="https://api.anthropic.com",
+            )
+
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is True
+        assert "known anthropic model" in result["message"].lower()
+
+    def test_unknown_anthropic_model_rejected_when_live_catalog_unreachable(self):
+        with patch("hermes_cli.models._fetch_anthropic_models", return_value=None):
+            result = validate_requested_model(
+                "claude-opus-next",
+                "anthropic",
+                api_key="sk-ant-oat01-test",
+                base_url="https://api.anthropic.com",
+            )
+
+        assert result["accepted"] is False
+        assert result["persist"] is False
+        assert "could not reach the anthropic api" in result["message"].lower()
+        assert "similar models" in result["message"].lower()
 
     def test_custom_endpoint_warns_with_probed_url_and_v1_hint(self):
         with patch(
