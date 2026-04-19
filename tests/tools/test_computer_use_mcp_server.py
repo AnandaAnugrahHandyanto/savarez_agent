@@ -131,6 +131,63 @@ class TestApprovalAndSessions:
         assert first["app_session_id"] == second["app_session_id"]
         assert first["app_name"] == "Safari"
 
+    def test_list_active_sessions_and_stop_session(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {})
+        adapter.approve_app_impl("Safari")
+
+        def fake_cc(**kwargs):
+            action = kwargs["action"]
+            if action == "activate_app":
+                return '{"success": true}'
+            if action == "frontmost_app":
+                return '{"success": true, "app_name": "Safari", "window_title": "Docs"}'
+            if action == "screenshot":
+                return '{"success": true, "path": "/tmp/shot.png"}'
+            raise AssertionError(action)
+
+        monkeypatch.setattr(adapter, "computer_control", fake_cc)
+
+        started = adapter.get_app_state_impl(app_name="Safari")
+        listed = adapter.list_active_sessions_impl()
+
+        assert started["success"] is True
+        assert listed["success"] is True
+        assert listed["active_sessions"][0]["app_name"] == "Safari"
+        assert listed["active_sessions"][0]["app_session_id"] == started["app_session_id"]
+
+        stopped = adapter.stop_app_session_impl(app_name="Safari")
+
+        assert stopped["success"] is True
+        assert stopped["stopped"] is True
+        assert stopped["app_session_id"] == started["app_session_id"]
+        assert adapter.list_active_sessions_impl()["active_sessions"] == []
+
+    def test_stop_then_reopen_app_creates_new_app_session_id(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {})
+        adapter.approve_app_impl("Safari")
+
+        def fake_cc(**kwargs):
+            action = kwargs["action"]
+            if action == "activate_app":
+                return '{"success": true}'
+            if action == "frontmost_app":
+                return '{"success": true, "app_name": "Safari", "window_title": "Docs"}'
+            if action == "screenshot":
+                return '{"success": true, "path": "/tmp/shot.png"}'
+            raise AssertionError(action)
+
+        monkeypatch.setattr(adapter, "computer_control", fake_cc)
+
+        first = adapter.get_app_state_impl(app_name="Safari")
+        adapter.stop_app_session_impl(app_name="Safari")
+        second = adapter.get_app_state_impl(app_name="Safari")
+
+        assert first["app_session_id"] != second["app_session_id"]
+
 
 class TestKeyboardTools:
     def test_type_text_impl_maps_to_computer_control(self, monkeypatch):

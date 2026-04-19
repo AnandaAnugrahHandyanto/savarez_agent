@@ -30,17 +30,67 @@ def _decode(payload: str) -> dict[str, Any]:
 
 
 _SESSION_ID = f"session-{uuid.uuid4().hex}"
-_APP_SESSIONS: dict[str, str] = {}
+_APP_SESSIONS: dict[str, dict[str, Any]] = {}
 
 
 def _normalize_app_name(app_name: str | None) -> str:
     return str(app_name or "").strip()
 
 
+def _session_key(app_name: str | None) -> str:
+    normalized = _normalize_app_name(app_name) or "desktop"
+    return normalized.casefold()
+
+
 def _approval_store_path() -> Path:
     root = get_hermes_home() / "computer-use"
     root.mkdir(parents=True, exist_ok=True)
     return root / "ComputerUseAppApprovals.json"
+
+
+def _session_payload(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "app_name": record["app_name"],
+        "app_session_id": record["app_session_id"],
+        "active": bool(record.get("active")),
+        "approved": bool(record.get("approved")),
+    }
+
+
+def _ensure_app_session(app_name: str | None, *, active: bool) -> dict[str, Any]:
+    normalized = _normalize_app_name(app_name) or "desktop"
+    key = _session_key(normalized)
+    existing = _APP_SESSIONS.get(key)
+    approved = _is_app_approved(normalized)
+    if existing and (not active or existing.get("active")):
+        existing["app_name"] = normalized
+        existing["approved"] = approved
+        return existing
+    record = {
+        "app_name": normalized,
+        "app_session_id": f"app-{uuid.uuid4().hex}",
+        "active": active,
+        "approved": approved,
+    }
+    _APP_SESSIONS[key] = record
+    return record
+
+
+def _find_session(*, app_name: str | None = None, app_session_id: str | None = None) -> dict[str, Any] | None:
+    normalized = _normalize_app_name(app_name)
+    if normalized:
+        return _APP_SESSIONS.get(_session_key(normalized))
+    wanted = str(app_session_id or "").strip()
+    if wanted:
+        for record in _APP_SESSIONS.values():
+            if record.get("app_session_id") == wanted:
+                return record
+    return None
+
+
+def _active_sessions() -> list[dict[str, Any]]:
+    records = [_session_payload(record) for record in _APP_SESSIONS.values() if record.get("active")]
+    return sorted(records, key=lambda item: item["app_name"].casefold())
 
 
 def _load_approved_apps() -> list[str]:
@@ -73,15 +123,31 @@ def _is_app_approved(app_name: str | None) -> bool:
     return any(app.casefold() == wanted for app in _load_approved_apps())
 
 
-def _app_session_id(app_name: str | None) -> str:
-    normalized = _normalize_app_name(app_name) or "desktop"
-    key = normalized.casefold()
-    session_id = _APP_SESSIONS.get(key)
-    if session_id:
-        return session_id
-    session_id = f"app-{uuid.uuid4().hex}"
-    _APP_SESSIONS[key] = session_id
-    return session_id
+def list_active_sessions_impl() -> dict[str, Any]:
+    return {
+        "success": True,
+        "session_id": _SESSION_ID,
+        "active_sessions": _active_sessions(),
+    }
+
+
+def stop_app_session_impl(app_name: str | None = None, app_session_id: str | None = None) -> dict[str, Any]:
+    record = _find_session(app_name=app_name, app_session_id=app_session_id)
+    if not record:
+        return {
+            "success": False,
+            "stopped": False,
+            "session_id": _SESSION_ID,
+            "error": "No matching app session was found.",
+        }
+    was_active = bool(record.get("active"))
+    record["active"] = False
+    return {
+        "success": True,
+        "stopped": was_active,
+        "session_id": _SESSION_ID,
+        **_session_payload(record),
+    }
 
 
 def list_approved_apps_impl() -> dict[str, Any]:
@@ -157,13 +223,14 @@ def list_apps_impl(limit: int = 100) -> dict[str, Any]:
 def get_app_state_impl(app_name: str | None = None) -> dict[str, Any]:
     requested_app = _normalize_app_name(app_name)
     if requested_app and not _is_app_approved(requested_app):
+        pending_session = _ensure_app_session(requested_app, active=False)
         return {
             "success": False,
             "approval_required": True,
             "approved": False,
             "app_name": requested_app,
             "session_id": _SESSION_ID,
-            "app_session_id": _app_session_id(requested_app),
+            **_session_payload(pending_session),
             "approved_apps": _load_approved_apps(),
             "approval_store_path": str(_approval_store_path()),
             "error": f"{requested_app} is not approved for Hermes computer-use yet.",
@@ -183,6 +250,7 @@ def get_app_state_impl(app_name: str | None = None) -> dict[str, Any]:
         return {"success": False, "error": screenshot["error"]}
 
     frontmost_app_name = _normalize_app_name(frontmost.get("app_name"))
+    session = _ensure_app_session(frontmost_app_name or requested_app, active=True)
     return {
         "success": True,
         "app_name": frontmost_app_name,
@@ -191,8 +259,7 @@ def get_app_state_impl(app_name: str | None = None) -> dict[str, Any]:
         "media_tag": screenshot.get("media_tag"),
         "accessibility_tree": [],
         "session_id": _SESSION_ID,
-        "app_session_id": _app_session_id(frontmost_app_name or requested_app),
-        "approved": _is_app_approved(frontmost_app_name or requested_app),
+        **_session_payload(session),
         "approval_required": False,
         "approved_apps": _load_approved_apps(),
         "approval_store_path": str(_approval_store_path()),
@@ -247,6 +314,16 @@ if mcp:
     def list_apps(limit: int = 100) -> dict[str, Any]:
         """List running apps and a sample of installed apps visible to the Hermes adapter."""
         return list_apps_impl(limit=limit)
+
+    @mcp.tool()
+    def list_active_sessions() -> dict[str, Any]:
+        """List currently active Hermes computer-use app sessions."""
+        return list_active_sessions_impl()
+
+    @mcp.tool()
+    def stop_app_session(app_name: str | None = None, app_session_id: str | None = None) -> dict[str, Any]:
+        """Stop an active Hermes computer-use app session by app name or app session id."""
+        return stop_app_session_impl(app_name=app_name, app_session_id=app_session_id)
 
     @mcp.tool()
     def list_approved_apps() -> dict[str, Any]:
