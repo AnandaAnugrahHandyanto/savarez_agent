@@ -26,6 +26,11 @@ from agent.prompt_builder import (
     OPENAI_MODEL_EXECUTION_GUIDANCE,
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
+    PLANNING_AND_SELF_REVIEW_GUIDANCE,
+    AUTONOMOUS_EXECUTION_GUIDANCE,
+    MULTIMODAL_VERIFICATION_GUIDANCE,
+    MEMORY_RETRIEVAL_GUIDANCE,
+    EDITING_VERIFICATION_GUIDANCE,
     PLATFORM_HINTS,
     WSL_ENVIRONMENT_HINT,
 )
@@ -42,12 +47,50 @@ class TestGuidanceConstants:
         assert "durable facts" in MEMORY_GUIDANCE
         assert "Do NOT save task progress" in MEMORY_GUIDANCE
         assert "session_search" in MEMORY_GUIDANCE
+        assert "Save memory proactively" in MEMORY_GUIDANCE
         assert "like a diary" not in MEMORY_GUIDANCE
         assert ">80%" not in MEMORY_GUIDANCE
 
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
+        assert "last time" in SESSION_SEARCH_GUIDANCE
+        assert "Prefer searching over guessing" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
+
+    def test_planning_and_self_review_guidance_mentions_plan_and_verify(self):
+        assert "concise plan" in PLANNING_AND_SELF_REVIEW_GUIDANCE
+        assert "self-review" in PLANNING_AND_SELF_REVIEW_GUIDANCE
+        assert "re-read" in PLANNING_AND_SELF_REVIEW_GUIDANCE
+        assert "read files back" in PLANNING_AND_SELF_REVIEW_GUIDANCE
+        assert "flag any remaining uncertainty" in PLANNING_AND_SELF_REVIEW_GUIDANCE
+
+    def test_multimodal_verification_guidance_content(self):
+        assert "visual content" in MULTIMODAL_VERIFICATION_GUIDANCE
+        assert "browser_vision" in MULTIMODAL_VERIFICATION_GUIDANCE
+        assert "vision_analyze" in MULTIMODAL_VERIFICATION_GUIDANCE
+        assert "verify" in MULTIMODAL_VERIFICATION_GUIDANCE
+
+    def test_autonomous_execution_guidance_content(self):
+        assert "act immediately" in AUTONOMOUS_EXECUTION_GUIDANCE
+        assert "execution over deliberation" in AUTONOMOUS_EXECUTION_GUIDANCE
+        assert "solvable obstacle" in AUTONOMOUS_EXECUTION_GUIDANCE
+        assert "safety rules" in AUTONOMOUS_EXECUTION_GUIDANCE
+        assert "diagnose the error" in AUTONOMOUS_EXECUTION_GUIDANCE
+        assert "re-read the current state" in AUTONOMOUS_EXECUTION_GUIDANCE
+
+    def test_memory_retrieval_guidance_content(self):
+        assert "memory" in MEMORY_RETRIEVAL_GUIDANCE.lower()
+        assert "session_search" in MEMORY_RETRIEVAL_GUIDANCE
+        assert "consolidate" in MEMORY_RETRIEVAL_GUIDANCE
+        assert "replace" in MEMORY_RETRIEVAL_GUIDANCE
+        assert "compact" in MEMORY_RETRIEVAL_GUIDANCE
+
+    def test_editing_verification_guidance_content(self):
+        assert "read the file back" in EDITING_VERIFICATION_GUIDANCE
+        assert "patch" in EDITING_VERIFICATION_GUIDANCE.lower()
+        assert "write_file" in EDITING_VERIFICATION_GUIDANCE
+        assert "tests" in EDITING_VERIFICATION_GUIDANCE.lower()
+        assert "regressions" in EDITING_VERIFICATION_GUIDANCE
 
 
 # =========================================================================

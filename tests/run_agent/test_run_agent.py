@@ -20,7 +20,7 @@ import pytest
 import run_agent
 from run_agent import AIAgent
 from agent.error_classifier import FailoverReason
-from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+from agent.prompt_builder import DEFAULT_AGENT_IDENTITY, PLANNING_AND_SELF_REVIEW_GUIDANCE, AUTONOMOUS_EXECUTION_GUIDANCE, MULTIMODAL_VERIFICATION_GUIDANCE, MEMORY_RETRIEVAL_GUIDANCE, EDITING_VERIFICATION_GUIDANCE
 
 
 # ---------------------------------------------------------------------------
@@ -728,6 +728,58 @@ class TestBuildSystemPrompt:
         prompt = agent._build_system_prompt()
         # Should contain current date info like "Conversation started:"
         assert "Conversation started:" in prompt
+
+    def test_includes_planning_and_self_review_guidance(self, agent):
+        prompt = agent._build_system_prompt()
+        assert PLANNING_AND_SELF_REVIEW_GUIDANCE in prompt
+
+    def test_includes_autonomous_execution_guidance(self, agent):
+        prompt = agent._build_system_prompt()
+        assert AUTONOMOUS_EXECUTION_GUIDANCE in prompt
+
+    def test_includes_multimodal_verification_guidance_when_vision_tools_present(self, agent):
+        """Multimodal verification guidance should appear when browser_vision is available."""
+        # Add browser_vision to valid_tool_names to trigger the guidance
+        agent.valid_tool_names = agent.valid_tool_names | {"browser_vision"}
+        prompt = agent._build_system_prompt()
+        assert MULTIMODAL_VERIFICATION_GUIDANCE in prompt
+
+    def test_excludes_multimodal_verification_guidance_without_vision_tools(self, agent):
+        """Multimodal verification guidance should NOT appear when no vision tools are loaded."""
+        # Remove all vision tools from valid_tool_names
+        agent.valid_tool_names = agent.valid_tool_names - {"browser_vision", "vision_analyze", "image_gen"}
+        prompt = agent._build_system_prompt()
+        assert MULTIMODAL_VERIFICATION_GUIDANCE not in prompt
+
+    def test_includes_memory_retrieval_guidance_when_both_tools_present(self, agent):
+        """Memory retrieval guidance should appear when both memory and session_search tools are loaded."""
+        agent.valid_tool_names = agent.valid_tool_names | {"memory", "session_search"}
+        prompt = agent._build_system_prompt()
+        assert MEMORY_RETRIEVAL_GUIDANCE in prompt
+
+    def test_excludes_memory_retrieval_guidance_without_memory_tool(self, agent):
+        """Memory retrieval guidance should NOT appear without the memory tool."""
+        agent.valid_tool_names = (agent.valid_tool_names | {"session_search"}) - {"memory"}
+        prompt = agent._build_system_prompt()
+        assert MEMORY_RETRIEVAL_GUIDANCE not in prompt
+
+    def test_excludes_memory_retrieval_guidance_without_session_search(self, agent):
+        """Memory retrieval guidance should NOT appear without the session_search tool."""
+        agent.valid_tool_names = (agent.valid_tool_names | {"memory"}) - {"session_search"}
+        prompt = agent._build_system_prompt()
+        assert MEMORY_RETRIEVAL_GUIDANCE not in prompt
+
+    def test_includes_editing_verification_guidance_when_editing_tools_present(self, agent):
+        """Editing verification guidance should appear when patch or write_file is available."""
+        agent.valid_tool_names = agent.valid_tool_names | {"patch", "write_file"}
+        prompt = agent._build_system_prompt()
+        assert EDITING_VERIFICATION_GUIDANCE in prompt
+
+    def test_excludes_editing_verification_guidance_without_editing_tools(self, agent):
+        """Editing verification guidance should NOT appear without patch or write_file."""
+        agent.valid_tool_names = agent.valid_tool_names - {"patch", "write_file"}
+        prompt = agent._build_system_prompt()
+        assert EDITING_VERIFICATION_GUIDANCE not in prompt
 
     def test_includes_nous_subscription_prompt(self, agent, monkeypatch):
         monkeypatch.setattr(run_agent, "build_nous_subscription_prompt", lambda tool_names: "NOUS SUBSCRIPTION BLOCK")
