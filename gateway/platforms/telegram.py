@@ -2522,17 +2522,6 @@ class TelegramAdapter(BasePlatformAdapter):
                     mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
                     ext = mime_to_ext.get(doc.mime_type, "")
 
-                # Check if supported
-                if ext not in SUPPORTED_DOCUMENT_TYPES:
-                    supported_list = ", ".join(sorted(SUPPORTED_DOCUMENT_TYPES.keys()))
-                    event.text = (
-                        f"Unsupported document type '{ext or 'unknown'}'. "
-                        f"Supported types: {supported_list}"
-                    )
-                    logger.info("[Telegram] Unsupported document type: %s", ext or "unknown")
-                    await self.handle_message(event)
-                    return
-
                 # Check file size (Telegram Bot API limit: 20 MB)
                 MAX_DOC_BYTES = 20 * 1024 * 1024
                 if not doc.file_size or doc.file_size > MAX_DOC_BYTES:
@@ -2549,14 +2538,18 @@ class TelegramAdapter(BasePlatformAdapter):
                 doc_bytes = await file_obj.download_as_bytearray()
                 raw_bytes = bytes(doc_bytes)
                 cached_path = cache_document_from_bytes(raw_bytes, original_filename or f"document{ext}")
-                mime_type = SUPPORTED_DOCUMENT_TYPES[ext]
+                mime_type = (doc.mime_type or "").split(";")[0].strip().lower() or SUPPORTED_DOCUMENT_TYPES.get(ext, "application/octet-stream")
                 event.media_urls = [cached_path]
                 event.media_types = [mime_type]
                 logger.info("[Telegram] Cached user document at %s", cached_path)
 
                 # For text files, inject content into event.text (capped at 100 KB)
                 MAX_TEXT_INJECT_BYTES = 100 * 1024
-                if ext in (".md", ".txt") and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                textish_exts = {".md", ".txt", ".log", ".json", ".csv", ".xml", ".html", ".htm", ".yaml", ".yml", ".ini", ".toml"}
+                textish_mimes = {"application/json", "application/xml", "application/yaml", "application/x-yaml"}
+                if len(raw_bytes) <= MAX_TEXT_INJECT_BYTES and (
+                    ext in textish_exts or (mime_type or "").startswith("text/") or mime_type in textish_mimes
+                ):
                     try:
                         text_content = raw_bytes.decode("utf-8")
                         display_name = original_filename or f"document{ext}"
