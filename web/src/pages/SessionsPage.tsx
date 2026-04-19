@@ -12,6 +12,10 @@ import {
   MessageCircle,
   Hash,
   X,
+  BrainCircuit,
+  FileText,
+  Sparkles,
+  Database,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { SessionInfo, SessionMessage, SessionSearchResult } from "@/lib/api";
@@ -20,6 +24,7 @@ import { Markdown } from "@/components/Markdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { useI18n } from "@/i18n";
 
 const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> = {
@@ -92,7 +97,66 @@ function ToolCallBlock({ toolCall }: { toolCall: { id: string; function: { name:
   );
 }
 
-function MessageBubble({ msg, highlight }: { msg: SessionMessage; highlight?: string }) {
+/** Collapsible section with a header button. */
+function CollapsibleSection({
+  title,
+  icon,
+  children,
+  defaultOpen = false,
+  className = "",
+}: {
+  title: string;
+  icon?: React.ReactNode;
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+  className?: string;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className={`rounded-md border border-border bg-background ${className}`}>
+      <button
+        type="button"
+        className="flex w-full items-center gap-2 px-3 py-2 text-xs text-muted-foreground cursor-pointer hover:bg-secondary/30 transition-colors"
+        onClick={() => setOpen(!open)}
+      >
+        {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+        {icon}
+        <span className="font-medium">{title}</span>
+      </button>
+      {open && (
+        <div className="border-t border-border px-3 py-2 text-xs overflow-x-auto whitespace-pre-wrap font-mono leading-relaxed">
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Renders a thinking/reasoning block for assistant messages. */
+function ThinkingBlock({ reasoning }: { reasoning: string }) {
+  // Try to pretty-print if it's JSON
+  let display = reasoning;
+  try {
+    const parsed = JSON.parse(reasoning);
+    display = JSON.stringify(parsed, null, 2);
+  } catch {
+    // keep as-is — likely plain text reasoning
+  }
+
+  return (
+    <CollapsibleSection
+      title="Thinking"
+      icon={<BrainCircuit className="h-3 w-3 text-purple-400" />}
+      className="mt-2 border-purple-500/20 bg-purple-500/5"
+    >
+      <div className="text-purple-300/90 whitespace-pre-wrap break-words max-h-[400px] overflow-y-auto">
+        {display}
+      </div>
+    </CollapsibleSection>
+  );
+}
+
+function MessageBubble({ msg, highlight, verbose }: { msg: SessionMessage; highlight?: string; verbose?: boolean }) {
   const { t } = useI18n();
 
   const ROLE_STYLES: Record<string, { bg: string; text: string; label: string }> = {
@@ -118,6 +182,8 @@ function MessageBubble({ msg, highlight }: { msg: SessionMessage; highlight?: st
     ? highlight.split(/\s+/).filter(Boolean)
     : undefined;
 
+  const hasReasoning = !!(msg.reasoning || msg.reasoning_details || msg.codex_reasoning_items);
+
   return (
     <div className={`${style.bg} p-3 ${isHit ? "ring-1 ring-warning/40" : ""}`} data-search-hit={isHit || undefined}>
       <div className="flex items-center gap-2 mb-1">
@@ -128,7 +194,46 @@ function MessageBubble({ msg, highlight }: { msg: SessionMessage; highlight?: st
         {msg.timestamp && (
           <span className="text-[10px] text-muted-foreground">{timeAgo(msg.timestamp)}</span>
         )}
+        {verbose && hasReasoning && (
+          <Badge variant="outline" className="text-[9px] py-0 px-1.5 border-purple-500/30 text-purple-400">
+            <BrainCircuit className="h-2.5 w-2.5 mr-0.5" />
+            thinking
+          </Badge>
+        )}
+        {verbose && msg.memory_context && (
+          <Badge variant="outline" className="text-[9px] py-0 px-1.5 border-emerald-500/30 text-emerald-400">
+            <Database className="h-2.5 w-2.5 mr-0.5" />
+            memory
+          </Badge>
+        )}
       </div>
+      {verbose && msg.reasoning && (
+        <ThinkingBlock reasoning={msg.reasoning} />
+      )}
+      {verbose && msg.reasoning_details && !msg.reasoning && (
+        <CollapsibleSection
+          title="Reasoning Details"
+          icon={<Sparkles className="h-3 w-3 text-purple-400" />}
+          className="mt-2 border-purple-500/20 bg-purple-500/5"
+        >
+          <div className="text-purple-300/90 whitespace-pre-wrap break-words max-h-[400px] overflow-y-auto">
+            {typeof msg.reasoning_details === "string"
+              ? msg.reasoning_details
+              : JSON.stringify(msg.reasoning_details, null, 2)}
+          </div>
+        </CollapsibleSection>
+      )}
+      {verbose && msg.memory_context && (
+        <CollapsibleSection
+          title="Memory Context"
+          icon={<Database className="h-3 w-3 text-emerald-400" />}
+          className="mt-2 border-emerald-500/20 bg-emerald-500/5"
+        >
+          <div className="text-emerald-300/90 whitespace-pre-wrap break-words max-h-[400px] overflow-y-auto text-xs">
+            {msg.memory_context}
+          </div>
+        </CollapsibleSection>
+      )}
       {msg.content && (
         msg.role === "system"
           ? <div className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">{msg.content}</div>
@@ -146,7 +251,7 @@ function MessageBubble({ msg, highlight }: { msg: SessionMessage; highlight?: st
 }
 
 /** Message list with auto-scroll to first search hit. */
-function MessageList({ messages, highlight }: { messages: SessionMessage[]; highlight?: string }) {
+function MessageList({ messages, highlight, verbose }: { messages: SessionMessage[]; highlight?: string; verbose?: boolean }) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -164,7 +269,7 @@ function MessageList({ messages, highlight }: { messages: SessionMessage[]; high
   return (
     <div ref={containerRef} className="flex flex-col gap-3 max-h-[600px] overflow-y-auto pr-2">
       {messages.map((msg, i) => (
-        <MessageBubble key={i} msg={msg} highlight={highlight} />
+        <MessageBubble key={i} msg={msg} highlight={highlight} verbose={verbose} />
       ))}
     </div>
   );
@@ -177,6 +282,7 @@ function SessionRow({
   isExpanded,
   onToggle,
   onDelete,
+  verbose,
 }: {
   session: SessionInfo;
   snippet?: string;
@@ -184,6 +290,7 @@ function SessionRow({
   isExpanded: boolean;
   onToggle: () => void;
   onDelete: () => void;
+  verbose: boolean;
 }) {
   const [messages, setMessages] = useState<SessionMessage[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -204,6 +311,14 @@ function SessionRow({
   const sourceInfo = (session.source ? SOURCE_CONFIG[session.source] : null) ?? { icon: Globe, color: "text-muted-foreground" };
   const SourceIcon = sourceInfo.icon;
   const hasTitle = session.title && session.title !== "Untitled";
+
+  // Format token counts for display
+  const fmtTokens = (n: number) => n > 0 ? (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)) : null;
+  const inputT = fmtTokens(session.input_tokens);
+  const outputT = fmtTokens(session.output_tokens);
+  const reasoningT = fmtTokens(session.reasoning_tokens);
+  const cacheReadT = fmtTokens(session.cache_read_tokens);
+  const cacheWriteT = fmtTokens(session.cache_write_tokens);
 
   return (
     <div className={`border overflow-hidden transition-colors ${
@@ -241,6 +356,18 @@ function SessionRow({
                   <span>{session.tool_call_count} {t.common.tools}</span>
                 </>
               )}
+              {(inputT || outputT) && (
+                <>
+                  <span className="text-border">&#183;</span>
+                  <span>{inputT}↑ {outputT}↓</span>
+                  {reasoningT && verbose && (
+                    <span className="text-purple-400">&#183;{reasoningT}🧠</span>
+                  )}
+                  {cacheReadT && verbose && (
+                    <span className="text-blue-400">&#183;{cacheReadT}📦</span>
+                  )}
+                </>
+              )}
               <span className="text-border">&#183;</span>
               <span>{timeAgo(session.last_active)}</span>
             </div>
@@ -271,6 +398,32 @@ function SessionRow({
 
       {isExpanded && (
         <div className="border-t border-border bg-background/50 p-4">
+          {/* Verbose: System Prompt */}
+          {verbose && session.system_prompt && (
+            <div className="mb-3">
+              <CollapsibleSection
+                title="System Prompt"
+                icon={<FileText className="h-3 w-3 text-blue-400" />}
+                className="border-blue-500/20 bg-blue-500/5"
+              >
+                <div className="text-blue-200/90 whitespace-pre-wrap break-words max-h-[500px] overflow-y-auto">
+                  {session.system_prompt}
+                </div>
+              </CollapsibleSection>
+            </div>
+          )}
+
+          {/* Verbose: Token Breakdown */}
+          {verbose && (inputT || outputT) && (
+            <div className="mb-3 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-muted-foreground">
+              {inputT && <span>Input: <span className="text-foreground">{inputT}</span></span>}
+              {outputT && <span>Output: <span className="text-foreground">{outputT}</span></span>}
+              {reasoningT && <span>Reasoning: <span className="text-purple-400">{reasoningT}</span></span>}
+              {cacheReadT && <span>Cache Read: <span className="text-blue-400">{cacheReadT}</span></span>}
+              {cacheWriteT && <span>Cache Write: <span className="text-blue-400">{cacheWriteT}</span></span>}
+            </div>
+          )}
+
           {loading && (
             <div className="flex items-center justify-center py-8">
               <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
@@ -283,7 +436,7 @@ function SessionRow({
             <p className="text-sm text-muted-foreground py-4 text-center">{t.sessions.noMessages}</p>
           )}
           {messages && messages.length > 0 && (
-            <MessageList messages={messages} highlight={searchQuery} />
+            <MessageList messages={messages} highlight={searchQuery} verbose={verbose} />
           )}
         </div>
       )}
@@ -301,6 +454,7 @@ export default function SessionsPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [searchResults, setSearchResults] = useState<SessionSearchResult[] | null>(null);
   const [searching, setSearching] = useState(false);
+  const [verbose, setVerbose] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(null);
   const { t } = useI18n();
 
@@ -388,7 +542,13 @@ export default function SessionsPage() {
             {total}
           </Badge>
         </div>
-        <div className="relative w-full sm:w-64">
+        <div className="flex items-center gap-3">
+          <label className="flex items-center gap-1.5 cursor-pointer text-xs text-muted-foreground select-none">
+            <BrainCircuit className="h-3.5 w-3.5" />
+            <span>Verbose</span>
+            <Switch checked={verbose} onCheckedChange={setVerbose} />
+          </label>
+          <div className="relative w-full sm:w-64">
           {searching ? (
             <div className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 animate-spin rounded-full border-[1.5px] border-primary border-t-transparent" />
           ) : (
@@ -409,6 +569,7 @@ export default function SessionsPage() {
               <X className="h-3 w-3" />
             </button>
           )}
+          </div>
         </div>
       </div>
 
@@ -436,6 +597,7 @@ export default function SessionsPage() {
                   setExpandedId((prev) => (prev === s.id ? null : s.id))
                 }
                 onDelete={() => handleDelete(s.id)}
+                verbose={verbose}
               />
             ))}
           </div>

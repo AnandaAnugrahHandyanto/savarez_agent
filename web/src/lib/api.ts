@@ -230,6 +230,7 @@ export interface SessionInfo {
   source: string | null;
   model: string | null;
   title: string | null;
+  system_prompt: string | null;
   started_at: number;
   ended_at: number | null;
   last_active: number;
@@ -238,6 +239,9 @@ export interface SessionInfo {
   tool_call_count: number;
   input_tokens: number;
   output_tokens: number;
+  reasoning_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
   preview: string | null;
 }
 
@@ -269,6 +273,10 @@ export interface SessionMessage {
   tool_name?: string;
   tool_call_id?: string;
   timestamp?: number;
+  reasoning?: string | null;
+  reasoning_details?: any;
+  codex_reasoning_items?: any;
+  memory_context?: string | null;
 }
 
 export interface SessionMessagesResponse {

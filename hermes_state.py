@@ -31,7 +31,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -81,7 +81,8 @@ CREATE TABLE IF NOT EXISTS messages (
     finish_reason TEXT,
     reasoning TEXT,
     reasoning_details TEXT,
-    codex_reasoning_items TEXT
+    codex_reasoning_items TEXT,
+    memory_context TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
@@ -329,6 +330,14 @@ class SessionDB:
                     except sqlite3.OperationalError:
                         pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 6")
+            if current_version < 7:
+                # v7: add memory_context column to messages — stores the Hindsight
+                # auto-recall context injected before each LLM call for dashboard visibility
+                try:
+                    cursor.execute("ALTER TABLE messages ADD COLUMN memory_context TEXT")
+                except sqlite3.OperationalError:
+                    pass  # Column already exists
+                cursor.execute("UPDATE schema_version SET version = 7")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -801,6 +810,7 @@ class SessionDB:
         reasoning: str = None,
         reasoning_details: Any = None,
         codex_reasoning_items: Any = None,
+        memory_context: str = None,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -828,8 +838,8 @@ class SessionDB:
             cursor = conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
-                   reasoning, reasoning_details, codex_reasoning_items)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   reasoning, reasoning_details, codex_reasoning_items, memory_context)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -843,6 +853,7 @@ class SessionDB:
                     reasoning,
                     reasoning_details_json,
                     codex_items_json,
+                    memory_context,
                 ),
             )
             msg_id = cursor.lastrowid

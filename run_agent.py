@@ -2669,7 +2669,7 @@ class AIAgent:
             )
             start_idx = len(conversation_history) if conversation_history else 0
             flush_from = max(start_idx, self._last_flushed_db_idx)
-            for msg in messages[flush_from:]:
+            for _db_i, msg in enumerate(messages[flush_from:], start=flush_from):
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
                 tool_calls_data = None
@@ -2680,6 +2680,10 @@ class AIAgent:
                     ]
                 elif isinstance(msg.get("tool_calls"), list):
                     tool_calls_data = msg["tool_calls"]
+                # Check if this is the user message that had memory context injected
+                _memory_ctx = None
+                if role == "user" and _db_i == self._persist_user_message_idx:
+                    _memory_ctx = getattr(self, "_current_memory_context", None)
                 self._session_db.append_message(
                     session_id=self.session_id,
                     role=role,
@@ -2691,6 +2695,7 @@ class AIAgent:
                     reasoning=msg.get("reasoning") if role == "assistant" else None,
                     reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
+                    memory_context=_memory_ctx,
                 )
             self._last_flushed_db_idx = len(messages)
         except Exception as e:
@@ -9153,6 +9158,7 @@ class AIAgent:
         # prefetch_all() on each tool call (10 tool calls = 10x latency + cost).
         # Use original_user_message (clean input) — user_message may contain
         # injected skill content that bloats / breaks provider queries.
+        self._current_memory_context = None
         _ext_prefetch_cache = ""
         if self._memory_manager:
             try:
@@ -9160,6 +9166,7 @@ class AIAgent:
                 _ext_prefetch_cache = self._memory_manager.prefetch_all(_query) or ""
             except Exception:
                 pass
+        self._current_memory_context = _ext_prefetch_cache or None
 
         while (api_call_count < self.max_iterations and self.iteration_budget.remaining > 0) or self._budget_grace_call:
             # Reset per-turn checkpoint dedup so each iteration can take one snapshot
