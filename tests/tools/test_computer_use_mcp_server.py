@@ -1,6 +1,7 @@
 """Tests for the Hermes Codex-style computer-use MCP adapter."""
 
 import json
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -708,6 +709,28 @@ class TestUnsupportedActions:
         assert result["app_session_id"] == "app-1"
         assert result["virtual_cursor"] == {"x": 10, "y": 20, "detached": True, "visible": True}
 
+    def test_click_rechecks_session_activity_before_queueing_pending_pointer_action(self, monkeypatch):
+        session = {
+            "app_name": "Safari",
+            "app_session_id": "app-1",
+            "active": True,
+            "approved": True,
+            "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True},
+        }
+
+        def stale_resolve_session(app_session_id=None):
+            session["active"] = False
+            return session
+
+        monkeypatch.setattr(adapter, "_resolve_session", stale_resolve_session, raising=False)
+
+        result = adapter.click_impl(x=10, y=20, app_session_id="app-1")
+
+        assert result["success"] is False
+        assert result["session_required"] is True
+        assert session.get("pending_pointer_action") is None
+        assert session["virtual_cursor"] == {"x": None, "y": None, "detached": True, "visible": True}
+
     def test_click_can_target_specific_app_session(self, monkeypatch):
         monkeypatch.setattr(adapter, "_APP_SESSIONS", {
             "safari": {
@@ -1188,6 +1211,64 @@ class TestUnsupportedActions:
         assert result["claimed_by"] == "helper-a"
         assert adapter._APP_SESSIONS["notes"]["pending_pointer_claim_token"] == "claim-old"
 
+    def test_claim_pending_pointer_action_is_atomic_across_competing_helpers(self, monkeypatch):
+        barrier = threading.Barrier(2)
+        monkeypatch.setattr(adapter, "_sync_session_artifacts", lambda session: "", raising=False)
+
+        def fake_utc_now():
+            try:
+                barrier.wait(timeout=0.2)
+            except threading.BrokenBarrierError:
+                pass
+            return adapter.datetime(2026, 4, 19, 17, 0, 0, tzinfo=adapter.timezone.utc)
+
+        monkeypatch.setattr(adapter, "_utc_now", fake_utc_now, raising=False)
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "notes": {
+                "app_name": "Notes",
+                "app_session_id": "app-2",
+                "active": True,
+                "approved": True,
+                "virtual_cursor": {"x": 50, "y": 60, "detached": True, "visible": True},
+                "pending_pointer_action": {
+                    "action_id": "ptr-123",
+                    "action_type": "click",
+                    "x": 50,
+                    "y": 60,
+                },
+            },
+        })
+
+        results = []
+        results_lock = threading.Lock()
+
+        def claim(worker_id: str) -> None:
+            payload = adapter.claim_pending_pointer_action_impl(
+                app_session_id="app-2",
+                action_id="ptr-123",
+                worker_id=worker_id,
+            )
+            with results_lock:
+                results.append(payload)
+
+        threads = [
+            threading.Thread(target=claim, args=("helper-a",)),
+            threading.Thread(target=claim, args=("helper-b",)),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert len(results) == 2
+        successes = [payload for payload in results if payload["success"] is True]
+        failures = [payload for payload in results if payload["success"] is False]
+        assert len(successes) == 1
+        assert len(failures) == 1
+        assert failures[0]["action_claimed"] is True
+        assert adapter._APP_SESSIONS["notes"]["pending_pointer_action"]["claimed_by"] == successes[0]["pending_pointer_action"]["claimed_by"]
+        assert adapter._APP_SESSIONS["notes"]["pending_pointer_claim_token"] == successes[0]["claim_token"]
+
     def test_claim_pending_pointer_action_allows_reclaim_after_expiry(self, monkeypatch, tmp_path):
         state_root = tmp_path / "session-state"
         monkeypatch.setattr(adapter, "_session_state_root", lambda: state_root, raising=False)
@@ -1277,6 +1358,39 @@ class TestUnsupportedActions:
         assert result["success"] is False
         assert result["app_session_required"] is True
         assert "app_session_id is required" in result["error"]
+
+    def test_claim_pending_pointer_action_rechecks_session_activity_before_mutation(self, monkeypatch):
+        session = {
+            "app_name": "Notes",
+            "app_session_id": "app-2",
+            "active": True,
+            "approved": True,
+            "virtual_cursor": {"x": 50, "y": 60, "detached": True, "visible": True},
+            "pending_pointer_action": {
+                "action_id": "ptr-123",
+                "action_type": "click",
+                "x": 50,
+                "y": 60,
+            },
+        }
+
+        def stale_resolve_session(app_session_id=None):
+            session["active"] = False
+            return session
+
+        monkeypatch.setattr(adapter, "_resolve_session", stale_resolve_session, raising=False)
+
+        result = adapter.claim_pending_pointer_action_impl(
+            app_session_id="app-2",
+            action_id="ptr-123",
+            worker_id="helper-a",
+        )
+
+        assert result["success"] is False
+        assert result["session_required"] is True
+        assert session["pending_pointer_action"]["action_id"] == "ptr-123"
+        assert "claimed_by" not in session["pending_pointer_action"]
+        assert session.get("pending_pointer_claim_token") in {None, ""}
 
     def test_claim_pending_pointer_action_requires_worker_id(self, monkeypatch):
         monkeypatch.setattr(adapter, "_APP_SESSIONS", {

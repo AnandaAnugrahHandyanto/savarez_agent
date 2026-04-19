@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -34,6 +35,7 @@ def _decode(payload: str) -> dict[str, Any]:
 
 _SESSION_ID = f"session-{uuid.uuid4().hex}"
 _APP_SESSIONS: dict[str, dict[str, Any]] = {}
+_APP_SESSIONS_LOCK = threading.RLock()
 
 
 def _normalize_app_name(app_name: str | None) -> str:
@@ -346,19 +348,22 @@ def _is_app_approved(app_name: str | None) -> bool:
 
 
 def list_active_sessions_impl() -> dict[str, Any]:
+    with _APP_SESSIONS_LOCK:
+        active_sessions = _active_sessions()
     return {
         "success": True,
         "session_id": _SESSION_ID,
-        "active_sessions": _active_sessions(),
+        "active_sessions": active_sessions,
     }
 
 
 def list_pending_pointer_actions_impl() -> dict[str, Any]:
-    pending_actions = [
-        _session_payload(record)
-        for record in _APP_SESSIONS.values()
-        if record.get("active") and _optional_dict(record, "pending_pointer_action")
-    ]
+    with _APP_SESSIONS_LOCK:
+        pending_actions = [
+            _session_payload(record)
+            for record in _APP_SESSIONS.values()
+            if record.get("active") and _optional_dict(record, "pending_pointer_action")
+        ]
     pending_actions.sort(key=lambda item: item["app_name"].casefold())
     return {
         "success": True,
@@ -420,24 +425,25 @@ def _pending_pointer_action_conflict(action: str, session: dict[str, Any]) -> di
 
 
 def stop_app_session_impl(app_name: str | None = None, app_session_id: str | None = None) -> dict[str, Any]:
-    record = _find_session(app_name=app_name, app_session_id=app_session_id)
-    if not record:
+    with _APP_SESSIONS_LOCK:
+        record = _find_session(app_name=app_name, app_session_id=app_session_id)
+        if not record:
+            return {
+                "success": False,
+                "stopped": False,
+                "session_id": _SESSION_ID,
+                "error": "No matching app session was found.",
+            }
+        was_active = bool(record.get("active"))
+        record["active"] = False
+        _clear_overlay_preview(record)
+        _clear_session_state(record)
         return {
-            "success": False,
-            "stopped": False,
+            "success": True,
+            "stopped": was_active,
             "session_id": _SESSION_ID,
-            "error": "No matching app session was found.",
+            **_session_payload(record),
         }
-    was_active = bool(record.get("active"))
-    record["active"] = False
-    _clear_overlay_preview(record)
-    _clear_session_state(record)
-    return {
-        "success": True,
-        "stopped": was_active,
-        "session_id": _SESSION_ID,
-        **_session_payload(record),
-    }
 
 
 def list_approved_apps_impl() -> dict[str, Any]:
@@ -601,24 +607,27 @@ def click_impl(*, index: int | None = None, x: int | None = None, y: int | None 
     session = _resolve_session(app_session_id=app_session_id)
     if not session:
         return _session_required_error("clicking")
-    if _optional_dict(session, "pending_pointer_action"):
-        return _pending_pointer_action_conflict("click", session)
-    cursor = session.setdefault("virtual_cursor", _fresh_virtual_cursor())
-    if x is not None:
-        cursor["x"] = x
-    if y is not None:
-        cursor["y"] = y
-    _record_pending_pointer_action(
-        session,
-        "click",
-        x=cursor.get("x"),
-        y=cursor.get("y"),
-        index=index,
-        button=button,
-        click_count=click_count,
-    )
-    _sync_session_artifacts(session)
-    return _preview_pointer_response("click", session)
+    with _APP_SESSIONS_LOCK:
+        if not session.get("active"):
+            return _session_required_error("clicking")
+        if _optional_dict(session, "pending_pointer_action"):
+            return _pending_pointer_action_conflict("click", session)
+        cursor = session.setdefault("virtual_cursor", _fresh_virtual_cursor())
+        if x is not None:
+            cursor["x"] = x
+        if y is not None:
+            cursor["y"] = y
+        _record_pending_pointer_action(
+            session,
+            "click",
+            x=cursor.get("x"),
+            y=cursor.get("y"),
+            index=index,
+            button=button,
+            click_count=click_count,
+        )
+        _sync_session_artifacts(session)
+        return _preview_pointer_response("click", session)
 
 
 def perform_secondary_action_impl(index: int, action_name: str) -> dict[str, Any]:
@@ -630,48 +639,54 @@ def scroll_impl(index: int | None = None, x: int | None = None, y: int | None = 
     session = _resolve_session(app_session_id=app_session_id)
     if not session:
         return _session_required_error("scrolling")
-    if _optional_dict(session, "pending_pointer_action"):
-        return _pending_pointer_action_conflict("scroll", session)
-    cursor = session.setdefault("virtual_cursor", _fresh_virtual_cursor())
-    if x is not None:
-        cursor["x"] = x
-    if y is not None:
-        cursor["y"] = y
-    _record_pending_pointer_action(
-        session,
-        "scroll",
-        x=cursor.get("x"),
-        y=cursor.get("y"),
-        index=index,
-        delta_y=delta_y,
-    )
-    _sync_session_artifacts(session)
-    response = _preview_pointer_response("scroll", session)
-    response["delta_y"] = delta_y
-    return response
+    with _APP_SESSIONS_LOCK:
+        if not session.get("active"):
+            return _session_required_error("scrolling")
+        if _optional_dict(session, "pending_pointer_action"):
+            return _pending_pointer_action_conflict("scroll", session)
+        cursor = session.setdefault("virtual_cursor", _fresh_virtual_cursor())
+        if x is not None:
+            cursor["x"] = x
+        if y is not None:
+            cursor["y"] = y
+        _record_pending_pointer_action(
+            session,
+            "scroll",
+            x=cursor.get("x"),
+            y=cursor.get("y"),
+            index=index,
+            delta_y=delta_y,
+        )
+        _sync_session_artifacts(session)
+        response = _preview_pointer_response("scroll", session)
+        response["delta_y"] = delta_y
+        return response
 
 
 def drag_impl(start_x: int, start_y: int, end_x: int, end_y: int, app_session_id: str | None = None) -> dict[str, Any]:
     session = _resolve_session(app_session_id=app_session_id)
     if not session:
         return _session_required_error("dragging")
-    if _optional_dict(session, "pending_pointer_action"):
-        return _pending_pointer_action_conflict("drag", session)
-    cursor = session.setdefault("virtual_cursor", _fresh_virtual_cursor())
-    cursor["x"] = end_x
-    cursor["y"] = end_y
-    _record_pending_pointer_action(
-        session,
-        "drag",
-        start_x=start_x,
-        start_y=start_y,
-        end_x=end_x,
-        end_y=end_y,
-    )
-    _sync_session_artifacts(session)
-    response = _preview_pointer_response("drag", session)
-    response["drag_path"] = {"start_x": start_x, "start_y": start_y, "end_x": end_x, "end_y": end_y}
-    return response
+    with _APP_SESSIONS_LOCK:
+        if not session.get("active"):
+            return _session_required_error("dragging")
+        if _optional_dict(session, "pending_pointer_action"):
+            return _pending_pointer_action_conflict("drag", session)
+        cursor = session.setdefault("virtual_cursor", _fresh_virtual_cursor())
+        cursor["x"] = end_x
+        cursor["y"] = end_y
+        _record_pending_pointer_action(
+            session,
+            "drag",
+            start_x=start_x,
+            start_y=start_y,
+            end_x=end_x,
+            end_y=end_y,
+        )
+        _sync_session_artifacts(session)
+        response = _preview_pointer_response("drag", session)
+        response["drag_path"] = {"start_x": start_x, "start_y": start_y, "end_x": end_x, "end_y": end_y}
+        return response
 
 
 def claim_pending_pointer_action_impl(*, app_session_id: str, action_id: str, worker_id: str | None = None) -> dict[str, Any]:
@@ -691,16 +706,6 @@ def claim_pending_pointer_action_impl(*, app_session_id: str, action_id: str, wo
     if not session:
         return _session_required_error("claiming pointer actions")
 
-    pending = session.get("pending_pointer_action")
-    if not isinstance(pending, dict):
-        return {
-            "success": False,
-            "action_required": True,
-            "session_id": _SESSION_ID,
-            **_session_payload(session),
-            "error": "No pending pointer action is available to claim.",
-        }
-
     wanted_action_id = str(action_id or "").strip()
     if not wanted_action_id:
         return {
@@ -708,17 +713,6 @@ def claim_pending_pointer_action_impl(*, app_session_id: str, action_id: str, wo
             "session_id": _SESSION_ID,
             **_session_payload(session),
             "error": "action_id is required",
-        }
-
-    if str(pending.get("action_id") or "").strip() != wanted_action_id:
-        return {
-            "success": False,
-            "action_mismatch": True,
-            "session_id": _SESSION_ID,
-            "expected_action_id": pending.get("action_id"),
-            "received_action_id": wanted_action_id,
-            **_session_payload(session),
-            "error": "Pending pointer action does not match the claimed action_id.",
         }
 
     claimer = str(worker_id or "").strip()
@@ -730,36 +724,60 @@ def claim_pending_pointer_action_impl(*, app_session_id: str, action_id: str, wo
             **_session_payload(session),
             "error": "worker_id is required",
         }
-    existing_claimer = str(pending.get("claimed_by") or "").strip()
-    claim_token = str(session.get("pending_pointer_claim_token") or "").strip()
-    claim_expires_at = _parse_iso_datetime(pending.get("claim_expires_at"))
-    now = _utc_now()
-    if existing_claimer:
-        claim_is_active = claim_expires_at is None or claim_expires_at > now
-        if claim_is_active:
+
+    with _APP_SESSIONS_LOCK:
+        if not session.get("active"):
+            return _session_required_error("claiming pointer actions")
+        pending = session.get("pending_pointer_action")
+        if not isinstance(pending, dict):
             return {
                 "success": False,
-                "action_claimed": True,
+                "action_required": True,
                 "session_id": _SESSION_ID,
-                "claimed_by": existing_claimer,
                 **_session_payload(session),
-                "error": f"Pending pointer action is already claimed by {existing_claimer}.",
+                "error": "No pending pointer action is available to claim.",
             }
 
-    pending["claimed_by"] = claimer
-    pending["claimed_at"] = now.isoformat()
-    pending["claim_expires_at"] = (now + timedelta(seconds=_PENDING_POINTER_CLAIM_TTL_SECONDS)).isoformat()
-    claim_token = f"claim-{uuid.uuid4().hex}"
-    session["pending_pointer_claim_token"] = claim_token
-    _sync_session_artifacts(session)
+        if str(pending.get("action_id") or "").strip() != wanted_action_id:
+            return {
+                "success": False,
+                "action_mismatch": True,
+                "session_id": _SESSION_ID,
+                "expected_action_id": pending.get("action_id"),
+                "received_action_id": wanted_action_id,
+                **_session_payload(session),
+                "error": "Pending pointer action does not match the claimed action_id.",
+            }
 
-    return {
-        "success": True,
-        "claimed": True,
-        "claim_token": claim_token,
-        "session_id": _SESSION_ID,
-        **_session_payload(session),
-    }
+        existing_claimer = str(pending.get("claimed_by") or "").strip()
+        claim_expires_at = _parse_iso_datetime(pending.get("claim_expires_at"))
+        now = _utc_now()
+        if existing_claimer:
+            claim_is_active = claim_expires_at is None or claim_expires_at > now
+            if claim_is_active:
+                return {
+                    "success": False,
+                    "action_claimed": True,
+                    "session_id": _SESSION_ID,
+                    "claimed_by": existing_claimer,
+                    **_session_payload(session),
+                    "error": f"Pending pointer action is already claimed by {existing_claimer}.",
+                }
+
+        pending["claimed_by"] = claimer
+        pending["claimed_at"] = now.isoformat()
+        pending["claim_expires_at"] = (now + timedelta(seconds=_PENDING_POINTER_CLAIM_TTL_SECONDS)).isoformat()
+        claim_token = f"claim-{uuid.uuid4().hex}"
+        session["pending_pointer_claim_token"] = claim_token
+        _sync_session_artifacts(session)
+
+        return {
+            "success": True,
+            "claimed": True,
+            "claim_token": claim_token,
+            "session_id": _SESSION_ID,
+            **_session_payload(session),
+        }
 
 
 def report_pointer_action_result_impl(*, app_session_id: str, action_id: str, status: str,
@@ -782,16 +800,6 @@ def report_pointer_action_result_impl(*, app_session_id: str, action_id: str, st
     if not session:
         return _session_required_error("reporting pointer action results")
 
-    pending = session.get("pending_pointer_action")
-    if not isinstance(pending, dict):
-        return {
-            "success": False,
-            "action_required": True,
-            "session_id": _SESSION_ID,
-            **_session_payload(session),
-            "error": "No pending pointer action is waiting for a helper result.",
-        }
-
     wanted_action_id = str(action_id or "").strip()
     if not wanted_action_id:
         return {
@@ -801,50 +809,7 @@ def report_pointer_action_result_impl(*, app_session_id: str, action_id: str, st
             "error": "action_id is required",
         }
 
-    if str(pending.get("action_id") or "").strip() != wanted_action_id:
-        return {
-            "success": False,
-            "action_mismatch": True,
-            "session_id": _SESSION_ID,
-            "expected_action_id": pending.get("action_id"),
-            "received_action_id": wanted_action_id,
-            **_session_payload(session),
-            "error": "Pending pointer action does not match the reported action_id.",
-        }
-
     provided_claim_token = str(claim_token or "").strip()
-    existing_claimer = str(pending.get("claimed_by") or "").strip()
-    required_claim_token = str(session.get("pending_pointer_claim_token") or "").strip()
-    claim_expires_at = _parse_iso_datetime(pending.get("claim_expires_at"))
-    now = _utc_now()
-    if existing_claimer and claim_expires_at is not None and claim_expires_at <= now:
-        return {
-            "success": False,
-            "claim_expired": True,
-            "session_id": _SESSION_ID,
-            "claimed_by": existing_claimer,
-            **_session_payload(session),
-            "error": f"Pending pointer action claim has expired for {existing_claimer}; reclaim it before reporting the result.",
-        }
-    if existing_claimer and not required_claim_token:
-        return {
-            "success": False,
-            "action_claimed": True,
-            "session_id": _SESSION_ID,
-            "claimed_by": existing_claimer,
-            **_session_payload(session),
-            "error": f"Pending pointer action is claimed by {existing_claimer}; a valid claim_token is required to report the result.",
-        }
-    if existing_claimer and provided_claim_token != required_claim_token:
-        return {
-            "success": False,
-            "action_claimed": True,
-            "session_id": _SESSION_ID,
-            "claimed_by": existing_claimer,
-            **_session_payload(session),
-            "error": f"Pending pointer action is claimed by {existing_claimer}; a valid claim_token is required to report the result.",
-        }
-
     normalized_status = str(status or "").strip().lower()
     if normalized_status not in {"completed", "failed"}:
         return {
@@ -854,36 +819,92 @@ def report_pointer_action_result_impl(*, app_session_id: str, action_id: str, st
             "error": "status must be 'completed' or 'failed'",
         }
 
-    cursor = session.setdefault("virtual_cursor", _fresh_virtual_cursor())
-    if x is not None:
-        cursor["x"] = x
-    if y is not None:
-        cursor["y"] = y
+    with _APP_SESSIONS_LOCK:
+        if not session.get("active"):
+            return _session_required_error("reporting pointer action results")
+        pending = session.get("pending_pointer_action")
+        if not isinstance(pending, dict):
+            return {
+                "success": False,
+                "action_required": True,
+                "session_id": _SESSION_ID,
+                **_session_payload(session),
+                "error": "No pending pointer action is waiting for a helper result.",
+            }
 
-    result_payload = {
-        **pending,
-        "status": normalized_status,
-    }
-    if existing_claimer:
-        result_payload["reported_by"] = existing_claimer
-    if x is not None:
-        result_payload["x"] = x
-    if y is not None:
-        result_payload["y"] = y
-    if error:
-        result_payload["error"] = error
+        if str(pending.get("action_id") or "").strip() != wanted_action_id:
+            return {
+                "success": False,
+                "action_mismatch": True,
+                "session_id": _SESSION_ID,
+                "expected_action_id": pending.get("action_id"),
+                "received_action_id": wanted_action_id,
+                **_session_payload(session),
+                "error": "Pending pointer action does not match the reported action_id.",
+            }
 
-    session["pending_pointer_action"] = None
-    session["pending_pointer_claim_token"] = ""
-    session["last_pointer_action_result"] = result_payload
-    _sync_session_artifacts(session)
-    return {
-        "success": True,
-        "reported": True,
-        "status": normalized_status,
-        "session_id": _SESSION_ID,
-        **_session_payload(session),
-    }
+        existing_claimer = str(pending.get("claimed_by") or "").strip()
+        required_claim_token = str(session.get("pending_pointer_claim_token") or "").strip()
+        claim_expires_at = _parse_iso_datetime(pending.get("claim_expires_at"))
+        now = _utc_now()
+        if existing_claimer and claim_expires_at is not None and claim_expires_at <= now:
+            return {
+                "success": False,
+                "claim_expired": True,
+                "session_id": _SESSION_ID,
+                "claimed_by": existing_claimer,
+                **_session_payload(session),
+                "error": f"Pending pointer action claim has expired for {existing_claimer}; reclaim it before reporting the result.",
+            }
+        if existing_claimer and not required_claim_token:
+            return {
+                "success": False,
+                "action_claimed": True,
+                "session_id": _SESSION_ID,
+                "claimed_by": existing_claimer,
+                **_session_payload(session),
+                "error": f"Pending pointer action is claimed by {existing_claimer}; a valid claim_token is required to report the result.",
+            }
+        if existing_claimer and provided_claim_token != required_claim_token:
+            return {
+                "success": False,
+                "action_claimed": True,
+                "session_id": _SESSION_ID,
+                "claimed_by": existing_claimer,
+                **_session_payload(session),
+                "error": f"Pending pointer action is claimed by {existing_claimer}; a valid claim_token is required to report the result.",
+            }
+
+        cursor = session.setdefault("virtual_cursor", _fresh_virtual_cursor())
+        if x is not None:
+            cursor["x"] = x
+        if y is not None:
+            cursor["y"] = y
+
+        result_payload = {
+            **pending,
+            "status": normalized_status,
+        }
+        if existing_claimer:
+            result_payload["reported_by"] = existing_claimer
+        if x is not None:
+            result_payload["x"] = x
+        if y is not None:
+            result_payload["y"] = y
+        if error:
+            result_payload["error"] = error
+
+        session["pending_pointer_action"] = None
+        session["pending_pointer_claim_token"] = ""
+        session["last_pointer_action_result"] = result_payload
+        _sync_session_artifacts(session)
+        return {
+            "success": True,
+            "reported": True,
+            "status": normalized_status,
+            "session_id": _SESSION_ID,
+            **_session_payload(session),
+        }
 
 
 def set_value_impl(index: int, value: str) -> dict[str, Any]:
