@@ -30,6 +30,35 @@ from tools.registry import registry
 
 logger = logging.getLogger(__name__)
 
+# Route ui emitter logs into the same apmzoom.log file that tools/apmzoom.py
+# targets, so `tail -f ~/.hermes/logs/apmzoom.log` shows both HTTP skill
+# invocations and synthetic ui_* events in one stream.  Reuses the file
+# handler if the apmzoom logger already installed one at import time.
+def _attach_to_apmzoom_log():
+    from pathlib import Path
+    import os
+    try:
+        home = Path(os.environ.get("HERMES_HOME") or (Path.home() / ".hermes"))
+        log_path = home / "logs" / "apmzoom.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        if any(getattr(h, "_apmzoom_file", False) for h in logger.handlers):
+            return
+        fh = logging.FileHandler(log_path, encoding="utf-8")
+        fh._apmzoom_file = True
+        fh.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        ))
+        fh.setLevel(logging.INFO)
+        logger.addHandler(fh)
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+    except Exception:
+        pass
+
+
+_attach_to_apmzoom_log()
+
 
 # ---------------------------------------------------------------------------
 # Per-request UI event emitter

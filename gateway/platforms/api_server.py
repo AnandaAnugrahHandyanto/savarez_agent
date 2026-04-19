@@ -1034,6 +1034,14 @@ class APIServerAdapter(BasePlatformAdapter):
                     return
                 if name.startswith("_"):
                     return
+                # Suppress tool-progress chips for synthetic ui_* tools.  They
+                # also emit a `hermes.ui.prompt` event with richer structured
+                # data for the frontend to render the actual UI component;
+                # a parallel tool-progress chip would double-render as a
+                # generic success pill (e.g. frontend label maps "ui_uploader"
+                # → "已上传 1 张图片" which is misleading — nothing uploaded yet).
+                if name.startswith("ui_"):
+                    return
                 from agent.display import get_tool_emoji
                 emoji = get_tool_emoji(name)
                 label = preview or name
