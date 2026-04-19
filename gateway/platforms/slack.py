@@ -1466,8 +1466,10 @@ class SlackAdapter(BasePlatformAdapter):
                 # as the user message itself, so including it here would duplicate it.
                 if msg_ts == current_ts:
                     continue
-                # Exclude our own bot messages to avoid circular context.
-                if msg.get("bot_id") or msg.get("subtype") == "bot_message":
+                # Skip our own bot to avoid circular context, but keep other
+                # bots (alerts, webhooks) — often the thread parent.
+                is_bot_msg = bool(msg.get("bot_id")) or msg.get("subtype") == "bot_message"
+                if is_bot_msg and (not bot_uid or msg.get("user") == bot_uid):
                     continue
 
                 msg_text = msg.get("text", "").strip()
