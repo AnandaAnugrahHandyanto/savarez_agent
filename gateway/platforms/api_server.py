@@ -168,8 +168,15 @@ def _load_merchant_prompt(merchant_id: str = "", active_skill: str = "") -> str:
 
     if merchant_id:
         merchant_dir = home / "merchants" / merchant_id
+        # identity_dynamic.md is an async-refreshed business-profile snapshot
+        # (top categories, price bands, recent active workflows, …) written by
+        # scripts/merchant-profile-refresh.py.  Injecting it after identity.md
+        # gives the LLM concrete context about the merchant's store without
+        # having to run read-tool calls for every greeting.  Stale snapshot
+        # (>24h) still loads — a little outdated is better than nothing.
         for fname, header in (
             ("identity.md", f"# Merchant Identity ({merchant_id})"),
+            ("identity_dynamic.md", f"# Merchant Business Snapshot ({merchant_id})"),
             ("system_extras.md", f"# Merchant Session Context ({merchant_id})"),
         ):
             p = merchant_dir / fname
@@ -687,13 +694,19 @@ class APIServerAdapter(BasePlatformAdapter):
         model = _resolve_gateway_model()
 
         # Per-merchant LLM credentials: when a merchant credentials file
-        # exists, use the merchant's access_token as the api_key for the
-        # underlying LLM provider call.  This lets a translation proxy
-        # (e.g. apmzoom-llm-proxy on :8001) forward the JWT verbatim to
-        # the upstream multi-tenant LLM gateway, so the model call carries
-        # the merchant's identity & quota.  Falls back silently to the
-        # gateway-wide api_key when the credentials file is missing/stale.
-        if merchant_mode and merchant_id:
+        # exists AND a translation proxy (apmzoom-llm-proxy) sits between
+        # hermes and the real upstream, forward the merchant JWT verbatim
+        # so the multi-tenant LLM gateway can attribute the call to the
+        # merchant's identity & quota.
+        #
+        # Critical gate: only swap the api_key when
+        # MERCHANT_TOKEN_AS_API_KEY=true is set.  Otherwise this code would
+        # overwrite a legitimate provider key (e.g. DeepSeek sk-xxx) with
+        # the APM JWT, causing the provider to 401 on every request.
+        # Falls back silently to the gateway-wide api_key when the flag is
+        # off, the credentials file is missing, or the JWT is stale.
+        if (merchant_mode and merchant_id
+                and os.getenv("MERCHANT_TOKEN_AS_API_KEY", "").lower() in ("1", "true", "yes")):
             try:
                 from hermes_constants import get_hermes_home
                 from pathlib import Path
@@ -920,6 +933,20 @@ class APIServerAdapter(BasePlatformAdapter):
                 _memory_tool.set_merchant_memory_scope(merchant_id or "")
             except Exception as e:
                 logger.debug("[memory] merchant scope propagation skipped: %s", e)
+            # Route terminal/file tools to the merchant's workspace so that
+            # SubdirectoryHintTracker (run_agent.py:1616) picks up per-merchant
+            # AGENTS.md files as dynamic tool-result hints.  Drop AGENTS.md
+            # into workspace/{products,promotions,stock}/ and those rules
+            # activate only when the agent cd's into that dir, without bloating
+            # the base system prompt.
+            try:
+                from hermes_constants import get_hermes_home
+                from pathlib import Path
+                _ws = Path(get_hermes_home()) / "merchants" / merchant_id / "workspace"
+                _ws.mkdir(parents=True, exist_ok=True)
+                os.environ["TERMINAL_CWD"] = str(_ws)
+            except Exception as e:
+                logger.debug("[merchant] TERMINAL_CWD setup skipped: %s", e)
         else:
             # Clear scope on non-merchant requests so the global memories
             # dir is used (important when the same process serves both
@@ -1185,7 +1212,33 @@ class APIServerAdapter(BasePlatformAdapter):
                 "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
             }
             await response.write(f"data: {json.dumps(role_chunk)}\n\n".encode())
+
+            # Lifecycle phase event — fires IMMEDIATELY so the frontend has
+            # a signal to show "thinking..." while the LLM prefills the
+            # context.  Without this the UI sees 5-10s of dead air on local
+            # 7-14B models where prefill takes longer than TCP first-byte.
+            # Frontend listens for `event: hermes.agent.phase` and switches
+            # its streaming UI state based on the `phase` field:
+            #   - thinking         : right after role chunk, LLM prefilling
+            #   - generating       : first content delta arrived (prefill done)
+            #   - (tool_call_issued / tool_done are covered by the existing
+            #    hermes.tool.progress events emitted from the agent loop)
+            thinking_evt = json.dumps({"phase": "thinking", "model": model})
+            await response.write(
+                f"event: hermes.agent.phase\ndata: {thinking_evt}\n\n".encode()
+            )
+            # Force the thinking frame onto the wire NOW — otherwise aiohttp
+            # + TCP buffer this initial envelope together with the first
+            # LLM token, defeating the whole point of the phase signal.
+            # drain() blocks until the write buffer is below the low-water
+            # mark, which effectively flushes on a stream that's otherwise
+            # idle.  ~1ms cost on local loopback.
+            try:
+                await response.drain()
+            except Exception:
+                pass
             last_activity = time.monotonic()
+            generating_emitted = False
 
             # Helper — route a queue item to the correct SSE event.
             async def _emit(item):
@@ -1197,6 +1250,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 frontends can display them without storing the markers in
                 conversation history.  See #6972.
                 """
+                nonlocal generating_emitted
                 if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
                     event_data = json.dumps(item[1])
                     await response.write(
@@ -1211,6 +1265,16 @@ class APIServerAdapter(BasePlatformAdapter):
                         f"event: hermes.ui.prompt\ndata: {event_data}\n\n".encode()
                     )
                 else:
+                    # First content delta — fire the "generating" phase so
+                    # the frontend can drop the thinking chip and render
+                    # the streaming body.  One-shot; subsequent deltas skip
+                    # the check via the generating_emitted flag.
+                    if not generating_emitted:
+                        generating_emitted = True
+                        phase_evt = json.dumps({"phase": "generating"})
+                        await response.write(
+                            f"event: hermes.agent.phase\ndata: {phase_evt}\n\n".encode()
+                        )
                     content_chunk = {
                         "id": completion_id, "object": "chat.completion.chunk",
                         "created": created, "model": model,
