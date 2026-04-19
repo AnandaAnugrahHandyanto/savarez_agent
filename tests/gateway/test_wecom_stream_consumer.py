@@ -9,9 +9,6 @@ import pytest
 
 from gateway.wecom_stream_consumer import (
     WeComStreamConsumer,
-    _escape_for_think_block,
-    _escape_for_visible,
-    _escape_think_tags,
     build_ws_stream_content,
     build_waiting_model_content,
 )
@@ -140,44 +137,6 @@ class TestBuildWsStreamContent:
         assert "<think>" not in result
         assert result == "final answer"
 
-
-# ── Escape function tests ─────────────────────────────────────────────
-
-
-class TestEscapeFunctions:
-    def test_escape_think_tags_noop(self):
-        assert _escape_think_tags("hello") == "hello"
-
-    def test_escape_think_tags_open(self):
-        text = chr(60) + "think" + chr(62) + " content"
-        result = _escape_think_tags(text)
-        assert "&lt;think&gt;" in result
-
-    def test_escape_think_tags_close(self):
-        text = "content" + chr(60) + "/think" + chr(62)
-        result = _escape_think_tags(text)
-        assert "&lt;/think&gt;" in result
-
-    def test_escape_for_think_block_replaces_backticks(self):
-        result = _escape_for_think_block("use `code`")
-        assert "\u02cb" in result
-        assert "`" not in result
-        assert "code" in result
-
-    def test_escape_for_think_block_escapes_tags(self):
-        text = "use " + chr(60) + "think" + chr(62) + " tag"
-        result = _escape_for_think_block(text)
-        assert "&lt;think&gt;" in result
-
-    def test_escape_for_visible_preserves_backticks(self):
-        result = _escape_for_visible("use `code`")
-        assert "`" in result
-        assert "code" in result
-
-    def test_escape_for_visible_escapes_tags(self):
-        text = "use " + chr(60) + "think" + chr(62) + " tag"
-        result = _escape_for_visible(text)
-        assert "&lt;think&gt;" in result
 
 
 # ── WeComStreamConsumer unit tests ──────────────────────────────────────

@@ -9101,9 +9101,9 @@ class GatewayRunner:
             agent.status_callback = _status_callback_sync
             # Wire up reasoning callback for WeCom stream consumer.
             # WeComStreamConsumer.on_reasoning receives reasoning token deltas
-            # and forwards them via WeCom stream API with  tags.
+            # and forwards them via WeCom stream API with think tags.
             # Only wire up when show_reasoning is enabled — otherwise the
-            # think block shows only the "等待模型响应" timer.
+            # think block shows only the waiting model text timer.
             _want_show_reasoning = getattr(self, "_show_reasoning", False)
             try:
                 from gateway.wecom_stream_consumer import WeComStreamConsumer as _WCS

@@ -68,6 +68,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
     cache_image_from_bytes,
 )
+from gateway.wecom_stream_consumer import WAITING_MODEL_TEXT
 
 logger = logging.getLogger(__name__)
 
@@ -503,7 +504,7 @@ class WeComAdapter(BasePlatformAdapter):
             self._thinking_cancelled = True
             self._thinking_task.cancel()
         self._thinking_stream_id = self._new_req_id("stream")
-        # Start a looping "等待模型响应 N秒" indicator (like openclaw)
+        # Start a looping f"{WAITING_MODEL_TEXT} N秒" indicator
         self._thinking_start_time = time.time()
         self._thinking_cancelled = False
         self._thinking_task = asyncio.create_task(
@@ -1242,11 +1243,19 @@ class WeComAdapter(BasePlatformAdapter):
 
         stream_id = getattr(self, "_thinking_stream_id", None) or self._new_req_id("stream")
 
-        # Build closed thinking block from accumulated lines + final content
+        # Only include thinking block if we actually received reasoning content
+        # (not just the waiting indicator lines from the thinking loop)
         accumulated = getattr(self, "_thinking_accumulated_lines", None)
-        if accumulated:
-            think_content = "\n".join(accumulated)
-            full_content = f"\n{content}"
+        # Check if accumulated contains actual reasoning (not just waiting indicators)
+        has_actual_reasoning = accumulated and any(
+            WAITING_MODEL_TEXT not in line for line in accumulated
+        )
+
+        if has_actual_reasoning:
+            # Filter out waiting indicator lines, keep only actual reasoning
+            reasoning_lines = [line for line in accumulated if WAITING_MODEL_TEXT not in line]
+            think_content = "\n".join(reasoning_lines)
+            full_content = f"<think>{think_content}</think>\n{content}"
         else:
             full_content = content
 
@@ -1259,7 +1268,6 @@ class WeComAdapter(BasePlatformAdapter):
         """Loop sending thinking indicator every second.
 
         Each tick appends a new line inside think tags so WeCom re-renders.
-        Format matches OpenClaw's buildWaitingModelContent.
         """
         loop = asyncio.get_running_loop()
         next_tick = loop.time() + 1.0
@@ -1276,7 +1284,7 @@ class WeComAdapter(BasePlatformAdapter):
                         f"[{self.name}] Thinking loop hit max {elapsed}s limit, stopping updates"
                     )
                     break
-                accumulated_lines.append(f"等待模型响应 {elapsed}s")
+                accumulated_lines.append(f"{WAITING_MODEL_TEXT} {elapsed}s")
                 content = "<think>" + "\n".join(accumulated_lines)
                 send_start = loop.time()
                 try:

@@ -5,7 +5,6 @@ editing sent messages, so the edit-based streaming used by Telegram/Discord
 doesn't work here.  Instead we use WeCom's native stream message API which
 supports progressive updates and <think> tag rendering.
 
-Design follows OpenClaw's WeCom ws-monitor.js implementation.
 """
 
 from __future__ import annotations
@@ -31,6 +30,9 @@ STREAM_MAX_LIFETIME_SECONDS = 5 * 60   # Hard limit is 6 minutes, rotate at 5
 STREAM_KEEPALIVE_INTERVAL_SECONDS = 4 * 60  # Send keepalive every 4 minutes
 WAITING_MODEL_TICK_SECONDS = 1
 
+# Waiting indicator text constant
+WAITING_MODEL_TEXT = "等待模型响应"
+
 # WeCom single-message length limit.  When a stream update would produce
 # content longer than this, we rotate the stream *before* sending so each
 # message stays self-contained.  This prevents the SDK from silently splitting
@@ -42,41 +44,6 @@ STREAM_MAX_CONTENT_LENGTH = 3500
 _THINK_OPEN = chr(60) + "think" + chr(62)
 _THINK_CLOSE = chr(60) + "/think" + chr(62)
 
-
-def _escape_think_tags(text: str) -> str:
-    """Escape <think> and </think> in text content.
-
-    Prevents nested or premature tag closure from breaking WeCom stream
-    rendering when models emit literal tag text in their output.
-    """
-    text = text.replace(_THINK_OPEN, "&lt;think&gt;")
-    text = text.replace(_THINK_CLOSE, "&lt;/think&gt;")
-    return text
-
-
-def _escape_for_think_block(text: str) -> str:
-    """Escape content destined for inside a <think> block.
-
-    Think tags are escaped.  Backticks are also replaced with \u02cb
-    (modifier letter grave accent) because WeCom's stream parser
-    misidentifies ` as a think-block delimiter even inside a properly
-    closed <think> block.
-    """
-    text = _escape_think_tags(text)
-    # Replace backticks to prevent WeCom parser from breaking think blocks.
-    # \u02cb (modifier letter grave accent) looks like ` but isn't one.
-    text = text.replace("`", "\u02cb")
-    return text
-
-
-def _escape_for_visible(text: str) -> str:
-    """Escape content for the visible (post-think) section of a message.
-
-    Think tags are escaped.  Backticks are left as-is for proper markdown
-    code rendering — they are outside the <think> block so WeCom's parser
-    won't misidentify them.
-    """
-    return _escape_think_tags(text)
 
 
 def build_ws_stream_content(
@@ -96,8 +63,8 @@ def build_ws_stream_content(
         finish: Whether to close the think block.
         error_text: Optional error message appended after think block.
     """
-    nr = _escape_for_think_block((reasoning_text or "").strip())
-    nv = _escape_for_visible((visible_text or "").strip())
+    nr = (reasoning_text or "").strip()
+    nv = (visible_text or "").strip()
     err = (error_text or "").strip()
 
     if not nr and not err:
@@ -123,9 +90,9 @@ def build_ws_stream_content(
 
 
 def build_waiting_model_content(seconds: int) -> str:
-    """Build '等待模型响应 Ns' content as a completed think block."""
+    """Build waiting model content as a completed think block."""
     seconds = max(1, seconds)
-    lines = [f"等待模型响应 {i}s" for i in range(1, seconds + 1)]
+    lines = [f"{WAITING_MODEL_TEXT} {i}s" for i in range(1, seconds + 1)]
     return _THINK_OPEN + "\n".join(lines) + _THINK_CLOSE
 
 
@@ -136,9 +103,9 @@ class WeComStreamConsumer:
     this uses WeCom's native stream message type for progressive updates.
 
     Features:
-    - Visible text streaming (逐字输出)
+    - Visible text streaming
     - Reasoning token forwarding with <think> tags
-    - "等待模型响应" waiting indicator before first tokens arrive
+    - waiting indicator before first tokens arrive
     - Stream lifecycle: keepalive, rotation (5min limit), message count limit,
       and content-length limit to prevent SDK message splitting.
     - Error handling: graceful fallback when API calls fail mid-stream
@@ -259,7 +226,7 @@ class WeComStreamConsumer:
         """Drain the queue and send updates via WeCom stream API."""
         # Don't cancel the thinking loop yet — let it keep running until
         # we have actual reasoning/visible tokens to send.  The thinking
-        # loop provides the "等待模型响应" indicator while the model is
+        # loop provides the waiting model indicator while the model is
         # loading; we cancel it only when we have real content to show.
 
         pending_reasoning = ""
@@ -388,7 +355,7 @@ class WeComStreamConsumer:
         )
 
     def _build_waiting_model_content(self) -> str:
-        """Build '等待模型响应' content."""
+        f"""Build '{WAITING_MODEL_TEXT}' content."""
         return build_waiting_model_content(self._waiting_model_seconds)
 
     async def _send_raw(self, content: str, finish: bool = False) -> None:
