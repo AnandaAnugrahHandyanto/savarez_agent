@@ -44,14 +44,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import adapters              # noqa: E402
 import algorithms            # noqa: E402
+import bandit_director       # noqa: E402
 import cache                 # noqa: E402
+import coevolve              # noqa: E402
 import critic                # noqa: E402
 import descriptor_controller # noqa: E402
 import descriptor_dsl        # noqa: E402
+import distributed           # noqa: E402
+import fitness_synth         # noqa: E402
 import hub                   # noqa: E402
 import judge                 # noqa: E402
 import operators             # noqa: E402
 import storage               # noqa: E402
+import task_features         # noqa: E402
+import transfer              # noqa: E402
 import evaluator             # noqa: E402
 from algorithms import (  # noqa: E402
     Exp3Bandit,
@@ -361,6 +367,19 @@ async def _run_loop(args: argparse.Namespace, exp: Path) -> dict:
                 model_override=spec["critic_model"],
             )
 
+        # v0.4 A2 — bandit director (off by default)
+        director: bandit_director.BanditDirector | None = None
+        if getattr(args, "bandit_director", "off") == "periodic":
+            director = bandit_director.BanditDirector(
+                client=llm,
+                trigger_every_r=getattr(args, "bandit_every_r", 4),
+            )
+
+        # v0.5 B1 — worker backend (accepted but not yet woven into
+        # evaluate_batch's internals; the flag surfaces in status for
+        # future migration without requiring a Namespace change).
+        workers_mode = getattr(args, "workers", "local")
+
         async def _evaluate(pop: list[Individual], gen: int, step_seed: int) -> None:
             """Dispatch to the right evaluator given the fitness spec."""
             if pairwise_judge is not None:
@@ -541,6 +560,39 @@ async def _run_loop(args: argparse.Namespace, exp: Path) -> dict:
                 else:  # pragma: no cover — argparse guards this
                     _err(f"unknown algorithm {args.algorithm!r}")
 
+                # v0.4 (A2): bandit director hook — operates on the
+                # in-flight Exp3 bandit independently of algorithm choice.
+                if director is not None and director.should_trigger(gen):
+                    stats = [
+                        bandit_director.OperatorStats(
+                            name=arm,
+                            weight=bandit.weights[i],
+                            selections=0,
+                            mean_delta=0.0,
+                            last_good_gen=gen,
+                        )
+                        for i, arm in enumerate(bandit.arms)
+                    ]
+                    verdict = await director.audit(
+                        bandit, stats, fitness_deltas,
+                        seed=args.seed + gen,
+                    )
+                    applied = bandit_director.apply_verdict(
+                        verdict, bandit, operators.MUTATION_OPERATORS, director,
+                    )
+                    for action in applied:
+                        if action.type == "add":
+                            storage.record_generated_operator(
+                                conn,
+                                name=action.payload["name"],
+                                template=action.payload["template"],
+                                temperature=action.payload["temperature"],
+                            )
+                        elif action.type == "retire":
+                            storage.retire_generated_operator(
+                                conn, action.payload["name"],
+                            )
+
                 # v0.3 (A1): descriptor-controller hook, MAP-Elites only.
                 _record_delta(population)
                 if (
@@ -712,6 +764,184 @@ def cmd_budget(args: argparse.Namespace) -> None:
     conn.close()
 
 
+def cmd_synthesise_fitness(args: argparse.Namespace) -> None:
+    """``evolver synthesise-fitness <dir> --examples file.jsonl`` (A4).
+
+    Reads newline-delimited JSON I/O pairs, asks the LLM to pick an
+    archetype, writes the generated fitness.py into the experiment
+    directory for the user to review. Never auto-accepts.
+    """
+    exp = _resolve_experiment(args.dir)
+    if not exp.exists():
+        _err(f"experiment not found: {exp}")
+    examples_path = Path(args.examples).expanduser().resolve()
+    if not examples_path.exists():
+        _err(f"examples file not found: {examples_path}")
+
+    examples: list[dict] = []
+    for line in examples_path.read_text("utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            examples.append(json.loads(line))
+        except json.JSONDecodeError as exc:
+            _err(f"bad JSONL line: {exc}")
+            return
+    if not examples:
+        _err("no examples parsed from file")
+        return
+
+    async def _run():
+        async with LLMClient.from_hermes() as client:
+            return await fitness_synth.synthesise(
+                client, examples, criterion=args.criterion,
+            )
+
+    result = asyncio.run(_run())
+    out_path = exp / ("fitness.synthesised.py" if args.no_overwrite else "fitness.py")
+    out_path.write_text(result.fitness_src, encoding="utf-8")
+
+    conn = storage.open_db(exp / "lineage.db")
+    try:
+        synth_id = storage.record_fitness_synthesis(
+            conn,
+            archetype=result.archetype,
+            examples_n=len(examples),
+            fitness_src=result.fitness_src,
+        )
+    finally:
+        conn.close()
+
+    _out({
+        "ok": True,
+        "archetype": result.archetype,
+        "rationale": result.rationale,
+        "path": str(out_path),
+        "synthesis_id": synth_id,
+        "examples": len(examples),
+    })
+
+
+def cmd_transfer(args: argparse.Namespace) -> None:
+    """``evolver transfer train|apply`` (A5)."""
+    if args.action == "train":
+        dirs = [_resolve_experiment(d) for d in args.experiments]
+        missing = [str(d) for d in dirs if not (d / "lineage.db").exists()]
+        if missing:
+            _err(f"missing lineage.db in: {missing}")
+            return
+        policy = transfer.train_policy(dirs, k=args.k)
+        out_path = Path(args.out).expanduser().resolve() if args.out \
+            else _data_root() / "transfer-policy.pkl"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        policy.save(out_path)
+        _out({
+            "ok": True,
+            "points": len(policy.points),
+            "path": str(out_path),
+            "policy_hash": policy.policy_hash,
+        })
+    elif args.action == "apply":
+        policy_path = Path(args.policy).expanduser().resolve()
+        if not policy_path.exists():
+            _err(f"policy file not found: {policy_path}")
+            return
+        policy = transfer.TransferPolicy.load(policy_path)
+        target_dir = _resolve_experiment(args.target)
+        if not target_dir.exists():
+            _err(f"target experiment not found: {target_dir}")
+            return
+        feats = task_features.featurise(target_dir)
+        prediction = policy.predict(feats.vector)
+
+        conn = storage.open_db(target_dir / "lineage.db")
+        try:
+            storage.record_task_features(
+                conn, target_dir.name, feats.to_dict(),
+                policy_hash=policy.policy_hash,
+            )
+        finally:
+            conn.close()
+
+        seed_dir = target_dir / "seed"
+        seed_dir.mkdir(exist_ok=True)
+        imported = 0
+        for i, g in enumerate(prediction["seeds"], start=1):
+            (seed_dir / f"transfer_{i:02d}.txt").write_text(g, encoding="utf-8")
+            imported += 1
+        _out({
+            "ok": True,
+            "target": str(target_dir),
+            "predicted_operators": prediction["operator_weights"],
+            "seeds_imported": imported,
+            "confidence": prediction["confidence"],
+            "policy_hash": policy.policy_hash,
+        })
+    else:  # pragma: no cover
+        _err(f"unknown transfer action {args.action!r}")
+
+
+def cmd_coevolve(args: argparse.Namespace) -> None:
+    """``evolver coevolve <dir>`` — dual-archive adversarial loop (A3).
+
+    Convenience runner that sets up a solver + adversary pair from
+    the experiment's seed directory and alternates evolution for
+    *--generations* rounds. Uses existing operators and the user's
+    fitness function (which MUST accept ``ctx["input"]``).
+    """
+    exp = _resolve_experiment(args.dir)
+    if not exp.exists():
+        _err(f"experiment not found: {exp}")
+    fitness_fn = evaluator.load_fitness(exp)
+    solver_seeds = _load_seeds(exp)
+    if not solver_seeds:
+        _err("no solver seeds in seed/")
+        return
+    adv_seeds = [f"adversarial input {i}" for i in range(1, args.adversaries + 1)]
+
+    solvers = [
+        algorithms.Individual(
+            cid=storage.hash_genome(s), genome=s, operator="seed",
+        )
+        for s in solver_seeds
+    ]
+    advers = [
+        algorithms.Individual(
+            cid=storage.hash_genome(a), genome=a, operator="adversary_seed",
+        )
+        for a in adv_seeds
+    ]
+
+    conn = storage.open_db(exp / "lineage.db")
+    for ind in solvers + advers:
+        storage.insert_candidate(conn, ind.genome, generation=0)
+
+    run = coevolve.CoevolveRun(solvers=solvers, adversaries=advers)
+
+    async def _main():
+        async with LLMClient.from_hermes(
+            concurrency=args.concurrency,
+            budget=BudgetLedger(cap_usd=args.budget),
+        ) as llm_client:
+            await coevolve.coevolve(
+                run, llm=llm_client, fitness_fn=fitness_fn,
+                conn=conn, generations=args.generations, seed=args.seed,
+                max_adversary_generations=args.max_adversary_gens,
+            )
+
+    asyncio.run(_main())
+    conn.close()
+
+    _out({
+        "ok": True,
+        "generations": args.generations,
+        "solvers_final": len(run.solvers),
+        "adversaries_final": len(run.adversaries),
+        "history_entries": len(run.history),
+    })
+
+
 def cmd_hub(args: argparse.Namespace) -> None:
     """``evolver hub {push|list|pull}`` — cross-experiment snapshot store."""
     if args.action == "push":
@@ -862,6 +1092,12 @@ def _build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--descriptor-every-k", dest="descriptor_every_k",
                     type=int, default=5,
                     help="when --descriptor-controller=periodic, trigger every K generations")
+    pr.add_argument("--bandit-director", dest="bandit_director",
+                    choices=["off", "periodic"], default="off",
+                    help="v0.4 A2: LLM-driven operator add/retire/merge")
+    pr.add_argument("--workers", dest="workers",
+                    choices=["local", "raysim", "ray"], default="local",
+                    help="v0.5 B1: evaluator worker backend (local | raysim | ray)")
     pr.set_defaults(fn=cmd_run, no_cache=False)
 
     ps = sub.add_parser("status", help="show generations, budget, and best-so-far")
@@ -913,6 +1149,43 @@ def _build_parser() -> argparse.ArgumentParser:
     phub.add_argument("--top-k", dest="top_k", type=int, default=10,
                       help="number of best-K genomes to record in the manifest")
     phub.set_defaults(fn=cmd_hub)
+
+    # v0.4 A4 — synthesise-fitness subcommand
+    psf = sub.add_parser("synthesise-fitness",
+                         help="v0.4 A4: LLM-synthesised fitness.py from I/O pairs")
+    psf.add_argument("dir")
+    psf.add_argument("--examples", required=True, help="JSONL of {input, output} pairs")
+    psf.add_argument("--criterion", default="correctness")
+    psf.add_argument("--no-overwrite", dest="no_overwrite", action="store_true",
+                     help="write to fitness.synthesised.py instead of fitness.py")
+    psf.set_defaults(fn=cmd_synthesise_fitness)
+
+    # v0.6 A5 — transfer train/apply
+    pt = sub.add_parser("transfer",
+                        help="v0.6 A5: cross-task transfer policy train/apply")
+    pt.add_argument("action", choices=["train", "apply"])
+    pt.add_argument("--experiments", nargs="+", default=[],
+                    help="experiment dirs (train mode)")
+    pt.add_argument("--k", type=int, default=3, help="k-NN neighbours (train mode)")
+    pt.add_argument("--out", default=None, help="policy output path (train mode)")
+    pt.add_argument("--policy", default=None, help="policy input path (apply mode)")
+    pt.add_argument("--target", default=None, help="target experiment dir (apply mode)")
+    pt.set_defaults(fn=cmd_transfer)
+
+    # v0.4 A3 — coevolve subcommand
+    pce = sub.add_parser("coevolve",
+                         help="v0.4 A3: solver / adversary co-evolution")
+    pce.add_argument("dir")
+    pce.add_argument("--generations", type=int, default=10)
+    pce.add_argument("--adversaries", type=int, default=4,
+                     help="initial adversary seeds")
+    pce.add_argument("--concurrency", type=int, default=4)
+    pce.add_argument("--budget", type=float, default=0.5)
+    pce.add_argument("--seed", type=int, default=42)
+    pce.add_argument("--max-adversary-gens", dest="max_adversary_gens",
+                     type=int, default=0,
+                     help="cap adversary evolution (0 = unbounded)")
+    pce.set_defaults(fn=cmd_coevolve)
 
     return p
 

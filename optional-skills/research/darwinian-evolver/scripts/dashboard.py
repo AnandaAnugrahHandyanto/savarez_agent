@@ -25,21 +25,23 @@ from typing import Any, Optional
 
 
 def _require_fastapi():
-    """Return ``(FastAPI, HTMLResponse, WebSocket, WebSocketDisconnect)``.
+    """Return a tuple of FastAPI symbols loaded lazily.
 
     Raises :class:`ImportError` with an installation hint when FastAPI
     is not on ``sys.path``; the CLI translates this into a non-zero
     exit with a message.
     """
     try:
-        from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+        from fastapi import (  # noqa: WPS433
+            Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect,
+        )
         from fastapi.responses import HTMLResponse
     except ImportError as exc:
         raise ImportError(
             "fastapi is required for `evolver dashboard`; install with "
             "`pip install fastapi uvicorn`."
         ) from exc
-    return FastAPI, HTMLResponse, HTTPException, WebSocket, WebSocketDisconnect
+    return FastAPI, HTMLResponse, HTTPException, WebSocket, WebSocketDisconnect, Body
 
 
 def _html_path() -> Path:
@@ -61,7 +63,7 @@ def build_app(experiment_dir: Path):
     transactions. For a 5-10 request/s dashboard this is well within
     SQLite's comfort zone.
     """
-    FastAPI, HTMLResponse, HTTPException, WebSocket, WebSocketDisconnect = _require_fastapi()
+    FastAPI, HTMLResponse, HTTPException, WebSocket, WebSocketDisconnect, Body = _require_fastapi()
 
     experiment_dir = Path(experiment_dir)
     db_path = experiment_dir / "lineage.db"
@@ -221,6 +223,41 @@ def build_app(experiment_dir: Path):
     @app.get("/api/operators")
     def api_operators() -> list[dict]:
         return _operators()
+
+    @app.post("/api/candidate/{cid}/edit")
+    def api_candidate_edit(cid: str, payload: dict = Body(...)) -> dict:
+        """C3 HITL — accept a human-edited genome as a new candidate.
+
+        Creates a new candidate row whose lineage links back to the
+        source ``cid`` through a synthetic ``human_edit`` operator.
+        Fitness is intentionally NOT auto-assigned; the next
+        evaluator pass picks it up as any other candidate.
+        """
+        import storage as _storage
+
+        new_genome = str(payload.get("genome", "")).strip()
+        if not new_genome:
+            raise HTTPException(status_code=400, detail="genome is required")
+        conn = _open(db_path)
+        try:
+            parent = conn.execute(
+                "SELECT id FROM candidates WHERE id = ?", (cid,),
+            ).fetchone()
+            if parent is None:
+                raise HTTPException(status_code=404, detail=f"candidate {cid} not found")
+            # Generation = max + 1 so the edit is visibly "latest".
+            gen_row = conn.execute(
+                "SELECT COALESCE(MAX(generation), 0) AS g FROM candidates"
+            ).fetchone()
+            next_gen = int(gen_row["g"]) + 1
+            new_cid = _storage.insert_candidate(
+                conn, new_genome, generation=next_gen,
+                descriptor={"source": "human_edit"},
+                parents=[(cid, "human_edit", "")],
+            )
+        finally:
+            conn.close()
+        return {"ok": True, "id": new_cid, "parent": cid, "generation": next_gen}
 
     @app.websocket("/api/stream")
     async def stream(ws: WebSocket) -> None:  # pragma: no cover — asyncio loop
