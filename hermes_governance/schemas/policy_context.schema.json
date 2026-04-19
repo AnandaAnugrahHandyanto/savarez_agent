@@ -137,10 +137,38 @@
       "additionalProperties": false,
       "required": [
         "contains_sensitive_data",
-        "detected_categories"
+        "contains_pii",
+        "contains_special_category_data",
+        "contains_financial_identifiers",
+        "contains_secrets",
+        "detected_categories",
+        "requested_fields",
+        "disclosed_fields",
+        "lawful_basis",
+        "purpose_code",
+        "masking_applied",
+        "masking_failures_count",
+        "output_contains_raw_identifier",
+        "audit_logged_for_data_access",
+        "requested_fields_exceed_policy",
+        "missing_lawful_basis",
+        "missing_supervisor_approval",
+        "retention_class"
       ],
       "properties": {
         "contains_sensitive_data": {
+          "type": "boolean"
+        },
+        "contains_pii": {
+          "type": "boolean"
+        },
+        "contains_special_category_data": {
+          "type": "boolean"
+        },
+        "contains_financial_identifiers": {
+          "type": "boolean"
+        },
+        "contains_secrets": {
           "type": "boolean"
         },
         "detected_categories": {
@@ -148,6 +176,60 @@
           "items": {
             "type": "string"
           }
+        },
+        "requested_fields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "disclosed_fields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "lawful_basis": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "purpose_code": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "masking_applied": {
+          "type": "boolean"
+        },
+        "masking_failures_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "output_contains_raw_identifier": {
+          "type": "boolean"
+        },
+        "audit_logged_for_data_access": {
+          "type": "boolean"
+        },
+        "requested_fields_exceed_policy": {
+          "type": "boolean"
+        },
+        "missing_lawful_basis": {
+          "type": "boolean"
+        },
+        "missing_supervisor_approval": {
+          "type": "boolean"
+        },
+        "retention_class": {
+          "type": "string",
+          "enum": [
+            "standard",
+            "restricted",
+            "confidential"
+          ]
         }
       }
     },

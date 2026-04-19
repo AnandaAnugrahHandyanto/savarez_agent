@@ -7908,7 +7908,7 @@ class AIAgent:
         else:
             normalized_function_args = function_args
             if self._governance_runtime:
-                normalized_function_args = self._governance_runtime.normalize_tool_arguments(
+                normalized_function_args = self._governance_runtime.validate_tool_arguments(
                     function_name,
                     function_args,
                 )
@@ -7920,6 +7920,8 @@ class AIAgent:
                 enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                 skip_pre_tool_call_hook=True,
             )
+
+        normalized_function_args = locals().get("normalized_function_args", function_args)
 
         if self._governance_runtime:
             self._governance_runtime.update_state_from_tool_result(
@@ -11505,9 +11507,9 @@ class AIAgent:
                                     self._governance_state
                                 )
                             except GovernanceBlocked as repair_exc:
-                                final_response = self._governance_runtime.ensure_final_response(
+                                final_response = self._governance_runtime.build_blocked_final_response(
                                     self._governance_state,
-                                    assistant_message.content or "",
+                                    str(repair_exc),
                                 )
                                 break
 
@@ -11888,10 +11890,16 @@ class AIAgent:
             final_response = self._handle_max_iterations(messages, api_call_count)
 
         if self._governance_runtime and not interrupted:
-            final_response = self._governance_runtime.ensure_final_response(
-                self._governance_state,
-                final_response or "",
-            )
+            try:
+                validated_payload = self._governance_runtime.validate_final_response_text(
+                    final_response or "",
+                )
+                final_response = json.dumps(validated_payload, ensure_ascii=False)
+            except GovernanceBlocked as exc:
+                final_response = self._governance_runtime.build_blocked_final_response(
+                    self._governance_state,
+                    str(exc),
+                )
 
         # Determine if conversation completed successfully
 

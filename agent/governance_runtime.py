@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import hashlib
+import hmac
+import os
 import re
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
@@ -12,6 +14,11 @@ try:
     from jsonschema import Draft202012Validator
 except Exception:  # pragma: no cover - optional dependency at integration time
     Draft202012Validator = None
+
+try:
+    from agent.privacy_guard import analyze_privacy_payload, assert_no_raw_sensitive_data, redact_payload
+except Exception:  # pragma: no cover - fallback for direct execution
+    from privacy_guard import analyze_privacy_payload, assert_no_raw_sensitive_data, redact_payload
 
 
 class GovernanceError(RuntimeError):
@@ -73,6 +80,31 @@ def _render_template(value: Any, context: dict[str, Any]) -> Any:
     return value
 
 
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+
+
+def _dedupe_preserve(items: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for item in items:
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        ordered.append(item)
+    return ordered
+
+
 @dataclass
 class GovernanceState:
     domain: str = "mixed"
@@ -88,7 +120,23 @@ class GovernanceState:
     tool_errors: list[str] = field(default_factory=list)
     source_refs: list[str] = field(default_factory=list)
     contains_sensitive_data: bool = False
+    contains_pii: bool = False
+    contains_special_category_data: bool = False
+    contains_financial_identifiers: bool = False
+    contains_secrets: bool = False
     detected_categories: list[str] = field(default_factory=list)
+    requested_fields: list[str] = field(default_factory=list)
+    disclosed_fields: list[str] = field(default_factory=list)
+    lawful_basis: str | None = None
+    purpose_code: str | None = None
+    masking_applied: bool = False
+    masking_failures_count: int = 0
+    output_contains_raw_identifier: bool = False
+    audit_logged_for_data_access: bool = True
+    requested_fields_exceed_policy: bool = False
+    missing_lawful_basis: bool = False
+    missing_supervisor_approval: bool = False
+    retention_class: str = "standard"
     client_file_execution_requested: bool = False
     supervisor_execution_approved: bool = False
     ongoing_dispute: bool = False
@@ -127,7 +175,6 @@ class GovernanceState:
             "verification": {
                 "required_tools_called": self.required_tools_called,
                 "primary_sources_verified": self.primary_sources_verified,
-                "fiscal_search_satisfied": self.fiscal_search_satisfied,
                 "conflicts_detected": self.conflicts_detected,
                 "tool_errors": self.tool_errors,
                 "tool_errors_count": len(self.tool_errors),
@@ -139,7 +186,23 @@ class GovernanceState:
             },
             "privacy": {
                 "contains_sensitive_data": self.contains_sensitive_data,
+                "contains_pii": self.contains_pii,
+                "contains_special_category_data": self.contains_special_category_data,
+                "contains_financial_identifiers": self.contains_financial_identifiers,
+                "contains_secrets": self.contains_secrets,
                 "detected_categories": self.detected_categories,
+                "requested_fields": self.requested_fields,
+                "disclosed_fields": self.disclosed_fields,
+                "lawful_basis": self.lawful_basis,
+                "purpose_code": self.purpose_code,
+                "masking_applied": self.masking_applied,
+                "masking_failures_count": self.masking_failures_count,
+                "output_contains_raw_identifier": self.output_contains_raw_identifier,
+                "audit_logged_for_data_access": self.audit_logged_for_data_access,
+                "requested_fields_exceed_policy": self.requested_fields_exceed_policy,
+                "missing_lawful_basis": self.missing_lawful_basis,
+                "missing_supervisor_approval": self.missing_supervisor_approval,
+                "retention_class": self.retention_class,
             },
             "execution": {
                 "client_file_execution_requested": self.client_file_execution_requested,
@@ -196,23 +259,279 @@ class GovernanceRuntime:
         self.tool_contract_map = {
             tool["name"]: tool for tool in self.tool_contracts.get("tools", [])
         }
+        self._fingerprint_secret = os.urandom(32)
+        self._shared_result_envelope_schema = self._build_shared_result_envelope_schema()
+        self._tool_argument_schemas = {
+            tool_name: (contract.get("arguments_schema") or {})
+            for tool_name, contract in self.tool_contract_map.items()
+        }
+        self._tool_result_schemas = {
+            tool_name: self._build_result_object_schema(contract.get("result_contract") or {})
+            for tool_name, contract in self.tool_contract_map.items()
+        }
 
-        self._final_validator = (
-            Draft202012Validator(self.final_response_schema)
-            if Draft202012Validator is not None
-            else None
-        )
-        self._policy_context_validator = (
-            Draft202012Validator(self.policy_context_schema)
-            if Draft202012Validator is not None
-            else None
-        )
+        self._final_validator = self._make_validator(self.final_response_schema)
+        self._policy_context_validator = self._make_validator(self.policy_context_schema)
+        self._shared_result_envelope_validator = self._make_validator(self._shared_result_envelope_schema)
+        self._tool_argument_validators = {
+            tool_name: self._make_validator(schema)
+            for tool_name, schema in self._tool_argument_schemas.items()
+        }
+        self._tool_result_validators = {
+            tool_name: self._make_validator(schema)
+            for tool_name, schema in self._tool_result_schemas.items()
+        }
 
     def _read_text(self, relative_path: str) -> str:
         return (self.pack_root / relative_path).read_text(encoding="utf-8")
 
     def _read_json(self, relative_path: str) -> dict[str, Any]:
         return json.loads(self._read_text(relative_path))
+
+    def _make_validator(self, schema: dict[str, Any] | None) -> Draft202012Validator | None:
+        if Draft202012Validator is None or not schema:
+            return None
+        return Draft202012Validator(schema)
+
+    def _build_shared_result_envelope_schema(self) -> dict[str, Any]:
+        envelope = dict(self.tool_contracts.get("shared_result_envelope") or {})
+        envelope.setdefault("type", "object")
+        envelope.setdefault("properties", {})
+        envelope.setdefault("required", [])
+        envelope.setdefault("additionalProperties", True)
+        return envelope
+
+    def _build_result_object_schema(self, result_contract: dict[str, Any]) -> dict[str, Any]:
+        schema: dict[str, Any] = {
+            "type": "object",
+            "additionalProperties": True,
+            "required": list(result_contract.get("required_fields") or []),
+        }
+        properties = result_contract.get("properties")
+        if isinstance(properties, dict):
+            schema["properties"] = properties
+        return schema
+
+    def _validate_schema_or_raise(
+        self,
+        *,
+        validator: Draft202012Validator | None,
+        schema: dict[str, Any],
+        payload: Any,
+        label: str,
+    ) -> None:
+        if validator is not None:
+            errors = sorted(validator.iter_errors(payload), key=lambda e: list(e.path))
+            if errors:
+                first = errors[0]
+                path = ".".join(str(part) for part in first.path) or "<root>"
+                raise GovernanceBlocked(f"{label}_schema_error at {path}: {first.message}")
+            return
+        self._manual_validate_schema(schema, payload, label=label, path="<root>")
+
+    def _manual_validate_schema(
+        self,
+        schema: dict[str, Any],
+        payload: Any,
+        *,
+        label: str,
+        path: str,
+    ) -> None:
+        declared_type = schema.get("type")
+        if declared_type is not None:
+            allowed_types = declared_type if isinstance(declared_type, list) else [declared_type]
+            if not any(self._matches_type(item_type, payload) for item_type in allowed_types):
+                expected = ",".join(str(item) for item in allowed_types)
+                raise GovernanceBlocked(f"{label}_schema_error at {path}: expected {expected}")
+
+        if "enum" in schema and payload not in schema["enum"]:
+            raise GovernanceBlocked(f"{label}_schema_error at {path}: value not in enum")
+
+        if isinstance(payload, str) and "maxLength" in schema and len(payload) > int(schema["maxLength"]):
+            raise GovernanceBlocked(f"{label}_schema_error at {path}: string too long")
+
+        if isinstance(payload, list):
+            min_items = schema.get("minItems")
+            if min_items is not None and len(payload) < int(min_items):
+                raise GovernanceBlocked(f"{label}_schema_error at {path}: array too short")
+            item_schema = schema.get("items")
+            if isinstance(item_schema, dict):
+                for index, item in enumerate(payload):
+                    self._manual_validate_schema(
+                        item_schema,
+                        item,
+                        label=label,
+                        path=f"{path}[{index}]",
+                    )
+
+        if isinstance(payload, (int, float)) and not isinstance(payload, bool):
+            minimum = schema.get("minimum")
+            if minimum is not None and payload < minimum:
+                raise GovernanceBlocked(f"{label}_schema_error at {path}: value below minimum")
+
+        if isinstance(payload, dict):
+            required = schema.get("required") or []
+            for key in required:
+                if key not in payload:
+                    missing_path = f"{path}.{key}" if path != "<root>" else f"<root>.{key}"
+                    raise GovernanceBlocked(f"{label}_schema_error at {missing_path}: missing required property")
+
+            properties = schema.get("properties") or {}
+            if schema.get("additionalProperties") is False:
+                unknown = sorted(key for key in payload if key not in properties)
+                if unknown:
+                    raise GovernanceBlocked(
+                        f"{label}_schema_error at {path}: unexpected properties {', '.join(unknown)}"
+                    )
+
+            for key, value in payload.items():
+                if key in properties and isinstance(properties[key], dict):
+                    child_path = f"{path}.{key}" if path != "<root>" else key
+                    self._manual_validate_schema(
+                        properties[key],
+                        value,
+                        label=label,
+                        path=child_path,
+                    )
+
+    def _matches_type(self, expected_type: str, payload: Any) -> bool:
+        if expected_type == "object":
+            return isinstance(payload, dict)
+        if expected_type == "array":
+            return isinstance(payload, list)
+        if expected_type == "string":
+            return isinstance(payload, str)
+        if expected_type == "boolean":
+            return isinstance(payload, bool)
+        if expected_type == "number":
+            return isinstance(payload, (int, float)) and not isinstance(payload, bool)
+        if expected_type == "integer":
+            return isinstance(payload, int) and not isinstance(payload, bool)
+        if expected_type == "null":
+            return payload is None
+        return True
+
+    def _redact_for_storage(self, value: Any) -> Any:
+        result = redact_payload(value)
+        return result.value
+
+    def _merge_privacy_analysis(
+        self,
+        state: GovernanceState,
+        value: Any,
+        *,
+        mark_masked: bool = False,
+    ) -> None:
+        analysis = analyze_privacy_payload(value)
+        state.contains_sensitive_data = state.contains_sensitive_data or analysis.contains_sensitive_data
+        state.contains_pii = state.contains_pii or analysis.contains_pii
+        state.contains_special_category_data = (
+            state.contains_special_category_data or analysis.contains_special_category_data
+        )
+        state.contains_financial_identifiers = (
+            state.contains_financial_identifiers or analysis.contains_financial_identifiers
+        )
+        state.contains_secrets = state.contains_secrets or analysis.contains_secrets
+        state.detected_categories = _dedupe_preserve(
+            [*state.detected_categories, *analysis.detected_categories]
+        )
+        if mark_masked and analysis.match_count:
+            state.masking_applied = True
+
+    def validate_tool_arguments(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        normalized = self.normalize_tool_arguments(tool_name, arguments)
+        contract = self.tool_contract_map.get(tool_name)
+        if not contract:
+            return normalized
+
+        self._validate_schema_or_raise(
+            validator=self._tool_argument_validators.get(tool_name),
+            schema=self._tool_argument_schemas.get(tool_name, {}),
+            payload=normalized,
+            label=f"{tool_name}_arguments",
+        )
+        return normalized
+
+    def validate_tool_result(
+        self,
+        tool_name: str,
+        result_raw: str,
+    ) -> dict[str, Any]:
+        try:
+            parsed = json.loads(result_raw)
+        except Exception as exc:
+            raise GovernanceBlocked(f"{tool_name}_result_invalid_json: {exc}") from exc
+
+        self._validate_schema_or_raise(
+            validator=self._shared_result_envelope_validator,
+            schema=self._shared_result_envelope_schema,
+            payload=parsed,
+            label=f"{tool_name}_envelope",
+        )
+
+        result = parsed.get("result")
+        if not isinstance(result, dict):
+            raise GovernanceBlocked(f"{tool_name}_result_schema_error at result: expected object")
+
+        self._validate_schema_or_raise(
+            validator=self._tool_result_validators.get(tool_name),
+            schema=self._tool_result_schemas.get(tool_name, {}),
+            payload=result,
+            label=f"{tool_name}_result",
+        )
+        return parsed
+
+    def _register_data_access_context(
+        self,
+        state: GovernanceState,
+        arguments: dict[str, Any],
+        result: dict[str, Any],
+    ) -> None:
+        requested_fields = arguments.get("requested_fields") or []
+        disclosed_fields = result.get("fields_disclosed") or []
+        state.requested_fields = _dedupe_preserve([*state.requested_fields, *requested_fields])
+        state.disclosed_fields = _dedupe_preserve([*state.disclosed_fields, *disclosed_fields])
+        state.lawful_basis = str(arguments.get("lawful_basis") or state.lawful_basis or "") or None
+        state.purpose_code = str(arguments.get("purpose_code") or state.purpose_code or "") or None
+        state.retention_class = str(result.get("retention_class") or state.retention_class)
+
+        privacy_flags = {str(item) for item in (result.get("privacy_flags") or [])}
+        if privacy_flags:
+            state.detected_categories = _dedupe_preserve([*state.detected_categories, *sorted(privacy_flags)])
+        if "contains_pii" in privacy_flags:
+            state.contains_pii = True
+            state.contains_sensitive_data = True
+        if "contains_financial_identifiers" in privacy_flags:
+            state.contains_financial_identifiers = True
+            state.contains_sensitive_data = True
+        if "contains_special_category_data" in privacy_flags:
+            state.contains_special_category_data = True
+            state.contains_sensitive_data = True
+        if "contains_secrets" in privacy_flags:
+            state.contains_secrets = True
+            state.contains_sensitive_data = True
+
+        if not state.lawful_basis:
+            state.missing_lawful_basis = True
+        if arguments.get("supervisor_approval_ref"):
+            state.supervisor_execution_approved = True
+        if result.get("requires_supervisor_approval") is True and not arguments.get("supervisor_approval_ref"):
+            state.missing_supervisor_approval = True
+        if state.requested_fields and state.disclosed_fields:
+            state.requested_fields_exceed_policy = not set(state.disclosed_fields).issubset(
+                set(state.requested_fields)
+            )
+        if result.get("records"):
+            state.audit_logged_for_data_access = False
+
+    def _sanitize_error_message(self, message: str) -> str:
+        result = redact_payload(message)
+        return str(result.value)
+
     def prepare_tool_definitions(self, tool_definitions: list[dict[str, Any]]) -> list[dict[str, Any]]:
         prepared: list[dict[str, Any]] = []
         for item in tool_definitions:
@@ -308,14 +627,15 @@ class GovernanceRuntime:
         arguments: dict[str, Any] | None,
     ) -> str:
         normalized_arguments = self.normalize_tool_arguments(tool_name, arguments)
-        payload = json.dumps(
-            {"tool_name": tool_name, "arguments": normalized_arguments},
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            default=str,
-        )
-        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+        payload = {
+            "tool_name": tool_name,
+            "arguments": normalized_arguments,
+        }
+        digest = hmac.new(
+            self._fingerprint_secret,
+            _canonical_json(payload).encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()[:16]
         return f"{tool_name}:{digest}"
 
     def _register_repeat_violation(self, state: GovernanceState, fingerprint: str, reason_code: str) -> None:
@@ -368,9 +688,15 @@ class GovernanceRuntime:
         result_raw: str,
         arguments: dict[str, Any] | None = None,
     ) -> None:
-        state.tools_called.append(tool_name)
+        try:
+            normalized_arguments = self.validate_tool_arguments(tool_name, arguments)
+        except GovernanceBlocked as exc:
+            state.tool_errors.append(self._sanitize_error_message(f"{tool_name}: {exc}"))
+            return
 
-        normalized_arguments = self.normalize_tool_arguments(tool_name, arguments)
+        state.tools_called.append(tool_name)
+        self._merge_privacy_analysis(state, normalized_arguments)
+
         if normalized_arguments:
             fingerprint = self.build_tool_call_fingerprint(tool_name, normalized_arguments)
             count = state.tool_call_counts.get(fingerprint, 0) + 1
@@ -381,9 +707,9 @@ class GovernanceRuntime:
             count = 1
 
         try:
-            parsed = json.loads(result_raw)
-        except Exception:
-            state.tool_errors.append(f"{tool_name}: invalid_json_result")
+            parsed = self.validate_tool_result(tool_name, result_raw)
+        except GovernanceBlocked as exc:
+            state.tool_errors.append(self._sanitize_error_message(f"{tool_name}: {exc}"))
             if fingerprint and count > self.config["max_identical_tool_calls"]:
                 self._register_repeat_violation(state, fingerprint, "identical_call_budget_exceeded")
             return
@@ -392,13 +718,12 @@ class GovernanceRuntime:
         if isinstance(trace_id, str) and trace_id:
             state.tool_trace_ids.append(trace_id)
 
-        result = parsed.get("result")
-        if not isinstance(result, dict):
-            result = {}
+        result = parsed.get("result") or {}
+        self._merge_privacy_analysis(state, result)
 
         if parsed.get("ok") is False or parsed.get("error_code") or parsed.get("error"):
             error_msg = parsed.get("error_message") or parsed.get("error") or "tool_error"
-            state.tool_errors.append(f"{tool_name}: {error_msg}")
+            state.tool_errors.append(self._sanitize_error_message(f"{tool_name}: {error_msg}"))
             if fingerprint and count > self.config["max_identical_tool_calls"]:
                 self._register_repeat_violation(state, fingerprint, "identical_call_budget_exceeded")
             return
@@ -407,11 +732,13 @@ class GovernanceRuntime:
         if not sources and isinstance(parsed.get("source_links"), list):
             sources = [{"url": item, "reference": item} for item in parsed.get("source_links") if isinstance(item, str)]
 
+        collected_refs: list[str] = []
         for source in sources:
             if isinstance(source, dict):
                 ref = source.get("reference") or source.get("id") or source.get("url")
                 if isinstance(ref, str):
-                    state.source_refs.append(ref)
+                    collected_refs.append(str(self._redact_for_storage(ref)))
+        state.source_refs = _dedupe_preserve([*state.source_refs, *collected_refs])
 
         if result.get("primary_sources_verified") is False:
             state.primary_sources_verified = False
@@ -433,10 +760,14 @@ class GovernanceRuntime:
             audit_event_id = result.get("audit_event_id") or parsed.get("event_id")
             if isinstance(audit_event_id, str):
                 state.audit_event_ids.append(audit_event_id)
+            if normalized_arguments.get("event_type") == "data_access" and result.get("accepted") is True:
+                state.audit_logged_for_data_access = True
+
+        if tool_name == "get_client_records":
+            self._register_data_access_context(state, normalized_arguments, result)
 
         if tool_name == "search_fiscal_sources":
             state.fiscal_search_call_count += 1
-
             if parsed.get("cache_hit") is True:
                 state.fiscal_search_cache_hits += 1
 
@@ -450,6 +781,10 @@ class GovernanceRuntime:
             if (parsed.get("ok") is True or parsed.get("success") is True) and (has_results or result_count > 0):
                 state.fiscal_search_satisfied = True
                 state.fiscal_search_cached_result = result_raw
+
+        redacted_result = redact_payload(result)
+        if redacted_result.applied_count:
+            state.masking_applied = True
 
         useful_result = bool(result) and (
             bool(result.get("sources"))
@@ -547,71 +882,15 @@ class GovernanceRuntime:
         if self._final_validator is not None:
             errors = sorted(self._final_validator.iter_errors(payload), key=lambda e: list(e.path))
             if errors:
-                normalized_payload = {
-                    "status": str(payload.get("status") or "ANALYSE_PREPARATOIRE").strip().upper(),
-                    "certainty": str(payload.get("certainty") or "MOYENNE").strip().upper(),
-                    "scope": payload.get("scope") if isinstance(payload.get("scope"), dict) else {
-                        "domain": "fiscal",
-                        "jurisdiction": "FR",
-                        "fact_date": None,
-                        "source_checked_at": self._now_iso_utc(),
-                        "risk_level": "medium",
-                    },
-                    "facts": payload.get("facts") if isinstance(payload.get("facts"), dict) else {
-                        "verified_facts": [str(item) for item in payload.get("facts", [])] if isinstance(payload.get("facts"), list) else [],
-                        "assumptions": [],
-                        "missing_facts": [],
-                    },
-                    "sources": payload.get("sources") if isinstance(payload.get("sources"), list) and payload.get("sources") else [
-                        {
-                            "source_type": "other",
-                            "reference": "governance_runtime",
-                            "effective_date": None,
-                            "checked_at": self._now_iso_utc(),
-                            "verified": False,
-                            "url": None,
-                        }
-                    ],
-                    "analysis": payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {
-                        "mode": "syllogism",
-                        "major": str(payload.get("summary") or "Réponse normalisée depuis un format legacy."),
-                        "minor": "",
-                        "conclusion": "Réponse finalisée après normalisation du schéma.",
-                    },
-                    "risks": payload.get("risks") if isinstance(payload.get("risks"), list) else [],
-                    "next_action": payload.get("next_action") if isinstance(payload.get("next_action"), dict) else {
-                        "type": "answer_ready",
-                        "message": "Réponse normalisée par la gouvernance Hermes.",
-                        "escalation_id": None,
-                    },
-                    "audit_trail": payload.get("audit_trail") if isinstance(payload.get("audit_trail"), dict) else {
-                        "tools_called": [],
-                        "tool_trace_ids": [],
-                        "policy_rule_hits": [],
-                        "audit_event_ids": [],
-                    },
-                }
-
-                if normalized_payload["status"] not in {
-                    "INFORMATION_SOURCEE", "ANALYSE_PREPARATOIRE", "ESCALADE_REQUISE", "BLOQUE"
-                }:
-                    normalized_payload["status"] = "ANALYSE_PREPARATOIRE"
-
-                if normalized_payload["certainty"] not in {
-                    "HAUTE", "MOYENNE", "FAIBLE_VERIFICATION_REQUISE"
-                }:
-                    normalized_payload["certainty"] = "MOYENNE"
-
-                retry_errors = sorted(
-                    self._final_validator.iter_errors(normalized_payload),
-                    key=lambda e: list(e.path),
-                )
-                if not retry_errors:
-                    return normalized_payload
-
-                first = retry_errors[0]
+                first = errors[0]
                 path = ".".join(str(part) for part in first.path) or "<root>"
                 raise GovernanceBlocked(f"final_response_schema_error at {path}: {first.message}")
+
+        leaks = assert_no_raw_sensitive_data(payload)
+        if leaks:
+            raise GovernanceBlocked(
+                "final_response_contains_raw_identifier: " + ", ".join(leaks[:5])
+            )
 
         return payload
 
@@ -620,6 +899,7 @@ class GovernanceRuntime:
             "Previous final response is invalid.\n"
             "Return exactly one JSON object and nothing else.\n"
             "Do not use markdown, prose, headings, bullets or code fences.\n"
+            "Do not emit raw identifiers, client secrets or account identifiers.\n"
             "Do not call another tool unless a mandatory source is still missing.\n"
             "Validation error: "
             + error_message
@@ -634,6 +914,7 @@ class GovernanceRuntime:
 
     def build_blocked_final_response(self, state: GovernanceState, reason: str) -> str:
         checked_at = self._now_iso_utc()
+        safe_reason = str(self._redact_for_storage(reason))
         payload = {
             "status": state.status if state.status in {
                 "INFORMATION_SOURCEE", "ANALYSE_PREPARATOIRE", "ESCALADE_REQUISE", "BLOQUE"
@@ -653,7 +934,7 @@ class GovernanceRuntime:
                 } else "medium",
             },
             "facts": {
-                "verified_facts": list(state.facts_summary),
+                "verified_facts": self._redact_for_storage(list(state.facts_summary)),
                 "assumptions": [],
                 "missing_facts": [],
             },
@@ -670,25 +951,29 @@ class GovernanceRuntime:
             "analysis": {
                 "mode": "blocked",
                 "major": "Final response enforcement triggered.",
-                "minor": reason,
+                "minor": safe_reason,
                 "conclusion": "A valid governance-compliant response could not be produced from the model output.",
             },
             "risks": [],
             "next_action": {
-                "type": "blocked",
-                "message": "Governance runtime produced a blocked fallback response.",
-                "escalation_id": state.escalation_id,
+                "type": "escalate" if state.status == "ESCALADE_REQUISE" else "blocked",
+                "message": safe_reason,
+                "escalation_id": None,
             },
             "audit_trail": {
                 "tools_called": list(state.tools_called),
-                "tool_trace_ids": list(state.tool_trace_ids),
                 "policy_rule_hits": list(state.policy_rule_hits),
-                "audit_event_ids": list(state.audit_event_ids),
-                "tool_call_fingerprints": list(state.tool_call_fingerprints),
-                "repetition_violations": list(state.tool_repeat_violations),
+                "audit_summary": (
+                    f"tool_calls={len(state.tools_called)};"
+                    f"audit_events={len(state.audit_event_ids)};"
+                    f"redactions={int(state.masking_applied)};"
+                    f"violations={len(state.tool_repeat_violations)}"
+                ),
+                "redactions_applied": state.masking_applied,
             },
         }
-        return json.dumps(payload, ensure_ascii=False)
+        validated_payload = self.validate_final_response_text(json.dumps(payload, ensure_ascii=False))
+        return json.dumps(validated_payload, ensure_ascii=False)
 
     def build_forced_fiscal_final_response(self, state: GovernanceState) -> str:
         checked_at = self._now_iso_utc()

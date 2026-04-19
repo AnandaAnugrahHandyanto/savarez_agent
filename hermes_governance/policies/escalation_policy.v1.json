@@ -32,7 +32,23 @@
       "config.escalation_materiality_eur",
       "config.deadline_escalation_days",
       "config.max_identical_tool_calls",
-      "config.max_final_repair_attempts"
+      "config.max_final_repair_attempts",
+      "privacy.contains_pii",
+      "privacy.contains_special_category_data",
+      "privacy.contains_financial_identifiers",
+      "privacy.contains_secrets",
+      "privacy.requested_fields",
+      "privacy.disclosed_fields",
+      "privacy.lawful_basis",
+      "privacy.purpose_code",
+      "privacy.masking_applied",
+      "privacy.masking_failures_count",
+      "privacy.output_contains_raw_identifier",
+      "privacy.audit_logged_for_data_access",
+      "privacy.requested_fields_exceed_policy",
+      "privacy.missing_lawful_basis",
+      "privacy.missing_supervisor_approval",
+      "privacy.retention_class"
     ]
   },
   "rules": [
@@ -84,6 +100,12 @@
             ],
             "source_refs": {
               "var": "verification.source_refs"
+            },
+            "confidentiality_level": {
+              "var": "privacy.retention_class"
+            },
+            "redaction_applied": {
+              "var": "privacy.masking_applied"
             }
           }
         },
@@ -141,6 +163,12 @@
             ],
             "source_refs": {
               "var": "verification.source_refs"
+            },
+            "confidentiality_level": {
+              "var": "privacy.retention_class"
+            },
+            "redaction_applied": {
+              "var": "privacy.masking_applied"
             }
           }
         },
@@ -201,6 +229,213 @@
               "violations": {
                 "var": "verification.repeated_tool_call_violations"
               }
+            }
+          }
+        },
+        {
+          "type": "stop_generation",
+          "value": true
+        }
+      ]
+    },
+    {
+      "id": "secret-detected-escalation",
+      "severity": "critical",
+      "terminal": true,
+      "when": {
+        "==": [
+          {
+            "var": "privacy.contains_secrets"
+          },
+          true
+        ]
+      },
+      "actions": [
+        {
+          "type": "set_status",
+          "value": "ESCALADE_REQUISE"
+        },
+        {
+          "type": "set_certainty",
+          "value": "FAIBLE_VERIFICATION_REQUISE"
+        },
+        {
+          "type": "call_tool",
+          "tool": "escalate_to_human_supervisor",
+          "args_template": {
+            "reason_code": "sensitive_data",
+            "severity": "critical",
+            "summary": "Secret applicatif ou jeton détecté.",
+            "facts": {
+              "var": "facts.summary"
+            },
+            "blocking_points": [
+              "Présence de secret ou jeton incompatible avec une réponse autonome."
+            ],
+            "confidentiality_level": {
+              "var": "privacy.retention_class"
+            },
+            "redaction_applied": {
+              "var": "privacy.masking_applied"
+            },
+            "source_refs": {
+              "var": "verification.source_refs"
+            }
+          }
+        },
+        {
+          "type": "call_tool",
+          "tool": "log_audit_event",
+          "args_template": {
+            "event_type": "security_incident",
+            "severity": "critical",
+            "summary": "Escalade pour détection de secret applicatif.",
+            "metadata": {
+              "rule_id": "secret-detected-escalation",
+              "detected_categories": {
+                "var": "privacy.detected_categories"
+              },
+              "privacy_review_outcome": "blocked",
+              "redaction_applied": {
+                "var": "privacy.masking_applied"
+              }
+            }
+          }
+        },
+        {
+          "type": "stop_generation",
+          "value": true
+        }
+      ]
+    },
+    {
+      "id": "privacy-governance-block",
+      "severity": "critical",
+      "terminal": true,
+      "when": {
+        "or": [
+          {
+            "==": [
+              {
+                "var": "privacy.output_contains_raw_identifier"
+              },
+              true
+            ]
+          },
+          {
+            ">": [
+              {
+                "var": "privacy.masking_failures_count"
+              },
+              0
+            ]
+          },
+          {
+            "==": [
+              {
+                "var": "privacy.requested_fields_exceed_policy"
+              },
+              true
+            ]
+          },
+          {
+            "==": [
+              {
+                "var": "privacy.missing_lawful_basis"
+              },
+              true
+            ]
+          },
+          {
+            "==": [
+              {
+                "var": "privacy.missing_supervisor_approval"
+              },
+              true
+            ]
+          },
+          {
+            "==": [
+              {
+                "var": "privacy.audit_logged_for_data_access"
+              },
+              false
+            ]
+          }
+        ]
+      },
+      "actions": [
+        {
+          "type": "set_status",
+          "value": "BLOQUE"
+        },
+        {
+          "type": "set_certainty",
+          "value": "FAIBLE_VERIFICATION_REQUISE"
+        },
+        {
+          "type": "call_tool",
+          "tool": "log_audit_event",
+          "args_template": {
+            "event_type": "policy_block",
+            "severity": "critical",
+            "summary": "Blocage sur violation confidentialité ou traçabilité.",
+            "metadata": {
+              "rule_id": "privacy-governance-block",
+              "detected_categories": {
+                "var": "privacy.detected_categories"
+              },
+              "privacy_review_outcome": "blocked",
+              "redaction_applied": {
+                "var": "privacy.masking_applied"
+              }
+            }
+          }
+        },
+        {
+          "type": "stop_generation",
+          "value": true
+        }
+      ]
+    },
+    {
+      "id": "confidential-retention-escalation",
+      "severity": "high",
+      "terminal": true,
+      "when": {
+        "==": [
+          {
+            "var": "privacy.retention_class"
+          },
+          "confidential"
+        ]
+      },
+      "actions": [
+        {
+          "type": "set_status",
+          "value": "ESCALADE_REQUISE"
+        },
+        {
+          "type": "call_tool",
+          "tool": "escalate_to_human_supervisor",
+          "args_template": {
+            "reason_code": "sensitive_data",
+            "severity": "high",
+            "summary": "Flux classifié confidentiel.",
+            "facts": {
+              "var": "facts.summary"
+            },
+            "blocking_points": [
+              "Le niveau de confidentialité impose une revue humaine."
+            ],
+            "confidentiality_level": {
+              "var": "privacy.retention_class"
+            },
+            "redaction_applied": {
+              "var": "privacy.masking_applied"
+            },
+            "source_refs": {
+              "var": "verification.source_refs"
             }
           }
         },
@@ -306,6 +541,12 @@
             ],
             "source_refs": {
               "var": "verification.source_refs"
+            },
+            "confidentiality_level": {
+              "var": "privacy.retention_class"
+            },
+            "redaction_applied": {
+              "var": "privacy.masking_applied"
             }
           }
         },
@@ -362,6 +603,12 @@
             ],
             "source_refs": {
               "var": "verification.source_refs"
+            },
+            "confidentiality_level": {
+              "var": "privacy.retention_class"
+            },
+            "redaction_applied": {
+              "var": "privacy.masking_applied"
             }
           }
         },
@@ -423,6 +670,12 @@
             ],
             "source_refs": {
               "var": "verification.source_refs"
+            },
+            "confidentiality_level": {
+              "var": "privacy.retention_class"
+            },
+            "redaction_applied": {
+              "var": "privacy.masking_applied"
             }
           }
         },
@@ -476,6 +729,12 @@
             ],
             "source_refs": {
               "var": "verification.source_refs"
+            },
+            "confidentiality_level": {
+              "var": "privacy.retention_class"
+            },
+            "redaction_applied": {
+              "var": "privacy.masking_applied"
             }
           }
         },
@@ -519,6 +778,12 @@
             ],
             "source_refs": {
               "var": "verification.source_refs"
+            },
+            "confidentiality_level": {
+              "var": "privacy.retention_class"
+            },
+            "redaction_applied": {
+              "var": "privacy.masking_applied"
             }
           }
         },
@@ -572,6 +837,12 @@
             ],
             "source_refs": {
               "var": "verification.source_refs"
+            },
+            "confidentiality_level": {
+              "var": "privacy.retention_class"
+            },
+            "redaction_applied": {
+              "var": "privacy.masking_applied"
             }
           }
         },

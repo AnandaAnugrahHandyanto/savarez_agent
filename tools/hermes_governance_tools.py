@@ -1407,6 +1407,8 @@ def search_fiscal_sources_tool(
             "source_links": source_links[:20],
             "has_results": result_count > 0,
             "result": {
+                "success": bool(payload.get("success", True)),
+                "tool_name": str(payload.get("tool_name") or "search_fiscal_sources"),
                 "sources": sources,
                 "coverage_status": coverage_status,
                 "primary_sources_verified": result_count > 0 and source_type in {"cgi", "lpf", "legal_text"},

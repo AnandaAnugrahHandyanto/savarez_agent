@@ -94,19 +94,22 @@
         "verified_facts": {
           "type": "array",
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 512
           }
         },
         "assumptions": {
           "type": "array",
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 512
           }
         },
         "missing_facts": {
           "type": "array",
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 256
           }
         }
       }
@@ -184,13 +187,16 @@
           ]
         },
         "major": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 512
         },
         "minor": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 512
         },
         "conclusion": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 512
         }
       }
     },
@@ -321,19 +327,22 @@
           ]
         },
         "message": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 256
         },
         "requested_facts": {
           "type": "array",
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 128
           }
         },
         "escalation_id": {
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "maxLength": 128
         }
       }
     },
@@ -342,45 +351,31 @@
       "additionalProperties": false,
       "required": [
         "tools_called",
-        "tool_trace_ids",
-        "policy_rule_hits"
+        "policy_rule_hits",
+        "audit_summary",
+        "redactions_applied"
       ],
       "properties": {
         "tools_called": {
           "type": "array",
           "items": {
-            "type": "string"
-          }
-        },
-        "tool_trace_ids": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "tool_call_fingerprints": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "repetition_violations": {
-          "type": "array",
-          "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 64
           }
         },
         "policy_rule_hits": {
           "type": "array",
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 128
           }
         },
-        "audit_event_ids": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
+        "audit_summary": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "redactions_applied": {
+          "type": "boolean"
         }
       }
     }
