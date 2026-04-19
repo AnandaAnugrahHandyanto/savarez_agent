@@ -911,6 +911,84 @@ class TestParseTargetRefMatrix:
         assert is_explicit is False
 
 
+class TestParseTargetRefSlack:
+    """_parse_target_ref correctly handles Slack channel, DM, and group IDs."""
+
+    def test_slack_channel_id_is_explicit(self):
+        """Slack channel IDs (C prefix) are recognized as explicit targets."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("slack", "C0ANYSL2GBE")
+        assert chat_id == "C0ANYSL2GBE"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_slack_dm_id_is_explicit(self):
+        """Slack DM IDs (D prefix) are recognized as explicit targets."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("slack", "D0ATJM3B9UH")
+        assert chat_id == "D0ATJM3B9UH"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_slack_group_id_is_explicit(self):
+        """Slack group IDs (G prefix) are recognized as explicit targets."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("slack", "G0ABCDE5F")
+        assert chat_id == "G0ABCDE5F"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_slack_id_with_thread_timestamp(self):
+        """Slack IDs with thread timestamp (colon-separated) parse both parts."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("slack", "C0ANYSL2GBE:1776351448.347679")
+        assert chat_id == "C0ANYSL2GBE"
+        assert thread_id == "1776351448.347679"
+        assert is_explicit is True
+
+    def test_slack_bot_id_is_explicit(self):
+        """Slack bot IDs (B prefix) are recognized as explicit targets."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("slack", "B0XYZ123ABC")
+        assert chat_id == "B0XYZ123ABC"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_slack_usergroup_id_is_explicit(self):
+        """Slack user (U), file (F), app (V), and workspace (W) IDs are recognized."""
+        for prefix in ["U", "F", "V", "W"]:
+            uid = f"{prefix}0ABC123DEF"
+            chat_id, thread_id, is_explicit = _parse_target_ref("slack", uid)
+            assert chat_id == uid, f"Failed for prefix {prefix}"
+            assert thread_id is None
+            assert is_explicit is True
+
+    def test_slack_id_with_whitespace_is_trimmed(self):
+        """Whitespace-padded Slack IDs are trimmed and recognized."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("slack", "  C0ANYSL2GBE  ")
+        assert chat_id == "C0ANYSL2GBE"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_slack_id_only_matches_slack_platform(self):
+        """Slack-style IDs on non-slack platforms are not treated as explicit."""
+        chat_id, _, is_explicit = _parse_target_ref("telegram", "C0ANYSL2GBE")
+        assert is_explicit is False
+
+        chat_id, _, is_explicit = _parse_target_ref("discord", "C0ANYSL2GBE")
+        assert is_explicit is False
+
+    def test_slack_lowercase_id_not_matched(self):
+        """Lowercase Slack-style IDs are not matched (real IDs use uppercase)."""
+        chat_id, _, is_explicit = _parse_target_ref("slack", "c0anysl2gbe")
+        assert is_explicit is False
+
+    def test_slack_invalid_prefix_not_matched(self):
+        """IDs starting with non-Slack prefixes (e.g. X, Z) are not matched."""
+        chat_id, _, is_explicit = _parse_target_ref("slack", "X0ANYSL2GBE")
+        assert is_explicit is False
+
+    def test_slack_id_with_invalid_thread_not_matched(self):
+        """Slack IDs with non-numeric thread parts are not matched."""
+        chat_id, _, is_explicit = _parse_target_ref("slack", "C0ANYSL2GBE:abc")
+        assert is_explicit is False
+
+
 class TestSendDiscordThreadId:
     """_send_discord uses thread_id when provided."""
 
