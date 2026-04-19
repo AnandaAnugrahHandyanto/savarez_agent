@@ -27,6 +27,7 @@ def _make_adapter(require_mention=None, free_response_chats=None, mention_patter
     adapter._pending_text_batch_tasks = {}
     adapter._text_batch_delay_seconds = 0.01
     adapter._mention_patterns = adapter._compile_mention_patterns()
+    adapter._allowed_inbound_targets = set()
     return adapter
 
 
