@@ -435,6 +435,8 @@ class TrajectoryCompressor:
             return "kimi-coding"
         if "arcee.ai" in url:
             return "arcee"
+        if "concentrate.ai" in url:
+            return "concentrate"
         if "minimaxi.com" in url:
             return "minimax-cn"
         if "minimax.io" in url:

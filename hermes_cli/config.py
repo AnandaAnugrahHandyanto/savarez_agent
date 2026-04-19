@@ -1150,6 +1150,22 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "CONCENTRATE_API_KEY": {
+        "description": "Concentrate AI API key (115+ models, auto-routing)",
+        "prompt": "Concentrate AI API key",
+        "url": "https://app.concentrate.ai",
+        "password": True,
+        "category": "provider",
+        "advanced": False,
+    },
+    "CONCENTRATE_BASE_URL": {
+        "description": "Concentrate AI base URL override (default: https://api.concentrate.ai/v1)",
+        "prompt": "Concentrate base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "AWS_REGION": {
         "description": "AWS region for Bedrock API calls (e.g. us-east-1, eu-central-1)",
         "prompt": "AWS Region",

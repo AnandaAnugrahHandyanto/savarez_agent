@@ -25,6 +25,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Kimi / Moonshot** | `KIMI_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding`) |
 | **Kimi / Moonshot (China)** | `KIMI_CN_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding-cn`; aliases: `kimi-cn`, `moonshot-cn`) |
 | **Arcee AI** | `ARCEEAI_API_KEY` in `~/.hermes/.env` (provider: `arcee`; aliases: `arcee-ai`, `arceeai`) |
+| **Concentrate AI** | `CONCENTRATE_API_KEY` in `~/.hermes/.env` (provider: `concentrate`; aliases: `concentrate-ai`) |
 | **MiniMax** | `MINIMAX_API_KEY` in `~/.hermes/.env` (provider: `minimax`) |
 | **MiniMax China** | `MINIMAX_CN_API_KEY` in `~/.hermes/.env` (provider: `minimax-cn`) |
 | **Alibaba Cloud** | `DASHSCOPE_API_KEY` in `~/.hermes/.env` (provider: `alibaba`, aliases: `dashscope`, `qwen`) |
@@ -274,12 +275,16 @@ hermes chat --provider xiaomi --model mimo-v2-pro
 # Arcee AI (Trinity models)
 hermes chat --provider arcee --model trinity-large-thinking
 # Requires: ARCEEAI_API_KEY in ~/.hermes/.env
+
+# Concentrate AI (multi-model aggregator, 115+ models)
+hermes chat --provider concentrate --model openai/gpt-5.4
+# Requires: CONCENTRATE_API_KEY in ~/.hermes/.env
 ```
 
 Or set the provider permanently in `config.yaml`:
 ```yaml
 model:
-  provider: "zai"       # or: kimi-coding, kimi-coding-cn, minimax, minimax-cn, alibaba, xiaomi, arcee
+  provider: "zai"       # or: kimi-coding, kimi-coding-cn, minimax, minimax-cn, alibaba, xiaomi, arcee, concentrate
   default: "glm-5"
 ```
 
@@ -430,6 +435,34 @@ Get your token at [huggingface.co/settings/tokens](https://huggingface.co/settin
 You can append routing suffixes to model names: `:fastest` (default), `:cheapest`, or `:provider_name` to force a specific backend.
 
 The base URL can be overridden with `HF_BASE_URL`.
+
+### Concentrate AI — Multi-Model Aggregator
+
+[Concentrate AI](https://concentrate.ai) is a multi-model aggregator — similar to OpenRouter — that provides access to 115+ models from multiple vendors through a single OpenAI-compatible endpoint. Models are addressed using `vendor/model` format (e.g. `openai/gpt-5.4`, `anthropic/claude-sonnet-4-6`).
+
+```bash
+# Use any available model
+hermes chat --provider concentrate --model openai/gpt-5.4
+# Requires: CONCENTRATE_API_KEY in ~/.hermes/.env
+
+# Short alias
+hermes chat --provider concentrate-ai --model anthropic/claude-sonnet-4-6
+```
+
+Or set it permanently in `config.yaml`:
+```yaml
+model:
+  provider: "concentrate"
+  default: "openai/gpt-5.4"
+```
+
+Get your API key at [app.concentrate.ai](https://app.concentrate.ai).
+
+The base URL can be overridden with `CONCENTRATE_BASE_URL` (default: `https://api.concentrate.ai/v1`).
+
+:::tip Concentrate AI vs OpenRouter
+Both are multi-model aggregators that use the `vendor/model` naming format. Concentrate AI is an alternative if you prefer its model catalog, pricing, or routing. The setup is identical — just set `CONCENTRATE_API_KEY` instead of `OPENROUTER_API_KEY`.
+:::
 
 ## Custom & Self-Hosted LLM Providers
 
@@ -1159,7 +1192,7 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. It fires **at most once** per session.
 
-Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `deepseek`, `nvidia`, `xai`, `ollama-cloud`, `bedrock`, `ai-gateway`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `alibaba`, `custom`.
+Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `deepseek`, `nvidia`, `xai`, `ollama-cloud`, `bedrock`, `ai-gateway`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `concentrate`, `alibaba`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — there are no environment variables for it. For full details on when it triggers, supported providers, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/docs/user-guide/features/fallback-providers).

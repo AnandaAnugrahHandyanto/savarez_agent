@@ -64,6 +64,7 @@ _AGGREGATOR_PROVIDERS: frozenset[str] = frozenset({
     "nous",
     "ai-gateway",
     "kilocode",
+    "concentrate",
 })
 
 # Providers that want bare names with dots replaced by hyphens.
@@ -96,6 +97,7 @@ _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
     "qwen-oauth",
     "xiaomi",
     "arcee",
+    "concentrate",
     "ollama-cloud",
     "custom",
 })
