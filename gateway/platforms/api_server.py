@@ -146,7 +146,10 @@ _IMAGE_PREPROCESS_PROMPT = (
     "and any other notable visual information."
 )
 
-_IMAGE_DATA_URL_SUFFIXES = {
+# Accept only image MIME types we can sniff and recognize.  Unknown types
+# collapse to a generic .bin suffix so the vision tool rejects them cleanly
+# instead of being misled by the caller's claimed Content-Type.
+_IMAGE_MIME_SUFFIXES = {
     "image/png": ".png",
     "image/gif": ".gif",
     "image/webp": ".webp",
@@ -154,13 +157,64 @@ _IMAGE_DATA_URL_SUFFIXES = {
     "image/jpg": ".jpg",
 }
 
+# Per-image cap on the decoded byte payload of a data: URL (15 MiB).
+# Paired with MAX_REQUEST_BYTES (the per-request cap) so that a single
+# oversize image can't sneak through, and so we don't decode > this much
+# attacker-controlled base64 into RAM.
+_MAX_IMAGE_BYTES = 15 * 1024 * 1024
+
+
+def _sniff_image_mime(data: bytes) -> Optional[str]:
+    """Return the MIME type implied by image magic bytes, or None."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def _is_safe_image_url(url: str) -> bool:
+    """Return True iff ``url`` is an acceptable image source.
+
+    Acceptable: ``data:image/*;base64,...`` and http(s) URLs that pass the
+    shared SSRF filter (which blocks loopback, link-local, private ranges,
+    and cloud-metadata endpoints).  Everything else — ``file://``,
+    ``ftp://``, ``gopher://``, raw local paths — is rejected.
+
+    Fails closed: any lookup/parse error returns False.
+    """
+    if not isinstance(url, str) or not url:
+        return False
+    if url.startswith("data:"):
+        return True  # data: URLs are validated by _materialize_data_url
+    if not url.startswith(("http://", "https://")):
+        return False
+    try:
+        from tools.url_safety import is_safe_url
+    except Exception:
+        # SSRF guard unavailable → refuse to call out to arbitrary hosts.
+        return False
+    try:
+        return bool(is_safe_url(url))
+    except Exception:
+        return False
+
 
 def _materialize_data_url(url: str):
     """Write a ``data:image/...;base64,...`` URL to a temp file.
 
     Returns ``(path_str, cleanup_path)`` where ``cleanup_path`` is the
     :class:`Path` the caller must ``unlink()`` when done.  Returns
-    ``(url, None)`` if ``url`` is not a ``data:`` URL.
+    ``(url, None)`` unchanged if ``url`` is not a ``data:`` URL.
+
+    Validates the payload by sniffing magic bytes — the caller-supplied
+    MIME type is not trusted for anything but logging.  Payloads that
+    exceed ``_MAX_IMAGE_BYTES`` or don't match a known image format raise
+    :class:`ValueError`.
     """
     import base64
     import tempfile
@@ -170,17 +224,33 @@ def _materialize_data_url(url: str):
         return url, None
 
     header, _, payload = url.partition(",")
-    mime = "image/jpeg"
-    mime_part = header[len("data:"):].split(";", 1)[0].strip()
-    if mime_part.startswith("image/"):
-        mime = mime_part
-    suffix = _IMAGE_DATA_URL_SUFFIXES.get(mime, ".jpg")
+    # The claimed MIME is advisory only — sniffed magic bytes decide.
+    claimed_mime = header[len("data:"):].split(";", 1)[0].strip().lower()
 
+    try:
+        data = base64.b64decode(payload, validate=False)
+    except Exception as exc:  # binascii.Error, ValueError
+        raise ValueError("invalid base64 payload in data: URL") from exc
+
+    if len(data) > _MAX_IMAGE_BYTES:
+        raise ValueError(
+            f"image payload exceeds per-image limit "
+            f"({len(data)} > {_MAX_IMAGE_BYTES} bytes)"
+        )
+
+    sniffed_mime = _sniff_image_mime(data)
+    if sniffed_mime is None:
+        raise ValueError(
+            "data: URL payload is not a recognized image format "
+            f"(claimed {claimed_mime!r})"
+        )
+
+    suffix = _IMAGE_MIME_SUFFIXES.get(sniffed_mime, ".bin")
     tmp = tempfile.NamedTemporaryFile(
         prefix="api_server_image_", suffix=suffix, delete=False,
     )
     try:
-        tmp.write(base64.b64decode(payload))
+        tmp.write(data)
     finally:
         tmp.close()
     path = _Path(tmp.name)
@@ -232,12 +302,20 @@ async def _preprocess_message_images(messages: List[Dict[str, Any]]) -> None:
     ultimately only sees text.
 
     ``data:`` URLs (used by Open WebUI and similar frontends) are materialized
-    to a temp file so the vision tool can read them; remote URLs are passed
-    through.  Errors per-image produce a note in the message rather than
-    failing the whole request.
+    to a temp file after base64-decoded-size and magic-byte validation;
+    remote URLs are filtered through ``tools.url_safety.is_safe_url`` to
+    block SSRF targets.  Per-image errors produce a neutral note in the
+    message rather than failing the whole request, and exception details
+    are logged internally rather than echoed to the caller.
 
     Mutates ``messages`` in place.
     """
+    # Neutral user-facing message for any per-image failure.  Exception
+    # details (file paths, stack traces, internal URLs) go only to logs.
+    _IMAGE_FAILED_NOTE = (
+        "[The user attached an image but it could not be processed.]"
+    )
+
     for msg in messages:
         if not isinstance(msg, dict):
             continue
@@ -266,6 +344,13 @@ async def _preprocess_message_images(messages: List[Dict[str, Any]]) -> None:
 
         enriched: List[str] = []
         for url in image_urls:
+            if not _is_safe_image_url(url):
+                logger.warning(
+                    "api_server rejecting unsafe image url (scheme/SSRF filter)"
+                )
+                enriched.append(_IMAGE_FAILED_NOTE)
+                continue
+
             vision_source, cleanup_path = url, None
             try:
                 vision_source, cleanup_path = _materialize_data_url(url)
@@ -288,17 +373,24 @@ async def _preprocess_message_images(messages: List[Dict[str, Any]]) -> None:
                             "[The user attached an image but the vision model returned no description.]"
                         )
                 else:
-                    err = ""
+                    # Log the upstream reason verbatim for operators; show a
+                    # neutral message to the agent so internal paths / errors
+                    # don't end up in user-visible output.
+                    upstream_err = ""
                     if isinstance(result, dict):
-                        err = str(result.get("analysis") or result.get("error") or "").strip()
-                    enriched.append(
-                        f"[The user attached an image but analysis failed: {err or 'unknown error'}]"
+                        upstream_err = str(
+                            result.get("analysis") or result.get("error") or ""
+                        ).strip()
+                    logger.warning(
+                        "api_server vision analysis failed: %s",
+                        upstream_err or "unknown error",
                     )
+                    enriched.append(_IMAGE_FAILED_NOTE)
             except Exception as exc:
-                logger.warning("api_server image preprocessing raised: %s", exc)
-                enriched.append(
-                    f"[The user attached an image but analysis raised: {exc}]"
+                logger.warning(
+                    "api_server image preprocessing raised: %s", exc, exc_info=True,
                 )
+                enriched.append(_IMAGE_FAILED_NOTE)
             finally:
                 if cleanup_path is not None:
                     try:

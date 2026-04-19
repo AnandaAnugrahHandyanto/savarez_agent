@@ -13,8 +13,10 @@ from unittest.mock import patch
 import pytest
 
 from gateway.platforms.api_server import (
+    _is_safe_image_url,
     _materialize_data_url,
     _preprocess_message_images,
+    _sniff_image_mime,
     _split_content_parts,
 )
 
@@ -53,6 +55,17 @@ def _install_vision_stub(monkeypatch, impl):
     stub = type(sys)("tools.vision_tools")
     stub.vision_analyze_tool = impl  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "tools.vision_tools", stub)
+
+
+def _force_allow_safe_url(monkeypatch):
+    """Make ``_is_safe_image_url`` treat any http(s) URL as safe.
+
+    Bypasses the real SSRF filter's network-dependent DNS checks so tests
+    don't flake on developer boxes where DNS hijacking / Stash fake-ip
+    resolves ``example.com`` to a private range.
+    """
+    import tools.url_safety as _url_safety
+    monkeypatch.setattr(_url_safety, "is_safe_url", lambda _url: True)
 
 
 # ── _split_content_parts ─────────────────────────────────────────────────
@@ -108,15 +121,90 @@ class TestMaterializeDataUrl:
             if cleanup is not None and cleanup.exists():
                 cleanup.unlink()
 
-    def test_unknown_mime_defaults_to_jpg_suffix(self):
-        url = "data:image/tiff;base64," + base64.b64encode(b"tiffdata").decode()
+    def test_payload_without_image_magic_is_rejected(self):
+        # Attacker-supplied Content-Type must NOT be trusted — sniff bytes.
+        url = "data:image/png;base64," + base64.b64encode(b"not an image").decode()
+        with pytest.raises(ValueError, match="not a recognized image format"):
+            _materialize_data_url(url)
+
+    def test_invalid_base64_rejected(self):
+        url = "data:image/png;base64,%%%not base64%%%"
+        with pytest.raises(ValueError, match="invalid base64"):
+            _materialize_data_url(url)
+
+    def test_oversize_payload_rejected(self):
+        # Synthetic 20 MiB "image" (well past _MAX_IMAGE_BYTES = 15 MiB).
+        from gateway.platforms.api_server import _MAX_IMAGE_BYTES
+        big = b"\x89PNG\r\n\x1a\n" + b"\x00" * (_MAX_IMAGE_BYTES + 1)
+        url = "data:image/png;base64," + base64.b64encode(big).decode()
+        with pytest.raises(ValueError, match="per-image limit"):
+            _materialize_data_url(url)
+
+    def test_suffix_reflects_sniffed_mime_not_claim(self):
+        # Claim JPEG but actually a PNG — suffix should match sniff, not claim.
+        url = "data:image/jpeg;base64," + base64.b64encode(_TINY_PNG_BYTES).decode()
         path, cleanup = _materialize_data_url(url)
         try:
             assert cleanup is not None
-            assert cleanup.suffix == ".jpg"
+            assert cleanup.suffix == ".png"
         finally:
             if cleanup is not None and cleanup.exists():
                 cleanup.unlink()
+
+
+class TestSniffImageMime:
+    def test_png(self):
+        assert _sniff_image_mime(_TINY_PNG_BYTES) == "image/png"
+
+    def test_jpeg(self):
+        assert _sniff_image_mime(b"\xff\xd8\xff\xe0foo") == "image/jpeg"
+
+    def test_gif(self):
+        assert _sniff_image_mime(b"GIF89a" + b"\x00" * 16) == "image/gif"
+
+    def test_webp(self):
+        assert _sniff_image_mime(b"RIFF\x00\x00\x00\x00WEBPfoo") == "image/webp"
+
+    def test_arbitrary_bytes_rejected(self):
+        assert _sniff_image_mime(b"plain text not an image") is None
+        assert _sniff_image_mime(b"") is None
+
+
+class TestIsSafeImageUrl:
+    def test_data_url_allowed(self):
+        assert _is_safe_image_url("data:image/png;base64,AAAA") is True
+
+    def test_https_allowed(self, monkeypatch):
+        _force_allow_safe_url(monkeypatch)
+        assert _is_safe_image_url("https://example.com/img.png") is True
+
+    @pytest.mark.parametrize("scheme", ["file://", "ftp://", "gopher://", "javascript:", "ldap://"])
+    def test_non_http_schemes_rejected(self, scheme):
+        assert _is_safe_image_url(scheme + "whatever/path") is False
+
+    def test_empty_or_non_string(self):
+        assert _is_safe_image_url("") is False
+        assert _is_safe_image_url(None) is False  # type: ignore[arg-type]
+        assert _is_safe_image_url(123) is False  # type: ignore[arg-type]
+
+    def test_fails_closed_when_url_safety_module_missing(self, monkeypatch):
+        # If the SSRF guard import fails, don't fall through to unchecked I/O.
+        import builtins
+        real_import = builtins.__import__
+
+        def fake_import(name, *a, **kw):
+            if name == "tools.url_safety":
+                raise ImportError("simulated")
+            return real_import(name, *a, **kw)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+        assert _is_safe_image_url("https://example.com/x.png") is False
+
+    def test_ssrf_target_rejected(self, monkeypatch):
+        # Mock is_safe_url → False to simulate a private-IP / metadata URL.
+        stub = sys.modules.setdefault("tools.url_safety", type(sys)("tools.url_safety"))
+        monkeypatch.setattr(stub, "is_safe_url", lambda _url: False, raising=False)
+        assert _is_safe_image_url("http://169.254.169.254/latest/meta-data/") is False
 
 
 # ── _preprocess_message_images ───────────────────────────────────────────
@@ -193,34 +281,74 @@ class TestPreprocessMessageImages:
         assert content.endswith("compare")
 
     @pytest.mark.asyncio
-    async def test_vision_tool_failure_produces_note(self, monkeypatch):
+    async def test_vision_tool_failure_produces_neutral_note(self, monkeypatch, caplog):
+        _force_allow_safe_url(monkeypatch)
         _install_vision_stub(monkeypatch, _failing_vision)
         messages = [{
             "role": "user",
             "content": [
                 {"type": "text", "text": "look"},
-                {"type": "image_url", "image_url": {"url": "https://example/x.png"}},
+                {"type": "image_url", "image_url": {"url": "https://example.com/x.png"}},
             ],
         }]
-        await _preprocess_message_images(messages)
+        with caplog.at_level("WARNING"):
+            await _preprocess_message_images(messages)
         content = messages[0]["content"]
         assert isinstance(content, str)
-        assert "analysis failed" in content
+        # User-facing message is neutral; upstream detail must not leak.
+        assert "could not be processed" in content
+        assert "vision backend unreachable" not in content
         assert "look" in content
+        # Operator-facing log DOES carry the detail.
+        assert any(
+            "vision backend unreachable" in r.getMessage() for r in caplog.records
+        )
 
     @pytest.mark.asyncio
-    async def test_vision_tool_exception_produces_note(self, monkeypatch):
+    async def test_vision_tool_exception_does_not_leak(self, monkeypatch, caplog):
+        _force_allow_safe_url(monkeypatch)
         _install_vision_stub(monkeypatch, _raising_vision)
         messages = [{
             "role": "user",
             "content": [
-                {"type": "image_url", "image_url": {"url": "https://example/x.png"}},
+                {"type": "image_url", "image_url": {"url": "https://example.com/x.png"}},
             ],
         }]
-        await _preprocess_message_images(messages)
+        with caplog.at_level("WARNING"):
+            await _preprocess_message_images(messages)
         content = messages[0]["content"]
-        assert "analysis raised" in content
-        assert "boom" in content
+        # Exception repr ("boom", the RuntimeError) is logged but NOT exposed.
+        assert "boom" not in content
+        assert "could not be processed" in content
+        assert any("boom" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_unsafe_url_is_rejected_without_calling_vision(self, monkeypatch, caplog):
+        """file:// and other non-http(s) schemes bypass the vision tool entirely."""
+        calls = []
+
+        async def spy_vision(image_url, user_prompt, **_kw):
+            calls.append(image_url)
+            return json.dumps({"success": True, "analysis": "leaked"})
+
+        _install_vision_stub(monkeypatch, spy_vision)
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": "file:///etc/passwd"}},
+                {"type": "text", "text": "what's in my file?"},
+            ],
+        }]
+        with caplog.at_level("WARNING"):
+            await _preprocess_message_images(messages)
+        assert calls == []  # vision tool never invoked for the unsafe URL
+        content = messages[0]["content"]
+        assert "could not be processed" in content
+        assert "passwd" not in content
+        assert "what's in my file?" in content
+        assert any(
+            "rejecting unsafe image url" in r.getMessage() for r in caplog.records
+        )
 
     @pytest.mark.asyncio
     async def test_data_url_tempfile_cleaned_up(self, monkeypatch):
