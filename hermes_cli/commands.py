@@ -58,8 +58,18 @@ class CommandDef:
 
 COMMAND_REGISTRY: list[CommandDef] = [
     # Session
-    CommandDef("new", "Start a new session (fresh session ID + history)", "Session",
+    CommandDef("new", "Start a new clean session", "Session",
                aliases=("reset",)),
+    CommandDef("undo", "Remove the last user/assistant exchange", "Session"),
+    CommandDef("btw", "Ask a quick side question without changing the main thread", "Session",
+               args_hint="<question>"),
+    CommandDef("wrapup", "Summarize the current workspace, open loops, and next resume point", "Session",
+               args_hint="[focus]"),
+    CommandDef("speech", "Switch to speech workspace and reset session context", "Session"),
+    CommandDef("post", "Switch to post/social workspace and reset session context", "Session"),
+    CommandDef("people", "Switch to people-manager workspace and reset session context", "Session"),
+    CommandDef("hiring", "Switch to hiring workspace and reset session context", "Session"),
+    CommandDef("project", "Switch to project workspace and reset session context", "Session"),
     CommandDef("clear", "Clear screen and start a new session", "Session",
                cli_only=True),
     CommandDef("history", "Show conversation history", "Session",
@@ -67,7 +77,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("save", "Save the current conversation", "Session",
                cli_only=True),
     CommandDef("retry", "Retry the last message (resend to agent)", "Session"),
-    CommandDef("undo", "Remove the last user/assistant exchange", "Session"),
     CommandDef("title", "Set a title for the current session", "Session",
                args_hint="[name]"),
     CommandDef("branch", "Branch the current session (explore a different path)", "Session",
@@ -85,8 +94,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True),
     CommandDef("background", "Run a prompt in the background", "Session",
                aliases=("bg",), args_hint="<prompt>"),
-    CommandDef("btw", "Ephemeral side question using session context (no tools, not persisted)", "Session",
-               args_hint="<question>"),
     CommandDef("queue", "Queue a prompt for the next turn (doesn't interrupt)", "Session",
                aliases=("q",), args_hint="<prompt>"),
     CommandDef("status", "Show session info", "Session"),
@@ -317,22 +324,47 @@ def gateway_help_lines() -> list[str]:
     return lines
 
 
+TELEGRAM_MENU_PRIORITY: tuple[str, ...] = (
+    "new",
+    "undo",
+    "btw",
+    "wrapup",
+    "speech",
+    "post",
+    "people",
+    "hiring",
+    "project",
+    "model",
+)
+
+
 def telegram_bot_commands() -> list[tuple[str, str]]:
     """Return (command_name, description) pairs for Telegram setMyCommands.
 
     Telegram command names cannot contain hyphens, so they are replaced with
     underscores.  Aliases are skipped -- Telegram shows one menu entry per
     canonical command.
+
+    The V1 high-frequency command set is surfaced first in the Telegram menu,
+    with all other gateway-available built-ins appended afterward.
     """
     overrides = _resolve_config_gates()
-    result: list[tuple[str, str]] = []
+    prioritized: list[tuple[str, str]] = []
+    remaining: list[tuple[str, str]] = []
+    priority_names = set(TELEGRAM_MENU_PRIORITY)
+
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
         tg_name = _sanitize_telegram_name(cmd.name)
-        if tg_name:
-            result.append((tg_name, cmd.description))
-    return result
+        if not tg_name:
+            continue
+        entry = (tg_name, cmd.description)
+        if cmd.name in priority_names:
+            prioritized.append(entry)
+        else:
+            remaining.append(entry)
+    return prioritized + remaining
 
 
 _CMD_NAME_LIMIT = 32

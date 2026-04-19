@@ -77,6 +77,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home
+from people_manager import handle_people_message
 from utils import atomic_yaml_write, is_truthy_value
 _hermes_home = get_hermes_home()
 
@@ -3045,6 +3046,14 @@ class GatewayRunner:
         if canonical == "personality":
             return await self._handle_personality_command(event)
 
+        if canonical == "wrapup":
+            focus = event.get_command_args().strip()
+            event.text = self._build_wrapup_prompt(focus)
+            canonical = None
+
+        if canonical in {"speech", "post", "people", "hiring", "project"}:
+            return await self._handle_workspace_switch_command(event, canonical)
+
         if canonical == "plan":
             try:
                 from agent.skill_commands import build_plan_path, build_skill_invocation_message
@@ -3120,6 +3129,11 @@ class GatewayRunner:
 
         if canonical == "voice":
             return await self._handle_voice_command(event)
+
+        if event.message_type == MessageType.TEXT and not command:
+            people_result = await self._maybe_handle_people_manager_message(event)
+            if people_result is not None:
+                return people_result
 
         if self._draining:
             return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
@@ -5005,14 +5019,52 @@ class GatewayRunner:
         lines.append("Setup: `hermes setup`")
         return "\n".join(lines)
     
-    async def _handle_personality_command(self, event: MessageEvent) -> str:
-        """Handle /personality command - list or set a personality."""
+    @staticmethod
+    def _resolve_personality_value(value) -> str:
+        if isinstance(value, dict):
+            parts = [value.get("system_prompt", "")]
+            if value.get("tone"):
+                parts.append(f'Tone: {value["tone"]}')
+            if value.get("style"):
+                parts.append(f'Style: {value["style"]}')
+            return "\n".join(p for p in parts if p)
+        return str(value)
+
+    @staticmethod
+    def _default_workspace_prompt(workspace: str) -> str:
+        prompts = {
+            "speech": (
+                "You are in /speech workspace. Focus on speechwriting, talk prep, "
+                "audience-aware structure, and stage delivery. Keep separation from "
+                "post, hiring, people, and project contexts unless the user explicitly asks."
+            ),
+            "post": (
+                "You are in /post workspace. Focus on public posts, social copy, "
+                "compression, voice, and public-safe framing. Do not pull in private "
+                "people or hiring context unless the user explicitly asks."
+            ),
+            "people": (
+                "You are in /people workspace. Focus on direct-report management, "
+                "1:1 prep, assessments, coaching, and organizational judgment. Separate "
+                "facts, manager assessment, and assistant synthesis."
+            ),
+            "hiring": (
+                "You are in /hiring workspace. Focus on interview prep, candidate "
+                "assessment, signal calibration, and hiring decisions. Keep this context "
+                "separate from people-management and public-writing work."
+            ),
+            "project": (
+                "You are in /project workspace. Focus on active project planning, "
+                "execution tracking, deliverables, dependencies, and decision follow-up. "
+                "Keep this workspace separate from speech, post, hiring, and people modes."
+            ),
+        }
+        return prompts[workspace]
+
+    def _load_gateway_personalities(self) -> tuple[dict, dict, object]:
         import yaml
-        from hermes_constants import display_hermes_home
 
-        args = event.get_command_args().strip().lower()
         config_path = _hermes_home / 'config.yaml'
-
         try:
             if config_path.exists():
                 with open(config_path, 'r', encoding="utf-8") as f:
@@ -5024,6 +5076,35 @@ class GatewayRunner:
         except Exception:
             config = {}
             personalities = {}
+        return config, personalities, config_path
+
+    def _set_session_prompt_override(self, source, prompt: str) -> None:
+        if not hasattr(self, "_ephemeral_system_prompt_by_session_key") or not isinstance(self._ephemeral_system_prompt_by_session_key, dict):
+            self._ephemeral_system_prompt_by_session_key = {}
+        self._ephemeral_system_prompt_by_session_key[self._session_key_for_source(source)] = prompt
+
+    def _clear_session_prompt_override(self, source) -> None:
+        overrides = getattr(self, "_ephemeral_system_prompt_by_session_key", {})
+        if isinstance(overrides, dict):
+            overrides.pop(self._session_key_for_source(source), None)
+
+    def _clear_session_workspace(self, source) -> None:
+        workspace_map = getattr(self, "_workspace_by_session_key", {})
+        if isinstance(workspace_map, dict):
+            workspace_map.pop(self._session_key_for_source(source), None)
+
+    def _get_session_prompt_override(self, session_key: str | None) -> str:
+        overrides = getattr(self, "_ephemeral_system_prompt_by_session_key", {})
+        if isinstance(overrides, dict) and session_key and session_key in overrides:
+            return overrides[session_key]
+        return self._ephemeral_system_prompt or ""
+
+    async def _handle_personality_command(self, event: MessageEvent) -> str:
+        """Handle /personality command - list or set a personality."""
+        from hermes_constants import display_hermes_home
+
+        args = event.get_command_args().strip().lower()
+        config, personalities, config_path = self._load_gateway_personalities()
 
         if not personalities:
             return f"No personalities configured in `{display_hermes_home()}/config.yaml`"
@@ -5040,16 +5121,6 @@ class GatewayRunner:
             lines.append("\nUsage: `/personality <name>`")
             return "\n".join(lines)
 
-        def _resolve_prompt(value):
-            if isinstance(value, dict):
-                parts = [value.get("system_prompt", "")]
-                if value.get("tone"):
-                    parts.append(f'Tone: {value["tone"]}')
-                if value.get("style"):
-                    parts.append(f'Style: {value["style"]}')
-                return "\n".join(p for p in parts if p)
-            return str(value)
-
         if args in ("none", "default", "neutral"):
             try:
                 if "agent" not in config or not isinstance(config.get("agent"), dict):
@@ -5058,10 +5129,12 @@ class GatewayRunner:
                 atomic_yaml_write(config_path, config)
             except Exception as e:
                 return f"⚠️ Failed to save personality change: {e}"
+            self._clear_session_workspace(event.source)
+            self._clear_session_prompt_override(event.source)
             self._ephemeral_system_prompt = ""
             return "🎭 Personality cleared — using base agent behavior.\n_(takes effect on next message)_"
         elif args in personalities:
-            new_prompt = _resolve_prompt(personalities[args])
+            new_prompt = self._resolve_personality_value(personalities[args])
 
             # Write to config.yaml, same pattern as CLI save_config_value.
             try:
@@ -5072,13 +5145,69 @@ class GatewayRunner:
             except Exception as e:
                 return f"⚠️ Failed to save personality change: {e}"
 
-            # Update in-memory so it takes effect on the very next message.
+            # Update this session so it takes effect on the very next message.
+            self._clear_session_workspace(event.source)
+            self._set_session_prompt_override(event.source, new_prompt)
             self._ephemeral_system_prompt = new_prompt
 
             return f"🎭 Personality set to **{args}**\n_(takes effect on next message)_"
 
         available = "`none`, " + ", ".join(f"`{n}`" for n in personalities)
         return f"Unknown personality: `{args}`\n\nAvailable: {available}"
+
+    async def _handle_workspace_switch_command(self, event: MessageEvent, workspace: str) -> str:
+        """Switch workspace/system prompt for this session and create a clean session boundary."""
+        _config, personalities, _config_path = self._load_gateway_personalities()
+        if workspace in personalities:
+            prompt = self._resolve_personality_value(personalities[workspace])
+            source_label = "configured personality"
+        else:
+            prompt = self._default_workspace_prompt(workspace)
+            source_label = "built-in workspace prompt"
+
+        if not hasattr(self, "_workspace_by_session_key") or not isinstance(self._workspace_by_session_key, dict):
+            self._workspace_by_session_key = {}
+        self._workspace_by_session_key[self._session_key_for_source(event.source)] = workspace
+        self._set_session_prompt_override(event.source, prompt)
+        reset_msg = await self._handle_reset_command(event)
+        return (
+            f"🧭 Switched to /{workspace} workspace ({source_label}).\n"
+            f"{reset_msg}\n\n"
+            "Use /wrapup before switching next time if you want an explicit handoff note."
+        )
+
+    def _get_active_workspace(self) -> Optional[str]:
+        """Return the active workspace recorded in config, if any."""
+        config, _personalities, _config_path = self._load_gateway_personalities()
+        agent_cfg = config.get("agent", {}) if isinstance(config, dict) else {}
+        workspace = agent_cfg.get("active_workspace") if isinstance(agent_cfg, dict) else None
+        return workspace if isinstance(workspace, str) else None
+
+    def _workspace_for_source(self, source) -> Optional[str]:
+        """Return only the per-session workspace mapping for this source."""
+        session_key = self._session_key_for_source(source)
+        workspace_map = getattr(self, "_workspace_by_session_key", {})
+        if isinstance(workspace_map, dict) and session_key in workspace_map:
+            return workspace_map[session_key]
+        return None
+
+    async def _maybe_handle_people_manager_message(self, event: MessageEvent) -> Optional[str]:
+        """Intercept deterministic people-manager messages in /people workspace."""
+        if self._workspace_for_source(event.source) != "people":
+            return None
+        lane_id = f"{event.source.platform.value}:{event.source.chat_id}" if event.source.platform else str(event.source.chat_id)
+        return handle_people_message(event.text or "", lane_id=lane_id, workspace="people")
+
+    @staticmethod
+    def _build_wrapup_prompt(focus: str = "") -> str:
+        prompt = (
+            "Please wrap up the current workspace/thread. Return: "
+            "(1) what we accomplished, (2) open loops, (3) decisions made, "
+            "(4) next recommended actions, and (5) a short resume note for restarting later."
+        )
+        if focus:
+            prompt += f" Focus especially on: {focus}."
+        return prompt
     
     async def _handle_retry_command(self, event: MessageEvent) -> str:
         """Handle /retry command - re-send the last user message."""
@@ -8462,8 +8591,9 @@ class GatewayRunner:
             event_channel_prompt = (channel_prompt or "").strip()
             if event_channel_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + event_channel_prompt).strip()
-            if self._ephemeral_system_prompt:
-                combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
+            session_prompt_override = self._get_session_prompt_override(session_key)
+            if session_prompt_override:
+                combined_ephemeral = (combined_ephemeral + "\n\n" + session_prompt_override).strip()
 
             # Re-read .env and config for fresh credentials (gateway is long-lived,
             # keys may change without restart).

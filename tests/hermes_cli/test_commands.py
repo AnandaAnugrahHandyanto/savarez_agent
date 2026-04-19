@@ -79,6 +79,11 @@ class TestCommandRegistry:
             "xhigh",
         )
 
+    def test_v1_workspace_commands_exist(self):
+        names = [cmd.name for cmd in COMMAND_REGISTRY]
+        for name in ("wrapup", "speech", "post", "people", "hiring", "project"):
+            assert name in names
+
     def test_cli_only_and_gateway_only_are_mutually_exclusive(self):
         for cmd in COMMAND_REGISTRY:
             assert not (cmd.cli_only and cmd.gateway_only), \
@@ -207,6 +212,21 @@ class TestTelegramBotCommands:
         for name, desc in cmds:
             assert isinstance(name, str)
             assert isinstance(desc, str)
+
+    def test_v1_priority_commands_surface_first(self):
+        names = [name for name, _ in telegram_bot_commands()[:10]]
+        assert names == [
+            "new",
+            "undo",
+            "btw",
+            "wrapup",
+            "speech",
+            "post",
+            "people",
+            "hiring",
+            "project",
+            "model",
+        ]
 
     def test_no_hyphens_in_command_names(self):
         """Telegram does not support hyphens in command names."""

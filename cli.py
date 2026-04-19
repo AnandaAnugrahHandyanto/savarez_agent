@@ -72,6 +72,7 @@ _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧
 # User-managed env files should override stale shell exports on restart.
 from hermes_constants import get_hermes_home, display_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
+from people_manager import handle_people_message
 
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
@@ -1734,6 +1735,7 @@ class HermesCLI:
             os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "")
             or CLI_CONFIG["agent"].get("system_prompt", "")
         )
+        self.active_workspace = None
         self.personalities = CLI_CONFIG["agent"].get("personalities", {})
         
         # Ephemeral prefill messages (few-shot priming, never persisted)
@@ -4921,6 +4923,7 @@ class HermesCLI:
             
             if personality_name in ("none", "default", "neutral"):
                 self.system_prompt = ""
+                self.active_workspace = None
                 self.agent = None  # Force re-init
                 if save_config_value("agent.system_prompt", ""):
                     print("(^_^)b Personality cleared (saved to config)")
@@ -4929,6 +4932,7 @@ class HermesCLI:
                 print("  No personality overlay — using base agent behavior.")
             elif personality_name in self.personalities:
                 self.system_prompt = self._resolve_personality_prompt(self.personalities[personality_name])
+                self.active_workspace = None
                 self.agent = None  # Force re-init
                 if save_config_value("agent.system_prompt", self.system_prompt):
                     print(f"(^_^)b Personality set to '{personality_name}' (saved to config)")
@@ -4955,9 +4959,80 @@ class HermesCLI:
             print()
             print("  Usage: /personality <name>")
             print()
+
+    @staticmethod
+    def _default_workspace_prompt(workspace: str) -> str:
+        prompts = {
+            "speech": (
+                "You are in /speech workspace. Focus on speechwriting, talk prep, "
+                "audience-aware structure, and stage delivery. Keep separation from "
+                "post, hiring, people, and project contexts unless the user explicitly asks."
+            ),
+            "post": (
+                "You are in /post workspace. Focus on public posts, social copy, "
+                "compression, voice, and public-safe framing. Do not pull in private "
+                "people or hiring context unless the user explicitly asks."
+            ),
+            "people": (
+                "You are in /people workspace. Focus on direct-report management, "
+                "1:1 prep, assessments, coaching, and organizational judgment. Separate "
+                "facts, manager assessment, and assistant synthesis."
+            ),
+            "hiring": (
+                "You are in /hiring workspace. Focus on interview prep, candidate "
+                "assessment, signal calibration, and hiring decisions. Keep this context "
+                "separate from people-management and public-writing work."
+            ),
+            "project": (
+                "You are in /project workspace. Focus on active project planning, "
+                "execution tracking, deliverables, dependencies, and decision follow-up. "
+                "Keep this workspace separate from speech, post, hiring, and people modes."
+            ),
+        }
+        return prompts[workspace]
+
+    def _load_workspace_prompt(self, workspace: str) -> tuple[str, str]:
+        """Return (prompt, source_label) for a workspace command."""
+        personality = self.personalities.get(workspace)
+        if personality is not None:
+            return self._resolve_personality_prompt(personality), "configured personality"
+        return self._default_workspace_prompt(workspace), "built-in workspace prompt"
+
+    def _handle_workspace_switch_command(self, workspace: str):
+        """Switch workspace/system prompt for this session and reset the session boundary cleanly."""
+        prompt, source_label = self._load_workspace_prompt(workspace)
+        self.system_prompt = prompt
+        self.active_workspace = workspace
+        self.agent = None
+        self.new_session()
+        _cprint(f"  Switched to /{workspace} workspace ({source_label}).")
+        _cprint("  Clean session boundary created. Use /wrapup before switching next time if you want an explicit handoff note.")
+
+    def _maybe_handle_people_manager_input(self, user_input: str) -> Optional[str]:
+        """Intercept deterministic people-manager commands in /people workspace."""
+        if getattr(self, "active_workspace", None) != "people":
+            return None
+        return handle_people_message(user_input, lane_id="cli", workspace="people")
+
+    def _handle_wrapup_command(self, cmd: str):
+        """Queue a workspace wrap-up prompt into the main conversation."""
+        parts = cmd.strip().split(maxsplit=1)
+        focus = parts[1].strip() if len(parts) > 1 else ""
+        prompt = (
+            "Please wrap up the current workspace/thread. Return: "
+            "(1) what we accomplished, (2) open loops, (3) decisions made, "
+            "(4) next recommended actions, and (5) a short resume note for restarting later."
+        )
+        if focus:
+            prompt += f" Focus especially on: {focus}."
+        if hasattr(self, '_pending_input'):
+            self._pending_input.put(prompt)
+            _cprint("  Wrap-up queued for the next turn.")
+        else:
+            _cprint("  Wrap-up unavailable: input queue not initialized.")
     
     def _handle_cron_command(self, cmd: str):
-        """Handle the /cron command to manage scheduled tasks."""
+        """Handle /cron [subcommand] — manage scheduled tasks."""
         import shlex
         from tools.cronjob_tools import cronjob as cronjob_tool
 
@@ -5424,6 +5499,10 @@ class HermesCLI:
         elif canonical == "personality":
             # Use original case (handler lowercases the personality name itself)
             self._handle_personality_command(cmd_original)
+        elif canonical == "wrapup":
+            self._handle_wrapup_command(cmd_original)
+        elif canonical in {"speech", "post", "people", "hiring", "project"}:
+            self._handle_workspace_switch_command(canonical)
         elif canonical == "plan":
             self._handle_plan_command(cmd_original)
         elif canonical == "retry":
@@ -9648,6 +9727,13 @@ class HermesCLI:
                     if submit_images:
                         n = len(submit_images)
                         _cprint(f"  {_DIM}📎 {n} image{'s' if n > 1 else ''} attached{_RST}")
+
+                    if isinstance(user_input, str):
+                        people_result = self._maybe_handle_people_manager_input(user_input)
+                        if people_result is not None:
+                            print()
+                            ChatConsole().print(people_result)
+                            continue
 
                     # Regular chat - run agent
                     self._agent_running = True
