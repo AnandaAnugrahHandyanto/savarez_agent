@@ -42,14 +42,17 @@ from typing import Any
 # on sys.path by default.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import adapters    # noqa: E402
-import algorithms  # noqa: E402
-import cache       # noqa: E402
-import critic      # noqa: E402
-import judge       # noqa: E402
-import operators   # noqa: E402
-import storage     # noqa: E402
-import evaluator   # noqa: E402
+import adapters              # noqa: E402
+import algorithms            # noqa: E402
+import cache                 # noqa: E402
+import critic                # noqa: E402
+import descriptor_controller # noqa: E402
+import descriptor_dsl        # noqa: E402
+import hub                   # noqa: E402
+import judge                 # noqa: E402
+import operators             # noqa: E402
+import storage               # noqa: E402
+import evaluator             # noqa: E402
 from algorithms import (  # noqa: E402
     Exp3Bandit,
     Individual,
@@ -257,8 +260,34 @@ def cmd_init(args: argparse.Namespace) -> None:
          "code":   "def solve(x):\n    return x\n"}[task],
         encoding="utf-8",
     )
-    storage.open_db(exp / "lineage.db").close()
-    _out({"ok": True, "dir": str(exp), "task": task})
+    conn = storage.open_db(exp / "lineage.db")
+
+    # v0.3 (B3): warm-start from a hub snapshot by adding its top-K
+    # genomes as extra seed files. Provenance is recorded so lineage
+    # queries can distinguish human-curated from hub-imported seeds.
+    imported = 0
+    warm_tag = getattr(args, "warm_start", None)
+    if warm_tag:
+        try:
+            genomes = hub.warm_start_seeds(warm_tag, top_k=getattr(args, "warm_k", 5))
+        except KeyError as exc:
+            conn.close()
+            _err(str(exc))
+            return
+        snap = hub.resolve(warm_tag)
+        for i, g in enumerate(genomes, start=1):
+            (exp / "seed" / f"warm_{i:02d}.txt").write_text(g, encoding="utf-8")
+            imported += 1
+            # Candidate rows appear only after ``evolver run``;
+            # hub-import provenance is keyed by content-hash genome ID.
+            cid = storage.hash_genome(g)
+            storage.record_hub_import(
+                conn, cid,
+                hub_hash=snap.hash if snap else warm_tag,
+                hub_tag=snap.tag if snap else warm_tag,
+            )
+    conn.close()
+    _out({"ok": True, "dir": str(exp), "task": task, "warm_start_imports": imported})
 
 
 def _load_seeds(exp: Path) -> list[str]:
@@ -414,16 +443,60 @@ async def _run_loop(args: argparse.Namespace, exp: Path) -> dict:
                 storage.record_fitness(conn, ind.cid, "fitness", float(ind.fitness), eval_seed=args.seed)
         await _apply_critic(population, gen=0)
 
+        # v0.3 (A1): descriptor is a DSL-parsed function that the
+        # optional controller can replace mid-run. The default grid
+        # matches v0.2's hard-coded (length, cot_presence) axes, so
+        # existing behaviour is byte-identical when the controller is
+        # off.
+        controller_mode = getattr(args, "descriptor_controller", "off")
+        current_descriptor = descriptor_dsl.parse_descriptor(
+            "grid(length(bins=8), cot_presence())"
+        )
+
+        descriptor_ctrl: descriptor_controller.DescriptorController | None = None
+        if controller_mode != "off":
+            descriptor_ctrl = descriptor_controller.DescriptorController(
+                client=llm,
+                trigger_every_k=getattr(args, "descriptor_every_k", 5),
+                mode=controller_mode,
+            )
+            storage.record_descriptor(
+                conn, 0, current_descriptor.canonical(),
+                "keep", "initial descriptor",
+            )
+
         archive: MapElitesArchive | None = None
         if args.algorithm == "map-elites":
             archive = MapElitesArchive(
-                bin_counts=(8, 2),
-                lows=(0, 0),
-                highs=(8, 2),
+                bin_counts=current_descriptor.bin_counts,
+                lows=current_descriptor.lows,
+                highs=current_descriptor.highs,
                 objective=primary_obj,
             )
+            # Re-descriptor every seed under the current DSL function so
+            # the archive is consistent even when the controller
+            # eventually rewrites the grid.
             for ind in population:
+                ind.descriptor = current_descriptor(ind.genome)
                 archive.place(ind)
+
+        # Fitness-delta ringbuffer (best-of-gen minus previous best)
+        # feeds the controller's plateau signal.
+        fitness_deltas: list[float] = []
+        prev_best_score: float | None = None
+        def _record_delta(pop: list[Individual]) -> None:
+            nonlocal prev_best_score
+            if not pop:
+                return
+            def _s(i: Individual) -> float:
+                f = i.fitness
+                if isinstance(f, dict):
+                    return float(f.get(primary_obj or next(iter(f)), float("nan")))
+                return float(f)
+            curr = max(_s(i) for i in pop)
+            if prev_best_score is not None:
+                fitness_deltas.append(curr - prev_best_score)
+            prev_best_score = curr
 
         bandit = Exp3Bandit(arms=list(operators.MUTATION_OPERATORS.keys()))
 
@@ -459,6 +532,7 @@ async def _run_loop(args: argparse.Namespace, exp: Path) -> dict:
                 elif args.algorithm == "map-elites":
                     assert archive is not None
                     for ind in offspring:
+                        ind.descriptor = current_descriptor(ind.genome)
                         archive.place(ind)
                     population = list(archive.cells.values())
                 elif args.algorithm == "nsga2":
@@ -466,6 +540,27 @@ async def _run_loop(args: argparse.Namespace, exp: Path) -> dict:
                     population = nsga2_select(population + offspring, objectives, args.pop)
                 else:  # pragma: no cover — argparse guards this
                     _err(f"unknown algorithm {args.algorithm!r}")
+
+                # v0.3 (A1): descriptor-controller hook, MAP-Elites only.
+                _record_delta(population)
+                if (
+                    descriptor_ctrl is not None
+                    and archive is not None
+                    and descriptor_ctrl.should_trigger(gen)
+                ):
+                    proposal = await descriptor_ctrl.propose(
+                        current_descriptor, archive, fitness_deltas,
+                        seed=args.seed + gen,
+                    )
+                    storage.record_descriptor(
+                        conn, gen,
+                        (proposal.grid or current_descriptor).canonical(),
+                        proposal.action, proposal.reason,
+                    )
+                    if proposal.action == "replace" and proposal.grid is not None:
+                        archive = descriptor_controller.remap_archive(archive, proposal.grid)
+                        current_descriptor = proposal.grid
+                        population = list(archive.cells.values())
 
                 _stream({
                     "gen": gen,
@@ -617,6 +712,32 @@ def cmd_budget(args: argparse.Namespace) -> None:
     conn.close()
 
 
+def cmd_hub(args: argparse.Namespace) -> None:
+    """``evolver hub {push|list|pull}`` — cross-experiment snapshot store."""
+    if args.action == "push":
+        exp = _resolve_experiment(args.dir)
+        if not exp.exists():
+            _err(f"experiment not found: {exp}")
+        snap = hub.push(exp, tag=args.tag, top_k=args.top_k)
+        _out({"ok": True, "hash": snap.hash, "tag": snap.tag, "path": str(snap.path)})
+    elif args.action == "list":
+        snaps = hub.list_snapshots()
+        _out({"snapshots": [
+            {"hash": s.hash, "tag": s.tag, "created_at": s.created_at,
+             "size": s.size, "objectives": s.manifest.get("objectives", [])}
+            for s in snaps
+        ]})
+    elif args.action == "pull":
+        if not args.tag:
+            _err("hub pull requires --tag / content-hash")
+            return
+        dest = Path(args.dest).resolve() if args.dest else Path.cwd() / f"pulled-{args.tag}"
+        snap = hub.pull(args.tag, dest)
+        _out({"ok": True, "hash": snap.hash, "tag": snap.tag, "dest": str(dest)})
+    else:  # pragma: no cover
+        _err(f"unknown hub action {args.action!r}")
+
+
 def cmd_dashboard(args: argparse.Namespace) -> None:
     """``evolver dashboard <dir>`` — launches the read-only FastAPI UI.
 
@@ -714,6 +835,10 @@ def _build_parser() -> argparse.ArgumentParser:
     pi = sub.add_parser("init", help="scaffold a new experiment directory")
     pi.add_argument("name")
     pi.add_argument("--task", required=True, choices=list(_FITNESS_TEMPLATES))
+    pi.add_argument("--warm-start", dest="warm_start", default=None,
+                    help="hub tag or content-hash to seed this experiment from")
+    pi.add_argument("--warm-k", dest="warm_k", type=int, default=5,
+                    help="number of top-K genomes to pull from the snapshot (default 5)")
     pi.set_defaults(fn=cmd_init)
 
     pr = sub.add_parser("run", help="run the evolutionary loop")
@@ -731,6 +856,12 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="USD per million output tokens (for budget accounting)")
     pr.add_argument("--no-cache",    dest="no_cache", action="store_true",
                     help="disable the LLM response cache (always hits the network)")
+    pr.add_argument("--descriptor-controller", dest="descriptor_controller",
+                    choices=["off", "periodic", "continuous"], default="off",
+                    help="v0.3 A1: enable LLM-driven descriptor mutation (map-elites only)")
+    pr.add_argument("--descriptor-every-k", dest="descriptor_every_k",
+                    type=int, default=5,
+                    help="when --descriptor-controller=periodic, trigger every K generations")
     pr.set_defaults(fn=cmd_run, no_cache=False)
 
     ps = sub.add_parser("status", help="show generations, budget, and best-so-far")
@@ -773,6 +904,15 @@ def _build_parser() -> argparse.ArgumentParser:
     pd_.add_argument("--host", default="127.0.0.1")
     pd_.add_argument("--port", type=int, default=8787)
     pd_.set_defaults(fn=cmd_dashboard)
+
+    phub = sub.add_parser("hub", help="persistent archive hub — push/list/pull")
+    phub.add_argument("action", choices=["push", "list", "pull"])
+    phub.add_argument("--dir",   default=".",     help="experiment dir (for push)")
+    phub.add_argument("--tag",   default=None,    help="tag / content-hash (for pull, default=exp name)")
+    phub.add_argument("--dest",  default=None,    help="pull destination dir")
+    phub.add_argument("--top-k", dest="top_k", type=int, default=10,
+                      help="number of best-K genomes to record in the manifest")
+    phub.set_defaults(fn=cmd_hub)
 
     return p
 

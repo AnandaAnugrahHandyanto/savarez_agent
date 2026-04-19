@@ -102,6 +102,24 @@ CREATE TABLE IF NOT EXISTS critic_evaluations (
     PRIMARY KEY (candidate_id, generation, model)
 );
 
+-- v0.3 (A1): controller-driven descriptor mutations
+CREATE TABLE IF NOT EXISTS descriptor_history (
+    generation INTEGER PRIMARY KEY,
+    grid_expr  TEXT    NOT NULL,
+    action     TEXT    NOT NULL,          -- 'keep' | 'replace'
+    reason     TEXT    NOT NULL DEFAULT '',
+    applied_at INTEGER NOT NULL
+);
+
+-- v0.3 (B3): warm-starts pulled from hub snapshots
+CREATE TABLE IF NOT EXISTS hub_imports (
+    candidate_id TEXT    NOT NULL REFERENCES candidates(id),
+    hub_hash     TEXT    NOT NULL,
+    hub_tag      TEXT    NOT NULL DEFAULT '',
+    imported_at  INTEGER NOT NULL,
+    PRIMARY KEY (candidate_id, hub_hash)
+);
+
 CREATE INDEX IF NOT EXISTS idx_fitness_candidate ON fitness(candidate_id);
 CREATE INDEX IF NOT EXISTS idx_lineage_child     ON lineage(child_id);
 CREATE INDEX IF NOT EXISTS idx_lineage_parent    ON lineage(parent_id);
@@ -448,3 +466,51 @@ def get_critic_evaluation(
     out = dict(row)
     out["signal_tags"] = json.loads(out["signal_tags"] or "[]")
     return out
+
+
+# ---------------------------------------------------------------------------
+# v0.3 (A1): descriptor history — one row per controller verdict
+# ---------------------------------------------------------------------------
+
+
+def record_descriptor(
+    conn: sqlite3.Connection,
+    generation: int,
+    grid_expr: str,
+    action: str,
+    reason: str = "",
+) -> None:
+    with conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO descriptor_history "
+            "(generation, grid_expr, action, reason, applied_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (int(generation), str(grid_expr), str(action), str(reason), int(time.time())),
+        )
+
+
+def list_descriptor_history(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute(
+        "SELECT generation, grid_expr, action, reason FROM descriptor_history "
+        "ORDER BY generation"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# v0.3 (B3): hub imports — lineage-aware warm-start provenance
+# ---------------------------------------------------------------------------
+
+
+def record_hub_import(
+    conn: sqlite3.Connection,
+    candidate_id: str,
+    hub_hash: str,
+    hub_tag: str = "",
+) -> None:
+    with conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO hub_imports "
+            "(candidate_id, hub_hash, hub_tag, imported_at) VALUES (?, ?, ?, ?)",
+            (candidate_id, str(hub_hash), str(hub_tag), int(time.time())),
+        )
