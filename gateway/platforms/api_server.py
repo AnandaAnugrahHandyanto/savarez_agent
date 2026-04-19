@@ -734,7 +734,13 @@ class APIServerAdapter(BasePlatformAdapter):
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
             skip_context_files=merchant_mode,
-            skip_memory=merchant_mode,
+            # Memory is NOT skipped in merchant_mode — instead MemoryStore is
+            # re-pointed at ~/.hermes/merchants/<mid>/memories/ by the
+            # set_merchant_memory_scope() call below, so each merchant gets
+            # their own MEMORY.md + USER.md surviving across sessions while
+            # still being fully isolated from the global store and from
+            # other merchants.
+            skip_memory=False if (merchant_mode and merchant_id) else merchant_mode,
             # Lean mode auto-on with merchant_mode: strips ~1.3k tokens of
             # behavioural guidance + skills index, since the frontend
             # already pre-loads SKILL.md via X-Hermes-Active-Skill and
@@ -904,6 +910,26 @@ class APIServerAdapter(BasePlatformAdapter):
                 _apmzoom_bridge.set_active_skill(active_skill)
             except Exception as e:
                 logger.debug("[apmzoom] merchant_id propagation skipped: %s", e)
+            # Route MemoryStore I/O to the merchant's own memories dir.
+            # MemoryStore is constructed inside AIAgent.__init__ below, and
+            # its get_memory_dir() is resolved at call time — so setting
+            # the scope BEFORE the agent is created is what makes per-merchant
+            # MEMORY.md / USER.md work without further plumbing.
+            try:
+                from tools import memory_tool as _memory_tool
+                _memory_tool.set_merchant_memory_scope(merchant_id or "")
+            except Exception as e:
+                logger.debug("[memory] merchant scope propagation skipped: %s", e)
+        else:
+            # Clear scope on non-merchant requests so the global memories
+            # dir is used (important when the same process serves both
+            # authenticated merchants and unscoped calls, e.g. health probes
+            # or CLI test requests).
+            try:
+                from tools import memory_tool as _memory_tool
+                _memory_tool.set_merchant_memory_scope("")
+            except Exception:
+                pass
         merchant_prompt = _load_merchant_prompt(merchant_id, active_skill)
         # If merchant_prompt was loaded, prepend it to the user-supplied system
         # message; AIAgent will see it via ephemeral_system_prompt.
