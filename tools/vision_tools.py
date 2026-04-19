@@ -2,17 +2,19 @@
 """
 Vision Tools Module
 
-This module provides vision analysis tools that work with image URLs.
-Uses the centralized auxiliary vision router, which can select OpenRouter,
-Nous, Codex, native Anthropic, or a custom OpenAI-compatible endpoint.
+This module provides vision analysis tools for screenshots, diagrams, charts,
+photos, and other image inputs. It uses the centralized auxiliary vision
+router, which can select OpenRouter, Nous, Codex, native Anthropic, or a
+custom OpenAI-compatible endpoint.
 
 Available tools:
-- vision_analyze_tool: Analyze images from URLs with custom prompts
+- vision_analyze_tool: Analyze remote or local image inputs with custom prompts
 
 Features:
-- Downloads images from URLs and converts to base64 for API compatibility
-- Comprehensive image description
-- Context-aware analysis based on user queries
+- Downloads remote images and converts them to base64 for API compatibility
+- Supports local image files and file:// image URIs
+- Comprehensive visual description plus question answering
+- Helpful for screenshots, rendered document captures, diagrams, and charts
 - Automatic temporary file cleanup
 - Proper error handling and validation
 - Debug logging support
@@ -21,7 +23,7 @@ Usage:
     from vision_tools import vision_analyze_tool
     import asyncio
     
-    # Analyze an image
+    # Analyze an image or screenshot
     result = await vision_analyze_tool(
         image_url="https://example.com/image.jpg",
         user_prompt="What architectural style is this building?"
@@ -749,17 +751,17 @@ from tools.registry import registry, tool_error
 
 VISION_ANALYZE_SCHEMA = {
     "name": "vision_analyze",
-    "description": "Analyze images using AI vision. Provides a comprehensive description and answers a specific question about the image content.",
+    "description": "Analyze an image with AI vision from an HTTP/HTTPS URL or local image file path. Best for screenshots, diagrams, charts, photos, and page captures. Not for raw PDF parsing.",
     "parameters": {
         "type": "object",
         "properties": {
             "image_url": {
                 "type": "string",
-                "description": "Image URL (http/https) or local file path to analyze."
+                "description": "HTTP/HTTPS image URL, file:// image URI, or local image file path to analyze."
             },
             "question": {
                 "type": "string",
-                "description": "Your specific question or request about the image to resolve. The AI will automatically provide a complete image description AND answer your specific question."
+                "description": "Your specific question or request about the image. The model will first understand the image itself, then answer this request."
             }
         },
         "required": ["image_url", "question"]

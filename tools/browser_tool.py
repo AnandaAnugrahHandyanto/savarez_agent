@@ -837,7 +837,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_get_images",
-        "description": "Get a list of all images on the current page with their URLs and alt text. Useful for finding images to analyze with the vision tool. Requires browser_navigate to be called first.",
+        "description": "Get a list of images visible from the current browser page with their URLs and alt text. Useful when inspecting rendered documents, slide decks, diagrams, or complex pages before handing specific images to the vision tools. Requires browser_navigate to be called first.",
         "parameters": {
             "type": "object",
             "properties": {},
@@ -846,7 +846,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_vision",
-        "description": "Take a screenshot of the current page and analyze it with vision AI. Use this when you need to visually understand what's on the page - especially useful for CAPTCHAs, visual verification challenges, complex layouts, or when the text snapshot doesn't capture important visual information. Returns both the AI analysis and a screenshot_path that you can share with the user by including MEDIA:<screenshot_path> in your response. Requires browser_navigate to be called first.",
+        "description": "Take a screenshot of the current browser page and analyze the rendered view with vision AI. Use this for rendered PDF pages, slide decks, diagrams, charts, visual verification challenges, or any layout where browser_snapshot misses important visual information. Returns both the AI analysis and a screenshot_path that you can share with the user by including MEDIA:<screenshot_path> in your response. Requires browser_navigate to be called first.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -865,7 +865,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_console",
-        "description": "Get browser console output and JavaScript errors from the current page. Returns console.log/warn/error/info messages and uncaught JS exceptions. Use this to detect silent JavaScript errors, failed API calls, and application warnings. Requires browser_navigate to be called first. When 'expression' is provided, evaluates JavaScript in the page context and returns the result — use this for DOM inspection, reading page state, or extracting data programmatically.",
+        "description": "Get browser console output and JavaScript errors from the current page. Returns console.log/warn/error/info messages and uncaught JS exceptions. Use this to detect silent JavaScript errors, failed API calls, and application warnings in web apps or browser-rendered document viewers. Requires browser_navigate to be called first. When 'expression' is provided, evaluates JavaScript in the live page context and returns the result — use this for DOM inspection, browser page-state checks, or extracting structured data from rendered pages.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -1761,10 +1761,14 @@ def browser_press(key: str, task_id: Optional[str] = None) -> str:
 
 def browser_console(clear: bool = False, expression: Optional[str] = None, task_id: Optional[str] = None) -> str:
     """Get browser console messages and JavaScript errors, or evaluate JS in the page.
-    
-    When ``expression`` is provided, evaluates JavaScript in the page context
-    (like the DevTools console) and returns the result.  Otherwise returns
-    console output (log/warn/error/info) and uncaught exceptions.
+
+    When ``expression`` is provided, evaluates JavaScript in the live page
+    context (like the DevTools console) and returns the result. Otherwise it
+    returns console output (log/warn/error/info) and uncaught exceptions.
+
+    Use this for browser page-state inspection, DOM checks, and structured
+    extraction from rendered pages or browser-based document viewers. It
+    inspects the live page state; it is not a raw document parser.
     
     Args:
         clear: If True, clear the message/error buffers after reading
@@ -1943,7 +1947,11 @@ def _maybe_stop_recording(task_id: str):
 
 def browser_get_images(task_id: Optional[str] = None) -> str:
     """
-    Get all images on the current page.
+    Get images exposed by the current browser page.
+
+    Useful for inspecting rendered documents, slide decks, diagrams, and
+    complex pages before handing a specific image to ``vision_analyze`` or
+    using ``browser_vision`` on the full rendered page.
     
     Args:
         task_id: Task identifier for session isolation
@@ -2002,11 +2010,11 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
 def browser_vision(question: str, annotate: bool = False, task_id: Optional[str] = None) -> str:
     """
     Take a screenshot of the current page and analyze it with vision AI.
-    
-    This tool captures what's visually displayed in the browser and sends it
-    to Gemini for analysis. Useful for understanding visual content that the
-    text-based snapshot may not capture (CAPTCHAs, verification challenges,
-    images, complex layouts, etc.).
+
+    This tool captures the rendered browser view and analyzes it with the
+    configured vision model. It is especially useful for rendered PDF pages,
+    slide decks, diagrams, charts, verification challenges, or any page where
+    the accessibility-tree snapshot misses important visual structure.
     
     The screenshot is saved persistently and its file path is returned alongside
     the analysis, so it can be shared with users via MEDIA:<path> in the response.
