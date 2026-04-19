@@ -784,6 +784,66 @@ class TestUnsupportedActions:
         assert payload["pending_pointer_action"]["y"] == 8
         assert payload["pending_pointer_action"]["delta_y"] == 240
 
+    def test_click_rejects_overwriting_existing_pending_pointer_action(self, monkeypatch):
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "notes": {
+                "app_name": "Notes",
+                "app_session_id": "app-2",
+                "active": True,
+                "approved": True,
+                "virtual_cursor": {"x": 10, "y": 20, "detached": True, "visible": True},
+                "pending_pointer_action": {
+                    "action_id": "ptr-123",
+                    "action_type": "click",
+                    "x": 10,
+                    "y": 20,
+                },
+            },
+        })
+
+        result = adapter.click_impl(x=50, y=60, app_session_id="app-2")
+
+        assert result["success"] is False
+        assert result["action_pending"] is True
+        assert result["pending_pointer_action"]["action_id"] == "ptr-123"
+        assert result["virtual_cursor"] == {"x": 10, "y": 20, "detached": True, "visible": True}
+        assert adapter._APP_SESSIONS["notes"]["pending_pointer_action"]["action_id"] == "ptr-123"
+        assert adapter._APP_SESSIONS["notes"]["virtual_cursor"] == {"x": 10, "y": 20, "detached": True, "visible": True}
+
+    def test_new_pointer_action_is_allowed_after_previous_pending_action_is_resolved(self, monkeypatch):
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "notes": {
+                "app_name": "Notes",
+                "app_session_id": "app-2",
+                "active": True,
+                "approved": True,
+                "virtual_cursor": {"x": 10, "y": 20, "detached": True, "visible": True},
+                "pending_pointer_action": {
+                    "action_id": "ptr-123",
+                    "action_type": "click",
+                    "x": 10,
+                    "y": 20,
+                },
+            },
+        })
+        monkeypatch.setattr(adapter, "_sync_virtual_cursor_overlay", lambda session: "", raising=False)
+
+        cleared = adapter.report_pointer_action_result_impl(
+            app_session_id="app-2",
+            action_id="ptr-123",
+            status="completed",
+            x=10,
+            y=20,
+        )
+        result = adapter.click_impl(x=50, y=60, app_session_id="app-2")
+
+        assert cleared["success"] is True
+        assert result["success"] is False
+        assert result["preview_only"] is True
+        assert result["pending_pointer_action"]["action_id"] != "ptr-123"
+        assert result["pending_pointer_action"]["x"] == 50
+        assert result["pending_pointer_action"]["y"] == 60
+
     def test_drag_updates_virtual_cursor_to_end_position(self, monkeypatch, tmp_path):
         state_root = tmp_path / "session-state"
         monkeypatch.setattr(adapter, "_session_state_root", lambda: state_root, raising=False)

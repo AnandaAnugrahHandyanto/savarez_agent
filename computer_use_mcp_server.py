@@ -368,6 +368,21 @@ def _preview_pointer_response(action: str, session: dict[str, Any]) -> dict[str,
     }
 
 
+def _pending_pointer_action_conflict(action: str, session: dict[str, Any]) -> dict[str, Any]:
+    pending = _optional_dict(session, "pending_pointer_action")
+    action_id = str((pending or {}).get("action_id") or "").strip()
+    return {
+        "success": False,
+        "action_pending": True,
+        "session_id": _SESSION_ID,
+        **_session_payload(session),
+        "error": (
+            f"Cannot queue {action} while pointer action {action_id or 'unknown'} is still pending. "
+            "Report the helper result first."
+        ),
+    }
+
+
 def stop_app_session_impl(app_name: str | None = None, app_session_id: str | None = None) -> dict[str, Any]:
     record = _find_session(app_name=app_name, app_session_id=app_session_id)
     if not record:
@@ -550,6 +565,8 @@ def click_impl(*, index: int | None = None, x: int | None = None, y: int | None 
     session = _resolve_session(app_session_id=app_session_id)
     if not session:
         return _session_required_error("clicking")
+    if _optional_dict(session, "pending_pointer_action"):
+        return _pending_pointer_action_conflict("click", session)
     cursor = session.setdefault("virtual_cursor", _fresh_virtual_cursor())
     if x is not None:
         cursor["x"] = x
@@ -577,6 +594,8 @@ def scroll_impl(index: int | None = None, x: int | None = None, y: int | None = 
     session = _resolve_session(app_session_id=app_session_id)
     if not session:
         return _session_required_error("scrolling")
+    if _optional_dict(session, "pending_pointer_action"):
+        return _pending_pointer_action_conflict("scroll", session)
     cursor = session.setdefault("virtual_cursor", _fresh_virtual_cursor())
     if x is not None:
         cursor["x"] = x
@@ -600,6 +619,8 @@ def drag_impl(start_x: int, start_y: int, end_x: int, end_y: int, app_session_id
     session = _resolve_session(app_session_id=app_session_id)
     if not session:
         return _session_required_error("dragging")
+    if _optional_dict(session, "pending_pointer_action"):
+        return _pending_pointer_action_conflict("drag", session)
     cursor = session.setdefault("virtual_cursor", _fresh_virtual_cursor())
     cursor["x"] = end_x
     cursor["y"] = end_y
