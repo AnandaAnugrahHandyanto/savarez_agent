@@ -2691,13 +2691,23 @@ class HermesCLI:
             fill = w - 2 - len(label)
             _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
 
-        self._stream_buf += text
-
-        # Emit complete lines, keep partial remainder in buffer
+        # Emit content immediately for character-level smooth streaming
+        # Track what was already in buffer before adding new text
         _tc = getattr(self, "_stream_text_ansi", "")
-        while "\n" in self._stream_buf:
-            line, self._stream_buf = self._stream_buf.split("\n", 1)
-            _cprint(f"{_STREAM_PAD}{_tc}{line}{_RST}" if _tc else f"{_STREAM_PAD}{line}")
+        self._stream_buf += text
+        
+        # Emit only the new content for real-time smooth output
+        # This gives the "typing" effect instead of chunky line-buffered output
+        new_content = text
+        
+        if new_content:
+            # Apply color to new content if we have a color set
+            if _tc:
+                _cprint(f"{_STREAM_PAD}{_tc}{new_content}{_RST}")
+            else:
+                _cprint(f"{_STREAM_PAD}{new_content}")
+            # Clear buffer since we already emitted
+            self._stream_buf = ""
 
     def _flush_stream(self) -> None:
         """Emit any remaining partial line from the stream buffer and close the box."""
