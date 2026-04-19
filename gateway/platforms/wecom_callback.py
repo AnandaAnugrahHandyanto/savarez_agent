@@ -42,7 +42,7 @@ except ImportError:
     HTTPX_AVAILABLE = False
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult, cache_audio_from_bytes
 from gateway.platforms.wecom_crypto import WXBizMsgCrypt, WeComCryptoError
 
 logger = logging.getLogger(__name__)
@@ -387,7 +387,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
                 decrypted = self._decrypt_request(
                     app, body, msg_signature, timestamp, nonce,
                 )
-                event = self._build_event(app, decrypted)
+                event = await self._build_event(app, decrypted)
                 if event is not None:
                     # Deduplicate: WeCom retries callbacks on timeout,
                     # producing duplicate inbound messages (#10305).
@@ -444,7 +444,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         crypt = self._crypt_for_app(app)
         return crypt.decrypt(msg_signature, timestamp, nonce, encrypt).decode("utf-8")
 
-    def _build_event(self, app: Dict[str, Any], xml_text: str) -> Optional[MessageEvent]:
+    async def _build_event(self, app: Dict[str, Any], xml_text: str) -> Optional[MessageEvent]:
         root = ET.fromstring(xml_text)
         msg_type = (root.findtext("MsgType") or "").lower()
         # Silently acknowledge lifecycle events.
@@ -452,15 +452,31 @@ class WecomCallbackAdapter(BasePlatformAdapter):
             event_name = (root.findtext("Event") or "").lower()
             if event_name in {"enter_agent", "subscribe"}:
                 return None
-        if msg_type not in {"text", "event"}:
+        if msg_type not in {"text", "event", "voice"}:
             return None
 
         user_id = root.findtext("FromUserName", default="")
         corp_id = root.findtext("ToUserName", default=app.get("corp_id", ""))
         scoped_chat_id = self._user_app_key(corp_id, user_id)
-        content = root.findtext("Content", default="").strip()
-        if not content and msg_type == "event":
-            content = "/start"
+
+        media_urls: list[str] = []
+        media_types: list[str] = []
+        message_type = MessageType.TEXT
+
+        if msg_type == "voice":
+            media_id = root.findtext("MediaId", default="")
+            if media_id:
+                audio_path = await self._download_voice_media(app, media_id)
+                if audio_path:
+                    media_urls.append(audio_path)
+                    media_types.append("audio/amr")
+                    message_type = MessageType.VOICE
+            content = ""
+        else:
+            content = root.findtext("Content", default="").strip()
+            if not content and msg_type == "event":
+                content = "/start"
+
         msg_id = (
             root.findtext("MsgId")
             or f"{user_id}:{root.findtext('CreateTime', default='0')}"
@@ -474,11 +490,42 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         )
         return MessageEvent(
             text=content,
-            message_type=MessageType.TEXT,
+            message_type=message_type,
             source=source,
             raw_message=xml_text,
             message_id=msg_id,
+            media_urls=media_urls,
+            media_types=media_types,
         )
+
+    async def _download_voice_media(self, app: Dict[str, Any], media_id: str) -> Optional[str]:
+        """Download voice file from WeCom media store and cache locally.
+
+        Returns local file path or None on failure.
+        WeCom voice messages are in AMR format.
+        """
+        try:
+            token = await self._get_access_token(app)
+            resp = await self._http_client.get(
+                "https://qyapi.weixin.qq.com/cgi-bin/media/get",
+                params={"access_token": token, "media_id": media_id},
+            )
+            # WeCom returns binary audio data directly (not JSON) on success
+            content_type = resp.headers.get("content-type", "")
+            if "application/json" in content_type:
+                data = resp.json()
+                logger.warning("[WecomCallback] Voice download failed: %s", data)
+                return None
+
+            audio_bytes = resp.content
+            if not audio_bytes:
+                logger.warning("[WecomCallback] Voice download returned empty content")
+                return None
+
+            return cache_audio_from_bytes(audio_bytes, ext=".amr")
+        except Exception as exc:
+            logger.warning("[WecomCallback] Voice download error: %s", exc)
+            return None
 
     def _crypt_for_app(self, app: Dict[str, Any]) -> WXBizMsgCrypt:
         return WXBizMsgCrypt(
