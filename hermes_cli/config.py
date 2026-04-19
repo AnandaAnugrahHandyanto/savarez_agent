@@ -62,6 +62,8 @@ import yaml
 from hermes_cli.colors import Colors, color
 from hermes_cli.default_soul import DEFAULT_SOUL_MD
 
+DEFAULT_MAX_ITERATIONS = 150
+
 
 # =============================================================================
 # Managed mode (NixOS declarative config)

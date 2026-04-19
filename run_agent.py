@@ -32,6 +32,7 @@ import os
 import random
 import re
 import sys
+from hermes_cli.config import DEFAULT_MAX_ITERATIONS
 import tempfile
 import time
 import threading
@@ -613,7 +614,7 @@ class AIAgent:
         command: str = None,
         args: list[str] | None = None,
         model: str = "",
-        max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
+        max_iterations: int | None = None,  # Default tool-calling iterations (shared with subagents)
         tool_delay: float = 1.0,
         enabled_toolsets: List[str] = None,
         disabled_toolsets: List[str] = None,
@@ -707,6 +708,24 @@ class AIAgent:
 
         self.model = model
         self.max_iterations = max_iterations
+
+        if self.max_iterations is None:
+            raw_env_val = os.getenv("HERMES_MAX_ITERATIONS")
+            if raw_env_val is not None:
+                try:
+                    env_max_iterations = int(raw_env_val)
+                    if env_max_iterations < 1:
+                        raise ValueError(f"Value must be a positive integer, got {env_max_iterations}")
+                    self.max_iterations = env_max_iterations
+                except ValueError:
+                    logger.warning(
+                        "Invalid value for HERMES_MAX_ITERATIONS environment variable: %s. Using default %s.",
+                        raw_env_val,
+                        DEFAULT_MAX_ITERATIONS,
+                    )
+                    self.max_iterations = DEFAULT_MAX_ITERATIONS
+            else:
+                self.max_iterations = DEFAULT_MAX_ITERATIONS
         # Shared iteration budget — parent creates, children inherit.
         # Consumed by every LLM turn across parent + all subagents.
         self.iteration_budget = iteration_budget or IterationBudget(max_iterations)
