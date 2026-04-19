@@ -1057,7 +1057,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 history.  Clients that don't understand the custom event type
                 silently ignore it per the SSE specification.
                 """
-                if event_type != "tool.started":
+                # Forward both tool.started and tool.completed so the frontend
+                # can transition the tool chip from ⟲ → ✓ as soon as the tool
+                # returns, even while the LLM keeps generating text afterwards.
+                # Without the completed event the chips spin forever (see
+                # screenshot: 看图分析 / 读取商品分类 stay ⟲ even though
+                # vision returned in 5s and classlist in 2s).
+                if event_type not in ("tool.started", "tool.completed"):
                     return
                 if name.startswith("_"):
                     return
@@ -1076,6 +1082,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "tool": name,
                     "emoji": emoji,
                     "label": label,
+                    "state": "completed" if event_type == "tool.completed" else "started",
                 }))
 
             # Wire the ui_* synthetic-tool emitter to push frontend render
