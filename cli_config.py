@@ -113,7 +113,7 @@ def _load_prefill_messages(file_path: str) -> List[Dict[str, Any]]:
         return []
     path = Path(file_path).expanduser()
     if not path.is_absolute():
-        path = _hermes_home / path
+        path = get_hermes_home() / path
     if not path.exists():
         logger.warning("Prefill messages file not found: %s", path)
         return []
