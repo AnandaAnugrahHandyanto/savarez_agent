@@ -35,7 +35,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional
 
-from agent.memory_inspection import explain_archive, explain_conflict, explain_write
+from agent.memory_inspection import explain_archive, explain_conflict, explain_expired, explain_write
 from agent.memory_policy import (
     ConflictDecision,
     WriteClass,
@@ -146,6 +146,7 @@ class MemoryStore:
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
+        self._last_review_explanations: List[Dict[str, Any]] = []
 
     def load_from_disk(self):
         """Load record-backed memory, project legacy exports, and capture the prompt snapshot."""
@@ -273,9 +274,28 @@ class MemoryStore:
         payload = records_to_sidecar_payload(records)
         self._write_json_file(self._records_path(), payload)
 
-    def _review_freshness(self, records: List[MemoryRecord], *, now: Optional[str] = None) -> tuple[List[MemoryRecord], bool]:
+    def _review_explanation_for_transition(
+        self,
+        original: MemoryRecord,
+        transitioned: MemoryRecord,
+    ) -> Optional[Dict[str, Any]]:
+        if transitioned.status is original.status:
+            return None
+        if transitioned.status is RecordStatus.EXPIRED:
+            return explain_expired(transitioned, "review_window_elapsed")
+        if transitioned.status is RecordStatus.ARCHIVED:
+            return explain_archive(transitioned, "archive_on_review")
+        return None
+
+    def _review_freshness(
+        self,
+        records: List[MemoryRecord],
+        *,
+        now: Optional[str] = None,
+    ) -> tuple[List[MemoryRecord], bool, List[Dict[str, Any]]]:
         reviewed: List[MemoryRecord] = []
         changed = False
+        explanations: List[Dict[str, Any]] = []
         review_time = now or _utc_now_iso()
 
         for record in records:
@@ -283,20 +303,30 @@ class MemoryStore:
             reviewed.append(transitioned)
             if transitioned.to_dict() != record.to_dict():
                 changed = True
+            explanation = self._review_explanation_for_transition(record, transitioned)
+            if explanation:
+                explanations.append(explanation)
 
         deduped = self._deduplicate_records(reviewed)
         if len(deduped) != len(reviewed):
             changed = True
-        return deduped, changed
+        return deduped, changed, explanations
 
     def _reload_records(self, *, render_exports: bool = False) -> None:
         loaded_records = self._deduplicate_records(self._load_records())
-        self.records, freshness_changed = self._review_freshness(loaded_records)
+        self.records, freshness_changed, review_explanations = self._review_freshness(loaded_records)
+        if review_explanations:
+            self._last_review_explanations = review_explanations
         if freshness_changed:
             self._save_records(self.records)
         self._sync_live_entries()
         if render_exports or freshness_changed:
             self._render_legacy_exports()
+
+    def read(self, target: str) -> Dict[str, Any]:
+        with self._file_lock(self._records_path()):
+            self._reload_records()
+        return self._success_response(target, "Current entries.")
 
     def save_to_disk(self, target: str | None = None):
         """Persist the record sidecar and projected legacy exports."""
@@ -613,16 +643,25 @@ class MemoryStore:
         current = len(ENTRY_DELIMITER.join(entries)) if entries else 0
         limit = self._char_limit(target)
         pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
+        records = self._records_for_target(target)
 
         resp = {
             "success": True,
             "target": target,
             "entries": entries,
-            "records": [record.to_dict() for record in self._records_for_target(target)],
+            "records": [record.to_dict() for record in records],
             "usage": f"{pct}% — {current:,}/{limit:,} chars",
             "entry_count": len(entries),
-            "record_count": len(self._records_for_target(target)),
+            "record_count": len(records),
         }
+        target_record_ids = {record.record_id for record in records}
+        review_explanations = [
+            explanation
+            for explanation in self._last_review_explanations
+            if explanation.get("record_id") in target_record_ids
+        ]
+        if review_explanations:
+            resp["review_explanations"] = review_explanations
         if explanations:
             resp["explanations"] = explanations
         if message:
@@ -730,8 +769,11 @@ def memory_tool(
             return tool_error("old_text is required for 'remove' action.", success=False)
         result = store.remove(target, old_text)
 
+    elif action == "read":
+        result = store.read(target)
+
     else:
-        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
+        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove, read", success=False)
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -767,7 +809,7 @@ MEMORY_SCHEMA = {
         "- 'user': who the user is -- name, role, preferences, communication style, pet peeves\n"
         "- 'memory': your notes -- environment facts, project conventions, tool quirks, lessons learned\n\n"
         "ACTIONS: add (new entry), replace (update existing -- old_text identifies it), "
-        "remove (delete -- old_text identifies it).\n\n"
+        "remove (delete -- old_text identifies it), read (inspect current state and record statuses).\n\n"
         "SKIP: trivial/obvious info, things easily re-discovered, raw data dumps, and temporary task state."
     ),
     "parameters": {
@@ -775,7 +817,7 @@ MEMORY_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "replace", "remove"],
+                "enum": ["add", "replace", "remove", "read"],
                 "description": "The action to perform."
             },
             "target": {

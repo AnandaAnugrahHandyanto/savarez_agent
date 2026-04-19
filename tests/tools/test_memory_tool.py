@@ -6,6 +6,7 @@ import tools.memory_tool as memory_tool_module
 from pathlib import Path
 
 from agent import memory_inspection
+from agent.memory_inspection import explain_archive, explain_expired
 from agent.memory_records import (
     MemoryRecord,
     MemoryScope,
@@ -122,7 +123,11 @@ def make_record(
     expires_at: str | None = None,
     last_confirmed_at: str | None = None,
     last_used_at: str | None = None,
+    metadata: dict | None = None,
 ) -> MemoryRecord:
+    record_metadata = {"target": target}
+    if metadata:
+        record_metadata.update(metadata)
     return MemoryRecord(
         record_id=record_id,
         memory_type=MemoryType.PROFILE,
@@ -139,7 +144,7 @@ def make_record(
         expires_at=expires_at,
         last_confirmed_at=last_confirmed_at,
         last_used_at=last_used_at,
-        metadata={"target": target},
+        metadata=record_metadata,
     )
 
 
@@ -479,6 +484,48 @@ class TestMemoryStorePersistence:
         assert persisted[0].status is RecordStatus.ACTIVE
         assert persisted[0].revision == 2
 
+    def test_read_surfaces_consolidation_review_expiry_and_archive(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        monkeypatch.setattr(memory_tool_module, "_utc_now_iso", lambda: "2026-03-05T00:00:00Z")
+
+        expiring_record = make_record(
+            "Old deploy note.",
+            target="memory",
+            record_id="rec-expired",
+            topic_key="workspace:deploy-command",
+            status=RecordStatus.STALE,
+            review_after="2026-02-01T00:00:00Z",
+            expires_at="2026-03-01T00:00:00Z",
+        )
+        archived_record = make_record(
+            "Retired shell note.",
+            target="memory",
+            record_id="rec-archived",
+            topic_key="env:shell",
+            status=RecordStatus.EXPIRED,
+            metadata={"archive_on_review": True},
+        )
+        (tmp_path / "records.json").write_text(
+            json.dumps(records_to_sidecar_payload([expiring_record, archived_record]), ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        store = MemoryStore()
+        store.load_from_disk()
+
+        payload = json.loads(memory_tool(action="read", target="memory", store=store))
+
+        assert payload["success"] is True
+        assert payload["entries"] == []
+        assert {record["record_id"]: record["status"] for record in payload["records"]} == {
+            "rec-expired": "expired",
+            "rec-archived": "archived",
+        }
+        assert payload["review_explanations"] == [
+            explain_expired(store.records[0], "review_window_elapsed"),
+            explain_archive(store.records[1], "archive_on_review"),
+        ]
+
 
 class TestMemoryStoreSnapshot:
     def test_snapshot_frozen_at_load(self, store):
@@ -512,6 +559,7 @@ class TestMemoryToolDispatcher:
         assert memory_tool_module.explain_write is memory_inspection.explain_write
         assert memory_tool_module.explain_conflict is memory_inspection.explain_conflict
         assert memory_tool_module.explain_archive is memory_inspection.explain_archive
+        assert memory_tool_module.explain_expired is memory_inspection.explain_expired
 
     def test_tool_response_includes_inspection_payload(self, store):
         payload = json.loads(
