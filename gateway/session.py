@@ -762,6 +762,34 @@ class SessionStore:
                 if not reset_reason:
                     entry.updated_at = now
                     self._save()
+                    # Release lock before DB call (DB calls must be outside self._lock)
+                    # Fix 1: Detect stale compressed session after crash restart
+                    if self._db is not None:
+                        try:
+                            # Query if this session has end_reason='compression'
+                            cursor = self._db._conn.execute(
+                                "SELECT end_reason FROM sessions WHERE id = ?",
+                                (entry.session_id,)
+                            )
+                            row = cursor.fetchone()
+                            if row and row["end_reason"] == "compression":
+                                # Follow compression chain to find latest leaf
+                                leaf = self._db._find_latest_leaf(entry.session_id)
+                                if leaf is not None:
+                                    old_session_id = entry.session_id
+                                    new_session_id = leaf["id"]
+                                    logger.warning(
+                                        "Stale compressed session detected: %s -> %s",
+                                        old_session_id,
+                                        new_session_id
+                                    )
+                                    # Re-acquire lock to update and save
+                                    with self._lock:
+                                        entry.session_id = new_session_id
+                                        self._save()
+                        except Exception as e:
+                            # If anything fails, just return entry as-is
+                            logger.debug("Failed to detect stale compressed session: %s", e)
                     return entry
                 else:
                     # Session is being auto-reset.
@@ -1172,6 +1200,28 @@ class SessionStore:
 
     def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
         """Load all messages from a session's transcript."""
+        # Fix 2: Check if session is compressed and follow the chain to find latest leaf
+        if self._db is not None:
+            try:
+                # Query end_reason for session_id
+                cursor = self._db._conn.execute(
+                    "SELECT end_reason FROM sessions WHERE id = ?",
+                    (session_id,)
+                )
+                row = cursor.fetchone()
+                if row and row["end_reason"] == "compression":
+                    leaf = self._db._find_latest_leaf(session_id)
+                    if leaf is not None:
+                        logger.warning(
+                            "Loading transcript from latest leaf in compression chain: %s -> %s",
+                            session_id,
+                            leaf["id"]
+                        )
+                        session_id = leaf["id"]
+            except Exception as e:
+                # Fall through to normal loading on any failure
+                logger.debug("Failed to follow compression chain: %s", e)
+
         db_messages = []
         # Try SQLite first
         if self._db:
