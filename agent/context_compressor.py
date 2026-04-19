@@ -483,6 +483,7 @@ class ContextCompressor(ContextEngine):
                 continue
             
             new_tcs = []
+            modified = False
             for tc in msg.get("tool_calls", []):
                 if not isinstance(tc, dict):
                     new_tcs.append(tc)
@@ -508,11 +509,12 @@ class ContextCompressor(ContextEngine):
                     except json.JSONDecodeError:
                         # If can't parse, drop this tool_call but keep message
                         pruned.append(msg)
+                        modified = True
                         break
                 else:
                     new_tcs.append(tc)
             
-            if modified:
+            if modified and new_tcs:
                 msg["tool_calls"] = new_tcs
 
         return result, pruned
