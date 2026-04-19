@@ -693,6 +693,7 @@ DEFAULT_CONFIG = {
     # always goes to ~/.hermes/skills/.
     "skills": {
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+        "auto_sync_bundled": True,  # If False, skip auto-copying new bundled skills on sync
     },
 
     # Honcho AI-native memory -- reads ~/.honcho/config.json as single source of truth.
