@@ -85,6 +85,7 @@ AUTHOR_MAP = {
     "dmayhem93@gmail.com": "dmahan93",
     "samherring99@gmail.com": "samherring99",
     "desaiaum08@gmail.com": "Aum08Desai",
+    "devagarwal076@gmail.com": "DevAgarwal2",
     "shannon.sands.1979@gmail.com": "shannonsands",
     "shannon@nousresearch.com": "shannonsands",
     "eri@plasticlabs.ai": "Erosika",
