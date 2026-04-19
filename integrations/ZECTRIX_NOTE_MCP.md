@@ -2,12 +2,27 @@
 
 This package exposes Zectrix Note 4 cloud functions as MCP tools for Hermes Agent or any MCP client.
 
+## Install
+
+If you want this server by itself:
+
+```bash
+# from the repo root
+uv pip install -e ".[mcp]"
+```
+
+Or, if you already have Hermes installed, this package is available after a normal editable install because it ships a console script:
+
+```bash
+zectrix-note-mcp --help
+```
+
 ## Prerequisites
 
 Set these environment variables:
 
 ```bash
-export ZECTRIX_API_KEY="zt_xxx"
+export ZECTRIX_API_KEY="***"
 export ZECTRIX_API_BASE_URL="https://cloud.zectrix.com"   # optional
 export ZECTRIX_DEFAULT_DEVICE_ID="AA:BB:CC:DD:EE:FF"      # optional
 ```
