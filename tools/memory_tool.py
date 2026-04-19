@@ -36,7 +36,15 @@ from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional
 
 from agent.memory_inspection import explain_archive, explain_conflict, explain_write
-from agent.memory_policy import ConflictDecision, WriteClass, assign_topic_key, classify_write_candidate, resolve_conflict
+from agent.memory_policy import (
+    ConflictDecision,
+    WriteClass,
+    assign_topic_key,
+    classify_write_candidate,
+    is_scoped_refinement,
+    resolve_conflict,
+    transition_freshness,
+)
 from agent.memory_records import (
     MemoryRecord,
     MemoryScope,
@@ -144,14 +152,12 @@ class MemoryStore:
         mem_dir = get_memory_dir()
         mem_dir.mkdir(parents=True, exist_ok=True)
 
-        self.records = self._deduplicate_records(self._load_records())
-        self._sync_live_entries()
-        self._render_legacy_exports()
-
-        self._system_prompt_snapshot = {
-            "memory": self._render_block("memory", self.memory_entries),
-            "user": self._render_block("user", self.user_entries),
-        }
+        with self._file_lock(self._records_path()):
+            self._reload_records(render_exports=True)
+            self._system_prompt_snapshot = {
+                "memory": self._render_block("memory", self.memory_entries),
+                "user": self._render_block("user", self.user_entries),
+            }
 
     @staticmethod
     @contextmanager
@@ -267,9 +273,30 @@ class MemoryStore:
         payload = records_to_sidecar_payload(records)
         self._write_json_file(self._records_path(), payload)
 
-    def _reload_records(self) -> None:
-        self.records = self._deduplicate_records(self._load_records())
+    def _review_freshness(self, records: List[MemoryRecord], *, now: Optional[str] = None) -> tuple[List[MemoryRecord], bool]:
+        reviewed: List[MemoryRecord] = []
+        changed = False
+        review_time = now or _utc_now_iso()
+
+        for record in records:
+            transitioned = transition_freshness(record, now=review_time)
+            reviewed.append(transitioned)
+            if transitioned.to_dict() != record.to_dict():
+                changed = True
+
+        deduped = self._deduplicate_records(reviewed)
+        if len(deduped) != len(reviewed):
+            changed = True
+        return deduped, changed
+
+    def _reload_records(self, *, render_exports: bool = False) -> None:
+        loaded_records = self._deduplicate_records(self._load_records())
+        self.records, freshness_changed = self._review_freshness(loaded_records)
+        if freshness_changed:
+            self._save_records(self.records)
         self._sync_live_entries()
+        if render_exports or freshness_changed:
+            self._render_legacy_exports()
 
     def save_to_disk(self, target: str | None = None):
         """Persist the record sidecar and projected legacy exports."""
@@ -430,6 +457,10 @@ class MemoryStore:
             if decision.write_class is WriteClass.DO_NOT_WRITE:
                 return {"success": False, "error": "Policy rejected this memory candidate as ephemeral or unsafe."}
 
+            # The rule-based classifier still marks ambiguous content as MAY_WRITE so
+            # passive/background extraction can defer it, but an explicit memory tool
+            # invocation is itself an operator-selected write and should retain the
+            # long-standing synchronous persistence behavior.
             scope = self._scope_for_target(target)
             record = MemoryRecord(
                 record_id=f"rec-{uuid.uuid4()}",
@@ -508,7 +539,8 @@ class MemoryStore:
                     reason="explicit_replace_supersedes_topicless_match",
                 )
             else:
-                conflict = resolve_conflict(old_record, new_record, explicit_correction=True)
+                explicit_correction = not is_scoped_refinement(old_record.content, new_content)
+                conflict = resolve_conflict(old_record, new_record, explicit_correction=explicit_correction)
             projected_records: List[MemoryRecord] = []
             for record in self.records:
                 if record.record_id == old_record.record_id:

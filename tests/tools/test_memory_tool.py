@@ -6,7 +6,16 @@ import tools.memory_tool as memory_tool_module
 from pathlib import Path
 
 from agent import memory_inspection
-from agent.memory_records import records_from_sidecar_payload
+from agent.memory_records import (
+    MemoryRecord,
+    MemoryScope,
+    MemoryType,
+    RecordStatus,
+    SalienceTier,
+    TrustTier,
+    records_from_sidecar_payload,
+    records_to_sidecar_payload,
+)
 from tools.memory_tool import (
     MemoryStore,
     memory_tool,
@@ -101,6 +110,39 @@ def store(tmp_path, monkeypatch):
     return s
 
 
+def make_record(
+    content: str,
+    *,
+    target: str,
+    record_id: str,
+    status: RecordStatus = RecordStatus.ACTIVE,
+    topic_key: str | None = None,
+    created_at: str = "2026-01-01T00:00:00Z",
+    review_after: str | None = None,
+    expires_at: str | None = None,
+    last_confirmed_at: str | None = None,
+    last_used_at: str | None = None,
+) -> MemoryRecord:
+    return MemoryRecord(
+        record_id=record_id,
+        memory_type=MemoryType.PROFILE,
+        scope=MemoryScope.OPERATOR if target == "user" else MemoryScope.WORKSPACE,
+        topic_key=topic_key,
+        content=content,
+        source="test",
+        source_kind="explicit_user_statement" if target == "user" else "tool_observation",
+        trust_tier=TrustTier.USER_ASSERTED if target == "user" else TrustTier.OBSERVED,
+        salience_tier=SalienceTier.HIGH if target == "user" else SalienceTier.MEDIUM,
+        status=status,
+        created_at=created_at,
+        review_after=review_after,
+        expires_at=expires_at,
+        last_confirmed_at=last_confirmed_at,
+        last_used_at=last_used_at,
+        metadata={"target": target},
+    )
+
+
 class TestMemoryStoreAdd:
     def test_add_entry(self, store):
         result = store.add("memory", "Python 3.12 project")
@@ -164,6 +206,15 @@ class TestMemoryStoreAdd:
                 "reason": "durable_scoped_fact",
             }
         ]
+
+    def test_add_may_write_candidate_is_persisted_for_explicit_tool_usage(self, store, tmp_path):
+        result = store.add("memory", "Possible flaky CI issue worth revisiting.")
+
+        assert result["success"] is True
+        assert result["entries"] == ["Possible flaky CI issue worth revisiting."]
+        assert result["explanations"][0]["reason"] == "possible_durable_fact_requires_validation"
+        persisted = records_from_sidecar_payload(json.loads((tmp_path / "records.json").read_text(encoding="utf-8")))
+        assert [record.content for record in persisted] == ["Possible flaky CI issue worth revisiting."]
 
 
 class TestMemoryStoreReplace:
@@ -246,6 +297,32 @@ class TestMemoryStoreReplace:
         assert explanation["loser_source_kind"] == "explicit_user_statement"
         assert explanation["winner_status"] == "active"
         assert explanation["loser_status"] == "superseded"
+
+    def test_replace_scoped_refinement_keeps_both_preferences_active(self, store, tmp_path):
+        store.add("user", "User prefers concise replies.")
+
+        result = store.replace("user", "concise replies", "User prefers concise replies for design work.")
+
+        assert result["success"] is True
+        assert result["entries"] == [
+            "User prefers concise replies.",
+            "User prefers concise replies for design work.",
+        ]
+        statuses = {record["content"]: record["status"] for record in result["records"]}
+        assert statuses["User prefers concise replies."] == "active"
+        assert statuses["User prefers concise replies for design work."] == "active"
+        assert result["explanations"][0]["reason"] == "scoped_refinement_keep_both"
+
+        sidecar_records = records_from_sidecar_payload(json.loads((tmp_path / "records.json").read_text(encoding="utf-8")))
+        refined = next(record for record in sidecar_records if record.content == "User prefers concise replies for design work.")
+        broad = next(record for record in sidecar_records if record.content == "User prefers concise replies.")
+        assert refined.status is RecordStatus.ACTIVE
+        assert broad.status is RecordStatus.ACTIVE
+        assert refined.metadata["scope_narrowed"] is True
+        assert refined.metadata["scope_refinement_of"] == broad.record_id
+        assert (tmp_path / "USER.md").read_text(encoding="utf-8") == (
+            "User prefers concise replies.\n§\nUser prefers concise replies for design work."
+        )
 
 
 class TestMemoryStoreRemove:
@@ -344,6 +421,63 @@ class TestMemoryStorePersistence:
         store = MemoryStore()
         store.load_from_disk()
         assert len(store.memory_entries) == 2
+
+    def test_load_applies_freshness_review_before_projection(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        monkeypatch.setattr(memory_tool_module, "_utc_now_iso", lambda: "2026-03-01T00:00:00Z")
+
+        stale_candidate = make_record(
+            "User prefers concise replies.",
+            target="user",
+            record_id="rec-user-preference",
+            topic_key="preference:reply-style",
+            review_after="2026-02-01T00:00:00Z",
+        )
+        (tmp_path / "records.json").write_text(
+            json.dumps(records_to_sidecar_payload([stale_candidate]), ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        store = MemoryStore()
+        store.load_from_disk()
+
+        assert store.user_entries == []
+        assert store.format_for_system_prompt("user") is None
+        assert store.records[0].status is RecordStatus.STALE
+        assert store.records[0].revision == 2
+        persisted = records_from_sidecar_payload(json.loads((tmp_path / "records.json").read_text(encoding="utf-8")))
+        assert persisted[0].status is RecordStatus.STALE
+        assert persisted[0].revision == 2
+        assert (tmp_path / "USER.md").read_text(encoding="utf-8") == ""
+
+    def test_load_reactivates_stale_record_before_projection_when_reconfirmed(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        monkeypatch.setattr(memory_tool_module, "_utc_now_iso", lambda: "2026-03-03T00:00:00Z")
+
+        stale_record = make_record(
+            "User prefers concise replies.",
+            target="user",
+            record_id="rec-stale-user-preference",
+            topic_key="preference:reply-style",
+            status=RecordStatus.STALE,
+            review_after="2026-02-01T00:00:00Z",
+            last_confirmed_at="2026-03-02T00:00:00Z",
+        )
+        (tmp_path / "records.json").write_text(
+            json.dumps(records_to_sidecar_payload([stale_record]), ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        store = MemoryStore()
+        store.load_from_disk()
+
+        assert store.user_entries == ["User prefers concise replies."]
+        assert "User prefers concise replies." in (store.format_for_system_prompt("user") or "")
+        assert store.records[0].status is RecordStatus.ACTIVE
+        assert store.records[0].revision == 2
+        persisted = records_from_sidecar_payload(json.loads((tmp_path / "records.json").read_text(encoding="utf-8")))
+        assert persisted[0].status is RecordStatus.ACTIVE
+        assert persisted[0].revision == 2
 
 
 class TestMemoryStoreSnapshot:

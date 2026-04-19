@@ -194,6 +194,10 @@ def transition_freshness(record: MemoryRecord, *, now: str) -> MemoryRecord:
     return updated
 
 
+def is_scoped_refinement(old_content: str, new_content: str) -> bool:
+    return _is_scoped_refinement(old_content, new_content)
+
+
 def resolve_conflict(old: MemoryRecord, new: MemoryRecord, *, explicit_correction: bool) -> ConflictDecision:
     existing = deepcopy(old)
     incoming = deepcopy(new)
@@ -455,6 +459,7 @@ __all__ = [
     "WriteDecision",
     "assign_topic_key",
     "classify_write_candidate",
+    "is_scoped_refinement",
     "resolve_conflict",
     "transition_freshness",
 ]
