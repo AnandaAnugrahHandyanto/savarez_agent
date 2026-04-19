@@ -230,6 +230,7 @@ class TestApprovalAndSessions:
 
         assert listed["success"] is True
         assert listed["active_sessions"][0]["overlay_screenshot_path"] == "/tmp/overlay.png"
+        assert listed["active_sessions"][0]["overlay_media_tag"] == "MEDIA:/tmp/overlay.png"
 
     def test_get_app_state_refreshes_overlay_preview_for_existing_cursor(self, monkeypatch, tmp_path):
         store_path = tmp_path / "ComputerUseAppApprovals.json"
@@ -268,6 +269,7 @@ class TestApprovalAndSessions:
 
         assert result["success"] is True
         assert result["overlay_screenshot_path"] == "/tmp/overlay-refresh.png"
+        assert result["overlay_media_tag"] == "MEDIA:/tmp/overlay-refresh.png"
         assert adapter._APP_SESSIONS["safari"]["overlay_screenshot_path"] == "/tmp/overlay-refresh.png"
 
     def test_stop_then_reopen_app_creates_new_app_session_id(self, monkeypatch, tmp_path):
@@ -293,6 +295,127 @@ class TestApprovalAndSessions:
         second = adapter.get_app_state_impl(app_name="Safari")
 
         assert first["app_session_id"] != second["app_session_id"]
+
+    def test_stop_app_session_removes_overlay_preview_file(self, monkeypatch, tmp_path):
+        managed_root = tmp_path / "managed-overlays"
+        managed_root.mkdir()
+        overlay_path = managed_root / "overlay.png"
+        overlay_path.write_text("fake overlay")
+        monkeypatch.setattr(adapter, "_overlay_root", lambda: managed_root)
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "safari": {
+                "app_name": "Safari",
+                "app_session_id": "app-1",
+                "active": True,
+                "approved": True,
+                "overlay_screenshot_path": str(overlay_path),
+                "virtual_cursor": {"x": 11, "y": 22, "detached": True, "visible": True},
+            }
+        })
+
+        stopped = adapter.stop_app_session_impl(app_name="Safari")
+
+        assert stopped["success"] is True
+        assert stopped["overlay_screenshot_path"] == ""
+        assert stopped["overlay_media_tag"] == ""
+        assert overlay_path.exists() is False
+
+    def test_stop_app_session_does_not_delete_unmanaged_overlay_path(self, monkeypatch, tmp_path):
+        overlay_path = tmp_path / "outside-overlay.png"
+        overlay_path.write_text("fake overlay")
+        managed_root = tmp_path / "managed-overlays"
+        managed_root.mkdir()
+        monkeypatch.setattr(adapter, "_overlay_root", lambda: managed_root)
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "safari": {
+                "app_name": "Safari",
+                "app_session_id": "app-1",
+                "active": True,
+                "approved": True,
+                "overlay_screenshot_path": str(overlay_path),
+                "virtual_cursor": {"x": 11, "y": 22, "detached": True, "visible": True},
+            }
+        })
+
+        stopped = adapter.stop_app_session_impl(app_name="Safari")
+
+        assert stopped["success"] is True
+        assert stopped["overlay_screenshot_path"] == ""
+        assert overlay_path.exists() is True
+
+    def test_stop_app_session_does_not_delete_dotdot_escape_path(self, monkeypatch, tmp_path):
+        managed_root = tmp_path / "managed-overlays"
+        managed_root.mkdir()
+        victim = tmp_path / "victim.txt"
+        victim.write_text("keep me")
+        escaped_path = managed_root / ".." / "victim.txt"
+        monkeypatch.setattr(adapter, "_overlay_root", lambda: managed_root)
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "safari": {
+                "app_name": "Safari",
+                "app_session_id": "app-1",
+                "active": True,
+                "approved": True,
+                "overlay_screenshot_path": str(escaped_path),
+                "virtual_cursor": {"x": 11, "y": 22, "detached": True, "visible": True},
+            }
+        })
+
+        stopped = adapter.stop_app_session_impl(app_name="Safari")
+
+        assert stopped["success"] is True
+        assert stopped["overlay_screenshot_path"] == ""
+        assert victim.exists() is True
+
+    def test_stop_app_session_does_not_delete_unmanaged_symlink_to_managed_file(self, monkeypatch, tmp_path):
+        managed_root = tmp_path / "managed-overlays"
+        managed_root.mkdir()
+        managed_overlay = managed_root / "overlay.png"
+        managed_overlay.write_text("managed overlay")
+        outside_link = tmp_path / "outside-overlay-link.png"
+        outside_link.symlink_to(managed_overlay)
+        monkeypatch.setattr(adapter, "_overlay_root", lambda: managed_root)
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "safari": {
+                "app_name": "Safari",
+                "app_session_id": "app-1",
+                "active": True,
+                "approved": True,
+                "overlay_screenshot_path": str(outside_link),
+                "virtual_cursor": {"x": 11, "y": 22, "detached": True, "visible": True},
+            }
+        })
+
+        stopped = adapter.stop_app_session_impl(app_name="Safari")
+
+        assert stopped["success"] is True
+        assert stopped["overlay_screenshot_path"] == ""
+        assert outside_link.exists() is True
+        assert managed_overlay.exists() is True
+
+    def test_stop_app_session_handles_symlink_loop_overlay_path(self, monkeypatch, tmp_path):
+        managed_root = tmp_path / "managed-overlays"
+        managed_root.mkdir()
+        loop_a = managed_root / "loop-a"
+        loop_b = managed_root / "loop-b"
+        loop_a.symlink_to(loop_b)
+        loop_b.symlink_to(loop_a)
+        monkeypatch.setattr(adapter, "_overlay_root", lambda: managed_root)
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "safari": {
+                "app_name": "Safari",
+                "app_session_id": "app-1",
+                "active": True,
+                "approved": True,
+                "overlay_screenshot_path": str(loop_a),
+                "virtual_cursor": {"x": 11, "y": 22, "detached": True, "visible": True},
+            }
+        })
+
+        stopped = adapter.stop_app_session_impl(app_name="Safari")
+
+        assert stopped["success"] is True
+        assert stopped["overlay_screenshot_path"] == ""
 
 
 class TestOverlayPreviewRenderer:
@@ -340,6 +463,37 @@ class TestOverlayPreviewRenderer:
             "rectangle 11,22 14,25",
             str(overlay_path),
         ]
+
+    def test_sync_virtual_cursor_overlay_removes_partial_file_on_render_failure(self, monkeypatch, tmp_path):
+        screenshot_path = tmp_path / "shot.png"
+        screenshot_path.write_text("fake image bytes")
+        managed_root = tmp_path / "managed-overlays"
+        managed_root.mkdir()
+        overlay_path = managed_root / "overlay.png"
+
+        monkeypatch.setattr(adapter, "_overlay_root", lambda: managed_root)
+        monkeypatch.setattr(adapter, "_overlay_preview_path", lambda session: overlay_path)
+        monkeypatch.setattr(adapter, "_pixel_cursor_draw_args", lambda x, y: ["-fill", "#8b5cf6", "-draw", f"rectangle {x},{y} {x + 3},{y + 3}"])
+        monkeypatch.setattr(adapter.shutil, "which", lambda name: "/opt/homebrew/bin/magick" if name == "magick" else None)
+
+        def fake_run(cmd, check, capture_output, text):
+            overlay_path.write_text("partial overlay")
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(adapter.subprocess, "run", fake_run)
+
+        session = {
+            "app_name": "Safari",
+            "app_session_id": "app-1",
+            "screenshot_path": str(screenshot_path),
+            "virtual_cursor": {"x": 11, "y": 22, "detached": True, "visible": True},
+        }
+
+        result = adapter._sync_virtual_cursor_overlay(session)
+
+        assert result == ""
+        assert session["overlay_screenshot_path"] == ""
+        assert overlay_path.exists() is False
 
 
 class TestKeyboardTools:

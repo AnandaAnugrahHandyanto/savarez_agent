@@ -9,6 +9,7 @@ macOS computer_control backend where possible, and returns explicit
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import uuid
@@ -51,6 +52,7 @@ def _approval_store_path() -> Path:
 
 def _session_payload(record: dict[str, Any]) -> dict[str, Any]:
     cursor = dict(record.get("virtual_cursor") or {"x": None, "y": None, "detached": True, "visible": True})
+    overlay_path = str(record.get("overlay_screenshot_path", "") or "")
     return {
         "app_name": record["app_name"],
         "app_session_id": record["app_session_id"],
@@ -59,7 +61,8 @@ def _session_payload(record: dict[str, Any]) -> dict[str, Any]:
         "virtual_cursor": cursor,
         "window_title": record.get("window_title", ""),
         "screenshot_path": record.get("screenshot_path", ""),
-        "overlay_screenshot_path": record.get("overlay_screenshot_path", ""),
+        "overlay_screenshot_path": overlay_path,
+        "overlay_media_tag": _media_tag_for_path(overlay_path),
     }
 
 
@@ -125,22 +128,42 @@ def _overlay_preview_path(session: dict[str, Any]) -> Path:
     return _overlay_root() / f"{app_session_id}-cursor-preview.png"
 
 
+def _media_tag_for_path(path: str | Path | None) -> str:
+    raw = str(path or "").strip()
+    if not raw or " " in raw:
+        return ""
+    return f"MEDIA:{raw}"
+
+
+def _clear_overlay_preview(session: dict[str, Any]) -> None:
+    raw = str(session.get("overlay_screenshot_path") or "").strip()
+    if raw:
+        try:
+            path = Path(os.path.normpath(str(Path(raw).expanduser().absolute())))
+            managed_root = Path(os.path.normpath(str(_overlay_root().expanduser().absolute())))
+            if path.exists() and (path == managed_root or managed_root in path.parents):
+                path.unlink()
+        except (OSError, RuntimeError):
+            pass
+    session["overlay_screenshot_path"] = ""
+
+
 def _sync_virtual_cursor_overlay(session: dict[str, Any]) -> str:
     cursor = session.get("virtual_cursor") or {}
     screenshot_path = Path(str(session.get("screenshot_path") or "")).expanduser()
     if not screenshot_path.exists():
-        session["overlay_screenshot_path"] = ""
+        _clear_overlay_preview(session)
         return ""
 
     x = cursor.get("x")
     y = cursor.get("y")
     if x is None or y is None:
-        session["overlay_screenshot_path"] = ""
+        _clear_overlay_preview(session)
         return ""
 
     magick = shutil.which("magick") or shutil.which("convert")
     if not magick:
-        session["overlay_screenshot_path"] = ""
+        _clear_overlay_preview(session)
         return ""
 
     overlay_path = _overlay_preview_path(session)
@@ -149,15 +172,16 @@ def _sync_virtual_cursor_overlay(session: dict[str, Any]) -> str:
         ix = int(x)
         iy = int(y)
     except (TypeError, ValueError):
-        session["overlay_screenshot_path"] = ""
+        _clear_overlay_preview(session)
         return ""
 
     draw_args = _pixel_cursor_draw_args(ix, iy)
+    session["overlay_screenshot_path"] = str(overlay_path)
 
     try:
         subprocess.run([magick, str(screenshot_path), *draw_args, str(overlay_path)], check=True, capture_output=True, text=True)
     except Exception:
-        session["overlay_screenshot_path"] = ""
+        _clear_overlay_preview(session)
         return ""
 
     session["overlay_screenshot_path"] = str(overlay_path)
@@ -288,6 +312,7 @@ def stop_app_session_impl(app_name: str | None = None, app_session_id: str | Non
         }
     was_active = bool(record.get("active"))
     record["active"] = False
+    _clear_overlay_preview(record)
     return {
         "success": True,
         "stopped": was_active,
