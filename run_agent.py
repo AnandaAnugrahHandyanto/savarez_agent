@@ -6761,10 +6761,30 @@ class AIAgent:
         MiniMax keeps dots (e.g. MiniMax-M2.7).
         OpenCode Go/Zen keeps dots for non-Claude models (e.g. minimax-m2.5-free).
         ZAI/Zhipu keeps dots (e.g. glm-4.7, glm-5.1)."""
-        if (getattr(self, "provider", "") or "").lower() in {"alibaba", "minimax", "minimax-cn", "opencode-go", "opencode-zen", "zai"}:
+        preserve_dot_providers = {"alibaba", "minimax", "minimax-cn", "opencode-go", "opencode-zen", "zai"}
+        provider = (getattr(self, "provider", "") or "").lower()
+        if provider in preserve_dot_providers:
             return True
+
         base = (getattr(self, "base_url", "") or "").lower()
-        return "dashscope" in base or "aliyuncs" in base or "minimax" in base or "opencode.ai/zen/" in base or "bigmodel.cn" in base
+        if "dashscope" in base or "aliyuncs" in base or "minimax" in base or "opencode.ai/zen/" in base or "bigmodel.cn" in base:
+            return True
+
+        # Opaque custom Anthropic proxies may hide the upstream vendor in the
+        # URL, so infer dot-preservation from the configured model family.
+        model_name = str(getattr(self, "model", "") or "")
+        if model_name:
+            try:
+                from hermes_cli.model_normalize import detect_vendor
+                from hermes_cli.models import normalize_provider
+
+                inferred_provider = normalize_provider(detect_vendor(model_name) or "")
+            except Exception:
+                inferred_provider = ""
+            if inferred_provider in {"alibaba", "minimax", "minimax-cn", "zai"}:
+                return True
+
+        return False
 
     def _is_qwen_portal(self) -> bool:
         """Return True when the base URL targets Qwen Portal."""
