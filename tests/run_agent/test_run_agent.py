@@ -661,6 +661,7 @@ class TestBuildSystemPrompt:
     def test_memory_guidance_when_memory_tool_loaded(self, agent_with_memory_tool):
         from agent.prompt_builder import MEMORY_GUIDANCE
 
+        agent_with_memory_tool._memory_store = MagicMock()
         prompt = agent_with_memory_tool._build_system_prompt()
         assert MEMORY_GUIDANCE in prompt
 
@@ -669,6 +670,119 @@ class TestBuildSystemPrompt:
 
         prompt = agent._build_system_prompt()
         assert MEMORY_GUIDANCE not in prompt
+
+    def test_honcho_provider_disables_builtin_memory_tooling(self):
+        from agent.prompt_builder import MEMORY_GUIDANCE
+
+        provider = MagicMock()
+        provider.is_available.return_value = True
+
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("web_search", "memory"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={
+                    "memory": {
+                        "provider": "honcho",
+                        "memory_enabled": True,
+                        "user_profile_enabled": True,
+                    }
+                },
+            ),
+            patch("plugins.memory.load_memory_provider", return_value=provider),
+        ):
+            agent = AIAgent(
+                api_key="test-k...7890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=False,
+            )
+
+        prompt = agent._build_system_prompt()
+        assert agent._memory_store is None
+        assert "memory" not in agent.valid_tool_names
+        assert MEMORY_GUIDANCE not in prompt
+
+    def test_honcho_provider_failure_preserves_builtin_memory_tooling(self):
+        from agent.prompt_builder import MEMORY_GUIDANCE
+
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("web_search", "memory"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={
+                    "memory": {
+                        "provider": "honcho",
+                        "memory_enabled": True,
+                        "user_profile_enabled": True,
+                    }
+                },
+            ),
+            patch("plugins.memory.load_memory_provider", return_value=None),
+        ):
+            agent = AIAgent(
+                api_key="test-k...7890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=False,
+            )
+
+        prompt = agent._build_system_prompt()
+        assert agent._memory_store is not None
+        assert "memory" in agent.valid_tool_names
+        assert MEMORY_GUIDANCE in prompt
+
+    def test_honcho_auto_detection_persists_provider_once(self):
+        fake_hcfg = MagicMock(enabled=True, api_key=None, base_url="http://localhost:8000")
+        provider = MagicMock()
+        provider.is_available.return_value = True
+        saved_cfg = {}
+
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("web_search", "memory"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={
+                    "memory": {
+                        "memory_enabled": True,
+                        "user_profile_enabled": True,
+                    }
+                },
+            ),
+            patch(
+                "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+                return_value=fake_hcfg,
+            ),
+            patch("plugins.memory.load_memory_provider", return_value=provider),
+            patch("hermes_cli.config.save_config") as mock_save_config,
+        ):
+            agent = AIAgent(
+                api_key="test-k...7890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=False,
+            )
+
+        assert agent._memory_store is None
+        assert "memory" not in agent.valid_tool_names
+        mock_save_config.assert_called_once()
+        saved_cfg = mock_save_config.call_args.args[0]
+        assert saved_cfg["memory"]["provider"] == "honcho"
 
     def test_includes_datetime(self, agent):
         prompt = agent._build_system_prompt()

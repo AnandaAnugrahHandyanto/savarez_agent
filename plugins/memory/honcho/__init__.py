@@ -26,6 +26,52 @@ from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
+_THINK_BLOCK_RE = re.compile(r"<think\b[^>]*>.*?</think>", re.IGNORECASE | re.DOTALL)
+
+
+def _strip_think_blocks(text: str) -> str:
+    if not text:
+        return ""
+    return _THINK_BLOCK_RE.sub("", text)
+
+
+def _normalize_context_text(value: Any, *, max_chars: int | None = None) -> str:
+    """Strip hidden reasoning noise and collapse whitespace for prompt safety."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        value = str(value)
+    value = _strip_think_blocks(value)
+    value = re.sub(r"[ \t]{2,}", " ", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    value = value.strip()
+    if max_chars and len(value) > max_chars:
+        value = value[: max_chars - 1].rstrip() + "…"
+    return value
+
+
+def _format_card_snapshot(card: Any, *, max_items: int = 8, max_item_chars: int = 180) -> str:
+    """Render a peer card as a compact bullet list instead of dumping raw reprs."""
+    if not card:
+        return ""
+
+    if isinstance(card, (list, tuple)):
+        cleaned = [
+            _normalize_context_text(item, max_chars=max_item_chars)
+            for item in card
+            if _normalize_context_text(item, max_chars=max_item_chars)
+        ]
+        if not cleaned:
+            return ""
+        visible = cleaned[:max_items]
+        lines = [f"- {item}" for item in visible]
+        remaining = len(cleaned) - len(visible)
+        if remaining > 0:
+            lines.append(f"- … and {remaining} more facts")
+        return "\n".join(lines)
+
+    return _normalize_context_text(card, max_chars=max_items * max_item_chars)
+
 
 # ---------------------------------------------------------------------------
 # Tool schemas (moved from tools/honcho_tools.py)
@@ -431,23 +477,23 @@ class HonchoMemoryProvider(MemoryProvider):
         parts = []
 
         # Session summary — session-scoped context, placed first for relevance
-        summary = ctx.get("summary", "")
+        summary = _normalize_context_text(ctx.get("summary", ""), max_chars=1200)
         if summary:
             parts.append(f"## Session Summary\n{summary}")
 
-        rep = ctx.get("representation", "")
+        rep = _normalize_context_text(ctx.get("representation", ""), max_chars=700)
         if rep:
             parts.append(f"## User Representation\n{rep}")
 
-        card = ctx.get("card", "")
+        card = _format_card_snapshot(ctx.get("card", ""), max_items=8, max_item_chars=160)
         if card:
             parts.append(f"## User Peer Card\n{card}")
 
-        ai_rep = ctx.get("ai_representation", "")
+        ai_rep = _normalize_context_text(ctx.get("ai_representation", ""), max_chars=500)
         if ai_rep:
             parts.append(f"## AI Self-Representation\n{ai_rep}")
 
-        ai_card = ctx.get("ai_card", "")
+        ai_card = _format_card_snapshot(ctx.get("ai_card", ""), max_items=6, max_item_chars=140)
         if ai_card:
             parts.append(f"## AI Identity Card\n{ai_card}")
 
@@ -993,18 +1039,26 @@ class HonchoMemoryProvider(MemoryProvider):
                     return json.dumps({"result": "No context available yet."})
                 parts = []
                 if ctx.get("summary"):
-                    parts.append(f"## Summary\n{ctx['summary']}")
+                    summary = _normalize_context_text(ctx["summary"], max_chars=1600)
+                    if summary:
+                        parts.append(f"## Summary\n{summary}")
                 if ctx.get("representation"):
-                    parts.append(f"## Representation\n{ctx['representation']}")
+                    rep = _normalize_context_text(ctx["representation"], max_chars=900)
+                    if rep:
+                        parts.append(f"## Representation\n{rep}")
                 if ctx.get("card"):
-                    parts.append(f"## Card\n{ctx['card']}")
+                    card = _format_card_snapshot(ctx["card"], max_items=10, max_item_chars=180)
+                    if card:
+                        parts.append(f"## Card\n{card}")
                 if ctx.get("recent_messages"):
                     msgs = ctx["recent_messages"]
                     msg_str = "\n".join(
-                        f"  [{m['role']}] {m['content'][:200]}"
+                        f"  [{m['role']}] {_normalize_context_text(m.get('content', ''), max_chars=200)}"
                         for m in msgs[-5:]  # last 5 for brevity
+                        if _normalize_context_text(m.get('content', ''), max_chars=200)
                     )
-                    parts.append(f"## Recent messages\n{msg_str}")
+                    if msg_str:
+                        parts.append(f"## Recent messages\n{msg_str}")
                 return json.dumps({"result": "\n\n".join(parts) or "No context available."})
 
             elif tool_name == "honcho_conclude":
