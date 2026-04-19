@@ -261,16 +261,35 @@ class TestMemoryManager:
 
         assert sanitize_context(fenced) == "最新问题\n\n\n\n只回答这句"
 
-    def test_sanitize_context_strips_compaction_summary_wrapper_and_body(self):
+    def test_sanitize_context_compresses_compaction_summary_wrapper(self):
+        # Body with ## headers: compressed to header + first line
         wrapped = (
             "只回答最新问题\n\n"
             f"{SUMMARY_PREFIX}\n"
-            "旧摘要：继续昨天的计划\n"
-            "旧摘要：顺手处理缓存问题\n\n"
+            "## Goal\n"
+            "Fix the fence marker bug\n"
+            "Detailed steps that should be removed\n"
+            "## Constraints\n"
+            "No breaking changes\n"
+            "More detail to be stripped\n\n"
             "只回答这句"
         )
 
-        assert sanitize_context(wrapped) == "只回答最新问题\n\n\n\n只回答这句"
+        result = sanitize_context(wrapped)
+        # Plan B: modern compaction blocks are compressed, not deleted
+        assert "只回答最新问题" in result
+        assert "只回答这句" in result
+        # Compressed skeleton preserves wrapper structure
+        assert SUMMARY_PREFIX in result
+        # Headers preserved
+        assert "## Goal" in result
+        assert "## Constraints" in result
+        # First line after each header preserved
+        assert "Fix the fence marker bug" in result
+        assert "No breaking changes" in result
+        # Detail lines removed
+        assert "Detailed steps" not in result
+        assert "More detail" not in result
 
     def test_sanitize_context_strips_legacy_compaction_summary_wrapper_and_body(self):
         wrapped = (
@@ -1026,42 +1045,59 @@ class TestMemoryContextFencing:
         assert "live message" in result
         assert "more live content" in result
 
-    def test_sanitize_context_strips_full_prefix_to_fence_block(self):
-        """Full prefix → body → FENCE_MARKER block should be entirely removed."""
+    def test_sanitize_context_compresses_full_prefix_to_fence_block(self):
+        """Full prefix → body → FENCE_MARKER block is compressed, not deleted (Plan B)."""
         from agent.memory_manager import sanitize_context
         text = (
             "只回答这句\n\n"
             f"{SUMMARY_PREFIX}\n"
-            "旧任务：继续修复bug\n"
+            "## Active Task\n"
+            "Fix the bug in sanitize path\n"
+            "Detailed implementation notes here\n"
+            "## Key Decisions\n"
+            "Use compression instead of deletion\n"
+            "More rationale details\n"
             f"{FENCE_MARKER}\n\n"
             "实际新消息"
         )
         result = sanitize_context(text)
-        assert "旧任务" not in result
-        assert "继续修复" not in result
-        assert SUMMARY_PREFIX not in result
-        assert FENCE_MARKER not in result
         assert "只回答这句" in result
         assert "实际新消息" in result
+        # Wrappers preserved — skeleton visible as background reference
+        assert SUMMARY_PREFIX in result
+        assert FENCE_MARKER in result
+        # Headers and first lines preserved
+        assert "## Active Task" in result
+        assert "Fix the bug in sanitize path" in result
+        assert "## Key Decisions" in result
+        assert "Use compression instead of deletion" in result
+        # Detail lines removed
+        assert "Detailed implementation notes" not in result
+        assert "More rationale" not in result
 
-    def test_sanitize_context_strips_merge_into_tail_format(self):
+    def test_sanitize_context_compresses_merge_into_tail_format(self):
         """Merge-into-tail uses summary + FENCE_MARKER + separator.
-        Summary body and markers are stripped; the plain-text separator
-        ("--- Respond to...") stays since it carries no stale task info."""
+        Plan B: summary body is compressed (not deleted), markers preserved;
+        the plain-text separator stays as a direction to the model."""
         from agent.memory_manager import sanitize_context
         text = (
             f"{SUMMARY_PREFIX}\n"
-            "旧摘要内容\n"
+            "## Completed\n"
+            "Pushed the rebase commit\n"
+            "Several conflicts resolved in detail\n"
             f"{FENCE_MARKER}\n"
             "--- Respond to the message below, not the summary above ---\n\n"
             "真正的新消息"
         )
         result = sanitize_context(text)
-        assert "旧摘要内容" not in result
-        assert SUMMARY_PREFIX not in result
-        assert FENCE_MARKER not in result
-        # The separator text remains — it's just a direction to the model,
-        # not stale task data. This is acceptable.
+        # Wrappers preserved as background reference
+        assert SUMMARY_PREFIX in result
+        assert FENCE_MARKER in result
+        # Header + first line preserved; detail removed
+        assert "## Completed" in result
+        assert "Pushed the rebase commit" in result
+        assert "Several conflicts resolved" not in result
+        # The separator text and real message remain
         assert "真正的新消息" in result
 
 
