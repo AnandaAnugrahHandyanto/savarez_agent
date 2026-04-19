@@ -269,40 +269,22 @@ class SessionTree:
         return chain_ids
 
     def get_same_conversation_ids(self, session_id: str) -> Set[str]:
-        """Get all session IDs in the same conversation (compression chain only).
+        """Get session IDs in the same conversation to exclude from /resume.
 
-        Only traverses compression edges (up and down), not session_reset/
-        session_switch/branched boundaries. Returns all members of the same
-        conversation's compression chain both above and below session_id.
+        Only traverses compression edges going DOWN (descendants), not
+        ancestors.  Compression ancestors are NOT excluded because they
+        represent previous conversation states that users may legitimately
+        want to /resume back to — especially after a gateway restart where
+        the pre-restart session became a compression parent of the new one.
 
-        - Going up: traverse parent, but only continue when parent.end_reason
-          == "compression"
-        - Going down: use get_compression_chain_ids() which follows compression/
-          active children
-        - Always includes session_id itself
+        Going down: use get_compression_chain_ids() which follows
+        compression/active children.  Always includes session_id itself.
 
-        Used for /resume to exclude only the current conversation, not the
-        entire tree which may include independent conversations (e.g., after
-        auto-reset creates a new session in the same tree).
+        Used for /resume to exclude only the current conversation's
+        compressed descendants, not ancestors or independent conversations.
         """
-        # Start with all descendants in the compression chain (going down)
-        chain_ids = self.get_compression_chain_ids(session_id)
-
-        # Add ancestors that are part of the compression chain (going up)
-        current = self._nodes.get(session_id)
-        while current and current.parent_id:
-            parent = self._nodes.get(current.parent_id)
-            if not parent:
-                break
-            # Only continue up if parent is a compression node
-            # Stop at session_reset/session_switch/branched boundaries
-            if parent.end_reason == "compression":
-                chain_ids.add(parent.id)
-                current = parent
-            else:
-                break
-
-        return chain_ids
+        # Only descendants in the compression chain (going down)
+        return self.get_compression_chain_ids(session_id)
 
     def get_resume_candidates(
         self,
@@ -325,6 +307,18 @@ class SessionTree:
 
         # Sort all nodes by last_active descending (most recently active first)
         all_nodes = sorted(self._nodes.values(), key=lambda n: n.last_active, reverse=True)
+
+        # Identify the direct compression parent of current_sid — this is the
+        # most recent session whose compressed content lives in the current
+        # session.  We special-case it so it appears in /resume candidates
+        # (using its own info, not the leaf's), while older compression
+        # ancestors that also resolve to current_sid are still skipped.
+        _direct_compression_parent_id: Optional[str] = None
+        _current_node = self._nodes.get(current_sid)
+        if _current_node and _current_node.parent_id:
+            _parent_node = self._nodes.get(_current_node.parent_id)
+            if _parent_node and _parent_node.is_compressed:
+                _direct_compression_parent_id = _parent_node.id
 
         candidates = []
         seen_ids = set()
@@ -357,11 +351,30 @@ class SessionTree:
                     display_chain = chain_ids - {leaf.id}
                     seen_ids.update(display_chain)
 
-                    if leaf.id == current_sid or leaf.id in seen_ids:
+                    if leaf.id == current_sid:
+                        # The compression chain resolves to the current session.
+                        # If this node is the *direct* compression parent, show it
+                        # using its own info (user may want to /resume back to it).
+                        # Otherwise skip — older ancestors are too far removed.
+                        if sid == _direct_compression_parent_id:
+                            # Use node itself as display (don't replace with leaf)
+                            # Mark remaining chain ancestors as seen to avoid duplicates
+                            _anc = self._nodes.get(sid)
+                            while _anc and _anc.parent_id:
+                                _anc_parent = self._nodes.get(_anc.parent_id)
+                                if _anc_parent and _anc_parent.is_compressed:
+                                    seen_ids.add(_anc_parent.id)
+                                    _anc = _anc_parent
+                                else:
+                                    break
+                        else:
+                            continue
+                    elif leaf.id in seen_ids:
                         continue
-                    display_node = leaf
-                    original_node = node
-                    seen_ids.add(leaf.id)
+                    else:
+                        display_node = leaf
+                        original_node = node
+                        seen_ids.add(leaf.id)
                 else:
                     # No distinct leaf — mark entire chain as seen
                     seen_ids.update(chain_ids)
