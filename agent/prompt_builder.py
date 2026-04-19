@@ -164,6 +164,16 @@ SESSION_SEARCH_GUIDANCE = (
     "unclear, and use keyword search for specific recall. Prefer searching over guessing."
 )
 
+MEMORY_RETRIEVAL_GUIDANCE = (
+    "Proactively recall relevant memory at the start of each session: check memory brief "
+    "and recent sessions before acting on a new request, especially when the topic seems "
+    "familiar. When memory entries become outdated or redundant — duplicate facts, stale "
+    "environment details, or superseded preferences — consolidate them with "
+    "memory(action='replace') so the memory store stays compact and accurate. When a "
+    "task spans multiple sessions, use session_search to pick up where you left off rather "
+    "than re-deriving context from scratch."
+)
+
 PLANNING_AND_SELF_REVIEW_GUIDANCE = (
     "Before starting non-trivial work, create a concise plan with the smallest "
     "useful next steps. While working, keep the plan current if new information "
@@ -191,7 +201,11 @@ AUTONOMOUS_EXECUTION_GUIDANCE = (
     "reasonable retry strategies. Keep the full task in mind: after completing a sub-step, "
     "move on to the next one without waiting for direction. Only pause when you genuinely "
     "cannot make progress without user input or when a destructive action requires explicit "
-    "approval per the safety rules."
+    "approval per the safety rules.\n"
+    "When a tool call fails, diagnose the error and retry with a correction before giving up — "
+    "most failures are transient (network timeout, missing prerequisite) or fixable (wrong path, "
+    "permission issue). For multi-step tasks, if step N fails, re-read the current state (ls, "
+    "read_file, git status) before retrying so you don't act on stale assumptions."
 )
 
 MULTIMODAL_VERIFICATION_GUIDANCE = (
@@ -203,26 +217,14 @@ MULTIMODAL_VERIFICATION_GUIDANCE = (
     "image to check for artifacts, correctness, and alignment with the prompt."
 )
 
-
 EDITING_VERIFICATION_GUIDANCE = (
-    "When you edit files using patch or write_file, verify the result before moving on: "
-    "(1) read the file back with read_file to confirm changes landed correctly, "
-    "(2) run lint or tests if available to check for regressions, and "
-    "(3) check for unintended side effects in other files that reference "
-    "the changed code. Do not assume an edit succeeded without verification."
+    "After editing files with patch or write_file, read the file back to confirm the "
+    "change landed correctly — especially for multi-line edits or regex replacements that "
+    "may match differently than expected. After modifying code, run relevant tests or "
+    "linters to catch regressions before declaring the task done. If an edit could affect "
+    "multiple files (e.g., renaming a function, moving a module), verify each impacted file "
+    "rather than assuming the changes propagated correctly."
 )
-
-MEMORY_RETRIEVAL_GUIDANCE = (
-    "When starting any task, proactively check whether you have relevant memory or "
-    "past session context before acting from scratch. Use session_search with specific "
-    "keywords when the task references prior work, tools, preferences, or conventions. "
-    "Use memory to save durable facts discovered during work — but first search existing "
-    "memory and session history to avoid duplicating or contradicting what you already "
-    "know. When a user's request seems familiar, search before asking them to re-explain. "
-    "Treat memory and session_search as your recall system: search first, then save, "
-    "and periodically prune outdated entries with memory(action='replace')."
-)
-
 
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
