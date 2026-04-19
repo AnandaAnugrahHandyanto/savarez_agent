@@ -823,6 +823,166 @@ class APIServerAdapter(BasePlatformAdapter):
             "pid": os.getpid(),
         })
 
+    async def _handle_fleet_snapshot(self, request: "web.Request") -> "web.Response":
+        """GET /v1/fleet/snapshot — one-shot observability payload for the
+        apmzoom fleet dashboard (agent-claw /fleet).  Combines machine health,
+        process stats, per-merchant counts, recent request metrics, and
+        fallback counters so the frontend can render the whole card with a
+        single HTTP round trip.
+
+        Shape is stable and additive — new fields may be added but existing
+        ones are not renamed/removed without a version bump.
+        """
+        from gateway.status import read_runtime_status
+        from pathlib import Path as _Path
+        import time as _time
+
+        runtime = read_runtime_status() or {}
+        hermes_home = _Path(os.environ.get("HERMES_HOME") or (_Path.home() / ".hermes"))
+
+        # ── Merchants (cheap: ls the merchants dir + count credentials) ──
+        merchants_dir = hermes_home / "merchants"
+        merchants: list[dict] = []
+        if merchants_dir.is_dir():
+            for m in sorted(merchants_dir.iterdir()):
+                if not m.is_dir() or m.name.startswith("_"):
+                    continue
+                cred = m / "credentials.json"
+                identity = m / "identity.md"
+                mem_md = m / "memories" / "MEMORY.md"
+                user_md = m / "memories" / "USER.md"
+                merchants.append({
+                    "merchant_id": m.name,
+                    "has_credentials": cred.exists(),
+                    "has_identity": identity.exists(),
+                    "memory_bytes": (mem_md.stat().st_size if mem_md.exists() else 0)
+                                  + (user_md.stat().st_size if user_md.exists() else 0),
+                    "last_touched": int(max(
+                        [p.stat().st_mtime for p in m.rglob("*") if p.is_file()] or [0]
+                    )),
+                })
+
+        # ── Recent apm_* tool calls (tail apmzoom.log) ──
+        tool_calls_last_100: list[dict] = []
+        tool_errors_last_100 = 0
+        apmzoom_log = hermes_home / "logs" / "apmzoom.log"
+        if apmzoom_log.exists():
+            try:
+                # Read last ~32KB, split by line, match " → <skill>" arrows
+                data = apmzoom_log.read_bytes()[-32768:]
+                lines = data.decode("utf-8", errors="replace").splitlines()
+                for ln in lines[-400:]:
+                    if "] → " in ln:
+                        # "2026-04-19 14:46 INFO [apmzoom] → <skill> mid=<mid>"
+                        parts = ln.split("] → ", 1)
+                        if len(parts) == 2:
+                            ts = parts[0].split(" INFO")[0].split("] ")[-1] if "] " in parts[0] else parts[0][:19]
+                            rest = parts[1]
+                            skill = rest.split(" ", 1)[0]
+                            mid = ""
+                            if "mid=" in rest:
+                                mid = rest.split("mid=", 1)[1].split(" ", 1)[0]
+                            tool_calls_last_100.append({"ts": ts, "skill": skill, "merchant_id": mid})
+                    elif "] ← " in ln and '"error"' in ln:
+                        tool_errors_last_100 += 1
+                tool_calls_last_100 = tool_calls_last_100[-100:]
+            except Exception:
+                pass
+
+        # ── Model / fallback (grep the last 50 agent.log lines for Fallback) ──
+        fallback_count = 0
+        agent_log = hermes_home / "logs" / "agent.log"
+        if agent_log.exists():
+            try:
+                data = agent_log.read_bytes()[-16384:]
+                fallback_count = data.decode("utf-8", errors="replace").count("Fallback activated")
+            except Exception:
+                pass
+
+        # ── Request queue — active agents from runtime status ──
+        active_agents = runtime.get("active_agents", 0)
+
+        # ── Session count (response_store.db is SQLite) ──
+        session_count = 0
+        session_db = hermes_home / "response_store.db"
+        if session_db.exists():
+            try:
+                import sqlite3 as _sql
+                conn = _sql.connect(f"file:{session_db}?mode=ro", uri=True)
+                cur = conn.execute("SELECT COUNT(DISTINCT session_id) FROM responses")
+                session_count = int(cur.fetchone()[0])
+                conn.close()
+            except Exception:
+                pass  # Schema may differ across hermes versions
+
+        # ── Model config (read config.yaml live so it's current) ──
+        model_info = {"default": None, "provider": None, "fallback_providers": []}
+        try:
+            import yaml as _yaml
+            cfg_path = hermes_home / "config.yaml"
+            if cfg_path.exists():
+                cfg = _yaml.safe_load(cfg_path.read_text()) or {}
+                model_info["default"] = (cfg.get("model") or {}).get("default")
+                model_info["provider"] = (cfg.get("model") or {}).get("provider")
+                model_info["fallback_providers"] = [
+                    {"model": fp.get("model"), "provider": fp.get("provider")}
+                    for fp in (cfg.get("fallback_providers") or [])
+                ]
+        except Exception:
+            pass
+
+        snapshot = {
+            "generated_at": int(_time.time()),
+            "pid": os.getpid(),
+            "platform": "hermes-agent",
+            "gateway_state": runtime.get("gateway_state"),
+            "active_agents": active_agents,
+            "session_count": session_count,
+            "merchant_count": len(merchants),
+            "merchants": merchants,
+            "model": model_info,
+            "tool_calls": {
+                "recent_count": len(tool_calls_last_100),
+                "error_count": tool_errors_last_100,
+                "recent": tool_calls_last_100[-20:],  # last 20 for the sparkline
+            },
+            "fallback_activations": fallback_count,
+        }
+        return web.json_response(snapshot)
+
+    async def _handle_fleet_merchants(self, request: "web.Request") -> "web.Response":
+        """GET /v1/fleet/merchants — merchants directory listing only.
+
+        Lighter than /v1/fleet/snapshot when the caller just needs to render
+        the merchant table.  Same shape as snapshot.merchants.
+        """
+        from pathlib import Path as _Path
+        hermes_home = _Path(os.environ.get("HERMES_HOME") or (_Path.home() / ".hermes"))
+        merchants_dir = hermes_home / "merchants"
+        out = []
+        if merchants_dir.is_dir():
+            for m in sorted(merchants_dir.iterdir()):
+                if not m.is_dir() or m.name.startswith("_"):
+                    continue
+                cred = m / "credentials.json"
+                identity = m / "identity.md"
+                email = ""
+                if cred.exists():
+                    try:
+                        email = json.loads(cred.read_text()).get("username", "")
+                    except Exception:
+                        pass
+                out.append({
+                    "merchant_id": m.name,
+                    "email": email,
+                    "has_credentials": cred.exists(),
+                    "has_identity": identity.exists(),
+                    "last_touched": int(max(
+                        [p.stat().st_mtime for p in m.rglob("*") if p.is_file()] or [0]
+                    )),
+                })
+        return web.json_response({"merchants": out})
+
     async def _handle_models(self, request: "web.Request") -> "web.Response":
         """GET /v1/models — return hermes-agent as an available model."""
         auth_err = self._check_auth(request)
@@ -1038,6 +1198,18 @@ class APIServerAdapter(BasePlatformAdapter):
                 # completion via agent_task.done() instead.
                 if delta is not None:
                     _stream_q.put(delta)
+
+            # Track tool invocations so the started↔completed pair for one
+            # call share a stable `call_id`.  Stack per tool name: push on
+            # started, pop on completed.  Same tool called twice gets two
+            # distinct call_ids → two chips on the frontend (correct).
+            #
+            # Keep these *declared* up-front so _on_tool_progress doesn't
+            # NameError and swallow every progress event silently (happened
+            # once when an earlier revert dropped the declaration and the
+            # entire hermes.tool.progress stream went dark).
+            _tool_call_counter = [0]
+            _tool_call_stack: Dict[str, list] = {}
 
             def _on_tool_progress(event_type, name, preview, args, **kwargs):
                 """Send tool progress as a separate SSE event.
@@ -2726,6 +2898,10 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/health/detailed", self._handle_health_detailed)
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
+            # Fleet observability for agent-claw /fleet dashboard.  No auth —
+            # reachable via the same CF Access wall the chat endpoint uses.
+            self._app.router.add_get("/v1/fleet/snapshot", self._handle_fleet_snapshot)
+            self._app.router.add_get("/v1/fleet/merchants", self._handle_fleet_merchants)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
