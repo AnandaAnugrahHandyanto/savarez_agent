@@ -29,6 +29,7 @@ from agent.prompt_builder import (
     PLANNING_AND_SELF_REVIEW_GUIDANCE,
     AUTONOMOUS_EXECUTION_GUIDANCE,
     MULTIMODAL_VERIFICATION_GUIDANCE,
+    MEMORY_RETRIEVAL_GUIDANCE,
     EDITING_VERIFICATION_GUIDANCE,
     PLATFORM_HINTS,
     WSL_ENVIRONMENT_HINT,
@@ -69,26 +70,27 @@ class TestGuidanceConstants:
         assert "vision_analyze" in MULTIMODAL_VERIFICATION_GUIDANCE
         assert "verify" in MULTIMODAL_VERIFICATION_GUIDANCE
 
-    def test_editing_verification_guidance_content(self):
-        assert "patch" in EDITING_VERIFICATION_GUIDANCE
-        assert "write_file" in EDITING_VERIFICATION_GUIDANCE
-        assert "read_file" in EDITING_VERIFICATION_GUIDANCE
-        assert "verify" in EDITING_VERIFICATION_GUIDANCE
-        assert "lint or tests" in EDITING_VERIFICATION_GUIDANCE
-
-    def test_memory_retrieval_guidance_content(self):
-        from agent.prompt_builder import MEMORY_RETRIEVAL_GUIDANCE
-        assert "proactively" in MEMORY_RETRIEVAL_GUIDANCE
-        assert "session_search" in MEMORY_RETRIEVAL_GUIDANCE
-        assert "search first" in MEMORY_RETRIEVAL_GUIDANCE
-        assert "prune" in MEMORY_RETRIEVAL_GUIDANCE or "replace" in MEMORY_RETRIEVAL_GUIDANCE
-        assert "search before asking" in MEMORY_RETRIEVAL_GUIDANCE
-
     def test_autonomous_execution_guidance_content(self):
         assert "act immediately" in AUTONOMOUS_EXECUTION_GUIDANCE
         assert "execution over deliberation" in AUTONOMOUS_EXECUTION_GUIDANCE
         assert "solvable obstacle" in AUTONOMOUS_EXECUTION_GUIDANCE
         assert "safety rules" in AUTONOMOUS_EXECUTION_GUIDANCE
+        assert "diagnose the error" in AUTONOMOUS_EXECUTION_GUIDANCE
+        assert "re-read the current state" in AUTONOMOUS_EXECUTION_GUIDANCE
+
+    def test_memory_retrieval_guidance_content(self):
+        assert "memory" in MEMORY_RETRIEVAL_GUIDANCE.lower()
+        assert "session_search" in MEMORY_RETRIEVAL_GUIDANCE
+        assert "consolidate" in MEMORY_RETRIEVAL_GUIDANCE
+        assert "replace" in MEMORY_RETRIEVAL_GUIDANCE
+        assert "compact" in MEMORY_RETRIEVAL_GUIDANCE
+
+    def test_editing_verification_guidance_content(self):
+        assert "read the file back" in EDITING_VERIFICATION_GUIDANCE
+        assert "patch" in EDITING_VERIFICATION_GUIDANCE.lower()
+        assert "write_file" in EDITING_VERIFICATION_GUIDANCE
+        assert "tests" in EDITING_VERIFICATION_GUIDANCE.lower()
+        assert "regressions" in EDITING_VERIFICATION_GUIDANCE
 
 
 # =========================================================================

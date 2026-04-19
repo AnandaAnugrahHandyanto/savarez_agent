@@ -20,7 +20,7 @@ import pytest
 import run_agent
 from run_agent import AIAgent
 from agent.error_classifier import FailoverReason
-from agent.prompt_builder import DEFAULT_AGENT_IDENTITY, PLANNING_AND_SELF_REVIEW_GUIDANCE, AUTONOMOUS_EXECUTION_GUIDANCE, MULTIMODAL_VERIFICATION_GUIDANCE, EDITING_VERIFICATION_GUIDANCE, MEMORY_RETRIEVAL_GUIDANCE
+from agent.prompt_builder import DEFAULT_AGENT_IDENTITY, PLANNING_AND_SELF_REVIEW_GUIDANCE, AUTONOMOUS_EXECUTION_GUIDANCE, MULTIMODAL_VERIFICATION_GUIDANCE, MEMORY_RETRIEVAL_GUIDANCE, EDITING_VERIFICATION_GUIDANCE
 
 
 # ---------------------------------------------------------------------------
@@ -751,35 +751,35 @@ class TestBuildSystemPrompt:
         prompt = agent._build_system_prompt()
         assert MULTIMODAL_VERIFICATION_GUIDANCE not in prompt
 
-    def test_includes_editing_verification_guidance_with_edit_tools(self, agent):
-        """Editing verification guidance should appear when patch or write_file tools are loaded."""
-        agent.valid_tool_names = agent.valid_tool_names | {"patch", "write_file"}
-        prompt = agent._build_system_prompt()
-        assert EDITING_VERIFICATION_GUIDANCE in prompt
-
-    def test_excludes_editing_verification_guidance_without_edit_tools(self, agent):
-        """Editing verification guidance should NOT appear when no editing tools are loaded."""
-        agent.valid_tool_names = agent.valid_tool_names - {"patch", "write_file"}
-        prompt = agent._build_system_prompt()
-        assert EDITING_VERIFICATION_GUIDANCE not in prompt
-
-    def test_includes_memory_retrieval_guidance_with_both_tools(self, agent):
+    def test_includes_memory_retrieval_guidance_when_both_tools_present(self, agent):
         """Memory retrieval guidance should appear when both memory and session_search tools are loaded."""
         agent.valid_tool_names = agent.valid_tool_names | {"memory", "session_search"}
         prompt = agent._build_system_prompt()
         assert MEMORY_RETRIEVAL_GUIDANCE in prompt
 
     def test_excludes_memory_retrieval_guidance_without_memory_tool(self, agent):
-        """Memory retrieval guidance should NOT appear when memory tool is missing."""
-        agent.valid_tool_names = agent.valid_tool_names - {"memory"}
+        """Memory retrieval guidance should NOT appear without the memory tool."""
+        agent.valid_tool_names = (agent.valid_tool_names | {"session_search"}) - {"memory"}
         prompt = agent._build_system_prompt()
         assert MEMORY_RETRIEVAL_GUIDANCE not in prompt
 
-    def test_excludes_memory_retrieval_guidance_without_session_search_tool(self, agent):
-        """Memory retrieval guidance should NOT appear when session_search tool is missing."""
-        agent.valid_tool_names = agent.valid_tool_names - {"session_search"}
+    def test_excludes_memory_retrieval_guidance_without_session_search(self, agent):
+        """Memory retrieval guidance should NOT appear without the session_search tool."""
+        agent.valid_tool_names = (agent.valid_tool_names | {"memory"}) - {"session_search"}
         prompt = agent._build_system_prompt()
         assert MEMORY_RETRIEVAL_GUIDANCE not in prompt
+
+    def test_includes_editing_verification_guidance_when_editing_tools_present(self, agent):
+        """Editing verification guidance should appear when patch or write_file is available."""
+        agent.valid_tool_names = agent.valid_tool_names | {"patch", "write_file"}
+        prompt = agent._build_system_prompt()
+        assert EDITING_VERIFICATION_GUIDANCE in prompt
+
+    def test_excludes_editing_verification_guidance_without_editing_tools(self, agent):
+        """Editing verification guidance should NOT appear without patch or write_file."""
+        agent.valid_tool_names = agent.valid_tool_names - {"patch", "write_file"}
+        prompt = agent._build_system_prompt()
+        assert EDITING_VERIFICATION_GUIDANCE not in prompt
 
     def test_includes_nous_subscription_prompt(self, agent, monkeypatch):
         monkeypatch.setattr(run_agent, "build_nous_subscription_prompt", lambda tool_names: "NOUS SUBSCRIPTION BLOCK")
