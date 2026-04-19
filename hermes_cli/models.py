@@ -2108,6 +2108,49 @@ def validate_requested_model(
     # api_models is None — couldn't reach API.  Accept and persist,
     # but warn so typos don't silently break things.
 
+    # MiniMax (global + CN): /v1/models returns 404 — use our local catalog
+    # instead of failing with a misleading "could not reach API" message.
+    if normalized in ("minimax", "minimax-cn"):
+        known = provider_model_ids(normalized)
+        if known:
+            if requested_for_lookup in set(known):
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": None,
+                }
+            auto = get_close_matches(requested_for_lookup, known, n=1, cutoff=0.9)
+            if auto:
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "corrected_model": auto[0],
+                    "message": f"Auto-corrected `{requested}` -> `{auto[0]}`",
+                }
+            suggestions = get_close_matches(requested, known, n=3, cutoff=0.5)
+            suggestion_text = ""
+            if suggestions:
+                suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": False,
+                "message": (
+                    f"Note: `{requested}` was not found in the MiniMax model catalog. "
+                    f"It may still work if your account has access to it."
+                    f"{suggestion_text}"
+                ),
+            }
+        # catalog empty — fall through to generic accept
+        return {
+            "accepted": True,
+            "persist": True,
+            "recognized": False,
+            "message": None,
+        }
+
     # Bedrock: use our own discovery instead of HTTP /models endpoint.
     # Bedrock's bedrock-runtime URL doesn't support /models — it uses the
     # AWS SDK control plane (ListFoundationModels + ListInferenceProfiles).
