@@ -203,8 +203,7 @@ async def test_handle_message_persists_agent_token_counts(monkeypatch):
             "tools": [],
             "history_offset": 0,
             "last_prompt_tokens": 80,
-            "input_tokens": 120,
-            "output_tokens": 45,
+            "total_tokens": 165,
             "model": "openai/test-model",
         }
     )
@@ -220,6 +219,7 @@ async def test_handle_message_persists_agent_token_counts(monkeypatch):
     assert result == "ok"
     runner.session_store.update_session.assert_called_once_with(
         session_entry.session_key,
+        total_tokens=165,
         last_prompt_tokens=80,
     )
 
@@ -337,6 +337,219 @@ async def test_handle_message_stale_result_keeps_newer_generation_callback(monke
     assert result is None
     assert session_key in adapter._post_delivery_callbacks
     assert adapter._post_delivery_callbacks[session_key][0] == 2
+
+
+@pytest.mark.asyncio
+async def test_post_delivery_callback_generation_snapshot_happens_after_bind():
+    import asyncio
+    from gateway.platforms.base import BasePlatformAdapter
+
+    source = _make_source()
+    session_key = build_session_key(source)
+    fired = []
+
+    class _ConcreteAdapter(BasePlatformAdapter):
+        platform = Platform.TELEGRAM
+
+        async def connect(self): pass
+        async def disconnect(self): pass
+        async def send(self, chat_id, content, **kwargs): pass
+        async def get_chat_info(self, chat_id): return {}
+
+    adapter = _ConcreteAdapter(PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM)
+
+    async def fake_handler(event):
+        interrupt_event = adapter._active_sessions.get(session_key)
+        setattr(interrupt_event, "_hermes_run_generation", 1)
+        adapter.register_post_delivery_callback(
+            session_key,
+            lambda: fired.append("older"),
+            generation=1,
+        )
+        adapter.register_post_delivery_callback(
+            session_key,
+            lambda: fired.append("newer"),
+            generation=2,
+        )
+        return None
+
+    adapter.set_message_handler(fake_handler)
+    event = MessageEvent(
+        text="hello",
+        source=source,
+        message_id="m1",
+    )
+
+    await adapter.handle_message(event)
+    tasks = list(adapter._background_tasks)
+    assert tasks, "expected background task to be created"
+    await asyncio.gather(*tasks)
+
+    assert fired == []
+    assert session_key in adapter._post_delivery_callbacks
+    assert adapter._post_delivery_callbacks[session_key][0] == 2
+
+
+@pytest.mark.asyncio
+async def test_status_command_shows_restored_total_after_completed_run(monkeypatch):
+    import gateway.run as gateway_run
+
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    runner.session_store.load_transcript.return_value = [{"role": "user", "content": "earlier"}]
+
+    def _apply_session_update(_session_key, total_tokens=None, last_prompt_tokens=None):
+        if total_tokens is not None:
+            session_entry.total_tokens = total_tokens
+        if last_prompt_tokens is not None:
+            session_entry.last_prompt_tokens = last_prompt_tokens
+
+    runner.session_store.update_session.side_effect = _apply_session_update
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "ok",
+            "messages": [],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 80,
+            "total_tokens": 165,
+            "model": "openai/test-model",
+        }
+    )
+
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 100000,
+    )
+
+    await runner._handle_message(_make_event("hello"))
+    status = await runner._handle_message(_make_event("/status"))
+
+    assert "**Tokens:** 165" in status
+
+
+@pytest.mark.asyncio
+async def test_handle_message_overwrites_mirrored_total_on_repeated_runs(monkeypatch):
+    import gateway.run as gateway_run
+
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    runner.session_store.load_transcript.return_value = [{"role": "user", "content": "earlier"}]
+
+    seen_updates = []
+
+    def _apply_session_update(_session_key, total_tokens=None, last_prompt_tokens=None):
+        seen_updates.append((total_tokens, last_prompt_tokens))
+        if total_tokens is not None:
+            session_entry.total_tokens = total_tokens
+        if last_prompt_tokens is not None:
+            session_entry.last_prompt_tokens = last_prompt_tokens
+
+    runner.session_store.update_session.side_effect = _apply_session_update
+    runner._run_agent = AsyncMock(
+        side_effect=[
+            {
+                "final_response": "ok 1",
+                "messages": [],
+                "tools": [],
+                "history_offset": 0,
+                "last_prompt_tokens": 80,
+                "total_tokens": 165,
+                "model": "openai/test-model",
+            },
+            {
+                "final_response": "ok 2",
+                "messages": [],
+                "tools": [],
+                "history_offset": 0,
+                "last_prompt_tokens": 95,
+                "total_tokens": 410,
+                "model": "openai/test-model",
+            },
+        ]
+    )
+
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 100000,
+    )
+
+    await runner._handle_message(_make_event("hello"))
+    await runner._handle_message(_make_event("hello again"))
+    status = await runner._handle_message(_make_event("/status"))
+
+    assert seen_updates == [(165, 80), (410, 95)]
+    assert session_entry.total_tokens == 410
+    assert "**Tokens:** 410" in status
+
+
+@pytest.mark.asyncio
+async def test_failed_run_does_not_clobber_existing_mirrored_total(monkeypatch):
+    import gateway.run as gateway_run
+
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=165,
+    )
+    runner = _make_runner(session_entry)
+    runner.session_store.load_transcript.return_value = [{"role": "user", "content": "earlier"}]
+
+    seen_kwargs = []
+
+    def _apply_session_update(_session_key, **kwargs):
+        seen_kwargs.append(kwargs)
+        if "total_tokens" in kwargs:
+            session_entry.total_tokens = kwargs["total_tokens"]
+        if "last_prompt_tokens" in kwargs:
+            session_entry.last_prompt_tokens = kwargs["last_prompt_tokens"]
+
+    runner.session_store.update_session.side_effect = _apply_session_update
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "⚠️ temporary failure",
+            "messages": [],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+            "total_tokens": 0,
+            "failed": True,
+            "model": "openai/test-model",
+        }
+    )
+
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 100000,
+    )
+
+    await runner._handle_message(_make_event("hello"))
+    status = await runner._handle_message(_make_event("/status"))
+
+    assert seen_kwargs == [{"last_prompt_tokens": 0}]
+    assert session_entry.total_tokens == 165
+    assert "**Tokens:** 165" in status
 
 
 

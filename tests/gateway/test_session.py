@@ -975,6 +975,54 @@ class TestLastPromptTokens:
         store.update_session("k1", last_prompt_tokens=85000)
         assert entry.last_prompt_tokens == 85000
 
+    def test_update_session_overwrites_total_tokens(self, tmp_path):
+        """update_session should overwrite mirrored cumulative total tokens."""
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._loaded = True
+        store._db = None
+        store._save = MagicMock()
+
+        from gateway.session import SessionEntry
+        from datetime import datetime
+        entry = SessionEntry(
+            session_key="k1",
+            session_id="s1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            total_tokens=165,
+        )
+        store._entries = {"k1": entry}
+
+        store.update_session("k1", total_tokens=410)
+        assert entry.total_tokens == 410
+
+    def test_update_session_positional_arg_preserves_last_prompt_tokens(self, tmp_path):
+        """update_session(session_key, value) should keep its legacy meaning."""
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._loaded = True
+        store._db = None
+        store._save = MagicMock()
+
+        from gateway.session import SessionEntry
+        from datetime import datetime
+        entry = SessionEntry(
+            session_key="k1",
+            session_id="s1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            last_prompt_tokens=165,
+            total_tokens=410,
+        )
+        store._entries = {"k1": entry}
+
+        store.update_session("k1", 85000)
+        assert entry.last_prompt_tokens == 85000
+        assert entry.total_tokens == 410
+
     def test_update_session_none_does_not_change(self, tmp_path):
         """update_session with default (None) should not change last_prompt_tokens."""
         config = GatewayConfig()
