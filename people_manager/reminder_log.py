@@ -57,6 +57,19 @@ def iter_reminder_log(for_dt: datetime):
 
 
 
+def load_reminder_entries(*, month: str | None = None, profile_slug: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
+    if month:
+        base = datetime.fromisoformat(f"{month}-01T00:00:00")
+    else:
+        base = datetime.now()
+    entries = list(iter_reminder_log(base) or [])
+    if profile_slug:
+        entries = [entry for entry in entries if entry.get("profile_slug") == profile_slug]
+    entries.sort(key=lambda entry: entry.get("prep_sent_at", ""), reverse=True)
+    return entries[:limit]
+
+
+
 def was_sent_for_occurrence(profile_slug: str, meeting_at: datetime) -> bool:
     meeting_key = meeting_at.isoformat()
     for entry in iter_reminder_log(meeting_at) or []:

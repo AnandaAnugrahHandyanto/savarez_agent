@@ -51,7 +51,7 @@ def get_schedule_registry_path() -> Path:
 
 
 def default_schedule_registry() -> dict[str, Any]:
-    return {"version": 1, "timezone": DEFAULT_TIMEZONE, "profiles": {}}
+    return {"version": 1, "timezone": DEFAULT_TIMEZONE, "profiles": {}, "archived_profiles": {}}
 
 
 
@@ -65,6 +65,7 @@ def load_schedule_registry() -> dict[str, Any]:
     data.setdefault("version", 1)
     data.setdefault("timezone", DEFAULT_TIMEZONE)
     data.setdefault("profiles", {})
+    data.setdefault("archived_profiles", {})
     return data
 
 
@@ -74,6 +75,7 @@ def save_schedule_registry(registry: dict[str, Any]) -> dict[str, Any]:
     payload.setdefault("version", 1)
     payload.setdefault("timezone", DEFAULT_TIMEZONE)
     payload.setdefault("profiles", {})
+    payload.setdefault("archived_profiles", {})
     path = get_schedule_registry_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -182,6 +184,15 @@ def next_meeting_occurrence(meeting: dict[str, Any], *, now: datetime, timezone_
     if meeting_type == "monthly_nth_weekday":
         return _next_monthly_nth_weekday_occurrence(meeting, now=now, timezone_name=timezone_name)
     raise ValueError(f"Unsupported meeting type: {meeting_type}")
+
+
+
+def next_schedule_times(schedule: dict[str, Any], *, now: datetime, timezone_name: str) -> tuple[datetime, datetime]:
+    meeting = schedule.get("meeting", {})
+    meeting_at = next_meeting_occurrence(meeting, now=now, timezone_name=timezone_name)
+    prep_offset = int(schedule.get("prep_offset_minutes", DEFAULT_PREP_OFFSET_MINUTES))
+    prep_at = meeting_at - timedelta(minutes=prep_offset)
+    return meeting_at, prep_at
 
 
 

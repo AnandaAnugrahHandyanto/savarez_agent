@@ -17,6 +17,7 @@ from people_manager.prep_renderer import render_prep_note
 from people_manager.reminder_log import (
     append_reminder_log,
     claim_occurrence,
+    load_reminder_entries,
     release_occurrence_claim,
     was_sent_for_occurrence,
 )
@@ -26,6 +27,7 @@ from people_manager.schedule_store import (
     due_reminders,
     load_schedule_registry,
     next_meeting_occurrence,
+    next_schedule_times,
     save_schedule_registry,
 )
 from people_manager.storage import get_people_manager_root, load_report
@@ -82,23 +84,50 @@ def _render_due_entry(entry: dict[str, Any]) -> str:
 
 
 
-def cmd_list(_args: argparse.Namespace) -> int:
+def _schedule_times_for_output(schedule: dict[str, Any], *, now: datetime, timezone_name: str) -> tuple[str | None, str | None]:
+    try:
+        meeting_at, prep_at = next_schedule_times(schedule, now=now, timezone_name=timezone_name)
+        return meeting_at.isoformat(), prep_at.isoformat()
+    except Exception:
+        return None, None
+
+
+
+def _reports_root() -> Path:
+    return get_people_manager_root() / "reports"
+
+
+
+def cmd_list(args: argparse.Namespace) -> int:
     registry = load_schedule_registry()
+    timezone_name = str(registry.get("timezone") or "Asia/Singapore")
+    now = _parse_now(getattr(args, "now", None), timezone_name)
     print(f"Schedule registry: {get_people_manager_root() / 'schedules' / 'one_on_ones.json'}")
     for slug, schedule in sorted(registry.get("profiles", {}).items()):
         meeting = schedule.get("meeting", {})
-        print(f"{slug}: enabled={schedule.get('enabled', True)} type={meeting.get('type')} target={schedule.get('delivery_target', 'origin')}")
+        next_meeting_at, next_prep_at = _schedule_times_for_output(schedule, now=now, timezone_name=timezone_name)
+        print(
+            f"{slug}: enabled={schedule.get('enabled', True)} type={meeting.get('type')} "
+            f"target={schedule.get('delivery_target', 'origin')} "
+            f"next_meeting_at={next_meeting_at or 'invalid'} next_prep_at={next_prep_at or 'invalid'}"
+        )
     return 0
 
 
 
 def cmd_show(args: argparse.Namespace) -> int:
     registry = load_schedule_registry()
+    timezone_name = str(registry.get("timezone") or "Asia/Singapore")
+    now = _parse_now(getattr(args, "now", None), timezone_name)
     schedule = registry.get("profiles", {}).get(args.slug)
     if not schedule:
         print(f"Schedule not found for {args.slug}", file=sys.stderr)
         return 1
-    print(json.dumps({args.slug: schedule}, indent=2, sort_keys=True))
+    next_meeting_at, next_prep_at = _schedule_times_for_output(schedule, now=now, timezone_name=timezone_name)
+    payload = dict(schedule)
+    payload["next_meeting_at"] = next_meeting_at
+    payload["next_prep_at"] = next_prep_at
+    print(json.dumps({args.slug: payload}, indent=2, sort_keys=True))
     return 0
 
 
@@ -183,29 +212,37 @@ def cmd_run_once(args: argparse.Namespace) -> int:
 
 
 
-def cmd_add(args: argparse.Namespace) -> int:
-    registry = load_schedule_registry()
-    profiles = registry.setdefault("profiles", {})
-    meeting: dict[str, Any]
-    if args.weekly:
-        meeting = {"type": "weekly", "weekday": _weekday_name_to_iso(args.weekly[0]), "time": args.weekly[1]}
-    elif args.biweekly:
-        if not args.anchor_date:
+def _build_meeting_from_args(args: argparse.Namespace, existing: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    if getattr(args, "weekly", None):
+        return {"type": "weekly", "weekday": _weekday_name_to_iso(args.weekly[0]), "time": args.weekly[1]}
+    if getattr(args, "biweekly", None):
+        anchor_date = args.anchor_date or ((existing or {}).get("anchor_date") if (existing or {}).get("type") == "biweekly" else None)
+        if not anchor_date:
             print("anchor_date is required for biweekly schedules", file=sys.stderr)
-            return 1
-        meeting = {
+            return None
+        return {
             "type": "biweekly",
             "weekday": _weekday_name_to_iso(args.biweekly[0]),
             "time": args.biweekly[1],
-            "anchor_date": args.anchor_date,
+            "anchor_date": anchor_date,
         }
-    else:
-        meeting = {
+    if getattr(args, "monthly_nth_weekday", None):
+        return {
             "type": "monthly_nth_weekday",
             "weekday": _weekday_name_to_iso(args.monthly_nth_weekday[1]),
             "ordinal": int(args.monthly_nth_weekday[0]),
             "time": args.monthly_nth_weekday[2],
         }
+    return None
+
+
+
+def cmd_add(args: argparse.Namespace) -> int:
+    registry = load_schedule_registry()
+    profiles = registry.setdefault("profiles", {})
+    meeting = _build_meeting_from_args(args)
+    if meeting is None:
+        return 1
     profiles[args.slug] = {
         "name": args.name or args.slug,
         "enabled": True,
@@ -216,6 +253,29 @@ def cmd_add(args: argparse.Namespace) -> int:
     }
     save_schedule_registry(registry)
     print(f"Saved schedule for {args.slug}")
+    return 0
+
+
+
+def cmd_update(args: argparse.Namespace) -> int:
+    registry = load_schedule_registry()
+    schedule = registry.get("profiles", {}).get(args.slug)
+    if not schedule:
+        print(f"Schedule not found for {args.slug}", file=sys.stderr)
+        return 1
+    meeting = _build_meeting_from_args(args, existing=schedule.get("meeting", {}))
+    if getattr(args, "weekly", None) or getattr(args, "biweekly", None) or getattr(args, "monthly_nth_weekday", None):
+        if meeting is None:
+            return 1
+        schedule["meeting"] = meeting
+    if args.name is not None:
+        schedule["name"] = args.name
+    if args.delivery_target is not None:
+        schedule["delivery_target"] = args.delivery_target
+    if args.prep_offset_minutes is not None:
+        schedule["prep_offset_minutes"] = args.prep_offset_minutes
+    save_schedule_registry(registry)
+    print(f"Updated schedule for {args.slug}")
     return 0
 
 
@@ -257,6 +317,67 @@ def cmd_disable(args: argparse.Namespace) -> int:
 
 
 
+def cmd_remove(args: argparse.Namespace) -> int:
+    registry = load_schedule_registry()
+    schedule = registry.get("profiles", {}).pop(args.slug, None)
+    if schedule is None:
+        print(f"Schedule not found for {args.slug}", file=sys.stderr)
+        return 1
+    if args.archive:
+        registry.setdefault("archived_profiles", {})[args.slug] = schedule
+    save_schedule_registry(registry)
+    print(f"Removed schedule for {args.slug}")
+    return 0
+
+
+
+def cmd_log(args: argparse.Namespace) -> int:
+    entries = load_reminder_entries(month=args.month, profile_slug=args.slug, limit=args.limit)
+    for entry in entries:
+        print(
+            f"{entry.get('prep_sent_at')} {entry.get('profile_slug')} "
+            f"status={entry.get('status')} meeting_at={entry.get('meeting_at')}"
+        )
+    return 0
+
+
+
+def cmd_audit(_args: argparse.Namespace) -> int:
+    registry = load_schedule_registry()
+    timezone_name = str(registry.get("timezone") or "Asia/Singapore")
+    now = datetime.now(ZoneInfo(timezone_name))
+    profiles = registry.get("profiles", {})
+    report_root = _reports_root()
+    report_slugs = sorted(path.stem for path in report_root.glob("*.json")) if report_root.exists() else []
+    scheduled_without_report = [slug for slug in sorted(profiles) if slug not in report_slugs]
+    unscheduled_reports = [slug for slug in report_slugs if slug not in profiles]
+    sparse_prep = []
+    malformed_schedules = []
+    for slug, schedule in sorted(profiles.items()):
+        report = load_report(slug)
+        if report:
+            if not report.get("prep_note_preference") and not (report.get("upcoming_one_on_one") or {}).get("topics") and not report.get("relationship_note"):
+                sparse_prep.append(slug)
+        try:
+            next_schedule_times(schedule, now=now, timezone_name=timezone_name)
+        except Exception:
+            malformed_schedules.append(slug)
+    print("Scheduled without report")
+    for slug in scheduled_without_report or ["(none)"]:
+        print(f"- {slug}")
+    print("\nUnscheduled reports")
+    for slug in unscheduled_reports or ["(none)"]:
+        print(f"- {slug}")
+    print("\nSparse prep metadata")
+    for slug in sparse_prep or ["(none)"]:
+        print(f"- {slug}")
+    print("\nMalformed schedules")
+    for slug in malformed_schedules or ["(none)"]:
+        print(f"- {slug}")
+    return 0
+
+
+
 def _weekday_name_to_iso(name: str) -> int:
     mapping = {
         "mon": 1,
@@ -286,10 +407,12 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     list_parser = subparsers.add_parser("list")
+    list_parser.add_argument("--now")
     list_parser.set_defaults(func=cmd_list)
 
     show_parser = subparsers.add_parser("show")
     show_parser.add_argument("slug")
+    show_parser.add_argument("--now")
     show_parser.set_defaults(func=cmd_show)
 
     preview_parser = subparsers.add_parser("preview")
@@ -318,6 +441,18 @@ def build_parser() -> argparse.ArgumentParser:
     add_parser.add_argument("--anchor-date")
     add_parser.set_defaults(func=cmd_add)
 
+    update_parser = subparsers.add_parser("update")
+    update_parser.add_argument("--slug", required=True)
+    update_parser.add_argument("--name")
+    update_parser.add_argument("--delivery-target")
+    update_parser.add_argument("--prep-offset-minutes", type=int)
+    update_group = update_parser.add_mutually_exclusive_group(required=False)
+    update_group.add_argument("--weekly", nargs=2, metavar=("WEEKDAY", "TIME"))
+    update_group.add_argument("--biweekly", nargs=2, metavar=("WEEKDAY", "TIME"))
+    update_group.add_argument("--monthly-nth-weekday", nargs=3, metavar=("ORDINAL", "WEEKDAY", "TIME"))
+    update_parser.add_argument("--anchor-date")
+    update_parser.set_defaults(func=cmd_update)
+
     style_parser = subparsers.add_parser("set-style")
     style_parser.add_argument("slug")
     style_parser.add_argument("style")
@@ -330,6 +465,20 @@ def build_parser() -> argparse.ArgumentParser:
     disable_parser = subparsers.add_parser("disable")
     disable_parser.add_argument("slug")
     disable_parser.set_defaults(func=cmd_disable)
+
+    remove_parser = subparsers.add_parser("remove")
+    remove_parser.add_argument("slug")
+    remove_parser.add_argument("--archive", action="store_true")
+    remove_parser.set_defaults(func=cmd_remove)
+
+    log_parser = subparsers.add_parser("log")
+    log_parser.add_argument("--month")
+    log_parser.add_argument("--slug")
+    log_parser.add_argument("--limit", type=int, default=20)
+    log_parser.set_defaults(func=cmd_log)
+
+    audit_parser = subparsers.add_parser("audit")
+    audit_parser.set_defaults(func=cmd_audit)
 
     return parser
 
