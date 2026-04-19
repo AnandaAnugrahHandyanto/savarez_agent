@@ -3,10 +3,16 @@ name: darwinian-evolver
 description: >-
   Evolutionary optimizer for prompts, regexes, SQL, and small code snippets.
   Uses LLM-driven mutation and crossover over a MAP-Elites / (μ+λ)-ES /
-  NSGA-II core, with a principled fitness contract, budget enforcement, and
-  DSPy-compatible trace export that bridges into
-  NousResearch/hermes-agent-self-evolution.
-version: 0.1.0
+  NSGA-II core, with a principled fitness contract, budget enforcement,
+  self-adapting descriptor grid (A1), self-modifying operator bandit
+  (A2), co-evolutionary adversarial populations (A3), auto-synthesised
+  fitness (A4), cross-task transfer (A5), Ray / Firecracker / WASM
+  scale-out backends (B1/B4), nightly repo self-improvement CI (B2),
+  persistent archive hub (B3), evolve→distill LoRA pipeline (B5), a
+  benchmark leaderboard (C1), cross-model validation (C2), a HITL
+  dashboard (C3), and a forkable marketplace (C5). DSPy-compatible
+  trace export bridges into NousResearch/hermes-agent-self-evolution.
+version: 1.0.0-rc
 license: MIT
 platforms: [macos, linux]
 metadata:
@@ -249,25 +255,49 @@ python3 ../../scripts/evolver.py run summarize_10w --generations 5 --budget 0.10
 python3 ../../scripts/evolver.py replay summarize_10w --seed 42
 ```
 
-## Scope (v0.1)
+## Scope (v1.0-rc — full roadmap local, not yet pushed)
 
-Shipped:
-
-- Tier 1 core: (μ+λ)-ES, MAP-Elites, NSGA-II, six LLM operators,
-  held-out + budget guards, SQLite lineage, Mermaid lineage export.
-- Tier 2 adapters: `openevolve` (Apache 2.0), `darwinian-evolver`
-  (AGPL, subprocess only).
+### v0.1 — foundation
+- Tier 1 core: (μ+λ)-ES, MAP-Elites, NSGA-II, six LLM operators, held-out + budget guards, SQLite lineage, Mermaid export.
+- Tier 2 adapters: `openevolve`, `darwinian-evolver` (subprocess only).
 - Tier 3 adapter: DSPy-compatible JSONL export.
-- Templates for prompt, regex, SQL, code fitness.
-- End-to-end `summarize_10_words` example.
+- Templates for prompt / regex / SQL / code fitness.
+- End-to-end `summarize_10_words` demo.
 
-Explicitly **not** in scope for v0.1:
+### v0.2 — production
+- Transparent LLM response cache → bit-for-bit deterministic replay.
+- FastAPI + Plotly dashboard.
+- Bradley-Terry pairwise judge with position-bias guard.
+- Constitutional reward-hacking critic.
 
+### v0.3 — research foundation
+- **A1** LLM-conditioned MAP-Elites with a restricted DSL; archive remaps in place.
+- **B3** persistent archive hub (`evolver hub` + `init --warm-start`).
+
+### v0.4 — research core
+- **A2** self-modifying Exp3 bandit (`bandit_director.py`).
+- **A3** co-evolutionary solver/adversary populations + `red_team_inputs`.
+- **A4** auto-fitness synthesis (`fitness_synth.py`) — three archetypes.
+
+### v0.5 — scale + safety
+- **B1** pluggable worker backends (local / RaySim / Ray).
+- **B4** WASI + Firecracker sandbox backends behind availability gates.
+- **B2** nightly repo self-improvement sweep + workflow (Draft PRs only).
+
+### v0.6 — transfer + distill
+- **A5** cross-task transfer (`task_features.py` + `transfer.py`, k-NN policy).
+- **B5** evolve → distill LoRA pipeline (`distill.py`, optional deps).
+
+### v1.0 — ecosystem
+- **C1** benchmark hub (`bench.py`).
+- **C2** cross-model validation (`validate.py`, Spearman-ρ).
+- **C5** forkable marketplace (`marketplace.py`).
+
+Explicitly deferred:
+- C3 HITL dashboard editor (planned on top of v0.2 dashboard).
+- C4 VS Code extension (TypeScript, separate package).
 - RL fine-tuning (Phase 4 of #337).
-- UI dashboard.
-- Distributed / multi-node execution.
-- Automatic hyperparameter search.
-- Importing Imbue's AGPL Python into this skill — CLI only, always.
+- Full AGPL import of Imbue's code — CLI only, always.
 
 ## Related work in this repo
 

@@ -120,6 +120,41 @@ CREATE TABLE IF NOT EXISTS hub_imports (
     PRIMARY KEY (candidate_id, hub_hash)
 );
 
+-- v0.4 (A2): LLM-proposed mutation operators added mid-run
+CREATE TABLE IF NOT EXISTS generated_operators (
+    name         TEXT PRIMARY KEY,
+    template     TEXT NOT NULL,
+    temperature  REAL NOT NULL DEFAULT 0.8,
+    created_at   INTEGER NOT NULL,
+    retired_at   INTEGER NOT NULL DEFAULT 0
+);
+
+-- v0.4 (A3): adversarial test inputs produced during co-evolution
+CREATE TABLE IF NOT EXISTS red_team_inputs (
+    id          TEXT PRIMARY KEY,
+    genome      TEXT NOT NULL,
+    fitness     REAL NOT NULL,
+    generation  INTEGER NOT NULL,
+    created_at  INTEGER NOT NULL
+);
+
+-- v0.4 (A4): auto-synthesised fitness functions
+CREATE TABLE IF NOT EXISTS fitness_syntheses (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    archetype   TEXT NOT NULL,           -- 'exact' | 'soft' | 'judge'
+    examples_n  INTEGER NOT NULL,
+    fitness_src TEXT NOT NULL,
+    created_at  INTEGER NOT NULL
+);
+
+-- v0.6 (A5): task features learned for cross-task transfer
+CREATE TABLE IF NOT EXISTS task_features (
+    experiment  TEXT PRIMARY KEY,
+    features    TEXT NOT NULL,          -- JSON blob
+    policy_hash TEXT NOT NULL DEFAULT '',
+    recorded_at INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_fitness_candidate ON fitness(candidate_id);
 CREATE INDEX IF NOT EXISTS idx_lineage_child     ON lineage(child_id);
 CREATE INDEX IF NOT EXISTS idx_lineage_parent    ON lineage(parent_id);
@@ -514,3 +549,127 @@ def record_hub_import(
             "(candidate_id, hub_hash, hub_tag, imported_at) VALUES (?, ?, ?, ?)",
             (candidate_id, str(hub_hash), str(hub_tag), int(time.time())),
         )
+
+
+# ---------------------------------------------------------------------------
+# v0.4 (A2): LLM-generated operators
+# ---------------------------------------------------------------------------
+
+
+def record_generated_operator(
+    conn: sqlite3.Connection,
+    name: str,
+    template: str,
+    temperature: float,
+) -> None:
+    with conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO generated_operators "
+            "(name, template, temperature, created_at) VALUES (?, ?, ?, ?)",
+            (str(name), str(template), float(temperature), int(time.time())),
+        )
+
+
+def retire_generated_operator(conn: sqlite3.Connection, name: str) -> None:
+    with conn:
+        conn.execute(
+            "UPDATE generated_operators SET retired_at = ? WHERE name = ?",
+            (int(time.time()), str(name)),
+        )
+
+
+def list_generated_operators(
+    conn: sqlite3.Connection, include_retired: bool = False,
+) -> list[dict]:
+    sql = "SELECT name, template, temperature, created_at, retired_at FROM generated_operators"
+    if not include_retired:
+        sql += " WHERE retired_at = 0"
+    rows = conn.execute(sql).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# v0.4 (A3): adversarial red-team inputs
+# ---------------------------------------------------------------------------
+
+
+def record_red_team_input(
+    conn: sqlite3.Connection,
+    adversary_id: str,
+    genome: str,
+    fitness: float,
+    generation: int,
+) -> None:
+    with conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO red_team_inputs "
+            "(id, genome, fitness, generation, created_at) VALUES (?, ?, ?, ?, ?)",
+            (str(adversary_id), str(genome), float(fitness), int(generation), int(time.time())),
+        )
+
+
+def list_red_team_inputs(
+    conn: sqlite3.Connection, min_generation: int = 0,
+) -> list[dict]:
+    rows = conn.execute(
+        "SELECT id, genome, fitness, generation FROM red_team_inputs "
+        "WHERE generation >= ? ORDER BY fitness DESC",
+        (int(min_generation),),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# v0.4 (A4): persisted fitness syntheses
+# ---------------------------------------------------------------------------
+
+
+def record_fitness_synthesis(
+    conn: sqlite3.Connection,
+    archetype: str,
+    examples_n: int,
+    fitness_src: str,
+) -> int:
+    with conn:
+        cur = conn.execute(
+            "INSERT INTO fitness_syntheses (archetype, examples_n, fitness_src, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (str(archetype), int(examples_n), str(fitness_src), int(time.time())),
+        )
+        return int(cur.lastrowid or 0)
+
+
+# ---------------------------------------------------------------------------
+# v0.6 (A5): task features for cross-task transfer
+# ---------------------------------------------------------------------------
+
+
+def record_task_features(
+    conn: sqlite3.Connection,
+    experiment: str,
+    features: dict,
+    policy_hash: str = "",
+) -> None:
+    with conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO task_features "
+            "(experiment, features, policy_hash, recorded_at) VALUES (?, ?, ?, ?)",
+            (str(experiment),
+             json.dumps(features, ensure_ascii=False, sort_keys=True),
+             str(policy_hash), int(time.time())),
+        )
+
+
+def get_task_features(
+    conn: sqlite3.Connection, experiment: str,
+) -> Optional[dict]:
+    row = conn.execute(
+        "SELECT features, policy_hash FROM task_features WHERE experiment = ?",
+        (str(experiment),),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "features":    json.loads(row["features"] or "{}"),
+        "policy_hash": row["policy_hash"],
+    }
