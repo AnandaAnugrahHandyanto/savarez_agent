@@ -358,6 +358,10 @@ class EmailAdapter(BasePlatformAdapter):
                     if len(self._seen_uids) > self._seen_uids_max:
                         self._trim_seen_uids()
 
+                    # Mark as read on the server so it won't reappear
+                    # as UNSEEN on the next poll or after a restart.
+                    imap.uid("store", uid, "+FLAGS", "\\Seen")
+
                     status, msg_data = imap.uid("fetch", uid, "(RFC822)")
                     if status != "OK":
                         continue
