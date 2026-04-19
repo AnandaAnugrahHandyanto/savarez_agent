@@ -220,3 +220,46 @@ class TestPersistentSSH:
         assert len(lines) == 1000
         assert lines[0] == "1"
         assert lines[-1] == "1000"
+
+
+class TestSocketPathHashing:
+
+    @pytest.fixture(autouse=True)
+    def _mock_connection(self, monkeypatch):
+        monkeypatch.setattr(ssh_env.shutil, "which", lambda _name: "/usr/bin/ssh")
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_establish_connection", lambda self: None)
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_detect_remote_home", lambda self: "/home/testuser")
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_ensure_remote_dirs", lambda self: None)
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "init_session", lambda self: None)
+        monkeypatch.setattr(ssh_env, "FileSyncManager", lambda **kw: type("M", (), {"sync": lambda self, **k: None})())
+
+    def test_ssh_socket_path_uses_hash(self):
+        """Socket filename is a 12-char hex string + .sock, with no @ or :."""
+        env = ssh_env.SSHEnvironment(host="example.com", user="testuser", port=22)
+        socket_name = env.control_socket.name
+        assert socket_name.endswith(".sock")
+        hex_part = socket_name[:-5]  # strip .sock
+        assert len(hex_part) == 12
+        assert all(c in "0123456789abcdef" for c in hex_part)
+        assert "@" not in socket_name
+        assert ":" not in socket_name
+
+    def test_ssh_socket_path_under_104_chars(self):
+        """Long IPv6 address still produces a socket path under 104 chars (macOS limit)."""
+        # This is a real-looking expanded IPv6 address
+        long_host = "2001:0db8:85a3:0000:0000:8a2e:0370:7334"
+        env = ssh_env.SSHEnvironment(host=long_host, user="testuser", port=22)
+        path = str(env.control_socket)
+        assert len(path) < 104, f"Socket path too long ({len(path)}): {path}"
+
+    def test_ssh_socket_path_deterministic(self):
+        """Same host/user/port always produce the same socket path."""
+        env1 = ssh_env.SSHEnvironment(host="example.com", user="testuser", port=22)
+        env2 = ssh_env.SSHEnvironment(host="example.com", user="testuser", port=22)
+        assert env1.control_socket == env2.control_socket
+
+    def test_ssh_socket_path_differs_by_port(self):
+        """Different ports produce different socket paths."""
+        env1 = ssh_env.SSHEnvironment(host="example.com", user="testuser", port=22)
+        env2 = ssh_env.SSHEnvironment(host="example.com", user="testuser", port=2222)
+        assert env1.control_socket != env2.control_socket
