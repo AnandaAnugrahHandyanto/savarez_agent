@@ -1361,6 +1361,52 @@ class FeishuAdapter(BasePlatformAdapter):
     # Outbound — send / edit / send_image / send_voice / …
     # =========================================================================
 
+    async def _send_chunk_with_fallback(
+        self,
+        chunk: str,
+        msg_type: str,
+        payload: str,
+        *,
+        chat_id: str,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> Any:
+        """Send a single chunk, falling back through post -> text on failure."""
+        try:
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type=msg_type,
+                payload=payload,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+        except Exception as exc:
+            if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
+                raise
+            logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+            return await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="text",
+                payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+        # Response-level fallback
+        if (
+            msg_type == "post"
+            and not self._response_succeeded(response)
+            and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
+        ):
+            logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
+            return await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="text",
+                payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+        return response
+
     async def send(
         self,
         chat_id: str,
@@ -1379,38 +1425,10 @@ class FeishuAdapter(BasePlatformAdapter):
         try:
             for chunk in chunks:
                 msg_type, payload = self._build_outbound_payload(chunk)
-                try:
-                    response = await self._feishu_send_with_retry(
-                        chat_id=chat_id,
-                        msg_type=msg_type,
-                        payload=payload,
-                        reply_to=reply_to,
-                        metadata=metadata,
-                    )
-                except Exception as exc:
-                    if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
-                        raise
-                    logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
-                    response = await self._feishu_send_with_retry(
-                        chat_id=chat_id,
-                        msg_type="text",
-                        payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
-                        reply_to=reply_to,
-                        metadata=metadata,
-                    )
-                if (
-                    msg_type == "post"
-                    and not self._response_succeeded(response)
-                    and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
-                ):
-                    logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
-                    response = await self._feishu_send_with_retry(
-                        chat_id=chat_id,
-                        msg_type="text",
-                        payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
-                        reply_to=reply_to,
-                        metadata=metadata,
-                    )
+                response = await self._send_chunk_with_fallback(
+                    chunk, msg_type, payload,
+                    chat_id=chat_id, reply_to=reply_to, metadata=metadata,
+                )
                 last_response = response
 
             return self._finalize_send_result(last_response, "send failed")
