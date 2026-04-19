@@ -9603,7 +9603,17 @@ class GatewayRunner:
             # and forwards them via WeCom stream API with think tags.
             # Only wire up when show_reasoning is enabled — otherwise the
             # think block shows only the waiting model text timer.
-            _want_show_reasoning = getattr(self, "_show_reasoning", False)
+            _want_show_reasoning = False
+            try:
+                from gateway.display_config import resolve_display_setting as _rds
+                _want_show_reasoning = bool(_rds(
+                    _load_gateway_config(),
+                    _platform_config_key(source.platform),
+                    "show_reasoning",
+                    False,
+                ))
+            except Exception:
+                pass
             try:
                 from gateway.wecom_stream_consumer import WeComStreamConsumer as _WCS
                 if isinstance(_stream_consumer, _WCS) and _want_show_reasoning:
