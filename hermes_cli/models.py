@@ -2112,6 +2112,17 @@ def validate_requested_model(
     api_models = fetch_api_models(api_key, base_url)
 
     if api_models is not None:
+        # Gemini's OpenAI-compat ``/models`` endpoint returns IDs prefixed
+        # with ``models/`` (e.g. ``models/gemini-2.5-flash``) — native
+        # Gemini-API convention.  Our curated list and user input both use
+        # the bare ID, so a direct set-membership check drops every known
+        # Gemini model.  Normalize the probed list before comparison.
+        # See #12532.
+        if normalized == "gemini":
+            api_models = [
+                m[len("models/") :] if isinstance(m, str) and m.startswith("models/") else m
+                for m in api_models
+            ]
         if requested_for_lookup in set(api_models):
             # API confirmed the model exists
             return {
@@ -2189,6 +2200,42 @@ def validate_requested_model(
             }
         except Exception:
             pass  # Fall through to generic warning
+
+    # Anthropic: ``probe_api_models`` uses ``Authorization: Bearer`` and
+    # no ``anthropic-version`` header, so the probe returns ``None`` for
+    # Anthropic's native API even though ``/v1/models`` does exist there.
+    # ``provider_model_ids("anthropic")`` internally uses
+    # ``_fetch_anthropic_models`` with the correct ``x-api-key`` +
+    # ``anthropic-version`` headers and falls back to the curated static
+    # list when the live fetch fails, so defer to it here.  See #12532.
+    if normalized == "anthropic":
+        try:
+            catalog = provider_model_ids("anthropic")
+        except Exception:
+            catalog = []
+        if catalog:
+            catalog_set = set(catalog)
+            if requested in catalog_set or requested_for_lookup in catalog_set:
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": None,
+                }
+            suggestions = get_close_matches(requested, catalog, n=3, cutoff=0.4)
+            suggestion_text = ""
+            if suggestions:
+                suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": False,
+                "message": (
+                    f"Note: `{requested}` was not found in the Anthropic catalog. "
+                    f"It may still work if it's a newer model the catalog doesn't list yet."
+                    f"{suggestion_text}"
+                ),
+            }
 
     provider_label = _PROVIDER_LABELS.get(normalized, normalized)
     return {
