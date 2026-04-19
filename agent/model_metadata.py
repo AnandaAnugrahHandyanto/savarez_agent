@@ -28,6 +28,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "qwen-oauth",
     "xiaomi",
     "arcee",
+    "concentrate",
     "custom", "local",
     # Common aliases
     "google", "google-gemini", "google-ai-studio",
@@ -37,6 +38,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "qwen",
     "mimo", "xiaomi-mimo",
     "arcee-ai", "arceeai",
+    "concentrate-ai",
     "xai", "x-ai", "x.ai", "grok",
     "nvidia", "nim", "nvidia-nim", "nemotron",
     "qwen-portal",
@@ -116,6 +118,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     "gpt-5.4-nano": 400000,           # 400k (not 1.05M like full 5.4)
     "gpt-5.4-mini": 400000,           # 400k (not 1.05M like full 5.4)
     "gpt-5.4": 1050000,               # GPT-5.4, GPT-5.4 Pro (1.05M context)
+    "gpt-5.4-pro": 1050000,            # GPT-5.4 Pro (Concentrate AI)
     "gpt-5.3-codex-spark": 128000,    # Spark variant has reduced 128k context
     "gpt-5.1-chat": 128000,           # Chat variant has 128k context
     "gpt-5": 400000,                  # GPT-5.x base, mini, codex variants (400k)
@@ -229,6 +232,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.moonshot.cn": "kimi-coding-cn",
     "api.kimi.com": "kimi-coding",
     "api.arcee.ai": "arcee",
+    "api.concentrate.ai": "concentrate",
     "api.minimax": "minimax",
     "dashscope.aliyuncs.com": "alibaba",
     "dashscope-intl.aliyuncs.com": "alibaba",

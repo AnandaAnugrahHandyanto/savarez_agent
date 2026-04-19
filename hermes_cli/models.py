@@ -222,6 +222,24 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "trinity-large-preview",
         "trinity-mini",
     ],
+    "concentrate": [
+        # OpenAI
+        "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.4-pro",
+        "gpt-5.3-codex", "gpt-5.2", "gpt-5.1", "gpt-5.1-codex-max", "gpt-5.1-codex-mini",
+        "gpt-5", "gpt-5-mini", "gpt-5-nano",
+        "o1", "o3", "o4-mini",
+        "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "gpt-4o", "gpt-4o-mini",
+        # Google
+        "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash",
+        # Anthropic
+        "claude-opus-4-6", "claude-sonnet-4", "claude-haiku-3.5",
+        # Meta
+        "llama-4-maverick", "llama-4-scout",
+        # DeepSeek
+        "deepseek-r1", "deepseek-v3-0324",
+        # xAI
+        "grok-3", "grok-3-mini",
+    ],
     "opencode-zen": [
         "kimi-k2.5",
         "gpt-5.4-pro",
@@ -564,6 +582,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("alibaba",        "Alibaba Cloud (DashScope)","Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
     ProviderEntry("ollama-cloud",   "Ollama Cloud",             "Ollama Cloud (cloud-hosted open models — ollama.com)"),
     ProviderEntry("arcee",          "Arcee AI",                 "Arcee AI (Trinity models — direct API)"),
+    ProviderEntry("concentrate",    "Concentrate AI",           "Concentrate AI (115+ models, auto-routing, pay-per-use)"),
     ProviderEntry("kilocode",       "Kilo Code",                "Kilo Code (Kilo Gateway API)"),
     ProviderEntry("opencode-zen",   "OpenCode Zen",             "OpenCode Zen (35+ curated models, pay-as-you-go)"),
     ProviderEntry("opencode-go",    "OpenCode Go",              "OpenCode Go (open models, $10/month subscription)"),
@@ -596,6 +615,7 @@ _PROVIDER_ALIASES = {
     "moonshot-cn": "kimi-coding-cn",
     "arcee-ai": "arcee",
     "arceeai": "arcee",
+    "concentrate-ai": "concentrate",
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
     "claude": "anthropic",
