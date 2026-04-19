@@ -1536,6 +1536,22 @@ class GatewayRunner:
             except Exception:
                 pass  # don't let interrupt failure block the ack
 
+        # Respect quiet/clean-output display settings. If tool progress is off for
+        # this platform, interrupt silently and let the follow-up response arrive
+        # without an extra status bubble in chat.
+        try:
+            from gateway.display_config import resolve_display_setting
+
+            user_config = _load_gateway_config()
+            platform_key = _platform_config_key(event.source.platform)
+            progress_mode = str(
+                resolve_display_setting(user_config, platform_key, "tool_progress", "all")
+            ).lower()
+            if progress_mode == "off":
+                return True
+        except Exception:
+            pass
+
         # Debounce: only send an acknowledgment once every 30 seconds per session
         # to avoid spamming the user when they send multiple messages quickly
         _BUSY_ACK_COOLDOWN = 30
@@ -4794,18 +4810,50 @@ class GatewayRunner:
             "session_key": session_key,
         })
 
-        # Resolve session config info to surface to the user
-        try:
-            session_info = self._format_session_info()
-        except Exception:
-            session_info = ""
+        is_telegram = source.platform == Platform.TELEGRAM
 
-        if new_entry:
-            header = "✨ Session reset! Starting fresh."
+        # Resolve session config info to surface to the user.
+        # Telegram reset replies stay intentionally minimal.
+        if is_telegram:
+            session_info = ""
         else:
+            try:
+                session_info = self._format_session_info()
+            except Exception:
+                session_info = ""
+
+        try:
+            from gateway.display_config import resolve_session_reset_message
+
+            header = resolve_session_reset_message(
+                _load_gateway_config(),
+                default=(
+                    "🌺 Fresh chat, same me — ready when you are."
+                    if new_entry
+                    else "🌺 Hi — I’m here and ready whenever you are."
+                )
+                if is_telegram
+                else ("✨ Session reset! Starting fresh." if new_entry else "✨ New session started!"),
+            )
+        except Exception:
+            header = (
+                "🌺 Fresh chat, same me — ready when you are."
+                if is_telegram and new_entry
+                else "🌺 Hi — I’m here and ready whenever you are."
+                if is_telegram
+                else ("✨ Session reset! Starting fresh." if new_entry else "✨ New session started!")
+            )
+
+        if is_telegram and not header:
+            header = (
+                "🌺 Fresh chat, same me — ready when you are."
+                if new_entry
+                else "🌺 Hi — I’m here and ready whenever you are."
+            )
+
+        if not new_entry:
             # No existing session, just create one
             new_entry = self.session_store.get_or_create_session(source, force_new=True)
-            header = "✨ New session started!"
 
         # Fire plugin on_session_reset hook (new session guaranteed to exist)
         try:
@@ -4817,15 +4865,27 @@ class GatewayRunner:
             pass
 
         # Append a random tip to the reset message
-        try:
-            from hermes_cli.tips import get_random_tip
-            _tip_line = f"\n✦ Tip: {get_random_tip()}"
-        except Exception:
+        if is_telegram:
             _tip_line = ""
+        else:
+            try:
+                from hermes_cli.tips import get_random_tip
+                _tip_line = f"\n✦ Tip: {get_random_tip()}"
+            except Exception:
+                _tip_line = ""
 
+        parts = []
+        if header:
+            parts.append(header)
         if session_info:
-            return f"{header}\n\n{session_info}{_tip_line}"
-        return f"{header}{_tip_line}"
+            parts.append(session_info)
+        if _tip_line:
+            if parts:
+                parts[-1] = parts[-1] + _tip_line
+            else:
+                parts.append(_tip_line.lstrip("\n"))
+
+        return "\n\n".join(parts)
     
     async def _handle_profile_command(self, event: MessageEvent) -> str:
         """Handle /profile — show active profile name and home directory."""

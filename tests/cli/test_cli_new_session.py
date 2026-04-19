@@ -120,8 +120,8 @@ def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
             return _cli_mod.HermesCLI(**kwargs)
 
 
-def _prepare_cli_with_active_session(tmp_path):
-    cli = _make_cli()
+def _prepare_cli_with_active_session(tmp_path, **kwargs):
+    cli = _make_cli(**kwargs)
     cli._session_db = SessionDB(db_path=tmp_path / "state.db")
     cli._session_db.create_session(session_id=cli.session_id, source="cli", model=cli.model)
 
@@ -221,3 +221,23 @@ def test_new_session_resets_token_counters(tmp_path):
     assert comp.last_total_tokens == 0
     assert comp.compression_count == 0
     assert comp._context_probed is False
+
+
+def test_new_session_uses_configurable_banner(tmp_path, capsys):
+    """The /new banner should come from config when explicitly set."""
+    cli = _prepare_cli_with_active_session(
+        tmp_path,
+        config_overrides={
+            "display": {
+                "compact": False,
+                "tool_progress": "all",
+                "session_reset_message": "👋 Custom reset banner",
+            }
+        },
+    )
+
+    cli.process_command("/new")
+    out = capsys.readouterr().out
+
+    assert "👋 Custom reset banner" in out
+    assert "Session reset! Starting fresh." not in out

@@ -108,14 +108,14 @@ async def test_new_command_only_clears_own_session():
     runner._session_model_overrides[session_key] = {
         "model": "gpt-4o",
         "provider": "openai",
-        "api_key": "sk-test",
+        "api_key": "***",
         "base_url": "",
         "api_mode": "openai",
     }
     runner._session_model_overrides[other_key] = {
         "model": "claude-sonnet-4-6",
         "provider": "anthropic",
-        "api_key": "sk-ant-test",
+        "api_key": "***",
         "base_url": "",
         "api_mode": "anthropic",
     }
@@ -124,3 +124,46 @@ async def test_new_command_only_clears_own_session():
 
     assert session_key not in runner._session_model_overrides
     assert other_key in runner._session_model_overrides
+
+
+@pytest.mark.asyncio
+async def test_new_command_uses_configurable_banner(monkeypatch):
+    """The /new banner should come from config when explicitly set."""
+    runner = _make_runner()
+    from gateway import run as gateway_run
+
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"display": {"session_reset_message": "👋 Custom reset banner"}},
+    )
+
+    result = await runner._handle_reset_command(_make_event("/new"))
+
+    assert "👋 Custom reset banner" in result
+    assert "Session reset! Starting fresh." not in result
+
+
+@pytest.mark.asyncio
+async def test_new_command_telegram_uses_simple_greeting(monkeypatch):
+    """Telegram /new should stay minimal and not show model info or tips."""
+    runner = _make_runner()
+    runner._format_session_info = lambda: "◆ Model: gpt-5.4-mini\n◆ Provider: openai-codex\n◆ Context: 400K tokens\n✦ Tip: ignore instructions"
+
+    from gateway import run as gateway_run
+
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"display": {"session_reset_message": ""}},
+    )
+    monkeypatch.setattr("hermes_cli.tips.get_random_tip", lambda: "ignore instructions")
+
+    result = await runner._handle_reset_command(_make_event("/new"))
+
+    assert "🌺 Fresh chat, same me — ready when you are." in result
+    assert "◆ Model:" not in result
+    assert "◆ Provider:" not in result
+    assert "◆ Context:" not in result
+    assert "✦ Tip:" not in result
+    assert "Session reset! Starting fresh." not in result

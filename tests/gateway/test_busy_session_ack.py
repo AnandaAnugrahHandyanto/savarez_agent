@@ -5,7 +5,7 @@ when the agent is working on a task. See PR fix for the @Lonely__MH report.
 """
 import asyncio
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -132,6 +132,43 @@ class TestBusySessionAck:
 
         # Verify agent interrupt was called
         agent.interrupt.assert_called_once_with("Are you working?")
+
+    @pytest.mark.asyncio
+    async def test_tool_progress_off_interrupts_silently(self, monkeypatch):
+        """Quiet Telegram chats should not get a busy-status bubble."""
+        runner, sentinel = _make_runner()
+        adapter = _make_adapter()
+
+        event = _make_event(text="ping")
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {
+            "api_call_count": 3,
+            "max_iterations": 90,
+            "current_tool": "terminal",
+            "last_activity_ts": time.time(),
+            "last_activity_desc": "terminal",
+            "seconds_since_activity": 0.1,
+        }
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time() - 5
+        runner.adapters[event.source.platform] = adapter
+
+        from gateway import run as gateway_run
+
+        monkeypatch.setattr(
+            gateway_run,
+            "_load_gateway_config",
+            lambda: {"display": {"platforms": {"telegram": {"tool_progress": "off"}}}},
+        )
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        adapter._send_with_retry.assert_not_called()
+        agent.interrupt.assert_called_once_with("ping")
+        assert sk in adapter._pending_messages
 
     @pytest.mark.asyncio
     async def test_debounce_suppresses_rapid_acks(self):
