@@ -53,7 +53,30 @@ logger = logging.getLogger(__name__)
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
-MAX_REQUEST_BYTES = 1_000_000  # 1 MB default limit for POST bodies
+
+
+def _resolve_max_request_bytes() -> int:
+    """Resolve the max POST body size.
+
+    Default is 25 MB so that multimodal requests carrying a few base64-encoded
+    images fit.  Operators can tighten or loosen this via the
+    ``API_SERVER_MAX_REQUEST_MB`` environment variable.
+    """
+    raw = os.getenv("API_SERVER_MAX_REQUEST_MB", "").strip()
+    if raw:
+        try:
+            mb = float(raw)
+            if mb > 0:
+                return int(mb * 1024 * 1024)
+        except ValueError:
+            logger.warning(
+                "Invalid API_SERVER_MAX_REQUEST_MB=%r; falling back to default",
+                raw,
+            )
+    return 25 * 1024 * 1024
+
+
+MAX_REQUEST_BYTES = _resolve_max_request_bytes()
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
@@ -115,6 +138,183 @@ def _normalize_chat_content(
         return result[:MAX_NORMALIZED_TEXT_LENGTH] if len(result) > MAX_NORMALIZED_TEXT_LENGTH else result
     except Exception:
         return ""
+
+
+_IMAGE_PREPROCESS_PROMPT = (
+    "Describe everything visible in this image in thorough detail. "
+    "Include any text, code, data, objects, people, layout, colors, "
+    "and any other notable visual information."
+)
+
+_IMAGE_DATA_URL_SUFFIXES = {
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+}
+
+
+def _materialize_data_url(url: str):
+    """Write a ``data:image/...;base64,...`` URL to a temp file.
+
+    Returns ``(path_str, cleanup_path)`` where ``cleanup_path`` is the
+    :class:`Path` the caller must ``unlink()`` when done.  Returns
+    ``(url, None)`` if ``url`` is not a ``data:`` URL.
+    """
+    import base64
+    import tempfile
+    from pathlib import Path as _Path
+
+    if not isinstance(url, str) or not url.startswith("data:"):
+        return url, None
+
+    header, _, payload = url.partition(",")
+    mime = "image/jpeg"
+    mime_part = header[len("data:"):].split(";", 1)[0].strip()
+    if mime_part.startswith("image/"):
+        mime = mime_part
+    suffix = _IMAGE_DATA_URL_SUFFIXES.get(mime, ".jpg")
+
+    tmp = tempfile.NamedTemporaryFile(
+        prefix="api_server_image_", suffix=suffix, delete=False,
+    )
+    try:
+        tmp.write(base64.b64decode(payload))
+    finally:
+        tmp.close()
+    path = _Path(tmp.name)
+    return str(path), path
+
+
+def _split_content_parts(content: List[Any]):
+    """Extract text strings and image URLs from a multi-part content list."""
+    text_parts: List[str] = []
+    image_urls: List[str] = []
+    for part in content:
+        if isinstance(part, str):
+            if part.strip():
+                text_parts.append(part.strip())
+            continue
+        if not isinstance(part, dict):
+            continue
+        ptype = str(part.get("type") or "").strip().lower()
+        if ptype in {"text", "input_text", "output_text"}:
+            text = str(part.get("text", "") or "").strip()
+            if text:
+                text_parts.append(text)
+        elif ptype == "image_url":
+            img = part.get("image_url")
+            url = ""
+            if isinstance(img, dict):
+                url = str(img.get("url", "") or "")
+            elif isinstance(img, str):
+                url = img
+            if url:
+                image_urls.append(url)
+    return text_parts, image_urls
+
+
+async def _preprocess_message_images(messages: List[Dict[str, Any]]) -> None:
+    """Convert ``image_url`` parts in OpenAI chat messages into text descriptions.
+
+    The OpenAI chat completions format allows a message's ``content`` to be an
+    array of typed parts, including ``{"type": "image_url", ...}``.  The
+    downstream agent pipeline expects plain strings, and the existing
+    :func:`_normalize_chat_content` flatten step silently drops image parts.
+
+    This helper — called before normalization — mirrors the CLI's
+    ``_preprocess_images_with_vision``: for each image in the message, it
+    invokes the auxiliary vision model (configured via ``auxiliary.vision``)
+    and inlines the resulting description back into the user's message as
+    text.  This lets any provider backend (Codex Responses, Anthropic,
+    OpenAI-compatible, etc.) receive the image content, since the agent
+    ultimately only sees text.
+
+    ``data:`` URLs (used by Open WebUI and similar frontends) are materialized
+    to a temp file so the vision tool can read them; remote URLs are passed
+    through.  Errors per-image produce a note in the message rather than
+    failing the whole request.
+
+    Mutates ``messages`` in place.
+    """
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+
+        has_image = any(
+            isinstance(p, dict) and str(p.get("type") or "").strip().lower() == "image_url"
+            for p in content
+        )
+        if not has_image:
+            continue
+
+        try:
+            from tools.vision_tools import vision_analyze_tool
+        except Exception as exc:
+            logger.warning(
+                "vision_analyze_tool unavailable (%s); image parts in this "
+                "request will be dropped",
+                exc,
+            )
+            continue
+
+        text_parts, image_urls = _split_content_parts(content)
+
+        enriched: List[str] = []
+        for url in image_urls:
+            vision_source, cleanup_path = url, None
+            try:
+                vision_source, cleanup_path = _materialize_data_url(url)
+                result_json = await vision_analyze_tool(
+                    image_url=vision_source, user_prompt=_IMAGE_PREPROCESS_PROMPT,
+                )
+                try:
+                    result = json.loads(result_json) if isinstance(result_json, str) else {}
+                except (ValueError, TypeError):
+                    result = {}
+
+                if isinstance(result, dict) and result.get("success"):
+                    desc = str(result.get("analysis", "") or "").strip()
+                    if desc:
+                        enriched.append(
+                            f"[The user attached an image. Here's what it contains:\n{desc}]"
+                        )
+                    else:
+                        enriched.append(
+                            "[The user attached an image but the vision model returned no description.]"
+                        )
+                else:
+                    err = ""
+                    if isinstance(result, dict):
+                        err = str(result.get("analysis") or result.get("error") or "").strip()
+                    enriched.append(
+                        f"[The user attached an image but analysis failed: {err or 'unknown error'}]"
+                    )
+            except Exception as exc:
+                logger.warning("api_server image preprocessing raised: %s", exc)
+                enriched.append(
+                    f"[The user attached an image but analysis raised: {exc}]"
+                )
+            finally:
+                if cleanup_path is not None:
+                    try:
+                        if cleanup_path.exists():
+                            cleanup_path.unlink()
+                    except OSError:
+                        pass
+
+        user_text = "\n".join(t for t in text_parts if t).strip()
+        if enriched:
+            prefix = "\n\n".join(enriched)
+            msg["content"] = f"{prefix}\n\n{user_text}" if user_text else prefix
+        elif user_text:
+            msg["content"] = user_text
+        else:
+            msg["content"] = "[An image was attached but could not be described.]"
 
 
 def check_api_server_requirements() -> bool:
@@ -632,6 +832,17 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         stream = body.get("stream", False)
+
+        # Describe any image_url parts in-place via the auxiliary vision model
+        # so the agent pipeline receives them as text.  Without this,
+        # _normalize_chat_content below would silently drop them.
+        try:
+            await _preprocess_message_images(messages)
+        except Exception as e:
+            logger.warning(
+                "image preprocessing failed; images in this request will be dropped: %s",
+                e,
+            )
 
         # Extract system message (becomes ephemeral system prompt layered ON TOP of core)
         system_prompt = None
@@ -1423,7 +1634,20 @@ class APIServerAdapter(BasePlatformAdapter):
             previous_response_id = self._response_store.get_conversation(conversation)
             # No error if conversation doesn't exist yet — it's a new conversation
 
-        # Normalize input to message list
+        # Normalize input to message list.  Preprocess image_url parts first
+        # so the auxiliary vision model can describe them before
+        # _normalize_chat_content drops non-text content.
+        if isinstance(raw_input, list):
+            try:
+                await _preprocess_message_images(
+                    [item for item in raw_input if isinstance(item, dict)]
+                )
+            except Exception as e:
+                logger.warning(
+                    "image preprocessing failed; images in this request will be dropped: %s",
+                    e,
+                )
+
         input_messages: List[Dict[str, str]] = []
         if isinstance(raw_input, str):
             input_messages = [{"role": "user", "content": raw_input}]
