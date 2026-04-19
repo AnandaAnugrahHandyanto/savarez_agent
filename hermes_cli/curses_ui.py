@@ -76,8 +76,12 @@ def read_curses_key(stdscr, curses_mod=None) -> int:
     if key != 27:
         return key
 
+    # Use a short blocking timeout rather than nodelay so we tolerate
+    # terminals (slow SSH/tmux PTYs) that deliver ESC, [, A across
+    # separate reads — a naive non-blocking poll would misread those
+    # as a bare Escape/cancel.
     try:
-        stdscr.nodelay(True)
+        stdscr.timeout(50)
     except Exception:
         pass
 
@@ -129,7 +133,7 @@ def read_curses_key(stdscr, curses_mod=None) -> int:
         return 0
     finally:
         try:
-            stdscr.nodelay(False)
+            stdscr.timeout(-1)
         except Exception:
             pass
 
@@ -436,9 +440,10 @@ def curses_single_select(
     title_lines = title.splitlines() or [""]
 
     if not sys.stdin.isatty():
-        return _numbered_single_fallback(
-            title, all_items, cancel_idx, footer_lines=footer
-        )
+        # Headless invocation (piped stdin, CI). Matches curses_checklist's
+        # behavior: return cancel rather than block on input() and silently
+        # consume piped bytes.
+        return None
 
     try:
         import curses

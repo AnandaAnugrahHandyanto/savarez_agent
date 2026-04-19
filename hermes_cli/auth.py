@@ -2830,10 +2830,9 @@ def _prompt_model_selection(
     # Build a pricing header hint for the menu title
     menu_title = "Select default model:"
     if has_pricing:
-        # Align the header with the model column.
-        # Each choice is "  {label}" (2 spaces) and simple_term_menu prepends
-        # a 3-char cursor region ("-> " or "   "), so content starts at col 5.
-        pad = " " * 5
+        # Align the header with the model column. curses_single_select renders
+        # each row as " {arrow} {label}", so the label starts at column 3.
+        pad = " " * 3
         header = f"\n{pad}{'':>{name_col}} {'In':>{price_col}}  {'Out':>{price_col}}"
         if has_cache:
             header += f"  {'Cache':>{cache_col}}"

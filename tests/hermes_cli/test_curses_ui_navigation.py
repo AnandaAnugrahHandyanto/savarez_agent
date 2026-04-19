@@ -151,3 +151,89 @@ def test_read_curses_key_still_decodes_arrow_after_cleanup():
     import curses as real_curses
     key = read_curses_key(mock_stdscr, curses_mod=real_curses)
     assert key == real_curses.KEY_DOWN
+
+
+def test_read_curses_key_uses_timeout_not_nodelay():
+    """Slow terminals (SSH/tmux) deliver ESC, [, A across separate reads. The
+    decoder must wait briefly for the continuation bytes instead of immediately
+    giving up on the sequence — so it must use timeout(), not nodelay(True)."""
+    from hermes_cli.curses_ui import read_curses_key
+
+    mock_stdscr = MagicMock()
+    mock_stdscr.getch.side_effect = [27, 91, 65]  # ESC [ A = up
+
+    import curses as real_curses
+    key = read_curses_key(mock_stdscr, curses_mod=real_curses)
+    assert key == real_curses.KEY_UP
+    assert mock_stdscr.timeout.called, "read_curses_key must set a blocking timeout"
+    # It should enter a bounded wait (positive ms) and restore afterwards.
+    delays = [c.args[0] for c in mock_stdscr.timeout.call_args_list]
+    assert any(d > 0 for d in delays), "expected a positive blocking timeout"
+    assert delays[-1] <= 0, "timeout must be restored to blocking after decode"
+
+
+def test_curses_single_select_returns_none_when_stdin_not_tty():
+    """Headless invocations (piped stdin, CI) must return cancel without
+    blocking on input() — matching curses_checklist's behavior."""
+    from hermes_cli.curses_ui import curses_single_select
+
+    with patch("sys.stdin") as mock_stdin, \
+         patch("builtins.input") as mock_input:
+        mock_stdin.isatty.return_value = False
+        result = curses_single_select(
+            "Pick one", ["a", "b", "c"], default_index=0
+        )
+
+    assert result is None
+    assert not mock_input.called, "curses_single_select must not read stdin when non-TTY"
+
+
+def test_prompt_model_selection_header_aligns_with_curses_rows():
+    """With the curses renderer each row starts at column 3 (' arrow label'),
+    so the header's 'In' column must align with the priced values in the item
+    rows. Previously pad=5 (simple_term_menu's layout) shifted 'In'/'Out' past
+    their values, making the table misleading."""
+    from hermes_cli import auth
+
+    captured: dict = {}
+
+    def _fake_select(title, items, default_index=0, *, cancel_label="Cancel", footer_lines=None):
+        captured["title"] = title
+        captured["items"] = items
+        return None  # cancel
+
+    pricing = {"m1": {"prompt": "0.001", "completion": "0.002"}}
+
+    with patch("hermes_cli.curses_ui.curses_single_select", _fake_select), \
+         patch("builtins.input", return_value=""):
+        auth._prompt_model_selection(
+            ["m1"],
+            current_model="",
+            pricing=pricing,
+            portal_url=None,
+            unavailable_models=None,
+        )
+
+    title = captured["title"]
+    items = captured["items"]
+    lines = title.split("\n")
+    assert len(lines) >= 2
+    header_line = lines[1]
+
+    # curses_single_select renders each row as " {arrow} {label}" (3-char
+    # prefix). Compare the right edge of "In" in the header against the right
+    # edge of the input-price value in the "m1" row prefixed with "   ".
+    rendered_m1_row = "   " + items[0]
+    in_column_right = header_line.rfind("In") + len("In")
+    # The input-price value "$0.001/Mtok" or similar lives after the name
+    # column; find the first non-space char after the model name in the row.
+    row_name_end = rendered_m1_row.index("m1") + len("m1")
+    tail = rendered_m1_row[row_name_end:]
+    # The first price token's right edge should line up with "In"'s right edge.
+    first_price_token = next(tok for tok in tail.split("  ") if tok.strip())
+    price_right = row_name_end + tail.index(first_price_token) + len(first_price_token)
+    assert in_column_right == price_right, (
+        f"Header 'In' must right-align with first price column; "
+        f"header={header_line!r}, row={rendered_m1_row!r}, "
+        f"in_right={in_column_right}, price_right={price_right}"
+    )
