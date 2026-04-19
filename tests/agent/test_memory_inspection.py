@@ -1,4 +1,4 @@
-from agent.memory_inspection import explain_archive, explain_conflict, explain_retrieval, explain_write
+from agent.memory_inspection import explain_archive, explain_conflict, explain_expired, explain_retrieval, explain_write
 from agent.memory_policy import ConflictDecision
 from agent.memory_records import (
     MemoryRecord,
@@ -81,6 +81,23 @@ def test_explain_archive_reports_reason_and_source_kind():
         "salience_tier": "high",
         "source_kind": "explicit_user_statement",
         "reason": "operator_requested_archive",
+    }
+
+
+def test_explain_expired_reports_reason_and_source_kind():
+    record = _make_record("rec-4", status=RecordStatus.EXPIRED)
+
+    payload = explain_expired(record, "review_window_elapsed")
+
+    assert payload == {
+        "record_id": "rec-4",
+        "topic_key": "preference:spelling",
+        "scope": "operator",
+        "status": "expired",
+        "trust_tier": "user_asserted",
+        "salience_tier": "high",
+        "source_kind": "explicit_user_statement",
+        "reason": "review_window_elapsed",
     }
 
 

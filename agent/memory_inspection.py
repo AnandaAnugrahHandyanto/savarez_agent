@@ -19,23 +19,30 @@ def _record_payload(record: MemoryRecord) -> dict[str, Any]:
 
 
 
-def explain_write(record: MemoryRecord, reason: str) -> dict[str, Any]:
+def _record_reason_payload(record: MemoryRecord, reason: str) -> dict[str, Any]:
     payload = _record_payload(record)
     payload["reason"] = reason
     return payload
+
+
+
+def explain_write(record: MemoryRecord, reason: str) -> dict[str, Any]:
+    return _record_reason_payload(record, reason)
 
 
 
 def explain_archive(record: MemoryRecord, reason: str) -> dict[str, Any]:
-    payload = _record_payload(record)
-    payload["reason"] = reason
-    return payload
+    return _record_reason_payload(record, reason)
+
+
+
+def explain_expired(record: MemoryRecord, reason: str) -> dict[str, Any]:
+    return _record_reason_payload(record, reason)
 
 
 
 def explain_retrieval(record: MemoryRecord, reason: str, *, score: float | None = None) -> dict[str, Any]:
-    payload = _record_payload(record)
-    payload["reason"] = reason
+    payload = _record_reason_payload(record, reason)
     if score is not None:
         payload["score"] = score
     return payload
