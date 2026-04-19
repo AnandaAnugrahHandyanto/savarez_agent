@@ -6964,17 +6964,16 @@ class GatewayRunner:
             try:
                 user_source = source.platform.value if source.platform else None
                 sessions = self._session_db.list_sessions_rich(
-                    source=user_source, limit=10
+                    source=user_source, limit=10, titled_only=True,
                 )
-                titled = [s for s in sessions if s.get("title")]
-                if not titled:
+                if not sessions:
                     return (
                         "No named sessions found.\n"
                         "Use `/title My Session` to name your current session, "
                         "then `/resume My Session` to return to it later."
                     )
                 lines = ["📋 **Named Sessions**\n"]
-                for s in titled[:10]:
+                for s in sessions:
                     title = s["title"]
                     preview = s.get("preview", "")[:40]
                     preview_part = f" — _{preview}_" if preview else ""

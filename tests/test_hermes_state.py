@@ -1349,6 +1349,57 @@ class TestListSessionsRich:
         assert "\n" not in sessions[0]["preview"]
         assert "Line one Line two" in sessions[0]["preview"]
 
+    def test_titled_only_returns_only_titled_sessions(self, db):
+        db.create_session("s1", "telegram")
+        db.create_session("s2", "telegram")
+        db.set_session_title("s2", "My Project")
+        db.create_session("s3", "telegram")
+        sessions = db.list_sessions_rich(titled_only=True)
+        assert len(sessions) == 1
+        assert sessions[0]["id"] == "s2"
+        assert sessions[0]["title"] == "My Project"
+
+    def test_titled_only_with_many_untitled_sessions(self, db):
+        """titled_only should find titled sessions even when many untitled
+        sessions would push them beyond the LIMIT in a non-filtered query."""
+        db.create_session("old_titled", "telegram")
+        db.set_session_title("old_titled", "Ancient Research")
+        for i in range(15):
+            db.create_session(f"untitled_{i}", "telegram")
+        sessions_default = db.list_sessions_rich(source="telegram", limit=10)
+        titled_in_default = [s for s in sessions_default if s.get("title")]
+        assert len(titled_in_default) == 0, (
+            "Precondition: the titled session should be pushed out of limit=10"
+        )
+        sessions_titled = db.list_sessions_rich(
+            source="telegram", limit=10, titled_only=True,
+        )
+        assert len(sessions_titled) == 1
+        assert sessions_titled[0]["title"] == "Ancient Research"
+
+    def test_titled_only_false_is_default_behavior(self, db):
+        db.create_session("s1", "cli")
+        db.create_session("s2", "cli")
+        db.set_session_title("s2", "Titled")
+        sessions = db.list_sessions_rich(titled_only=False)
+        assert len(sessions) == 2
+
+    def test_titled_only_combined_with_source_filter(self, db):
+        db.create_session("s1", "cli")
+        db.set_session_title("s1", "CLI Project")
+        db.create_session("s2", "telegram")
+        db.set_session_title("s2", "TG Project")
+        db.create_session("s3", "telegram")
+        sessions = db.list_sessions_rich(source="telegram", titled_only=True)
+        assert len(sessions) == 1
+        assert sessions[0]["title"] == "TG Project"
+
+    def test_titled_only_empty_when_no_titles(self, db):
+        db.create_session("s1", "cli")
+        db.create_session("s2", "cli")
+        sessions = db.list_sessions_rich(titled_only=True)
+        assert len(sessions) == 0
+
 
 # =========================================================================
 # Session source exclusion (--source flag for third-party isolation)
