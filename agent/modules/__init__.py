@@ -55,3 +55,16 @@ __all__ = [
     "ClassifiedIntent",
     "classify_intent",
 ]
+
+# ------ C§1.5-C§1.8 output pipeline ------
+from agent.modules.mission_compiler import MissionContract, compile_mission
+from agent.modules.routing_policy import Dispatch, apply_routing_policy
+from agent.modules.response_mode import ResponseShape, UpstreamResult, select_response_mode
+from agent.modules.summarizer import CompanyKPIs, ExecutiveSummary, ResultPackage, summarize
+
+__all__.extend([
+    "MissionContract", "compile_mission",
+    "Dispatch", "apply_routing_policy",
+    "UpstreamResult", "ResponseShape", "select_response_mode",
+    "ResultPackage", "CompanyKPIs", "ExecutiveSummary", "summarize",
+])
