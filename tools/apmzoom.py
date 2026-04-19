@@ -34,7 +34,6 @@ import logging
 import os
 import re
 import time
-from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib import error as _urlerror
@@ -52,14 +51,17 @@ logger = logging.getLogger(__name__)
 # Set by gateway/platforms/api_server.py at the start of each chat completion
 # request when the X-Hermes-Merchant-Id header is present.  Tool handlers
 # read it to look up the right merchant's APM credentials.
-# Default empty string = "no merchant context" (handler will still try but
-# auth-required skills will return an error the LLM can recover from).
-_merchant_id_ctx: ContextVar[str] = ContextVar("apmzoom_merchant_id", default="")
-
-# Per-request active workflow (X-Hermes-Active-Skill).  Used by api_server to
-# prune the apm_* tool list to just the skills the workflow declares in its
-# frontmatter `metadata.apmzoom.skills_used`, keeping the prompt lean.
-_active_skill_ctx: ContextVar[str] = ContextVar("apmzoom_active_skill", default="")
+#
+# Originally ContextVar, but hermes dispatches tool handlers via
+# ThreadPoolExecutor (run_agent.py:844) and ContextVars do NOT propagate to
+# pool workers by default — mid kept resolving to "" inside handlers even
+# after api_server set it, so auth headers were never attached.  Plain
+# module globals work for the Mac mini single-process deployment where this
+# lives; requests are effectively serial.  If we ever need true per-request
+# isolation under parallel load, wrap executor.submit in
+# `contextvars.copy_context().run(...)` in run_agent and revert to ContextVar.
+_current_merchant_id: str = ""
+_current_active_skill: str = ""
 
 
 def set_merchant_id(merchant_id: str) -> None:
@@ -67,20 +69,22 @@ def set_merchant_id(merchant_id: str) -> None:
 
     Safe to call with empty string to clear (no-op merchant_mode).
     """
-    _merchant_id_ctx.set(merchant_id or "")
+    global _current_merchant_id
+    _current_merchant_id = merchant_id or ""
 
 
 def current_merchant_id() -> str:
-    return _merchant_id_ctx.get()
+    return _current_merchant_id
 
 
 def set_active_skill(active_skill: str) -> None:
     """Propagate the X-Hermes-Active-Skill header for downstream filters."""
-    _active_skill_ctx.set(active_skill or "")
+    global _current_active_skill
+    _current_active_skill = active_skill or ""
 
 
 def current_active_skill() -> str:
-    return _active_skill_ctx.get()
+    return _current_active_skill
 
 
 def resolve_workflow_skills_used(active_skill: str) -> Optional[set]:
@@ -233,6 +237,51 @@ def _extract_salt(content: str) -> str:
     return ""
 
 
+# Parameter-hint block headers seen across openclaw docs (zh/ko/en).
+# We pull the paragraph that follows any of these and truncate for the
+# tool schema, so the LLM sees field names without having to call skill_view.
+_PARAM_HEADER_RE = re.compile(
+    r"""【
+        (?:
+            파라미터 | 요청\s*본문 | 필드\s*설명 | 호출\s*흐름 | 호출\s*절차 |
+            参数 | 请求体 | 请求\s*本体 | 字段说明 | 调用\s*流程 | 调用\s*顺序 |
+            Parameters | Request\s*Body | Fields | Call\s*Flow | Procedure
+        )
+        】""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _extract_param_hint(content: str, max_chars: int = 320) -> str:
+    """Pull the parameter section from an openclaw doc body.
+
+    Strategy: find the first 【파라미터/参数/Parameters/…】 header, then
+    take up to `max_chars` chars until the next 【…】 block or the Quick
+    Reference table, whichever comes first.  Inline code fences (``` or
+    single backticks) are flattened to keep the schema readable.
+    """
+    m = _PARAM_HEADER_RE.search(content)
+    if not m:
+        return ""
+    tail = content[m.end():]
+    # Stop at the next 【…】 header or the Quick Reference heading.
+    stops = []
+    next_header = re.search(r"【[^】]+】", tail)
+    if next_header:
+        stops.append(next_header.start())
+    qr = re.search(r"##\s*Quick Reference", tail)
+    if qr:
+        stops.append(qr.start())
+    cut = min(stops) if stops else len(tail)
+    snippet = tail[:cut].strip()
+    # Flatten code fences + collapse blank lines.
+    snippet = re.sub(r"```[a-z]*\n?|```", "", snippet)
+    snippet = re.sub(r"\n{3,}", "\n\n", snippet)
+    if len(snippet) > max_chars:
+        snippet = snippet[:max_chars].rstrip() + "…"
+    return snippet
+
+
 def _parse_openclaw_endpoint_md(path: Path) -> Dict[str, Any]:
     """Parse an openclaw-imports endpoint file (e.g. apmzoom-gds/gds_m_storegoodslist.md).
 
@@ -243,12 +292,13 @@ def _parse_openclaw_endpoint_md(path: Path) -> Dict[str, Any]:
     out = {
         "api_method": "POST", "api_url": "", "endpoint": "", "base_url": "",
         "auth_type": "none", "auth_sign_salt": "", "permission_level": "read",
-        "display_name": "", "category": "",
+        "display_name": "", "category": "", "param_hint": "",
     }
     try:
         content = path.read_text(encoding="utf-8")
     except Exception:
         return out
+    out["param_hint"] = _extract_param_hint(content)
 
     # Frontmatter: permission_level
     if content.startswith("---"):
@@ -414,18 +464,29 @@ def _execute_skill(skill_name: str, params: Optional[Dict[str, Any]] = None,
 # ---------------------------------------------------------------------------
 
 def _build_tool_schema(skill_name: str, display_name: str, bucket: str,
-                       category: str = "") -> Dict[str, Any]:
+                       category: str = "", param_hint: str = "") -> Dict[str, Any]:
     """OpenAI function-calling schema for one apmzoom skill.
 
-    We accept any object as `params` (LLM provides whatever the skill needs);
-    the skill's own SKILL.md has the parameter spec which the LLM can be
-    asked to load via skill_view if it needs more detail.  This keeps the
-    schema small (important for local 7-14B models with finite context).
+    We accept any object as `params` (LLM provides whatever the skill needs).
+    When a `param_hint` is supplied (extracted from the endpoint doc's
+    【파라미터】/【参数】 block), we inline it into the `params` property
+    description so the LLM can pick field names without calling skill_view.
+    This is the difference between "LLM guesses mark/page_size correctly on
+    first try" and "LLM hallucinates merchant_id param and 400s".
     """
     desc = f"[apmzoom · {bucket}] {display_name or skill_name}"
     if category:
         desc += f" ({category})"
-    desc += ". Pass parameters in `params` per the skill's SKILL.md."
+    desc += "."
+    params_desc = (
+        f"Skill parameters as a JSON object.\n\nField spec from the skill doc:\n{param_hint}"
+        if param_hint
+        else "Skill parameters as a JSON object. See the skill's SKILL.md for the exact field spec."
+    )
+    # Cap the params description so one bloated doc can't blow the tool
+    # budget — 420 chars ≈ ~110 tokens, fits comfortably with 20 tools in 8K.
+    if len(params_desc) > 420:
+        params_desc = params_desc[:420].rstrip() + "…"
     return {
         "name": f"apm_{skill_name}",
         "description": desc[:500],
@@ -434,7 +495,7 @@ def _build_tool_schema(skill_name: str, display_name: str, bucket: str,
             "properties": {
                 "params": {
                     "type": "object",
-                    "description": "Skill parameters as a JSON object. See the skill's SKILL.md for the exact field spec.",
+                    "description": params_desc,
                 },
             },
             "required": ["params"],
@@ -445,11 +506,24 @@ def _build_tool_schema(skill_name: str, display_name: str, bucket: str,
 def _make_handler(skill_name: str):
     """Closure capturing skill_name so each tool handler knows which skill to call."""
     def _handler(args: Dict[str, Any], **kwargs) -> str:
-        params = args.get("params") if isinstance(args, dict) else {}
-        if not isinstance(params, dict):
-            return json.dumps({"error": "bad_params", "message": "`params` must be an object"},
+        # Accept both {"params": {...}} (schema-compliant) and a bare object
+        # (local 7B models occasionally skip the wrapper).  Be permissive on
+        # input, strict on output.
+        if isinstance(args, dict) and "params" in args and isinstance(args["params"], dict):
+            params = args["params"]
+        elif isinstance(args, dict):
+            params = args
+        else:
+            return json.dumps({"error": "bad_params", "message": "arguments must be an object"},
                               ensure_ascii=False)
-        return _execute_skill(skill_name, params)
+        import sys
+        print(f"[apmzoom] → {skill_name} mid={current_merchant_id() or '(none)'} "
+              f"params={json.dumps(params, ensure_ascii=False)[:300]}",
+              file=sys.stderr, flush=True)
+        out = _execute_skill(skill_name, params)
+        print(f"[apmzoom] ← {skill_name} result[:300]={out[:300]}",
+              file=sys.stderr, flush=True)
+        return out
     return _handler
 
 
@@ -499,11 +573,29 @@ DEFAULT_ALLOWLIST = {
 }
 
 
+# Authentication-sensitive tools the LLM should NEVER call autonomously.
+# Calling a login endpoint from the agent loop is both useless (the merchant
+# already logged in via the frontend before landing on the chat) and
+# dangerous (a misrouted user message like "帮我登录" could make the LLM
+# POST credentials it doesn't have, or replay stale creds).  Out of the
+# allowlist by default.  Opt in with APMZOOM_ALLOW_LOGIN_TOOLS=1 for
+# debugging / integration testing only.
+_LOGIN_TOOLS = {
+    "ids_m_login_account", "ids_m_login_email", "ids_m_login_tel",
+    "ids_u_login_account", "ids_u_login_email", "ids_u_login_tel",
+    "ids_u_login_to_ce",   "ids_suppliers_login",
+    "ids_admin_login",     "ids_admin_app_tool_login", "ids_admin_desk_tool_login",
+    "ids_send_tel_code",   "ids_send_tel_code_r",
+    "ids_send_email_code", "ids_send_email_code_r",
+}
+
+
 def _allowlist() -> set:
     raw = os.environ.get("APMZOOM_TOOL_ALLOWLIST", "").strip()
-    if not raw:
-        return DEFAULT_ALLOWLIST
-    return {s.strip() for s in raw.split(",") if s.strip()}
+    base = {s.strip() for s in raw.split(",") if s.strip()} if raw else set(DEFAULT_ALLOWLIST)
+    if os.environ.get("APMZOOM_ALLOW_LOGIN_TOOLS", "").lower() not in ("1", "true", "yes"):
+        base -= _LOGIN_TOOLS
+    return base
 
 
 def _scan_and_register() -> Tuple[int, int]:
@@ -550,7 +642,8 @@ def _scan_and_register() -> Tuple[int, int]:
                     bucket = "write" if perm == "write" else "read"
                     display_name = meta.get("display_name") or name
                     category = meta.get("category") or group_dir.name.replace("apmzoom-", "")
-                    schema = _build_tool_schema(name, display_name, bucket, category)
+                    param_hint = meta.get("param_hint", "")
+                    schema = _build_tool_schema(name, display_name, bucket, category, param_hint)
                     handler = _make_handler(name)
                     registry.register(
                         name=schema["name"],
