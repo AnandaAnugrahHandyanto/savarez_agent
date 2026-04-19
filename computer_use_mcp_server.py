@@ -50,15 +50,19 @@ def _approval_store_path() -> Path:
     return root / "ComputerUseAppApprovals.json"
 
 
+def _optional_dict(record: dict[str, Any], key: str) -> dict[str, Any] | None:
+    value = record.get(key)
+    if isinstance(value, dict):
+        return dict(value)
+    return None
+
+
 def _session_payload(record: dict[str, Any]) -> dict[str, Any]:
     cursor = dict(record.get("virtual_cursor") or {"x": None, "y": None, "detached": True, "visible": True})
     overlay_path = str(record.get("overlay_screenshot_path", "") or "")
     session_state_path = str(record.get("session_state_path", "") or "")
-    pending_pointer_action = record.get("pending_pointer_action")
-    if isinstance(pending_pointer_action, dict):
-        pending_pointer_action = dict(pending_pointer_action)
-    else:
-        pending_pointer_action = None
+    pending_pointer_action = _optional_dict(record, "pending_pointer_action")
+    last_pointer_action_result = _optional_dict(record, "last_pointer_action_result")
     return {
         "app_name": record["app_name"],
         "app_session_id": record["app_session_id"],
@@ -71,6 +75,7 @@ def _session_payload(record: dict[str, Any]) -> dict[str, Any]:
         "overlay_media_tag": _media_tag_for_path(overlay_path),
         "session_state_path": session_state_path,
         "pending_pointer_action": pending_pointer_action,
+        "last_pointer_action_result": last_pointer_action_result,
     }
 
 
@@ -206,6 +211,7 @@ def _record_pending_pointer_action(session: dict[str, Any], action_type: str, **
         if value is not None:
             payload[key] = value
     session["pending_pointer_action"] = payload
+    session["last_pointer_action_result"] = None
     return payload
 
 
@@ -611,6 +617,93 @@ def drag_impl(start_x: int, start_y: int, end_x: int, end_y: int, app_session_id
     return response
 
 
+def report_pointer_action_result_impl(*, app_session_id: str, action_id: str, status: str,
+                                      x: int | None = None, y: int | None = None,
+                                      error: str | None = None) -> dict[str, Any]:
+    wanted_session_id = str(app_session_id or "").strip()
+    if not wanted_session_id:
+        current = _current_active_session()
+        payload = _session_payload(current) if current else {}
+        return {
+            "success": False,
+            "app_session_required": True,
+            "session_id": _SESSION_ID,
+            **payload,
+            "error": "app_session_id is required",
+        }
+
+    session = _resolve_session(app_session_id=wanted_session_id)
+    if not session:
+        return _session_required_error("reporting pointer action results")
+
+    pending = session.get("pending_pointer_action")
+    if not isinstance(pending, dict):
+        return {
+            "success": False,
+            "action_required": True,
+            "session_id": _SESSION_ID,
+            **_session_payload(session),
+            "error": "No pending pointer action is waiting for a helper result.",
+        }
+
+    wanted_action_id = str(action_id or "").strip()
+    if not wanted_action_id:
+        return {
+            "success": False,
+            "session_id": _SESSION_ID,
+            **_session_payload(session),
+            "error": "action_id is required",
+        }
+
+    if str(pending.get("action_id") or "").strip() != wanted_action_id:
+        return {
+            "success": False,
+            "action_mismatch": True,
+            "session_id": _SESSION_ID,
+            "expected_action_id": pending.get("action_id"),
+            "received_action_id": wanted_action_id,
+            **_session_payload(session),
+            "error": "Pending pointer action does not match the reported action_id.",
+        }
+
+    normalized_status = str(status or "").strip().lower()
+    if normalized_status not in {"completed", "failed"}:
+        return {
+            "success": False,
+            "session_id": _SESSION_ID,
+            **_session_payload(session),
+            "error": "status must be 'completed' or 'failed'",
+        }
+
+    cursor = session.setdefault("virtual_cursor", _fresh_virtual_cursor())
+    if x is not None:
+        cursor["x"] = x
+    if y is not None:
+        cursor["y"] = y
+
+    result_payload = {
+        **pending,
+        "status": normalized_status,
+    }
+    if x is not None:
+        result_payload["x"] = x
+    if y is not None:
+        result_payload["y"] = y
+    if error:
+        result_payload["error"] = error
+
+    session["pending_pointer_action"] = None
+    session["last_pointer_action_result"] = result_payload
+    _sync_session_artifacts(session)
+    return {
+        "success": True,
+        "reported": True,
+        "status": normalized_status,
+        "session_id": _SESSION_ID,
+        **_session_payload(session),
+    }
+
+
 def set_value_impl(index: int, value: str) -> dict[str, Any]:
     return _unsupported("set_value")
 
@@ -684,6 +777,20 @@ if mcp:
     def drag(start_x: int, start_y: int, end_x: int, end_y: int, app_session_id: str | None = None) -> dict[str, Any]:
         """Reserved for future drag support."""
         return drag_impl(start_x=start_x, start_y=start_y, end_x=end_x, end_y=end_y, app_session_id=app_session_id)
+
+    @mcp.tool()
+    def report_pointer_action_result(app_session_id: str, action_id: str, status: str,
+                                     x: int | None = None, y: int | None = None,
+                                     error: str | None = None) -> dict[str, Any]:
+        """Helper-facing bridge: report the execution result of a pending pointer action for an app session."""
+        return report_pointer_action_result_impl(
+            app_session_id=app_session_id,
+            action_id=action_id,
+            status=status,
+            x=x,
+            y=y,
+            error=error,
+        )
 
     @mcp.tool()
     def set_value(index: int, value: str) -> dict[str, Any]:

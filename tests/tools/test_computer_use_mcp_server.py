@@ -811,6 +811,105 @@ class TestUnsupportedActions:
         assert payload["pending_pointer_action"]["end_x"] == 30
         assert payload["pending_pointer_action"]["end_y"] == 40
 
+    def test_report_pointer_action_result_clears_pending_action_and_records_completion(self, monkeypatch, tmp_path):
+        state_root = tmp_path / "session-state"
+        monkeypatch.setattr(adapter, "_session_state_root", lambda: state_root, raising=False)
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "notes": {
+                "app_name": "Notes",
+                "app_session_id": "app-2",
+                "active": True,
+                "approved": True,
+                "virtual_cursor": {"x": 50, "y": 60, "detached": True, "visible": True},
+                "pending_pointer_action": {
+                    "action_id": "ptr-123",
+                    "action_type": "click",
+                    "x": 50,
+                    "y": 60,
+                    "button": "left",
+                    "click_count": 1,
+                },
+            },
+        })
+        monkeypatch.setattr(adapter, "_sync_virtual_cursor_overlay", lambda session: "", raising=False)
+
+        result = adapter.report_pointer_action_result_impl(
+            app_session_id="app-2",
+            action_id="ptr-123",
+            status="completed",
+            x=55,
+            y=65,
+        )
+
+        assert result["success"] is True
+        assert result["pending_pointer_action"] is None
+        assert result["virtual_cursor"] == {"x": 55, "y": 65, "detached": True, "visible": True}
+        assert result["last_pointer_action_result"]["action_id"] == "ptr-123"
+        assert result["last_pointer_action_result"]["action_type"] == "click"
+        assert result["last_pointer_action_result"]["status"] == "completed"
+        assert result["last_pointer_action_result"]["x"] == 55
+        assert result["last_pointer_action_result"]["y"] == 65
+        state_path = Path(result["session_state_path"])
+        payload = json.loads(state_path.read_text())
+        assert payload["pending_pointer_action"] is None
+        assert payload["last_pointer_action_result"]["action_id"] == "ptr-123"
+        assert payload["last_pointer_action_result"]["status"] == "completed"
+
+    def test_report_pointer_action_result_rejects_mismatched_action_id(self, monkeypatch):
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "notes": {
+                "app_name": "Notes",
+                "app_session_id": "app-2",
+                "active": True,
+                "approved": True,
+                "virtual_cursor": {"x": 50, "y": 60, "detached": True, "visible": True},
+                "pending_pointer_action": {
+                    "action_id": "ptr-123",
+                    "action_type": "click",
+                    "x": 50,
+                    "y": 60,
+                },
+            },
+        })
+
+        result = adapter.report_pointer_action_result_impl(
+            app_session_id="app-2",
+            action_id="ptr-wrong",
+            status="completed",
+        )
+
+        assert result["success"] is False
+        assert result["action_mismatch"] is True
+        assert adapter._APP_SESSIONS["notes"]["pending_pointer_action"]["action_id"] == "ptr-123"
+
+    def test_report_pointer_action_result_rejects_blank_app_session_id(self, monkeypatch):
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "notes": {
+                "app_name": "Notes",
+                "app_session_id": "app-2",
+                "active": True,
+                "approved": True,
+                "virtual_cursor": {"x": 50, "y": 60, "detached": True, "visible": True},
+                "pending_pointer_action": {
+                    "action_id": "ptr-123",
+                    "action_type": "click",
+                    "x": 50,
+                    "y": 60,
+                },
+            },
+        })
+
+        result = adapter.report_pointer_action_result_impl(
+            app_session_id="   ",
+            action_id="ptr-123",
+            status="completed",
+        )
+
+        assert result["success"] is False
+        assert result["app_session_required"] is True
+        assert "app_session_id is required" in result["error"]
+        assert adapter._APP_SESSIONS["notes"]["pending_pointer_action"]["action_id"] == "ptr-123"
+
     def test_click_stub_is_explicit(self, monkeypatch):
         monkeypatch.setattr(adapter, "_APP_SESSIONS", {
             "safari": {
