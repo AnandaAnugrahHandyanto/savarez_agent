@@ -1773,6 +1773,7 @@ class HermesCLI:
             or "auto"
         )
         self._provider_source: Optional[str] = None
+        self._model_explicitly_set: bool = False
         self.provider = self.requested_provider
         self.api_mode = "chat_completions"
         self.acp_command: Optional[str] = None
@@ -2851,7 +2852,7 @@ class HermesCLI:
         # (e.g. "my-provider") as the model string to the API instead of
         # the configured model (e.g. "qwen3.6-plus"), causing 400 errors.
         runtime_model = runtime.get("model")
-        if runtime_model and isinstance(runtime_model, str):
+        if runtime_model and isinstance(runtime_model, str) and not self._model_explicitly_set:
             self.model = runtime_model
 
         # If model is still empty (e.g. user ran `hermes auth add openai-codex`
@@ -4704,6 +4705,7 @@ class HermesCLI:
         self.model = result.new_model
         self.provider = result.target_provider
         self.requested_provider = result.target_provider
+        self._model_explicitly_set = True
         if result.api_key:
             self.api_key = result.api_key
             self._explicit_api_key = result.api_key
@@ -4924,6 +4926,7 @@ class HermesCLI:
         self.model = result.new_model
         self.provider = result.target_provider
         self.requested_provider = result.target_provider
+        self._model_explicitly_set = True
         if result.api_key:
             self.api_key = result.api_key
             self._explicit_api_key = result.api_key
