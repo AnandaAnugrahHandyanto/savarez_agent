@@ -1,0 +1,110 @@
+# Coverage configuration for hermes-agent
+# Run: python -m pytest --cov=. --cov-config=.coveragerc
+
+[run]
+# Measure branch coverage (tracks which branches were taken)
+branch = True
+
+# Source directories to measure
+source = 
+    .
+
+# Omit patterns (files/directories to exclude from coverage)
+omit = 
+    # Test files themselves
+    tests/*
+    test_*.py
+    *_test.py
+    
+    # Setup and configuration
+    setup.py
+    
+    # Virtual environments
+    venv/*
+    .venv/*
+    env/*
+    
+    # Build artifacts
+    build/*
+    dist/*
+    *.egg-info/*
+    
+    # IDE and editor files
+    .vscode/*
+    .idea/*
+    
+    # Documentation
+    docs/*
+    
+    # Cache and temporary files
+    .pytest_cache/*
+    __pycache__/*
+    .mypy_cache/*
+    
+    # Third-party or auto-generated code
+    */site-packages/*
+
+# Fail if coverage run is incomplete
+# fail_under = 80  # Set in CI, not here to allow partial runs
+
+[report]
+# Exclude lines from coverage report
+exclude_lines =
+    # Standard pragma
+    pragma: no cover
+    
+    # Debug-only code
+    def __repr__
+    if self\.debug
+    
+    # Don't test defensive code that shouldn't be reached
+    raise AssertionError
+    raise NotImplementedError
+    
+    # Don't test abstract methods
+    @abstractmethod
+    @abc.abstractmethod
+    
+    # Don't test type checking imports
+    if TYPE_CHECKING:
+    if typing.TYPE_CHECKING:
+    
+    # Don't test main entry points
+    if __name__ == .__main__.:
+    
+    # Don't test platform-specific code not in CI
+    if sys.platform == .win32.:
+    if sys.platform == .darwin.:
+    
+    # Don't test early returns for missing optional dependencies
+    except ImportError:
+    
+    # Pass statements (often placeholders)
+    pass
+
+# Precision for coverage percentages
+precision = 2
+
+# Show missing lines in the report
+show_missing = True
+
+# Skip covered files in the report (keeps it shorter)
+skip_covered = False
+
+# Sort the report by name
+sort = Name
+
+[html]
+# HTML report directory
+directory = htmlcov
+
+# Title for the HTML report
+title = Hermes-Agent Coverage Report
+
+# Context for each line (shows which tests covered it)
+# Requires pytest-cov with dynamic context
+show_contexts = False
+
+[xml]
+# XML report for CI integration
+output = coverage.xml

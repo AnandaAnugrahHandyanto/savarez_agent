@@ -1,0 +1,72 @@
+# Pre-commit hooks for hermes-agent
+# Install: pip install pre-commit && pre-commit install
+# Update: pre-commit autoupdate
+# Run manually: pre-commit run --all-files
+
+repos:
+  # General file checks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: ^(tests/fixtures/|docs/)
+      - id: end-of-file-fixer
+        exclude: ^(tests/fixtures/|docs/)
+      - id: check-yaml
+      - id: check-json
+      - id: check-toml
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: detect-private-key
+      - id: mixed-line-ending
+        args: ['--fix=lf']
+
+  # Python import sorting
+  - repo: https://github.com/pycqa/isort
+    rev: 5.13.2
+    hooks:
+      - id: isort
+        args: ['--profile=black', '--filter-files']
+        exclude: ^(tests/fixtures/|docs/)
+
+  # Python linting
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.0
+    hooks:
+      - id: ruff
+        args: ['--fix']
+        exclude: ^(tests/fixtures/|docs/)
+
+  # Python formatting (optional - uncomment if project uses black)
+  # - repo: https://github.com/psf/black
+  #   rev: 24.10.0
+  #   hooks:
+  #     - id: black
+  #       language_version: python3.11
+  #       exclude: ^(tests/fixtures/|docs/)
+
+  # Run tests before commit (optional - can be slow)
+  # Uncomment if you want tests to run on every commit
+  # - repo: local
+  #   hooks:
+  #     - id: pytest-check
+  #       name: pytest-check
+  #       entry: python -m pytest tests/ -q --tb=line -x
+  #       language: system
+  #       pass_filenames: false
+  #       always_run: true
+  #       stages: [commit]
+
+  # Check for test files accompanying source changes
+  - repo: local
+    hooks:
+      - id: check-test-files
+        name: Check for test files
+        entry: python scripts/check_test_files.py
+        language: system
+        pass_filenames: false
+        always_run: false
+        stages: [commit]
+        verbose: true

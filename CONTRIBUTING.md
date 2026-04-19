@@ -105,6 +105,27 @@ hermes chat -q "Hello"
 
 ### Run tests
 
+We follow Test-Driven Development (TDD) practices. Please read [TESTING.md](TESTING.md) for detailed testing guidelines.
+
+Quick commands:
+```bash
+# Run all unit tests
+make test
+
+# Run tests with coverage
+make coverage
+
+# Run specific test file
+make test-specific FILE=tests/tools/test_approval.py
+
+# Run specific test class
+make test-class FILE=tests/tools/test_approval.py CLASS=TestDetectDangerousRm
+
+# Run specific test method
+make test-single FILE=tests/tools/test_approval.py TEST=test_rm_rf_detected
+```
+
+Legacy pytest command:
 ```bash
 pytest tests/ -v
 ```
@@ -595,10 +616,12 @@ refactor/description   # Code restructuring
 
 ### Before submitting
 
-1. **Run tests**: `pytest tests/ -v`
-2. **Test manually**: Run `hermes` and exercise the code path you changed
-3. **Check cross-platform impact**: If you touch file I/O, process management, or terminal handling, consider Windows and macOS
-4. **Keep PRs focused**: One logical change per PR. Don't mix a bug fix with a refactor with a new feature.
+1. **Run tests**: `make test` (or `pytest tests/ -v`)
+2. **Check coverage**: `make coverage` (ensure coverage is maintained or improved)
+3. **Test manually**: Run `hermes` and exercise the code path you changed
+4. **Check cross-platform impact**: If you touch file I/O, process management, or terminal handling, consider Windows and macOS
+5. **Keep PRs focused**: One logical change per PR. Don't mix a bug fix with a refactor with a new feature.
+6. **Pre-commit hooks**: Run `pre-commit run --all-files` if you have them installed
 
 ### PR description
 

@@ -34,15 +34,40 @@ jobs:
           source .venv/bin/activate
           uv pip install -e ".[all,dev]"
 
-      - name: Run tests
+      - name: Run tests with coverage
         run: |
           source .venv/bin/activate
-          python -m pytest tests/ -q --ignore=tests/integration --ignore=tests/e2e --tb=short -n auto
+          python -m pytest tests/ \
+            -q \
+            --ignore=tests/integration \
+            --ignore=tests/e2e \
+            --tb=short \
+            -n auto \
+            --cov=. \
+            --cov-report=xml \
+            --cov-report=term-missing:skip-covered \
+            --cov-config=.coveragerc
         env:
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false
+          verbose: true
+
+      - name: Upload coverage report as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            coverage.xml
+            htmlcov/
+          retention-days: 7
 
   e2e:
     runs-on: ubuntu-latest
@@ -71,3 +96,28 @@ jobs:
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
+
+  coverage-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: test
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download coverage report
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-report
+
+      - name: Check coverage threshold
+        run: |
+          # Install coverage tool
+          pip install coverage
+          
+          # Check overall coverage (adjust threshold as needed)
+          coverage report --fail-under=70 || {
+            echo "::warning::Coverage is below 70%. Consider adding more tests."
+            # Don't fail the build, just warn
+            exit 0
+          }
