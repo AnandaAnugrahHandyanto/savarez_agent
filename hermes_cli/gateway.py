@@ -59,6 +59,27 @@ class GatewayRuntimeSnapshot:
     def has_process_service_mismatch(self) -> bool:
         return self.service_installed and self.running and not self.service_running
 
+
+def _getuid() -> int | None:
+    getter = getattr(os, "getuid", None)
+    if getter is None:
+        return None
+    try:
+        return int(getter())
+    except (OSError, TypeError, ValueError):
+        return None
+
+
+def _geteuid() -> int | None:
+    getter = getattr(os, "geteuid", None)
+    if getter is None:
+        return _getuid()
+    try:
+        return int(getter())
+    except (OSError, TypeError, ValueError):
+        return _getuid()
+
+
 def _get_service_pids() -> set:
     """Return PIDs currently managed by systemd or launchd gateway services.
 
@@ -628,7 +649,9 @@ def _ensure_user_systemd_env() -> None:
     We detect the standard socket path and set the vars so all subsequent
     subprocess calls inherit them.
     """
-    uid = os.getuid()
+    uid = _getuid()
+    if uid is None:
+        return
     if "XDG_RUNTIME_DIR" not in os.environ:
         runtime_dir = f"/run/user/{uid}"
         if Path(runtime_dir).exists():
@@ -844,7 +867,7 @@ def remove_legacy_hermes_units(
 
     # System-scope removal (needs root)
     if system_units:
-        if os.geteuid() != 0:
+        if _geteuid() != 0:
             print()
             print_warning("System-scope legacy units require root to remove.")
             print_info("  Re-run with: sudo hermes gateway migrate-legacy")
@@ -891,7 +914,7 @@ def print_systemd_scope_conflict_warning() -> None:
 
 
 def _require_root_for_system_service(action: str) -> None:
-    if os.geteuid() != 0:
+    if _geteuid() != 0:
         print(f"System gateway {action} requires root. Re-run with sudo.")
         sys.exit(1)
 
@@ -957,7 +980,7 @@ def install_linux_gateway_from_setup(force: bool = False) -> tuple[str | None, b
 
     if scope == "system":
         run_as_user = _default_system_service_user()
-        if os.geteuid() != 0:
+        if _geteuid() != 0:
             print_warning("  System service install requires sudo, so Hermes can't create it from this user session.")
             if run_as_user:
                 print_info(f"  After setup, run: sudo hermes gateway install --system --run-as-user {run_as_user}")
@@ -1003,7 +1026,10 @@ def get_systemd_linger_status() -> tuple[bool | None, str]:
     if not username:
         try:
             import pwd
-            username = pwd.getpwuid(os.getuid()).pw_name
+            uid = _getuid()
+            if uid is None:
+                return None, "could not determine current user"
+            username = pwd.getpwuid(uid).pw_name
         except Exception:
             return None, "could not determine current user"
 
@@ -1053,7 +1079,10 @@ def _launchd_user_home() -> Path:
     """
     import pwd
 
-    return Path(pwd.getpwuid(os.getuid()).pw_dir)
+    uid = _getuid()
+    if uid is None:
+        return Path.home()
+    return Path(pwd.getpwuid(uid).pw_dir)
 
 
 def get_launchd_plist_path() -> Path:
@@ -1657,7 +1686,8 @@ def get_launchd_label() -> str:
 
 def _launchd_domain() -> str:
     import os
-    return f"gui/{os.getuid()}"
+    uid = _getuid()
+    return f"gui/{uid if uid is not None else 0}"
 
 
 def generate_launchd_plist() -> str:
