@@ -91,3 +91,63 @@ def test_curses_single_select_renders_footer_lines_dim_below_items():
     last_item_row = max(item_rows)
     assert all(args[0] > last_item_row for args in footer_calls)
     assert all(args[4] == curses.A_DIM for args in footer_calls)
+
+
+def test_curses_single_select_long_footer_does_not_crush_items():
+    """A long footer must not shrink the selectable list to a single row on a
+    24-row terminal — items should always win most of the screen."""
+    from hermes_cli.curses_ui import curses_single_select
+
+    mock_stdscr = MagicMock()
+    mock_stdscr.getmaxyx.return_value = (24, 80)
+    mock_stdscr.getch.side_effect = [10]
+
+    items = [f"model-{i}" for i in range(15)]
+    footer = [f"footer-{i}" for i in range(40)]
+
+    with patch("sys.stdin") as mock_stdin, \
+         patch("curses.wrapper") as mock_wrapper, \
+         patch("curses.curs_set"), \
+         patch("curses.has_colors", return_value=False):
+        mock_stdin.isatty.return_value = True
+        mock_wrapper.side_effect = lambda func: func(mock_stdscr)
+        curses_single_select(
+            "Select default model:", items, default_index=0, footer_lines=footer
+        )
+
+    rendered = [call.args for call in mock_stdscr.addnstr.call_args_list]
+    item_rows = [args[2] for args in rendered if args[2].startswith(" → ") or args[2].startswith("   ")]
+    # At least half of the screen should stay available for items, even with
+    # a 40-line footer. On a 24-row terminal that means well over a single row.
+    assert len(item_rows) >= 10, f"Only {len(item_rows)} items visible with long footer"
+
+
+def test_read_curses_key_swallows_non_arrow_csi_sequences():
+    """Delete/Home/End sequences (ESC [ 3 ~, ESC [ H, ESC [ F) must not leave
+    their tail bytes in the pending-key buffer — replaying them would inject
+    '[3~' into a filter input or cancel the picker unexpectedly."""
+    from hermes_cli.curses_ui import read_curses_key, _PENDING_KEYS
+
+    mock_stdscr = MagicMock()
+    # ESC [ 3 ~  (Delete)
+    mock_stdscr.getch.side_effect = [27, 91, 51, 126]
+
+    import curses as real_curses
+    key = read_curses_key(mock_stdscr, curses_mod=real_curses)
+
+    assert key != 27, "non-arrow escape should not surface as ESC (would cancel picker)"
+    assert 32 > key or key > 126, "non-arrow escape must not be a printable char"
+    # No leftover bytes injected into pending buffer.
+    assert _PENDING_KEYS.get(id(mock_stdscr)) in (None, [])
+
+
+def test_read_curses_key_still_decodes_arrow_after_cleanup():
+    """The cleanup for non-arrow sequences must not regress arrow decoding."""
+    from hermes_cli.curses_ui import read_curses_key
+
+    mock_stdscr = MagicMock()
+    mock_stdscr.getch.side_effect = [27, 91, 66]  # ESC [ B = down
+
+    import curses as real_curses
+    key = read_curses_key(mock_stdscr, curses_mod=real_curses)
+    assert key == real_curses.KEY_DOWN

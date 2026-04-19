@@ -89,18 +89,29 @@ def read_curses_key(stdscr, curses_mod=None) -> int:
             _queue_pending_keys(stdscr, second)
             return key
 
+        # CSI/SS3 sequence. Read until we hit a terminator so function keys
+        # like Home/End/Delete (ESC [ H, ESC [ F, ESC [ 3 ~) don't leak their
+        # tail bytes back into the caller's input buffer where they would be
+        # injected as printable characters.
         sequence: list[int] = []
         while True:
             part = stdscr.getch()
             if part == -1:
-                _queue_pending_keys(stdscr, second, *sequence)
-                return key
+                break
             sequence.append(part)
-            if 65 <= part <= 68:
+            if second == 79:  # SS3: single-byte function identifier
+                break
+            # CSI final byte is in range 0x40–0x7E.
+            if 0x40 <= part <= 0x7E:
                 break
             if len(sequence) >= 8:
-                _queue_pending_keys(stdscr, second, *sequence)
-                return key
+                break
+
+        if not sequence:
+            # Incomplete escape (e.g. Alt-[ / Alt-O). Preserve the lead byte
+            # so Alt-key semantics still work and return the bare ESC.
+            _queue_pending_keys(stdscr, second)
+            return key
 
         last = sequence[-1]
         mapping = {
@@ -110,10 +121,12 @@ def read_curses_key(stdscr, curses_mod=None) -> int:
             68: curses_mod.KEY_LEFT,
         }
         mapped = mapping.get(last)
-        if mapped is None:
-            _queue_pending_keys(stdscr, second, *sequence)
-            return key
-        return mapped
+        if mapped is not None:
+            return mapped
+        # Unknown function key — swallow the whole sequence rather than
+        # replaying it as input; returning 0 is a harmless no-op for the
+        # menu/filter loops (not ESC, not printable, not an arrow).
+        return 0
     finally:
         try:
             stdscr.nodelay(False)
@@ -466,8 +479,14 @@ def curses_single_select(
                 except curses.error:
                     pass
 
-                reserved = items_start + len(footer) + 1  # +1 for trailing row
-                visible_rows = max(1, max_y - reserved)
+                # Cap footer at one-third of the rows below the hint so a long
+                # unavailable-model block can't crush the selectable list on a
+                # standard 24-row terminal. The remaining footer lines are
+                # dropped (users can still see them in the numbered fallback).
+                available = max(1, max_y - items_start - 1)
+                footer_cap = max(0, available // 3)
+                footer_shown = min(len(footer), footer_cap)
+                visible_rows = max(1, available - footer_shown)
                 if cursor < scroll_offset:
                     scroll_offset = cursor
                 elif cursor >= scroll_offset + visible_rows:
@@ -493,12 +512,15 @@ def curses_single_select(
                         pass
                     last_item_row = y
 
-                if footer:
+                if footer_shown:
                     footer_start = last_item_row + 2
-                    for i, fline in enumerate(footer):
+                    for i in range(footer_shown):
                         y = footer_start + i
                         if y >= max_y - 1:
                             break
+                        fline = footer[i]
+                        if i == footer_shown - 1 and footer_shown < len(footer):
+                            fline = f"{fline}  (+{len(footer) - footer_shown} more)"
                         try:
                             stdscr.addnstr(y, 0, fline, max_x - 1, curses.A_DIM)
                         except curses.error:
