@@ -3973,7 +3973,7 @@ def _model_flow_anthropic(config, current_model=""):
 
         elif choice == "2":
             print()
-            print("  Get an API key at: https://console.anthropic.com/settings/keys")
+            print("  Get an API key at: https://platform.claude.com/settings/keys")
             print()
             try:
                 import getpass
@@ -6229,8 +6229,9 @@ def cmd_dashboard(args):
         print(f"Install them with:  {sys.executable} -m pip install 'fastapi' 'uvicorn[standard]'")
         sys.exit(1)
 
-    if not _build_web_ui(PROJECT_ROOT / "web", fatal=True):
-        sys.exit(1)
+    if "HERMES_WEB_DIST" not in os.environ:
+        if not _build_web_ui(PROJECT_ROOT / "web", fatal=True):
+            sys.exit(1)
 
     from hermes_cli.web_server import start_server
 

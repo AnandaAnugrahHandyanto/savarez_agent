@@ -737,9 +737,14 @@ DEFAULT_CONFIG = {
     #   manual — always prompt the user (default)
     #   smart  — use auxiliary LLM to auto-approve low-risk commands, prompt for high-risk
     #   off    — skip all approval prompts (equivalent to --yolo)
+    #
+    # cron_mode — what to do when a cron job hits a dangerous command:
+    #   deny    — block the command and let the agent find another way (default, safe)
+    #   approve — auto-approve all dangerous commands in cron jobs
     "approvals": {
         "mode": "manual",
         "timeout": 60,
+        "cron_mode": "deny",
     },
 
     # Permanently allowed dangerous command patterns (added via "always" approval)
@@ -2856,7 +2861,7 @@ _FALLBACK_COMMENT = """
 #   minimax      (MINIMAX_API_KEY)     — MiniMax
 #   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
 #
-# For custom OpenAI-compatible endpoints, add base_url and api_key_env.
+# For custom OpenAI-compatible endpoints, add base_url and key_env.
 #
 # fallback_model:
 #   provider: openrouter
@@ -2900,7 +2905,7 @@ _COMMENTED_SECTIONS = """
 #   minimax      (MINIMAX_API_KEY)     — MiniMax
 #   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
 #
-# For custom OpenAI-compatible endpoints, add base_url and api_key_env.
+# For custom OpenAI-compatible endpoints, add base_url and key_env.
 #
 # fallback_model:
 #   provider: openrouter
