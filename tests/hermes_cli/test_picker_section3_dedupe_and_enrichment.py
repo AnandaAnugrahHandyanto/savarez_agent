@@ -160,6 +160,54 @@ def test_user_provider_explicit_models_not_overwritten(monkeypatch):
     assert "surprise-model-1" not in lo["models"]
 
 
+def test_section4_skips_provider_key_already_in_section3(monkeypatch):
+    """Custom-provider entries derived from user_providers must not duplicate.
+
+    The CLI picker calls ``get_compatible_custom_providers()`` which expands
+    ``providers:`` config entries into legacy ``custom_providers`` shape with
+    a ``provider_key`` tag. Section 3 already emits a row for each
+    user_provider; Section 4 must skip the matching expanded entry, otherwise
+    the same logical provider appears twice with different generated slugs
+    (e.g. user_provider key ``custom`` named "Ollama (local)" → Section 3
+    emits slug=custom, Section 4 emits slug=ollama-local).
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    user_providers = {
+        "custom": {
+            "name": "Ollama (local)",
+            "base_url": "http://localhost:11434/v1",
+            "default_model": "qwen3.5",
+            "models": ["qwen3.5"],
+        }
+    }
+    # Mirrors what get_compatible_custom_providers() returns: same logical
+    # entry tagged with provider_key pointing back to the user_providers key.
+    custom_providers = [
+        {
+            "name": "Ollama (local)",
+            "base_url": "http://localhost:11434/v1",
+            "provider_key": "custom",
+            "model": "qwen3.5",
+        }
+    ]
+
+    providers = list_authenticated_providers(
+        current_provider="",
+        user_providers=user_providers,
+        custom_providers=custom_providers,
+    )
+
+    matches = [p for p in providers if p["name"] == "Ollama (local)"]
+    assert len(matches) == 1, (
+        f"'Ollama (local)' should appear once; got {len(matches)}: "
+        f"{[(p['slug'], p['source']) for p in matches]}"
+    )
+    # The surviving row should be the Section 3 one (slug = user_providers key)
+    assert matches[0]["slug"] == "custom"
+
+
 def test_live_probe_failure_falls_back_to_config(monkeypatch):
     """If the live probe raises, the picker must still return config-only data."""
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})

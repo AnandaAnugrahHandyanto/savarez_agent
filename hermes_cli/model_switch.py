@@ -1121,6 +1121,17 @@ def list_authenticated_providers(
             if not isinstance(entry, dict):
                 continue
 
+            # Skip entries that originated from a `providers:` dict entry
+            # already emitted by Section 3. get_compatible_custom_providers()
+            # expands user_providers into custom-provider shape and tags them
+            # with provider_key; without this guard the same logical provider
+            # appears twice with different generated slugs (e.g. user_provider
+            # `custom` named "Ollama (local)" → Section 3 emits slug=custom,
+            # Section 4 emits slug=ollama-local).
+            provider_key = str(entry.get("provider_key", "") or "").strip().lower()
+            if provider_key and provider_key in seen_slugs:
+                continue
+
             display_name = (entry.get("name") or "").strip()
             api_url = (
                 entry.get("base_url", "")
