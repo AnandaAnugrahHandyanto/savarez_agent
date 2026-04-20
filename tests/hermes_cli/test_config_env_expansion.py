@@ -57,6 +57,22 @@ class TestExpandEnvVars:
             assert "${KEY}" in result
 
 
+class TestReadUserConfigExpansion:
+    def test_read_user_config_expands_env_without_defaults(self, tmp_path, monkeypatch):
+        config_yaml = "model:\n  default: ${TEST_MODEL}\n"
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(config_yaml)
+
+        monkeypatch.setenv("TEST_MODEL", "openrouter/test-model")
+        monkeypatch.setattr("hermes_cli.config.get_config_path", lambda: config_file)
+
+        from hermes_cli.config import read_user_config
+
+        config = read_user_config(expand_env=True, merge_defaults=False)
+
+        assert config == {"model": {"default": "openrouter/test-model"}}
+
+
 class TestLoadConfigExpansion:
     def test_load_config_expands_env_vars(self, tmp_path, monkeypatch):
         config_yaml = (

@@ -2787,22 +2787,58 @@ def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 
-def read_raw_config() -> Dict[str, Any]:
+def read_user_config_raw(*, config_path: Path | None = None) -> Dict[str, Any]:
     """Read ~/.hermes/config.yaml as-is, without merging defaults or migrating.
 
     Returns the raw YAML dict, or ``{}`` if the file doesn't exist or can't
     be parsed.  Use this for lightweight config reads where you just need a
     single value and don't want the overhead of ``load_config()``'s deep-merge
     + migration pipeline.
+
+    Unlike ``load_config()``, this helper intentionally avoids bootstrapping
+    Hermes home side effects such as creating directories or ``SOUL.md``.
     """
     try:
-        config_path = get_config_path()
+        config_path = config_path or get_config_path()
         if config_path.exists():
             with open(config_path, encoding="utf-8") as f:
                 return yaml.safe_load(f) or {}
     except Exception:
         pass
     return {}
+
+
+def read_raw_config(*, config_path: Path | None = None) -> Dict[str, Any]:
+    """Backward-compatible alias for raw config reads."""
+    return read_user_config_raw(config_path=config_path)
+
+
+def read_user_config(
+    *,
+    expand_env: bool = True,
+    merge_defaults: bool = False,
+    config_path: Path | None = None,
+) -> Dict[str, Any]:
+    """Read user config with optional env expansion and default merging.
+
+    This helper is intended for runtime callers that want shared config parsing
+    behavior without necessarily paying the full cost of ``load_config()``.
+    When ``merge_defaults`` is false, the returned data reflects only what the
+    user wrote in ``config.yaml`` (aside from optional env expansion).
+    """
+    raw_data = read_user_config_raw(config_path=config_path)
+    if not isinstance(raw_data, dict):
+        raw_data = {}
+
+    if merge_defaults:
+        normalized_raw = _normalize_root_model_keys(_normalize_max_turns_config(raw_data))
+        data = _deep_merge(copy.deepcopy(DEFAULT_CONFIG), normalized_raw)
+    else:
+        data = copy.deepcopy(raw_data)
+
+    if expand_env:
+        data = _expand_env_vars(data)
+    return data
 
 
 def load_config() -> Dict[str, Any]:

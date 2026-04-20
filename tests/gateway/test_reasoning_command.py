@@ -73,8 +73,10 @@ class TestReasoningCommand:
         assert "/reasoning [level|show|hide]" in result
 
     def test_reasoning_is_known_command(self):
-        source = inspect.getsource(gateway_run.GatewayRunner._handle_message)
-        assert '"reasoning"' in source
+        from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, resolve_command
+
+        assert "reasoning" in GATEWAY_KNOWN_COMMANDS
+        assert resolve_command("reasoning").name == "reasoning"
 
     @pytest.mark.asyncio
     async def test_reasoning_command_reloads_current_state_from_config(self, tmp_path, monkeypatch):

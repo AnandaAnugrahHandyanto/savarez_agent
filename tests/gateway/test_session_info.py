@@ -108,3 +108,19 @@ class TestFormatSessionInfo:
             info = runner._format_session_info()
         assert "4K" in info
         assert "config" in info
+
+    def test_uses_shared_read_user_config(self, runner, tmp_path):
+        called = {}
+
+        def fake_read_user_config(*, expand_env=True, merge_defaults=False, config_path=None):
+            called["args"] = (expand_env, merge_defaults, config_path)
+            return {"model": {"provider": "openrouter", "context_length": 32768}}
+
+        with patch("gateway.run._hermes_home", tmp_path), \
+             patch("gateway.run._resolve_gateway_model", return_value="test-model"), \
+             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"provider": "openrouter", "base_url": "", "api_key": ""}), \
+             patch("hermes_cli.config.read_user_config", side_effect=fake_read_user_config):
+            info = runner._format_session_info()
+
+        assert "32K" in info
+        assert called["args"] == (True, False, tmp_path / "config.yaml")

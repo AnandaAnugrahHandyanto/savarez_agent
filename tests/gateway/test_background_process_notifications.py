@@ -110,6 +110,22 @@ class TestLoadBackgroundNotificationsMode:
         monkeypatch.delenv("HERMES_BACKGROUND_NOTIFICATIONS", raising=False)
         assert GatewayRunner._load_background_notifications_mode() == "all"
 
+    def test_uses_shared_read_user_config(self, monkeypatch, tmp_path):
+        import gateway.run as gw
+        monkeypatch.setattr(gw, "_hermes_home", tmp_path)
+        monkeypatch.delenv("HERMES_BACKGROUND_NOTIFICATIONS", raising=False)
+        called = {}
+
+        def fake_read_user_config(*, expand_env=True, merge_defaults=False, config_path=None):
+            called["args"] = (expand_env, merge_defaults, config_path)
+            return {"display": {"background_process_notifications": "error"}}
+
+        with patch("hermes_cli.config.read_user_config", side_effect=fake_read_user_config):
+            mode = GatewayRunner._load_background_notifications_mode()
+
+        assert mode == "error"
+        assert called["args"] == (True, False, tmp_path / "config.yaml")
+
 
 # ---------------------------------------------------------------------------
 # _run_process_watcher integration tests

@@ -71,6 +71,50 @@ class TestLoadConfigDefaults:
             assert config["terminal"]["backend"] == "local"
             assert config["display"]["interim_assistant_messages"] is True
 
+    def test_read_user_config_raw_returns_yaml_without_defaults(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            cfg_path = tmp_path / "config.yaml"
+            cfg_path.write_text("model:\n  default: test/model\n", encoding="utf-8")
+
+            from hermes_cli.config import read_user_config_raw
+
+            data = read_user_config_raw()
+            assert data == {"model": {"default": "test/model"}}
+
+    def test_read_user_config_raw_does_not_create_hermes_home_side_effects(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            from hermes_cli.config import read_user_config_raw
+
+            data = read_user_config_raw()
+
+            assert data == {}
+            assert not (tmp_path / "SOUL.md").exists()
+            assert not (tmp_path / "sessions").exists()
+            assert not (tmp_path / "logs").exists()
+
+    def test_read_user_config_merge_defaults_handles_non_mapping_yaml(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("- one\n- two\n", encoding="utf-8")
+        monkeypatch.setattr("hermes_cli.config.get_config_path", lambda: config_file)
+
+        from hermes_cli.config import read_user_config
+
+        config = read_user_config(expand_env=False, merge_defaults=True)
+        assert isinstance(config, dict)
+        assert config["model"] == DEFAULT_CONFIG["model"]
+        assert config["agent"]["max_turns"] == DEFAULT_CONFIG["agent"]["max_turns"]
+
+    def test_read_user_config_merge_defaults_migrates_legacy_root_max_turns(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("max_turns: 42\n", encoding="utf-8")
+        monkeypatch.setattr("hermes_cli.config.get_config_path", lambda: config_file)
+
+        from hermes_cli.config import read_user_config
+
+        config = read_user_config(expand_env=False, merge_defaults=True)
+        assert config["agent"]["max_turns"] == 42
+        assert "max_turns" not in config
+
     def test_legacy_root_level_max_turns_migrates_to_agent_config(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             config_path = tmp_path / "config.yaml"

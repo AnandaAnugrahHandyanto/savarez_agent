@@ -62,6 +62,7 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
+from gateway.user_config_store import load_gateway_user_config_raw, save_gateway_user_config_raw
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -504,14 +505,13 @@ class TelegramAdapter(BasePlatformAdapter):
         """Save a newly created thread_id back into config.yaml so it persists across restarts."""
         try:
             from hermes_constants import get_hermes_home
-            config_path = get_hermes_home() / "config.yaml"
+            hermes_home = get_hermes_home()
+            config_path = hermes_home / "config.yaml"
             if not config_path.exists():
                 logger.warning("[%s] Config file not found at %s, cannot persist thread_id", self.name, config_path)
                 return
 
-            import yaml as _yaml
-            with open(config_path, "r") as f:
-                config = _yaml.safe_load(f) or {}
+            config = load_gateway_user_config_raw(hermes_home)
 
             # Navigate to platforms.telegram.extra.dm_topics
             dm_topics = (
@@ -534,8 +534,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         break
 
             if changed:
-                with open(config_path, "w") as f:
-                    _yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+                save_gateway_user_config_raw(hermes_home, config)
                 logger.info(
                     "[%s] Persisted thread_id=%s for topic '%s' in config.yaml",
                     self.name, thread_id, topic_name,
@@ -2792,13 +2791,12 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         try:
             from hermes_constants import get_hermes_home
-            config_path = get_hermes_home() / "config.yaml"
+            hermes_home = get_hermes_home()
+            config_path = hermes_home / "config.yaml"
             if not config_path.exists():
                 return
 
-            import yaml as _yaml
-            with open(config_path, "r") as f:
-                config = _yaml.safe_load(f) or {}
+            config = load_gateway_user_config_raw(hermes_home)
 
             dm_topics = (
                 config.get("platforms", {})

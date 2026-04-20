@@ -23,18 +23,29 @@ from gateway.config import PlatformConfig
 
 def _ensure_telegram_mock():
     if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
-        return
+        telegram_mod = sys.modules["telegram"]
+    else:
+        telegram_mod = sys.modules.get("telegram")
+        if telegram_mod is None:
+            telegram_mod = MagicMock()
+            telegram_mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
+            sys.modules.setdefault("telegram", telegram_mod)
+            sys.modules.setdefault("telegram.ext", telegram_mod)
+            sys.modules.setdefault("telegram.constants", telegram_mod)
+            sys.modules.setdefault("telegram.request", telegram_mod)
 
-    telegram_mod = MagicMock()
-    telegram_mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
     telegram_mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
     telegram_mod.constants.ChatType.GROUP = "group"
     telegram_mod.constants.ChatType.SUPERGROUP = "supergroup"
     telegram_mod.constants.ChatType.CHANNEL = "channel"
     telegram_mod.constants.ChatType.PRIVATE = "private"
+    telegram_mod.ChatType = telegram_mod.constants.ChatType
+    telegram_mod.ParseMode = telegram_mod.constants.ParseMode
 
-    for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
-        sys.modules.setdefault(name, telegram_mod)
+    if "gateway.platforms.telegram" in sys.modules:
+        platform_telegram = sys.modules["gateway.platforms.telegram"]
+        platform_telegram.ChatType = telegram_mod.ChatType
+        platform_telegram.ParseMode = telegram_mod.ParseMode
 
 
 _ensure_telegram_mock()

@@ -381,6 +381,76 @@ class TestLoadGatewayConfig:
         import os
         assert os.environ.get("TELEGRAM_PROXY") == "socks5://from-env:1080"
 
+    def test_gateway_json_provides_fallback_defaults_under_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "gateway.json").write_text(
+            '{"always_log_local": false, "platforms": {"telegram": {"enabled": true, "extra": {"legacy": "keep"}}}}',
+            encoding="utf-8",
+        )
+        (hermes_home / "config.yaml").write_text(
+            "always_log_local: true\n"
+            "platforms:\n"
+            "  telegram:\n"
+            "    extra:\n"
+            "      added: from-yaml\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.always_log_local is True
+        assert config.platforms[Platform.TELEGRAM].extra == {
+            "legacy": "keep",
+            "added": "from-yaml",
+        }
+
+    def test_invalid_config_yaml_warns_and_falls_back_to_gateway_json(self, tmp_path, monkeypatch, caplog):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "gateway.json").write_text(
+            '{"always_log_local": false}',
+            encoding="utf-8",
+        )
+        (hermes_home / "config.yaml").write_text(
+            "platforms: [broken\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.always_log_local is False
+        assert "Failed to process config.yaml" in caplog.text
+
+    def test_yaml_platform_extra_merges_with_gateway_json_extra(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "gateway.json").write_text(
+            '{"platforms": {"webhook": {"enabled": true, "extra": {"legacy": "keep", "routes": {"/legacy": {"secret": "abc"}}}}}}',
+            encoding="utf-8",
+        )
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  webhook:\n"
+            "    extra:\n"
+            "      added: from-yaml\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.WEBHOOK].extra == {
+            "legacy": "keep",
+            "routes": {"/legacy": {"secret": "abc"}},
+            "added": "from-yaml",
+        }
+
 
 class TestHomeChannelEnvOverrides:
     """Home channel env vars should apply even when the platform was already

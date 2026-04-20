@@ -86,7 +86,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home
-from utils import atomic_yaml_write, is_truthy_value
+from utils import is_truthy_value
 _hermes_home = get_hermes_home()
 
 # Load environment variables from ~/.hermes/.env first.
@@ -102,131 +102,20 @@ _DOCKER_MEDIA_OUTPUT_CONTAINER_PATHS = {"/output", "/outputs"}
 
 # Bridge config.yaml values into the environment so os.getenv() picks them up.
 # config.yaml is authoritative for terminal settings — overrides .env.
-_config_path = _hermes_home / 'config.yaml'
-if _config_path.exists():
-    try:
-        import yaml as _yaml
-        with open(_config_path, encoding="utf-8") as _f:
-            _cfg = _yaml.safe_load(_f) or {}
-        # Expand ${ENV_VAR} references before bridging to env vars.
-        from hermes_cli.config import _expand_env_vars
-        _cfg = _expand_env_vars(_cfg)
-        # Top-level simple values (fallback only — don't override .env)
-        for _key, _val in _cfg.items():
-            if isinstance(_val, (str, int, float, bool)) and _key not in os.environ:
-                os.environ[_key] = str(_val)
-        # Terminal config is nested — bridge to TERMINAL_* env vars.
-        # config.yaml overrides .env for these since it's the documented config path.
-        _terminal_cfg = _cfg.get("terminal", {})
-        if _terminal_cfg and isinstance(_terminal_cfg, dict):
-            _terminal_env_map = {
-                "backend": "TERMINAL_ENV",
-                "cwd": "TERMINAL_CWD",
-                "timeout": "TERMINAL_TIMEOUT",
-                "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
-                "docker_image": "TERMINAL_DOCKER_IMAGE",
-                "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
-                "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
-                "modal_image": "TERMINAL_MODAL_IMAGE",
-                "daytona_image": "TERMINAL_DAYTONA_IMAGE",
-                "ssh_host": "TERMINAL_SSH_HOST",
-                "ssh_user": "TERMINAL_SSH_USER",
-                "ssh_port": "TERMINAL_SSH_PORT",
-                "ssh_key": "TERMINAL_SSH_KEY",
-                "container_cpu": "TERMINAL_CONTAINER_CPU",
-                "container_memory": "TERMINAL_CONTAINER_MEMORY",
-                "container_disk": "TERMINAL_CONTAINER_DISK",
-                "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
-                "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
-                "sandbox_dir": "TERMINAL_SANDBOX_DIR",
-                "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
-            }
-            for _cfg_key, _env_var in _terminal_env_map.items():
-                if _cfg_key in _terminal_cfg:
-                    _val = _terminal_cfg[_cfg_key]
-                    # Skip cwd placeholder values (".", "auto", "cwd") — the
-                    # gateway resolves these to Path.home() later (line ~255).
-                    # Writing the raw placeholder here would just be noise.
-                    # Only bridge explicit absolute paths from config.yaml.
-                    if _cfg_key == "cwd" and str(_val) in (".", "auto", "cwd"):
-                        continue
-                    if isinstance(_val, list):
-                        os.environ[_env_var] = json.dumps(_val)
-                    else:
-                        os.environ[_env_var] = str(_val)
-        # Compression config is read directly from config.yaml by run_agent.py
-        # and auxiliary_client.py — no env var bridging needed.
-        # Auxiliary model/direct-endpoint overrides (vision, web_extract).
-        # Each task has provider/model/base_url/api_key; bridge non-default values to env vars.
-        _auxiliary_cfg = _cfg.get("auxiliary", {})
-        if _auxiliary_cfg and isinstance(_auxiliary_cfg, dict):
-            _aux_task_env = {
-                "vision": {
-                    "provider": "AUXILIARY_VISION_PROVIDER",
-                    "model": "AUXILIARY_VISION_MODEL",
-                    "base_url": "AUXILIARY_VISION_BASE_URL",
-                    "api_key": "AUXILIARY_VISION_API_KEY",
-                },
-                "web_extract": {
-                    "provider": "AUXILIARY_WEB_EXTRACT_PROVIDER",
-                    "model": "AUXILIARY_WEB_EXTRACT_MODEL",
-                    "base_url": "AUXILIARY_WEB_EXTRACT_BASE_URL",
-                    "api_key": "AUXILIARY_WEB_EXTRACT_API_KEY",
-                },
-                "approval": {
-                    "provider": "AUXILIARY_APPROVAL_PROVIDER",
-                    "model": "AUXILIARY_APPROVAL_MODEL",
-                    "base_url": "AUXILIARY_APPROVAL_BASE_URL",
-                    "api_key": "AUXILIARY_APPROVAL_API_KEY",
-                },
-            }
-            for _task_key, _env_map in _aux_task_env.items():
-                _task_cfg = _auxiliary_cfg.get(_task_key, {})
-                if not isinstance(_task_cfg, dict):
-                    continue
-                _prov = str(_task_cfg.get("provider", "")).strip()
-                _model = str(_task_cfg.get("model", "")).strip()
-                _base_url = str(_task_cfg.get("base_url", "")).strip()
-                _api_key = str(_task_cfg.get("api_key", "")).strip()
-                if _prov and _prov != "auto":
-                    os.environ[_env_map["provider"]] = _prov
-                if _model:
-                    os.environ[_env_map["model"]] = _model
-                if _base_url:
-                    os.environ[_env_map["base_url"]] = _base_url
-                if _api_key:
-                    os.environ[_env_map["api_key"]] = _api_key
-        _agent_cfg = _cfg.get("agent", {})
-        if _agent_cfg and isinstance(_agent_cfg, dict):
-            if "max_turns" in _agent_cfg:
-                os.environ["HERMES_MAX_ITERATIONS"] = str(_agent_cfg["max_turns"])
-            # Bridge agent.gateway_timeout → HERMES_AGENT_TIMEOUT env var.
-            # Env var from .env takes precedence (already in os.environ).
-            if "gateway_timeout" in _agent_cfg and "HERMES_AGENT_TIMEOUT" not in os.environ:
-                os.environ["HERMES_AGENT_TIMEOUT"] = str(_agent_cfg["gateway_timeout"])
-            if "gateway_timeout_warning" in _agent_cfg and "HERMES_AGENT_TIMEOUT_WARNING" not in os.environ:
-                os.environ["HERMES_AGENT_TIMEOUT_WARNING"] = str(_agent_cfg["gateway_timeout_warning"])
-            if "gateway_notify_interval" in _agent_cfg and "HERMES_AGENT_NOTIFY_INTERVAL" not in os.environ:
-                os.environ["HERMES_AGENT_NOTIFY_INTERVAL"] = str(_agent_cfg["gateway_notify_interval"])
-            if "restart_drain_timeout" in _agent_cfg and "HERMES_RESTART_DRAIN_TIMEOUT" not in os.environ:
-                os.environ["HERMES_RESTART_DRAIN_TIMEOUT"] = str(_agent_cfg["restart_drain_timeout"])
-        _display_cfg = _cfg.get("display", {})
-        if _display_cfg and isinstance(_display_cfg, dict):
-            if "busy_input_mode" in _display_cfg and "HERMES_GATEWAY_BUSY_INPUT_MODE" not in os.environ:
-                os.environ["HERMES_GATEWAY_BUSY_INPUT_MODE"] = str(_display_cfg["busy_input_mode"])
-        # Timezone: bridge config.yaml → HERMES_TIMEZONE env var.
-        # HERMES_TIMEZONE from .env takes precedence (already in os.environ).
-        _tz_cfg = _cfg.get("timezone", "")
-        if _tz_cfg and isinstance(_tz_cfg, str) and "HERMES_TIMEZONE" not in os.environ:
-            os.environ["HERMES_TIMEZONE"] = _tz_cfg.strip()
-        # Security settings
-        _security_cfg = _cfg.get("security", {})
-        if isinstance(_security_cfg, dict):
-            _redact = _security_cfg.get("redact_secrets")
-            if _redact is not None:
-                os.environ["HERMES_REDACT_SECRETS"] = str(_redact).lower()
-    except Exception:
-        pass  # Non-fatal; gateway can still run with .env values
+from gateway.runtime_config_bridge import (
+    apply_gateway_startup_env_bridge,
+    load_gateway_startup_bridge_config,
+)
+from gateway.user_config_store import (
+    load_gateway_user_config_raw,
+    load_raw_config_mapping,
+    save_gateway_config_key as save_gateway_config_key_raw,
+    save_gateway_config_updates as save_gateway_config_updates_raw,
+    save_gateway_user_config_raw,
+)
+
+_cfg = load_gateway_startup_bridge_config(_hermes_home)
+apply_gateway_startup_env_bridge(_cfg)
 
 # Apply IPv4 preference if configured (before any HTTP clients are created).
 try:
@@ -482,17 +371,24 @@ def _platform_config_key(platform: "Platform") -> str:
     return "cli" if platform == Platform.LOCAL else platform.value
 
 
-def _load_gateway_config() -> dict:
-    """Load and parse ~/.hermes/config.yaml, returning {} on any error."""
+def _read_gateway_user_config() -> dict:
+    """Load user-authored gateway config via the shared user-config reader."""
     try:
-        config_path = _hermes_home / 'config.yaml'
-        if config_path.exists():
-            import yaml
-            with open(config_path, 'r', encoding='utf-8') as f:
-                return yaml.safe_load(f) or {}
+        from hermes_cli.config import read_user_config
+
+        return read_user_config(
+            expand_env=True,
+            merge_defaults=False,
+            config_path=_hermes_home / "config.yaml",
+        )
     except Exception:
         logger.debug("Could not load gateway config from %s", _hermes_home / 'config.yaml')
     return {}
+
+
+def _load_gateway_config() -> dict:
+    """Backward-compatible wrapper for the shared gateway user-config reader."""
+    return _read_gateway_user_config()
 
 
 def _resolve_gateway_model(config: dict | None = None) -> str:
@@ -1238,6 +1134,50 @@ class GatewayRunner:
             )
         except Exception:
             pass
+
+    @staticmethod
+    def _load_gateway_user_config_for_write() -> Dict[str, Any]:
+        """Load mutable user config for gateway write paths."""
+        return load_gateway_user_config_raw(_hermes_home)
+
+    @staticmethod
+    def _save_gateway_user_config(config: Dict[str, Any]) -> bool:
+        """Persist mutable gateway user config to ~/.hermes/config.yaml."""
+        try:
+            save_gateway_user_config_raw(_hermes_home, config)
+            return True
+        except Exception as e:
+            logger.error("Failed to save gateway config: %s", e)
+            return False
+
+    @staticmethod
+    def _save_gateway_config_key(key_path: str, value: Any) -> bool:
+        """Save a dot-separated key to ~/.hermes/config.yaml for gateway commands."""
+        try:
+            save_gateway_config_key_raw(_hermes_home, key_path, value)
+            return True
+        except Exception as e:
+            logger.error("Failed to save config key %s: %s", key_path, e)
+            return False
+
+    @staticmethod
+    def _save_gateway_config_updates(
+        updates: Dict[str, Any],
+        *,
+        delete_paths: List[str] | None = None,
+    ) -> bool:
+        """Save multiple dot-separated config keys in one load/save cycle."""
+        try:
+            save_gateway_config_updates_raw(_hermes_home, updates, delete_paths=delete_paths)
+            return True
+        except Exception as e:
+            logger.error(
+                "Failed to save config updates %s (delete=%s): %s",
+                sorted(updates),
+                sorted(delete_paths or []),
+                e,
+            )
+            return False
     
     @staticmethod
     def _load_prefill_messages() -> List[Dict[str, Any]]:
@@ -1250,15 +1190,8 @@ class GatewayRunner:
         import json as _json
         file_path = os.getenv("HERMES_PREFILL_MESSAGES_FILE", "")
         if not file_path:
-            try:
-                import yaml as _y
-                cfg_path = _hermes_home / "config.yaml"
-                if cfg_path.exists():
-                    with open(cfg_path, encoding="utf-8") as _f:
-                        cfg = _y.safe_load(_f) or {}
-                    file_path = cfg.get("prefill_messages_file", "")
-            except Exception:
-                pass
+            cfg = _read_gateway_user_config()
+            file_path = str(cfg.get("prefill_messages_file", "") or "")
         if not file_path:
             return []
         path = Path(file_path).expanduser()
@@ -1288,15 +1221,11 @@ class GatewayRunner:
         prompt = os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "")
         if prompt:
             return prompt
-        try:
-            import yaml as _y
-            cfg_path = _hermes_home / "config.yaml"
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as _f:
-                    cfg = _y.safe_load(_f) or {}
-                return (cfg.get("agent", {}).get("system_prompt", "") or "").strip()
-        except Exception:
-            pass
+
+        cfg = _read_gateway_user_config()
+        agent_cfg = cfg.get("agent", {})
+        if isinstance(agent_cfg, dict):
+            return str(agent_cfg.get("system_prompt", "") or "").strip()
         return ""
 
     @staticmethod
@@ -1308,16 +1237,12 @@ class GatewayRunner:
         default (medium).
         """
         from hermes_constants import parse_reasoning_effort
+
+        cfg = _read_gateway_user_config()
+        agent_cfg = cfg.get("agent", {})
         effort = ""
-        try:
-            import yaml as _y
-            cfg_path = _hermes_home / "config.yaml"
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as _f:
-                    cfg = _y.safe_load(_f) or {}
-                effort = str(cfg.get("agent", {}).get("reasoning_effort", "") or "").strip()
-        except Exception:
-            pass
+        if isinstance(agent_cfg, dict):
+            effort = str(agent_cfg.get("reasoning_effort", "") or "").strip()
         result = parse_reasoning_effort(effort)
         if effort and effort.strip() and result is None:
             logger.warning("Unknown reasoning_effort '%s', using default (medium)", effort)
@@ -1331,16 +1256,11 @@ class GatewayRunner:
         "fast"/"priority"/"on" => "priority", while "normal"/"off" disables it.
         Returns None when unset or unsupported.
         """
+        cfg = _read_gateway_user_config()
+        agent_cfg = cfg.get("agent", {})
         raw = ""
-        try:
-            import yaml as _y
-            cfg_path = _hermes_home / "config.yaml"
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as _f:
-                    cfg = _y.safe_load(_f) or {}
-                raw = str(cfg.get("agent", {}).get("service_tier", "") or "").strip()
-        except Exception:
-            pass
+        if isinstance(agent_cfg, dict):
+            raw = str(agent_cfg.get("service_tier", "") or "").strip()
 
         value = raw.lower()
         if not value or value in {"normal", "default", "standard", "off", "none"}:
@@ -1353,15 +1273,10 @@ class GatewayRunner:
     @staticmethod
     def _load_show_reasoning() -> bool:
         """Load show_reasoning toggle from config.yaml display section."""
-        try:
-            import yaml as _y
-            cfg_path = _hermes_home / "config.yaml"
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as _f:
-                    cfg = _y.safe_load(_f) or {}
-                return bool(cfg.get("display", {}).get("show_reasoning", False))
-        except Exception:
-            pass
+        cfg = _read_gateway_user_config()
+        display_cfg = cfg.get("display", {})
+        if isinstance(display_cfg, dict):
+            return bool(display_cfg.get("show_reasoning", False))
         return False
 
     @staticmethod
@@ -1369,15 +1284,10 @@ class GatewayRunner:
         """Load gateway drain-time busy-input behavior from config/env."""
         mode = os.getenv("HERMES_GATEWAY_BUSY_INPUT_MODE", "").strip().lower()
         if not mode:
-            try:
-                import yaml as _y
-                cfg_path = _hermes_home / "config.yaml"
-                if cfg_path.exists():
-                    with open(cfg_path, encoding="utf-8") as _f:
-                        cfg = _y.safe_load(_f) or {}
-                    mode = str(cfg.get("display", {}).get("busy_input_mode", "") or "").strip().lower()
-            except Exception:
-                pass
+            cfg = _read_gateway_user_config()
+            display_cfg = cfg.get("display", {})
+            if isinstance(display_cfg, dict):
+                mode = str(display_cfg.get("busy_input_mode", "") or "").strip().lower()
         return "queue" if mode == "queue" else "interrupt"
 
     @staticmethod
@@ -1385,15 +1295,10 @@ class GatewayRunner:
         """Load graceful gateway restart/stop drain timeout in seconds."""
         raw = os.getenv("HERMES_RESTART_DRAIN_TIMEOUT", "").strip()
         if not raw:
-            try:
-                import yaml as _y
-                cfg_path = _hermes_home / "config.yaml"
-                if cfg_path.exists():
-                    with open(cfg_path, encoding="utf-8") as _f:
-                        cfg = _y.safe_load(_f) or {}
-                    raw = str(cfg.get("agent", {}).get("restart_drain_timeout", "") or "").strip()
-            except Exception:
-                pass
+            cfg = _read_gateway_user_config()
+            agent_cfg = cfg.get("agent", {})
+            if isinstance(agent_cfg, dict):
+                raw = str(agent_cfg.get("restart_drain_timeout", "") or "").strip()
         value = parse_restart_drain_timeout(raw)
         if raw and value == DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT:
             try:
@@ -1418,19 +1323,14 @@ class GatewayRunner:
         """
         mode = os.getenv("HERMES_BACKGROUND_NOTIFICATIONS", "")
         if not mode:
-            try:
-                import yaml as _y
-                cfg_path = _hermes_home / "config.yaml"
-                if cfg_path.exists():
-                    with open(cfg_path, encoding="utf-8") as _f:
-                        cfg = _y.safe_load(_f) or {}
-                    raw = cfg.get("display", {}).get("background_process_notifications")
-                    if raw is False:
-                        mode = "off"
-                    elif raw not in (None, ""):
-                        mode = str(raw)
-            except Exception:
-                pass
+            cfg = _read_gateway_user_config()
+            display_cfg = cfg.get("display", {})
+            if isinstance(display_cfg, dict):
+                raw = display_cfg.get("background_process_notifications")
+                if raw is False:
+                    mode = "off"
+                elif raw not in (None, ""):
+                    mode = str(raw)
         mode = (mode or "all").strip().lower()
         valid = {"all", "result", "error", "off"}
         if mode not in valid:
@@ -1444,16 +1344,9 @@ class GatewayRunner:
     @staticmethod
     def _load_provider_routing() -> dict:
         """Load OpenRouter provider routing preferences from config.yaml."""
-        try:
-            import yaml as _y
-            cfg_path = _hermes_home / "config.yaml"
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as _f:
-                    cfg = _y.safe_load(_f) or {}
-                return cfg.get("provider_routing", {}) or {}
-        except Exception:
-            pass
-        return {}
+        cfg = _read_gateway_user_config()
+        routing = cfg.get("provider_routing", {})
+        return routing if isinstance(routing, dict) else {}
 
     @staticmethod
     def _load_fallback_model() -> list | dict | None:
@@ -1463,19 +1356,35 @@ class GatewayRunner:
         dict (legacy ``fallback_model``), or None if not configured.
         AIAgent.__init__ normalizes both formats into a chain.
         """
-        try:
-            import yaml as _y
-            cfg_path = _hermes_home / "config.yaml"
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as _f:
-                    cfg = _y.safe_load(_f) or {}
-                fb = cfg.get("fallback_providers") or cfg.get("fallback_model") or None
-                if fb:
-                    return fb
-        except Exception:
-            pass
+        cfg = _read_gateway_user_config()
+        fb = cfg.get("fallback_providers") or cfg.get("fallback_model") or None
+        if fb:
+            return fb
         return None
 
+    @staticmethod
+    def _load_privacy_redact_pii() -> bool:
+        """Load privacy.redact_pii from config.yaml via the shared reader."""
+        cfg = _read_gateway_user_config()
+        privacy_cfg = cfg.get("privacy", {})
+        if isinstance(privacy_cfg, dict):
+            return bool(privacy_cfg.get("redact_pii", False))
+        return False
+
+    @staticmethod
+    def _load_session_hygiene_user_config() -> dict:
+        """Load config used by gateway session hygiene checks via the shared reader."""
+        cfg = _read_gateway_user_config()
+        return cfg if isinstance(cfg, dict) else {}
+
+    @staticmethod
+    def _load_checkpoints_config() -> dict:
+        """Load checkpoints config from config.yaml via the shared reader."""
+        cfg = _read_gateway_user_config()
+        cp_cfg = cfg.get("checkpoints", {}) if isinstance(cfg, dict) else {}
+        if isinstance(cp_cfg, bool):
+            return {"enabled": cp_cfg}
+        return cp_cfg if isinstance(cp_cfg, dict) else {}
     def _snapshot_running_agents(self) -> Dict[str, Any]:
         return {
             session_key: agent
@@ -3835,14 +3744,7 @@ class GatewayRunner:
         _session_env_tokens = self._set_session_env(context)
         
         # Read privacy.redact_pii from config (re-read per message)
-        _redact_pii = False
-        try:
-            import yaml as _pii_yaml
-            with open(_config_path, encoding="utf-8") as _pf:
-                _pcfg = _pii_yaml.safe_load(_pf) or {}
-            _redact_pii = bool((_pcfg.get("privacy") or {}).get("redact_pii", False))
-        except Exception:
-            pass
+        _redact_pii = self._load_privacy_redact_pii()
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
@@ -3986,14 +3888,9 @@ class GatewayRunner:
             _hyg_provider = None
             _hyg_base_url = None
             _hyg_api_key = None
-            _hyg_data = {}
+            _hyg_data = self._load_session_hygiene_user_config()
             try:
-                _hyg_cfg_path = _hermes_home / "config.yaml"
-                if _hyg_cfg_path.exists():
-                    import yaml as _hyg_yaml
-                    with open(_hyg_cfg_path, encoding="utf-8") as _hyg_f:
-                        _hyg_data = _hyg_yaml.safe_load(_hyg_f) or {}
-
+                if _hyg_data:
                     # Resolve model name (same logic as run_sync)
                     _model_cfg = _hyg_data.get("model", {})
                     if isinstance(_model_cfg, str):
@@ -4657,24 +4554,17 @@ class GatewayRunner:
         base_url = None
         api_key = None
 
-        try:
-            cfg_path = _hermes_home / "config.yaml"
-            if cfg_path.exists():
-                import yaml as _info_yaml
-                with open(cfg_path, encoding="utf-8") as f:
-                    data = _info_yaml.safe_load(f) or {}
-                model_cfg = data.get("model", {})
-                if isinstance(model_cfg, dict):
-                    raw_ctx = model_cfg.get("context_length")
-                    if raw_ctx is not None:
-                        try:
-                            config_context_length = int(raw_ctx)
-                        except (TypeError, ValueError):
-                            pass
-                    provider = model_cfg.get("provider") or None
-                    base_url = model_cfg.get("base_url") or None
-        except Exception:
-            pass
+        data = _read_gateway_user_config()
+        model_cfg = data.get("model", {}) if isinstance(data, dict) else {}
+        if isinstance(model_cfg, dict):
+            raw_ctx = model_cfg.get("context_length")
+            if raw_ctx is not None:
+                try:
+                    config_context_length = int(raw_ctx)
+                except (TypeError, ValueError):
+                    pass
+            provider = model_cfg.get("provider") or None
+            base_url = model_cfg.get("base_url") or None
 
         # Resolve runtime credentials for probing
         try:
@@ -5224,7 +5114,6 @@ class GatewayRunner:
           /model <name> --provider <provider> — switch provider + model
           /model --provider <provider>        — switch to provider, auto-detect model
         """
-        import yaml
         from hermes_cli.model_switch import (
             switch_model as _switch_model, parse_model_flags,
             list_authenticated_providers,
@@ -5243,22 +5132,19 @@ class GatewayRunner:
         current_api_key = ""
         user_provs = None
         custom_provs = None
-        config_path = _hermes_home / "config.yaml"
+        cfg = _read_gateway_user_config()
         try:
-            if config_path.exists():
-                with open(config_path, encoding="utf-8") as f:
-                    cfg = yaml.safe_load(f) or {}
-                model_cfg = cfg.get("model", {})
-                if isinstance(model_cfg, dict):
-                    current_model = model_cfg.get("default", "")
-                    current_provider = model_cfg.get("provider", current_provider)
-                    current_base_url = model_cfg.get("base_url", "")
-                user_provs = cfg.get("providers")
-                try:
-                    from hermes_cli.config import get_compatible_custom_providers
-                    custom_provs = get_compatible_custom_providers(cfg)
-                except Exception:
-                    custom_provs = cfg.get("custom_providers")
+            model_cfg = cfg.get("model", {}) if isinstance(cfg, dict) else {}
+            if isinstance(model_cfg, dict):
+                current_model = model_cfg.get("default", "")
+                current_provider = model_cfg.get("provider", current_provider)
+                current_base_url = model_cfg.get("base_url", "")
+            user_provs = cfg.get("providers") if isinstance(cfg, dict) else None
+            try:
+                from hermes_cli.config import get_compatible_custom_providers
+                custom_provs = get_compatible_custom_providers(cfg if isinstance(cfg, dict) else {})
+            except Exception:
+                custom_provs = cfg.get("custom_providers") if isinstance(cfg, dict) else None
         except Exception:
             pass
 
@@ -5480,18 +5366,16 @@ class GatewayRunner:
         # Persist to config if --global
         if persist_global:
             try:
-                if config_path.exists():
-                    with open(config_path, encoding="utf-8") as f:
-                        cfg = yaml.safe_load(f) or {}
-                else:
-                    cfg = {}
-                model_cfg = cfg.setdefault("model", {})
-                model_cfg["default"] = result.new_model
-                model_cfg["provider"] = result.target_provider
+                updates = {
+                    "model.default": result.new_model,
+                    "model.provider": result.target_provider,
+                }
+                delete_paths = ["model.base_url"]
                 if result.base_url:
-                    model_cfg["base_url"] = result.base_url
-                from hermes_cli.config import save_config
-                save_config(cfg)
+                    updates["model.base_url"] = result.base_url
+                    delete_paths = []
+                if not self._save_gateway_config_updates(updates, delete_paths=delete_paths):
+                    raise RuntimeError("could not write config")
             except Exception as e:
                 logger.warning("Failed to persist model switch: %s", e)
 
@@ -5543,7 +5427,6 @@ class GatewayRunner:
 
     async def _handle_provider_command(self, event: MessageEvent) -> str:
         """Handle /provider command - show available providers."""
-        import yaml
         from hermes_cli.models import (
             list_available_providers,
             normalize_provider,
@@ -5553,14 +5436,11 @@ class GatewayRunner:
         # Resolve current provider from config
         current_provider = "openrouter"
         model_cfg = {}
-        config_path = _hermes_home / 'config.yaml'
+        cfg = _read_gateway_user_config()
         try:
-            if config_path.exists():
-                with open(config_path, encoding="utf-8") as f:
-                    cfg = yaml.safe_load(f) or {}
-                model_cfg = cfg.get("model", {})
-                if isinstance(model_cfg, dict):
-                    current_provider = model_cfg.get("provider", current_provider)
+            model_cfg = cfg.get("model", {}) if isinstance(cfg, dict) else {}
+            if isinstance(model_cfg, dict):
+                current_provider = model_cfg.get("provider", current_provider)
         except Exception:
             pass
 
@@ -5600,20 +5480,15 @@ class GatewayRunner:
     
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality command - list or set a personality."""
-        import yaml
         from hermes_constants import display_hermes_home
 
         args = event.get_command_args().strip().lower()
-        config_path = _hermes_home / 'config.yaml'
 
         try:
-            if config_path.exists():
-                with open(config_path, 'r', encoding="utf-8") as f:
-                    config = yaml.safe_load(f) or {}
-                personalities = config.get("agent", {}).get("personalities", {})
-            else:
+            config = _read_gateway_user_config()
+            if not isinstance(config, dict):
                 config = {}
-                personalities = {}
+            personalities = config.get("agent", {}).get("personalities", {})
         except Exception:
             config = {}
             personalities = {}
@@ -5645,10 +5520,8 @@ class GatewayRunner:
 
         if args in ("none", "default", "neutral"):
             try:
-                if "agent" not in config or not isinstance(config.get("agent"), dict):
-                    config["agent"] = {}
-                config["agent"]["system_prompt"] = ""
-                atomic_yaml_write(config_path, config)
+                if not self._save_gateway_config_key("agent.system_prompt", ""):
+                    return "⚠️ Failed to save personality change: could not write config"
             except Exception as e:
                 return f"⚠️ Failed to save personality change: {e}"
             self._ephemeral_system_prompt = ""
@@ -5658,10 +5531,8 @@ class GatewayRunner:
 
             # Write to config.yaml, same pattern as CLI save_config_value.
             try:
-                if "agent" not in config or not isinstance(config.get("agent"), dict):
-                    config["agent"] = {}
-                config["agent"]["system_prompt"] = new_prompt
-                atomic_yaml_write(config_path, config)
+                if not self._save_gateway_config_key("agent.system_prompt", new_prompt):
+                    return "⚠️ Failed to save personality change: could not write config"
             except Exception as e:
                 return f"⚠️ Failed to save personality change: {e}"
 
@@ -5745,14 +5616,8 @@ class GatewayRunner:
         
         # Save to config.yaml
         try:
-            import yaml
-            config_path = _hermes_home / 'config.yaml'
-            user_config = {}
-            if config_path.exists():
-                with open(config_path, encoding="utf-8") as f:
-                    user_config = yaml.safe_load(f) or {}
-            user_config[env_key] = chat_id
-            atomic_yaml_write(config_path, user_config)
+            if not self._save_gateway_config_key(env_key, chat_id):
+                return "Failed to save home channel: could not write config"
             # Also set in the current environment so it takes effect immediately
             os.environ[env_key] = str(chat_id)
         except Exception as e:
@@ -6188,18 +6053,7 @@ class GatewayRunner:
         from tools.checkpoint_manager import CheckpointManager, format_checkpoint_list
 
         # Read checkpoint config from config.yaml
-        cp_cfg = {}
-        try:
-            import yaml as _y
-            _cfg_path = _hermes_home / "config.yaml"
-            if _cfg_path.exists():
-                with open(_cfg_path, encoding="utf-8") as _f:
-                    _data = _y.safe_load(_f) or {}
-                cp_cfg = _data.get("checkpoints", {})
-                if isinstance(cp_cfg, bool):
-                    cp_cfg = {"enabled": cp_cfg}
-        except Exception:
-            pass
+        cp_cfg = self._load_checkpoints_config()
 
         if not cp_cfg.get("enabled", False):
             return (
@@ -6584,32 +6438,10 @@ class GatewayRunner:
             /reasoning show|on      Show model reasoning in responses
             /reasoning hide|off     Hide model reasoning from responses
         """
-        import yaml
 
         args = event.get_command_args().strip().lower()
-        config_path = _hermes_home / "config.yaml"
         self._reasoning_config = self._load_reasoning_config()
         self._show_reasoning = self._load_show_reasoning()
-
-        def _save_config_key(key_path: str, value):
-            """Save a dot-separated key to config.yaml."""
-            try:
-                user_config = {}
-                if config_path.exists():
-                    with open(config_path, encoding="utf-8") as f:
-                        user_config = yaml.safe_load(f) or {}
-                keys = key_path.split(".")
-                current = user_config
-                for k in keys[:-1]:
-                    if k not in current or not isinstance(current[k], dict):
-                        current[k] = {}
-                    current = current[k]
-                current[keys[-1]] = value
-                atomic_yaml_write(config_path, user_config)
-                return True
-            except Exception as e:
-                logger.error("Failed to save config key %s: %s", key_path, e)
-                return False
 
         if not args:
             # Show current state
@@ -6632,7 +6464,7 @@ class GatewayRunner:
         platform_key = _platform_config_key(event.source.platform)
         if args in ("show", "on"):
             self._show_reasoning = True
-            _save_config_key(f"display.platforms.{platform_key}.show_reasoning", True)
+            self._save_gateway_config_key(f"display.platforms.{platform_key}.show_reasoning", True)
             return (
                 "🧠 ✓ Reasoning display: **ON**\n"
                 f"Model thinking will be shown before each response on **{platform_key}**."
@@ -6640,7 +6472,7 @@ class GatewayRunner:
 
         if args in ("hide", "off"):
             self._show_reasoning = False
-            _save_config_key(f"display.platforms.{platform_key}.show_reasoning", False)
+            self._save_gateway_config_key(f"display.platforms.{platform_key}.show_reasoning", False)
             return f"🧠 ✓ Reasoning display: **OFF** for **{platform_key}**"
 
         # Effort level change
@@ -6657,44 +6489,22 @@ class GatewayRunner:
             )
 
         self._reasoning_config = parsed
-        if _save_config_key("agent.reasoning_effort", effort):
+        if self._save_gateway_config_key("agent.reasoning_effort", effort):
             return f"🧠 ✓ Reasoning effort set to `{effort}` (saved to config)\n_(takes effect on next message)_"
         else:
             return f"🧠 ✓ Reasoning effort set to `{effort}` (this session only)"
 
     async def _handle_fast_command(self, event: MessageEvent) -> str:
         """Handle /fast — mirror the CLI Priority Processing toggle in gateway chats."""
-        import yaml
         from hermes_cli.models import model_supports_fast_mode
 
         args = event.get_command_args().strip().lower()
-        config_path = _hermes_home / "config.yaml"
         self._service_tier = self._load_service_tier()
 
         user_config = _load_gateway_config()
         model = _resolve_gateway_model(user_config)
         if not model_supports_fast_mode(model):
             return "⚡ /fast is only available for OpenAI models that support Priority Processing."
-
-        def _save_config_key(key_path: str, value):
-            """Save a dot-separated key to config.yaml."""
-            try:
-                user_config = {}
-                if config_path.exists():
-                    with open(config_path, encoding="utf-8") as f:
-                        user_config = yaml.safe_load(f) or {}
-                keys = key_path.split(".")
-                current = user_config
-                for k in keys[:-1]:
-                    if k not in current or not isinstance(current[k], dict):
-                        current[k] = {}
-                    current = current[k]
-                current[keys[-1]] = value
-                atomic_yaml_write(config_path, user_config)
-                return True
-            except Exception as e:
-                logger.error("Failed to save config key %s: %s", key_path, e)
-                return False
 
         if not args or args == "status":
             status = "fast" if self._service_tier == "priority" else "normal"
@@ -6718,7 +6528,7 @@ class GatewayRunner:
                 "**Valid options:** normal, fast, status"
             )
 
-        if _save_config_key("agent.service_tier", saved_value):
+        if self._save_gateway_config_key("agent.service_tier", saved_value):
             return f"⚡ ✓ Priority Processing: **{label}** (saved to config)\n_(takes effect on next message)_"
         return f"⚡ ✓ Priority Processing: **{label}** (this session only)"
 
@@ -6748,19 +6558,17 @@ class GatewayRunner:
         ``display.platforms.<platform>.tool_progress`` so each channel can
         have its own verbosity level independently.
         """
-        import yaml
 
-        config_path = _hermes_home / "config.yaml"
         platform_key = _platform_config_key(event.source.platform)
 
         # --- check config gate ------------------------------------------------
         try:
-            user_config = {}
-            if config_path.exists():
-                with open(config_path, encoding="utf-8") as f:
-                    user_config = yaml.safe_load(f) or {}
+            user_config = _read_gateway_user_config()
+            if not isinstance(user_config, dict):
+                user_config = {}
             gate_enabled = user_config.get("display", {}).get("tool_progress_command", False)
         except Exception:
+            user_config = {}
             gate_enabled = False
 
         if not gate_enabled:
@@ -6789,15 +6597,11 @@ class GatewayRunner:
 
         # Save to display.platforms.<platform>.tool_progress
         try:
-            if "display" not in user_config or not isinstance(user_config.get("display"), dict):
-                user_config["display"] = {}
-            display = user_config["display"]
-            if "platforms" not in display or not isinstance(display.get("platforms"), dict):
-                display["platforms"] = {}
-            if platform_key not in display["platforms"] or not isinstance(display["platforms"].get(platform_key), dict):
-                display["platforms"][platform_key] = {}
-            display["platforms"][platform_key]["tool_progress"] = new_mode
-            atomic_yaml_write(config_path, user_config)
+            if not self._save_gateway_config_key(
+                f"display.platforms.{platform_key}.tool_progress",
+                new_mode,
+            ):
+                return f"{descriptions[new_mode]}\n_(could not save to config: write failed)_"
             return (
                 f"{descriptions[new_mode]}\n"
                 f"_(saved for **{platform_key}** — takes effect on next message)_"
@@ -10876,10 +10680,12 @@ def main():
     
     config = None
     if args.config:
-        import yaml
-        with open(args.config, encoding="utf-8") as f:
-            data = yaml.safe_load(f)
-            config = GatewayConfig.from_dict(data)
+        data = load_raw_config_mapping(
+            Path(args.config),
+            allow_missing=False,
+            require_mapping=True,
+        )
+        config = GatewayConfig.from_dict(data)
     
     # Run the gateway - exit with code 1 if no platforms connected,
     # so systemd Restart=on-failure will retry on transient errors (e.g. DNS)
