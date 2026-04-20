@@ -11,9 +11,9 @@ moa = importlib.import_module("tools.mixture_of_agents_tool")
 def test_moa_defaults_track_current_openrouter_frontier_models():
     assert moa.REFERENCE_MODELS == [
         "anthropic/claude-opus-4.6",
-        "google/gemini-3-pro-preview",
+        "google/gemini-3.1-pro-preview",
         "openai/gpt-5.4-pro",
-        "deepseek/deepseek-v3.2",
+        "x-ai/grok-4.20",
     ]
     assert moa.AGGREGATOR_MODEL == "anthropic/claude-opus-4.6"
 
@@ -30,12 +30,21 @@ async def test_reference_model_retry_warnings_avoid_exc_info_until_terminal_fail
     warn = MagicMock()
     err = MagicMock()
 
-    monkeypatch.setattr(moa, "_get_openrouter_client", lambda: fake_client)
+    monkeypatch.setattr(
+        moa,
+        "resolve_provider_client",
+        lambda *a, **k: (fake_client, "openai/gpt-5.4-pro"),
+    )
     monkeypatch.setattr(moa.logger, "warning", warn)
     monkeypatch.setattr(moa.logger, "error", err)
 
+    entry = {
+        "model": "openai/gpt-5.4-pro",
+        "provider": "openrouter",
+        "reasoning_config": None,
+    }
     model, message, success = await moa._run_reference_model_safe(
-        "openai/gpt-5.4-pro", "hello", max_retries=2
+        entry, "hello", max_retries=2
     )
 
     assert model == "openai/gpt-5.4-pro"

@@ -89,6 +89,7 @@ const sidebars: SidebarsConfig = {
           label: 'Advanced',
           items: [
             'user-guide/features/rl-training',
+            'user-guide/features/mixture-of-agents',
           ],
         },
         {
@@ -224,6 +225,7 @@ const sidebars: SidebarsConfig = {
         'reference/environment-variables',
         'reference/tools-reference',
         'reference/toolsets-reference',
+        'reference/mixture-of-agents',
         'reference/mcp-config-reference',
         'reference/skills-catalog',
         'reference/optional-skills-catalog',
