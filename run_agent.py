@@ -82,6 +82,12 @@ from hermes_constants import OPENROUTER_BASE_URL
 from agent.memory_manager import build_memory_context_block, sanitize_context
 from agent.retry_utils import jittered_backoff
 from agent.error_classifier import classify_api_error, FailoverReason
+from agent.provider_health import (
+    clear_provider_degradation,
+    format_remaining as format_provider_health_remaining,
+    provider_degraded_remaining,
+    record_provider_degradation,
+)
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
@@ -5898,6 +5904,7 @@ class AIAgent:
                 raise InterruptedError("Agent interrupted during API call")
         if result["error"] is not None:
             raise result["error"]
+        self._clear_current_provider_health()
         return result["response"]
 
     # ── Unified streaming API call ─────────────────────────────────────────
@@ -6082,6 +6089,7 @@ class AIAgent:
                     raise InterruptedError("Agent interrupted during Bedrock API call")
             if result["error"] is not None:
                 raise result["error"]
+            self._clear_current_provider_health()
             return result["response"]
 
         result = {"response": None, "error": None, "partial_tool_names": []}
@@ -6701,7 +6709,9 @@ class AIAgent:
                     )],
                     usage=None,
                 )
+        if result["error"] is not None:
             raise result["error"]
+        self._clear_current_provider_health()
         return result["response"]
 
     # ── Provider fallback ──────────────────────────────────────────────────
@@ -6727,6 +6737,15 @@ class AIAgent:
         fb_model = (fb.get("model") or "").strip()
         if not fb_provider or not fb_model:
             return self._try_activate_fallback()  # skip invalid, try next
+
+        remaining = self._provider_health_remaining(fb_provider)
+        if remaining is not None:
+            logging.info(
+                "Skipping fallback provider %s because it is temporarily degraded for %s",
+                fb_provider,
+                format_provider_health_remaining(remaining),
+            )
+            return self._try_activate_fallback()
 
         # Use centralized router for client construction.
         # raw_codex=True because the main agent needs direct responses.stream()
@@ -6888,6 +6907,32 @@ class AIAgent:
             return False
 
         rt = self._primary_runtime
+        primary_provider = str(rt.get("provider") or "").strip().lower()
+        if primary_provider:
+            from agent.provider_health import peek_provider_health_state
+            health_state = peek_provider_health_state(primary_provider)
+            if health_state:
+                try:
+                    degraded_until = float(health_state.get("degraded_until", 0.0))
+                except (TypeError, ValueError):
+                    degraded_until = 0.0
+                remaining = degraded_until - time.time()
+                if remaining > 0:
+                    logger.info(
+                        "Primary provider %s still degraded for %s — staying on fallback",
+                        primary_provider,
+                        format_provider_health_remaining(remaining),
+                    )
+                    return False
+                if not self._probe_runtime_health(rt):
+                    logger.info(
+                        "Primary provider %s probe failed after cooldown — keeping fallback for this turn",
+                        primary_provider,
+                    )
+                    return False
+                clear_provider_degradation(primary_provider)
+                logger.info("Primary provider %s probe succeeded — restoring primary runtime", primary_provider)
+
         try:
             # ── Core runtime state ──
             self.model = rt["model"]
@@ -6943,6 +6988,151 @@ class AIAgent:
             return True
         except Exception as e:
             logging.warning("Failed to restore primary runtime: %s", e)
+            return False
+
+    def _provider_health_remaining(self, provider: Optional[str]) -> Optional[float]:
+        provider = str(provider or "").strip().lower()
+        if not provider:
+            return None
+        return provider_degraded_remaining(provider)
+
+    def _record_current_provider_degradation(
+        self,
+        *,
+        classified_reason: FailoverReason,
+        status_code: Optional[int],
+        error_context: Optional[Dict[str, Any]],
+        api_error: Optional[Exception] = None,
+    ) -> Optional[dict[str, Any]]:
+        provider = str(getattr(self, "provider", "") or "").strip().lower()
+        if not provider:
+            return None
+        if classified_reason not in (FailoverReason.rate_limit, FailoverReason.overloaded):
+            return None
+
+        headers = getattr(getattr(api_error, "response", None), "headers", None) if api_error else None
+        base_cooldown = 900.0 if classified_reason == FailoverReason.rate_limit else 300.0
+        env_key = (
+            "HERMES_PROVIDER_RATE_LIMIT_COOLDOWN_SECONDS"
+            if classified_reason == FailoverReason.rate_limit
+            else "HERMES_PROVIDER_OVERLOADED_COOLDOWN_SECONDS"
+        )
+        try:
+            base_cooldown = max(1.0, float(os.getenv(env_key, str(base_cooldown))))
+        except (TypeError, ValueError):
+            pass
+
+        state = record_provider_degradation(
+            provider,
+            reason=classified_reason.value,
+            status_code=status_code,
+            headers=headers,
+            error_context=error_context,
+            base_cooldown_seconds=base_cooldown,
+        )
+        remaining = state.get("degraded_until", 0.0) - time.time()
+        logger.warning(
+            "Provider %s temporarily degraded (%s); cooldown=%s remaining=%s",
+            provider,
+            classified_reason.value,
+            format_provider_health_remaining(state.get("cooldown_seconds", 0.0)),
+            format_provider_health_remaining(remaining),
+        )
+        return state
+
+    def _clear_current_provider_health(self) -> None:
+        provider = str(getattr(self, "provider", "") or "").strip().lower()
+        if provider:
+            clear_provider_degradation(provider)
+
+    def _ensure_healthy_runtime_for_turn(self) -> None:
+        """If the active provider is cooled down, move to the next healthy fallback."""
+        provider = str(getattr(self, "provider", "") or "").strip().lower()
+        remaining = self._provider_health_remaining(provider)
+        if remaining is None or not self._fallback_chain:
+            return
+        logger.info(
+            "Active provider %s is temporarily degraded for %s — switching to fallback",
+            provider,
+            format_provider_health_remaining(remaining),
+        )
+        self._emit_status(
+            f"⚠️ Provider {provider} temporarily degraded — switching to fallback..."
+        )
+        self._try_activate_fallback()
+
+    def _probe_runtime_health(self, runtime: Optional[Dict[str, Any]] = None) -> bool:
+        """Run a lightweight probe request for a provider whose cooldown expired."""
+        rt = runtime or self._primary_runtime
+        provider = str(rt.get("provider") or "").strip().lower()
+        model = str(rt.get("model") or "").strip()
+        api_mode = str(rt.get("api_mode") or "chat_completions").strip()
+        if not provider or not model:
+            return False
+
+        try:
+            if api_mode == "anthropic_messages":
+                from agent.anthropic_adapter import build_anthropic_client
+                probe_key = str(rt.get("anthropic_api_key") or rt.get("api_key") or "")
+                probe_base = str(rt.get("anthropic_base_url") or rt.get("base_url") or "")
+                client = build_anthropic_client(probe_key, probe_base)
+                try:
+                    client.messages.create(
+                        model=model,
+                        max_tokens=1,
+                        messages=[{"role": "user", "content": "ping"}],
+                    )
+                finally:
+                    try:
+                        client.close()
+                    except Exception:
+                        pass
+            elif api_mode == "bedrock_converse":
+                from agent.bedrock_adapter import _get_bedrock_runtime_client, build_converse_kwargs
+                region = str(rt.get("region") or "us-east-1")
+                client = _get_bedrock_runtime_client(region)
+                kwargs = build_converse_kwargs(
+                    model=model,
+                    messages=[{"role": "user", "content": "ping"}],
+                    max_tokens=1,
+                )
+                client.converse(**kwargs)
+            elif api_mode == "codex_responses":
+                client_kwargs = dict(rt.get("client_kwargs") or {})
+                client = self._create_openai_client(client_kwargs, reason="health_probe", shared=True)
+                try:
+                    client.responses.create(model=model, input="ping", max_output_tokens=1)
+                finally:
+                    self._close_request_openai_client(client, reason="health_probe")
+            else:
+                client_kwargs = dict(rt.get("client_kwargs") or {})
+                client = self._create_openai_client(client_kwargs, reason="health_probe", shared=True)
+                try:
+                    client.chat.completions.create(
+                        model=model,
+                        messages=[{"role": "user", "content": "ping"}],
+                        max_tokens=1,
+                    )
+                finally:
+                    self._close_request_openai_client(client, reason="health_probe")
+            return True
+        except Exception as exc:
+            try:
+                status_code = getattr(exc, "status_code", None)
+                classified = classify_api_error(
+                    exc,
+                    provider=provider,
+                    model=model,
+                )
+                if classified.reason in (FailoverReason.rate_limit, FailoverReason.overloaded):
+                    self._record_current_provider_degradation(
+                        classified_reason=classified.reason,
+                        status_code=status_code,
+                        error_context=self._extract_api_error_context(exc),
+                        api_error=exc,
+                    )
+            except Exception:
+                pass
             return False
 
     # Which error types indicate a transient transport failure worth
@@ -7699,7 +7889,7 @@ class AIAgent:
             # (gateway, batch, quiet) still get reasoning.
             # Any reasoning that wasn't shown during streaming is caught by the
             # CLI post-response display fallback (cli.py _reasoning_shown_this_turn).
-            if not self.stream_delta_callback and not self._stream_callback:
+            if not self.stream_delta_callback and not getattr(self, "_stream_callback", None):
                 try:
                     self.reasoning_callback(reasoning_text)
                 except Exception:
@@ -9157,6 +9347,7 @@ class AIAgent:
         # runtime so this turn gets a fresh attempt with the preferred model.
         # No-op when _fallback_activated is False (gateway, first turn, etc.).
         self._restore_primary_runtime()
+        self._ensure_healthy_runtime_for_turn()
 
         # Sanitize surrogate characters from user input.  Clipboard paste from
         # rich-text editors (Google Docs, Word, etc.) can inject lone surrogates
@@ -10598,6 +10789,28 @@ class AIAgent:
                     )
                     if recovered_with_pool:
                         continue
+                    is_throttled = classified.reason in (
+                        FailoverReason.rate_limit,
+                        FailoverReason.overloaded,
+                    )
+                    if is_throttled:
+                        self._record_current_provider_degradation(
+                            classified_reason=classified.reason,
+                            status_code=status_code,
+                            error_context=error_context,
+                            api_error=api_error,
+                        )
+                        if self._fallback_index < len(self._fallback_chain):
+                            self._emit_status(
+                                f"⚠️ {classified.reason.value.replace('_', ' ')} — switching to fallback provider..."
+                            )
+                            if self._try_activate_fallback():
+                                retry_count = 0
+                                compression_attempts = 0
+                                primary_recovery_attempted = False
+                                has_retried_429 = False
+                                continue
+
                     if (
                         self.api_mode == "codex_responses"
                         and self.provider == "openai-codex"

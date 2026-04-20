@@ -8,6 +8,10 @@ description: "Browser-based dashboard for managing configuration, API keys, sess
 
 The web dashboard is a browser-based UI for managing your Hermes Agent installation. Instead of editing YAML files or running CLI commands, you can configure settings, manage API keys, and monitor sessions from a clean web interface.
 
+It can run locally or as a public frontend against a separate Hermes backend, as long as the backend is configured with a matching CORS allowlist.
+
+For the public chat studio mode, you can also enable a password login gate with `HERMES_WEB_LOGIN_EMAIL` / `HERMES_WEB_LOGIN_PASSWORD` and an optional `HERMES_WEB_LOGIN_SECRET` for persisted sessions.
+
 ## Quick Start
 
 ```bash

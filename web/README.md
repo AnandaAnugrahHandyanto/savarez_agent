@@ -22,13 +22,26 @@ npm run dev
 
 The Vite dev server proxies `/api` requests to `http://127.0.0.1:9119` (the FastAPI backend).
 
+## Environment variables
+
+Copy `web/.env.example` to a local `.env.local` if you want to override the defaults.
+
+- `VITE_HERMES_API_BASE_URL` — production API base URL for the Hermes backend
+- `VITE_HERMES_AUTH_BASE_URL` — origin that serves the SPA shell and token-injected HTML
+- `VITE_HERMES_API_PROXY_URL` — local Vite proxy target for `/api`
+- `HERMES_WEB_CORS_ORIGINS` — comma-separated backend allowlist for deployed frontend origins
+- `HERMES_WEB_LOGIN_EMAIL` / `HERMES_WEB_LOGIN_PASSWORD` — optional public login gate for the studio UI
+- `HERMES_WEB_LOGIN_SECRET` — optional signing secret for persisted login tokens
+
+For local development, you usually do not need to set any of them.
+
 ## Build
 
 ```bash
 npm run build
 ```
 
-This outputs to `../hermes_cli/web_dist/`, which the FastAPI server serves as a static SPA. The built assets are included in the Python package via `pyproject.toml` package-data.
+This builds the SPA into `dist/` and syncs the same assets into `../hermes_cli/web_dist/` when the Hermes CLI runs its web build step. The FastAPI server serves that packaged folder at runtime.
 
 ## Structure
 

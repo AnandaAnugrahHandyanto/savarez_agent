@@ -155,8 +155,13 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     return [t for t in toolsets if t not in blocked_toolset_names]
 
 
-def _build_child_progress_callback(task_index: int, goal: str, parent_agent, task_count: int = 1) -> Optional[callable]:
+def _build_child_progress_callback(task_index: int, goal_or_parent, parent_agent=None, task_count: int = 1) -> Optional[callable]:
     """Build a callback that relays child agent tool calls to the parent display.
+
+    Backward compatible with the older two-argument form
+    ``_build_child_progress_callback(task_index, parent_agent)`` used by some
+    tests and callers, while also supporting the newer explicit
+    ``(task_index, goal, parent_agent, task_count)`` signature.
 
     Two display paths:
       CLI:     prints tree-view lines above the parent's delegation spinner
@@ -165,6 +170,12 @@ def _build_child_progress_callback(task_index: int, goal: str, parent_agent, tas
     Returns None if no display mechanism is available, in which case the
     child agent runs with no progress callback (identical to current behavior).
     """
+    if parent_agent is None and not isinstance(goal_or_parent, str):
+        parent_agent = goal_or_parent
+        goal = ""
+    else:
+        goal = str(goal_or_parent or "")
+
     spinner = getattr(parent_agent, '_delegate_spinner', None)
     parent_cb = getattr(parent_agent, 'tool_progress_callback', None)
 
@@ -244,18 +255,17 @@ def _build_child_progress_callback(task_index: int, goal: str, parent_agent, tas
                 logger.debug("Spinner print_above failed: %s", e)
 
         if parent_cb:
-            _relay("subagent.tool", tool_name, preview, args)
             _batch.append(tool_name or "")
             if len(_batch) >= _BATCH_SIZE:
                 summary = ", ".join(_batch)
-                _relay("subagent.progress", preview=f"🔀 {prefix}{summary}")
+                _relay("subagent.progress", summary, preview=f"🔀 {prefix}{summary}")
                 _batch.clear()
 
     def _flush():
         """Flush remaining batched tool names to gateway on completion."""
         if parent_cb and _batch:
             summary = ", ".join(_batch)
-            _relay("subagent.progress", preview=f"🔀 {prefix}{summary}")
+            _relay("subagent.progress", summary, preview=f"🔀 {prefix}{summary}")
             _batch.clear()
 
     _callback._flush = _flush

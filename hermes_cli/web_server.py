@@ -10,12 +10,15 @@ Usage:
 """
 
 import asyncio
+import base64
+import hashlib
 import hmac
 import importlib.util
 import json
 import logging
 import os
 import secrets
+import sqlite3
 import sys
 import threading
 import time
@@ -71,21 +74,123 @@ app = FastAPI(title="Hermes Agent", version=__version__)
 # ---------------------------------------------------------------------------
 _SESSION_TOKEN = secrets.token_urlsafe(32)
 
+# ---------------------------------------------------------------------------
+# Optional password login for the public chat studio.
+# ---------------------------------------------------------------------------
+_LOGIN_EMAIL = os.getenv("HERMES_WEB_LOGIN_EMAIL", "").strip().lower()
+_LOGIN_PASSWORD = os.getenv("HERMES_WEB_LOGIN_PASSWORD", "")
+_LOGIN_TOKEN_TTL_REMEMBER_SECONDS = int(os.getenv("HERMES_WEB_LOGIN_TOKEN_TTL_REMEMBER_SECONDS", str(30 * 24 * 60 * 60)))
+_LOGIN_TOKEN_TTL_SESSION_SECONDS = int(os.getenv("HERMES_WEB_LOGIN_TOKEN_TTL_SESSION_SECONDS", str(12 * 60 * 60)))
+_LOGIN_SECRET_PATH = get_hermes_home() / "web_login_secret"
+
+
+def _login_enabled() -> bool:
+    return bool(_LOGIN_EMAIL and _LOGIN_PASSWORD)
+
+
+def _get_login_secret() -> str:
+    secret = os.getenv("HERMES_WEB_LOGIN_SECRET", "").strip()
+    if secret:
+        return secret
+    try:
+        if _LOGIN_SECRET_PATH.exists():
+            loaded = _LOGIN_SECRET_PATH.read_text(encoding="utf-8").strip()
+            if loaded:
+                return loaded
+    except Exception:
+        pass
+    generated = secrets.token_urlsafe(48)
+    try:
+        _LOGIN_SECRET_PATH.write_text(generated, encoding="utf-8")
+        try:
+            _LOGIN_SECRET_PATH.chmod(0o600)
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return generated
+
+
+def _login_payload_to_token(payload: Dict[str, Any]) -> str:
+    payload_json = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    payload_b64 = base64.urlsafe_b64encode(payload_json).decode("ascii").rstrip("=")
+    signature = hmac.new(_get_login_secret().encode("utf-8"), payload_b64.encode("ascii"), hashlib.sha256).hexdigest()
+    return f"{payload_b64}.{signature}"
+
+
+def _login_token_to_payload(token: str) -> Optional[Dict[str, Any]]:
+    try:
+        payload_b64, signature = token.split(".", 1)
+    except ValueError:
+        return None
+    expected_signature = hmac.new(_get_login_secret().encode("utf-8"), payload_b64.encode("ascii"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected_signature):
+        return None
+    padding = "=" * (-len(payload_b64) % 4)
+    try:
+        payload_raw = base64.urlsafe_b64decode(f"{payload_b64}{padding}".encode("ascii"))
+        payload = json.loads(payload_raw.decode("utf-8"))
+    except Exception:
+        return None
+    if payload.get("kind") != "web_login":
+        return None
+    exp = payload.get("exp")
+    if not isinstance(exp, int) or exp <= int(time.time()):
+        return None
+    email = str(payload.get("email", "")).strip().lower()
+    if not email:
+        return None
+    payload["email"] = email
+    return payload
+
+
+def _extract_bearer_token(request: Request) -> str:
+    auth = request.headers.get("authorization", "")
+    if auth.startswith("Bearer "):
+        return auth[7:].strip()
+    return ""
+
+
+def _active_login_payload(request: Request) -> Optional[Dict[str, Any]]:
+    token = _extract_bearer_token(request)
+    if not token:
+        return None
+    return _login_token_to_payload(token)
+
+
+def _is_authorized_request(request: Request) -> bool:
+    auth = request.headers.get("authorization", "")
+    expected = f"Bearer {_SESSION_TOKEN}"
+    if hmac.compare_digest(auth.encode(), expected.encode()):
+        return True
+    return _login_token_to_payload(_extract_bearer_token(request)) is not None
+
+
 # Simple rate limiter for the reveal endpoint
 _reveal_timestamps: List[float] = []
 _REVEAL_MAX_PER_WINDOW = 5
 _REVEAL_WINDOW_SECONDS = 30
 
-# CORS: restrict to localhost origins only.  The web UI is intended to run
-# locally; binding to 0.0.0.0 with allow_origins=["*"] would let any website
-# read/modify config and secrets.
+def _parse_cors_origins(value: str) -> List[str]:
+    """Parse a comma-separated CORS origin allowlist from env."""
+    return [origin for origin in (part.strip().rstrip("/") for part in value.split(",")) if origin]
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
+# CORS: keep localhost enabled for the built-in dashboard, but allow explicit
+# cross-origin frontend hosts when configured (for example, a Netlify deploy).
+# This keeps the default local-only posture while making public frontend ↔
+# backend deployments possible without code changes.
+_local_origin_regex = r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
+_configured_cors_origins = _parse_cors_origins(os.getenv("HERMES_WEB_CORS_ORIGINS", ""))
+_cors_kwargs = {
+    "allow_origin_regex": _local_origin_regex,
+    "allow_methods": ["*"],
+    "allow_headers": ["*"],
+}
+if _configured_cors_origins:
+    _cors_kwargs["allow_origins"] = _configured_cors_origins
+
+app.add_middleware(CORSMiddleware, **_cors_kwargs)
 
 # ---------------------------------------------------------------------------
 # Endpoints that do NOT require the session token.  Everything else under
@@ -100,17 +205,18 @@ _PUBLIC_API_PATHS: frozenset = frozenset({
     "/api/dashboard/themes",
     "/api/dashboard/plugins",
     "/api/dashboard/plugins/rescan",
+    "/api/auth/login",
+    "/api/auth/me",
+    "/api/auth/logout",
 })
 
 
 def _require_token(request: Request) -> None:
-    """Validate the ephemeral session token.  Raises 401 on mismatch.
+    """Validate either the ephemeral dashboard token or a persisted login token.
 
     Uses ``hmac.compare_digest`` to prevent timing side-channels.
     """
-    auth = request.headers.get("authorization", "")
-    expected = f"Bearer {_SESSION_TOKEN}"
-    if not hmac.compare_digest(auth.encode(), expected.encode()):
+    if not _is_authorized_request(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
@@ -118,15 +224,15 @@ def _require_token(request: Request) -> None:
 async def auth_middleware(request: Request, call_next):
     """Require the session token on all /api/ routes except the public list."""
     path = request.url.path
-    if path.startswith("/api/") and path not in _PUBLIC_API_PATHS and not path.startswith("/api/plugins/"):
-        auth = request.headers.get("authorization", "")
-        expected = f"Bearer {_SESSION_TOKEN}"
-        if not hmac.compare_digest(auth.encode(), expected.encode()):
+    # Let CORS middleware handle preflight requests before auth checks.
+    if request.method != "OPTIONS" and path.startswith("/api/") and path not in _PUBLIC_API_PATHS and not path.startswith("/api/plugins/"):
+        if not _is_authorized_request(request):
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Unauthorized"},
             )
     return await call_next(request)
+
 
 
 # ---------------------------------------------------------------------------
@@ -1664,6 +1770,230 @@ async def cancel_oauth_session(session_id: str, request: Request):
     return {"ok": True, "session_id": session_id}
 
 
+class WebLoginRequest(BaseModel):
+    email: str
+    password: str
+    remember: bool = True
+
+
+class WebLoginResponse(BaseModel):
+    ok: bool
+    email: str
+    token: str
+    token_type: str = "Bearer"
+    expires_at: str
+    remember: bool
+
+
+@app.post("/api/auth/login")
+async def login(body: WebLoginRequest):
+    """Validate the configured public login credentials and mint a signed token."""
+    if not _login_enabled():
+        raise HTTPException(status_code=503, detail="Web login is not configured")
+    email = body.email.strip().lower()
+    password = body.password
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="Email and password are required")
+    if not (hmac.compare_digest(email.encode("utf-8"), _LOGIN_EMAIL.encode("utf-8")) and hmac.compare_digest(password.encode("utf-8"), _LOGIN_PASSWORD.encode("utf-8"))):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    ttl = _LOGIN_TOKEN_TTL_REMEMBER_SECONDS if body.remember else _LOGIN_TOKEN_TTL_SESSION_SECONDS
+    exp = int(time.time()) + ttl
+    token = _login_payload_to_token({
+        "kind": "web_login",
+        "email": email,
+        "iat": int(time.time()),
+        "exp": exp,
+        "remember": bool(body.remember),
+    })
+    return WebLoginResponse(
+        ok=True,
+        email=email,
+        token=token,
+        expires_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(exp)),
+        remember=bool(body.remember),
+    )
+
+
+@app.get("/api/auth/me")
+async def auth_me(request: Request):
+    """Return the authenticated login identity if a valid token is present."""
+    payload = _active_login_payload(request)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return {
+        "authenticated": True,
+        "email": payload["email"],
+        "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(int(payload["exp"]))),
+        "remember": bool(payload.get("remember", False)),
+        "token_type": "Bearer",
+    }
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(request: Request):
+    """Stateless logout endpoint. The frontend clears its persisted token."""
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Persisted chat studio state
+# ---------------------------------------------------------------------------
+
+_CHAT_STATE_DB_PATH = get_hermes_home() / "chat_studio_state.db"
+
+
+class ChatStudioStateStore:
+    """SQLite-backed state store for the chat studio shell.
+
+    The store is keyed by the authenticated login email when available, which
+    keeps chats, workspaces, and memories in sync across devices.
+    """
+
+    def __init__(self, db_path: Path = _CHAT_STATE_DB_PATH):
+        self._db_path = db_path
+        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
+        except Exception:
+            self._conn = sqlite3.connect(":memory:", check_same_thread=False)
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS chat_studio_state (
+                owner TEXT PRIMARY KEY,
+                state_json TEXT NOT NULL,
+                revision INTEGER NOT NULL DEFAULT 0,
+                updated_at REAL NOT NULL
+            )"""
+        )
+        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(chat_studio_state)").fetchall()}
+        if "revision" not in columns:
+            self._conn.execute("ALTER TABLE chat_studio_state ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
+        if "updated_at" not in columns:
+            self._conn.execute("ALTER TABLE chat_studio_state ADD COLUMN updated_at REAL NOT NULL DEFAULT 0")
+        self._conn.commit()
+
+    def get(self, owner: str) -> Optional[Dict[str, Any]]:
+        row = self._conn.execute(
+            "SELECT state_json, revision FROM chat_studio_state WHERE owner = ?",
+            (owner,),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            return {"state": json.loads(row[0]), "revision": int(row[1] or 0)}
+        except Exception:
+            return None
+
+    def revision(self, owner: str) -> int:
+        row = self._conn.execute(
+            "SELECT revision FROM chat_studio_state WHERE owner = ?",
+            (owner,),
+        ).fetchone()
+        return int(row[0] or 0) if row else 0
+
+    def put(self, owner: str, state: Dict[str, Any], base_revision: int = 0, force: bool = False) -> int:
+        current_revision = self.revision(owner)
+        if not force and current_revision and base_revision != current_revision:
+            raise ValueError("conflict")
+        next_revision = current_revision + 1
+        self._conn.execute(
+            "INSERT OR REPLACE INTO chat_studio_state (owner, state_json, revision, updated_at) VALUES (?, ?, ?, ?)",
+            (owner, json.dumps(state, ensure_ascii=False), next_revision, time.time()),
+        )
+        self._conn.commit()
+        return next_revision
+
+    def close(self) -> None:
+        try:
+            self._conn.close()
+        except Exception:
+            pass
+
+
+_CHAT_STATE_STORE: Optional[ChatStudioStateStore] = None
+
+
+def _get_chat_state_store() -> ChatStudioStateStore:
+    global _CHAT_STATE_STORE
+    if _CHAT_STATE_STORE is None:
+        _CHAT_STATE_STORE = ChatStudioStateStore()
+    return _CHAT_STATE_STORE
+
+
+def _chat_state_owner(request: Request) -> str:
+    payload = _active_login_payload(request)
+    if payload:
+        return payload["email"]
+    auth_header = request.headers.get("authorization", "")
+    if hmac.compare_digest(auth_header.encode("utf-8"), f"Bearer {_SESSION_TOKEN}".encode("utf-8")):
+        return "dashboard"
+    return "anonymous"
+
+
+def _is_chat_state_payload(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    required = {
+        "version",
+        "workspaces",
+        "chats",
+        "messages",
+        "memories",
+        "activeWorkspaceId",
+        "activeChatId",
+    }
+    if not required.issubset(value.keys()):
+        return False
+    return all(
+        isinstance(value[key], list)
+        for key in ("workspaces", "chats", "messages", "memories")
+    ) and all(
+        isinstance(value[key], str)
+        for key in ("activeWorkspaceId", "activeChatId")
+    )
+
+
+class ChatStudioStateResponse(BaseModel):
+    ok: bool
+    owner: str
+    revision: int
+
+
+@app.get("/api/chat/state")
+async def get_chat_state(request: Request):
+    """Fetch the persisted chat studio state for the current authenticated user."""
+    owner = _chat_state_owner(request)
+    store = _get_chat_state_store()
+    payload = store.get(owner)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="Chat state not found")
+    return payload
+
+
+@app.put("/api/chat/state")
+async def save_chat_state(payload: Dict[str, Any], request: Request):
+    """Persist the chat studio state for the current authenticated user."""
+    state = payload.get("state") if isinstance(payload.get("state"), dict) else payload
+    base_revision_raw = payload.get("base_revision", 0) if isinstance(payload, dict) else 0
+    force = bool(payload.get("force", False)) if isinstance(payload, dict) else False
+    try:
+        base_revision = int(base_revision_raw or 0)
+    except Exception:
+        base_revision = 0
+
+    if not _is_chat_state_payload(state):
+        raise HTTPException(status_code=400, detail="Invalid chat state payload")
+
+    owner = _chat_state_owner(request)
+    store = _get_chat_state_store()
+    try:
+        revision = store.put(owner, state, base_revision=base_revision, force=force)
+    except ValueError:
+        current = store.get(owner)
+        return JSONResponse(status_code=409, content={"detail": "Conflict", **(current or {"state": state, "revision": base_revision})})
+    return ChatStudioStateResponse(ok=True, owner=owner, revision=revision)
+
+
 # ---------------------------------------------------------------------------
 # Session detail endpoints
 # ---------------------------------------------------------------------------
@@ -1697,6 +2027,36 @@ async def get_session_messages(session_id: str):
         db.close()
 
 
+class ChatMessageInput(BaseModel):
+    role: str
+    content: str
+
+
+class ChatAttachmentInput(BaseModel):
+    name: str
+    mimeType: str
+    size: int
+    url: Optional[str] = None
+
+
+class ChatRequest(BaseModel):
+    chat_id: str
+    chat_title: Optional[str] = None
+    workspace_name: Optional[str] = None
+    system_message: Optional[str] = None
+    conversation_history: List[ChatMessageInput] = []
+    current_user_message: str
+    attachments: List[ChatAttachmentInput] = []
+    selected_modes: List[str] = []
+    memory_context: Optional[str] = None
+
+
+class ChatResponse(BaseModel):
+    reply: str
+    session_id: Optional[str] = None
+    model: Optional[str] = None
+
+
 @app.delete("/api/sessions/{session_id}")
 async def delete_session_endpoint(session_id: str):
     from hermes_state import SessionDB
@@ -1707,6 +2067,79 @@ async def delete_session_endpoint(session_id: str):
         return {"ok": True}
     finally:
         db.close()
+
+
+@app.post("/api/chat")
+async def chat_endpoint(body: ChatRequest):
+    """Run a Hermes turn for the chat studio UI."""
+    from run_agent import AIAgent
+
+    chat_id = body.chat_id.strip() or f"chat-{int(time.time())}"
+    user_message = body.current_user_message.strip()
+    if not user_message:
+        raise HTTPException(status_code=400, detail="current_user_message is required")
+
+    system_parts: List[str] = []
+    if body.system_message and body.system_message.strip():
+        system_parts.append(body.system_message.strip())
+    if body.memory_context and body.memory_context.strip():
+        system_parts.append(f"Memória persistente:\n{body.memory_context.strip()}")
+    if body.chat_title and body.chat_title.strip():
+        system_parts.append(f"Título do chat: {body.chat_title.strip()}.")
+    if body.workspace_name and body.workspace_name.strip():
+        system_parts.append(f"Workspace: {body.workspace_name.strip()}.")
+    if body.selected_modes:
+        system_parts.append(f"Modos solicitados: {', '.join(body.selected_modes)}.")
+
+    history: List[Dict[str, Any]] = []
+    for item in body.conversation_history[-40:]:
+        role = (item.role or "").strip().lower()
+        content = (item.content or "").strip()
+        if not content:
+            continue
+        if role == "system":
+            system_parts.append(content)
+        elif role in {"user", "assistant"}:
+            history.append({"role": role, "content": content})
+
+    def _run() -> Dict[str, Any]:
+        from hermes_state import SessionDB
+        from gateway.run import _load_gateway_config, _resolve_gateway_model, _resolve_runtime_agent_kwargs, GatewayRunner
+
+        session_db = SessionDB()
+        try:
+            user_config = _load_gateway_config()
+            agent = AIAgent(
+                model=_resolve_gateway_model(user_config),
+                **_resolve_runtime_agent_kwargs(),
+                session_id=chat_id,
+                platform="web",
+                quiet_mode=True,
+                verbose_logging=False,
+                persist_session=True,
+                session_db=session_db,
+                fallback_model=GatewayRunner._load_fallback_model(),
+            )
+            return agent.run_conversation(
+                user_message=user_message,
+                system_message="\n\n".join(system_parts).strip() or None,
+                conversation_history=history,
+                task_id=chat_id,
+            )
+        finally:
+            session_db.close()
+
+    try:
+        result = await asyncio.to_thread(_run)
+    except Exception as exc:
+        _log.exception("chat endpoint failed")
+        raise HTTPException(status_code=500, detail=f"Chat failed: {exc}") from exc
+
+    reply = str(result.get("final_response", "") or "").strip()
+    if not reply:
+        reply = ""
+
+    return ChatResponse(reply=reply, session_id=chat_id, model=str(result.get("model") or "")).model_dump()
 
 
 # ---------------------------------------------------------------------------

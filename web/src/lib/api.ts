@@ -1,41 +1,183 @@
-const BASE = "";
+const RAW_API_BASE =
+  (typeof import.meta !== 'undefined' && import.meta.env && typeof import.meta.env.VITE_HERMES_API_BASE_URL === 'string'
+    ? import.meta.env.VITE_HERMES_API_BASE_URL
+    : '')
+    .trim();
+const BASE = RAW_API_BASE.replace(/\/+$/, '');
+const RAW_AUTH_BASE =
+  (typeof import.meta !== 'undefined' && import.meta.env && typeof import.meta.env.VITE_HERMES_AUTH_BASE_URL === 'string'
+    ? import.meta.env.VITE_HERMES_AUTH_BASE_URL
+    : '')
+    .trim();
+const AUTH_BASE = (RAW_AUTH_BASE || BASE).replace(/\/+$/, '');
 
 // Ephemeral session token for protected endpoints.
 // Injected into index.html by the server — never fetched via API.
 declare global {
   interface Window {
     __HERMES_SESSION_TOKEN__?: string;
+    __HERMES_API_BASE_URL__?: string;
   }
 }
+import { getAuthToken, saveAuthSession, clearAuthSession } from '@/auth/session';
+import type { ChatAppState } from '@/chat/types';
+
+const ALLOW_DASHBOARD_SESSION_TOKEN =
+  Boolean(import.meta.env.DEV) || (typeof window !== 'undefined' && AUTH_BASE.length > 0 && window.location.origin === AUTH_BASE);
+
 let _sessionToken: string | null = null;
 
-export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
-  // Inject the session token into all /api/ requests.
+
+export interface ChatMessageInput {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+export interface ChatAttachmentInput {
+  name: string;
+  mimeType: string;
+  size: number;
+  url?: string;
+}
+
+export interface ChatRequestPayload {
+  chat_id: string;
+  chat_title?: string;
+  workspace_name?: string;
+  system_message?: string;
+  conversation_history: ChatMessageInput[];
+  current_user_message: string;
+  attachments?: ChatAttachmentInput[];
+  selected_modes?: string[];
+  memory_context?: string;
+}
+
+export interface ChatResponsePayload {
+  reply: string;
+  session_id?: string;
+  model?: string;
+}
+
+export interface ChatStateEnvelope {
+  state: ChatAppState;
+  revision: number;
+}
+
+export interface ChatStateSaveResponse {
+  ok: boolean;
+  owner: string;
+  revision: number;
+}
+
+export interface AuthLoginRequest {
+  email: string;
+  password: string;
+  remember?: boolean;
+}
+
+export interface AuthLoginResponse {
+  ok: boolean;
+  email: string;
+  token: string;
+  token_type: string;
+  expires_at: string;
+  remember: boolean;
+}
+
+export interface AuthMeResponse {
+  authenticated: boolean;
+  email: string;
+  expires_at: string;
+  remember: boolean;
+  token_type: string;
+}
+
+async function resolveSessionToken(): Promise<string> {
+  const stored = getAuthToken();
+  if (stored) return stored;
+
+  const injected = window.__HERMES_SESSION_TOKEN__;
+  if (injected) return injected;
+
+  if (ALLOW_DASHBOARD_SESSION_TOKEN && AUTH_BASE) {
+    const res = await fetch(`${AUTH_BASE}/`, { headers: { Accept: 'text/html' } });
+    if (res.ok) {
+      const html = await res.text();
+      const match = html.match(/__HERMES_SESSION_TOKEN__\s*=\s*["']([^"']+)["']/);
+      if (match?.[1]) {
+        _sessionToken = match[1];
+        return _sessionToken;
+      }
+    }
+  }
+
+  throw new Error('Sessão não autenticada — faça login para continuar');
+}
+
+async function getSessionToken(): Promise<string> {
+  return resolveSessionToken();
+}
+
+export async function fetchJSON<T>(url: string, init?: RequestInit, auth = false): Promise<T> {
   const headers = new Headers(init?.headers);
-  const token = window.__HERMES_SESSION_TOKEN__;
-  if (token && !headers.has("Authorization")) {
-    headers.set("Authorization", `Bearer ${token}`);
+  if (auth && !headers.has('Authorization')) {
+    const token = await resolveSessionToken();
+    headers.set('Authorization', `Bearer ${token}`);
   }
   const res = await fetch(`${BASE}${url}`, { ...init, headers });
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
-    throw new Error(`${res.status}: ${text}`);
+    const error = new Error(`${res.status}: ${text}`) as Error & { status?: number };
+    error.status = res.status;
+    throw error;
   }
   return res.json();
 }
 
-async function getSessionToken(): Promise<string> {
-  if (_sessionToken) return _sessionToken;
-  const injected = window.__HERMES_SESSION_TOKEN__;
-  if (injected) {
-    _sessionToken = injected;
-    return _sessionToken;
-  }
-  throw new Error("Session token not available — page must be served by the Hermes dashboard server");
-}
-
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  login: async (payload: AuthLoginRequest) => {
+    const response = await fetchJSON<AuthLoginResponse>("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    return saveAuthSession({
+      email: response.email,
+      token: response.token,
+      expiresAt: response.expires_at,
+      remember: response.remember,
+    });
+  },
+  me: async () => {
+    const token = getAuthToken();
+    const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+    return fetchJSON<AuthMeResponse>("/api/auth/me", headers ? { headers } : undefined);
+  },
+  logout: async () => {
+    try {
+      await fetchJSON<{ ok: boolean }>("/api/auth/logout", { method: "POST" }, false);
+    } finally {
+      clearAuthSession();
+    }
+  },
+  getChatState: () => fetchJSON<ChatStateEnvelope>("/api/chat/state", undefined, true),
+  saveChatState: (state: ChatAppState, baseRevision: number, force = false) =>
+    fetchJSON<ChatStateSaveResponse>(
+      "/api/chat/state",
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ state, base_revision: baseRevision, force }),
+      },
+      true,
+    ),
+  chat: (payload: ChatRequestPayload) =>
+    fetchJSON<ChatResponsePayload>("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }, true),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>

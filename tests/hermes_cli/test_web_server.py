@@ -1,10 +1,11 @@
 """Tests for hermes_cli.web_server and related config utilities."""
 
-import os
+import importlib
 import json
+import os
 import tempfile
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -306,6 +307,427 @@ class TestWebServerEndpoints:
         assert resp.status_code in (200, 404)
         if resp.status_code == 200:
             assert "FastAPI" not in resp.text  # Should not serve the actual source
+
+
+class TestWebServerCors:
+    """CORS should stay local by default but support explicit public origins."""
+
+    def test_explicit_public_origin_is_allowed(self, monkeypatch):
+        monkeypatch.setenv("HERMES_WEB_CORS_ORIGINS", "https://studio.example.com")
+
+        import hermes_cli.web_server as web_server
+        reloaded = importlib.reload(web_server)
+
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        client = TestClient(reloaded.app)
+        response = client.options(
+            "/api/status",
+            headers={
+                "Origin": "https://studio.example.com",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+
+        assert response.status_code in (200, 204)
+        assert response.headers.get("access-control-allow-origin") == "https://studio.example.com"
+
+        monkeypatch.delenv("HERMES_WEB_CORS_ORIGINS", raising=False)
+        importlib.reload(reloaded)
+
+    def test_preflight_for_protected_chat_route_is_not_blocked_by_auth(self, monkeypatch):
+        monkeypatch.setenv("HERMES_WEB_CORS_ORIGINS", "https://studio.example.com")
+
+        import hermes_cli.web_server as web_server
+        reloaded = importlib.reload(web_server)
+
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        client = TestClient(reloaded.app)
+        response = client.options(
+            "/api/chat",
+            headers={
+                "Origin": "https://studio.example.com",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type,authorization",
+            },
+        )
+
+        assert response.status_code in (200, 204)
+        assert response.headers.get("access-control-allow-origin") == "https://studio.example.com"
+
+        monkeypatch.delenv("HERMES_WEB_CORS_ORIGINS", raising=False)
+        importlib.reload(reloaded)
+
+
+class TestWebLogin:
+    """Login endpoint should validate a configured email/password and mint a persisted token."""
+
+    def test_login_flow_and_authenticated_access(self, monkeypatch):
+        monkeypatch.setenv("HERMES_WEB_LOGIN_EMAIL", "renato.mott@gmail.com")
+        monkeypatch.setenv("HERMES_WEB_LOGIN_PASSWORD", "2893053")
+        monkeypatch.setenv("HERMES_WEB_LOGIN_SECRET", "unit-test-secret")
+
+        import hermes_cli.web_server as web_server
+        reloaded = importlib.reload(web_server)
+
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        client = TestClient(reloaded.app)
+        response = client.post(
+            "/api/auth/login",
+            json={"email": "renato.mott@gmail.com", "password": "2893053", "remember": True},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["ok"] is True
+        assert payload["email"] == "renato.mott@gmail.com"
+        assert payload["token"]
+
+        me = client.get(
+            "/api/auth/me",
+            headers={"Authorization": f"Bearer {payload['token']}"},
+        )
+        assert me.status_code == 200
+        assert me.json()["authenticated"] is True
+        assert me.json()["email"] == "renato.mott@gmail.com"
+
+        protected = client.get(
+            "/api/env",
+            headers={"Authorization": f"Bearer {payload['token']}"},
+        )
+        assert protected.status_code == 200
+
+        monkeypatch.delenv("HERMES_WEB_LOGIN_EMAIL", raising=False)
+        monkeypatch.delenv("HERMES_WEB_LOGIN_PASSWORD", raising=False)
+        monkeypatch.delenv("HERMES_WEB_LOGIN_SECRET", raising=False)
+        importlib.reload(reloaded)
+
+    def test_login_rejects_invalid_password(self, monkeypatch):
+        monkeypatch.setenv("HERMES_WEB_LOGIN_EMAIL", "renato.mott@gmail.com")
+        monkeypatch.setenv("HERMES_WEB_LOGIN_PASSWORD", "2893053")
+        monkeypatch.setenv("HERMES_WEB_LOGIN_SECRET", "unit-test-secret")
+
+        import hermes_cli.web_server as web_server
+        reloaded = importlib.reload(web_server)
+
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        client = TestClient(reloaded.app)
+        response = client.post(
+            "/api/auth/login",
+            json={"email": "renato.mott@gmail.com", "password": "wrong-password", "remember": True},
+        )
+        assert response.status_code == 401
+
+        monkeypatch.delenv("HERMES_WEB_LOGIN_EMAIL", raising=False)
+        monkeypatch.delenv("HERMES_WEB_LOGIN_PASSWORD", raising=False)
+        monkeypatch.delenv("HERMES_WEB_LOGIN_SECRET", raising=False)
+        importlib.reload(reloaded)
+
+
+class TestChatStudioStatePersistence:
+    """The chat studio state should round-trip through the backend and survive restarts."""
+
+    def test_state_round_trip_persists_for_the_same_user(self, monkeypatch, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_WEB_LOGIN_EMAIL", "renato.mott@gmail.com")
+        monkeypatch.setenv("HERMES_WEB_LOGIN_PASSWORD", "2893053")
+        monkeypatch.setenv("HERMES_WEB_LOGIN_SECRET", "unit-test-secret")
+
+        import hermes_cli.web_server as web_server
+        reloaded = importlib.reload(web_server)
+
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        client = TestClient(reloaded.app)
+        login = client.post(
+            "/api/auth/login",
+            json={"email": "renato.mott@gmail.com", "password": "2893053", "remember": True},
+        )
+        assert login.status_code == 200
+        token = login.json()["token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        state = {
+            "version": 1,
+            "workspaces": [
+                {
+                    "id": "ws_shared",
+                    "name": "Compartilhado",
+                    "description": "Chats acessíveis em qualquer dispositivo.",
+                    "accent": "teal",
+                }
+            ],
+            "chats": [
+                {
+                    "id": "chat_remote",
+                    "workspaceId": "ws_shared",
+                    "title": "Teste de sync",
+                    "summary": "Persistência remota funcionando.",
+                    "createdAt": "2026-04-19T10:00:00.000Z",
+                    "updatedAt": "2026-04-19T10:05:00.000Z",
+                    "archivedAt": None,
+                    "pinned": True,
+                }
+            ],
+            "messages": [
+                {
+                    "id": "msg_remote_1",
+                    "chatId": "chat_remote",
+                    "role": "user",
+                    "content": "Olá do dispositivo A",
+                    "createdAt": "2026-04-19T10:01:00.000Z",
+                    "segments": [],
+                    "attachments": [],
+                }
+            ],
+            "memories": [
+                {
+                    "id": "mem_remote_1",
+                    "scope": "global",
+                    "chatId": None,
+                    "kind": "preference",
+                    "content": "Tom direto",
+                    "sourceMessageId": None,
+                    "confidence": 0.95,
+                    "pinned": True,
+                    "createdAt": "2026-04-19T10:02:00.000Z",
+                    "updatedAt": "2026-04-19T10:02:00.000Z",
+                }
+            ],
+            "activeWorkspaceId": "ws_shared",
+            "activeChatId": "chat_remote",
+        }
+
+        save_response = client.put("/api/chat/state", json={"state": state, "base_revision": 0}, headers=headers)
+        assert save_response.status_code == 200
+        assert save_response.json()["ok"] is True
+        assert save_response.json()["revision"] == 1
+
+        fetch_response = client.get("/api/chat/state", headers=headers)
+        assert fetch_response.status_code == 200
+        assert fetch_response.json() == {"state": state, "revision": 1}
+
+        reloaded = importlib.reload(reloaded)
+        restarted_client = TestClient(reloaded.app)
+        login_again = restarted_client.post(
+            "/api/auth/login",
+            json={"email": "renato.mott@gmail.com", "password": "2893053", "remember": True},
+        )
+        assert login_again.status_code == 200
+        restarted_token = login_again.json()["token"]
+        restarted_fetch = restarted_client.get(
+            "/api/chat/state",
+            headers={"Authorization": f"Bearer {restarted_token}"},
+        )
+        assert restarted_fetch.status_code == 200
+        assert restarted_fetch.json() == {"state": state, "revision": 1}
+
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("HERMES_WEB_LOGIN_EMAIL", raising=False)
+        monkeypatch.delenv("HERMES_WEB_LOGIN_PASSWORD", raising=False)
+        monkeypatch.delenv("HERMES_WEB_LOGIN_SECRET", raising=False)
+        importlib.reload(reloaded)
+
+    def test_stale_revision_rejects_conflicting_write(self, monkeypatch, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_WEB_LOGIN_EMAIL", "renato.mott@gmail.com")
+        monkeypatch.setenv("HERMES_WEB_LOGIN_PASSWORD", "2893053")
+        monkeypatch.setenv("HERMES_WEB_LOGIN_SECRET", "unit-test-secret")
+
+        import hermes_cli.web_server as web_server
+        reloaded = importlib.reload(web_server)
+
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        client = TestClient(reloaded.app)
+        login = client.post(
+            "/api/auth/login",
+            json={"email": "renato.mott@gmail.com", "password": "2893053", "remember": True},
+        )
+        assert login.status_code == 200
+        headers = {"Authorization": f"Bearer {login.json()['token']}"}
+
+        base_state = {
+            "version": 1,
+            "workspaces": [],
+            "chats": [],
+            "messages": [],
+            "memories": [],
+            "activeWorkspaceId": "ws_shared",
+            "activeChatId": "chat_remote",
+        }
+        first_save = client.put("/api/chat/state", json={"state": base_state, "base_revision": 0}, headers=headers)
+        assert first_save.status_code == 200
+        assert first_save.json()["revision"] == 1
+
+        updated_state = {
+            **base_state,
+            "memories": [
+                {
+                    "id": "mem_2",
+                    "scope": "global",
+                    "chatId": None,
+                    "kind": "note",
+                    "content": "Do dispositivo B",
+                    "sourceMessageId": None,
+                    "confidence": 0.7,
+                    "pinned": False,
+                    "createdAt": "2026-04-19T10:10:00.000Z",
+                    "updatedAt": "2026-04-19T10:10:00.000Z",
+                }
+            ],
+        }
+        second_save = client.put("/api/chat/state", json={"state": updated_state, "base_revision": 1}, headers=headers)
+        assert second_save.status_code == 200
+        assert second_save.json()["revision"] == 2
+
+        stale_state = {
+            **base_state,
+            "memories": [
+                {
+                    "id": "mem_stale",
+                    "scope": "global",
+                    "chatId": None,
+                    "kind": "note",
+                    "content": "Tentativa antiga",
+                    "sourceMessageId": None,
+                    "confidence": 0.7,
+                    "pinned": False,
+                    "createdAt": "2026-04-19T10:11:00.000Z",
+                    "updatedAt": "2026-04-19T10:11:00.000Z",
+                }
+            ],
+        }
+        conflict = client.put("/api/chat/state", json={"state": stale_state, "base_revision": 1}, headers=headers)
+        assert conflict.status_code == 409
+        assert conflict.json()["revision"] == 2
+        assert conflict.json()["state"] == updated_state
+
+    def test_force_save_can_overwrite_remote_state(self, monkeypatch, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_WEB_LOGIN_EMAIL", "renato.mott@gmail.com")
+        monkeypatch.setenv("HERMES_WEB_LOGIN_PASSWORD", "2893053")
+        monkeypatch.setenv("HERMES_WEB_LOGIN_SECRET", "unit-test-secret")
+
+        import hermes_cli.web_server as web_server
+        reloaded = importlib.reload(web_server)
+
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        client = TestClient(reloaded.app)
+        login = client.post(
+            "/api/auth/login",
+            json={"email": "renato.mott@gmail.com", "password": "2893053", "remember": True},
+        )
+        assert login.status_code == 200
+        headers = {"Authorization": f"Bearer {login.json()['token']}"}
+
+        first_state = {
+            "version": 1,
+            "workspaces": [],
+            "chats": [],
+            "messages": [],
+            "memories": [],
+            "activeWorkspaceId": "ws_first",
+            "activeChatId": "chat_first",
+        }
+        save_1 = client.put("/api/chat/state", json={"state": first_state, "base_revision": 0}, headers=headers)
+        assert save_1.status_code == 200
+        assert save_1.json()["revision"] == 1
+
+        forced_state = {
+            **first_state,
+            "activeWorkspaceId": "ws_forced",
+            "activeChatId": "chat_forced",
+            "memories": [
+                {
+                    "id": "mem_forced",
+                    "scope": "global",
+                    "chatId": None,
+                    "kind": "note",
+                    "content": "Backup restaurado",
+                    "sourceMessageId": None,
+                    "confidence": 0.88,
+                    "pinned": False,
+                    "createdAt": "2026-04-19T11:00:00.000Z",
+                    "updatedAt": "2026-04-19T11:00:00.000Z",
+                }
+            ],
+        }
+        forced_save = client.put(
+            "/api/chat/state",
+            json={"state": forced_state, "base_revision": 0, "force": True},
+            headers=headers,
+        )
+        assert forced_save.status_code == 200
+        assert forced_save.json()["revision"] == 2
+
+        fetch_response = client.get("/api/chat/state", headers=headers)
+        assert fetch_response.status_code == 200
+        assert fetch_response.json() == {"state": forced_state, "revision": 2}
+
+
+class TestWebBuildSync:
+
+    """The CLI web build should copy dist/ into hermes_cli/web_dist."""
+
+    def test_build_syncs_dist_into_package_web_dist(self, monkeypatch, tmp_path):
+        import shutil
+        import subprocess
+
+        import hermes_cli.main as hermes_main
+
+        web_dir = tmp_path / "web"
+        web_dir.mkdir()
+        (web_dir / "package.json").write_text("{}", encoding="utf-8")
+
+        monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/npm")
+
+        def fake_run(cmd, cwd=None, capture_output=None):
+            if isinstance(cmd, list) and len(cmd) >= 3 and cmd[1] == "run" and cmd[2] == "build":
+                dist_dir = web_dir / "dist" / "assets"
+                dist_dir.mkdir(parents=True, exist_ok=True)
+                (web_dir / "dist" / "index.html").write_text("<html>ok</html>", encoding="utf-8")
+                (dist_dir / "bundle.js").write_text("console.log('ok')", encoding="utf-8")
+            return subprocess.CompletedProcess(cmd, 0)
+
+        monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+        assert hermes_main._build_web_ui(web_dir, fatal=True) is True
+
+        package_web_dist = tmp_path / "hermes_cli" / "web_dist"
+        assert (package_web_dist / "index.html").read_text(encoding="utf-8") == "<html>ok</html>"
+        assert (package_web_dist / "assets" / "bundle.js").read_text(encoding="utf-8") == "console.log('ok')"
 
 
 # ---------------------------------------------------------------------------

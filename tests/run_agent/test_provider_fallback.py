@@ -7,6 +7,8 @@ advancement through multiple providers.
 
 from unittest.mock import MagicMock, patch
 
+import time
+
 from run_agent import AIAgent
 
 
@@ -134,8 +136,8 @@ class TestFallbackChainAdvancement:
         agent = _make_agent(fallback_model=fbs)
         with patch("agent.auxiliary_client.resolve_provider_client") as mock_rpc:
             mock_rpc.side_effect = [
-                (None, None),                    # broken provider
-                (_mock_client(), "gpt-4o"),       # fallback succeeds
+                (None, None),
+                (_mock_client(), "gpt-4o"),
             ]
             assert agent._try_activate_fallback() is True
             assert agent.model == "gpt-4o"
@@ -155,3 +157,62 @@ class TestFallbackChainAdvancement:
             ]
             assert agent._try_activate_fallback() is True
             assert agent.model == "gpt-4o"
+            assert agent._fallback_index == 2
+
+    def test_skips_temporarily_degraded_fallback_provider(self):
+        fbs = [
+            {"provider": "openai", "model": "gpt-4o"},
+            {"provider": "zai", "model": "glm-4.7"},
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        with (
+            patch.object(agent, "_provider_health_remaining", side_effect=[120.0, None]),
+            patch("agent.auxiliary_client.resolve_provider_client", return_value=(_mock_client(), "glm-4.7")),
+        ):
+            assert agent._try_activate_fallback() is True
+            assert agent.model == "glm-4.7"
+            assert agent.provider == "zai"
+            assert agent._fallback_index == 2
+
+    def test_ensure_healthy_runtime_for_turn_switches_to_fallback_when_blocked(self):
+        agent = _make_agent(fallback_model=[{"provider": "openai", "model": "gpt-4o"}])
+        with (
+            patch.object(agent, "_provider_health_remaining", return_value=90.0),
+            patch.object(agent, "_try_activate_fallback", return_value=True) as mock_fallback,
+        ):
+            agent._ensure_healthy_runtime_for_turn()
+            mock_fallback.assert_called_once()
+
+    def test_restore_primary_runtime_probes_and_restores_after_cooldown(self):
+        agent = _make_agent(fallback_model=[{"provider": "openai", "model": "gpt-4o"}])
+        agent._fallback_activated = True
+        agent.provider = "zai"
+        agent.model = "glm-4.7"
+        agent.base_url = "https://api.z.ai/v1"
+        agent.api_mode = "chat_completions"
+        agent.api_key = "fb-key"
+        primary_runtime = dict(agent._primary_runtime)
+        primary_runtime.update({
+            "model": "claude-sonnet-4.6",
+            "provider": "anthropic",
+            "base_url": "https://api.anthropic.com",
+            "api_mode": "anthropic_messages",
+            "api_key": "primary-key",
+            "anthropic_api_key": "primary-key",
+            "anthropic_base_url": "https://api.anthropic.com",
+            "is_anthropic_oauth": False,
+        })
+        agent._primary_runtime = primary_runtime
+
+        with (
+
+            patch("agent.provider_health.peek_provider_health_state", return_value={"degraded_until": time.time() - 10}),
+            patch.object(agent, "_probe_runtime_health", return_value=True) as mock_probe,
+            patch("run_agent.clear_provider_degradation") as mock_clear,
+        ):
+            assert agent._restore_primary_runtime() is True
+            mock_probe.assert_called_once()
+            mock_clear.assert_called_once_with("anthropic")
+            assert agent.provider == "anthropic"
+            assert agent.model == "claude-sonnet-4.6"
+            assert agent._fallback_activated is False

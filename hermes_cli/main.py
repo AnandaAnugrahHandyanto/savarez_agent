@@ -4290,7 +4290,22 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         if fatal:
             print("  Run manually:  cd web && npm install && npm run build")
         return False
-    print("  ✓ Web UI built")
+
+    dist_dir = web_dir / "dist"
+    package_web_dist = PROJECT_ROOT / "hermes_cli" / "web_dist"
+    if not dist_dir.exists():
+        print("  ✗ Web UI build finished but dist/ was not created")
+        return False
+
+    if package_web_dist.exists():
+        if package_web_dist.is_dir():
+            shutil.rmtree(package_web_dist)
+        else:
+            package_web_dist.unlink()
+    package_web_dist.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(dist_dir, package_web_dist)
+
+    print("  ✓ Web UI built and synced to hermes_cli/web_dist")
     return True
 
 

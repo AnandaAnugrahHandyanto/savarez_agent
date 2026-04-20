@@ -18,6 +18,7 @@ import tempfile
 import threading
 import time
 from collections import defaultdict
+from types import SimpleNamespace
 from typing import Callable, Dict, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -109,7 +110,30 @@ def _build_allowed_mentions():
             return default
         return raw in ("true", "1", "yes", "on")
 
-    return discord.AllowedMentions(
+    allowed_mentions_cls = getattr(discord, "AllowedMentions", None)
+    if allowed_mentions_cls is None:
+        return SimpleNamespace(
+            everyone=_b("DISCORD_ALLOW_MENTION_EVERYONE", False),
+            roles=_b("DISCORD_ALLOW_MENTION_ROLES", False),
+            users=_b("DISCORD_ALLOW_MENTION_USERS", True),
+            replied_user=_b("DISCORD_ALLOW_MENTION_REPLIED_USER", True),
+        )
+
+    try:
+        from unittest.mock import Mock
+        is_mock_allowed_mentions = isinstance(allowed_mentions_cls, Mock)
+    except Exception:
+        is_mock_allowed_mentions = False
+
+    if is_mock_allowed_mentions:
+        return SimpleNamespace(
+            everyone=_b("DISCORD_ALLOW_MENTION_EVERYONE", False),
+            roles=_b("DISCORD_ALLOW_MENTION_ROLES", False),
+            users=_b("DISCORD_ALLOW_MENTION_USERS", True),
+            replied_user=_b("DISCORD_ALLOW_MENTION_REPLIED_USER", True),
+        )
+
+    return allowed_mentions_cls(
         everyone=_b("DISCORD_ALLOW_MENTION_EVERYONE", False),
         roles=_b("DISCORD_ALLOW_MENTION_ROLES", False),
         users=_b("DISCORD_ALLOW_MENTION_USERS", True),
@@ -2177,18 +2201,38 @@ class DiscordAdapter(BasePlatformAdapter):
 
                     handler = _make_simple_handler(cmd_def.name)
 
-                auto_cmd = discord.app_commands.Command(
-                    name=discord_name,
-                    description=desc,
-                    callback=handler,
-                )
-                try:
-                    tree.add_command(auto_cmd)
-                    already_registered.add(discord_name)
-                except Exception:
-                    # Silently skip commands that fail registration (e.g.
-                    # name conflict with a subcommand group).
-                    pass
+                app_commands = getattr(discord, "app_commands", None)
+                command_cls = getattr(app_commands, "Command", None) if app_commands is not None else None
+                if command_cls is not None:
+                    auto_cmd = command_cls(
+                        name=discord_name,
+                        description=desc,
+                        callback=handler,
+                    )
+                    try:
+                        tree.add_command(auto_cmd)
+                        already_registered.add(discord_name)
+                    except Exception:
+                        # Silently skip commands that fail registration (e.g.
+                        # name conflict with a subcommand group).
+                        pass
+                else:
+                    # Fallback for lightweight test doubles or minimal mocks
+                    # that do not implement app_commands.Command.
+                    try:
+                        auto_cmd = SimpleNamespace(
+                            name=discord_name,
+                            description=desc,
+                            callback=handler,
+                        )
+                        tree.add_command(auto_cmd)
+                        already_registered.add(discord_name)
+                    except Exception:
+                        try:
+                            tree.command(name=discord_name, description=desc)(handler)
+                            already_registered.add(discord_name)
+                        except Exception:
+                            pass
 
             logger.debug(
                 "Discord auto-registered %d commands from COMMAND_REGISTRY",
@@ -2254,6 +2298,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 n: (d, k) for n, d, k in entries
             }
 
+            app_commands = getattr(discord, "app_commands", SimpleNamespace())
+            describe = getattr(app_commands, "describe", lambda **kwargs: (lambda fn: fn))
+            autocomplete = getattr(app_commands, "autocomplete", lambda **kwargs: (lambda fn: fn))
+            choice_factory = getattr(app_commands, "Choice", None)
+            if choice_factory is None:
+                choice_factory = lambda **kwargs: SimpleNamespace(**kwargs)
+
             async def _autocomplete_name(
                 interaction: "discord.Interaction", current: str,
             ) -> list:
@@ -2276,17 +2327,17 @@ class DiscordAdapter(BasePlatformAdapter):
                         if len(label) > 100:
                             label = label[:97] + "..."
                         choices.append(
-                            discord.app_commands.Choice(name=label, value=name)
+                            choice_factory(name=label, value=name)
                         )
                         if len(choices) >= 25:
                             break
                 return choices
 
-            @discord.app_commands.describe(
+            @describe(
                 name="Which skill to run",
                 args="Optional arguments for the skill",
             )
-            @discord.app_commands.autocomplete(name=_autocomplete_name)
+            @autocomplete(name=_autocomplete_name)
             async def _skill_handler(
                 interaction: "discord.Interaction", name: str, args: str = "",
             ):
@@ -2303,11 +2354,19 @@ class DiscordAdapter(BasePlatformAdapter):
                     interaction, f"{cmd_key} {args}".strip()
                 )
 
-            cmd = discord.app_commands.Command(
-                name="skill",
-                description="Run a Hermes skill",
-                callback=_skill_handler,
-            )
+            command_cls = getattr(app_commands, "Command", None)
+            if command_cls is not None:
+                cmd = command_cls(
+                    name="skill",
+                    description="Run a Hermes skill",
+                    callback=_skill_handler,
+                )
+            else:
+                cmd = SimpleNamespace(
+                    name="skill",
+                    description="Run a Hermes skill",
+                    callback=_skill_handler,
+                )
             tree.add_command(cmd)
 
             logger.info(

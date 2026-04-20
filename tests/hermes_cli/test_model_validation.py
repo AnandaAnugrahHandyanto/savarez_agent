@@ -430,10 +430,11 @@ class TestValidateApiFound:
 # -- validate — API not found ------------------------------------------------
 
 class TestValidateApiNotFound:
-    def test_model_not_in_api_rejected_with_guidance(self):
+    def test_model_not_in_api_accepted_with_guidance(self):
         result = _validate("anthropic/claude-nonexistent")
-        assert result["accepted"] is False
-        assert result["persist"] is False
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is False
         assert "not found" in result["message"]
 
     def test_warning_includes_suggestions(self):
@@ -450,9 +451,9 @@ class TestValidateApiNotFound:
         assert result["recognized"] is True
 
     def test_dissimilar_model_shows_suggestions_not_autocorrect(self):
-        """Models too different for auto-correction are rejected with suggestions."""
+        """Models too different for auto-correction still get suggestions."""
         result = _validate("anthropic/claude-nonexistent")
-        assert result["accepted"] is False
+        assert result["accepted"] is True
         assert result.get("corrected_model") is None
         assert "not found" in result["message"]
 
@@ -512,7 +513,7 @@ class TestValidateCodexAutoCorrection:
 
     def test_missing_dash_auto_corrects(self):
         """gpt5.3-codex (missing dash) auto-corrects to gpt-5.3-codex."""
-        codex_models = ["gpt-5.4-mini", "gpt-5.4", "gpt-5.3-codex",
+        codex_models = ["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex",
                         "gpt-5.2-codex", "gpt-5.1-codex-max"]
         with patch("hermes_cli.models.provider_model_ids", return_value=codex_models):
             result = validate_requested_model("gpt5.3-codex", "openai-codex")
@@ -523,7 +524,7 @@ class TestValidateCodexAutoCorrection:
 
     def test_exact_match_no_correction(self):
         """Exact model name does not trigger auto-correction."""
-        codex_models = ["gpt-5.4-mini", "gpt-5.4", "gpt-5.3-codex"]
+        codex_models = ["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"]
         with patch("hermes_cli.models.provider_model_ids", return_value=codex_models):
             result = validate_requested_model("gpt-5.3-codex", "openai-codex")
         assert result["accepted"] is True
@@ -532,11 +533,11 @@ class TestValidateCodexAutoCorrection:
         assert result["message"] is None
 
     def test_very_different_name_falls_to_suggestions(self):
-        """Names too different for auto-correction are rejected with a suggestion list."""
-        codex_models = ["gpt-5.4-mini", "gpt-5.4", "gpt-5.3-codex"]
+        """Names too different for auto-correction get the suggestion list."""
+        codex_models = ["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"]
         with patch("hermes_cli.models.provider_model_ids", return_value=codex_models):
             result = validate_requested_model("totally-wrong", "openai-codex")
-        assert result["accepted"] is False
+        assert result["accepted"] is True
         assert result["recognized"] is False
         assert result.get("corrected_model") is None
         assert "not found" in result["message"]
