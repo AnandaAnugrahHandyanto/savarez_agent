@@ -1,13 +1,9 @@
 import { useI18n } from "@/i18n/context";
 
-/**
- * Compact language toggle — shows a clickable flag that switches between
- * English and Chinese.  Persists choice to localStorage.
- */
 export function LanguageSwitcher() {
   const { locale, setLocale, t } = useI18n();
 
-  const toggle = () => setLocale(locale === "en" ? "zh" : "en");
+  const toggle = () => setLocale(locale === "en" ? "ru" : "en");
 
   return (
     <button
@@ -17,10 +13,9 @@ export function LanguageSwitcher() {
       title={t.language.switchTo}
       aria-label={t.language.switchTo}
     >
-      {/* Show the *current* language's flag — tooltip advertises the click action */}
-      <span className="text-base leading-none">{locale === "en" ? "🇬🇧" : "🇨🇳"}</span>
+      <span className="text-base leading-none">{locale === "en" ? "🇬🇧" : "🇷🇺"}</span>
       <span className="hidden sm:inline font-display tracking-wide uppercase text-[0.65rem]">
-        {locale === "en" ? "EN" : "中文"}
+        {locale === "en" ? "EN" : "RU"}
       </span>
     </button>
   );

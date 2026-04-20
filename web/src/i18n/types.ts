@@ -1,4 +1,4 @@
-export type Locale = "en" | "zh";
+export type Locale = "en" | "ru";
 
 export interface Translations {
   // ── Common ──
@@ -50,6 +50,8 @@ export interface Translations {
     brand: string;
     brandShort: string;
     webUi: string;
+    openMenu: string;
+    closeMenu: string;
     footer: {
       name: string;
       org: string;
@@ -142,6 +144,18 @@ export interface Translations {
     dismissError: string;
     sendFailed: string;
     hotkeysHint: string;
+    openHelpMenu: string;
+    closeHelpMenu: string;
+    helpMenuTitle: string;
+    helpMenuDescription: string;
+    commandsMenuShow: string;
+    commandsMenuHide: string;
+    helpNewLine: string;
+    helpFocus: string;
+    helpDismissError: string;
+    helpNewSession: string;
+    helpStopGeneration: string;
+    helpCopySession: string;
     sessionCopied: string;
     sessionCopyFailed: string;
     copyMessage: string;

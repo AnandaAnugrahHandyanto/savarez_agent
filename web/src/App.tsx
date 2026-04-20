@@ -1,10 +1,10 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Routes, Route, NavLink, Navigate } from "react-router-dom";
 import {
   Activity, BarChart3, Clock, FileText, KeyRound,
-  MessageSquare, Package, Settings, Puzzle,
+  Menu, MessageSquare, Package, Settings, Puzzle,
   MessagesSquare, Sparkles, Terminal, Globe, Database, Shield,
-  Wrench, Zap, Heart, Star, Code, Eye,
+  Wrench, X, Zap, Heart, Star, Code, Eye,
 } from "lucide-react";
 import StatusPage from "@/pages/StatusPage";
 import ConfigPage from "@/pages/ConfigPage";
@@ -17,6 +17,7 @@ import SkillsPage from "@/pages/SkillsPage";
 import ChatPage from "@/pages/ChatPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
+import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
 import { usePlugins } from "@/plugins";
 import type { RegisteredPlugin } from "@/plugins";
@@ -98,6 +99,7 @@ function buildNavItems(builtIn: NavItem[], plugins: RegisteredPlugin[]): NavItem
 export default function App() {
   const { t } = useI18n();
   const { plugins } = usePlugins();
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const navItems = useMemo(
     () => buildNavItems(BUILTIN_NAV, plugins),
@@ -117,7 +119,7 @@ export default function App() {
             </span>
           </div>
 
-          <nav className="flex items-stretch overflow-x-auto scrollbar-none">
+          <nav className="hidden sm:flex items-stretch overflow-x-auto scrollbar-none">
             {navItems.map(({ path, label, labelKey, icon: Icon }) => (
               <NavLink
                 key={path}
@@ -148,6 +150,17 @@ export default function App() {
           </nav>
 
           <div className="ml-auto flex items-center gap-2 px-2 sm:px-4">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="sm:hidden"
+              aria-label={menuOpen ? t.app.closeMenu : t.app.openMenu}
+              title={menuOpen ? t.app.closeMenu : t.app.openMenu}
+              onClick={() => setMenuOpen((prev) => !prev)}
+            >
+              {menuOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
+            </Button>
             <ThemeSwitcher />
             <LanguageSwitcher />
             <span className="hidden sm:inline font-display text-[0.7rem] tracking-[0.15em] uppercase opacity-50">
@@ -155,6 +168,28 @@ export default function App() {
             </span>
           </div>
         </div>
+        {menuOpen && (
+          <div className="border-t border-border bg-background/95 sm:hidden">
+            <nav className="mx-auto grid max-w-[1400px] grid-cols-2">
+              {navItems.map(({ path, label, labelKey, icon: Icon }) => (
+                <NavLink
+                  key={path}
+                  to={path}
+                  end={path === "/"}
+                  onClick={() => setMenuOpen(false)}
+                  className={({ isActive }) =>
+                    `group relative inline-flex items-center gap-2 border-r border-b border-border px-3 py-3 font-display text-[0.68rem] tracking-[0.12em] uppercase transition-colors ${
+                      isActive ? "text-foreground bg-foreground/5" : "text-muted-foreground hover:text-foreground"
+                    }`
+                  }
+                >
+                  <Icon className="h-4 w-4 shrink-0" />
+                  <span>{labelKey ? (t.app.nav as Record<string, string>)[labelKey] ?? label : label}</span>
+                </NavLink>
+              ))}
+            </nav>
+          </div>
+        )}
       </header>
 
       <main className="relative z-2 mx-auto w-full max-w-[1400px] flex-1 px-3 sm:px-6 pt-16 sm:pt-20 pb-4 sm:pb-8">

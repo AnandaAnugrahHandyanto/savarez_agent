@@ -1,19 +1,19 @@
 import { createContext, useContext, useState, useCallback, type ReactNode } from "react";
 import type { Locale, Translations } from "./types";
 import { en } from "./en";
-import { zh } from "./zh";
+import { ru } from "./ru";
 
-const TRANSLATIONS: Record<Locale, Translations> = { en, zh };
+const TRANSLATIONS: Record<Locale, Translations> = { en, ru };
 const STORAGE_KEY = "hermes-locale";
 
 function getInitialLocale(): Locale {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === "en" || stored === "zh") return stored;
+    if (stored === "en" || stored === "ru") return stored;
   } catch {
     // SSR or privacy mode
   }
-  return "en";
+  return "ru";
 }
 
 interface I18nContextValue {

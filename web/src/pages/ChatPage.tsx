@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDown, Copy, Link2, Loader2, MessageSquare, Plus, RefreshCw, Search, Send, Sparkles, Square, Trash2, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowDown, Copy, Link2, Loader2, Menu, MessageSquare, Plus, RefreshCw, Search, Send, Sparkles, Square, Trash2, X } from "lucide-react";
 import { api } from "@/lib/api";
 import type { SessionInfo, SessionMessage } from "@/lib/api";
 import { Markdown } from "@/components/Markdown";
@@ -10,10 +10,6 @@ import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/useToast";
 import { useI18n } from "@/i18n";
 
-type ChatHotkeysHintProps = {
-  hint: string;
-};
-
 type ChatBubbleProps = {
   msg: SessionMessage;
   pending?: boolean;
@@ -22,11 +18,8 @@ type ChatBubbleProps = {
   copyLabel?: string;
 };
 
-function ChatHotkeysHint({ hint }: ChatHotkeysHintProps) {
-  return <div className="text-[11px] text-muted-foreground">{hint}</div>;
-}
-
 function ChatBubble({ msg, pending = false, timestampLabel, onCopy, copyLabel }: ChatBubbleProps) {
+  const { t } = useI18n();
   const isUser = msg.role === "user";
   const isAssistant = msg.role === "assistant";
   const badgeClass = isUser
@@ -35,6 +28,7 @@ function ChatBubble({ msg, pending = false, timestampLabel, onCopy, copyLabel }:
       ? "bg-success/12 text-success"
       : "bg-secondary text-muted-foreground";
   const content = msg.content ?? "";
+  const roleLabel = t.sessions.roles[msg.role as keyof typeof t.sessions.roles] ?? msg.role;
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
@@ -44,7 +38,7 @@ function ChatBubble({ msg, pending = false, timestampLabel, onCopy, copyLabel }:
         <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <span className={`inline-flex px-2 py-0.5 text-[10px] uppercase tracking-[0.14em] ${badgeClass}`}>
-              {msg.tool_name ? `${msg.role}: ${msg.tool_name}` : msg.role}
+              {msg.tool_name ? `${roleLabel}: ${msg.tool_name}` : roleLabel}
             </span>
             {pending && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
           </div>
@@ -109,9 +103,11 @@ export default function ChatPage() {
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [lastFailedMessage, setLastFailedMessage] = useState<string | null>(null);
   const [isPinnedToBottom, setIsPinnedToBottom] = useState(true);
+  const [helpMenuOpen, setHelpMenuOpen] = useState(false);
   const messageEndRef = useRef<HTMLDivElement>(null);
   const messageListRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const helpMenuRef = useRef<HTMLDivElement>(null);
   const sendAbortRef = useRef<AbortController | null>(null);
 
   const normalizedSearch = sessionSearch.trim().toLowerCase();
@@ -153,6 +149,8 @@ export default function ChatPage() {
     el.style.height = "0px";
     el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
   };
+
+  const closeHelpMenu = useCallback(() => setHelpMenuOpen(false), []);
 
   const copyText = async (text: string, successMessage: string, errorMessage: string) => {
     try {
@@ -230,6 +228,34 @@ export default function ChatPage() {
       sendAbortRef.current?.abort();
     };
   }, []);
+
+  useEffect(() => {
+    if (!sending) {
+      closeHelpMenu();
+    }
+  }, [sending, closeHelpMenu]);
+
+  useEffect(() => {
+    if (!helpMenuOpen) return;
+    const handler = (event: MouseEvent) => {
+      if (helpMenuRef.current && !helpMenuRef.current.contains(event.target as Node)) {
+        closeHelpMenu();
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [helpMenuOpen, closeHelpMenu]);
+
+  useEffect(() => {
+    if (!helpMenuOpen) return;
+    const handler = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeHelpMenu();
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [helpMenuOpen, closeHelpMenu]);
 
   const cancelGeneration = () => {
     sendAbortRef.current?.abort();
@@ -586,10 +612,52 @@ export default function ChatPage() {
                     }
                   }}
                 />
-                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                  <div className="space-y-1">
-                    <ChatHotkeysHint hint={t.chat.hotkeysHint} />
-                    {sending && <div className="text-xs text-muted-foreground">{t.chat.typing}</div>}
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+                  <div className="space-y-2">
+                    <div className="text-[11px] text-muted-foreground">{t.chat.hotkeysHint}</div>
+                    <div ref={helpMenuRef} className="relative inline-flex flex-col items-start gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setHelpMenuOpen((prev) => !prev)}
+                          aria-label={helpMenuOpen ? t.chat.closeHelpMenu : t.chat.openHelpMenu}
+                          title={helpMenuOpen ? t.chat.closeHelpMenu : t.chat.openHelpMenu}
+                          aria-expanded={helpMenuOpen}
+                          aria-haspopup="dialog"
+                        >
+                          {helpMenuOpen ? <X className="h-3.5 w-3.5" /> : <Menu className="h-3.5 w-3.5" />}
+                          {helpMenuOpen ? t.chat.commandsMenuHide : t.chat.commandsMenuShow}
+                        </Button>
+                        {sending && <div className="text-xs text-muted-foreground">{t.chat.typing}</div>}
+                      </div>
+                      {helpMenuOpen && (
+                        <div
+                          role="dialog"
+                          aria-label={t.chat.helpMenuTitle}
+                          className="absolute left-0 bottom-full z-20 mb-2 w-[min(92vw,30rem)] border border-border bg-popover text-popover-foreground shadow-lg"
+                        >
+                          <div className="border-b border-border px-3 py-2">
+                            <div className="font-medium text-foreground">{t.chat.helpMenuTitle}</div>
+                            <div className="mt-1 text-xs text-muted-foreground">{t.chat.helpMenuDescription}</div>
+                          </div>
+                          <div className="grid gap-2 px-3 py-3 text-xs text-muted-foreground sm:grid-cols-2">
+                            <div className="space-y-1">
+                              <div className="font-medium text-foreground/90">{t.chat.commandsMenuShow}</div>
+                              <div>{t.chat.helpNewLine}</div>
+                              <div>{t.chat.helpFocus}</div>
+                            </div>
+                            <div className="space-y-1">
+                              <div className="font-medium text-foreground/90">{t.chat.helpMenuTitle}</div>
+                              <div>{t.chat.helpDismissError}</div>
+                              <div>{t.chat.helpNewSession}</div>
+                              <div>{sending ? t.chat.helpStopGeneration : t.chat.helpCopySession}</div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   </div>
                   <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
                     {sending ? (
