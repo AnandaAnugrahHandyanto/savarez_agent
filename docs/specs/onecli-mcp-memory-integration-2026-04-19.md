@@ -266,3 +266,71 @@ The validated end state for Hermes Spark is:
 - real provider validation: passed
 - bootstrap dependency for proxy material: removed
 - bootstrap dependency for CA material: reduced to fallback only
+
+## Hermes Spark cleanup and final state
+
+Update: 2026-04-20
+
+The Hermes Spark client-node cutover needed two additional cleanup passes after
+the initial handoff.
+
+### Handoff bundle defects
+
+Two handoff bundles were operationally invalid and had to be corrected locally
+before Hermes could run reliably:
+
+- `v2` still contained localhost-style proxy targets and authority-local CA
+  paths
+- `v3` still contained malformed proxy URLs of the form
+  `http://x://x:<token>@host:port`
+
+The final installed env file on `rj-spark` was corrected in place so that:
+
+- every proxy variable parses as:
+  - scheme `http`
+  - username `x`
+  - host `openclaw-gcp.tailc13f7e.ts.net`
+  - port `10255`
+- `ONECLI_GATEWAY_URL` is:
+  - `http://openclaw-gcp.tailc13f7e.ts.net:10255`
+- CA paths point at:
+  - `~/.config/onecli/certs/combined-ca.pem`
+  - `~/.config/onecli/certs/gateway-ca.pem`
+- `api.telegram.org` remains in `NO_PROXY` and `no_proxy`
+
+### Telegram startup impact
+
+The Telegram bot token was not changed during the OneCli proxy-token rotation.
+Telegram bot identity remains local on the machine and continues to come from:
+
+- `~/.hermes/.env`
+
+What changed was the Hermes Spark OneCli env. When Hermes was restarted under
+the malformed handoff env, Telegram startup also failed and systemd eventually
+placed `hermes-gateway.service` into the restart-limited failed state.
+
+After the env file was corrected:
+
+- OneCli provider probes succeeded again
+- direct Telegram egress probes succeeded again
+- `systemctl --user reset-failed hermes-gateway.service`
+- `systemctl --user restart hermes-gateway.service`
+
+restored the live gateway, and Telegram returned to the connected state.
+
+### Current operational truth
+
+For Hermes Spark on `rj-spark`:
+
+- provider traffic uses the dedicated OneCli client env at
+  `~/.config/onecli/hermes-spark-proxy.env`
+- provider traffic goes through the authority proxy on
+  `openclaw-gcp.tailc13f7e.ts.net:10255`
+- `10254` is not part of the normal runtime path
+- the old `hermes-onecli-api.service` local authority service was removed
+- obsolete secret-bearing handoff directories were deleted after installation
+
+One leftover cleanup item remains local to the machine:
+
+- `~/.hermes/onecli-backend` still contains a root-owned sandbox subtree from
+  the former local backend and cannot be fully removed without root access
