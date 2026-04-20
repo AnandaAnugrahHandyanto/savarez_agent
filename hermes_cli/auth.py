@@ -1652,7 +1652,7 @@ def _resolve_verify(
     insecure: Optional[bool] = None,
     ca_bundle: Optional[str] = None,
     auth_state: Optional[Dict[str, Any]] = None,
-) -> bool | str:
+) -> "bool | str | ssl.SSLContext":  # noqa: F821
     tls_state = auth_state.get("tls") if isinstance(auth_state, dict) else {}
     tls_state = tls_state if isinstance(tls_state, dict) else {}
 
@@ -1678,7 +1678,8 @@ def _resolve_verify(
                 ca_path,
             )
             return True
-        return ca_path
+        import ssl
+        return ssl.create_default_context(cafile=ca_path)
     return True
 
 
