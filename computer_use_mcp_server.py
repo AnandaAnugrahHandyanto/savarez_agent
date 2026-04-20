@@ -72,6 +72,10 @@ def _session_payload(record: dict[str, Any]) -> dict[str, Any]:
         "active": bool(record.get("active")),
         "approved": bool(record.get("approved")),
         "virtual_cursor": cursor,
+        "bundle_id": record.get("bundle_id", ""),
+        "process_id": record.get("process_id"),
+        "window_id": record.get("window_id"),
+        "window_bounds": record.get("window_bounds"),
         "window_title": record.get("window_title", ""),
         "screenshot_path": record.get("screenshot_path", ""),
         "overlay_screenshot_path": overlay_path,
@@ -347,6 +351,36 @@ def _is_app_approved(app_name: str | None) -> bool:
     return any(app.casefold() == wanted for app in _load_approved_apps())
 
 
+def _frontmost_identity_candidates(frontmost: dict[str, Any]) -> list[str]:
+    candidates: list[str] = []
+
+    def _append(raw_value: Any) -> None:
+        normalized = _normalize_app_name(raw_value)
+        if not normalized:
+            return
+        if any(existing.casefold() == normalized.casefold() for existing in candidates):
+            return
+        candidates.append(normalized)
+
+    _append(frontmost.get("app_name"))
+    _append(frontmost.get("bundle_name"))
+    _append(frontmost.get("bundle_id"))
+    return candidates
+
+
+def _frontmost_matches_requested(requested_app: str | None, frontmost: dict[str, Any]) -> bool:
+    wanted = _normalize_app_name(requested_app)
+    if not wanted:
+        return False
+    return any(candidate.casefold() == wanted.casefold() for candidate in _frontmost_identity_candidates(frontmost))
+
+
+def _frontmost_is_approved(frontmost: dict[str, Any], requested_app: str | None = None) -> bool:
+    if requested_app:
+        return _is_app_approved(requested_app) and _frontmost_matches_requested(requested_app, frontmost)
+    return any(_is_app_approved(candidate) for candidate in _frontmost_identity_candidates(frontmost))
+
+
 def list_active_sessions_impl() -> dict[str, Any]:
     with _APP_SESSIONS_LOCK:
         active_sessions = _active_sessions()
@@ -549,7 +583,13 @@ def get_app_state_impl(app_name: str | None = None, app_session_id: str | None =
     if frontmost.get("error"):
         return {"success": False, "error": frontmost["error"]}
 
-    screenshot = _decode(computer_control(action="screenshot"))
+    screenshot_kwargs: dict[str, Any] = {"action": "screenshot"}
+    frontmost_window_id = frontmost.get("window_id")
+    if frontmost_window_id is not None:
+        screenshot_kwargs["window_id"] = frontmost_window_id
+    screenshot = _decode(computer_control(**screenshot_kwargs))
+    if screenshot.get("error") and frontmost_window_id is not None:
+        screenshot = _decode(computer_control(action="screenshot"))
     if screenshot.get("error"):
         return {"success": False, "error": screenshot["error"]}
 
@@ -557,7 +597,11 @@ def get_app_state_impl(app_name: str | None = None, app_session_id: str | None =
     session = session or _ensure_app_session(frontmost_app_name or requested_app, active=True)
     session["active"] = True
     session["app_name"] = frontmost_app_name or requested_app or session.get("app_name", "desktop")
-    session["approved"] = _is_app_approved(session["app_name"])
+    session["approved"] = _frontmost_is_approved(frontmost, requested_app=requested_app)
+    session["bundle_id"] = str(frontmost.get("bundle_id") or "")
+    session["process_id"] = frontmost.get("process_id")
+    session["window_id"] = frontmost.get("window_id")
+    session["window_bounds"] = frontmost.get("window_bounds")
     session["window_title"] = frontmost.get("window_title", "")
     session["screenshot_path"] = screenshot.get("path", "")
     session.setdefault("virtual_cursor", _fresh_virtual_cursor())
@@ -565,6 +609,10 @@ def get_app_state_impl(app_name: str | None = None, app_session_id: str | None =
     return {
         "success": True,
         "app_name": frontmost_app_name,
+        "bundle_id": str(frontmost.get("bundle_id") or ""),
+        "process_id": frontmost.get("process_id"),
+        "window_id": frontmost.get("window_id"),
+        "window_bounds": frontmost.get("window_bounds"),
         "window_title": frontmost.get("window_title", ""),
         "screenshot_path": screenshot.get("path", ""),
         "media_tag": screenshot.get("media_tag"),

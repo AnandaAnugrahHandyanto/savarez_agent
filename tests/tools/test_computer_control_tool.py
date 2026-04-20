@@ -42,6 +42,20 @@ class TestHandlers:
         assert result["media_tag"] == f"MEDIA:{path}"
         assert seen["cmd"] == ["screencapture", "-x", str(path)]
 
+    def test_screenshot_can_target_specific_window_id(self, monkeypatch):
+        path = Path("/tmp/hermes-window-shot.png")
+        seen = {}
+
+        monkeypatch.setattr(cct, "_default_screenshot_path", lambda: path)
+        monkeypatch.setattr(cct, "_run_command", lambda cmd: seen.setdefault("cmd", cmd) or "")
+
+        result = json.loads(cct._handle_computer_control({"action": "screenshot", "window_id": 321}))
+
+        assert result["success"] is True
+        assert result["path"] == str(path)
+        assert result["window_id"] == 321
+        assert seen["cmd"] == ["screencapture", "-x", "-o", "-l321", str(path)]
+
     def test_activate_app_uses_osascript(self, monkeypatch):
         scripts = []
         monkeypatch.setattr(cct, "_run_osascript", lambda script: scripts.append(script) or "")
@@ -74,13 +88,26 @@ class TestHandlers:
         assert "key code 36 using {command down, shift down}" in scripts[0]
 
     def test_frontmost_app_parses_result(self, monkeypatch):
-        monkeypatch.setattr(cct, "_run_osascript", lambda script: "Finder\nDownloads")
+        monkeypatch.setattr(cct, "_frontmost_window_info", lambda: {
+            "app_name": "Finder",
+            "bundle_id": "com.apple.finder",
+            "bundle_name": "Finder",
+            "process_id": 111,
+            "window_title": "Downloads",
+            "window_id": 222,
+            "window_bounds": {"x": 10, "y": 20, "width": 300, "height": 200},
+        })
 
         result = json.loads(cct._handle_computer_control({"action": "frontmost_app"}))
 
         assert result["success"] is True
         assert result["app_name"] == "Finder"
+        assert result["bundle_id"] == "com.apple.finder"
+        assert result["bundle_name"] == "Finder"
+        assert result["process_id"] == 111
         assert result["window_title"] == "Downloads"
+        assert result["window_id"] == 222
+        assert result["window_bounds"] == {"x": 10, "y": 20, "width": 300, "height": 200}
 
     def test_keystroke_requires_text_or_key(self):
         result = json.loads(cct._handle_computer_control({"action": "keystroke"}))

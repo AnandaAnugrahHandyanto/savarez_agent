@@ -75,6 +75,10 @@ COMPUTER_CONTROL_SCHEMA = {
                 "type": "string",
                 "description": "Optional output path for action='screenshot'. Defaults to a timestamped PNG under the Hermes home directory.",
             },
+            "window_id": {
+                "type": "integer",
+                "description": "Optional macOS window id for action='screenshot'. When provided, capture that specific window instead of the whole display.",
+            },
             "text": {
                 "type": "string",
                 "description": "Literal text to type for action='keystroke'.",
@@ -169,6 +173,61 @@ end tell
 """.strip()
 
 
+def _window_helper_source() -> Path:
+    return Path(__file__).with_name("mac_window_info.swift")
+
+
+def _window_helper_binary() -> Path:
+    root = get_hermes_home() / "computer-control" / "bin"
+    root.mkdir(parents=True, exist_ok=True)
+    return root / "mac-window-info"
+
+
+def _ensure_window_helper_binary() -> Path:
+    source = _window_helper_source()
+    swiftc = shutil.which("swiftc")
+    if not swiftc or not source.exists():
+        raise RuntimeError("Window helper source or swiftc is unavailable.")
+    binary = _window_helper_binary()
+    needs_build = not binary.exists() or source.stat().st_mtime > binary.stat().st_mtime
+    if needs_build:
+        subprocess.run([swiftc, str(source), "-o", str(binary)], check=True, capture_output=True, text=True)
+    return binary
+
+
+def _frontmost_window_info() -> dict[str, object]:
+    try:
+        helper = _ensure_window_helper_binary()
+        raw = _run_command([str(helper)])
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+
+    raw = _run_osascript(_frontmost_app_script())
+    parts = raw.splitlines()
+    app = parts[0].strip() if parts else ""
+    window = parts[1].strip() if len(parts) > 1 else ""
+    return {
+        "app_name": app,
+        "bundle_id": "",
+        "bundle_name": "",
+        "process_id": None,
+        "window_title": window,
+        "window_id": None,
+        "window_bounds": None,
+    }
+
+
+def _screencapture_command(path: Path, *, window_id: int | None = None) -> list[str]:
+    cmd = ["screencapture", "-x"]
+    if window_id is not None:
+        cmd.extend(["-o", f"-l{int(window_id)}"])
+    cmd.append(str(path))
+    return cmd
+
+
 def _humanize_os_error(message: str) -> str:
     text = (message or "").strip()
     low = text.lower()
@@ -176,13 +235,15 @@ def _humanize_os_error(message: str) -> str:
         return "macOS blocked Automation/System Events access. Grant Hermes/Terminal the needed Automation or Accessibility permission in System Settings."
     if "could not create image from display" in low:
         return "macOS could not capture the display. This usually means Screen Recording permission is missing, the display is unavailable, or the current runtime cannot access the GUI session."
+    if "could not create image from window" in low:
+        return "macOS could not capture that specific window. The window may be unavailable, private, or unsupported for window-level capture from the current session."
     if "not permitted" in low or "screen recording" in low:
         return "macOS blocked screen capture. Grant Hermes/Terminal Screen Recording permission in System Settings."
     return text or "Desktop control command failed."
 
 
 def computer_control(*, action: str, app_name: str | None = None, target: str | None = None,
-                     output_path: str | None = None, text: str | None = None,
+                     output_path: str | None = None, window_id: int | None = None, text: str | None = None,
                      key: str | None = None, modifiers: list[str] | None = None) -> str:
     action_name = str(action or "").strip().lower()
     screenshot_path: Path | None = None
@@ -191,8 +252,11 @@ def computer_control(*, action: str, app_name: str | None = None, target: str | 
             path = Path(output_path).expanduser() if output_path else _default_screenshot_path()
             screenshot_path = path
             path.parent.mkdir(parents=True, exist_ok=True)
-            _run_command(["screencapture", "-x", str(path)])
+            normalized_window_id = int(window_id) if window_id is not None else None
+            _run_command(_screencapture_command(path, window_id=normalized_window_id))
             payload = {"success": True, "action": action_name, "path": str(path)}
+            if normalized_window_id is not None:
+                payload["window_id"] = normalized_window_id
             if " " not in str(path):
                 payload["media_tag"] = f"MEDIA:{path}"
             return json.dumps(payload, ensure_ascii=False)
@@ -222,15 +286,17 @@ def computer_control(*, action: str, app_name: str | None = None, target: str | 
             }, ensure_ascii=False)
 
         if action_name == "frontmost_app":
-            raw = _run_osascript(_frontmost_app_script())
-            parts = raw.splitlines()
-            app = parts[0].strip() if parts else ""
-            window = parts[1].strip() if len(parts) > 1 else ""
+            info = _frontmost_window_info()
             return json.dumps({
                 "success": True,
                 "action": action_name,
-                "app_name": app,
-                "window_title": window,
+                "app_name": str(info.get("app_name") or ""),
+                "bundle_id": str(info.get("bundle_id") or ""),
+                "bundle_name": str(info.get("bundle_name") or ""),
+                "process_id": info.get("process_id"),
+                "window_title": str(info.get("window_title") or ""),
+                "window_id": info.get("window_id"),
+                "window_bounds": info.get("window_bounds"),
             }, ensure_ascii=False)
 
         raise ValueError(f"Unknown action: {action}")
@@ -254,6 +320,7 @@ def _handle_computer_control(args, **_kw):
         app_name=args.get("app_name"),
         target=args.get("target"),
         output_path=args.get("output_path"),
+        window_id=args.get("window_id"),
         text=args.get("text"),
         key=args.get("key"),
         modifiers=args.get("modifiers"),

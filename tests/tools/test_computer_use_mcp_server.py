@@ -33,9 +33,10 @@ class TestGetAppState:
             if action == "activate_app":
                 return '{"success": true}'
             if action == "frontmost_app":
-                return '{"success": true, "app_name": "Safari", "window_title": "Docs"}'
+                return '{"success": true, "app_name": "Safari", "bundle_id": "com.apple.Safari", "bundle_name": "Safari", "process_id": 999, "window_title": "Docs", "window_id": 123, "window_bounds": {"x": 1, "y": 2, "width": 640, "height": 480}}'
             if action == "screenshot":
-                return '{"success": true, "path": "/tmp/shot.png", "media_tag": "MEDIA:/tmp/shot.png"}'
+                assert kwargs["window_id"] == 123
+                return '{"success": true, "path": "/tmp/shot.png", "media_tag": "MEDIA:/tmp/shot.png", "window_id": 123}'
             raise AssertionError(action)
 
         monkeypatch.setattr(adapter, "computer_control", fake_cc)
@@ -47,6 +48,10 @@ class TestGetAppState:
         assert result["approval_required"] is False
         assert result["app_name"] == "Safari"
         assert result["window_title"] == "Docs"
+        assert result["window_id"] == 123
+        assert result["window_bounds"] == {"x": 1, "y": 2, "width": 640, "height": 480}
+        assert result["bundle_id"] == "com.apple.Safari"
+        assert result["process_id"] == 999
         assert result["screenshot_path"] == "/tmp/shot.png"
         assert result["accessibility_tree"] == []
         assert result["virtual_cursor"] == {"x": None, "y": None, "detached": True, "visible": True}
@@ -66,6 +71,107 @@ class TestGetAppState:
 
         assert result["success"] is False
         assert "screen capture blocked" in result["error"]
+    def test_get_app_state_marks_session_approved_even_if_frontmost_name_is_localized(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+        adapter.approve_app_impl("TextEdit")
+
+        def fake_cc(**kwargs):
+            action = kwargs["action"]
+            if action == "activate_app":
+                return '{"success": true}'
+            if action == "frontmost_app":
+                return '{"success": true, "app_name": "文本编辑", "bundle_id": "com.apple.TextEdit", "bundle_name": "TextEdit", "process_id": 321, "window_title": "Notes", "window_id": 777, "window_bounds": {"x": 3, "y": 4, "width": 500, "height": 300}}'
+            if action == "screenshot":
+                return '{"success": true, "path": "/tmp/shot.png", "media_tag": "MEDIA:/tmp/shot.png", "window_id": 777}'
+            raise AssertionError(action)
+
+        monkeypatch.setattr(adapter, "computer_control", fake_cc)
+
+        result = adapter.get_app_state_impl(app_name="TextEdit")
+
+        assert result["success"] is True
+        assert result["approved"] is True
+        assert result["app_name"] == "文本编辑"
+        assert result["bundle_id"] == "com.apple.TextEdit"
+
+    def test_get_app_state_does_not_inherit_approval_from_requested_app_when_frontmost_differs(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+        adapter.approve_app_impl("TextEdit")
+
+        def fake_cc(**kwargs):
+            action = kwargs["action"]
+            if action == "activate_app":
+                return '{"success": true}'
+            if action == "frontmost_app":
+                return '{"success": true, "app_name": "Safari", "bundle_id": "com.apple.Safari", "bundle_name": "Safari", "process_id": 222, "window_title": "Other", "window_id": 888, "window_bounds": {"x": 5, "y": 6, "width": 700, "height": 400}}'
+            if action == "screenshot":
+                return '{"success": true, "path": "/tmp/shot.png", "media_tag": "MEDIA:/tmp/shot.png", "window_id": 888}'
+            raise AssertionError(action)
+
+        monkeypatch.setattr(adapter, "computer_control", fake_cc)
+
+        result = adapter.get_app_state_impl(app_name="TextEdit")
+
+        assert result["success"] is True
+        assert result["approved"] is False
+        assert result["app_name"] == "Safari"
+        assert result["bundle_id"] == "com.apple.Safari"
+
+    def test_get_app_state_does_not_trust_bundle_id_suffix_alone_for_approval(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+        adapter.approve_app_impl("TextEdit")
+
+        def fake_cc(**kwargs):
+            action = kwargs["action"]
+            if action == "activate_app":
+                return '{"success": true}'
+            if action == "frontmost_app":
+                return '{"success": true, "app_name": "Evil Notes", "bundle_id": "com.evil.TextEdit", "bundle_name": "Evil Notes", "process_id": 444, "window_title": "Trap", "window_id": 889, "window_bounds": {"x": 8, "y": 9, "width": 710, "height": 410}}'
+            if action == "screenshot":
+                return '{"success": true, "path": "/tmp/evil-shot.png", "media_tag": "MEDIA:/tmp/evil-shot.png", "window_id": 889}'
+            raise AssertionError(action)
+
+        monkeypatch.setattr(adapter, "computer_control", fake_cc)
+
+        result = adapter.get_app_state_impl(app_name="TextEdit")
+
+        assert result["success"] is True
+        assert result["approved"] is False
+        assert result["app_name"] == "Evil Notes"
+        assert result["bundle_id"] == "com.evil.TextEdit"
+
+    def test_get_app_state_falls_back_to_display_capture_when_window_capture_fails(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+        adapter.approve_app_impl("Safari")
+        calls = []
+
+        def fake_cc(**kwargs):
+            calls.append(kwargs)
+            action = kwargs["action"]
+            if action == "activate_app":
+                return '{"success": true}'
+            if action == "frontmost_app":
+                return '{"success": true, "app_name": "Safari", "bundle_id": "com.apple.Safari", "bundle_name": "Safari", "process_id": 999, "window_title": "Docs", "window_id": 123, "window_bounds": {"x": 1, "y": 2, "width": 640, "height": 480}}'
+            if action == "screenshot" and kwargs.get("window_id") == 123:
+                return '{"error": "window capture blocked"}'
+            if action == "screenshot":
+                assert "window_id" not in kwargs
+                return '{"success": true, "path": "/tmp/fallback-shot.png", "media_tag": "MEDIA:/tmp/fallback-shot.png"}'
+            raise AssertionError(action)
+
+        monkeypatch.setattr(adapter, "computer_control", fake_cc)
+
+        result = adapter.get_app_state_impl(app_name="Safari")
+
+        assert result["success"] is True
+        assert result["screenshot_path"] == "/tmp/fallback-shot.png"
+        assert [c["action"] for c in calls] == ["activate_app", "frontmost_app", "screenshot", "screenshot"]
+        assert calls[2]["window_id"] == 123
+        assert "window_id" not in calls[3]
 
 
 class TestApprovalAndSessions:
