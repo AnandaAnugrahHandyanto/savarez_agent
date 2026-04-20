@@ -106,18 +106,18 @@ def resolve_tier_config(cfg: dict, tier: Optional[str] = None) -> dict:
     if tier is not None and str(tier).strip():
         effective_tier = str(tier).strip().lower()
         if effective_tier not in SUPPORTED_TIERS:
-            logger.warning("unknown delegation tier '%s'; falling back to flat config", tier)
-            return merged
+            logger.warning("unknown delegation tier '%s'; proceeding with user-defined tier", tier)
     else:
         effective_tier = str(default_tier or "").strip().lower() or None
         if not effective_tier:
             return merged
         if effective_tier not in SUPPORTED_TIERS:
-            logger.warning("unknown default_tier '%s'; falling back to flat config", default_tier)
-            return merged
+            logger.warning("unknown default_tier '%s'; proceeding with user-defined tier", default_tier)
 
+    # Check if tier (built-in or user-defined) exists in config; if not, fall back to flat config
     tier_cfg = tiers.get(effective_tier)
     if not isinstance(tier_cfg, dict):
+        logger.warning("tier '%s' not defined in tiers config; falling back to flat config", effective_tier)
         return merged
 
     merged.update(tier_cfg)
@@ -1247,11 +1247,10 @@ DELEGATE_TASK_SCHEMA = {
                             "items": {"type": "string"},
                             "description": f"Toolsets for this specific task. Available: {_TOOLSET_LIST_STR}. Use 'web' for network access, 'terminal' for shell, 'browser' for web interaction.",
                         },
-                        "tier": {
-                            "type": "string",
-                            "enum": sorted(SUPPORTED_TIERS),
-                            "description": "Per-task complexity tier. Overrides the top-level tier for this task only.",
-                        },
+"tier": {
+    "type": "string",
+    "description": "Per-task complexity tier. Overrides the top-level tier for this task only. Can be a built-in tier (light, heavy, review, planning, research) or a user-defined tier from config.",
+},
                         "acp_command": {
                             "type": "string",
                             "description": "Per-task ACP command override (e.g. 'claude'). Overrides the top-level acp_command for this task only.",
@@ -1280,16 +1279,15 @@ DELEGATE_TASK_SCHEMA = {
                     "Only set lower for simple tasks."
                 ),
             },
-            "tier": {
-                "type": "string",
-                "enum": sorted(SUPPORTED_TIERS),
-                "description": (
-                    "Task complexity tier. Explicit values only: 'light' (fast/cheap lookups), "
-                    "'heavy' (default implementation/debugging), 'review' (deep analysis/code review), "
-                    "'planning' (strategy/architecture), 'research' (information gathering). "
-                    "Per-task tiers in tasks[] override this top-level tier."
-                ),
-            },
+"tier": {
+    "type": "string",
+    "description": (
+        "Task complexity tier. Can be a built-in tier (light, heavy, review, planning, research) "
+        "or a user-defined tier from config. Built-in tiers have predefined reasoning floors; "
+        "user-defined tiers require explicit config in the 'tiers' section. "
+        "Per-task tiers in tasks[] override this top-level tier."
+    ),
+},
             "acp_command": {
                 "type": "string",
                 "description": (

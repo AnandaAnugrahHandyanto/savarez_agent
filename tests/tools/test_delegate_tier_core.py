@@ -33,16 +33,20 @@ def _make_mock_parent(depth=0):
 
 
 class TestDelegateTierProfiles(unittest.TestCase):
-    def test_schema_exposes_explicit_tiers_but_not_auto(self):
+    def test_schema_allows_user_defined_tiers(self):
+        """Schema no longer restricts tier to a fixed enum; user-defined tiers are allowed."""
         props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
-        top_enum = props["tier"]["enum"]
-        task_enum = props["tasks"]["items"]["properties"]["tier"]["enum"]
-
-        for expected in ["light", "heavy", "review", "planning", "research"]:
-            self.assertIn(expected, top_enum)
-            self.assertIn(expected, task_enum)
-        self.assertNotIn("auto", top_enum)
-        self.assertNotIn("auto", task_enum)
+        
+        # tier field should exist and be a string type
+        self.assertEqual(props["tier"]["type"], "string")
+        
+        # enum should NOT be present - any string is allowed
+        self.assertNotIn("enum", props["tier"])
+        
+        # Check task-level tier as well
+        task_tier = props["tasks"]["items"]["properties"]["tier"]
+        self.assertEqual(task_tier["type"], "string")
+        self.assertNotIn("enum", task_tier)
 
     def test_resolve_tier_config_merges_default_and_applies_reasoning_floor(self):
         from tools.delegate_tool import resolve_tier_config
@@ -358,6 +362,103 @@ class TestDelegateTierProfiles(unittest.TestCase):
         self.assertEqual(first_kwargs["override_reasoning_effort"], "medium")
         self.assertEqual(second_kwargs["max_iterations"], 10)
         self.assertEqual(second_kwargs["override_reasoning_effort"], "low")
+
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._get_max_concurrent_children")
+    def test_user_defined_tier_accepted_with_warning(
+        self,
+        mock_max_children,
+        mock_load_config,
+        mock_resolve_creds,
+        mock_build_child,
+        mock_run_child,
+    ):
+        """User-defined tiers should be accepted (not rejected) but warn if not in config."""
+        mock_max_children.return_value = 1
+        mock_load_config.return_value = {
+            "model": "gpt-5.4-mini",
+            "reasoning_effort": "low",
+            "max_iterations": 25,
+            "tiers": {
+                "heavy": {"reasoning_effort": "medium", "max_iterations": 50},
+            },
+        }
+        mock_resolve_creds.return_value = {
+            "model": "gpt-5.4-mini",
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        mock_build_child.return_value = MagicMock()
+        mock_run_child.return_value = {"task_index": 0, "status": "completed", "summary": "done", "api_calls": 1, "duration_seconds": 0.1}
+
+        # User-defined tier not in config should fall back to flat config with warning
+        result = json.loads(
+            delegate_task(
+                tier="my_custom_tier",
+                goal="test custom tier",
+                parent_agent=_make_mock_parent(),
+            )
+        )
+
+        # Should complete with default config (tier not in config, so falls back)
+        self.assertIn("results", result)
+        self.assertEqual(len(result["results"]), 1)
+        self.assertEqual(result["results"][0]["status"], "completed")
+
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._get_max_concurrent_children")
+    def test_user_defined_tier_with_config(
+        self,
+        mock_max_children,
+        mock_load_config,
+        mock_resolve_creds,
+        mock_build_child,
+        mock_run_child,
+    ):
+        """User-defined tier with proper config should work like built-in tiers."""
+        mock_max_children.return_value = 1
+        mock_load_config.return_value = {
+            "model": "gpt-5.4-mini",
+            "reasoning_effort": "low",
+            "max_iterations": 25,
+            "tiers": {
+                "my_custom_tier": {"reasoning_effort": "high", "max_iterations": 100},
+            },
+        }
+        mock_resolve_creds.return_value = {
+            "model": "gpt-5.4-mini",
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        mock_build_child.return_value = MagicMock()
+        mock_run_child.return_value = {"task_index": 0, "status": "completed", "summary": "done", "api_calls": 1, "duration_seconds": 0.1}
+
+        result = json.loads(
+            delegate_task(
+                tier="my_custom_tier",
+                goal="test custom tier with config",
+                parent_agent=_make_mock_parent(),
+            )
+        )
+
+        # Should complete with custom tier config applied
+        self.assertIn("results", result)
+        self.assertEqual(len(result["results"]), 1)
+        self.assertEqual(result["results"][0]["status"], "completed")
+        # Verify the custom tier config was applied
+        call_kwargs = mock_build_child.call_args.kwargs
+        self.assertEqual(call_kwargs["max_iterations"], 100)
+        self.assertEqual(call_kwargs["override_reasoning_effort"], "high")
 
 
 if __name__ == "__main__":
