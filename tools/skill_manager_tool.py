@@ -80,17 +80,28 @@ import yaml
 HERMES_HOME = get_hermes_home()
 SKILLS_DIR = HERMES_HOME / "skills"
 
+# User-created skills go to this directory (separate from bundled)
+# Honors HERMES_USER_SKILLS_DIR env var, falls back to ~/agent-skills/skills
+from hermes_constants import get_user_skills_dir
+_USER_SKILLS_DIR = get_user_skills_dir()
+
 MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
 
 
 def _is_local_skill(skill_path: Path) -> bool:
-    """Check if a skill path is within the local SKILLS_DIR.
+    """Check if a skill path is within a writable skill directory.
 
+    Skills in SKILLS_DIR or _USER_SKILLS_DIR are considered local (writable).
     Skills found in external_dirs are read-only from the agent's perspective.
     """
     try:
         skill_path.resolve().relative_to(SKILLS_DIR.resolve())
+        return True
+    except ValueError:
+        pass
+    try:
+        skill_path.resolve().relative_to(_USER_SKILLS_DIR)
         return True
     except ValueError:
         return False
