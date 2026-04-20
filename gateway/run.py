@@ -4203,10 +4203,26 @@ class GatewayRunner:
                 # disconnects.  400 messages is well above normal sessions
                 # but catches runaway growth before it becomes unrecoverable.
                 # (#2153)
-                _HARD_MSG_LIMIT = 400
-                _needs_compress = (
-                    _approx_tokens >= _compress_token_threshold
-                    or _msg_count >= _HARD_MSG_LIMIT
+                # Configurable via gateway.session_hygiene.max_messages (0 = disabled).
+                _hyg_hygiene_cfg = (
+                    _hyg_data.get("gateway", {}).get("session_hygiene", {})
+                    if isinstance(_hyg_data, dict) else {}
+                )
+                _raw_msg_limit = _hyg_hygiene_cfg.get("max_messages", 400)
+                try:
+                    _HARD_MSG_LIMIT = int(_raw_msg_limit)
+                except (TypeError, ValueError):
+                    _HARD_MSG_LIMIT = 400
+                # 0 means disabled
+                _msg_limit_enabled = _HARD_MSG_LIMIT > 0
+
+                _needs_compress = _approx_tokens >= _compress_token_threshold or (
+                    _msg_limit_enabled and _msg_count >= _HARD_MSG_LIMIT
+                )
+                _hygiene_reason = (
+                    "message_count"
+                    if (_msg_limit_enabled and _msg_count >= _HARD_MSG_LIMIT)
+                    else "token_pressure"
                 )
 
                 if _needs_compress:
@@ -4285,6 +4301,31 @@ class GatewayRunner:
                                         _msg_count, _new_count,
                                         f"{_approx_tokens:,}", f"{_new_tokens:,}",
                                     )
+
+                                    # Notify the user when compaction was triggered by message count
+                                    # (not token pressure) so the behaviour is not surprising.
+                                    if _hygiene_reason == "message_count":
+                                        try:
+                                            _notice = (
+                                                f"ℹ️ **Session auto-compacted** — your conversation reached "
+                                                f"{_msg_count} messages (limit: {_HARD_MSG_LIMIT}). "
+                                                f"Earlier context was summarized to keep things running smoothly. "
+                                                f"Token pressure was only "
+                                                f"{min(100, int(_approx_tokens / _hyg_context_length * 100))}% "
+                                                f"of the context window.\n"
+                                                f"_To adjust the limit: set `gateway.session_hygiene.max_messages` "
+                                                f"in config.yaml. Set to `0` to disable the message-count valve._"
+                                            )
+                                            _hyg_adapter = self.adapters.get(source.platform)
+                                            if _hyg_adapter:
+                                                _hyg_thread_meta = {"thread_id": source.thread_id} if source.thread_id else None
+                                                await _hyg_adapter._send_with_retry(
+                                                    chat_id=source.chat_id,
+                                                    content=_notice,
+                                                    metadata=_hyg_thread_meta,
+                                                )
+                                        except Exception:
+                                            pass
 
                                     if _new_tokens >= _warn_token_threshold:
                                         logger.warning(
@@ -7298,6 +7339,21 @@ class GatewayRunner:
             if ctx.compression_count:
                 lines.append(f"Compressions: {ctx.compression_count}")
 
+            # Message count vs hygiene limit
+            try:
+                _usage_session_entry = self.session_store.get_or_create_session(source)
+                _usage_history = self.session_store.load_transcript(_usage_session_entry.session_id)
+                _usage_msg_count = len(_usage_history) if _usage_history else 0
+                _usage_hygiene_cfg = self.config.get("gateway", {}).get("session_hygiene", {}) if isinstance(self.config, dict) else {}
+                _usage_msg_limit = int(_usage_hygiene_cfg.get("max_messages", 400))
+                if _usage_msg_limit > 0:
+                    _usage_msg_pct = min(100, _usage_msg_count * 100 // _usage_msg_limit)
+                    lines.append(f"Messages: {_usage_msg_count} / {_usage_msg_limit} ({_usage_msg_pct}%)")
+                    if _usage_msg_count >= _usage_msg_limit * 0.9:
+                        lines.append("⚠️ _Approaching message limit — session may auto-compact soon_")
+            except Exception:
+                pass
+
             return "\n".join(lines)
 
         # No agent at all -- check session history for a rough count
@@ -7307,12 +7363,17 @@ class GatewayRunner:
             from agent.model_metadata import estimate_messages_tokens_rough
             msgs = [m for m in history if m.get("role") in ("user", "assistant") and m.get("content")]
             approx = estimate_messages_tokens_rough(msgs)
-            return (
-                f"📊 **Session Info**\n"
-                f"Messages: {len(msgs)}\n"
-                f"Estimated context: ~{approx:,} tokens\n"
-                f"_(Detailed usage available after the first agent response)_"
-            )
+            _fb_hygiene_cfg = self.config.get("gateway", {}).get("session_hygiene", {}) if isinstance(self.config, dict) else {}
+            _fb_msg_limit = int(_fb_hygiene_cfg.get("max_messages", 400))
+            _fb_lines = [
+                "📊 **Session Info**",
+                f"Messages: {len(msgs)}" + (f" / {_fb_msg_limit} ({min(100, len(msgs)*100//_fb_msg_limit)}%)" if _fb_msg_limit > 0 else ""),
+                f"Estimated context: ~{approx:,} tokens",
+                "_(Detailed usage available after the first agent response)_",
+            ]
+            if _fb_msg_limit > 0 and len(msgs) >= _fb_msg_limit * 0.9:
+                _fb_lines.insert(2, "⚠️ _Approaching message limit — session may auto-compact soon_")
+            return "\n".join(_fb_lines)
         return "No usage data available for this session."
 
     async def _handle_insights_command(self, event: MessageEvent) -> str:
