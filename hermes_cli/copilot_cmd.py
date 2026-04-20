@@ -11,7 +11,7 @@ import json
 import sys
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from hermes_state import SessionDB
 
@@ -19,6 +19,11 @@ from hermes_state import SessionDB
 def _get_db() -> SessionDB:
     """Get a SessionDB instance using the standard Hermes home."""
     return SessionDB()
+
+
+def _connect_handle(job: dict) -> str:
+    """Return the best external handle for connect/resume."""
+    return job.get("signal_ref") or job["id"]
 
 
 def _relative_time(ts) -> str:
@@ -35,6 +40,13 @@ def _relative_time(ts) -> str:
     if delta < 172800:
         return "yesterday"
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+
+
+def _utc_time(ts) -> str:
+    """Format a timestamp as a UTC ISO-8601 string."""
+    if not ts:
+        return "-"
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
 
 
 def _state_badge(state: str) -> str:
@@ -133,14 +145,18 @@ def copilot_launch(args):
         db.close()
         raise
 
+    connect_handle = result.get("connect_id") or job_id
+    if connect_handle != job_id:
+        db.update_copilot_job_signal_ref(job_id, connect_handle)
+
     # For dry-run, the process already completed synchronously.
     if getattr(args, "dry_run", False):
         print(f"  State: {_state_badge('done')}")
     else:
         print(f"  State: 🟢 running")
 
-    print(f"\n  Connect: copilot --connect={job_id}")
-    print(f"  Resume:  copilot --resume={job_id}")
+    print(f"\n  Connect: copilot --connect={connect_handle}")
+    print(f"  Resume:  copilot --resume={connect_handle}")
 
     db.close()
 
@@ -157,15 +173,15 @@ def copilot_list(args):
             print("No copilot jobs found.")
             return
 
-        fmt = "{:<38s} {:<20s} {:<12s} {:<14s}"
-        print(fmt.format("ID", "REPO", "STATE", "CREATED"))
-        print("-" * 88)
+        fmt = "{:<38s} {:<20s} {:<12s} {:<21s}"
+        print(fmt.format("ID", "REPO", "STATE", "CREATED (UTC)"))
+        print("-" * 95)
         for job in jobs:
             print(fmt.format(
                 job["id"][:38],
                 (job["repo_slug"] or "")[:20],
                 _state_badge(job["state"])[:12],
-                _relative_time(job["created_at"]),
+                _utc_time(job["created_at"]),
             ))
     finally:
         db.close()
@@ -192,7 +208,7 @@ def copilot_show(args):
             preview = job["prompt"][:120] + ("..." if len(job["prompt"]) > 120 else "")
             print(f"Prompt:   {preview}")
 
-        sid = job["id"]
+        sid = _connect_handle(job)
         print(f"Connect:  copilot --connect={sid}")
         print(f"Resume:   copilot --resume={sid}")
 

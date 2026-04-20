@@ -105,6 +105,16 @@ class TestSlashShow:
         assert "show-repo" in out
         assert "connect" in out.lower()
 
+    def test_show_prefers_external_connect_handle(self, db):
+        db.create_copilot_job(
+            job_id="eeeeeeee-0000-0000-0000-000000000001",
+            repo_slug="show-repo",
+            repo_path="/show",
+            signal_ref="task-123",
+        )
+        out = _capture_slash("/copilot show eeeeeeee-0000-0000-0000-000000000001")
+        assert "copilot --connect=task-123" in out
+
     def test_show_nonexistent(self):
         out = _capture_slash("/copilot show dddddddd-0000-0000-0000-999999999999")
         assert "not found" in out.lower()

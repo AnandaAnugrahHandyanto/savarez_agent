@@ -1393,6 +1393,19 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def update_copilot_job_signal_ref(
+        self,
+        job_id: str,
+        signal_ref: str,
+    ) -> None:
+        """Update the external connect/resume handle for a copilot job."""
+        def _do(conn):
+            conn.execute(
+                "UPDATE copilot_jobs SET signal_ref = ? WHERE id = ?",
+                (signal_ref, job_id),
+            )
+        self._execute_write(_do)
+
     def get_copilot_job(self, job_id: str) -> Optional[Dict[str, Any]]:
         """Get a copilot job by ID."""
         with self._lock:

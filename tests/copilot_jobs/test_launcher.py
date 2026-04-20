@@ -3,10 +3,13 @@
 import json
 import os
 import threading
+from pathlib import Path
 
 import pytest
 
 from copilot_jobs.launcher import (
+    _parse_remote_task_id,
+    _resolve_copilot_bin,
     build_copilot_command,
     launch_copilot,
     parse_copilot_output,
@@ -87,22 +90,19 @@ class TestBuildCopilotCommand:
     def test_basic_command(self):
         cmd = build_copilot_command("fix the tests")
         assert cmd[0] == "copilot"
-        assert "-p" in cmd
+        # Interactive mode required for --remote/--connect to work.
+        assert "-i" in cmd
         assert "fix the tests" in cmd
         assert "--allow-all" in cmd
-        assert "--silent" in cmd
         assert "--remote" in cmd
         assert "--no-auto-update" in cmd
         assert "--no-ask-user" in cmd
 
-    def test_json_output_default(self):
+    def test_no_silent_or_json_output(self):
+        # --silent and --output-format json conflict with the interactive
+        # TUI required by --remote/--connect.
         cmd = build_copilot_command("test")
-        assert "--output-format" in cmd
-        idx = cmd.index("--output-format")
-        assert cmd[idx + 1] == "json"
-
-    def test_no_json_output(self):
-        cmd = build_copilot_command("test", json_output=False)
+        assert "--silent" not in cmd
         assert "--output-format" not in cmd
 
     def test_custom_model(self):
@@ -124,6 +124,38 @@ class TestBuildCopilotCommand:
     def test_no_session_id_no_resume(self):
         cmd = build_copilot_command("test")
         assert "--resume" not in cmd
+
+
+class TestResolveCopilotBin:
+    def test_prefers_which_result(self, monkeypatch):
+        monkeypatch.setattr("copilot_jobs.launcher.shutil.which", lambda name: "/custom/bin/copilot")
+        assert _resolve_copilot_bin("copilot") == "/custom/bin/copilot"
+
+    def test_returns_explicit_path_when_missing(self, monkeypatch):
+        monkeypatch.setattr("copilot_jobs.launcher.shutil.which", lambda name: None)
+        assert _resolve_copilot_bin("/opt/copilot/bin/copilot") == "/opt/copilot/bin/copilot"
+
+    def test_falls_back_to_known_install_location(self, monkeypatch, tmp_path):
+        candidate = tmp_path / "copilot"
+        candidate.write_text("#!/bin/sh\n", encoding="utf-8")
+
+        monkeypatch.setattr("copilot_jobs.launcher.shutil.which", lambda name: None)
+        monkeypatch.setattr("copilot_jobs.launcher._DEFAULT_COPILOT_PATHS", [str(candidate)])
+
+        assert _resolve_copilot_bin("copilot") == str(candidate)
+
+
+class TestParseRemoteTaskId:
+    def test_extracts_task_id_for_requested_session(self):
+        log_text = """
+2026-04-20T15:36:12.106Z [INFO] Creating new session with provided ID: requested-session
+2026-04-20T15:36:13.192Z [INFO] Remote session active (steerable): https://github.com/org/repo/tasks/2c9fa2a9-5ee6-4504-9fd0-afa54132b304
+        """
+        assert _parse_remote_task_id(log_text, "requested-session") == "2c9fa2a9-5ee6-4504-9fd0-afa54132b304"
+
+    def test_ignores_unrelated_sessions(self):
+        log_text = "Remote session active (steerable): https://github.com/org/repo/tasks/2c9fa2a9-5ee6-4504-9fd0-afa54132b304"
+        assert _parse_remote_task_id(log_text, "requested-session") is None
 
 
 # ---------------------------------------------------------------------------
@@ -220,3 +252,29 @@ class TestLaunchCopilot:
 
         with pytest.raises(OSError, match="copilot not found"):
             launch_copilot(repo, "test", session_id=_TEST_SID, _spawn=bad_spawn)
+
+    def test_real_launch_uses_script_exit_code(self, monkeypatch, tmp_path):
+        repo = RepoEntry(slug="test-repo", path="/test")
+        captured = {}
+
+        class DummyProc:
+            pass
+
+        def fake_popen(args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return DummyProc()
+
+        monkeypatch.setattr("copilot_jobs.launcher._log_dir", lambda: tmp_path)
+        monkeypatch.setattr("copilot_jobs.launcher.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("copilot_jobs.launcher.shutil.which", lambda name: "/resolved/copilot")
+        monkeypatch.setattr("copilot_jobs.launcher._wait_for_remote_task_id", lambda session_id: "task-123")
+
+        result = launch_copilot(repo, "test", session_id=_TEST_SID)
+
+        assert result["cmd"][0] == "/resolved/copilot"
+        assert result["connect_id"] == "task-123"
+        assert captured["args"][0] == "bash"
+        assert captured["args"][1] == "-c"
+        assert "script -eqfc" in captured["args"][2]
+        assert captured["kwargs"]["cwd"] == "/test"
