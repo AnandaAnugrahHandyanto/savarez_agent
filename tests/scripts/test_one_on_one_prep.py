@@ -238,3 +238,145 @@ def test_list_and_show_include_next_occurrence_visibility(tmp_path, monkeypatch,
     show_output = capsys.readouterr().out
     assert '"next_meeting_at": "2026-04-20T13:15:00+08:00"' in show_output
     assert '"next_prep_at": "2026-04-20T13:10:00+08:00"' in show_output
+
+
+
+def test_enqueue_due_creates_queue_event_with_dedupe_key(tmp_path, monkeypatch):
+    _install_schedule(tmp_path, monkeypatch)
+    from people_manager.prep_queue import list_queue_events
+    from scripts.one_on_one_prep import main
+
+    assert main(["enqueue-due", "--now", "2026-04-20T13:10:00+08:00"]) == 0
+
+    events = list_queue_events()
+    assert len(events) == 1
+    event = events[0]
+    assert event["type"] == "one_on_one_prep_due"
+    assert event["profile_slug"] == "thomas-zhu"
+    assert event["dedupe_key"] == "thomas-zhu::2026-04-20T13:15:00+08:00"
+    assert event["state"] == "queued_for_miya"
+    assert event["delivery_outcome"] is None
+    assert event["deadline_at"] == "2026-04-20T13:11:00+08:00"
+
+
+
+def test_miya_sent_before_deadline_suppresses_fallback(tmp_path, monkeypatch):
+    _install_schedule(tmp_path, monkeypatch)
+    from people_manager.prep_queue import load_queue_event
+    from scripts.one_on_one_prep import main
+
+    sent_messages = []
+    monkeypatch.setattr(
+        "scripts.one_on_one_prep.send_telegram_message",
+        lambda text, delivery_target: sent_messages.append((text, delivery_target)) or {"success": True},
+    )
+
+    assert main(["enqueue-due", "--now", "2026-04-20T13:10:00+08:00"]) == 0
+    assert main(["miya-claim-next", "--now", "2026-04-20T13:10:05+08:00"]) == 0
+    assert main(
+        [
+            "miya-mark-sent",
+            "--dedupe-key",
+            "thomas-zhu::2026-04-20T13:15:00+08:00",
+            "--sent-at",
+            "2026-04-20T13:10:20+08:00",
+        ]
+    ) == 0
+    assert main(["run-fallback", "--now", "2026-04-20T13:11:10+08:00"]) == 0
+
+    event = load_queue_event("thomas-zhu::2026-04-20T13:15:00+08:00")
+    assert event["state"] == "sent_by_miya"
+    assert event["delivery_outcome"] == "sent_by_miya"
+    assert sent_messages == []
+
+
+
+def test_fallback_fires_once_after_sla_miss(tmp_path, monkeypatch):
+    _install_schedule(tmp_path, monkeypatch)
+    from people_manager.prep_queue import load_queue_event
+    from scripts.one_on_one_prep import main
+
+    sent_messages = []
+    monkeypatch.setattr(
+        "scripts.one_on_one_prep.send_telegram_message",
+        lambda text, delivery_target: sent_messages.append((text, delivery_target)) or {"success": True},
+    )
+
+    assert main(["enqueue-due", "--now", "2026-04-20T13:10:00+08:00"]) == 0
+    assert main(["run-fallback", "--now", "2026-04-20T13:11:05+08:00"]) == 0
+    assert main(["run-fallback", "--now", "2026-04-20T13:11:20+08:00"]) == 0
+
+    event = load_queue_event("thomas-zhu::2026-04-20T13:15:00+08:00")
+    assert event["state"] == "fallback_sent"
+    assert event["delivery_outcome"] == "fallback_sent"
+    assert len(sent_messages) == 1
+    assert sent_messages[0][1] == "origin"
+    assert "Thomas Zhu 1:1 in 5m" in sent_messages[0][0]
+    assert "Miya response delayed" in sent_messages[0][0]
+
+
+
+def test_late_miya_completion_after_fallback_is_suppressed_and_logged(tmp_path, monkeypatch, capsys):
+    _install_schedule(tmp_path, monkeypatch)
+    from people_manager.prep_queue import load_queue_event
+    from scripts.one_on_one_prep import main
+
+    monkeypatch.setattr(
+        "scripts.one_on_one_prep.send_telegram_message",
+        lambda text, delivery_target: {"success": True},
+    )
+
+    assert main(["enqueue-due", "--now", "2026-04-20T13:10:00+08:00"]) == 0
+    assert main(["run-fallback", "--now", "2026-04-20T13:11:05+08:00"]) == 0
+    assert main(
+        [
+            "miya-mark-sent",
+            "--dedupe-key",
+            "thomas-zhu::2026-04-20T13:15:00+08:00",
+            "--sent-at",
+            "2026-04-20T13:11:30+08:00",
+        ]
+    ) == 0
+    assert main(["log", "--month", "2026-04", "--slug", "thomas-zhu", "--limit", "10"]) == 0
+    log_output = capsys.readouterr().out
+
+    event = load_queue_event("thomas-zhu::2026-04-20T13:15:00+08:00")
+    assert event["state"] == "stale_completion_suppressed"
+    assert event["delivery_outcome"] == "fallback_sent"
+    assert "status=stale_completion_suppressed" in log_output
+    assert "status=fallback_sent" in log_output
+
+
+
+def test_audit_surfaces_queue_state_counts(tmp_path, monkeypatch, capsys):
+    _install_schedule(tmp_path, monkeypatch)
+    from scripts.one_on_one_prep import main
+
+    assert main(["enqueue-due", "--now", "2026-04-20T13:10:00+08:00"]) == 0
+    assert main(["miya-claim-next", "--now", "2026-04-20T13:10:05+08:00"]) == 0
+    assert main(["audit"] ) == 0
+    output = capsys.readouterr().out
+
+    assert "Occurrence queue state" in output
+    assert "claimed_by_miya: 1" in output
+
+
+
+def test_enqueue_and_fallback_are_idempotent_across_retries(tmp_path, monkeypatch):
+    _install_schedule(tmp_path, monkeypatch)
+    from people_manager.prep_queue import list_queue_events
+    from scripts.one_on_one_prep import main
+
+    sent_messages = []
+    monkeypatch.setattr(
+        "scripts.one_on_one_prep.send_telegram_message",
+        lambda text, delivery_target: sent_messages.append((text, delivery_target)) or {"success": True},
+    )
+
+    assert main(["enqueue-due", "--now", "2026-04-20T13:10:00+08:00"]) == 0
+    assert main(["enqueue-due", "--now", "2026-04-20T13:10:20+08:00"]) == 0
+    assert len(list_queue_events()) == 1
+
+    assert main(["run-fallback", "--now", "2026-04-20T13:11:05+08:00"]) == 0
+    assert main(["run-fallback", "--now", "2026-04-20T13:11:40+08:00"]) == 0
+    assert len(sent_messages) == 1

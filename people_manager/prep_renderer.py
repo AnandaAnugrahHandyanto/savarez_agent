@@ -22,17 +22,12 @@ def _normalize_lines(values: Any) -> list[str]:
 
 
 
-def render_prep_note(report: dict[str, Any], *, minutes_until: int = 5) -> str:
-    name = report.get("name") or report.get("slug") or "Unknown"
+def _candidate_bullets(report: dict[str, Any]) -> list[str]:
     bullets: list[str] = []
-
     bullets.extend(_normalize_lines(report.get("prep_note_preference")))
-
     upcoming = report.get("upcoming_one_on_one") or {}
     bullets.extend(_normalize_lines(upcoming.get("topics")))
-
-    cadence_notes = _normalize_lines(report.get("one_on_one_cadence_notes"))
-    bullets.extend(cadence_notes)
+    bullets.extend(_normalize_lines(report.get("one_on_one_cadence_notes")))
 
     current_priorities = _normalize_lines(report.get("role_charter", {}).get("current_priorities"))
     if not bullets:
@@ -42,7 +37,13 @@ def render_prep_note(report: dict[str, Any], *, minutes_until: int = 5) -> str:
     for bullet in bullets:
         if bullet not in deduped:
             deduped.append(bullet)
-    bullets = deduped[: MAX_BULLETS - 1]
+    return deduped
+
+
+
+def render_prep_note(report: dict[str, Any], *, minutes_until: int = 5) -> str:
+    name = report.get("name") or report.get("slug") or "Unknown"
+    bullets = _candidate_bullets(report)[: MAX_BULLETS - 1]
 
     if not bullets:
         bullets = ["weekly/monthly alignment", "check current priorities"]
@@ -66,3 +67,17 @@ def render_prep_note(report: dict[str, Any], *, minutes_until: int = 5) -> str:
             break
         trimmed.append(line)
     return "\n".join(trimmed)
+
+
+
+def render_fallback_prep_note(report: dict[str, Any], *, minutes_until: int = 5) -> str:
+    name = report.get("name") or report.get("slug") or "Unknown"
+    bullets = _candidate_bullets(report)[:3]
+    if not bullets:
+        bullets = ["weekly/monthly alignment", "check current priorities"]
+
+    lines = [f"{name} 1:1 in {minutes_until}m"]
+    for bullet in bullets:
+        lines.append(f"- {bullet}")
+    lines.append("- Miya response delayed")
+    return "\n".join(lines)

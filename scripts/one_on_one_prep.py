@@ -13,12 +13,24 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from hermes_cli.env_loader import load_hermes_dotenv
-from people_manager.prep_renderer import render_prep_note
+from people_manager.prep_renderer import render_fallback_prep_note, render_prep_note
+from people_manager.prep_queue import (
+    acquire_transition_lock,
+    claim_next_for_miya,
+    enqueue_due_occurrence,
+    fallback_candidates,
+    load_queue_event,
+    mark_fallback_sent,
+    mark_sent_by_miya,
+    queue_state_counts,
+    release_transition_lock,
+)
 from people_manager.reminder_log import (
     append_reminder_log,
     claim_occurrence,
     load_reminder_entries,
     release_occurrence_claim,
+    reminder_entry_timestamp,
     was_sent_for_occurrence,
 )
 from people_manager.schedule_store import (
@@ -78,9 +90,13 @@ def send_telegram_message(text: str, delivery_target: str) -> dict[str, Any]:
 
 
 
+def _minutes_until(entry: dict[str, Any]) -> int:
+    return max(1, int((entry["meeting_at"] - entry["prep_at"]).total_seconds() // 60))
+
+
+
 def _render_due_entry(entry: dict[str, Any]) -> str:
-    minutes_until = max(1, int((entry["meeting_at"] - entry["prep_at"]).total_seconds() // 60))
-    return render_prep_note(entry["report"], minutes_until=minutes_until)
+    return render_prep_note(entry["report"], minutes_until=_minutes_until(entry))
 
 
 
@@ -165,6 +181,81 @@ def cmd_due_now(args: argparse.Namespace) -> int:
     now = _parse_now(args.now, timezone_name)
     for entry in _due_entries(now):
         print(f"{entry['profile_slug']} due at {entry['prep_at'].isoformat()} for meeting {entry['meeting_at'].isoformat()}")
+    return 0
+
+
+
+def cmd_enqueue_due(args: argparse.Namespace) -> int:
+    registry = load_schedule_registry()
+    timezone_name = str(registry.get("timezone") or "Asia/Singapore")
+    now = _parse_now(args.now, timezone_name)
+    entries = _due_entries(now)
+    for entry in entries:
+        event, created = enqueue_due_occurrence(entry, detected_at=now)
+        state = "queued" if created else "already-present"
+        print(f"{state} {event['profile_slug']} dedupe_key={event['dedupe_key']} state={event['state']}")
+    return 0
+
+
+
+def cmd_miya_claim_next(args: argparse.Namespace) -> int:
+    registry = load_schedule_registry()
+    timezone_name = str(registry.get("timezone") or "Asia/Singapore")
+    now = _parse_now(getattr(args, "now", None), timezone_name)
+    event = claim_next_for_miya(now=now)
+    if not event:
+        print("No queued occurrences for Miya")
+        return 0
+    print(json.dumps(event, indent=2, sort_keys=True))
+    return 0
+
+
+
+def cmd_miya_mark_sent(args: argparse.Namespace) -> int:
+    event = load_queue_event(args.dedupe_key)
+    if not event:
+        print(f"Occurrence not found: {args.dedupe_key}", file=sys.stderr)
+        return 1
+    sent_at = datetime.fromisoformat(args.sent_at)
+    updated = mark_sent_by_miya(args.dedupe_key, sent_at=sent_at)
+    print(f"{updated['state']} {updated['profile_slug']} dedupe_key={updated['dedupe_key']}")
+    return 0
+
+
+
+def cmd_run_fallback(args: argparse.Namespace) -> int:
+    registry = load_schedule_registry()
+    timezone_name = str(registry.get("timezone") or "Asia/Singapore")
+    now = _parse_now(args.now, timezone_name)
+    for event in fallback_candidates(now=now):
+        dedupe_key = str(event["dedupe_key"])
+        if not acquire_transition_lock(dedupe_key, lock_name="fallback-send", owner="scheduler"):
+            continue
+        try:
+            fresh = load_queue_event(dedupe_key)
+            if not fresh or fresh.get("delivery_outcome"):
+                continue
+            report = load_report(fresh["profile_slug"])
+            if not report:
+                print(f"fallback failed for {fresh['profile_slug']}: missing report", file=sys.stderr)
+                continue
+            text = render_fallback_prep_note(report, minutes_until=int(fresh.get("minutes_until") or DEFAULT_PREP_OFFSET_MINUTES))
+            try:
+                result = send_telegram_message(text, fresh.get("delivery_target", "origin"))
+            except Exception as exc:
+                print(f"fallback failed for {fresh['profile_slug']}: {exc}", file=sys.stderr)
+                continue
+            if not result.get("success"):
+                print(f"fallback failed for {fresh['profile_slug']}: {result}", file=sys.stderr)
+                continue
+            updated = mark_fallback_sent(
+                dedupe_key,
+                sent_at=now,
+                note="Minimal deterministic fallback sent after Miya SLA miss.",
+            )
+            print(f"fallback-sent {updated['profile_slug']} dedupe_key={updated['dedupe_key']}")
+        finally:
+            release_transition_lock(dedupe_key, lock_name="fallback-send")
     return 0
 
 
@@ -334,9 +425,17 @@ def cmd_remove(args: argparse.Namespace) -> int:
 def cmd_log(args: argparse.Namespace) -> int:
     entries = load_reminder_entries(month=args.month, profile_slug=args.slug, limit=args.limit)
     for entry in entries:
+        extras = []
+        if entry.get("actor"):
+            extras.append(f"actor={entry.get('actor')}")
+        if entry.get("dedupe_key"):
+            extras.append(f"dedupe_key={entry.get('dedupe_key')}")
+        if entry.get("note"):
+            extras.append(f"note={entry.get('note')}")
+        suffix = f" {' '.join(extras)}" if extras else ""
         print(
-            f"{entry.get('prep_sent_at')} {entry.get('profile_slug')} "
-            f"status={entry.get('status')} meeting_at={entry.get('meeting_at')}"
+            f"{reminder_entry_timestamp(entry)} {entry.get('profile_slug')} "
+            f"status={entry.get('status')} meeting_at={entry.get('meeting_at')}{suffix}"
         )
     return 0
 
@@ -374,6 +473,14 @@ def cmd_audit(_args: argparse.Namespace) -> int:
     print("\nMalformed schedules")
     for slug in malformed_schedules or ["(none)"]:
         print(f"- {slug}")
+
+    print("\nOccurrence queue state")
+    counts = queue_state_counts()
+    if counts:
+        for state, count in counts.items():
+            print(f"- {state}: {count}")
+    else:
+        print("- (none)")
     return 0
 
 
@@ -423,6 +530,23 @@ def build_parser() -> argparse.ArgumentParser:
     due_parser = subparsers.add_parser("due-now")
     due_parser.add_argument("--now")
     due_parser.set_defaults(func=cmd_due_now)
+
+    enqueue_parser = subparsers.add_parser("enqueue-due")
+    enqueue_parser.add_argument("--now")
+    enqueue_parser.set_defaults(func=cmd_enqueue_due)
+
+    miya_claim_parser = subparsers.add_parser("miya-claim-next")
+    miya_claim_parser.add_argument("--now")
+    miya_claim_parser.set_defaults(func=cmd_miya_claim_next)
+
+    miya_mark_sent_parser = subparsers.add_parser("miya-mark-sent")
+    miya_mark_sent_parser.add_argument("--dedupe-key", required=True)
+    miya_mark_sent_parser.add_argument("--sent-at", required=True)
+    miya_mark_sent_parser.set_defaults(func=cmd_miya_mark_sent)
+
+    fallback_parser = subparsers.add_parser("run-fallback")
+    fallback_parser.add_argument("--now")
+    fallback_parser.set_defaults(func=cmd_run_fallback)
 
     run_parser = subparsers.add_parser("run-once")
     run_parser.add_argument("--now")
