@@ -487,7 +487,17 @@ agent:
   # finish, then interrupts anything still running after this timeout.
   # 0 = no drain, interrupt immediately.
   # restart_drain_timeout: 60
-  
+
+  # Gateway session hygiene — message-count safety valve.
+  # Long-lived gateway sessions are auto-compacted when the message count
+  # reaches this limit, regardless of token pressure.  This breaks a
+  # failure mode where API disconnects prevent token tracking, leading to
+  # runaway session growth.  The user receives a notice when this fires.
+  #
+  # gateway:
+  #   session_hygiene:
+  #     max_messages: 400  # Hard message limit (0 = disabled, default: 400)
+
   # Enable verbose logging
   verbose: false
   
