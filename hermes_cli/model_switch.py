@@ -1095,6 +1095,12 @@ def list_authenticated_providers(
                 "api_url": api_url,
             })
             seen_slugs.add(ep_name.lower())
+            # Also add the custom:-prefixed slug so that Section 4's
+            # ``custom_provider_slug(display_name)`` check finds it and skips
+            # the duplicate entry (issue #12293).
+            _cp_slug = custom_provider_slug(display_name)
+            if _cp_slug and _cp_slug.lower() != ep_name.lower():
+                seen_slugs.add(_cp_slug.lower())
             _pair = (
                 str(display_name).strip().lower(),
                 str(api_url).strip().rstrip("/").lower(),
