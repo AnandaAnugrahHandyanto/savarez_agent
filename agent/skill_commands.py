@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from hermes_constants import display_hermes_home
+from hermes_constants import display_hermes_home, get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ def build_plan_path(
         slug = "-".join(part for part in slug.split("-")[:8] if part)[:48].strip("-")
     slug = slug or "conversation-plan"
     timestamp = (now or datetime.now()).strftime("%Y-%m-%d_%H%M%S")
-    return Path(".hermes") / "plans" / f"{timestamp}-{slug}.md"
+    return get_hermes_home() / "plans" / f"{timestamp}-{slug}.md"
 
 
 def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
