@@ -110,6 +110,7 @@ def _check_disk_usage_warning():
 
 # Session-cached sudo password (persists until CLI exits)
 _cached_sudo_password: str = ""
+_sudo_password_lock = threading.Lock()
 
 # Optional UI callbacks for interactive prompts. When set, these are called
 # instead of the default /dev/tty or input() readers. The CLI registers these
@@ -650,12 +651,14 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
         return command, None
 
     has_configured_password = "SUDO_PASSWORD" in os.environ
-    sudo_password = os.environ.get("SUDO_PASSWORD", "") if has_configured_password else _cached_sudo_password
+    with _sudo_password_lock:
+        sudo_password = os.environ.get("SUDO_PASSWORD", "") if has_configured_password else _cached_sudo_password
 
     if not has_configured_password and not sudo_password and os.getenv("HERMES_INTERACTIVE"):
         sudo_password = _prompt_for_sudo_password(timeout_seconds=45)
         if sudo_password:
-            _cached_sudo_password = sudo_password
+            with _sudo_password_lock:
+                _cached_sudo_password = sudo_password
 
     if has_configured_password or sudo_password:
         # Trailing newline is required: sudo -S reads one line for the password.

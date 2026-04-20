@@ -361,9 +361,15 @@ def run_import(args) -> None:
 
             # Security: reject absolute paths and traversals
             try:
-                target.resolve().relative_to(hermes_root.resolve())
+                resolved = target.resolve()
+                resolved.relative_to(hermes_root.resolve())
             except ValueError:
                 errors.append(f"  {rel}: path traversal blocked")
+                continue
+
+            # Reject symlinks that could escape the target directory
+            if target.exists() and target.is_symlink():
+                errors.append(f"  {rel}: symlink blocked for safety")
                 continue
 
             try:

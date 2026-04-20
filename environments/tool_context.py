@@ -26,6 +26,7 @@ Example usage in a compute_reward():
 import json
 import logging
 import os
+import shlex
 from typing import Any, Dict, List, Optional
 
 import asyncio
@@ -181,13 +182,13 @@ class ToolContext:
         # Ensure parent directory exists in the sandbox
         parent = str(_Path(remote_path).parent)
         if parent not in (".", "/"):
-            self.terminal(f"mkdir -p {parent}", timeout=10)
+            self.terminal(f"mkdir -p {shlex.quote(parent)}", timeout=10)
 
         # For small files, single command is fine
         chunk_size = 60_000  # ~60KB per chunk (well within shell limits)
         if len(b64) <= chunk_size:
             result = self.terminal(
-                f"printf '%s' '{b64}' | base64 -d > {remote_path}",
+                f"printf '%s' '{b64}' | base64 -d > {shlex.quote(remote_path)}",
                 timeout=30,
             )
         else:
@@ -198,7 +199,7 @@ class ToolContext:
                 chunk = b64[i : i + chunk_size]
                 self.terminal(f"printf '%s' '{chunk}' >> {tmp_b64}", timeout=15)
             result = self.terminal(
-                f"base64 -d {tmp_b64} > {remote_path} && rm -f {tmp_b64}",
+                f"base64 -d {tmp_b64} > {shlex.quote(remote_path)} && rm -f {tmp_b64}",
                 timeout=30,
             )
 
@@ -251,7 +252,7 @@ class ToolContext:
 
         # Base64-encode the file inside the sandbox and capture output
         result = self.terminal(
-            f"base64 {remote_path} 2>/dev/null",
+            f"base64 {shlex.quote(remote_path)} 2>/dev/null",
             timeout=30,
         )
 

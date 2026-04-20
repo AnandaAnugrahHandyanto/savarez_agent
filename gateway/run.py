@@ -225,8 +225,8 @@ if _config_path.exists():
             _redact = _security_cfg.get("redact_secrets")
             if _redact is not None:
                 os.environ["HERMES_REDACT_SECRETS"] = str(_redact).lower()
-    except Exception:
-        pass  # Non-fatal; gateway can still run with .env values
+    except Exception as _exc:
+        print(f"[gateway] Warning: config.yaml bridge failed: {_exc}", file=sys.stderr)
 
 # Apply IPv4 preference if configured (before any HTTP clients are created).
 try:
@@ -234,22 +234,22 @@ try:
     _network_cfg = (_cfg if '_cfg' in dir() else {}).get("network", {})
     if isinstance(_network_cfg, dict) and _network_cfg.get("force_ipv4"):
         apply_ipv4_preference(force=True)
-except Exception:
-    pass
+except Exception as _exc:
+    print(f"[gateway] Warning: IPv4 preference setup failed: {_exc}", file=sys.stderr)
 
 # Validate config structure early — log warnings so gateway operators see problems
 try:
     from hermes_cli.config import print_config_warnings
     print_config_warnings()
-except Exception:
-    pass
+except Exception as _exc:
+    print(f"[gateway] Warning: config validation failed: {_exc}", file=sys.stderr)
 
 # Warn if user has deprecated MESSAGING_CWD / TERMINAL_CWD in .env
 try:
     from hermes_cli.config import warn_deprecated_cwd_env_vars
     warn_deprecated_cwd_env_vars()
-except Exception:
-    pass
+except Exception as _exc:
+    print(f"[gateway] Warning: deprecated env var check failed: {_exc}", file=sys.stderr)
 
 # Gateway runs in quiet mode - suppress debug output and use cwd directly (no temp dirs)
 os.environ["HERMES_QUIET"] = "1"

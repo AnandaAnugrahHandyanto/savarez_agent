@@ -190,9 +190,10 @@ class SessionDB:
                         except Exception:
                             pass
                         raise
-                # Success — periodic best-effort checkpoint.
-                self._write_count += 1
-                if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
+                    # Success — periodic best-effort checkpoint.
+                    self._write_count += 1
+                    should_checkpoint = self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0
+                if should_checkpoint:
                     self._try_wal_checkpoint()
                 return result
             except sqlite3.OperationalError as exc:

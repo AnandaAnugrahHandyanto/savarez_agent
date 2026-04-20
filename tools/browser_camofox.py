@@ -156,8 +156,9 @@ def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
 def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, Any]:
     """Ensure a tab exists for the session, creating one if needed."""
     session = _get_session(task_id)
-    if session["tab_id"]:
-        return session
+    with _sessions_lock:
+        if session["tab_id"]:
+            return session
     base = get_camofox_url()
     resp = requests.post(
         f"{base}/tabs",
@@ -170,7 +171,10 @@ def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, A
     )
     resp.raise_for_status()
     data = resp.json()
-    session["tab_id"] = data.get("tabId")
+    with _sessions_lock:
+        # Double-check: another thread may have created the tab concurrently
+        if not session["tab_id"]:
+            session["tab_id"] = data.get("tabId")
     return session
 
 
