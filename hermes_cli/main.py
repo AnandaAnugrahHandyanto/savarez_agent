@@ -4237,15 +4237,7 @@ For more help on a command:
     # config sub-action: interactive enable/disable
     skills_subparsers.add_parser("config", help="Interactive skill configuration — enable/disable individual skills")
 
-    def cmd_skills(args):
-        # Route 'config' action to skills_config module
-        if getattr(args, 'skills_action', None) == 'config':
-            _require_tty("skills config")
-            from hermes_cli.skills_config import skills_command as skills_config_command
-            skills_config_command(args)
-        else:
-            from hermes_cli.skills_hub import skills_command
-            skills_command(args)
+    from hermes_cli.cmd_handlers.skills_handler import cmd_skills  # noqa: E402,F401
 
     skills_parser.set_defaults(func=cmd_skills)
 
