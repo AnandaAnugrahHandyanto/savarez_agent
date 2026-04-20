@@ -141,6 +141,11 @@ def test_create_openai_client_skips_keepalive_injection_for_codex_provider(mock_
         provider="openai-codex",
         model="gpt-5.4",
     )
+
+    def _unexpected_keepalive_builder():
+        raise AssertionError("Codex provider path must not call _build_keepalive_http_client()")
+
+    monkeypatch.setattr(agent, "_build_keepalive_http_client", _unexpected_keepalive_builder)
     kwargs = {
         "api_key": "***",
         "base_url": "https://chatgpt.com/backend-api/codex",
@@ -166,6 +171,11 @@ def test_create_openai_client_skips_keepalive_injection_for_codex_base_url(mock_
         provider="openai",
         model="gpt-5.4",
     )
+
+    def _unexpected_keepalive_builder():
+        raise AssertionError("Codex base_url path must not call _build_keepalive_http_client()")
+
+    monkeypatch.setattr(agent, "_build_keepalive_http_client", _unexpected_keepalive_builder)
     kwargs = {
         "api_key": "***",
         "base_url": "https://chatgpt.com/backend-api/codex",
