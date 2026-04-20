@@ -340,11 +340,41 @@ class SessionDB:
         except sqlite3.OperationalError:
             pass  # Index already exists
 
-        # FTS5 setup (separate because CREATE VIRTUAL TABLE can't be in executescript with IF NOT EXISTS reliably)
+        # FTS5 setup (separate because CREATE VIRTUAL TABLE can't be in executescript with IF NOT EXISTS reliably).
+        #
+        # Some Python SQLite builds (notably Python 3.11 on macOS via certain Homebrew
+        # formulae and pyenv builds) compile sqlite3 without the FTS5 module. When FTS5
+        # is missing, CREATE VIRTUAL TABLE ... USING fts5(...) raises `no such module:
+        # fts5`. Historically this killed every SQLite-backed feature (`hermes sessions
+        # list`, `hermes insights`, external readers like Scarf) because init threw and
+        # the database connection never opened.
+        #
+        # Degrade gracefully instead: keep the rest of the schema, mark FTS5 as
+        # unavailable, and let search callers fall back to substring/LIKE matching.
+        # Non-search features (sessions list, session history, insights primary path)
+        # keep working. (#13029)
+        self._fts5_available: bool = False
         try:
             cursor.execute("SELECT * FROM messages_fts LIMIT 0")
+            self._fts5_available = True
         except sqlite3.OperationalError:
-            cursor.executescript(FTS_SQL)
+            try:
+                cursor.executescript(FTS_SQL)
+                self._fts5_available = True
+            except sqlite3.OperationalError as err:
+                message = str(err).lower()
+                if "no such module" in message and "fts5" in message:
+                    logger.warning(
+                        "SQLite build lacks the FTS5 module — full-text search is disabled "
+                        "for this session store. Session history, CLI list, and insights "
+                        "will continue to work; only `hermes sessions search` will degrade "
+                        "to substring match. Fix by installing a Python whose sqlite3 has "
+                        "FTS5 (e.g. Python 3.12/3.13/3.14 via Homebrew, pyenv with "
+                        "--enable-loadable-sqlite-extensions, or rebuilding SQLite with "
+                        "FTS5 enabled)."
+                    )
+                else:
+                    raise
 
         self._conn.commit()
 
@@ -1196,21 +1226,30 @@ class SessionDB:
             LIMIT ? OFFSET ?
         """
 
-        with self._lock:
-            try:
-                cursor = self._conn.execute(sql, params)
-            except sqlite3.OperationalError:
-                # FTS5 query syntax error despite sanitization — return empty
-                # unless query contains CJK (fall back to LIKE below)
-                if not self._contains_cjk(query):
-                    return []
-                matches = []
-            else:
-                matches = [dict(row) for row in cursor.fetchall()]
+        # When FTS5 is unavailable on this SQLite build, skip the MATCH query
+        # entirely and jump to the LIKE fallback below. (#13029)
+        fts5_unavailable = not getattr(self, "_fts5_available", True)
 
-        # LIKE fallback for CJK queries: FTS5 default tokenizer splits CJK
-        # characters individually, causing multi-character queries to fail.
-        if not matches and self._contains_cjk(query):
+        if fts5_unavailable:
+            matches = []
+        else:
+            with self._lock:
+                try:
+                    cursor = self._conn.execute(sql, params)
+                except sqlite3.OperationalError:
+                    # FTS5 query syntax error despite sanitization — return empty
+                    # unless query contains CJK (fall back to LIKE below)
+                    if not self._contains_cjk(query):
+                        return []
+                    matches = []
+                else:
+                    matches = [dict(row) for row in cursor.fetchall()]
+
+        # LIKE fallback for CJK queries AND for SQLite builds without FTS5.
+        # FTS5 default tokenizer splits CJK characters individually, causing
+        # multi-character queries to fail; when the whole FTS5 module is
+        # missing the fallback is the only path.
+        if not matches and (self._contains_cjk(query) or fts5_unavailable):
             raw_query = query.strip('"').strip()
             like_where = ["m.content LIKE ?"]
             like_params: list = [f"%{raw_query}%"]

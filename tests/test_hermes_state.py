@@ -314,6 +314,28 @@ class TestFTS5Search:
         assert db.search_messages("") == []
         assert db.search_messages("   ") == []
 
+    def test_search_falls_back_to_like_when_fts5_unavailable(self, db):
+        """#13029: when SQLite was built without the FTS5 module, SessionDB
+        init should set ``_fts5_available = False`` and search_messages should
+        route through the LIKE fallback instead of trying MATCH.
+
+        We simulate "no FTS5" by flipping the flag after init. The MATCH code
+        path is never reached; results come from the substring fallback that
+        already exists for CJK queries.
+        """
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="How do I deploy with Docker?")
+        db.append_message("s1", role="assistant", content="Use docker compose up.")
+
+        db._fts5_available = False
+        results = db.search_messages("docker")
+
+        assert len(results) == 2, (
+            "LIKE fallback must find both messages when FTS5 is unavailable"
+        )
+        snippets = [r.get("snippet", "").lower() for r in results]
+        assert any("docker" in s for s in snippets)
+
     def test_search_with_source_filter(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="user", content="CLI question about Python")
