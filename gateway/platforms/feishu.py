@@ -319,7 +319,9 @@ class FeishuAdapterSettings:
     webhook_host: str
     webhook_port: int
     webhook_path: str
-    ack_emoji: str = "Get"  # Default ACK reaction emoji
+    # Configurable via config.yaml → feishu.ack_emoji (default: "Get")
+    # Supports text ("Get", "OK") or Unicode emoji ("👍", "✅", "🚀")
+    ack_emoji: str = "Get"
     ws_reconnect_nonce: int = 30
     ws_reconnect_interval: int = 120
     ws_ping_interval: Optional[int] = None
