@@ -2640,7 +2640,7 @@ class GatewayRunner:
                     else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
                 )
             logger.debug("PRIORITY interrupt for session %s", _quick_key[:20])
-            running_agent.interrupt(event.text)
+            running_agent.interrupt(event.text, propagate=False)
             if _quick_key in self._pending_messages:
                 self._pending_messages[_quick_key] += "\n" + event.text
             else:
@@ -8295,7 +8295,7 @@ class GatewayRunner:
                             _peek_event = _adapter._pending_messages.get(session_key)
                             pending_text = _peek_event.text if _peek_event else None
                             logger.debug("Interrupt detected from adapter, signaling agent...")
-                            agent.interrupt(pending_text)
+                            agent.interrupt(pending_text, propagate=False)
                             _interrupt_detected.set()
                             break
                 except asyncio.CancelledError:

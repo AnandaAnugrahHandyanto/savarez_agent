@@ -2870,7 +2870,7 @@ class AIAgent:
             if self.verbose_logging:
                 logging.warning(f"Failed to save session log: {e}")
     
-    def interrupt(self, message: str = None) -> None:
+    def interrupt(self, message: str = None, propagate: bool = True) -> None:
         """
         Request the agent to interrupt its current tool-calling loop.
         
@@ -2883,6 +2883,10 @@ class AIAgent:
         Args:
             message: Optional new message that triggered the interrupt.
                      If provided, the agent will include this in its response context.
+            propagate: If True (default), propagate interrupt to child agents
+                       (subagent delegation). Set to False for soft interrupts
+                       (e.g., new user message) so children can complete their work.
+                       Hard stops (/stop, shutdown) should use True.
         
         Example (CLI):
             # In a separate input thread:
@@ -2901,13 +2905,17 @@ class AIAgent:
         # agents running in the same process (gateway) are not affected.
         _set_interrupt(True, self._execution_thread_id)
         # Propagate interrupt to any running child agents (subagent delegation)
-        with self._active_children_lock:
-            children_copy = list(self._active_children)
-        for child in children_copy:
-            try:
-                child.interrupt(message)
-            except Exception as e:
-                logger.debug("Failed to propagate interrupt to child agent: %s", e)
+        # only when explicitly requested. Soft interrupts (new user messages)
+        # should NOT kill children — they should complete their work so the
+        # parent can use their results before handling the interrupt.
+        if propagate:
+            with self._active_children_lock:
+                children_copy = list(self._active_children)
+            for child in children_copy:
+                try:
+                    child.interrupt(message)
+                except Exception as e:
+                    logger.debug("Failed to propagate interrupt to child agent: %s", e)
         if not self.quiet_mode:
             print("\n⚡ Interrupt requested" + (f": '{message[:40]}...'" if message and len(message) > 40 else f": '{message}'" if message else ""))
     
