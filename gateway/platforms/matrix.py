@@ -1178,6 +1178,13 @@ class MatrixAdapter(BasePlatformAdapter):
         if self._is_duplicate_event(event_id):
             return
 
+        logger.debug(
+            "Matrix: received event %s from %s in %s",
+            event_id or "(unknown)",
+            sender or "(unknown)",
+            room_id or "(unknown)",
+        )
+
         # Startup grace: ignore old messages from initial sync.
         raw_ts = (
             getattr(event, "timestamp", None)
@@ -1266,6 +1273,14 @@ class MatrixAdapter(BasePlatformAdapter):
             in_bot_thread = bool(thread_id and thread_id in self._threads)
             if self._require_mention and not is_free_room and not in_bot_thread:
                 if not is_mentioned:
+                    logger.debug(
+                        "Matrix: ignoring unmentioned event %s in %s "
+                        "(require_mention=true, free_room=%s, bot_thread=%s)",
+                        event_id or "(unknown)",
+                        room_id or "(unknown)",
+                        is_free_room,
+                        in_bot_thread,
+                    )
                     return None
 
         # DM mention-thread.
@@ -1917,19 +1932,59 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _is_dm_room(self, room_id: str) -> bool:
         """Check if a room is a DM."""
-        if self._dm_rooms.get(room_id, False):
-            return True
-        # Fallback: check member count via state store.
+        cached = self._dm_rooms.get(room_id)
+        if cached is not None:
+            return cached
+        # Only trust the state store when it confirms the member list is
+        # complete. Freshly joined rooms may have partial membership there.
         state_store = (
             getattr(self._client, "state_store", None) if self._client else None
         )
         if state_store:
             try:
-                members = await state_store.get_members(room_id)
-                if members and len(members) == 2:
-                    return True
-            except Exception:
-                pass
+                has_full_member_list = getattr(state_store, "has_full_member_list", None)
+                state_store_complete = False
+                if has_full_member_list:
+                    state_store_complete = bool(await has_full_member_list(room_id))
+
+                if state_store_complete:
+                    members = await state_store.get_members(room_id)
+                    is_dm = len(members) == 2
+                    self._dm_rooms[room_id] = is_dm
+                    logger.debug(
+                        "Matrix: DM detection for %s resolved via state_store_full -> %s",
+                        room_id,
+                        "dm" if is_dm else "group",
+                    )
+                    return is_dm
+            except Exception as exc:
+                logger.debug(
+                    "Matrix: state_store DM detection failed for %s: %s",
+                    room_id,
+                    exc,
+                )
+
+        # Freshly joined 1:1 rooms are often missing from m.direct on the bot
+        # account. Fall back to the joined-members API so a new DM isn't
+        # misclassified as a group room that requires an explicit mention.
+        if self._client and hasattr(self._client, "get_joined_members"):
+            try:
+                joined_members = await self._client.get_joined_members(RoomID(room_id))
+                if joined_members:
+                    is_dm = len(joined_members) == 2
+                    self._dm_rooms[room_id] = is_dm
+                    logger.debug(
+                        "Matrix: DM detection for %s resolved via joined_members -> %s",
+                        room_id,
+                        "dm" if is_dm else "group",
+                    )
+                    return is_dm
+            except Exception as exc:
+                logger.debug(
+                    "Matrix: get_joined_members(%s) failed during DM detection: %s",
+                    room_id,
+                    exc,
+                )
         return False
 
     async def _refresh_dm_cache(self) -> None:
@@ -1956,7 +2011,12 @@ class MatrixAdapter(BasePlatformAdapter):
             if isinstance(rooms, list):
                 dm_room_ids.update(str(r) for r in rooms)
 
-        self._dm_rooms = {rid: (rid in dm_room_ids) for rid in self._joined_rooms}
+        # m.direct is reliable as a positive DM signal, but not as a negative
+        # one: fresh 1:1 rooms often appear here late or never. Only cache
+        # rooms that are explicitly marked as DMs.
+        for rid in self._joined_rooms:
+            if rid in dm_room_ids:
+                self._dm_rooms[rid] = True
 
     # ------------------------------------------------------------------
     # Mention detection helpers

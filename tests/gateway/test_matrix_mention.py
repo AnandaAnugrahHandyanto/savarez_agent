@@ -278,6 +278,61 @@ async def test_require_mention_dm_always_responds(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_fresh_two_member_room_without_m_direct_responds_like_dm(monkeypatch):
+    """Freshly joined 1:1 rooms should not require an explicit mention."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._client = MagicMock()
+    adapter._client.state_store = MagicMock()
+    adapter._client.state_store.has_full_member_list = AsyncMock(return_value=False)
+    adapter._client.state_store.get_members = AsyncMock(return_value=[])
+    adapter._client.get_joined_members = AsyncMock(
+        return_value={
+            "@hermes:example.org": MagicMock(),
+            "@alice:example.org": MagicMock(),
+        }
+    )
+    event = _make_event("hello without mention")
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_non_m_direct_room_does_not_block_joined_members_dm_fallback(monkeypatch):
+    """A room absent from m.direct should still behave like a DM when membership says so."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._joined_rooms = {"!room1:example.org"}
+    adapter._client = MagicMock()
+    adapter._client.get_account_data = AsyncMock(
+        return_value={"@someone:example.org": ["!other:example.org"]}
+    )
+    adapter._client.state_store = MagicMock()
+    adapter._client.state_store.has_full_member_list = AsyncMock(return_value=False)
+    adapter._client.state_store.get_members = AsyncMock(return_value=["@hermes:example.org"])
+    adapter._client.get_joined_members = AsyncMock(
+        return_value={
+            "@hermes:example.org": MagicMock(),
+            "@alice:example.org": MagicMock(),
+        }
+    )
+
+    await adapter._refresh_dm_cache()
+    assert "!room1:example.org" not in adapter._dm_rooms
+
+    event = _make_event("hello without mention")
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_dm_strips_full_mxid(monkeypatch):
     """DMs strip the full MXID from body when require_mention is on (default)."""
     monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
