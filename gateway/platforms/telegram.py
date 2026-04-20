@@ -2665,10 +2665,60 @@ class TelegramAdapter(BasePlatformAdapter):
                     _, ext = os.path.splitext(original_filename)
                     ext = ext.lower()
 
-                # If no extension from filename, reverse-lookup from MIME type
-                if not ext and doc.mime_type:
-                    mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
-                    ext = mime_to_ext.get(doc.mime_type, "")
+                image_mime_to_ext = {
+                    "image/png": ".png",
+                    "image/jpeg": ".jpg",
+                    "image/jpg": ".jpg",
+                    "image/webp": ".webp",
+                    "image/gif": ".gif",
+                }
+                image_ext_to_mime = {
+                    ".png": "image/png",
+                    ".jpg": "image/jpeg",
+                    ".jpeg": "image/jpeg",
+                    ".webp": "image/webp",
+                    ".gif": "image/gif",
+                }
+                image_exts = set(image_ext_to_mime.keys())
+                mime_type = str(doc.mime_type or "").lower()
+                image_ext = ""
+                if mime_type.startswith("image/"):
+                    image_ext = image_mime_to_ext.get(mime_type, "")
+                elif mime_type in ("", "application/octet-stream") and ext in image_exts:
+                    image_ext = ext
+
+                # Telegram screenshots are often sent as documents to preserve quality.
+                # Treat supported image documents as images so they flow through vision normally.
+                if image_ext:
+                    MAX_IMAGE_BYTES = 20 * 1024 * 1024
+                    if not doc.file_size or doc.file_size > MAX_IMAGE_BYTES:
+                        event.text = (
+                            "The image is too large or its size could not be verified. "
+                            "Maximum: 20 MB."
+                        )
+                        logger.info("[Telegram] Image document too large: %s bytes", doc.file_size)
+                        await self.handle_message(event)
+                        return
+
+                    file_obj = await doc.get_file()
+                    image_bytes = bytes(await file_obj.download_as_bytearray())
+                    try:
+                        cached_path = cache_image_from_bytes(image_bytes, ext=image_ext)
+                    except ValueError:
+                        supported_list = ", ".join(sorted(SUPPORTED_DOCUMENT_TYPES.keys()))
+                        event.text = (
+                            f"Unsupported document type '{ext or image_ext or 'unknown'}'. "
+                            f"Supported types: {supported_list}"
+                        )
+                        logger.info("[Telegram] Rejected invalid image document: %s", ext or image_ext or "unknown")
+                        await self.handle_message(event)
+                        return
+                    event.message_type = MessageType.PHOTO
+                    event.media_urls = [cached_path]
+                    event.media_types = [image_ext_to_mime[image_ext]]
+                    logger.info("[Telegram] Cached user image document at %s", cached_path)
+                    await self.handle_message(event)
+                    return
 
                 if not ext and doc.mime_type:
                     video_mime_to_ext = {v: k for k, v in SUPPORTED_VIDEO_TYPES.items()}
@@ -2684,6 +2734,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     logger.info("[Telegram] Cached user video document at %s", cached_path)
                     await self.handle_message(event)
                     return
+
+                # If no extension from filename, reverse-lookup from MIME type
+                if not ext and doc.mime_type:
+                    mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
+                    ext = mime_to_ext.get(doc.mime_type, "")
 
                 # Check if supported
                 if ext not in SUPPORTED_DOCUMENT_TYPES:

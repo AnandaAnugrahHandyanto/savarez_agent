@@ -199,6 +199,111 @@ class TestDocumentDownloadBlock:
         assert event.media_types == ["application/pdf"]
 
     @pytest.mark.asyncio
+    async def test_png_document_is_treated_as_image(self, adapter):
+        png_bytes = b"\x89PNG\r\n\x1a\n fake png data"
+        file_obj = _make_file_obj(png_bytes)
+        file_obj.file_path = "documents/screenshot.png"
+        doc = _make_document(
+            file_name="screenshot.png",
+            mime_type="image/png",
+            file_size=len(png_bytes),
+            file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        with patch("gateway.platforms.telegram.cache_image_from_bytes", return_value="/tmp/screenshot.png") as mock_cache:
+            await adapter._handle_media_message(update, MagicMock())
+
+        event = adapter.handle_message.call_args[0][0]
+        mock_cache.assert_called_once_with(png_bytes, ext=".png")
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_urls == ["/tmp/screenshot.png"]
+        assert event.media_types == ["image/png"]
+        assert "Unsupported document type" not in (event.text or "")
+
+    @pytest.mark.asyncio
+    async def test_image_mime_normalizes_non_image_filename_extension(self, adapter):
+        png_bytes = b"\x89PNG\r\n\x1a\n fake png data"
+        doc = _make_document(
+            file_name="notes.txt",
+            mime_type="image/png",
+            file_size=len(png_bytes),
+            file_obj=_make_file_obj(png_bytes),
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        with patch("gateway.platforms.telegram.cache_image_from_bytes", return_value="/tmp/normalized.png") as mock_cache:
+            await adapter._handle_media_message(update, MagicMock())
+
+        event = adapter.handle_message.call_args[0][0]
+        mock_cache.assert_called_once_with(png_bytes, ext=".png")
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_urls == ["/tmp/normalized.png"]
+        assert event.media_types == ["image/png"]
+
+    @pytest.mark.asyncio
+    async def test_unsupported_image_document_returns_unsupported_type_message(self, adapter):
+        heic_bytes = b"not-a-supported-image"
+        doc = _make_document(
+            file_name="capture.heic",
+            mime_type="image/heic",
+            file_size=len(heic_bytes),
+            file_obj=_make_file_obj(heic_bytes),
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        with patch("gateway.platforms.telegram.cache_image_from_bytes") as mock_cache:
+            await adapter._handle_media_message(update, MagicMock())
+
+        event = adapter.handle_message.call_args[0][0]
+        mock_cache.assert_not_called()
+        assert event.message_type == MessageType.DOCUMENT
+        assert "Unsupported document type '.heic'" in (event.text or "")
+
+    @pytest.mark.asyncio
+    async def test_image_extension_with_non_image_mime_is_rejected_cleanly(self, adapter):
+        bad_bytes = b"%PDF-1.4 fake"
+        doc = _make_document(
+            file_name="sneaky.png",
+            mime_type="application/pdf",
+            file_size=len(bad_bytes),
+            file_obj=_make_file_obj(bad_bytes),
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        with patch("gateway.platforms.telegram.cache_image_from_bytes") as mock_cache:
+            await adapter._handle_media_message(update, MagicMock())
+
+        event = adapter.handle_message.call_args[0][0]
+        mock_cache.assert_not_called()
+        assert event.message_type == MessageType.DOCUMENT
+        assert "Unsupported document type '.png'" in (event.text or "")
+
+    @pytest.mark.asyncio
+    async def test_unsupported_image_mime_does_not_fallback_to_supported_extension(self, adapter):
+        heic_bytes = b"fake-heic"
+        doc = _make_document(
+            file_name="photo.jpg",
+            mime_type="image/heic",
+            file_size=len(heic_bytes),
+            file_obj=_make_file_obj(heic_bytes),
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        with patch("gateway.platforms.telegram.cache_image_from_bytes") as mock_cache:
+            await adapter._handle_media_message(update, MagicMock())
+
+        event = adapter.handle_message.call_args[0][0]
+        mock_cache.assert_not_called()
+        assert event.message_type == MessageType.DOCUMENT
+        assert "Unsupported document type '.jpg'" in (event.text or "")
+
+    @pytest.mark.asyncio
     async def test_supported_txt_injects_content(self, adapter):
         content = b"Hello from a text file"
         file_obj = _make_file_obj(content)
