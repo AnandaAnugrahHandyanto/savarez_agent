@@ -2816,6 +2816,18 @@ class GatewayRunner:
             os.getenv(v, "").lower() in ("true", "1", "yes")
             for v in _builtin_allow_all_vars + _plugin_allow_all_vars
         )
+        try:
+            from gateway.config import load_nim_instances
+
+            nim_platform = self.config.platforms.get(Platform.NIM)
+            if nim_platform is not None:
+                nim_instances = load_nim_instances(nim_platform)
+                if any(instance.p2p_allow_from for instance in nim_instances):
+                    _any_allowlist = True
+                if any(instance.p2p_policy == "open" for instance in nim_instances):
+                    _allow_all = True
+        except Exception:
+            pass
         if not _any_allowlist and not _allow_all:
             logger.warning(
                 "No user allowlists configured. All unauthorized users will be denied. "
@@ -4288,6 +4300,26 @@ class GatewayRunner:
                 return None
             return WeixinAdapter(config)
 
+        elif platform == Platform.NIM:
+            from gateway.platforms.nim import MultiNimAdapter, NimAdapter, check_nim_requirements
+            from gateway.config import load_nim_instances
+            nim_instances = load_nim_instances(config)
+            if not check_nim_requirements(config):
+                logger.warning(
+                    "NIM: bridge runtime is unavailable. Hermes now uses nim-bot-py for "
+                    "the default NIM bridge; install nim-bot-py and ensure node/npm are "
+                    "available."
+                )
+                return None
+            has_explicit_instances = bool(
+                (isinstance(getattr(config, "extra", None), dict) and "instances" in config.extra)
+                or os.getenv("NIM_INSTANCES", "").strip()
+            )
+            if len(nim_instances) > 1 or (nim_instances and has_explicit_instances):
+                return MultiNimAdapter(config, resolved_instances=nim_instances)
+            if nim_instances:
+                return NimAdapter(config, resolved=nim_instances[0])
+            return NimAdapter(config)
         elif platform == Platform.MATTERMOST:
             from gateway.platforms.mattermost import MattermostAdapter, check_mattermost_requirements
             if not check_mattermost_requirements():
