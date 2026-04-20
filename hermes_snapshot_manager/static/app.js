@@ -118,6 +118,9 @@
     const descriptionPreview = document.getElementById("schedule-description-preview");
     const panels = Array.from(form.querySelectorAll("[data-mode-panel]"));
     const currentCron = form.dataset.currentCron || hiddenCronInput?.value || "0 */6 * * *";
+    const excludeEditor = form.querySelector("[data-exclude-editor]");
+    const excludeRows = form.querySelector("[data-exclude-rows]");
+    const excludeTextarea = form.querySelector("[data-exclude-textarea]");
 
     function inferModeFromCron(cron) {
       const hourly = cron.match(/^0 \*\/(\d{1,2}) \* \* \*$/);
@@ -142,6 +145,10 @@
       return "Custom cron schedule";
     }
 
+    function validCron(cron) {
+      return /^\S+\s+\S+\s+\S+\s+\S+\s+\S+$/.test(cron.trim());
+    }
+
     function selectedMode() {
       return modeInputs.find((input) => input.checked)?.value || "every_hours";
     }
@@ -160,6 +167,29 @@
       return hours === 24 ? "0 0 * * *" : `0 */${hours} * * *`;
     }
 
+    function createExcludeRow(value = "") {
+      const row = document.createElement("div");
+      row.className = "exclude-row";
+      row.innerHTML = `<input type="text" value="${value.replaceAll('"', '&quot;')}" placeholder="sessions/**" /><button type="button" class="button-link button-link--ghost">Remove</button>`;
+      const input = row.querySelector("input");
+      const removeButton = row.querySelector("button");
+      input.addEventListener("input", syncExcludeTextarea);
+      removeButton.addEventListener("click", () => {
+        row.remove();
+        syncExcludeTextarea();
+      });
+      excludeRows?.appendChild(row);
+      return row;
+    }
+
+    function syncExcludeTextarea() {
+      if (!excludeTextarea || !excludeRows) return;
+      const values = Array.from(excludeRows.querySelectorAll("input"))
+        .map((input) => input.value.trim())
+        .filter(Boolean);
+      excludeTextarea.value = values.join("\n");
+    }
+
     const inferred = inferModeFromCron(currentCron);
     modeInputs.forEach((input) => { input.checked = input.value === inferred.mode; });
     if (inferred.hours && everyHoursInput) everyHoursInput.value = inferred.hours;
@@ -168,13 +198,35 @@
     if (inferred.time && weeklyTimeInput && inferred.mode === "weekly") weeklyTimeInput.value = inferred.time;
     if (customCronInput) customCronInput.value = currentCron;
 
+    if (excludeRows && excludeTextarea) {
+      const initialPatterns = excludeTextarea.value.split("\n").map((item) => item.trim()).filter(Boolean);
+      if (initialPatterns.length === 0) createExcludeRow("");
+      initialPatterns.forEach((pattern) => createExcludeRow(pattern));
+      excludeEditor?.querySelectorAll("[data-exclude-add]").forEach((button) => button.addEventListener("click", () => createExcludeRow("")));
+      excludeEditor?.querySelectorAll("[data-exclude-preset]").forEach((button) => button.addEventListener("click", () => {
+        const pattern = button.dataset.excludePreset || "";
+        const existing = Array.from(excludeRows.querySelectorAll("input")).map((input) => input.value.trim());
+        if (!existing.includes(pattern)) createExcludeRow(pattern);
+        syncExcludeTextarea();
+      }));
+      excludeEditor?.querySelectorAll("[data-exclude-restore-defaults]").forEach((button) => button.addEventListener("click", () => {
+        excludeRows.innerHTML = "";
+        ["audio_cache/**", "cron/output/**", "**/*.log", "**/__pycache__/**", "**/tmp/**", ".venv/**", "venv/**", ".virtualenv/**", "**/site-packages/**", "**/node_modules/**", "**/*.egg-info/**", "**/build/**", "**/dist/**", ".vscode/**", ".idea/**", ".DS_Store", "Thumbs.db", "**/.git/**"].forEach((pattern) => createExcludeRow(pattern));
+        syncExcludeTextarea();
+      }));
+      syncExcludeTextarea();
+    }
+
     function renderMode() {
       const mode = selectedMode();
       panels.forEach((panel) => panel.classList.toggle("hidden", panel.dataset.modePanel !== mode));
       const cron = computeCron(mode);
       if (hiddenCronInput) hiddenCronInput.value = cron;
       if (preview) preview.innerHTML = `<code>${cron}</code>`;
-      if (descriptionPreview) descriptionPreview.textContent = describeCron(cron);
+      if (descriptionPreview) {
+        descriptionPreview.textContent = validCron(cron) ? describeCron(cron) : "Cron must have 5 fields";
+        descriptionPreview.classList.toggle("validation-error", !validCron(cron));
+      }
     }
 
     modeInputs.forEach((input) => input.addEventListener("change", renderMode));
@@ -189,33 +241,68 @@
   function setupSnapshotTable() {
     const table = document.getElementById("snapshots-table");
     const filterInput = document.getElementById("snapshot-filter");
+    const statusFilter = document.getElementById("snapshot-status-filter");
     const sortSelect = document.getElementById("snapshot-sort");
-    if (!table || !filterInput || !sortSelect) return;
+    const prevButton = document.getElementById("snapshots-prev-page");
+    const nextButton = document.getElementById("snapshots-next-page");
+    const pageIndicator = document.getElementById("snapshots-page-indicator");
+    const summary = document.getElementById("snapshots-table-summary");
+    const noResults = document.getElementById("snapshots-no-results");
+    if (!table || !filterInput || !sortSelect || !statusFilter) return;
     const tbody = table.querySelector("tbody");
     const rows = Array.from(tbody.querySelectorAll("tr[data-filter-text]"));
+    let currentPage = 1;
+    const pageSize = 10;
 
-    function applyTableState() {
+    function currentFilteredRows() {
       const query = filterInput.value.trim().toLowerCase();
-      const sortMode = sortSelect.value;
-      const visibleRows = rows.filter((row) => row.dataset.filterText.toLowerCase().includes(query));
-      visibleRows.sort((a, b) => {
+      const status = statusFilter.value;
+      const filtered = rows.filter((row) => {
+        const matchesQuery = row.dataset.filterText.toLowerCase().includes(query);
+        const matchesStatus = status === "all" || (row.dataset.status || "") === status;
+        return matchesQuery && matchesStatus;
+      });
+      filtered.sort((a, b) => {
         const createdA = Date.parse(a.dataset.created || "") || 0;
         const createdB = Date.parse(b.dataset.created || "") || 0;
         const sizeA = Number(a.dataset.size || 0);
         const sizeB = Number(b.dataset.size || 0);
-        if (sortMode === "created_asc") return createdA - createdB;
-        if (sortMode === "size_desc") return sizeB - sizeA;
-        if (sortMode === "size_asc") return sizeA - sizeB;
+        if (sortSelect.value === "created_asc") return createdA - createdB;
+        if (sortSelect.value === "size_desc") return sizeB - sizeA;
+        if (sortSelect.value === "size_asc") return sizeA - sizeB;
         return createdB - createdA;
       });
-      rows.forEach((row) => row.remove());
-      visibleRows.forEach((row) => tbody.appendChild(row));
-      rows.forEach((row) => { row.classList.toggle("hidden", !visibleRows.includes(row)); });
+      return filtered;
     }
 
-    filterInput.addEventListener("input", applyTableState);
+    function applyTableState() {
+      const filtered = currentFilteredRows();
+      const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+      currentPage = Math.min(currentPage, totalPages);
+      const start = (currentPage - 1) * pageSize;
+      const visibleSet = new Set(filtered.slice(start, start + pageSize));
+      rows.forEach((row) => {
+        row.classList.toggle("hidden", !visibleSet.has(row));
+        if (visibleSet.has(row)) tbody.appendChild(row);
+      });
+      if (summary) summary.textContent = filtered.length ? `Showing ${Math.min(start + 1, filtered.length)}-${Math.min(start + pageSize, filtered.length)} of ${filtered.length} snapshots` : "No snapshots match the current filters";
+      if (pageIndicator) pageIndicator.textContent = `Page ${currentPage} / ${totalPages}`;
+      if (prevButton) prevButton.disabled = currentPage <= 1;
+      if (nextButton) nextButton.disabled = currentPage >= totalPages;
+      if (noResults) noResults.classList.toggle("hidden", filtered.length !== 0);
+    }
+
+    filterInput.addEventListener("input", () => { currentPage = 1; applyTableState(); });
+    statusFilter.addEventListener("change", () => { currentPage = 1; applyTableState(); });
     sortSelect.addEventListener("change", applyTableState);
+    prevButton?.addEventListener("click", () => { currentPage = Math.max(1, currentPage - 1); applyTableState(); });
+    nextButton?.addEventListener("click", () => { currentPage += 1; applyTableState(); });
     applyTableState();
+  }
+
+  const saveBanner = document.getElementById("settings-save-banner");
+  if (saveBanner) {
+    window.setTimeout(() => saveBanner.classList.add("hidden"), 2400);
   }
 
   setupScheduleForm();

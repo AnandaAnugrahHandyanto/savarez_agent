@@ -40,6 +40,7 @@ code { color: #dbe6ff; font-family: Consolas, monospace; font-size: 0.92em; }
 .stat-value { display: block; margin-top: 8px; font-size: 1.8rem; }
 .stat-value--small { font-size: 1.2rem; }
 .chip-row, .inline-actions, .operation-actions, .button-row, .list-filters, .preset-grid { display: flex; flex-wrap: wrap; gap: 10px; }
+.inline-actions > * { flex: 1; }
 .chip { display: inline-flex; align-items: center; gap: 6px; padding: 10px 14px; border-radius: 999px; border: 1px solid rgba(140, 168, 255, 0.18); background: rgba(16, 28, 49, 0.72); color: var(--text); }
 input, button, textarea, select { width: 100%; margin-top: 8px; padding: 13px 14px; border-radius: 14px; border: 1px solid rgba(140, 168, 255, 0.18); background: var(--panel-3); color: var(--text); font: inherit; }
 textarea { resize: vertical; min-height: 160px; }
@@ -52,6 +53,10 @@ button, .button-link { cursor: pointer; background: linear-gradient(135deg, var(
 .preset-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
 .preset-option { padding: 12px 14px; }
 .preset-option input { width: auto; margin-right: 8px; }
+.exclude-editor { display: grid; gap: 12px; margin-top: 8px; }
+.exclude-editor__toolbar, .exclude-editor__presets, .table-footer { display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; align-items: center; }
+.exclude-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; }
+.exclude-row input { margin-top: 0; }
 .inline-control { display: flex; gap: 10px; align-items: center; }
 .inline-control input { margin-top: 0; }
 .inset-card { padding: 14px; margin: 14px 0; }
@@ -71,6 +76,8 @@ thead th { color: var(--muted); font-weight: 700; border-top: 0; background: rgb
 .empty-state { color: var(--muted); padding: 18px 0; }
 .hidden { display: none !important; }
 .success-banner { border-color: rgba(66, 214, 164, 0.28); }
+.toast-banner { position: sticky; top: 16px; z-index: 20; transition: opacity 0.25s ease, transform 0.25s ease; }
+.validation-error { color: #ffd6de; }
 .card.danger { border-color: rgba(255, 140, 158, 0.26); }
 .pill { display: inline-flex; align-items: center; justify-content: center; min-height: 32px; padding: 7px 12px; border-radius: 999px; border: 1px solid rgba(140, 168, 255, 0.18); background: rgba(140, 168, 255, 0.12); color: var(--text); }
 .pill-info { background: rgba(140, 168, 255, 0.14); border-color: rgba(140, 168, 255, 0.24); }

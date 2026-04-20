@@ -9,6 +9,13 @@
     </div>
     <div class="list-filters">
       <input id="snapshot-filter" type="search" placeholder="Filter by label or snapshot id" data-filter-table="snapshots-table" />
+      <select id="snapshot-status-filter">
+        <option value="all">All statuses</option>
+        <option value="created">Created</option>
+        <option value="verified">Verified</option>
+        <option value="degraded">Degraded</option>
+        <option value="failed">Failed</option>
+      </select>
       <select id="snapshot-sort" data-sort-table="snapshots-table">
         <option value="created_desc">Newest first</option>
         <option value="created_asc">Oldest first</option>
@@ -26,7 +33,7 @@
       </thead>
       <tbody>
         {% for snapshot in snapshots %}
-        <tr data-filter-text="{{ (snapshot.label or '') ~ ' ' ~ snapshot.id }}" data-created="{{ snapshot.created_at }}" data-size="{{ snapshot.total_bytes }}">
+        <tr data-filter-text="{{ (snapshot.label or '') ~ ' ' ~ snapshot.id }}" data-created="{{ snapshot.created_at }}" data-size="{{ snapshot.total_bytes }}" data-status="{{ snapshot.status }}">
           <td><a href="/snapshots/{{ snapshot.id }}"><strong>{{ snapshot.label or snapshot.id }}</strong></a><div class="table-subtitle"><code>{{ snapshot.id }}</code></div></td>
           <td>{{ snapshot.created_at }}</td>
           <td>{{ snapshot.trigger_type }}</td>
@@ -41,5 +48,14 @@
       </tbody>
     </table>
   </div>
+  <div class="table-footer">
+    <p class="help-text" id="snapshots-table-summary">Showing all snapshots</p>
+    <div class="inline-actions compact-actions">
+      <button type="button" class="button-link button-link--secondary" id="snapshots-prev-page">Previous</button>
+      <span class="chip" id="snapshots-page-indicator">Page 1</span>
+      <button type="button" class="button-link button-link--secondary" id="snapshots-next-page">Next</button>
+    </div>
+  </div>
+  <p class="empty-state hidden" id="snapshots-no-results">No snapshots match the current filters.</p>
 </section>
 {% endblock %}

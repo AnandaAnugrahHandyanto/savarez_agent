@@ -1,9 +1,15 @@
 {% extends 'base.html' %}
 {% block content %}
 {% if request.query_params.get('saved') == '1' %}
-<section class="card success-banner">
+<section class="card success-banner toast-banner" id="settings-save-banner">
   <strong>Settings saved.</strong>
   <p class="subtitle">Schedule and retention changes will apply to the next run.</p>
+</section>
+{% endif %}
+{% if request.query_params.get('error') %}
+<section class="card danger" id="settings-error-banner">
+  <strong>Could not save settings.</strong>
+  <p class="subtitle">{{ request.query_params.get('error') }}</p>
 </section>
 {% endif %}
 <section class="grid two-up">
@@ -52,8 +58,25 @@
       <label>Weekly retention</label>
       <input type="number" name="retention_weekly" value="{{ settings.retention_weekly }}" min="1" />
       <label>Exclude patterns</label>
-      <textarea name="exclude_patterns" rows="8">{{ schedule_summary.exclude_patterns_text }}</textarea>
-      <button type="submit">Save settings</button>
+      <div class="exclude-editor" data-exclude-editor>
+        <div class="exclude-editor__toolbar">
+          <button type="button" class="button-link button-link--secondary" data-exclude-add>Add pattern</button>
+          <button type="button" class="button-link button-link--ghost" data-exclude-restore-defaults>Restore defaults</button>
+        </div>
+        <div class="exclude-editor__presets">
+          <button type="button" class="chip-button" data-exclude-preset="sessions/**">sessions/**</button>
+          <button type="button" class="chip-button" data-exclude-preset="checkpoints/**">checkpoints/**</button>
+          <button type="button" class="chip-button" data-exclude-preset="cache/**">cache/**</button>
+          <button type="button" class="chip-button" data-exclude-preset="browser_screenshots/**">browser_screenshots/**</button>
+        </div>
+        <div class="exclude-editor__rows" data-exclude-rows></div>
+        <textarea name="exclude_patterns" rows="8" class="hidden" data-exclude-textarea>{{ schedule_summary.exclude_patterns_text }}</textarea>
+      </div>
+      <p class="help-text">One pattern per line. Bulky directories can be pruned before copy starts.</p>
+      <div class="inline-actions">
+        <button type="submit">Save settings</button>
+        <button type="button" class="button-link button-link--ghost" data-exclude-restore-defaults>Reset excludes</button>
+      </div>
     </form>
   </article>
   <article class="card">
