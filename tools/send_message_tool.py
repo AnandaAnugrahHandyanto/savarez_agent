@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 _TELEGRAM_TOPIC_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
 _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::([-A-Za-z0-9_]+))?\s*$")
-_WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
+_WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@[A-Za-z0-9.]+|filehelper)\s*$")
 # Discord snowflake IDs are numeric, same regex pattern as Telegram topic targets.
 _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
@@ -138,6 +138,25 @@ def _handle_send(args):
     from tools.interrupt import is_interrupted
     if is_interrupted():
         return tool_error("Interrupted")
+
+    # For CLI sessions, check whether the gateway is running and surface an
+    # actionable error rather than silently failing.
+    from gateway.session_context import get_session_env
+    _session_platform = get_session_env("HERMES_SESSION_PLATFORM", "")
+    if not _session_platform or _session_platform == "local":
+        try:
+            from gateway.status import is_gateway_running
+            if not is_gateway_running():
+                return json.dumps({
+                    "error": (
+                        "The Hermes gateway is not running. "
+                        "Start it with: hermes gateway start\n"
+                        "Or run it in the foreground: hermes gateway run\n"
+                        "Then retry your send_message call."
+                    )
+                })
+        except Exception:
+            pass
 
     try:
         from gateway.config import load_gateway_config, Platform
@@ -1024,16 +1043,30 @@ async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=No
 
 
 def _check_send_message():
-    """Gate send_message on gateway running (always available on messaging platforms)."""
+    """Show send_message whenever any platform is configured.
+
+    Previously this was gated on the gateway process being alive, which caused
+    the tool to disappear entirely when the gateway crashed — leaving the agent
+    with no way to discover the correct recovery path. Now the tool is always
+    visible when at least one platform is configured; the handler surfaces an
+    actionable error with restart instructions when the gateway is down.
+    """
     from gateway.session_context import get_session_env
     platform = get_session_env("HERMES_SESSION_PLATFORM", "")
     if platform and platform != "local":
         return True
     try:
-        from gateway.status import is_gateway_running
-        return is_gateway_running()
+        from gateway.config import load_gateway_config
+        config = load_gateway_config()
+        return any(p.enabled for p in config.platforms.values())
     except Exception:
-        return False
+        # Fall back to process check so the tool still appears in unconfigured
+        # environments where the gateway may have been started manually.
+        try:
+            from gateway.status import is_gateway_running
+            return is_gateway_running()
+        except Exception:
+            return False
 
 
 # --- Registry ---

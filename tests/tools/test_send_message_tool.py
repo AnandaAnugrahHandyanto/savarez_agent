@@ -63,6 +63,29 @@ def _ensure_slack_mock(monkeypatch):
 
 
 class TestSendMessageTool:
+    def setup_method(self):
+        self._gw_patch = patch("gateway.status.is_gateway_running", return_value=True)
+        self._gw_patch.start()
+
+    def teardown_method(self):
+        self._gw_patch.stop()
+
+    def test_gateway_not_running_returns_actionable_error(self):
+        self._gw_patch.stop()
+        dead_patch = patch("gateway.status.is_gateway_running", return_value=False)
+        dead_patch.start()
+        try:
+            result = json.loads(
+                send_message_tool(
+                    {"action": "send", "target": "telegram:-1001", "message": "hello"}
+                )
+            )
+            assert "error" in result
+            assert "hermes gateway start" in result["error"]
+        finally:
+            dead_patch.stop()
+            self._gw_patch.start()
+
     def test_cron_duplicate_target_is_skipped_and_explained(self):
         home = SimpleNamespace(chat_id="-1001")
         config, _telegram_cfg = _make_config()
