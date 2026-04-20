@@ -5869,15 +5869,26 @@ class AIAgent:
                             entry["id"] = tc_delta.id
                         if tc_delta.function:
                             if tc_delta.function.name:
-                                # Use assignment, not +=.  Function names are
-                                # atomic identifiers delivered complete in the
-                                # first chunk (OpenAI spec).  Some providers
-                                # (MiniMax M2.7 via NVIDIA NIM) resend the full
-                                # name in every chunk; concatenation would
-                                # produce "read_fileread_file".  Assignment
-                                # (matching the OpenAI Node SDK / LiteLLM /
-                                # Vercel AI patterns) is immune to this.
-                                entry["function"]["name"] = tc_delta.function.name
+                                # Tool names are usually atomic, but some providers
+                                # stream them in pieces (e.g. "web_" then "search")
+                                # while others resend the full name every chunk.
+                                # Accumulate only when the new fragment is neither
+                                # identical to nor a superset/subset of what we
+                                # already have; this preserves partial-name joins
+                                # without producing duplicates like
+                                # "read_fileread_file".
+                                current_name = entry["function"]["name"]
+                                incoming_name = tc_delta.function.name
+                                if not current_name:
+                                    entry["function"]["name"] = incoming_name
+                                elif incoming_name == current_name:
+                                    pass
+                                elif incoming_name.startswith(current_name):
+                                    entry["function"]["name"] = incoming_name
+                                elif current_name.startswith(incoming_name):
+                                    pass
+                                else:
+                                    entry["function"]["name"] += incoming_name
                             if tc_delta.function.arguments:
                                 entry["function"]["arguments"] += tc_delta.function.arguments
                         extra = getattr(tc_delta, "extra_content", None)
