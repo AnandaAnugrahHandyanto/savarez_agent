@@ -610,6 +610,7 @@ class GatewayRunner:
     _restart_task_started: bool = False
     _restart_detached: bool = False
     _restart_via_service: bool = False
+    _restart_task: Optional[asyncio.Task] = None
     _stop_task: Optional[asyncio.Task] = None
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
     
@@ -1878,8 +1879,10 @@ class GatewayRunner:
             await self.stop(restart=True, detached_restart=detached, service_restart=via_service)
 
         task = asyncio.create_task(_run_restart())
+        self._restart_task = task
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
+        task.add_done_callback(lambda _: setattr(self, "_restart_task", None))
         return True
 
     async def start(self) -> bool:
@@ -2568,7 +2571,7 @@ class GatewayRunner:
                     logger.error("✗ %s disconnect error: %s", platform.value, e)
 
             for _task in list(self._background_tasks):
-                if _task is self._stop_task:
+                if _task is self._stop_task or _task is self._restart_task:
                     continue
                 _task.cancel()
             self._background_tasks.clear()
