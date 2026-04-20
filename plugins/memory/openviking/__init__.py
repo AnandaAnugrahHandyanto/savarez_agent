@@ -576,13 +576,27 @@ class OpenVikingMemoryProvider(MemoryProvider):
             return tool_error("uri is required")
 
         level = args.get("level", "overview")
-        # Map our level names to OpenViking GET endpoints
-        if level == "abstract":
-            resp = self._client.get("/api/v1/content/abstract", params={"uri": uri})
-        elif level == "full":
+
+        # Determine URI type so we route to the correct endpoint.
+        # abstract/overview are directory-only; files must use /content/download.
+        try:
+            stat_resp = self._client.get("/api/v1/fs/stat", params={"uri": uri})
+            is_dir = stat_resp.get("result", {}).get("isDir", False)
+        except Exception:
+            is_dir = False
+
+        if is_dir:
+            # Directory — route by level as before
+            if level == "abstract":
+                resp = self._client.get("/api/v1/content/abstract", params={"uri": uri})
+            elif level == "full":
+                resp = self._client.get("/api/v1/content/read", params={"uri": uri})
+            else:  # overview
+                resp = self._client.get("/api/v1/content/overview", params={"uri": uri})
+        else:
+            # File — abstract/overview endpoints don't support files;
+            # use /content/read which handles both types.
             resp = self._client.get("/api/v1/content/read", params={"uri": uri})
-        else:  # overview
-            resp = self._client.get("/api/v1/content/overview", params={"uri": uri})
 
         result = resp.get("result", "")
         # result is a plain string from the content endpoints
