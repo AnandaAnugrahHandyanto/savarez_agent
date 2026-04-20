@@ -98,6 +98,7 @@ AUTHOR_MAP = {
     "liujinkun@bytedance.com": "liujinkun2025",
     "dmayhem93@gmail.com": "dmahan93",
     "cdanis@gmail.com": "cdanis",
+    "JoshCSan@gmail.com": "MrNiceRicee",
     "samherring99@gmail.com": "samherring99",
     "desaiaum08@gmail.com": "Aum08Desai",
     "shannon.sands.1979@gmail.com": "shannonsands",

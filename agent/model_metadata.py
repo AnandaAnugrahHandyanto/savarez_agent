@@ -134,6 +134,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     # Official docs: https://help.aliyun.com/zh/model-studio/developer-reference/
     "qwen3-coder-plus": 1000000,  # 1M context
     "qwen3-coder": 262144,        # 256K context
+    "qwen3.6": 262144,            # 256K context (Qwen3.6 series)
     "qwen": 131072,
     # MiniMax — official docs: 204,800 context for all models
     # https://platform.minimax.io/docs/api-reference/text-anthropic-api
@@ -1002,13 +1003,17 @@ def get_model_context_length(
                 if local_ctx and local_ctx > 0:
                     save_context_length(model, base_url, local_ctx)
                     return local_ctx
-            logger.info(
-                "Could not detect context length for model %r at %s — "
-                "defaulting to %s tokens (probe-down). Set model.context_length "
-                "in config.yaml to override.",
-                model, base_url, f"{DEFAULT_FALLBACK_CONTEXT:,}",
-            )
-            return DEFAULT_FALLBACK_CONTEXT
+                # Some local OpenAI-compatible endpoints do not expose context
+                # metadata in /v1/models. Fall through to curated family defaults
+                # before using the generic probe-tier fallback.
+            else:
+                logger.info(
+                    "Could not detect context length for model %r at %s — "
+                    "defaulting to %s tokens (probe-down). Set model.context_length "
+                    "in config.yaml to override.",
+                    model, base_url, f"{DEFAULT_FALLBACK_CONTEXT:,}",
+                )
+                return DEFAULT_FALLBACK_CONTEXT
 
     # 4. Anthropic /v1/models API (only for regular API keys, not OAuth)
     if provider == "anthropic" or (

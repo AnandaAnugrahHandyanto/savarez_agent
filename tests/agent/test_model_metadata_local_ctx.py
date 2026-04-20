@@ -480,7 +480,7 @@ class TestGetModelContextLengthLocalFallback:
         mock_save.assert_called_once_with("omnicoder-9b", "http://localhost:11434/v1", 131072)
 
     def test_local_endpoint_server_returns_none_falls_back_to_2m(self):
-        """When local server returns None, still falls back to 2M probe tier."""
+        """When local server returns None for unknown models, still falls back to 128K probe tier."""
         from agent.model_metadata import get_model_context_length, CONTEXT_PROBE_TIERS
 
         with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
@@ -491,6 +491,19 @@ class TestGetModelContextLengthLocalFallback:
             result = get_model_context_length("omnicoder-9b", "http://localhost:11434/v1")
 
         assert result == CONTEXT_PROBE_TIERS[0]
+
+    def test_local_endpoint_qwen3_6_without_metadata_uses_family_default(self):
+        """Local endpoints without context metadata should still resolve Qwen3.6 to 256K."""
+        from agent.model_metadata import get_model_context_length
+
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             patch("agent.model_metadata.is_local_endpoint", return_value=True), \
+             patch("agent.model_metadata._query_local_context_length", return_value=None):
+            result = get_model_context_length("Qwen3.6-35B-A3B-8bit", "http://127.0.0.1:7070/v1")
+
+        assert result == 262144
 
     def test_non_local_endpoint_does_not_query_local_server(self):
         """For non-local endpoints, _query_local_context_length is not called."""
