@@ -2,6 +2,20 @@
 
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.
 
+## Autorunne Kernel
+
+This repo now uses the local-first Autorunne kernel under `.autorunne/`.
+
+Before any multi-step implementation or bugfix work, read these in order:
+1. `.autorunne/README.md`
+2. `.autorunne/NEXT_ACTION.md`
+3. `.autorunne/TASKS.md`
+4. `.autorunne/DECISIONS.md`
+5. `.autorunne/PROJECT_CONTEXT.md`
+6. `.autorunne/snapshots/latest.json`
+
+After meaningful verified progress, update the relevant files in `.autorunne/` so Hermes, Claude Code, and Codex can resume from the same shared project state.
+
 ## Development Environment
 
 ```bash
