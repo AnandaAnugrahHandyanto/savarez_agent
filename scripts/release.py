@@ -104,9 +104,13 @@ AUTHOR_MAP = {
     "xiewenxuan462@gmail.com": "yule975",
     "yiweimeng.dlut@hotmail.com": "meng93",
     "hakanerten02@hotmail.com": "teyrebaz33",
+    "linux2010@users.noreply.github.com": "Linux2010",
+    "elmatadorgh@users.noreply.github.com": "elmatadorgh",
+    "alexazzjjtt@163.com": "alexzhu0",
     "ruzzgarcn@gmail.com": "Ruzzgar",
     "alireza78.crypto@gmail.com": "alireza78a",
     "brooklyn.bb.nicholson@gmail.com": "brooklynnicholson",
+    "withapurpose37@gmail.com": "StefanIsMe",
     "4317663+helix4u@users.noreply.github.com": "helix4u",
     "331214+counterposition@users.noreply.github.com": "counterposition",
     "blspear@gmail.com": "BrennerSpear",
@@ -137,6 +141,7 @@ AUTHOR_MAP = {
     "aryan@synvoid.com": "aryansingh",
     "johnsonblake1@gmail.com": "blakejohnson",
     "hcn518@gmail.com": "pedh",
+    "haileymarshall005@gmail.com": "haileymarshall",
     "greer.guthrie@gmail.com": "g-guthrie",
     "kennyx102@gmail.com": "bobashopcashier",
     "shokatalishaikh95@gmail.com": "areu01or00",
@@ -293,6 +298,10 @@ AUTHOR_MAP = {
     "jarvischer@gmail.com": "maxchernin",
     "levantam.98.2324@gmail.com": "LVT382009",
     "zhurongcheng@rcrai.com": "heykb",
+    "withapurpose37@gmail.com": "StefanIsMe",
+    "261797239+lumenradley@users.noreply.github.com": "lumenradley",
+    "166376523+sjz-ks@users.noreply.github.com": "sjz-ks",
+    "haileymarshall005@gmail.com": "haileymarshall",
 }
 
 
