@@ -483,6 +483,29 @@ class ShellFileOperations(FileOperations):
 
         # Cache for command availability checks
         self._command_cache: Dict[str, bool] = {}
+
+    def _uses_windows_shell_path_translation(self) -> bool:
+        """Return True when the backend is native Windows using a POSIX-like shell."""
+        return getattr(self.env, "shell_path_style", "") == "git-bash"
+
+    def _normalize_shell_path(self, path: str) -> str:
+        """Convert Windows-style paths into a form Git Bash can consume."""
+        if not path or not self._uses_windows_shell_path_translation():
+            return path
+
+        if path.startswith("~"):
+            return path
+
+        if re.match(r"^[A-Za-z]:[\\/]", path):
+            return path.replace("\\", "/")
+
+        if path.startswith("\\\\"):
+            return "//" + path.lstrip("\\").replace("\\", "/")
+
+        if "\\" in path:
+            return path.replace("\\", "/")
+
+        return path
     
     def _exec(self, command: str, cwd: str = None, timeout: int = None,
               stdin_data: str = None) -> ExecuteResult:
@@ -568,6 +591,8 @@ class ShellFileOperations(FileOperations):
         """
         if not path:
             return path
+
+        path = self._normalize_shell_path(path)
         
         # Handle ~ and ~user
         if path.startswith('~'):
@@ -605,6 +630,11 @@ class ShellFileOperations(FileOperations):
     def _is_absolute_shell_path(path: str) -> bool:
         """Return True for absolute POSIX or Windows-style paths."""
         return path.startswith("/") or bool(re.match(r"^[A-Za-z]:[\\/]", path))
+
+    @staticmethod
+    def _is_native_windows_local_path(path: str) -> bool:
+        """Return True for paths that can be traversed by local Windows Python."""
+        return bool(re.match(r"^[A-Za-z]:[\\/]", path)) or path.startswith("\\\\")
 
     def _resolve_search_path_for_grep(self, path: str) -> tuple[str, str | None]:
         """Resolve relative grep search roots to an absolute shell path.
@@ -1277,6 +1307,15 @@ class ShellFileOperations(FileOperations):
 
         # Fallback: find (slower, no .gitignore awareness)
         if not self._has_command('find'):
+            if self._is_native_windows_local_path(path):
+                python_result = self._search_files_python_local(
+                    search_pattern,
+                    path,
+                    limit,
+                    offset,
+                )
+                if python_result is not None:
+                    return python_result
             return SearchResult(
                 error="File search requires 'rg' (ripgrep) or 'find'. "
                       "Install ripgrep for best results: "
@@ -1332,9 +1371,59 @@ class ShellFileOperations(FileOperations):
             files = filtered_files[offset:offset + limit]
         # pagination for standard roots is already applied in shell
 
+        if not files and self._is_native_windows_local_path(path):
+            python_result = self._search_files_python_local(
+                search_pattern,
+                path,
+                limit,
+                offset,
+            )
+            if python_result is not None:
+                return python_result
+
         return SearchResult(
             files=files,
             total_count=len(files)
+        )
+
+    def _search_files_python_local(
+        self,
+        search_pattern: str,
+        path: str,
+        limit: int,
+        offset: int,
+    ) -> Optional[SearchResult]:
+        """Native Windows fallback when shell `find` cannot handle a local path."""
+        root = Path(path)
+        if not root.exists() or not root.is_dir():
+            return None
+
+        matches: list[tuple[float, str]] = []
+        try:
+            for candidate in root.rglob(search_pattern):
+                if not candidate.is_file():
+                    continue
+                try:
+                    rel_parts = candidate.relative_to(root).parts
+                except ValueError:
+                    rel_parts = candidate.parts
+                if any(part not in (".", "..") and part.startswith(".") for part in rel_parts):
+                    continue
+                try:
+                    mtime = candidate.stat().st_mtime
+                except OSError:
+                    mtime = 0.0
+                matches.append((mtime, str(candidate)))
+        except OSError:
+            return None
+
+        matches.sort(key=lambda item: item[0], reverse=True)
+        all_files = [file_path for _, file_path in matches]
+        page = all_files[offset:offset + limit]
+        return SearchResult(
+            files=page,
+            total_count=len(all_files),
+            truncated=len(all_files) > offset + limit,
         )
 
     def _search_files_rg(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
