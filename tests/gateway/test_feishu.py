@@ -3187,3 +3187,96 @@ class TestPerGroupRequireMention(unittest.TestCase):
         message = SimpleNamespace(mentions=[], content="hello")
         blocked_sender = SimpleNamespace(open_id="ou_blocked", user_id=None)
         self.assertFalse(adapter._should_accept_group_message(message, blocked_sender, chat_id))
+
+
+# ===========================================================================
+# Card 2.0 table limit tests
+# ===========================================================================
+
+class TestCountMdTables(unittest.TestCase):
+    """Tests for _count_md_tables helper."""
+
+    def test_zero_tables(self):
+        from gateway.platforms.feishu import _count_md_tables
+        content = "Hello world\n\nSome text\n```\n| a |\n|---|\n| b |\n```\n"
+        self.assertEqual(_count_md_tables(content), 0)
+
+    def test_exactly_one(self):
+        from gateway.platforms.feishu import _count_md_tables
+        content = "| A | B |\n|---|---|\n| 1 | 2 |\n"
+        self.assertEqual(_count_md_tables(content), 1)
+
+    def test_exactly_five(self):
+        from gateway.platforms.feishu import _count_md_tables
+        content = ""
+        for i in range(5):
+            content += f"\n## Table {i+1}\n| Col |\n|-----|\n| Val |\n"
+        self.assertEqual(_count_md_tables(content), 5)
+
+    def test_ignores_code_blocks(self):
+        from gateway.platforms.feishu import _count_md_tables
+        content = "| H1 | H2 |\n|----|----|\n| A | B |\n```\n| fake |\n|------|\n| data |\n```\n"
+        self.assertEqual(_count_md_tables(content), 1)
+
+    def test_header_only_no_count(self):
+        from gateway.platforms.feishu import _count_md_tables
+        content = "| Just a header\n| Real | Col |\n|-----|-----|\n| Data | here |\n"
+        self.assertEqual(_count_md_tables(content), 1)
+
+
+class TestSplitMdByTableLimit(unittest.TestCase):
+    """Tests for _split_md_by_table_limit helper."""
+
+    def test_under_limit_no_split(self):
+        from gateway.platforms.feishu import _split_md_by_table_limit
+        content = "| A |\n|---|\n| 1 |\n"
+        self.assertEqual(_split_md_by_table_limit(content, 5), [content])
+
+    def test_exactly_at_limit_no_split(self):
+        from gateway.platforms.feishu import _split_md_by_table_limit
+        content = ""
+        for i in range(5):
+            content += f"| Col{i} |\n|------|\n| Val |\n"
+        chunks = _split_md_by_table_limit(content, 5)
+        self.assertEqual(len(chunks), 1)
+
+    def test_six_tables_splits_into_two(self):
+        from gateway.platforms.feishu import _split_md_by_table_limit, _count_md_tables
+        content = ""
+        for i in range(6):
+            content += f"## Section {i+1}\n| Col |\n|-----|\n| Val |\n\n"
+        chunks = _split_md_by_table_limit(content, 5)
+        self.assertEqual(len(chunks), 2)
+        self.assertEqual(_count_md_tables(chunks[0]), 5)
+        self.assertEqual(_count_md_tables(chunks[1]), 1)
+
+    def test_preserves_heading(self):
+        from gateway.platforms.feishu import _split_md_by_table_limit
+        content = "## Table Section\n| A | B |\n|---|---|\n| 1 | 2 |\n\n## Another\n| C | D |\n|---|---|\n| 3 | 4 |\n"
+        chunks = _split_md_by_table_limit(content, 1)
+        self.assertEqual(len(chunks), 2)
+        self.assertIn("## Table Section", chunks[0])
+        self.assertIn("## Another", chunks[1])
+
+    def test_eight_tables(self):
+        from gateway.platforms.feishu import _split_md_by_table_limit, _count_md_tables
+        content = ""
+        for i in range(8):
+            content += f"## T{i}\n| C |\n|---|\n| V |\n"
+        chunks = _split_md_by_table_limit(content, 5)
+        self.assertGreaterEqual(len(chunks), 2)
+        for chunk in chunks:
+            self.assertLessEqual(_count_md_tables(chunk), 5)
+
+
+class TestEditTableTruncation(unittest.TestCase):
+    """Verify truncation logic used by edit_message."""
+
+    def test_truncated_content_has_five_tables(self):
+        from gateway.platforms.feishu import _count_md_tables, _split_md_by_table_limit
+        content = ""
+        for i in range(8):
+            content += f"## T{i}\n| C |\n|---|\n| V |\n"
+        chunks = _split_md_by_table_limit(content, 5)
+        truncated = chunks[0] + "\n\n> truncated"
+        self.assertEqual(_count_md_tables(truncated), 5)

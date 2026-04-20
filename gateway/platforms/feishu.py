@@ -138,6 +138,96 @@ _COMPLEX_MARKDOWN_RE = re.compile(
 )
 _FEISHU_CARD_MAX_BYTES = 30 * 1024  # Feishu interactive card payload size limit
                                      # Ref: https://open.feishu.cn/document/uAjLw4CM/ukzMukzMukzM/feishu-cards/card-components/interactive-components/button
+_FEISHU_CARD_MAX_TABLES = 5         # Feishu Card 2.0 markdown component table limit
+                                     # API returns ErrCode:11310 when exceeded
+
+# Regex for table separator line (|---|---| or |:---:| etc.)
+_TABLE_SEPARATOR_RE = re.compile(r"\|[-:]+[-| :]*\|?")
+
+
+def _count_md_tables(content: str) -> int:
+    """Count Markdown tables in *content*, skipping code blocks.
+
+    A table is counted when a separator line (containing ``|---|``) appears
+    immediately after a header line (containing ``|``).
+    """
+    lines = content.split("\n")
+    count = 0
+    in_code = False
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_code = not in_code
+            continue
+        if in_code:
+            continue
+        if i > 0 and _TABLE_SEPARATOR_RE.search(stripped):
+            prev = lines[i - 1].strip()
+            if prev.startswith("|"):
+                count += 1
+    return count
+
+
+def _split_md_by_table_limit(content: str, max_tables: int) -> list[str]:
+    """Split *content* so each chunk has at most *max_tables* tables.
+
+    Preserves the most recent heading above each table group so context
+    is not lost across split boundaries.
+    """
+    if _count_md_tables(content) <= max_tables:
+        return [content]
+
+    lines = content.split("\n")
+    chunks: list[str] = []
+    current_lines: list[str] = []
+    current_tables = 0
+    current_heading = ""
+    in_code = False
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_code = not in_code
+            current_lines.append(line)
+            continue
+        if in_code:
+            current_lines.append(line)
+            continue
+
+        # Detect new table (header + separator)
+        is_new_table = False
+        if i > 0 and _TABLE_SEPARATOR_RE.search(stripped):
+            prev = lines[i - 1].strip()
+            if prev.startswith("|"):
+                is_new_table = True
+
+        if is_new_table and current_tables >= max_tables:
+            # Flush current chunk, keeping the header line for the new chunk
+            header_line = current_lines.pop() if current_lines else ""
+            chunk_text = "\n".join(current_lines).strip()
+            if chunk_text:
+                chunks.append(chunk_text)
+            current_lines = []
+            if current_heading:
+                current_lines.append(current_heading)
+            current_lines.append(header_line)
+            current_tables = 0
+
+        if is_new_table:
+            current_tables += 1
+
+        if re.match(r"^#{1,6}\s", stripped):
+            current_heading = line
+
+        current_lines.append(line)
+
+    remaining = "\n".join(current_lines).strip()
+    if remaining:
+        chunks.append(remaining)
+
+    return chunks if chunks else [content]
+
+
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -1451,7 +1541,8 @@ class FeishuAdapter(BasePlatformAdapter):
         # Response-level fallback
         if not self._response_succeeded(response):
             if msg_type == "interactive":
-                logger.warning("[Feishu] Interactive card rejected by API response; falling back to post")
+                logger.warning("[Feishu] Interactive card rejected by API response (code=%s); falling back to post",
+                               getattr(response, "code", "unknown"))
                 return await self._send_chunk_with_fallback(
                     chunk, "post", _build_markdown_post_payload(chunk),
                     chat_id=chat_id, reply_to=reply_to, metadata=metadata,
@@ -1482,6 +1573,28 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         formatted = self.format_message(content)
+
+        # Table limit pre-check: if Card 2.0 is enabled and content has too many
+        # tables, split by table boundaries *before* the normal truncation step so
+        # each resulting message stays within the 5-table Card 2.0 limit.
+        if self._use_interactive_cards_for_markdown and _count_md_tables(formatted) > _FEISHU_CARD_MAX_TABLES:
+            table_chunks = _split_md_by_table_limit(formatted, _FEISHU_CARD_MAX_TABLES)
+            if len(table_chunks) > 1:
+                logger.info("[Feishu] Content has %d tables (limit %d), splitting into %d messages",
+                            _count_md_tables(formatted), _FEISHU_CARD_MAX_TABLES, len(table_chunks))
+                results = []
+                for tc in table_chunks:
+                    sub_chunks = self.truncate_message(tc, self.MAX_MESSAGE_LENGTH)
+                    for sc in sub_chunks:
+                        msg_type, payload = self._build_outbound_payload(sc)
+                        result = await self._send_chunk_with_fallback(
+                            sc, msg_type, payload,
+                            chat_id=chat_id, reply_to=reply_to, metadata=metadata,
+                        )
+                        results.append(result)
+                        await asyncio.sleep(0.1)
+                return self._finalize_send_result(results[-1] if results else None, "send failed")
+
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         last_response = None
 
@@ -1510,6 +1623,15 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
+            # Table limit truncation for edit (cannot split into multiple edits)
+            if self._use_interactive_cards_for_markdown and _count_md_tables(content) > _FEISHU_CARD_MAX_TABLES:
+                original_count = _count_md_tables(content)
+                table_chunks = _split_md_by_table_limit(content, _FEISHU_CARD_MAX_TABLES)
+                if table_chunks:
+                    content = table_chunks[0] + "\n\n> \u26a0\ufe0f \u56e0\u98de\u4e66\u5e73\u53f0\u9650\u5236\uff0c\u4ec5\u663e\u793a\u524d 5 \u4e2a\u8868\u683c"
+                    logger.info("[Feishu] edit_message: truncated from %d to %d tables",
+                                original_count, _FEISHU_CARD_MAX_TABLES)
+
             msg_type, payload = self._build_outbound_payload(content)
 
             def _update(mt: str, pl: str) -> Any:
@@ -1522,7 +1644,8 @@ class FeishuAdapter(BasePlatformAdapter):
             # Fallback: interactive -> post -> text
             if not result.success:
                 if msg_type == "interactive":
-                    logger.warning("[Feishu] Interactive card update failed; falling back to post")
+                    logger.warning("[Feishu] Interactive card update failed (code=%s); falling back to post",
+                                   getattr(result, "error", "unknown"))
                     msg_type, payload = "post", _build_markdown_post_payload(content)
                     response = await _update(msg_type, payload)
                     result = self._finalize_send_result(response, "update failed")
