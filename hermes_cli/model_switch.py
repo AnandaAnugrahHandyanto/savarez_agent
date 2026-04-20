@@ -933,6 +933,8 @@ def list_authenticated_providers(
                 "source": "user-config",
                 "api_url": api_url,
             })
+            seen_slugs.add(ep_name)
+            seen_slugs.add(custom_provider_slug(display_name))
 
     # --- 4. Saved custom providers from config ---
     if custom_providers and isinstance(custom_providers, list):
