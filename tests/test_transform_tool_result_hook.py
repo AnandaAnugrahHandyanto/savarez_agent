@@ -173,6 +173,13 @@ def test_transform_tool_result_integration_with_real_plugin(monkeypatch, tmp_pat
         encoding="utf-8",
     )
 
+    # Plugins are opt-in by default (PR #70111eea); enable via config.yaml.
+    import yaml as _yaml
+    (hermes_home / "config.yaml").write_text(
+        _yaml.safe_dump({"plugins": {"enabled": ["transform_result_canon"]}}),
+        encoding="utf-8",
+    )
+
     plugins_mod.discover_plugins()
 
     out = _run_handle_function_call(

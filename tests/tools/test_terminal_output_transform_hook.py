@@ -185,6 +185,13 @@ def test_terminal_output_transform_integration_with_real_plugin(monkeypatch, tmp
         encoding="utf-8",
     )
 
+    # Plugins are opt-in by default (PR #70111eea); enable via config.yaml.
+    import yaml as _yaml
+    (hermes_home / "config.yaml").write_text(
+        _yaml.safe_dump({"plugins": {"enabled": ["terminal_transform"]}}),
+        encoding="utf-8",
+    )
+
     plugins_mod.discover_plugins()
 
     long_output = "X" * 60000
