@@ -9,6 +9,7 @@ from agent.error_classifier import (
     _extract_error_body,
     _extract_error_code,
     _classify_402,
+    _safe_lower,
 )
 
 
@@ -849,3 +850,73 @@ class TestAdversarialEdgeCases:
         )
         result = classify_api_error(e, provider="openrouter")
         assert result.reason == FailoverReason.model_not_found
+
+
+# ── Test: dict-typed message fields (#11233) ─────────────────────────────
+
+class TestDictMessageField:
+    """classify_api_error must not crash when error bodies contain dict-typed
+    ``message`` fields, which some providers (e.g. Pydantic validation
+    frameworks) return instead of plain strings."""
+
+    def test_safe_lower_string(self):
+        assert _safe_lower("Hello World") == "hello world"
+
+    def test_safe_lower_none(self):
+        assert _safe_lower(None) == ""
+
+    def test_safe_lower_dict(self):
+        result = _safe_lower({"code": "rate_limit", "msg": "slow down"})
+        assert isinstance(result, str)
+        assert "rate_limit" in result
+
+    def test_safe_lower_int(self):
+        assert _safe_lower(42) == "42"
+
+    def test_flat_body_dict_message(self):
+        """body.message is a dict — should not raise AttributeError."""
+        e = MockAPIError(
+            "Bad Request",
+            status_code=400,
+            body={"message": {"reason": "validation", "details": "invalid field"}},
+        )
+        result = classify_api_error(e)
+        assert isinstance(result, ClassifiedError)
+
+    def test_nested_error_dict_message(self):
+        """body.error.message is a dict — should not raise AttributeError."""
+        e = MockAPIError(
+            "Bad Request",
+            status_code=400,
+            body={"error": {"message": {"code": "invalid_request", "info": "bad param"}}},
+        )
+        result = classify_api_error(e)
+        assert isinstance(result, ClassifiedError)
+
+    def test_metadata_raw_inner_dict_message(self):
+        """Nested metadata.raw → inner error.message is a dict."""
+        import json
+        inner = json.dumps({"error": {"message": {"type": "provider_error"}}})
+        e = MockAPIError(
+            "Provider returned error",
+            status_code=400,
+            body={
+                "error": {
+                    "message": "Provider returned error",
+                    "metadata": {"raw": inner},
+                }
+            },
+        )
+        result = classify_api_error(e, provider="openrouter")
+        assert isinstance(result, ClassifiedError)
+
+    def test_classify_400_dict_message_no_crash(self):
+        """_classify_by_status also handles dict message in body."""
+        e = MockAPIError(
+            "Bad Request",
+            status_code=400,
+            body={"message": {"error": "context_length_exceeded"}},
+        )
+        result = classify_api_error(e, approx_tokens=150000, context_length=128000)
+        assert isinstance(result, ClassifiedError)
+

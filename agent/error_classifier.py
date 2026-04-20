@@ -237,6 +237,22 @@ _SERVER_DISCONNECT_PATTERNS = [
 ]
 
 
+# ── Helpers ───────────────────────────────────────────────────────────────
+
+def _safe_lower(val) -> str:
+    """Return .lower() for strings, str() for other types, or '' for None.
+
+    Some providers return dict-typed ``message`` fields in error bodies
+    (e.g. Pydantic validation errors).  Calling ``.lower()`` on those would
+    raise ``AttributeError``.
+    """
+    if val is None:
+        return ""
+    if isinstance(val, str):
+        return val.lower()
+    return str(val).lower()
+
+
 # ── Classification pipeline ─────────────────────────────────────────────
 
 def classify_api_error(
@@ -290,7 +306,7 @@ def classify_api_error(
     if isinstance(body, dict):
         _err_obj = body.get("error", {})
         if isinstance(_err_obj, dict):
-            _body_msg = (_err_obj.get("message") or "").lower()
+            _body_msg = _safe_lower(_err_obj.get("message"))
             # Parse metadata.raw for wrapped provider errors
             _metadata = _err_obj.get("metadata", {})
             if isinstance(_metadata, dict):
@@ -302,11 +318,11 @@ def classify_api_error(
                         if isinstance(_inner, dict):
                             _inner_err = _inner.get("error", {})
                             if isinstance(_inner_err, dict):
-                                _metadata_msg = (_inner_err.get("message") or "").lower()
+                                _metadata_msg = _safe_lower(_inner_err.get("message"))
                     except (json.JSONDecodeError, TypeError):
                         pass
         if not _body_msg:
-            _body_msg = (body.get("message") or "").lower()
+            _body_msg = _safe_lower(body.get("message"))
     # Combine all message sources for pattern matching
     parts = [_raw_msg]
     if _body_msg and _body_msg not in _raw_msg:
@@ -606,10 +622,10 @@ def _classify_400(
     if isinstance(body, dict):
         err_obj = body.get("error", {})
         if isinstance(err_obj, dict):
-            err_body_msg = (err_obj.get("message") or "").strip().lower()
+            err_body_msg = _safe_lower(err_obj.get("message")).strip()
         # Responses API (and some providers) use flat body: {"message": "..."}
         if not err_body_msg:
-            err_body_msg = (body.get("message") or "").strip().lower()
+            err_body_msg = _safe_lower(body.get("message")).strip()
     is_generic = len(err_body_msg) < 30 or err_body_msg in ("error", "")
     is_large = approx_tokens > context_length * 0.4 or approx_tokens > 80000 or num_messages > 80
 
