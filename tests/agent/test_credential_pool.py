@@ -252,6 +252,8 @@ def test_exhausted_402_entry_resets_after_one_hour(tmp_path, monkeypatch):
 
 def test_explicit_reset_timestamp_overrides_default_429_ttl(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr("agent.credential_pool._import_codex_cli_tokens", lambda: None)
+    monkeypatch.setattr("hermes_cli.auth._import_codex_cli_tokens", lambda: None)
     _write_auth_store(
         tmp_path,
         {
@@ -386,6 +388,226 @@ def test_try_refresh_current_updates_only_current_entry(tmp_path, monkeypatch):
     assert primary["refresh_token"] == "refresh-new"
     assert secondary["access_token"] == "access-other"
     assert secondary["refresh_token"] == "refresh-other"
+
+
+def test_codex_cli_sync_skips_non_device_code_entries(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {
+                        "access_token": "provider-access",
+                        "refresh_token": "provider-refresh",
+                    }
+                }
+            },
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "manual-1",
+                        "label": "manual-entry",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:dashboard:openai-codex:test",
+                        "access_token": "manual-access",
+                        "refresh_token": "manual-refresh",
+                        "last_status": "exhausted",
+                        "last_status_at": time.time(),
+                        "last_error_code": 429,
+                    },
+                    {
+                        "id": "device-1",
+                        "label": "device-entry",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "source": "device_code",
+                        "access_token": "provider-access",
+                        "refresh_token": "provider-refresh",
+                    },
+                ]
+            },
+        },
+    )
+
+    monkeypatch.setattr(
+        "agent.credential_pool._import_codex_cli_tokens",
+        lambda: {
+            "access_token": "cli-access",
+            "refresh_token": "cli-refresh",
+        },
+    )
+    monkeypatch.setattr(
+        "agent.credential_pool.label_from_token",
+        lambda token, fallback: "cli@example.com" if token == "cli-access" else fallback,
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    selected = pool.select()
+
+    assert selected is not None
+    assert selected.id == "device-1"
+
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    manual_entry = auth_payload["credential_pool"]["openai-codex"][0]
+    assert manual_entry["id"] == "manual-1"
+    assert manual_entry["access_token"] == "manual-access"
+    assert manual_entry["refresh_token"] == "manual-refresh"
+    assert manual_entry["last_status"] == "exhausted"
+
+
+def test_codex_device_code_sync_updates_provider_state_and_label(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {
+                        "access_token": "provider-access",
+                        "refresh_token": "provider-refresh",
+                    }
+                }
+            },
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "device-1",
+                        "label": "device_code",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "device_code",
+                        "access_token": "provider-access",
+                        "refresh_token": "provider-refresh",
+                        "last_status": "exhausted",
+                        "last_status_at": time.time(),
+                        "last_error_code": 429,
+                    }
+                ]
+            },
+        },
+    )
+
+    monkeypatch.setattr(
+        "agent.credential_pool._import_codex_cli_tokens",
+        lambda: {
+            "access_token": "cli-access",
+            "refresh_token": "cli-refresh",
+        },
+    )
+    monkeypatch.setattr(
+        "agent.credential_pool.label_from_token",
+        lambda token, fallback: "cli@example.com" if token == "cli-access" else fallback,
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    selected = pool.select()
+
+    assert selected is not None
+    assert selected.id == "device-1"
+    assert selected.access_token == "cli-access"
+    assert selected.refresh_token == "cli-refresh"
+    assert selected.label == "cli@example.com"
+    assert selected.last_status in (None, "ok")
+
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    provider_tokens = auth_payload["providers"]["openai-codex"]["tokens"]
+    pool_entry = auth_payload["credential_pool"]["openai-codex"][0]
+    assert provider_tokens["access_token"] == "cli-access"
+    assert provider_tokens["refresh_token"] == "cli-refresh"
+    assert pool_entry["label"] == "cli@example.com"
+
+
+def test_load_pool_repairs_codex_cli_pollution_and_removes_duplicate_manual_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {
+                        "access_token": "provider-access",
+                        "refresh_token": "provider-refresh",
+                    }
+                }
+            },
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "manual-bad",
+                        "label": "stale-manual-label",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:dashboard:openai-codex:test",
+                        "access_token": "cli-access",
+                        "refresh_token": "cli-refresh",
+                        "last_status": "exhausted",
+                        "last_status_at": time.time(),
+                        "last_error_code": 429,
+                    },
+                    {
+                        "id": "manual-good",
+                        "label": "manual-good",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "source": "manual:dashboard:openai-codex:good",
+                        "access_token": "manual-access-2",
+                        "refresh_token": "manual-refresh-2",
+                    },
+                    {
+                        "id": "device-1",
+                        "label": "device_code",
+                        "auth_type": "oauth",
+                        "priority": 2,
+                        "source": "device_code",
+                        "access_token": "provider-access",
+                        "refresh_token": "provider-refresh",
+                    },
+                ]
+            },
+        },
+    )
+
+    monkeypatch.setattr(
+        "agent.credential_pool._import_codex_cli_tokens",
+        lambda: {
+            "access_token": "cli-access",
+            "refresh_token": "cli-refresh",
+        },
+    )
+    monkeypatch.setattr(
+        "agent.credential_pool.label_from_token",
+        lambda token, fallback: "cli@example.com" if token == "cli-access" else fallback,
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    entries = pool.entries()
+
+    assert [entry.id for entry in entries] == ["manual-good", "device-1"]
+    assert entries[1].access_token == "cli-access"
+    assert entries[1].refresh_token == "cli-refresh"
+    assert entries[1].label == "cli@example.com"
+
+    selected = pool.select()
+    assert selected is not None
+    assert selected.id == "manual-good"
+
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    persisted_entries = auth_payload["credential_pool"]["openai-codex"]
+    provider_tokens = auth_payload["providers"]["openai-codex"]["tokens"]
+    assert [entry["id"] for entry in persisted_entries] == ["manual-good", "device-1"]
+    assert provider_tokens["access_token"] == "cli-access"
+    assert provider_tokens["refresh_token"] == "cli-refresh"
 
 
 def test_load_pool_seeds_env_api_key(tmp_path, monkeypatch):

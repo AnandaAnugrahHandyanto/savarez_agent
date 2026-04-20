@@ -57,6 +57,15 @@ AUTH_TYPE_API_KEY = "api_key"
 
 SOURCE_MANUAL = "manual"
 
+CODEX_DEVICE_CODE_SOURCES = (
+    "device_code",
+    f"{SOURCE_MANUAL}:device_code",
+    f"{SOURCE_MANUAL}:dashboard_device_code",
+)
+_CODEX_DEVICE_CODE_SOURCE_RANK = {
+    source: idx for idx, source in enumerate(CODEX_DEVICE_CODE_SOURCES)
+}
+
 STRATEGY_FILL_FIRST = "fill_first"
 STRATEGY_ROUND_ROBIN = "round_robin"
 STRATEGY_RANDOM = "random"
@@ -187,6 +196,19 @@ def _next_priority(entries: List[PooledCredential]) -> int:
 def _is_manual_source(source: str) -> bool:
     normalized = (source or "").strip().lower()
     return normalized == SOURCE_MANUAL or normalized.startswith(f"{SOURCE_MANUAL}:")
+
+
+def _is_codex_cli_managed_source(source: str) -> bool:
+    normalized = (source or "").strip().lower()
+    return normalized in _CODEX_DEVICE_CODE_SOURCE_RANK
+
+
+def _codex_label_fallback(entry: PooledCredential) -> str:
+    fallback = (entry.label or "").strip()
+    if fallback:
+        return fallback
+    fallback = (entry.source or "").strip()
+    return fallback or "device_code"
 
 
 def _exhausted_ttl(error_code: Optional[int]) -> int:
@@ -465,7 +487,7 @@ class CredentialPool:
         the pool entry's refresh_token becomes stale.  This method detects that
         by comparing against ~/.codex/auth.json and syncing the fresh pair.
         """
-        if self.provider != "openai-codex":
+        if self.provider != "openai-codex" or not _is_codex_cli_managed_source(entry.source):
             return entry
         try:
             cli_tokens = _import_codex_cli_tokens()
@@ -479,12 +501,17 @@ class CredentialPool:
                     entry,
                     access_token=cli_access,
                     refresh_token=cli_refresh,
+                    label=label_from_token(cli_access, _codex_label_fallback(entry)),
                     last_status=None,
                     last_status_at=None,
                     last_error_code=None,
+                    last_error_reason=None,
+                    last_error_message=None,
+                    last_error_reset_at=None,
                 )
                 self._replace_entry(entry, updated)
                 self._persist()
+                _sync_singleton_entry_to_auth_store(self.provider, updated)
                 return updated
         except Exception as exc:
             logger.debug("Failed to sync from ~/.codex/auth.json: %s", exc)
@@ -502,54 +529,7 @@ class CredentialPool:
         Applies to any OAuth provider whose singleton lives in auth.json
         (currently Nous and OpenAI Codex).
         """
-        if entry.source != "device_code":
-            return
-        try:
-            with _auth_store_lock():
-                auth_store = _load_auth_store()
-                if self.provider == "nous":
-                    state = _load_provider_state(auth_store, "nous")
-                    if state is None:
-                        return
-                    state["access_token"] = entry.access_token
-                    if entry.refresh_token:
-                        state["refresh_token"] = entry.refresh_token
-                    if entry.expires_at:
-                        state["expires_at"] = entry.expires_at
-                    if entry.agent_key:
-                        state["agent_key"] = entry.agent_key
-                    if entry.agent_key_expires_at:
-                        state["agent_key_expires_at"] = entry.agent_key_expires_at
-                    for extra_key in ("obtained_at", "expires_in", "agent_key_id",
-                                      "agent_key_expires_in", "agent_key_reused",
-                                      "agent_key_obtained_at"):
-                        val = entry.extra.get(extra_key)
-                        if val is not None:
-                            state[extra_key] = val
-                    if entry.inference_base_url:
-                        state["inference_base_url"] = entry.inference_base_url
-                    _save_provider_state(auth_store, "nous", state)
-
-                elif self.provider == "openai-codex":
-                    state = _load_provider_state(auth_store, "openai-codex")
-                    if not isinstance(state, dict):
-                        return
-                    tokens = state.get("tokens")
-                    if not isinstance(tokens, dict):
-                        return
-                    tokens["access_token"] = entry.access_token
-                    if entry.refresh_token:
-                        tokens["refresh_token"] = entry.refresh_token
-                    if entry.last_refresh:
-                        state["last_refresh"] = entry.last_refresh
-                    _save_provider_state(auth_store, "openai-codex", state)
-
-                else:
-                    return
-
-                _save_auth_store(auth_store)
-        except Exception as exc:
-            logger.debug("Failed to sync %s pool entry back to auth store: %s", self.provider, exc)
+        _sync_singleton_entry_to_auth_store(self.provider, entry)
 
     def _refresh_entry(self, entry: PooledCredential, *, force: bool) -> Optional[PooledCredential]:
         if entry.auth_type != AUTH_TYPE_OAUTH or not entry.refresh_token:
@@ -1080,6 +1060,162 @@ def _normalize_pool_priorities(provider: str, entries: List[PooledCredential]) -
     return changed
 
 
+def _reindex_entry_priorities(entries: List[PooledCredential]) -> bool:
+    changed = False
+    for new_priority, entry in enumerate(entries):
+        if entry.priority != new_priority:
+            entries[new_priority] = replace(entry, priority=new_priority)
+            changed = True
+    return changed
+
+
+def _sync_singleton_entry_to_auth_store(provider: str, entry: PooledCredential) -> None:
+    if provider == "nous":
+        if entry.source != "device_code":
+            return
+    elif provider == "openai-codex":
+        if not _is_codex_cli_managed_source(entry.source):
+            return
+    else:
+        return
+
+    try:
+        with _auth_store_lock():
+            auth_store = _load_auth_store()
+            if provider == "nous":
+                state = _load_provider_state(auth_store, "nous")
+                if state is None:
+                    return
+                state["access_token"] = entry.access_token
+                if entry.refresh_token:
+                    state["refresh_token"] = entry.refresh_token
+                if entry.expires_at:
+                    state["expires_at"] = entry.expires_at
+                if entry.agent_key:
+                    state["agent_key"] = entry.agent_key
+                if entry.agent_key_expires_at:
+                    state["agent_key_expires_at"] = entry.agent_key_expires_at
+                for extra_key in (
+                    "obtained_at",
+                    "expires_in",
+                    "agent_key_id",
+                    "agent_key_expires_in",
+                    "agent_key_reused",
+                    "agent_key_obtained_at",
+                ):
+                    val = entry.extra.get(extra_key)
+                    if val is not None:
+                        state[extra_key] = val
+                if entry.inference_base_url:
+                    state["inference_base_url"] = entry.inference_base_url
+                _save_provider_state(auth_store, "nous", state)
+            elif provider == "openai-codex":
+                state = _load_provider_state(auth_store, "openai-codex")
+                if not isinstance(state, dict):
+                    return
+                tokens = state.get("tokens")
+                if not isinstance(tokens, dict):
+                    return
+                tokens["access_token"] = entry.access_token
+                if entry.refresh_token:
+                    tokens["refresh_token"] = entry.refresh_token
+                if entry.last_refresh:
+                    state["last_refresh"] = entry.last_refresh
+                _save_provider_state(auth_store, "openai-codex", state)
+            _save_auth_store(auth_store)
+    except Exception as exc:
+        logger.debug("Failed to sync %s pool entry back to auth store: %s", provider, exc)
+
+
+def _canonical_codex_cli_entry_index(entries: List[PooledCredential]) -> Optional[int]:
+    candidates = [
+        (idx, entry)
+        for idx, entry in enumerate(entries)
+        if _is_codex_cli_managed_source(entry.source)
+    ]
+    if not candidates:
+        return None
+    best_idx, _ = min(
+        candidates,
+        key=lambda item: (
+            _CODEX_DEVICE_CODE_SOURCE_RANK.get(item[1].source.strip().lower(), len(_CODEX_DEVICE_CODE_SOURCE_RANK)),
+            item[1].priority,
+            item[0],
+        ),
+    )
+    return best_idx
+
+
+def _repair_codex_cli_entries(entries: List[PooledCredential]) -> bool:
+    if not entries:
+        return False
+    try:
+        cli_tokens = _import_codex_cli_tokens()
+    except Exception as exc:
+        logger.debug("Failed to import Codex CLI tokens for pool repair: %s", exc)
+        return False
+    if not cli_tokens:
+        return False
+
+    cli_access = str(cli_tokens.get("access_token", "") or "").strip()
+    cli_refresh = str(cli_tokens.get("refresh_token", "") or "").strip()
+    if not cli_access or not cli_refresh:
+        return False
+
+    canonical_idx = _canonical_codex_cli_entry_index(entries)
+    if canonical_idx is None:
+        return False
+
+    changed = False
+    canonical = entries[canonical_idx]
+    canonical_label = label_from_token(cli_access, _codex_label_fallback(canonical))
+    token_changed = (
+        canonical.access_token != cli_access
+        or canonical.refresh_token != cli_refresh
+    )
+    if (
+        token_changed
+        or canonical.label != canonical_label
+    ):
+        canonical = replace(
+            canonical,
+            access_token=cli_access,
+            refresh_token=cli_refresh,
+            label=canonical_label,
+            last_status=None if token_changed else canonical.last_status,
+            last_status_at=None if token_changed else canonical.last_status_at,
+            last_error_code=None if token_changed else canonical.last_error_code,
+            last_error_reason=None if token_changed else canonical.last_error_reason,
+            last_error_message=None if token_changed else canonical.last_error_message,
+            last_error_reset_at=None if token_changed else canonical.last_error_reset_at,
+        )
+        entries[canonical_idx] = canonical
+        changed = True
+
+    canonical_id = canonical.id
+    filtered_entries = []
+    removed_duplicate = False
+    for entry in entries:
+        if (
+            entry.id != canonical_id
+            and entry.access_token == cli_access
+            and entry.refresh_token == cli_refresh
+        ):
+            removed_duplicate = True
+            continue
+        filtered_entries.append(entry)
+    if removed_duplicate:
+        entries[:] = filtered_entries
+        changed = True
+
+    changed |= _reindex_entry_priorities(entries)
+    if changed:
+        canonical_idx = _canonical_codex_cli_entry_index(entries)
+        if canonical_idx is not None:
+            _sync_singleton_entry_to_auth_store("openai-codex", entries[canonical_idx])
+    return changed
+
+
 def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tuple[bool, Set[str]]:
     changed = False
     active_sources: Set[str] = set()
@@ -1354,6 +1490,8 @@ def load_pool(provider: str) -> CredentialPool:
         changed = singleton_changed or env_changed
         changed |= _prune_stale_seeded_entries(entries, singleton_sources | env_sources)
         changed |= _normalize_pool_priorities(provider, entries)
+        if provider == "openai-codex":
+            changed |= _repair_codex_cli_entries(entries)
 
     if changed:
         write_credential_pool(
