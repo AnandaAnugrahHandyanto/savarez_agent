@@ -319,7 +319,7 @@ class FeishuAdapterSettings:
     webhook_host: str
     webhook_port: int
     webhook_path: str
-    ack_emoji: str = "👍"  # Default ACK reaction emoji
+    ack_emoji: str = "Get"  # Default ACK reaction emoji
     ws_reconnect_nonce: int = 30
     ws_reconnect_interval: int = 120
     ws_ping_interval: Optional[int] = None
@@ -1231,7 +1231,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 str(extra.get("webhook_path") or os.getenv("FEISHU_WEBHOOK_PATH", _DEFAULT_WEBHOOK_PATH)).strip()
                 or _DEFAULT_WEBHOOK_PATH
             ),
-            ack_emoji=str(extra.get("ack_emoji", "👍")).strip(),
+            ack_emoji=str(extra.get("ack_emoji", "Get")).strip(),
             ws_reconnect_nonce=_coerce_required_int(extra.get("ws_reconnect_nonce"), default=30, min_value=0),
             ws_reconnect_interval=_coerce_required_int(extra.get("ws_reconnect_interval"), default=120, min_value=1),
             ws_ping_interval=_coerce_int(extra.get("ws_ping_interval"), default=None, min_value=1),
@@ -2399,7 +2399,7 @@ class FeishuAdapter(BasePlatformAdapter):
     async def _add_ack_reaction(self, message_id: str) -> Optional[str]:
         """Add a persistent ACK emoji reaction to signal the message was received.
         
-        Uses configurable ack_emoji from settings (default: 👍).
+        Uses configurable ack_emoji from settings (default: Get).
         """
         if not self._client or not message_id:
             return None
