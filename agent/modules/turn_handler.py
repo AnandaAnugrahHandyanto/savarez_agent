@@ -19,8 +19,9 @@ Event emitted per step: see individual submodule docstrings.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any, Optional
+
+from pydantic import BaseModel, Field
 
 # ---------------------------------------------------------------------------
 # Event emitter
@@ -46,7 +47,7 @@ from agent.modules.interpreter import Interpretation, interpret, set_emitter as 
 from agent.modules.intent_classifier import ClassifiedIntent, Route, classify_intent, set_emitter as set_classifier_emitter
 
 # ---------------------------------------------------------------------------
-# Output-pipeline submodules (dataclass types — local stubs per C§1.5–C§1.8)
+# Output-pipeline submodules (Pydantic types)
 # ---------------------------------------------------------------------------
 from agent.modules import mission_compiler as _mc
 from agent.modules.mission_compiler import set_emitter as set_mc_emitter
@@ -66,8 +67,7 @@ from agent.modules.summarizer import (
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class TurnInput:
+class TurnInput(BaseModel):
     """Everything needed to start a single Hermes turn.
 
     Fields mirror the gateway's inbound-message envelope; non-gateway callers
@@ -84,13 +84,12 @@ class TurnInput:
     raw_company_id: Optional[str] = None
 
     # Optional extras forwarded from the gateway
-    attachments: list[dict[str, Any]] = field(default_factory=list)
+    attachments: list[dict[str, Any]] = Field(default_factory=list)
     turn_index: int = 0
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-@dataclass
-class TurnResult:
+class TurnResult(BaseModel):
     """Aggregate result of one completed Hermes turn.
 
     Every field maps to the output of one submodule so callers can inspect
