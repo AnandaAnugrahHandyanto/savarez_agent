@@ -12,7 +12,10 @@ a thin dispatcher that delegates to a platform-provided callback.
 """
 
 import json
+import logging
 from typing import List, Optional, Callable
+
+logger = logging.getLogger(__name__)
 
 
 # Maximum number of predefined choices the agent can offer.
@@ -24,6 +27,9 @@ def clarify_tool(
     question: str,
     choices: Optional[List[str]] = None,
     callback: Optional[Callable] = None,
+    session_id: str = "",
+    model: str = "",
+    platform: str = "",
 ) -> str:
     """
     Ask the user a question, optionally with multiple-choice options.
@@ -35,6 +41,9 @@ def clarify_tool(
         callback: Platform-provided function that handles the actual UI
                   interaction. Signature: callback(question, choices) -> str.
                   Injected by the agent runner (cli.py / gateway).
+        session_id: Current session identifier (for plugin hooks).
+        model: Current model identifier (for plugin hooks).
+        platform: Platform name (for plugin hooks).
 
     Returns:
         JSON string with the user's response.
@@ -59,6 +68,22 @@ def clarify_tool(
             {"error": "Clarify tool is not available in this execution context."},
             ensure_ascii=False,
         )
+
+    # Fire on_clarify hook for plugins (e.g. desktop notifications).
+    # This hook is fire-and-forget — intentionally has no post_clarify
+    # counterpart, as notification toasts auto-dismiss.
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        _invoke_hook(
+            "on_clarify",
+            question=question,
+            choices=choices,
+            session_id=session_id,
+            model=model,
+            platform=platform,
+        )
+    except Exception as exc:
+        logger.warning("on_clarify hook failed: %s", exc)
 
     try:
         user_response = callback(question, choices)
@@ -135,7 +160,11 @@ registry.register(
     handler=lambda args, **kw: clarify_tool(
         question=args.get("question", ""),
         choices=args.get("choices"),
-        callback=kw.get("callback")),
+        callback=kw.get("callback"),
+        session_id=kw.get("session_id", ""),
+        model=kw.get("model", ""),
+        platform=kw.get("platform", ""),
+    ),
     check_fn=check_clarify_requirements,
     emoji="❓",
 )

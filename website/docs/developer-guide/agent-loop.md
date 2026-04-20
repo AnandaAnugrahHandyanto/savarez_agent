@@ -134,6 +134,10 @@ When the model returns tool calls:
   - Exception: tools marked as interactive (e.g., `clarify`) force sequential execution
   - Results are reinserted in the original tool call order regardless of completion order
 
+:::note
+`clarify` additionally fires a tool-specific plugin hook — `on_clarify` — from inside `tools/clarify_tool.py`, after input validation and before blocking on the user's response. See [Event Hooks → `on_clarify`](/docs/user-guide/features/hooks#on_clarify).
+:::
+
 ### Execution Flow
 
 ```text
