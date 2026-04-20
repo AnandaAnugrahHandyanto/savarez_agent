@@ -4437,15 +4437,7 @@ For more help on a command:
         help="Platform to apply to (default: cli)",
     )
 
-    def cmd_tools(args):
-        action = getattr(args, "tools_action", None)
-        if action in ("list", "disable", "enable"):
-            from hermes_cli.tools_config import tools_disable_enable_command
-            tools_disable_enable_command(args)
-        else:
-            _require_tty("tools")
-            from hermes_cli.tools_config import tools_command
-            tools_command(args)
+    from hermes_cli.cmd_handlers.tools_handler import cmd_tools  # noqa: E402,F401
 
     tools_parser.set_defaults(func=cmd_tools)
     # =========================================================================
