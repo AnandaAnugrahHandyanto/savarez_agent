@@ -865,8 +865,16 @@ class GatewayConfig:
     def get_home_channel(self, platform: Platform) -> Optional[HomeChannel]:
         """Get the home channel for a platform."""
         config = self.platforms.get(platform)
-        if config:
+        if config and config.home_channel:
             return config.home_channel
+        if platform == Platform.NIM and config:
+            for instance in load_nim_instances(config):
+                if instance.home_channel:
+                    return HomeChannel(
+                        platform=Platform.NIM,
+                        chat_id=instance.home_channel,
+                        name=f"NIM {instance.instance_name}",
+                    )
         return None
     
     def get_reset_policy(
