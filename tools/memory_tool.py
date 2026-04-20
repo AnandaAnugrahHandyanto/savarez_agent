@@ -15,17 +15,16 @@ from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional
 
 import tools.persistent_memory_store as pm
+from tools.registry import registry, tool_error
 
 logger = logging.getLogger(__name__)
 
 # Where memory files live — resolved dynamically so profile overrides
 # (HERMES_HOME env var changes) are always respected. The old module-level
 # constant was cached at import time and could go stale if a profile switch
-# happened after the first import.
 def get_memory_dir() -> Path:
     """Return the profile-scoped memories directory."""
     return get_hermes_home() / "memories"
-
 
 # Backward-compatible alias — some callers/tests still reference MEMORY_DIR
 # directly, but new code should prefer get_memory_dir().
@@ -330,25 +329,25 @@ def memory_tool(
     session_id: str = None,
 ) -> str:
     if store is None:
-        return json.dumps({"success": False, "error": "Memory is not available. It may be disabled in config or this environment."}, ensure_ascii=False)
+        return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
     if target not in ("memory", "user"):
-        return json.dumps({"success": False, "error": f"Invalid target '{target}'. Use 'memory' or 'user'."}, ensure_ascii=False)
+        return tool_error(f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False)
     if action == "add":
         if not content:
-            return json.dumps({"success": False, "error": "Content is required for 'add' action."}, ensure_ascii=False)
+            return tool_error("Content is required for 'add' action.", success=False)
         result = store.add(target, content, session_id=session_id)
     elif action == "replace":
         if not old_text:
-            return json.dumps({"success": False, "error": "old_text is required for 'replace' action."}, ensure_ascii=False)
+            return tool_error("old_text is required for 'replace' action.", success=False)
         if not content:
-            return json.dumps({"success": False, "error": "content is required for 'replace' action."}, ensure_ascii=False)
+            return tool_error("content is required for 'replace' action.", success=False)
         result = store.replace(target, old_text, content, session_id=session_id)
     elif action == "remove":
         if not old_text:
-            return json.dumps({"success": False, "error": "old_text is required for 'remove' action."}, ensure_ascii=False)
+            return tool_error("old_text is required for 'remove' action.", success=False)
         result = store.remove(target, old_text)
     else:
-        return json.dumps({"success": False, "error": f"Unknown action '{action}'. Use: add, replace, remove"}, ensure_ascii=False)
+        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -392,8 +391,6 @@ MEMORY_SCHEMA = {
         "required": ["action", "target"],
     },
 }
-
-from tools.registry import registry
 
 registry.register(
     name="memory",
