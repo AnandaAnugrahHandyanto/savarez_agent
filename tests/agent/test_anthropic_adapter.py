@@ -481,6 +481,17 @@ class TestNormalizeModelName:
         assert normalize_model_name("anthropic/qwen3.5-plus", preserve_dots=True) == "qwen3.5-plus"
         assert normalize_model_name("qwen3.5-flash", preserve_dots=True) == "qwen3.5-flash"
 
+    def test_bedrock_inference_profile_ids_preserved(self):
+        """Bedrock inference profile IDs use dots as namespace separators (global., us., eu., ap., jp.).
+        These must be preserved, not converted to hyphens. Fixes #12727."""
+        assert normalize_model_name("global.anthropic.claude-sonnet-4-6") == "global.anthropic.claude-sonnet-4-6"
+        assert normalize_model_name("us.anthropic.claude-3-5-sonnet-20240620-v1:0") == "us.anthropic.claude-3-5-sonnet-20240620-v1:0"
+        assert normalize_model_name("eu.anthropic.claude-sonnet-4-5") == "eu.anthropic.claude-sonnet-4-5"
+        assert normalize_model_name("ap.anthropic.claude-opus-4") == "ap.anthropic.claude-opus-4"
+        assert normalize_model_name("jp.anthropic.claude-haiku-4-5") == "jp.anthropic.claude-haiku-4-5"
+        # Ensure non-Bedrock model names still convert dots to hyphens
+        assert normalize_model_name("claude-opus-4.6") == "claude-opus-4-6"
+
 
 # ---------------------------------------------------------------------------
 # Tool conversion
