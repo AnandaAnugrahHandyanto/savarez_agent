@@ -377,7 +377,14 @@ DEFAULT_CONFIG = {
         # agent hasn't died during long tasks.  0 = disable notifications.
         "gateway_notify_interval": 600,
     },
-    
+
+    "auto_update": {
+        "enabled": False,
+        "mode": "notify",
+        "check_interval": "24h",
+        "grace_period_seconds": 300,
+    },
+
     "terminal": {
         "backend": "local",
         "modal_mode": "auto",

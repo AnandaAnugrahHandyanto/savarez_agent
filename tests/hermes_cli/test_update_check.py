@@ -58,6 +58,28 @@ def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
     assert mock_run.call_count == 2  # git fetch + git rev-list
 
 
+def test_check_for_updates_uncached_bypasses_cache(tmp_path, monkeypatch):
+    """check_for_updates_uncached should always call git, bypassing cache."""
+    from hermes_cli.banner import check_for_updates_uncached
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    # Create a fresh cache (should be ignored by _uncached version)
+    cache_file = tmp_path / ".update_check"
+    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 999}))
+
+    mock_result = MagicMock(returncode=0, stdout="10\n")
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with patch("hermes_cli.banner.subprocess.run", return_value=mock_result) as mock_run:
+        result = check_for_updates_uncached()
+
+    assert result == 10
+    assert mock_run.call_count == 2  # git fetch + git rev-list
+
+
 def test_check_for_updates_no_git_dir(tmp_path, monkeypatch):
     """Returns None when .git directory doesn't exist anywhere."""
     import hermes_cli.banner as banner
