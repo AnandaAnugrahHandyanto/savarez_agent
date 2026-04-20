@@ -169,10 +169,14 @@ class TestFileDedup(unittest.TestCase):
         r1 = json.loads(read_file_tool(self._tmpfile, task_id="dup"))
         self.assertNotIn("dedup", r1)
 
-        # Second read — should get dedup stub
+        # Second read — should get dedup stub. The skip hint is returned in
+        # ``error`` (not ``content``) so downstream tooling that treats
+        # ``content`` as literal file text cannot splice the hint into the
+        # file payload — see #13079.
         r2 = json.loads(read_file_tool(self._tmpfile, task_id="dup"))
         self.assertTrue(r2.get("dedup"), "Second read should return dedup stub")
-        self.assertIn("unchanged", r2.get("content", ""))
+        self.assertNotIn("content", r2, "Dedup stub must not leak into content field")
+        self.assertIn("unchanged", r2.get("error", "").lower())
 
     @patch("tools.file_tools._get_file_ops")
     def test_modified_file_not_deduped(self, mock_ops):
