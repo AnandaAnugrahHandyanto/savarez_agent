@@ -831,6 +831,22 @@ def read_hermes_oauth_credentials() -> Optional[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+def _is_bedrock_model_id(model: str) -> bool:
+    """Return True if the model string is a Bedrock-native model identifier.
+
+    Bedrock IDs use dots as structural separators (e.g.
+    ``global.anthropic.claude-opus-4-6-v1``, ``anthropic.claude-sonnet-4-6``).
+    These must NOT have their dots replaced with hyphens.
+    """
+    lower = model.lower()
+    for prefix in ("global.", "us.", "eu.", "ap.", "apac.", "jp."):
+        if lower.startswith(prefix):
+            return True
+    if lower.startswith("anthropic.claude"):
+        return True
+    return False
+
+
 def normalize_model_name(model: str, preserve_dots: bool = False) -> str:
     """Normalize a model name for the Anthropic API.
 
@@ -838,13 +854,15 @@ def normalize_model_name(model: str, preserve_dots: bool = False) -> str:
     - Converts dots to hyphens in version numbers (OpenRouter uses dots,
       Anthropic uses hyphens: claude-opus-4.6 → claude-opus-4-6), unless
       preserve_dots is True (e.g. for Alibaba/DashScope: qwen3.5-plus).
+    - Preserves dots in Bedrock model IDs where dots are structural
+      separators (e.g. global.anthropic.claude-opus-4-6-v1).
     """
     lower = model.lower()
     if lower.startswith("anthropic/"):
         model = model[len("anthropic/"):]
+    if _is_bedrock_model_id(model):
+        return model
     if not preserve_dots:
-        # OpenRouter uses dots for version separators (claude-opus-4.6),
-        # Anthropic uses hyphens (claude-opus-4-6). Convert dots to hyphens.
         model = model.replace(".", "-")
     return model
 

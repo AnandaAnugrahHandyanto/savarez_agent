@@ -19,6 +19,7 @@ from agent.anthropic_adapter import (
     convert_tools_to_anthropic,
     is_claude_code_token_valid,
     normalize_anthropic_response,
+    _is_bedrock_model_id,
     normalize_model_name,
     read_claude_code_credentials,
     resolve_anthropic_token,
@@ -480,6 +481,42 @@ class TestNormalizeModelName:
         assert normalize_model_name("qwen3.5-plus", preserve_dots=True) == "qwen3.5-plus"
         assert normalize_model_name("anthropic/qwen3.5-plus", preserve_dots=True) == "qwen3.5-plus"
         assert normalize_model_name("qwen3.5-flash", preserve_dots=True) == "qwen3.5-flash"
+
+    def test_preserves_dots_in_bedrock_model_ids(self):
+        """Bedrock model IDs use dots as structural separators, not version delimiters."""
+        assert normalize_model_name("global.anthropic.claude-opus-4-6-v1") == "global.anthropic.claude-opus-4-6-v1"
+        assert normalize_model_name("global.anthropic.claude-opus-4-7") == "global.anthropic.claude-opus-4-7"
+        assert normalize_model_name("global.anthropic.claude-sonnet-4-6") == "global.anthropic.claude-sonnet-4-6"
+        assert normalize_model_name("apac.anthropic.claude-sonnet-4-20250514-v1:0") == "apac.anthropic.claude-sonnet-4-20250514-v1:0"
+        assert normalize_model_name("us.anthropic.claude-opus-4-6-v1") == "us.anthropic.claude-opus-4-6-v1"
+        assert normalize_model_name("eu.anthropic.claude-sonnet-4-6") == "eu.anthropic.claude-sonnet-4-6"
+        assert normalize_model_name("anthropic.claude-opus-4-6-v1") == "anthropic.claude-opus-4-6-v1"
+
+
+class TestIsBedrockModelId:
+    def test_global_prefix(self):
+        assert _is_bedrock_model_id("global.anthropic.claude-opus-4-6-v1") is True
+
+    def test_regional_prefixes(self):
+        assert _is_bedrock_model_id("us.anthropic.claude-opus-4-6-v1") is True
+        assert _is_bedrock_model_id("eu.anthropic.claude-sonnet-4-6") is True
+        assert _is_bedrock_model_id("ap.anthropic.claude-sonnet-4-6") is True
+        assert _is_bedrock_model_id("apac.anthropic.claude-sonnet-4-20250514-v1:0") is True
+        assert _is_bedrock_model_id("jp.anthropic.claude-opus-4-7") is True
+
+    def test_foundation_model_prefix(self):
+        assert _is_bedrock_model_id("anthropic.claude-opus-4-6-v1") is True
+        assert _is_bedrock_model_id("anthropic.claude-sonnet-4-6") is True
+
+    def test_non_bedrock_ids(self):
+        assert _is_bedrock_model_id("claude-opus-4-6") is False
+        assert _is_bedrock_model_id("claude-opus-4.6") is False
+        assert _is_bedrock_model_id("anthropic/claude-opus-4.6") is False
+        assert _is_bedrock_model_id("qwen3.5-plus") is False
+
+    def test_case_insensitive(self):
+        assert _is_bedrock_model_id("Global.Anthropic.Claude-Opus-4-6-v1") is True
+        assert _is_bedrock_model_id("GLOBAL.ANTHROPIC.CLAUDE-OPUS-4-6-V1") is True
 
 
 # ---------------------------------------------------------------------------
