@@ -100,6 +100,7 @@ class TestMemoryInjection:
             runner._flush_memories_for_session("session_123")
 
         tmp_agent.run_conversation.assert_called_once()
+        tmp_agent.close.assert_called_once()
         flush_prompt = tmp_agent.run_conversation.call_args.kwargs.get("user_message", "")
 
         assert "Agent knows Python" in flush_prompt
@@ -124,6 +125,7 @@ class TestMemoryInjection:
             runner._flush_memories_for_session("session_456")
 
         tmp_agent.run_conversation.assert_called_once()
+        tmp_agent.close.assert_called_once()
         flush_prompt = tmp_agent.run_conversation.call_args.kwargs.get("user_message", "")
         assert "Do NOT overwrite or remove entries" not in flush_prompt
         assert "Review the conversation above" in flush_prompt
@@ -145,6 +147,7 @@ class TestMemoryInjection:
             runner._flush_memories_for_session("session_789")
 
         tmp_agent.run_conversation.assert_called_once()
+        tmp_agent.close.assert_called_once()
         flush_prompt = tmp_agent.run_conversation.call_args.kwargs.get("user_message", "")
         assert "current live state of memory" not in flush_prompt
 

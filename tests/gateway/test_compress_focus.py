@@ -83,6 +83,7 @@ async def test_compress_focus_topic_passed_to_agent():
 
     # Verify focus_topic was passed
     agent_instance._compress_context.assert_called_once()
+    agent_instance.close.assert_called_once()
     call_kwargs = agent_instance._compress_context.call_args
     assert call_kwargs.kwargs.get("focus_topic") == "database schema"
 
@@ -111,6 +112,7 @@ async def test_compress_no_focus_passes_none():
         result = await runner._handle_compress_command(_make_event("/compress"))
 
     agent_instance._compress_context.assert_called_once()
+    agent_instance.close.assert_called_once()
     call_kwargs = agent_instance._compress_context.call_args
     assert call_kwargs.kwargs.get("focus_topic") is None
 
