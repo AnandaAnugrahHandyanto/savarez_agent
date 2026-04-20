@@ -1259,6 +1259,9 @@ class AIAgent:
             enabled=checkpoints_enabled,
             max_snapshots=checkpoint_max_snapshots,
         )
+        self._checkpoint_dirs_touched: set[str] = set()
+        self._low_budget_handoff_triggered = False
+        self._low_budget_handoff_artifacts: Dict[str, Any] = {}
         
         # SQLite session store (optional -- provided by CLI or gateway)
         self._session_db = session_db
@@ -1303,6 +1306,23 @@ class AIAgent:
         # needed later by the startup feasibility check.  Avoid exposing a
         # broad pseudo-public config object on the agent instance.
         self._aux_compression_context_length_config = None
+
+        checkpoint_cfg = _agent_cfg.get("checkpoints", {})
+        if isinstance(checkpoint_cfg, bool):
+            checkpoint_cfg = {"enabled": checkpoint_cfg}
+        low_budget_cfg = checkpoint_cfg.get("low_budget_handoff", {})
+        if isinstance(low_budget_cfg, bool):
+            low_budget_cfg = {"enabled": low_budget_cfg}
+        self._low_budget_handoff_enabled = bool(low_budget_cfg.get("enabled", False))
+        try:
+            reserve_iterations = int(low_budget_cfg.get("reserve_iterations", 8))
+        except (TypeError, ValueError):
+            reserve_iterations = 8
+        self._low_budget_handoff_reserve = max(1, reserve_iterations)
+        self._low_budget_handoff_snapshot_workdirs = bool(
+            low_budget_cfg.get("snapshot_workdirs", True)
+        )
+        self._low_budget_handoff_write_file = bool(low_budget_cfg.get("write_file", True))
 
         # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
         self._memory_store = None
@@ -7992,6 +8012,7 @@ class AIAgent:
                     file_path = function_args.get("path", "")
                     if file_path:
                         work_dir = self._checkpoint_mgr.get_working_dir_for_path(file_path)
+                        self._remember_checkpoint_dir(work_dir)
                         self._checkpoint_mgr.ensure_checkpoint(work_dir, f"before {function_name}")
                 except Exception:
                     pass
@@ -8002,6 +8023,7 @@ class AIAgent:
                     cmd = function_args.get("command", "")
                     if _is_destructive_command(cmd):
                         cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
+                        self._remember_checkpoint_dir(cwd)
                         self._checkpoint_mgr.ensure_checkpoint(
                             cwd, f"before terminal: {cmd[:60]}"
                         )
@@ -8341,6 +8363,7 @@ class AIAgent:
                     file_path = function_args.get("path", "")
                     if file_path:
                         work_dir = self._checkpoint_mgr.get_working_dir_for_path(file_path)
+                        self._remember_checkpoint_dir(work_dir)
                         self._checkpoint_mgr.ensure_checkpoint(
                             work_dir, f"before {function_name}"
                         )
@@ -8353,6 +8376,7 @@ class AIAgent:
                     cmd = function_args.get("command", "")
                     if _is_destructive_command(cmd):
                         cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
+                        self._remember_checkpoint_dir(cwd)
                         self._checkpoint_mgr.ensure_checkpoint(
                             cwd, f"before terminal: {cmd[:60]}"
                         )
@@ -8635,6 +8659,389 @@ class AIAgent:
 
 
 
+    def _remember_checkpoint_dir(self, working_dir: Optional[str]) -> None:
+        """Track directories touched by mutating tools for later handoff snapshots."""
+        if not working_dir:
+            return
+        try:
+            abs_dir = str(Path(working_dir).expanduser().resolve())
+        except Exception:
+            return
+        if abs_dir in ("/", str(Path.home())):
+            return
+        self._checkpoint_dirs_touched.add(abs_dir)
+
+    def _build_low_budget_resume_prompt(self, original_user_message: str, handoff_path: Optional[str] = None) -> str:
+        """Build a ready-to-paste continuation prompt for a future Hermes session."""
+        prompt_lines = []
+        if handoff_path:
+            prompt_lines.append(f"Resume this task from handoff file: {handoff_path}")
+        else:
+            prompt_lines.append("Resume this task from the latest low-budget handoff summary.")
+
+        clean_request = (original_user_message or "").strip()
+        if clean_request:
+            prompt_lines.extend([
+                "",
+                "Original user request:",
+                clean_request,
+            ])
+
+        prompt_lines.extend([
+            "",
+            "Instructions:",
+            "1. Read the handoff summary first.",
+            "2. Verify current workspace / git state before changing anything.",
+            "3. Continue from the listed Next Steps.",
+            "4. Do not repeat completed work unless verification shows drift.",
+        ])
+        return "\n".join(prompt_lines).strip()
+
+    def _snapshot_low_budget_workdirs(self) -> List[Dict[str, Any]]:
+        """Take fresh snapshots for touched workdirs when emitting a low-budget handoff."""
+        if not (self._checkpoint_mgr.enabled and self._low_budget_handoff_snapshot_workdirs):
+            return []
+
+        dirs = list(self._checkpoint_dirs_touched)
+        if not dirs:
+            fallback_dir = os.getenv("TERMINAL_CWD") or os.getcwd()
+            if fallback_dir:
+                dirs = [fallback_dir]
+
+        # Clear turn-level dedup so the handoff can create a fresh snapshot even if
+        # this turn already checkpointed during earlier file mutations.
+        self._checkpoint_mgr.new_turn()
+
+        records: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for working_dir in dirs:
+            try:
+                resolved = str(Path(working_dir).expanduser().resolve())
+            except Exception:
+                continue
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+
+            record: Dict[str, Any] = {"directory": resolved, "checkpointed": False}
+            try:
+                record["checkpointed"] = bool(
+                    self._checkpoint_mgr.ensure_checkpoint(resolved, "low-budget handoff")
+                )
+                checkpoints = self._checkpoint_mgr.list_checkpoints(resolved)
+                if checkpoints:
+                    latest = checkpoints[0]
+                    record["checkpoint"] = latest.get("short_hash") or latest.get("hash")
+                    record["reason"] = latest.get("reason")
+                    record["timestamp"] = latest.get("timestamp")
+            except Exception as exc:
+                record["error"] = str(exc)
+            records.append(record)
+
+        return records
+
+    def _build_low_budget_fallback_handoff(
+        self,
+        api_call_count: int,
+        original_user_message: str,
+        checkpoint_records: List[Dict[str, Any]],
+        error: Optional[str] = None,
+    ) -> str:
+        """Build a deterministic handoff when the model cannot generate one."""
+        relevant_files = [
+            f"- {entry['directory']}"
+            + (f" (checkpoint {entry['checkpoint']})" if entry.get("checkpoint") else "")
+            for entry in checkpoint_records
+            if entry.get("directory")
+        ] or ["- No checkpointable workdir was recorded."]
+
+        blocked = (
+            f"- Automatic handoff summary generation failed: {error}"
+            if error else
+            "- Budget reserve reached; session paused before hard exhaustion."
+        )
+
+        return "\n".join([
+            "## Goal",
+            (original_user_message or "Continue the current task.").strip() or "Continue the current task.",
+            "",
+            "## Constraints & Preferences",
+            "- Resume from existing workspace state; avoid repeating completed work.",
+            "- Verify file / git state before making new changes.",
+            "",
+            "## Progress",
+            "### Done",
+            f"- Reached low-budget reserve at iteration {api_call_count}/{self.max_iterations}.",
+            "### In Progress",
+            "- A continuation handoff is needed before more tool work.",
+            "### Blocked",
+            blocked,
+            "",
+            "## Key Decisions",
+            "- Stop early instead of hitting the hard tool-iteration ceiling.",
+            "",
+            "## Relevant Files",
+            *relevant_files,
+            "",
+            "## Next Steps",
+            "- Read the latest handoff and session transcript.",
+            "- Inspect current workspace / git diff.",
+            "- Continue from the last successful tool results.",
+            "",
+            "## Critical Context",
+            f"- Session ID: {self.session_id}",
+            f"- Model: {self.model}",
+            f"- Iteration budget used: {api_call_count}/{self.max_iterations}",
+            "",
+            "## Resume Prompt",
+            self._build_low_budget_resume_prompt(original_user_message),
+        ]).strip()
+
+    def _should_trigger_low_budget_handoff(self, assistant_message, api_call_count: int) -> bool:
+        """Return True when the session should stop early and emit a resume handoff."""
+        if not self._low_budget_handoff_enabled or self._low_budget_handoff_triggered:
+            return False
+        if not getattr(assistant_message, "tool_calls", None):
+            return False
+        if self.iteration_budget.remaining <= 0:
+            return False
+        if self.iteration_budget.remaining > self._low_budget_handoff_reserve:
+            return False
+
+        housekeeping_tools = frozenset({"memory", "todo", "skill_manage", "session_search"})
+        tool_names = {
+            tc.function.name
+            for tc in assistant_message.tool_calls
+            if getattr(tc, "function", None) is not None
+        }
+        if (
+            tool_names
+            and tool_names.issubset(housekeeping_tools)
+            and getattr(assistant_message, "content", None)
+            and self._has_content_after_think_block(assistant_message.content or "")
+        ):
+            return False
+        return True
+
+    def _handle_low_budget_handoff(
+        self,
+        messages: list,
+        api_call_count: int,
+        original_user_message: str,
+    ) -> str:
+        """Stop early, snapshot state, and emit a resumable handoff before exhaustion."""
+        remaining = self.iteration_budget.remaining
+        if not self.quiet_mode:
+            self._safe_print(
+                f"\n⚠️  Low-budget reserve triggered ({remaining} iteration(s) remaining). "
+                "Creating a resumable handoff instead of continuing tool calls..."
+            )
+
+        checkpoint_records = self._snapshot_low_budget_workdirs()
+        handoff_request = (
+            "You are almost out of tool-calling budget in this Hermes session. "
+            "Do not call any more tools. Create a concise resume handoff for the next session.\n\n"
+            "Use this exact structure:\n\n"
+            "## Goal\n"
+            "[What the user is trying to accomplish]\n\n"
+            "## Constraints & Preferences\n"
+            "[Important constraints, style requirements, user preferences]\n\n"
+            "## Progress\n"
+            "### Done\n"
+            "[Specific work already completed]\n"
+            "### In Progress\n"
+            "[What was underway when budget ran low]\n"
+            "### Blocked\n"
+            "[Anything blocking completion]\n\n"
+            "## Key Decisions\n"
+            "[Important technical decisions and why]\n\n"
+            "## Relevant Files\n"
+            "[Files and directories that matter, with notes]\n\n"
+            "## Next Steps\n"
+            "[Exact next actions for the next session]\n\n"
+            "## Critical Context\n"
+            "[Concrete values, errors, command outputs, or state that must not be lost]\n\n"
+            "## Resume Prompt\n"
+            "[A ready-to-paste prompt telling the next Hermes session how to continue without repeating work]\n\n"
+            "Be concrete. Include file paths, commands, errors, and verification already completed."
+        )
+        messages.append({"role": "user", "content": handoff_request})
+
+        handoff_body = ""
+        handoff_error = None
+
+        try:
+            _needs_sanitize = self._should_sanitize_tool_calls()
+            api_messages = []
+            for msg in messages:
+                api_msg = msg.copy()
+                for internal_field in ("reasoning", "finish_reason", "_thinking_prefill"):
+                    api_msg.pop(internal_field, None)
+                if _needs_sanitize:
+                    self._sanitize_tool_calls_for_strict_api(api_msg)
+                api_messages.append(api_msg)
+
+            effective_system = self._cached_system_prompt or ""
+            if self.ephemeral_system_prompt:
+                effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+            if effective_system:
+                api_messages = [{"role": "system", "content": effective_system}] + api_messages
+            if self.prefill_messages:
+                sys_offset = 1 if effective_system else 0
+                for idx, pfm in enumerate(self.prefill_messages):
+                    api_messages.insert(sys_offset + idx, pfm.copy())
+
+            summary_extra_body = {}
+            _is_nous = "nousresearch" in self._base_url_lower
+            if self._supports_reasoning_extra_body():
+                if self.reasoning_config is not None:
+                    summary_extra_body["reasoning"] = self.reasoning_config
+                else:
+                    summary_extra_body["reasoning"] = {
+                        "enabled": True,
+                        "effort": "medium",
+                    }
+            if _is_nous:
+                summary_extra_body["tags"] = ["product=hermes-agent"]
+
+            if self.api_mode == "codex_responses":
+                codex_kwargs = self._build_api_kwargs(api_messages)
+                codex_kwargs.pop("tools", None)
+                summary_response = self._run_codex_stream(codex_kwargs)
+                assistant_message, _ = self._normalize_codex_response(summary_response)
+                handoff_body = (assistant_message.content or "").strip() if assistant_message else ""
+            else:
+                summary_kwargs = {
+                    "model": self.model,
+                    "messages": api_messages,
+                }
+                if self.max_tokens is not None:
+                    summary_kwargs.update(self._max_tokens_param(self.max_tokens))
+
+                provider_preferences = {}
+                if self.providers_allowed:
+                    provider_preferences["only"] = self.providers_allowed
+                if self.providers_ignored:
+                    provider_preferences["ignore"] = self.providers_ignored
+                if self.providers_order:
+                    provider_preferences["order"] = self.providers_order
+                if self.provider_sort:
+                    provider_preferences["sort"] = self.provider_sort
+                if provider_preferences:
+                    summary_extra_body["provider"] = provider_preferences
+                if summary_extra_body:
+                    summary_kwargs["extra_body"] = summary_extra_body
+
+                if self.api_mode == "anthropic_messages":
+                    from agent.anthropic_adapter import build_anthropic_kwargs as _bak, normalize_anthropic_response as _nar
+
+                    _ant_kw = _bak(
+                        model=self.model,
+                        messages=api_messages,
+                        tools=None,
+                        max_tokens=self.max_tokens,
+                        reasoning_config=self.reasoning_config,
+                        is_oauth=self._is_anthropic_oauth,
+                        preserve_dots=self._anthropic_preserve_dots(),
+                    )
+                    summary_response = self._anthropic_messages_create(_ant_kw)
+                    _msg, _ = _nar(summary_response, strip_tool_prefix=self._is_anthropic_oauth)
+                    handoff_body = (_msg.content or "").strip()
+                else:
+                    summary_response = self._ensure_primary_openai_client(
+                        reason="low_budget_handoff"
+                    ).chat.completions.create(**summary_kwargs)
+                    if summary_response.choices and summary_response.choices[0].message.content:
+                        handoff_body = summary_response.choices[0].message.content or ""
+
+            if handoff_body and "<think>" in handoff_body:
+                handoff_body = re.sub(r'<think>.*?</think>\s*', '', handoff_body, flags=re.DOTALL).strip()
+        except Exception as exc:
+            handoff_error = str(exc)
+            logging.warning("Failed to generate low-budget handoff: %s", exc)
+
+        if not handoff_body:
+            handoff_body = self._build_low_budget_fallback_handoff(
+                api_call_count,
+                original_user_message,
+                checkpoint_records,
+                error=handoff_error,
+            )
+
+        artifacts: Dict[str, Any] = {"checkpoints": checkpoint_records}
+        resume_prompt = self._build_low_budget_resume_prompt(original_user_message)
+        if self._low_budget_handoff_write_file:
+            try:
+                handoff_dir = get_hermes_home() / "handoffs"
+                handoff_dir.mkdir(parents=True, exist_ok=True)
+                stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                stem = f"{stamp}_{self.session_id}_budget_handoff"
+                markdown_path = handoff_dir / f"{stem}.md"
+                resume_prompt = self._build_low_budget_resume_prompt(
+                    original_user_message,
+                    handoff_path=str(markdown_path),
+                )
+                markdown_body = handoff_body
+                if "## Resume Prompt" not in markdown_body:
+                    markdown_body = markdown_body.rstrip() + "\n\n## Resume Prompt\n" + resume_prompt
+                markdown_path.write_text(markdown_body.rstrip() + "\n", encoding="utf-8")
+
+                json_path = handoff_dir / f"{stem}.json"
+                atomic_json_write(
+                    json_path,
+                    {
+                        "session_id": self.session_id,
+                        "created_at": datetime.now().isoformat(),
+                        "reason": "low_budget_handoff",
+                        "api_calls_used": api_call_count,
+                        "max_iterations": self.max_iterations,
+                        "remaining_iterations": remaining,
+                        "model": self.model,
+                        "platform": self.platform,
+                        "original_user_message": original_user_message,
+                        "resume_prompt": resume_prompt,
+                        "checkpoints": checkpoint_records,
+                        "handoff_markdown": markdown_body,
+                    },
+                    indent=2,
+                    default=str,
+                )
+                artifacts.update(
+                    {
+                        "markdown_path": str(markdown_path),
+                        "json_path": str(json_path),
+                    }
+                )
+                handoff_body = markdown_body
+            except Exception as exc:
+                logging.warning("Failed to write low-budget handoff artifacts: %s", exc)
+                artifacts["write_error"] = str(exc)
+
+        lines = [
+            f"⚠️ Low-budget handoff triggered at iteration {api_call_count}/{self.max_iterations}.",
+            f"Reserved iterations remaining: {remaining}.",
+        ]
+        if checkpoint_records:
+            lines.append("Checkpointed workdirs:")
+            for entry in checkpoint_records:
+                checkpoint_text = f" [{entry.get('checkpoint')}]" if entry.get("checkpoint") else ""
+                state = "new snapshot" if entry.get("checkpointed") else "existing snapshot"
+                lines.append(f"- {entry.get('directory')}{checkpoint_text} ({state})")
+        if artifacts.get("markdown_path"):
+            lines.extend([
+                f"Handoff markdown: {artifacts['markdown_path']}",
+                f"Handoff metadata: {artifacts.get('json_path')}",
+            ])
+        if resume_prompt:
+            lines.extend(["", "Resume prompt:", resume_prompt])
+        lines.extend(["", handoff_body.strip()])
+
+        final_response = "\n".join(line for line in lines if line is not None).strip()
+        messages.append({"role": "assistant", "content": final_response})
+        self._low_budget_handoff_triggered = True
+        self._low_budget_handoff_artifacts = artifacts
+        return final_response
+
     def _handle_max_iterations(self, messages: list, api_call_count: int) -> str:
         """Request a summary when max iterations are reached. Returns the final response text."""
         print(f"⚠️  Reached maximum iterations ({self.max_iterations}). Requesting summary...")
@@ -8879,6 +9286,9 @@ class AIAgent:
         self._last_content_tools_all_housekeeping = False
         self._mute_post_response = False
         self._unicode_sanitization_passes = 0
+        self._checkpoint_dirs_touched.clear()
+        self._low_budget_handoff_triggered = False
+        self._low_budget_handoff_artifacts = {}
 
         # Pre-turn connection health check: detect and clean up dead TCP
         # connections left over from provider outages or dropped streams.
@@ -11427,6 +11837,14 @@ class AIAgent:
                     # Save session log incrementally (so progress is visible even if interrupted)
                     self._session_messages = messages
                     self._save_session_log(messages)
+
+                    if self._should_trigger_low_budget_handoff(assistant_message, api_call_count):
+                        final_response = self._handle_low_budget_handoff(
+                            messages,
+                            api_call_count,
+                            original_user_message,
+                        )
+                        break
                     
                     # Continue loop for next response
                     continue
@@ -11805,7 +12223,11 @@ class AIAgent:
             final_response = self._handle_max_iterations(messages, api_call_count)
         
         # Determine if conversation completed successfully
-        completed = final_response is not None and api_call_count < self.max_iterations
+        completed = (
+            final_response is not None
+            and api_call_count < self.max_iterations
+            and not self._low_budget_handoff_triggered
+        )
 
         # Save trajectory if enabled
         self._save_trajectory(messages, user_message, completed)
@@ -11896,6 +12318,8 @@ class AIAgent:
             "partial": False,  # True only when stopped due to invalid tool calls
             "interrupted": interrupted,
             "response_previewed": getattr(self, "_response_was_previewed", False),
+            "budget_handoff": self._low_budget_handoff_triggered,
+            "budget_handoff_artifacts": self._low_budget_handoff_artifacts,
             "model": self.model,
             "provider": self.provider,
             "base_url": self.base_url,

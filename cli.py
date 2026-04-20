@@ -379,6 +379,16 @@ def load_cli_config() -> Dict[str, Any]:
             "base_url": "",    # Direct OpenAI-compatible endpoint for subagents
             "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
         },
+        "checkpoints": {
+            "enabled": True,
+            "max_snapshots": 50,
+            "low_budget_handoff": {
+                "enabled": False,
+                "reserve_iterations": 8,
+                "snapshot_workdirs": True,
+                "write_file": True,
+            },
+        },
     }
     
     # Track whether the config file explicitly set terminal config.

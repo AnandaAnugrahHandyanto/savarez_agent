@@ -9,6 +9,7 @@ import io
 import json
 import logging
 import re
+import tempfile
 import uuid
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -3177,6 +3178,634 @@ class TestBudgetPressure:
         """Agent should have budget grace call flags."""
         assert agent._budget_exhausted_injected is False
         assert agent._budget_grace_call is False
+
+
+class TestLowBudgetHandoff:
+    def _safe_temp_root(self) -> Path:
+        return Path(tempfile.mkdtemp(dir="/tmp"))
+
+    def _consume_to_remaining(self, agent, remaining: int, max_total: int = 10):
+        agent.iteration_budget = run_agent.IterationBudget(max_total)
+        while agent.iteration_budget.remaining > remaining:
+            assert agent.iteration_budget.consume() is True
+
+    def test_should_trigger_at_reserve_for_non_housekeeping_tool(self, agent):
+        agent._low_budget_handoff_enabled = True
+        agent._low_budget_handoff_triggered = False
+        agent._low_budget_handoff_reserve = 2
+        self._consume_to_remaining(agent, remaining=2)
+
+        assistant_message = _mock_assistant_msg(
+            content="",
+            tool_calls=[_mock_tool_call(name="web_search")],
+        )
+
+        assert agent._should_trigger_low_budget_handoff(assistant_message, 8) is True
+
+    def test_skips_housekeeping_tool_when_visible_content_exists(self, agent):
+        agent._low_budget_handoff_enabled = True
+        agent._low_budget_handoff_triggered = False
+        agent._low_budget_handoff_reserve = 1
+        self._consume_to_remaining(agent, remaining=1)
+
+        assistant_message = _mock_assistant_msg(
+            content="Done saving memory.",
+            tool_calls=[_mock_tool_call(name="memory")],
+        )
+
+        assert agent._should_trigger_low_budget_handoff(assistant_message, 9) is False
+
+    def test_handle_low_budget_handoff_writes_artifacts(self, agent, tmp_path, monkeypatch):
+        handoff_home = tmp_path / "hermes-home"
+        checkpoint_records = [
+            {
+                "directory": str(tmp_path / "repo"),
+                "checkpointed": True,
+                "checkpoint": "abc123",
+                "reason": "low-budget handoff",
+            }
+        ]
+        self._consume_to_remaining(agent, remaining=2)
+        agent._cached_system_prompt = "You are helpful."
+        agent.session_id = "sess-budget"
+        agent._low_budget_handoff_enabled = True
+        agent._low_budget_handoff_write_file = True
+        agent._snapshot_low_budget_workdirs = MagicMock(return_value=checkpoint_records)
+        agent._ensure_primary_openai_client = MagicMock(return_value=agent.client)
+        monkeypatch.setattr(run_agent, "get_hermes_home", lambda: handoff_home)
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="## Goal\nShip it\n\n## Resume Prompt\nresume me"
+        )
+
+        messages = [{"role": "user", "content": "ship it"}]
+        result = agent._handle_low_budget_handoff(messages, 8, "ship it")
+
+        handoff_dir = handoff_home / "handoffs"
+        markdown_files = sorted(handoff_dir.glob("*_budget_handoff.md"))
+        json_files = sorted(handoff_dir.glob("*_budget_handoff.json"))
+
+        assert len(markdown_files) == 1
+        assert len(json_files) == 1
+        assert agent._low_budget_handoff_triggered is True
+        assert agent._low_budget_handoff_artifacts["markdown_path"] == str(markdown_files[0])
+        assert "Handoff markdown:" in result
+        assert messages[-1]["role"] == "assistant"
+
+        metadata = json.loads(json_files[0].read_text(encoding="utf-8"))
+        assert metadata["reason"] == "low_budget_handoff"
+        assert metadata["original_user_message"] == "ship it"
+        assert metadata["checkpoints"][0]["checkpoint"] == "abc123"
+        assert "## Resume Prompt" in markdown_files[0].read_text(encoding="utf-8")
+
+    def test_handle_low_budget_handoff_falls_back_when_summary_generation_fails(self, agent, tmp_path, monkeypatch):
+        handoff_home = tmp_path / "hermes-home"
+        self._consume_to_remaining(agent, remaining=1)
+        agent._cached_system_prompt = "You are helpful."
+        agent.session_id = "sess-budget"
+        agent._low_budget_handoff_enabled = True
+        agent._low_budget_handoff_write_file = True
+        agent._snapshot_low_budget_workdirs = MagicMock(return_value=[])
+        agent._ensure_primary_openai_client = MagicMock(return_value=agent.client)
+        monkeypatch.setattr(run_agent, "get_hermes_home", lambda: handoff_home)
+        agent.client.chat.completions.create.side_effect = Exception("summary api down")
+
+        messages = [{"role": "user", "content": "ship it"}]
+        result = agent._handle_low_budget_handoff(messages, 9, "ship it")
+
+        assert "Automatic handoff summary generation failed: summary api down" in result
+        assert "## Resume Prompt" in result
+        assert agent._low_budget_handoff_triggered is True
+        assert messages[-1]["role"] == "assistant"
+
+    def test_run_conversation_returns_budget_handoff_result(self, agent, tmp_path, monkeypatch):
+        handoff_home = tmp_path / "hermes-home"
+        checkpoint_records = [
+            {
+                "directory": str(tmp_path / "repo"),
+                "checkpointed": False,
+                "checkpoint": "seed123",
+                "reason": "low-budget handoff",
+            }
+        ]
+        monkeypatch.setattr(run_agent, "get_hermes_home", lambda: handoff_home)
+
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+        agent.max_iterations = 2
+        agent.iteration_budget = run_agent.IterationBudget(2)
+        agent._low_budget_handoff_enabled = True
+        agent._low_budget_handoff_reserve = 1
+        agent._low_budget_handoff_write_file = True
+        agent._interruptible_api_call = MagicMock(
+            return_value=_mock_response(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[_mock_tool_call(name="web_search", call_id="c1")],
+            )
+        )
+        agent._ensure_primary_openai_client = MagicMock(return_value=agent.client)
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="## Goal\nSearch\n\n## Resume Prompt\nresume"
+        )
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_save_session_log"),
+            patch.object(agent, "_execute_tool_calls"),
+            patch.object(agent, "_snapshot_low_budget_workdirs", return_value=checkpoint_records),
+        ):
+            result = agent.run_conversation("search for regressions")
+
+        assert result["budget_handoff"] is True
+        assert result["completed"] is False
+        assert result["api_calls"] == 1
+        assert result["budget_handoff_artifacts"]["checkpoints"] == checkpoint_records
+        assert result["budget_handoff_artifacts"]["markdown_path"].endswith("_budget_handoff.md")
+        assert "Low-budget handoff triggered" in result["final_response"]
+
+    def test_run_conversation_creates_real_checkpoint_and_handoff_artifacts(self, agent, tmp_path, monkeypatch):
+        import tools.checkpoint_manager as checkpoint_manager
+
+        handoff_home = tmp_path / "hermes-home"
+        checkpoint_base = tmp_path / "shadow-checkpoints"
+        work_dir = tmp_path / "project"
+        work_dir.mkdir()
+        target_file = work_dir / "main.py"
+        target_file.write_text("print('seed')\n", encoding="utf-8")
+
+        monkeypatch.setattr(run_agent, "get_hermes_home", lambda: handoff_home)
+        monkeypatch.setattr(checkpoint_manager, "CHECKPOINT_BASE", checkpoint_base)
+
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+        agent.max_iterations = 2
+        agent.iteration_budget = run_agent.IterationBudget(2)
+        agent._low_budget_handoff_enabled = True
+        agent._low_budget_handoff_reserve = 1
+        agent._low_budget_handoff_write_file = True
+        agent._low_budget_handoff_snapshot_workdirs = True
+        agent._checkpoint_mgr.enabled = True
+        agent._checkpoint_mgr.max_snapshots = 5
+
+        assert agent._checkpoint_mgr.ensure_checkpoint(str(work_dir), "seed baseline") is True
+        agent._checkpoint_mgr.new_turn()
+
+        def fake_execute_tool_calls(*_args, **_kwargs):
+            target_file.write_text("print('changed during tool call')\n", encoding="utf-8")
+            agent._remember_checkpoint_dir(str(work_dir))
+
+        agent._interruptible_api_call = MagicMock(
+            return_value=_mock_response(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[_mock_tool_call(name="web_search", call_id="c1")],
+            )
+        )
+        agent._ensure_primary_openai_client = MagicMock(return_value=agent.client)
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="## Goal\nSearch\n\n## Resume Prompt\nresume"
+        )
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_save_session_log"),
+            patch.object(agent, "_execute_tool_calls", side_effect=fake_execute_tool_calls),
+        ):
+            result = agent.run_conversation("search for regressions")
+
+        checkpoints = agent._checkpoint_mgr.list_checkpoints(str(work_dir))
+        markdown_path = Path(result["budget_handoff_artifacts"]["markdown_path"])
+        json_path = Path(result["budget_handoff_artifacts"]["json_path"])
+        metadata = json.loads(json_path.read_text(encoding="utf-8"))
+
+        assert result["budget_handoff"] is True
+        assert result["completed"] is False
+        assert len(checkpoints) >= 2
+        assert checkpoints[0]["reason"] == "low-budget handoff"
+        assert checkpoints[0]["files_changed"] >= 1
+        assert markdown_path.exists()
+        assert json_path.exists()
+        assert metadata["checkpoints"][0]["directory"] == str(work_dir.resolve())
+        assert metadata["checkpoints"][0]["checkpoint"] == checkpoints[0]["short_hash"]
+        assert "## Resume Prompt" in markdown_path.read_text(encoding="utf-8")
+        assert checkpoint_base.exists()
+
+    def test_run_conversation_real_write_file_tool_creates_checkpoint_and_handoff_artifacts(self, agent, tmp_path, monkeypatch):
+        import tools.checkpoint_manager as checkpoint_manager
+
+        safe_root = self._safe_temp_root()
+        handoff_home = safe_root / "hermes-home"
+        checkpoint_base = safe_root / "shadow-checkpoints"
+        work_dir = safe_root / "project"
+        work_dir.mkdir()
+        target_file = work_dir / "main.py"
+        target_file.write_text("print('seed')\n", encoding="utf-8")
+
+        monkeypatch.setattr(run_agent, "get_hermes_home", lambda: handoff_home)
+        monkeypatch.setattr(checkpoint_manager, "CHECKPOINT_BASE", checkpoint_base)
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+
+        agent.tools = _make_tool_defs("write_file")
+        agent.valid_tool_names = {"write_file"}
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+        agent.max_iterations = 2
+        agent.iteration_budget = run_agent.IterationBudget(2)
+        agent._low_budget_handoff_enabled = True
+        agent._low_budget_handoff_reserve = 1
+        agent._low_budget_handoff_write_file = True
+        agent._low_budget_handoff_snapshot_workdirs = True
+        agent._checkpoint_mgr.enabled = True
+        agent._checkpoint_mgr.max_snapshots = 5
+
+        assert agent._checkpoint_mgr.ensure_checkpoint(str(work_dir), "seed baseline") is True
+        agent._checkpoint_mgr.new_turn()
+
+        tool_call = _mock_tool_call(
+            name="write_file",
+            arguments=json.dumps({
+                "path": str(target_file),
+                "content": "print('changed by real tool')\n",
+            }),
+            call_id="c1",
+        )
+        agent._interruptible_api_call = MagicMock(
+            return_value=_mock_response(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[tool_call],
+            )
+        )
+        agent._ensure_primary_openai_client = MagicMock(return_value=agent.client)
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="## Goal\nUpdate file\n\n## Resume Prompt\nresume"
+        )
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_save_session_log"),
+            patch("run_agent.handle_function_call", wraps=run_agent.handle_function_call) as wrapped_handle,
+        ):
+            result = agent.run_conversation("update main.py and pause cleanly if budget is low")
+
+        checkpoints = agent._checkpoint_mgr.list_checkpoints(str(work_dir))
+        markdown_path = Path(result["budget_handoff_artifacts"]["markdown_path"])
+        json_path = Path(result["budget_handoff_artifacts"]["json_path"])
+        metadata = json.loads(json_path.read_text(encoding="utf-8"))
+        tool_messages = [msg for msg in result["messages"] if msg.get("role") == "tool"]
+        tool_payload = json.loads(tool_messages[0]["content"])
+
+        assert wrapped_handle.call_count == 1
+        call_args, call_kwargs = wrapped_handle.call_args
+        assert call_args[:2] == (
+            "write_file",
+            {"path": str(target_file), "content": "print('changed by real tool')\n"},
+        )
+        assert call_kwargs["enabled_tools"] == ["write_file"]
+        assert target_file.read_text(encoding="utf-8") == "print('changed by real tool')\n"
+        assert len(tool_messages) == 1
+        assert tool_payload["bytes_written"] > 0
+        assert "error" not in tool_payload
+        assert result["budget_handoff"] is True
+        assert result["completed"] is False
+        assert result["api_calls"] == 1
+        assert len(checkpoints) >= 2
+        assert checkpoints[0]["reason"] == "low-budget handoff"
+        assert checkpoints[0]["files_changed"] >= 1
+        assert markdown_path.exists()
+        assert json_path.exists()
+        assert metadata["checkpoints"][0]["directory"] == str(work_dir.resolve())
+        assert metadata["checkpoints"][0]["checkpoint"] == checkpoints[0]["short_hash"]
+        assert "## Resume Prompt" in markdown_path.read_text(encoding="utf-8")
+        assert checkpoint_base.exists()
+
+    def test_run_conversation_real_patch_tool_creates_checkpoint_and_handoff_artifacts(self, agent, tmp_path, monkeypatch):
+        import tools.checkpoint_manager as checkpoint_manager
+
+        safe_root = self._safe_temp_root()
+        handoff_home = safe_root / "hermes-home"
+        checkpoint_base = safe_root / "shadow-checkpoints"
+        work_dir = safe_root / "project"
+        work_dir.mkdir()
+        target_file = work_dir / "main.py"
+        target_file.write_text("print('seed')\n", encoding="utf-8")
+
+        monkeypatch.setattr(run_agent, "get_hermes_home", lambda: handoff_home)
+        monkeypatch.setattr(checkpoint_manager, "CHECKPOINT_BASE", checkpoint_base)
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+
+        agent.tools = _make_tool_defs("patch")
+        agent.valid_tool_names = {"patch"}
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+        agent.max_iterations = 2
+        agent.iteration_budget = run_agent.IterationBudget(2)
+        agent._low_budget_handoff_enabled = True
+        agent._low_budget_handoff_reserve = 1
+        agent._low_budget_handoff_write_file = True
+        agent._low_budget_handoff_snapshot_workdirs = True
+        agent._checkpoint_mgr.enabled = True
+        agent._checkpoint_mgr.max_snapshots = 5
+
+        assert agent._checkpoint_mgr.ensure_checkpoint(str(work_dir), "seed baseline") is True
+        agent._checkpoint_mgr.new_turn()
+
+        tool_call = _mock_tool_call(
+            name="patch",
+            arguments=json.dumps({
+                "mode": "replace",
+                "path": str(target_file),
+                "old_string": "print('seed')\n",
+                "new_string": "print('patched by real tool')\n",
+            }),
+            call_id="c1",
+        )
+        agent._interruptible_api_call = MagicMock(
+            return_value=_mock_response(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[tool_call],
+            )
+        )
+        agent._ensure_primary_openai_client = MagicMock(return_value=agent.client)
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="## Goal\nPatch file\n\n## Resume Prompt\nresume"
+        )
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_save_session_log"),
+            patch("run_agent.handle_function_call", wraps=run_agent.handle_function_call) as wrapped_handle,
+        ):
+            result = agent.run_conversation("patch main.py and pause cleanly if budget is low")
+
+        checkpoints = agent._checkpoint_mgr.list_checkpoints(str(work_dir))
+        markdown_path = Path(result["budget_handoff_artifacts"]["markdown_path"])
+        json_path = Path(result["budget_handoff_artifacts"]["json_path"])
+        metadata = json.loads(json_path.read_text(encoding="utf-8"))
+        tool_messages = [msg for msg in result["messages"] if msg.get("role") == "tool"]
+        tool_payload = json.loads(tool_messages[0]["content"])
+
+        assert wrapped_handle.call_count == 1
+        call_args, call_kwargs = wrapped_handle.call_args
+        assert call_args[:2] == (
+            "patch",
+            {
+                "mode": "replace",
+                "path": str(target_file),
+                "old_string": "print('seed')\n",
+                "new_string": "print('patched by real tool')\n",
+            },
+        )
+        assert call_kwargs["enabled_tools"] == ["patch"]
+        assert target_file.read_text(encoding="utf-8") == "print('patched by real tool')\n"
+        assert len(tool_messages) == 1
+        assert tool_payload["success"] is True
+        assert str(target_file) in tool_payload["files_modified"]
+        assert result["budget_handoff"] is True
+        assert result["completed"] is False
+        assert result["api_calls"] == 1
+        assert len(checkpoints) >= 2
+        assert checkpoints[0]["reason"] == "low-budget handoff"
+        assert checkpoints[0]["files_changed"] >= 1
+        assert markdown_path.exists()
+        assert json_path.exists()
+        assert metadata["checkpoints"][0]["directory"] == str(work_dir.resolve())
+        assert metadata["checkpoints"][0]["checkpoint"] == checkpoints[0]["short_hash"]
+        assert "## Resume Prompt" in markdown_path.read_text(encoding="utf-8")
+        assert checkpoint_base.exists()
+
+    def test_run_conversation_real_terminal_tool_creates_checkpoint_and_handoff_artifacts(self, agent, tmp_path, monkeypatch):
+        import tools.checkpoint_manager as checkpoint_manager
+
+        safe_root = self._safe_temp_root()
+        handoff_home = safe_root / "hermes-home"
+        checkpoint_base = safe_root / "shadow-checkpoints"
+        work_dir = safe_root / "project"
+        work_dir.mkdir()
+        target_file = work_dir / "main.py"
+        target_file.write_text("print('seed')\n", encoding="utf-8")
+
+        monkeypatch.setattr(run_agent, "get_hermes_home", lambda: handoff_home)
+        monkeypatch.setattr(checkpoint_manager, "CHECKPOINT_BASE", checkpoint_base)
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+
+        agent.tools = _make_tool_defs("terminal")
+        agent.valid_tool_names = {"terminal"}
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+        agent.max_iterations = 2
+        agent.iteration_budget = run_agent.IterationBudget(2)
+        agent._low_budget_handoff_enabled = True
+        agent._low_budget_handoff_reserve = 1
+        agent._low_budget_handoff_write_file = True
+        agent._low_budget_handoff_snapshot_workdirs = True
+        agent._checkpoint_mgr.enabled = True
+        agent._checkpoint_mgr.max_snapshots = 5
+
+        assert agent._checkpoint_mgr.ensure_checkpoint(str(work_dir), "seed baseline") is True
+        agent._checkpoint_mgr.new_turn()
+
+        command = 'printf "changed by terminal\\n" > main.py'
+        tool_call = _mock_tool_call(
+            name="terminal",
+            arguments=json.dumps({
+                "command": command,
+                "workdir": str(work_dir),
+                "timeout": 30,
+            }),
+            call_id="c1",
+        )
+        agent._interruptible_api_call = MagicMock(
+            return_value=_mock_response(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[tool_call],
+            )
+        )
+        agent._ensure_primary_openai_client = MagicMock(return_value=agent.client)
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="## Goal\nEdit file via terminal\n\n## Resume Prompt\nresume"
+        )
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_save_session_log"),
+            patch("run_agent.handle_function_call", wraps=run_agent.handle_function_call) as wrapped_handle,
+        ):
+            result = agent.run_conversation("update main.py through terminal and pause cleanly if budget is low")
+
+        checkpoints = agent._checkpoint_mgr.list_checkpoints(str(work_dir))
+        markdown_path = Path(result["budget_handoff_artifacts"]["markdown_path"])
+        json_path = Path(result["budget_handoff_artifacts"]["json_path"])
+        metadata = json.loads(json_path.read_text(encoding="utf-8"))
+        tool_messages = [msg for msg in result["messages"] if msg.get("role") == "tool"]
+        tool_payload = json.loads(tool_messages[0]["content"])
+
+        assert wrapped_handle.call_count == 1
+        call_args, call_kwargs = wrapped_handle.call_args
+        assert call_args[:2] == (
+            "terminal",
+            {"command": command, "workdir": str(work_dir), "timeout": 30},
+        )
+        assert call_kwargs["enabled_tools"] == ["terminal"]
+        assert target_file.read_text(encoding="utf-8") == "changed by terminal\n"
+        assert len(tool_messages) == 1
+        assert tool_payload["exit_code"] == 0
+        assert result["budget_handoff"] is True
+        assert result["completed"] is False
+        assert result["api_calls"] == 1
+        assert len(checkpoints) >= 2
+        assert checkpoints[0]["reason"] == "low-budget handoff"
+        assert checkpoints[0]["files_changed"] >= 1
+        assert markdown_path.exists()
+        assert json_path.exists()
+        assert metadata["checkpoints"][0]["directory"] == str(work_dir.resolve())
+        assert metadata["checkpoints"][0]["checkpoint"] == checkpoints[0]["short_hash"]
+        assert "## Resume Prompt" in markdown_path.read_text(encoding="utf-8")
+        assert checkpoint_base.exists()
+
+    def test_run_conversation_real_multi_tool_same_turn_preserves_order_and_handoff_artifacts(self, agent, tmp_path, monkeypatch):
+        import tools.checkpoint_manager as checkpoint_manager
+
+        safe_root = self._safe_temp_root()
+        handoff_home = safe_root / "hermes-home"
+        checkpoint_base = safe_root / "shadow-checkpoints"
+        work_dir = safe_root / "project"
+        work_dir.mkdir()
+        target_file = work_dir / "main.py"
+        target_file.write_text("print('seed')\n", encoding="utf-8")
+
+        monkeypatch.setattr(run_agent, "get_hermes_home", lambda: handoff_home)
+        monkeypatch.setattr(checkpoint_manager, "CHECKPOINT_BASE", checkpoint_base)
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+
+        agent.tools = _make_tool_defs("write_file", "patch")
+        agent.valid_tool_names = {"write_file", "patch"}
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+        agent.max_iterations = 2
+        agent.iteration_budget = run_agent.IterationBudget(2)
+        agent._low_budget_handoff_enabled = True
+        agent._low_budget_handoff_reserve = 1
+        agent._low_budget_handoff_write_file = True
+        agent._low_budget_handoff_snapshot_workdirs = True
+        agent._checkpoint_mgr.enabled = True
+        agent._checkpoint_mgr.max_snapshots = 5
+
+        assert agent._checkpoint_mgr.ensure_checkpoint(str(work_dir), "seed baseline") is True
+        agent._checkpoint_mgr.new_turn()
+
+        write_tool_call = _mock_tool_call(
+            name="write_file",
+            arguments=json.dumps({
+                "path": str(target_file),
+                "content": "print('phase one')\n",
+            }),
+            call_id="c1",
+        )
+        patch_tool_call = _mock_tool_call(
+            name="patch",
+            arguments=json.dumps({
+                "mode": "replace",
+                "path": str(target_file),
+                "old_string": "print('phase one')\n",
+                "new_string": "print('phase two')\n",
+            }),
+            call_id="c2",
+        )
+        agent._interruptible_api_call = MagicMock(
+            return_value=_mock_response(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[write_tool_call, patch_tool_call],
+            )
+        )
+        agent._ensure_primary_openai_client = MagicMock(return_value=agent.client)
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="## Goal\nApply ordered file mutations\n\n## Resume Prompt\nresume"
+        )
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_save_session_log"),
+            patch("run_agent.handle_function_call", wraps=run_agent.handle_function_call) as wrapped_handle,
+        ):
+            result = agent.run_conversation("update main.py in two ordered steps and pause cleanly if budget is low")
+
+        checkpoints = agent._checkpoint_mgr.list_checkpoints(str(work_dir))
+        markdown_path = Path(result["budget_handoff_artifacts"]["markdown_path"])
+        json_path = Path(result["budget_handoff_artifacts"]["json_path"])
+        metadata = json.loads(json_path.read_text(encoding="utf-8"))
+        tool_messages = [msg for msg in result["messages"] if msg.get("role") == "tool"]
+        write_payload = json.loads(tool_messages[0]["content"])
+        patch_payload = json.loads(tool_messages[1]["content"])
+
+        assert wrapped_handle.call_count == 2
+        first_args, first_kwargs = wrapped_handle.call_args_list[0]
+        second_args, second_kwargs = wrapped_handle.call_args_list[1]
+        assert first_args[:2] == (
+            "write_file",
+            {"path": str(target_file), "content": "print('phase one')\n"},
+        )
+        assert second_args[:2] == (
+            "patch",
+            {
+                "mode": "replace",
+                "path": str(target_file),
+                "old_string": "print('phase one')\n",
+                "new_string": "print('phase two')\n",
+            },
+        )
+        assert set(first_kwargs["enabled_tools"]) == {"write_file", "patch"}
+        assert set(second_kwargs["enabled_tools"]) == {"write_file", "patch"}
+        assert target_file.read_text(encoding="utf-8") == "print('phase two')\n"
+        assert len(tool_messages) == 2
+        assert write_payload["bytes_written"] > 0
+        assert patch_payload["success"] is True
+        assert str(target_file) in patch_payload["files_modified"]
+        assert result["budget_handoff"] is True
+        assert result["completed"] is False
+        assert result["api_calls"] == 1
+        assert len(checkpoints) >= 2
+        assert checkpoints[0]["reason"] == "low-budget handoff"
+        assert checkpoints[0]["files_changed"] >= 1
+        assert markdown_path.exists()
+        assert json_path.exists()
+        assert metadata["checkpoints"][0]["directory"] == str(work_dir.resolve())
+        assert metadata["checkpoints"][0]["checkpoint"] == checkpoints[0]["short_hash"]
+        assert "## Resume Prompt" in markdown_path.read_text(encoding="utf-8")
+        assert checkpoint_base.exists()
 
 
 class TestSafeWriter:

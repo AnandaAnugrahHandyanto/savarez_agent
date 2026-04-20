@@ -439,6 +439,12 @@ DEFAULT_CONFIG = {
     "checkpoints": {
         "enabled": True,
         "max_snapshots": 50,  # Max checkpoints to keep per directory
+        "low_budget_handoff": {
+            "enabled": False,        # Stop early and emit a resumable handoff before iteration exhaustion
+            "reserve_iterations": 8, # Remaining turns to preserve for the handoff path
+            "snapshot_workdirs": True,
+            "write_file": True,
+        },
     },
 
     # Maximum characters returned by a single read_file call.  Reads that
