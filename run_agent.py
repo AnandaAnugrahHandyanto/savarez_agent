@@ -11390,9 +11390,19 @@ class AIAgent:
                         self.iteration_budget.refund()
                     
                     # Use real token counts from the API response to decide
-                    # compression.  prompt_tokens + completion_tokens is the
-                    # actual context size the provider reported plus the
-                    # assistant turn — a tight lower bound for the next prompt.
+                    # compression. We use only prompt_tokens, which represents
+                    # the actual context window consumption for the next request.
+                    #
+                    # NOTE: We intentionally exclude completion_tokens because:
+                    # 1. For reasoning models (GLM-5.1, QwQ, DeepSeek R1, etc.),
+                    #    completion_tokens includes ephemeral reasoning/thinking
+                    #    tokens that do NOT consume the context window.
+                    # 2. Including them caused premature compression at ~42%
+                    #    actual context usage, triggering cascading session splits
+                    #    that destroyed conversation continuity. (#12026)
+                    # 3. False negatives (missing compression) are self-correcting:
+                    #    the next API call reports the real prompt size.
+                    #
                     # Tool results appended above aren't counted yet, but the
                     # threshold (default 50%) leaves ample headroom; if tool
                     # results push past it, the next API call will report the
@@ -11405,10 +11415,7 @@ class AIAgent:
                     # should_compress(0) never fires.  (#2153)
                     _compressor = self.context_compressor
                     if _compressor.last_prompt_tokens > 0:
-                        _real_tokens = (
-                            _compressor.last_prompt_tokens
-                            + _compressor.last_completion_tokens
-                        )
+                        _real_tokens = _compressor.last_prompt_tokens
                     else:
                         _real_tokens = estimate_messages_tokens_rough(messages)
 
