@@ -72,6 +72,7 @@ Good defaults:
 | You already have Claude or Codex auth | Anthropic or OpenAI Codex |
 | You want local/private inference | Ollama or any custom OpenAI-compatible endpoint |
 | You want multi-provider routing | OpenRouter |
+| You want EU-resident multi-provider routing | EUrouter |
 | You have a custom GPU server | vLLM, SGLang, LiteLLM, or any OpenAI-compatible endpoint |
 
 For most first-time users: choose a provider, accept the defaults unless you know why you're changing them. The full provider catalog with env vars and setup steps lives on the [Providers](../integrations/providers.md) page.

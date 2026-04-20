@@ -226,6 +226,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("DEEPSEEK_API_KEY",),
         base_url_env_var="DEEPSEEK_BASE_URL",
     ),
+    "eurouter": ProviderConfig(
+        id="eurouter",
+        name="EUrouter",
+        auth_type="api_key",
+        inference_base_url="https://api.eurouter.ai/api/v1",
+        api_key_env_vars=("EUROUTER_API_KEY",),
+        base_url_env_var="EUROUTER_BASE_URL",
+    ),
     "xai": ProviderConfig(
         id="xai",
         name="xAI",
@@ -980,6 +988,7 @@ def resolve_provider(
     _PROVIDER_ALIASES = {
         "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
         "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
+        "eu-router": "eurouter", "eur": "eurouter",
         "x-ai": "xai", "x.ai": "xai", "grok": "xai",
         "kimi": "kimi-coding", "kimi-for-coding": "kimi-coding", "moonshot": "kimi-coding",
         "kimi-cn": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",

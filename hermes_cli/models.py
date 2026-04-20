@@ -112,6 +112,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "openai/gpt-5.4-nano",
         "openrouter/elephant-alpha",
     ],
+    # Mirror the familiar OpenRouter starter set for the EUrouter gateway.
+    "eurouter": [mid for mid, _ in OPENROUTER_MODELS[:15]],
     "openai-codex": _codex_curated_models(),
     "copilot-acp": [
         "copilot-acp",
@@ -551,6 +553,7 @@ class ProviderEntry(NamedTuple):
 CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("nous",           "Nous Portal",              "Nous Portal (Nous Research subscription)"),
     ProviderEntry("openrouter",     "OpenRouter",               "OpenRouter (100+ models, pay-per-use)"),
+    ProviderEntry("eurouter",       "EUrouter",                 "EUrouter (EU-resident OpenAI-compatible gateway, GDPR-focused)"),
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models — API key or Claude Code)"),
     ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex"),
     ProviderEntry("xiaomi",         "Xiaomi MiMo",              "Xiaomi MiMo (MiMo-V2 models — pro, omni, flash)"),
@@ -584,6 +587,8 @@ _PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named prov
 
 
 _PROVIDER_ALIASES = {
+    "eu-router": "eurouter",
+    "eur": "eurouter",
     "glm": "zai",
     "z-ai": "zai",
     "z.ai": "zai",
@@ -891,12 +896,25 @@ def _resolve_nous_pricing_credentials() -> tuple[str, str]:
 
 
 def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> dict[str, dict[str, str]]:
-    """Return live pricing for providers that support it (openrouter, nous)."""
+    """Return live pricing for providers that support a compatible /v1/models API."""
     normalized = normalize_provider(provider)
     if normalized == "openrouter":
         return fetch_models_with_pricing(
             api_key=_resolve_openrouter_api_key(),
             base_url="https://openrouter.ai/api",
+            force_refresh=force_refresh,
+        )
+    if normalized == "eurouter":
+        api_key = os.getenv("EUROUTER_API_KEY", "").strip()
+        base_url = os.getenv("EUROUTER_BASE_URL", "").strip() or "https://api.eurouter.ai/api/v1"
+        stripped = base_url.rstrip("/")
+        if stripped.endswith("/api/v1"):
+            stripped = stripped[:-3]
+        elif stripped.endswith("/v1"):
+            stripped = stripped[:-3]
+        return fetch_models_with_pricing(
+            api_key=api_key,
+            base_url=stripped,
             force_refresh=force_refresh,
         )
     if normalized == "nous":
@@ -1079,7 +1097,7 @@ def detect_provider_for_model(
             return (resolved_provider, default_models[0])
 
     # Aggregators list other providers' models — never auto-switch TO them
-    _AGGREGATORS = {"nous", "openrouter", "ai-gateway", "copilot", "kilocode"}
+    _AGGREGATORS = {"nous", "openrouter", "eurouter", "ai-gateway", "copilot", "kilocode"}
 
     # If the model belongs to the current provider's catalog, don't suggest switching
     current_models = _PROVIDER_MODELS.get(current_provider, [])

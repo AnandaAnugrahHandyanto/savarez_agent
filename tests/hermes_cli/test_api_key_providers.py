@@ -31,6 +31,7 @@ class TestProviderRegistry:
         ("copilot-acp", "GitHub Copilot ACP", "external_process"),
         ("copilot", "GitHub Copilot", "api_key"),
         ("huggingface", "Hugging Face", "api_key"),
+        ("eurouter", "EUrouter", "api_key"),
         ("zai", "Z.AI / GLM", "api_key"),
         ("xai", "xAI", "api_key"),
         ("nvidia", "NVIDIA NIM", "api_key"),
@@ -51,6 +52,12 @@ class TestProviderRegistry:
         pconfig = PROVIDER_REGISTRY["zai"]
         assert pconfig.api_key_env_vars == ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY")
         assert pconfig.base_url_env_var == "GLM_BASE_URL"
+
+    def test_eurouter_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["eurouter"]
+        assert pconfig.api_key_env_vars == ("EUROUTER_API_KEY",)
+        assert pconfig.base_url_env_var == "EUROUTER_BASE_URL"
+        assert pconfig.inference_base_url == "https://api.eurouter.ai/api/v1"
 
     def test_xai_env_vars(self):
         pconfig = PROVIDER_REGISTRY["xai"]
@@ -125,6 +132,7 @@ class TestProviderRegistry:
 PROVIDER_ENV_VARS = (
     "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
+    "EUROUTER_API_KEY", "EUROUTER_BASE_URL",
     "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
     "KIMI_API_KEY", "KIMI_BASE_URL", "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
     "AI_GATEWAY_API_KEY", "AI_GATEWAY_BASE_URL",
@@ -146,6 +154,9 @@ def _clear_provider_env(monkeypatch):
 class TestResolveProvider:
     """Test resolve_provider() with new providers."""
 
+    def test_explicit_eurouter(self):
+        assert resolve_provider("eurouter") == "eurouter"
+
     def test_explicit_zai(self):
         assert resolve_provider("zai") == "zai"
 
@@ -163,6 +174,12 @@ class TestResolveProvider:
 
     def test_alias_glm(self):
         assert resolve_provider("glm") == "zai"
+
+    def test_alias_eu_router(self):
+        assert resolve_provider("eu-router") == "eurouter"
+
+    def test_alias_eur(self):
+        assert resolve_provider("eur") == "eurouter"
 
     def test_alias_z_ai(self):
         assert resolve_provider("z-ai") == "zai"
@@ -239,6 +256,10 @@ class TestResolveProvider:
     def test_auto_detects_z_ai_key(self, monkeypatch):
         monkeypatch.setenv("Z_AI_API_KEY", "test-z-ai-key")
         assert resolve_provider("auto") == "zai"
+
+    def test_auto_detects_eurouter_key(self, monkeypatch):
+        monkeypatch.setenv("EUROUTER_API_KEY", "eur-test-key")
+        assert resolve_provider("auto") == "eurouter"
 
     def test_auto_detects_kimi_key(self, monkeypatch):
         monkeypatch.setenv("KIMI_API_KEY", "test-kimi-key")
