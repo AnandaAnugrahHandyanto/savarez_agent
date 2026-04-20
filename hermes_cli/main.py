@@ -5202,6 +5202,136 @@ def cmd_update(args):
         _finalize_update_output(_update_io_state)
 
 
+def _update_mcp_packages():
+    """Update npm/npx and uvx/pipx packages used by configured MCP servers.
+
+    Reads the ``mcp_servers`` config section, identifies packages launched via
+    ``npx -y`` or ``uvx``, and updates them so the next server startup uses the
+    latest version.  Skips URL-based (remote) servers and binary commands that
+    aren't package-managed.
+    """
+    try:
+        from hermes_cli.config import load_config
+    except ImportError:
+        print("  ⚠ Cannot load config — skipping MCP package update")
+        return
+
+    config = load_config()
+    servers = config.get("mcp_servers", {})
+    if not servers:
+        print()
+        print("→ No MCP servers configured — skipping package update")
+        return
+
+    print()
+    print("→ Updating MCP server packages...")
+
+    npx_packages = set()
+    uvx_packages = set()
+
+    for name, conf in servers.items():
+        if not isinstance(conf, dict):
+            continue
+        # Skip URL-based (remote) servers
+        if conf.get("url"):
+            continue
+        cmd = conf.get("command", "")
+        srv_args = conf.get("args", [])
+
+        if cmd in ("npx", "npx.cmd") and srv_args:
+            # npx -y @scope/package  or  npx -y package
+            # Find the package name (first arg that isn't a flag)
+            for a in srv_args:
+                a_str = str(a)
+                if a_str.startswith("-"):
+                    continue
+                npx_packages.add(a_str)
+                break
+
+        elif cmd in ("uvx", "pipx"):
+            # uvx package  or  pipx run package
+            for a in srv_args:
+                a_str = str(a)
+                if a_str.startswith("-") or a_str == "run":
+                    continue
+                uvx_packages.add(a_str)
+                break
+
+    updated = 0
+    failed = 0
+
+    # Update npm packages
+    for pkg in sorted(npx_packages):
+        try:
+            result = subprocess.run(
+                ["npm", "update", "-g", pkg],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if result.returncode == 0:
+                print(f"  ✓ npm: {pkg}")
+                updated += 1
+            else:
+                # npx -y packages may not be globally installed; try cache clear
+                # so the next npx invocation fetches the latest
+                subprocess.run(
+                    ["npx", "clear-npx-cache"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                print(f"  ✓ npx cache cleared for: {pkg}")
+                updated += 1
+        except FileNotFoundError:
+            print("  ⚠ npm/npx not found — skipping npm-based MCP servers")
+            break
+        except subprocess.TimeoutExpired:
+            print(f"  ⚠ npm: {pkg} (timed out)")
+            failed += 1
+        except Exception as e:
+            print(f"  ⚠ npm: {pkg} ({e})")
+            failed += 1
+
+    # Update uvx/pipx packages
+    for pkg in sorted(uvx_packages):
+        for tool in ("uvx", "pipx"):
+            try:
+                result = subprocess.run(
+                    [tool, "upgrade", pkg],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+                if result.returncode == 0:
+                    print(f"  ✓ {tool}: {pkg}")
+                    updated += 1
+                    break
+                # uvx uses "upgrade", try next tool
+            except FileNotFoundError:
+                continue
+            except subprocess.TimeoutExpired:
+                print(f"  ⚠ {tool}: {pkg} (timed out)")
+                failed += 1
+                break
+            except Exception as e:
+                print(f"  ⚠ {tool}: {pkg} ({e})")
+                failed += 1
+                break
+        else:
+            # Neither uvx nor pipx found/worked
+            if uvx_packages:
+                print(f"  ⚠ uvx/pipx not found — skipping: {pkg}")
+
+    total = len(npx_packages) + len(uvx_packages)
+    if total == 0:
+        print("  ✓ No package-managed MCP servers found")
+    elif failed:
+        print(f"  Done: {updated}/{total} updated, {failed} failed")
+    else:
+        print(f"  ✓ {updated} package(s) updated")
+
+
 def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always
     restore stdio even on ``sys.exit``."""
@@ -5534,6 +5664,24 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         print(f"  {p.name}: error ({pe})")
         except Exception:
             pass  # profiles module not available or no profiles
+
+        # Update hub-installed skills (--skills or --all)
+        update_skills = getattr(args, "skills", False) or getattr(args, "all", False)
+        if update_skills:
+            try:
+                from hermes_cli.skills_hub import do_update as do_skills_update
+
+                print()
+                print("→ Updating hub-installed skills...")
+                do_skills_update()
+            except Exception as e:
+                logger.debug("Hub skills update failed: %s", e)
+                print(f"  ⚠ Hub skills update failed: {e}")
+
+        # Update MCP server packages (--mcp or --all)
+        update_mcp = getattr(args, "mcp", False) or getattr(args, "all", False)
+        if update_mcp:
+            _update_mcp_packages()
 
         # Sync Honcho host blocks to all profiles
         try:
@@ -8129,13 +8277,32 @@ Examples:
     update_parser = subparsers.add_parser(
         "update",
         help="Update Hermes Agent to the latest version",
-        description="Pull the latest changes from git and reinstall dependencies",
+        description="Pull the latest changes from git, reinstall dependencies, "
+        "and optionally update hub skills and MCP server packages",
     )
     update_parser.add_argument(
         "--gateway",
         action="store_true",
         default=False,
         help="Gateway mode: use file-based IPC for prompts instead of stdin (used internally by /update)",
+    )
+    update_parser.add_argument(
+        "--skills",
+        action="store_true",
+        default=False,
+        help="Also update hub-installed skills from their upstream registries",
+    )
+    update_parser.add_argument(
+        "--mcp",
+        action="store_true",
+        default=False,
+        help="Also update MCP server packages (npm/npx and uvx/pipx)",
+    )
+    update_parser.add_argument(
+        "--all",
+        action="store_true",
+        default=False,
+        help="Update everything: core agent, hub skills, and MCP server packages",
     )
     update_parser.set_defaults(func=cmd_update)
 
