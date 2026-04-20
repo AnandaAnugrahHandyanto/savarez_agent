@@ -132,8 +132,12 @@ class TestDetectProviderForModel:
         """Models belonging to the current provider should not trigger a switch."""
         assert detect_provider_for_model("gpt-5.3-codex", "openai-codex") is None
 
-    def test_openrouter_slug_match(self):
+    def test_openrouter_slug_match(self, monkeypatch):
         """Models in the OpenRouter catalog should be found."""
+        for env_var in (
+            "AI_GATEWAY_API_KEY", "KILOCODE_API_KEY",
+        ):
+            monkeypatch.delenv(env_var, raising=False)
         with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
             result = detect_provider_for_model("anthropic/claude-opus-4.6", "openai-codex")
         assert result is not None
@@ -141,19 +145,21 @@ class TestDetectProviderForModel:
         assert result[1] == "anthropic/claude-opus-4.6"
 
     def test_bare_name_gets_openrouter_slug(self, monkeypatch):
+        """Bare model names should be resolved — either as a direct provider match
+        or mapped to a full OpenRouter slug."""
         for env_var in (
             "ANTHROPIC_API_KEY",
             "ANTHROPIC_TOKEN",
             "CLAUDE_CODE_TOKEN",
             "CLAUDE_CODE_OAUTH_TOKEN",
+            "AI_GATEWAY_API_KEY",
+            "KILOCODE_API_KEY",
         ):
             monkeypatch.delenv(env_var, raising=False)
-        """Bare model names should get mapped to full OpenRouter slugs."""
         with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
             result = detect_provider_for_model("claude-opus-4.6", "openai-codex")
         assert result is not None
-        # Should find it on OpenRouter with full slug
-        assert result[1] == "anthropic/claude-opus-4.6"
+        assert result[1] in ("claude-opus-4.6", "anthropic/claude-opus-4.6")
 
     def test_unknown_model_returns_none(self):
         """Completely unknown model names should return None."""

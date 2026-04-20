@@ -698,6 +698,7 @@ class TestAuxiliaryClientProviderPriority:
 
     def test_nous_when_no_openrouter(self, monkeypatch):
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("FASTROUTER_API_KEY", raising=False)
         from agent.auxiliary_client import get_text_auxiliary_client
         with patch("agent.auxiliary_client._read_nous_auth", return_value={"access_token": "nous-tok"}), \
              patch("agent.auxiliary_client.OpenAI") as mock:
@@ -712,6 +713,7 @@ class TestAuxiliaryClientProviderPriority:
         resolve_runtime_provider.  Mock _resolve_custom_runtime directly.
         """
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("FASTROUTER_API_KEY", raising=False)
         monkeypatch.setenv("OPENAI_API_KEY", "local-key")
         from agent.auxiliary_client import get_text_auxiliary_client
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
@@ -723,6 +725,7 @@ class TestAuxiliaryClientProviderPriority:
 
     def test_codex_fallback_last_resort(self, monkeypatch):
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("FASTROUTER_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         from agent.auxiliary_client import get_text_auxiliary_client, CodexAuxiliaryClient
