@@ -1904,6 +1904,7 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.
 def launchd_restart():
     label = get_launchd_label()
     target = f"{_launchd_domain()}/{label}"
+    refresh_launchd_plist_if_needed()
     drain_timeout = _get_restart_drain_timeout()
     from gateway.status import get_running_pid
 

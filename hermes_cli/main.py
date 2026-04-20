@@ -5758,6 +5758,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 try:
                     from hermes_cli.gateway import (
                         launchd_restart,
+                        launchd_start,
                         get_launchd_label,
                         get_launchd_plist_path,
                     )
@@ -5770,9 +5771,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             text=True,
                             timeout=5,
                         )
-                        if check.returncode == 0:
+                        service_loaded = check.returncode == 0
+                        # In --gateway mode, the update was triggered by a live
+                        # messaging gateway. By the time update completes, that
+                        # service may already have stopped/unloaded itself, so
+                        # we must recover it even if `launchctl list` is empty.
+                        if service_loaded or gateway_mode:
                             try:
-                                launchd_restart()
+                                if service_loaded:
+                                    launchd_restart()
+                                else:
+                                    launchd_start()
                                 restarted_services.append(get_launchd_label())
                             except subprocess.CalledProcessError as e:
                                 stderr = (getattr(e, "stderr", "") or "").strip()
