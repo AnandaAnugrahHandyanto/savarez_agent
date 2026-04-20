@@ -1307,12 +1307,16 @@ class TelegramAdapter(BasePlatformAdapter):
             )
 
             thread_id = metadata.get("thread_id") if metadata else None
+            # Route through the shared helper so the General-topic sentinel ("1")
+            # is converted to None; passing message_thread_id=1 to Telegram on
+            # the General topic returns "Message thread not found" and the
+            # interactive picker silently falls back to plain text. (#12839)
             msg = await self._bot.send_message(
                 chat_id=int(chat_id),
                 text=text,
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=keyboard,
-                message_thread_id=int(thread_id) if thread_id else None,
+                message_thread_id=self._message_thread_id_for_send(thread_id),
                 **self._link_preview_kwargs(),
             )
 
