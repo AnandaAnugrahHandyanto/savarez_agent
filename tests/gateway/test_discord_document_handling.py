@@ -277,6 +277,22 @@ class TestIncomingDocumentHandling:
         assert event.message_type == MessageType.DOCUMENT
 
     @pytest.mark.asyncio
+    async def test_json_document_cached(self, adapter):
+        """A .json file should be treated as a document instead of being skipped."""
+        msg = make_message([
+            make_attachment(filename="payload.json", content_type="application/json; charset=utf-8")
+        ])
+
+        with _mock_aiohttp_download(b'{"ok": true}'):
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.DOCUMENT
+        assert len(event.media_urls) == 1
+        assert event.media_types == ["application/json"]
+        assert '{"ok": true}' in event.text
+
+    @pytest.mark.asyncio
     async def test_download_error_handled(self, adapter):
         """If the HTTP download raises, the handler should not crash."""
         resp = AsyncMock()

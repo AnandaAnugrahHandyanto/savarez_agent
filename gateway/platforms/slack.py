@@ -1128,13 +1128,12 @@ class SlackAdapter(BasePlatformAdapter):
                         _, ext = os.path.splitext(original_filename)
                         ext = ext.lower()
 
-                    # Fallback: reverse-lookup from MIME type
-                    if not ext and mimetype:
-                        mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
-                        ext = mime_to_ext.get(mimetype, "")
+                    mimetype_base = (mimetype or "").split(";")[0].strip().lower()
 
-                    if ext not in SUPPORTED_DOCUMENT_TYPES:
-                        continue  # Skip unsupported file types silently
+                    # Fallback: reverse-lookup from MIME type
+                    if not ext and mimetype_base:
+                        mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
+                        ext = mime_to_ext.get(mimetype_base, "")
 
                     # Check file size (Slack limit: 20 MB for bots)
                     file_size = f.get("size", 0)
@@ -1148,7 +1147,7 @@ class SlackAdapter(BasePlatformAdapter):
                     cached_path = cache_document_from_bytes(
                         raw_bytes, original_filename or f"document{ext}"
                     )
-                    doc_mime = SUPPORTED_DOCUMENT_TYPES[ext]
+                    doc_mime = mimetype_base or SUPPORTED_DOCUMENT_TYPES.get(ext, "application/octet-stream")
                     media_urls.append(cached_path)
                     media_types.append(doc_mime)
                     msg_type = MessageType.DOCUMENT
@@ -1156,11 +1155,15 @@ class SlackAdapter(BasePlatformAdapter):
 
                     # Inject text content for .txt/.md files (capped at 100 KB)
                     MAX_TEXT_INJECT_BYTES = 100 * 1024
-                    if ext in (".md", ".txt") and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                    textish_exts = {".md", ".txt", ".log", ".json", ".csv", ".xml", ".html", ".htm", ".yaml", ".yml", ".ini", ".toml"}
+                    textish_mimes = {"application/json", "application/xml", "application/yaml", "application/x-yaml"}
+                    if len(raw_bytes) <= MAX_TEXT_INJECT_BYTES and (
+                        ext in textish_exts or mimetype_base.startswith("text/") or mimetype_base in textish_mimes
+                    ):
                         try:
                             text_content = raw_bytes.decode("utf-8")
                             display_name = original_filename or f"document{ext}"
-                            display_name = re.sub(r'[^\w.\- ]', '_', display_name)
+                            display_name = re.sub(r"[^\w. -]", "_", display_name)
                             injection = f"[Content of {display_name}]:\n{text_content}"
                             if text:
                                 text = f"{injection}\n\n{text}"
