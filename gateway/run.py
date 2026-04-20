@@ -9128,6 +9128,8 @@ class GatewayRunner:
         notes and auto-continue context later in this method. It is reassigned directly
         (no `nonlocal` needed since it's a local parameter, not an outer-scope variable).
         """
+        from gateway.display_config import resolve_display_setting
+        from run_agent import AIAgent
         # session_key is now set via contextvars in _set_session_env()
         # (concurrency-safe). Keep os.environ as fallback for CLI/cron.
         os.environ["HERMES_SESSION_KEY"] = session_key or ""
