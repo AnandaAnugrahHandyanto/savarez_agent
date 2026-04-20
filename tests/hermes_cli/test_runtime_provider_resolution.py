@@ -866,6 +866,46 @@ def test_named_custom_provider_api_mode(monkeypatch):
     assert resolved["base_url"] == "http://localhost:8000/v1"
 
 
+def test_named_custom_provider_explicit_api_mode_from_providers_dict(monkeypatch):
+    """Regression for #13051: explicit ``api_mode`` in a ``providers:`` dict
+    entry must survive named-provider resolution instead of falling back to
+    URL-based auto-detection."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("MY_CODEX_KEY", "sk-codex")
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "mycodex": {
+                    # Unknown host — _detect_api_mode_for_url returns None, so
+                    # the explicit api_mode must be the only source of truth.
+                    "base_url": "https://codex.example.invalid/v1",
+                    "default_model": "mymodel",
+                    "key_env": "MY_CODEX_KEY",
+                    "name": "My Codex",
+                    "api_mode": "codex_responses",
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("resolve_provider should not be called for named custom providers")
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="mycodex")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["base_url"] == "https://codex.example.invalid/v1"
+    assert resolved["api_key"] == "sk-codex"
+
+
 def test_named_custom_provider_without_api_mode_defaults(monkeypatch):
     """custom_providers entries without api_mode should default to chat_completions."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-server")
