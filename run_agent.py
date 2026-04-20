@@ -657,10 +657,115 @@ def _sanitize_structure_non_ascii(payload: Any) -> bool:
     return found
 
 
+_EMPTY_TEXT_PLACEHOLDER = " "
+
+
+def _needs_empty_text_sanitization(messages: list) -> bool:
+    """检测 messages 中是否存在空 text content（只读扫描，不修改）。
+
+    用于在真正需要 shallow-copy 前快速判定，避免正常情况下
+    多一次不必要的列表复制。
+    """
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        content = msg.get("content")
+        has_tool_calls = bool(msg.get("tool_calls"))
+
+        if isinstance(content, str):
+            if not content.strip():
+                return True
+            continue
+
+        if isinstance(content, list):
+            has_any_nonempty = False
+            has_empty_text = False
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    text_val = part.get("text", "")
+                    if isinstance(text_val, str) and not text_val.strip():
+                        has_empty_text = True
+                        continue
+                has_any_nonempty = True
+            if has_empty_text or not has_any_nonempty:
+                return True
+            continue
+
+        if content is None and not (role == "assistant" and has_tool_calls):
+            return True
+
+    return False
+
+
+def _sanitize_empty_text_blocks(messages: list) -> bool:
+    """清洗空的 text content，避免 Anthropic 兼容代理报错。
+
+    当通过 OpenAI→Anthropic 的代理（claude-code-router、one-api 的 Anthropic
+    通道等）发送消息时，空字符串或空 text block 会触发
+    HTTP 400: "messages: text content blocks must be non-empty"。
+
+    规则（原地修改 messages）：
+      - 字符串 content 为空/纯空白：
+          * assistant + tool_calls 存在 → 置为 None（OpenAI 标准写法，
+            告诉代理不要产生 text block）
+          * 其他角色 → 用单空格占位
+      - 列表 content 中过滤掉 text 为空的 block；若列表变空：
+          * assistant + tool_calls 存在 → None
+          * 其他角色 → 单空格占位的 text block
+      - None content + 非 assistant-tool_call 情况 → 单空格占位
+
+    返回是否发生了修改。
+    """
+    modified = False
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        content = msg.get("content")
+        has_tool_calls = bool(msg.get("tool_calls"))
+
+        if isinstance(content, str):
+            if not content.strip():
+                if role == "assistant" and has_tool_calls:
+                    msg["content"] = None
+                else:
+                    msg["content"] = _EMPTY_TEXT_PLACEHOLDER
+                modified = True
+            continue
+
+        if isinstance(content, list):
+            kept = []
+            dropped = False
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    text_val = part.get("text", "")
+                    if isinstance(text_val, str) and not text_val.strip():
+                        dropped = True
+                        continue
+                kept.append(part)
+            if not kept:
+                if role == "assistant" and has_tool_calls:
+                    msg["content"] = None
+                else:
+                    msg["content"] = [
+                        {"type": "text", "text": _EMPTY_TEXT_PLACEHOLDER}
+                    ]
+                modified = True
+            elif dropped:
+                msg["content"] = kept
+                modified = True
+            continue
+
+        if content is None and not (role == "assistant" and has_tool_calls):
+            msg["content"] = _EMPTY_TEXT_PLACEHOLDER
+            modified = True
+
+    return modified
 
 
 
-# =========================================================================
+# ====================================================================
 # Large tool result handler — save oversized output to temp file
 # =========================================================================
 
@@ -4395,9 +4500,10 @@ class AIAgent:
                         # The Responses API requires a following item after each
                         # reasoning item (otherwise: missing_following_item error).
                         # When the assistant produced only reasoning with no visible
-                        # content, emit an empty assistant message as the required
-                        # following item.
-                        items.append({"role": "assistant", "content": ""})
+                        # content, emit a minimal assistant message as the required
+                        # following item.  Use a single space rather than empty string
+                        # to avoid "text content blocks must be non-empty" from proxies.
+                        items.append({"role": "assistant", "content": " "})
 
                     tool_calls = msg.get("tool_calls")
                     if isinstance(tool_calls, list):
@@ -7455,6 +7561,18 @@ class AIAgent:
             sanitized_messages = list(sanitized_messages)
             sanitized_messages[0] = {**sanitized_messages[0], "role": "developer"}
 
+        # 空 text content 清洗：某些 OpenAI→Anthropic 代理会把空字符串/空
+        # text block 翻译成空的 Anthropic text 块，触发
+        # HTTP 400: "messages: text content blocks must be non-empty"。
+        # 只有在真正检测到空内容时才 shallow-copy 并清洗，正常情况下保持
+        # sanitized_messages 与 api_messages 同一引用以兼顾性能与现有语义。
+        if _needs_empty_text_sanitization(sanitized_messages):
+            if sanitized_messages is api_messages:
+                sanitized_messages = [
+                    dict(m) if isinstance(m, dict) else m for m in api_messages
+                ]
+            _sanitize_empty_text_blocks(sanitized_messages)
+
         provider_preferences = {}
         if self.providers_allowed:
             provider_preferences["only"] = self.providers_allowed
@@ -7711,7 +7829,12 @@ class AIAgent:
         _san_content = _sanitize_surrogates(_raw_content)
         if reasoning_text:
             reasoning_text = _sanitize_surrogates(reasoning_text)
-
+        # Normalize empty content to None — Anthropic-compatible proxies reject
+        # empty text blocks with HTTP 400 ("text content blocks must be non-empty").
+        # For assistant messages with tool_calls, None is the OpenAI-standard way
+        # to signal "no text content".  For other cases, keep None too and let
+        # the exit-level sanitizer decide whether a placeholder is needed.
+        _effective_content = _san_content if _san_content.strip() else None
         # Strip inline reasoning tags (<think>…</think> etc.) from the stored
         # assistant content.  Reasoning was already captured into
         # ``reasoning_text`` above (either from structured fields or the
@@ -7728,7 +7851,7 @@ class AIAgent:
 
         msg = {
             "role": "assistant",
-            "content": _san_content,
+            "content": _effective_content,
             "reasoning": reasoning_text,
             "finish_reason": finish_reason,
         }
@@ -9644,7 +9767,17 @@ class AIAgent:
             # the original conversation history in `messages` is untouched.
             for am in api_messages:
                 if isinstance(am.get("content"), str):
-                    am["content"] = am["content"].strip()
+                    stripped = am["content"].strip()
+                    if stripped:
+                        am["content"] = stripped
+                    else:
+                        # Normalize whitespace-only content: assistant with
+                        # tool_calls → None; otherwise keep a single space to
+                        # avoid "text content blocks must be non-empty".
+                        if am.get("role") == "assistant" and am.get("tool_calls"):
+                            am["content"] = None
+                        else:
+                            am["content"] = " "
             for am in api_messages:
                 tcs = am.get("tool_calls")
                 if not tcs:
