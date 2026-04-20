@@ -8929,23 +8929,23 @@ class HermesCLI:
             event.app.current_buffer.reset()
             event.app.invalidate()
 
-        # --- History navigation: up/down browse history in normal input mode ---
-        # The TextArea is multiline, so by default up/down only move the cursor.
-        # Buffer.auto_up/auto_down handle both: cursor movement when multi-line,
-        # history browsing when on the first/last line (or single-line input).
+        # --- Cursor navigation: up/down move cursor across lines in multiline input ---
+        # Use cursor_up/cursor_down instead of auto_up/auto_down so that up/down
+        # always navigates lines and never unexpectedly switches to history browsing.
+        # Users can still recall history via Ctrl+Up/Ctrl+Down.
         _normal_input = Condition(
             lambda: not self._clarify_state and not self._approval_state and not self._sudo_state and not self._secret_state and not self._model_picker_state
         )
 
         @kb.add('up', filter=_normal_input)
         def history_up(event):
-            """Up arrow: browse history when on first line, else move cursor up."""
-            event.app.current_buffer.auto_up(count=event.arg)
+            """Up arrow: move cursor up one line."""
+            event.app.current_buffer.cursor_up(count=event.arg)
 
         @kb.add('down', filter=_normal_input)
         def history_down(event):
-            """Down arrow: browse history when on last line, else move cursor down."""
-            event.app.current_buffer.auto_down(count=event.arg)
+            """Down arrow: move cursor down one line."""
+            event.app.current_buffer.cursor_down(count=event.arg)
 
         @kb.add('c-c')
         def handle_ctrl_c(event):
