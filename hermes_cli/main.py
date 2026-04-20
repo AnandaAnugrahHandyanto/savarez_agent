@@ -4226,6 +4226,10 @@ def cmd_update(args):
                     response = input("Would you like to configure them now? [Y/n]: ").strip().lower()
                 except EOFError:
                     response = "n"
+                except UnicodeDecodeError:
+                    print("  ℹ Unreadable terminal input — skipping config migration prompt.")
+                    print("    Run 'hermes config migrate' later to apply any new config/env options.")
+                    response = "n"
             
             if response in ('', 'y', 'yes'):
                 print()
