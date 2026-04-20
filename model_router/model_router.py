@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
@@ -115,13 +115,18 @@ def load_config(path: str | Path) -> RouterConfig:
         _to_model(key): [_to_model(item) for item in value]
         for key, value in raw["fallbacks"].items()
     }
+
+    raw_mode_overrides = raw.get("mode_overrides") or {}
+    raw_reviewers = raw.get("reviewers") or {}
+    raw_policy_overrides = raw.get("policy_overrides") or []
+
     mode_overrides = {
         _to_mode(mode): {_to_task_type(key): _to_model(value) for key, value in mapping.items()}
-        for mode, mapping in raw.get("mode_overrides", {}).items()
+        for mode, mapping in raw_mode_overrides.items()
     }
     reviewers = {
         _to_priority(priority): {_to_task_type(key): _to_model(value) for key, value in mapping.items()}
-        for priority, mapping in raw.get("reviewers", {}).items()
+        for priority, mapping in raw_reviewers.items()
     }
 
     return RouterConfig(
@@ -130,7 +135,7 @@ def load_config(path: str | Path) -> RouterConfig:
         fallbacks=fallbacks,
         mode_overrides=mode_overrides,
         reviewers=reviewers,
-        policy_overrides=raw.get("policy_overrides", []) or [],
+        policy_overrides=raw_policy_overrides,
         router_version=router.get("version", "0.3"),
         config_path=str(Path(path)),
     )
@@ -142,10 +147,10 @@ def load_default_config() -> RouterConfig:
 
 def normalize(ctx: RouterInput, trace: list[str]) -> RouterInput:
     if ctx.has_code or ctx.has_logs:
-        ctx.task_type = TaskType.CODING
         trace.append("normalize: has_code/has_logs -> coding")
-    else:
-        trace.append(f"normalize: keep task_type={ctx.task_type.value}")
+        return replace(ctx, task_type=TaskType.CODING)
+
+    trace.append(f"normalize: keep task_type={ctx.task_type.value}")
     return ctx
 
 
@@ -284,7 +289,9 @@ def route_model(ctx: RouterInput, config: RouterConfig) -> RouterDecision:
     model = enforce_constraints(model, ctx, trace)
 
     reviewer = select_reviewer(ctx, config, trace)
-    fallbacks = config.fallbacks[model]
+    fallbacks = config.fallbacks.get(model, [])
+    if not fallbacks:
+        trace.append(f"fallbacks: missing for {model.value} -> []")
     reason = build_reason(ctx, model, trace)
 
     return RouterDecision(

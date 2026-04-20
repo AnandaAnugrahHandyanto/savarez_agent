@@ -81,7 +81,10 @@ def _override_signature(override: dict[str, Any]) -> str:
 
 def build_patch_proposal(config: dict[str, Any], suggestions: list[dict[str, Any]]) -> dict[str, Any]:
     proposed = copy.deepcopy(config)
-    overrides = proposed.setdefault("policy_overrides", [])
+    overrides = proposed.get("policy_overrides")
+    if not isinstance(overrides, list):
+        overrides = []
+        proposed["policy_overrides"] = overrides
 
     generated = []
     seen = {_override_signature(item) for item in overrides if isinstance(item, dict)}

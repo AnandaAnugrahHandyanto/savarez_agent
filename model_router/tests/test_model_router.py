@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import yaml
+
 from model_router import (
     Mode,
     Model,
@@ -98,3 +100,45 @@ def test_high_priority_disallows_cheap_primary():
     )
 
     assert decision.primary_model == Model.CLAUDE
+
+
+
+def test_normalize_does_not_mutate_original_router_input():
+    router_input = RouterInput(
+        task_type=TaskType.CHAT,
+        mode=Mode.EXECUTE,
+        priority=Priority.MEDIUM,
+        privacy=Privacy.NORMAL,
+        quota=Quota.NORMAL,
+        has_code=True,
+    )
+
+    decision = route_model(router_input, get_config())
+
+    assert decision.primary_model == Model.GPT
+    assert router_input.task_type == TaskType.CHAT
+
+
+
+def test_route_model_handles_missing_fallbacks_without_keyerror(tmp_path: Path):
+    config_dict = yaml.safe_load((ROOT / "router_config.yaml").read_text(encoding="utf-8"))
+    del config_dict["fallbacks"]["claude-sonnet-4.6"]
+
+    config_path = tmp_path / "router_config.yaml"
+    config_path.write_text(yaml.safe_dump(config_dict, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    config = load_config(config_path)
+
+    decision = route_model(
+        RouterInput(
+            task_type=TaskType.CHAT,
+            mode=Mode.DRAFT,
+            priority=Priority.MEDIUM,
+            privacy=Privacy.NORMAL,
+            quota=Quota.CRITICAL,
+        ),
+        config,
+    )
+
+    assert decision.primary_model == Model.CLAUDE
+    assert decision.fallback_models == []
+    assert any("fallbacks: missing for claude-sonnet-4.6 -> []" in item for item in decision.trace)

@@ -131,3 +131,30 @@ def test_validate_router_config_warns_on_duplicate_fallback_entries():
 
     assert result["valid"] is True
     assert any("כפילות" in item and "gpt-5.4" in item for item in result["warnings"])
+
+
+
+def test_validate_router_config_rejects_null_optional_sections_that_break_runtime():
+    config = load_base_config_dict()
+    config["mode_overrides"] = None
+    config["reviewers"] = None
+    config["policy_overrides"] = None
+
+    result = validate_router_config(config)
+
+    assert result["valid"] is False
+    assert any("mode_overrides לא יכול להיות null" in item for item in result["errors"])
+    assert any("reviewers לא יכול להיות null" in item for item in result["errors"])
+    assert any("policy_overrides לא יכול להיות null" in item for item in result["errors"])
+
+
+
+def test_validate_router_config_requires_fallbacks_for_all_possible_models():
+    config = load_base_config_dict()
+    config["fallbacks"] = copy.deepcopy(config["fallbacks"])
+    del config["fallbacks"]["ollama"]
+
+    result = validate_router_config(config)
+
+    assert result["valid"] is False
+    assert any("fallbacks חסר עבור מודל אפשרי: ollama" in item for item in result["errors"])

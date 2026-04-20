@@ -1,19 +1,14 @@
 from __future__ import annotations
 
-VALID_MODELS = {
-    "claude-sonnet-4.6",
-    "gpt-5.4",
-    "deepseek",
-    "ollama",
-    "flash_or_o4_mini",
-}
+from model_router import Model, Mode, Privacy, Priority, Quota, Speed, TaskType
 
-VALID_TASK_TYPES = {"chat", "coding", "writing", "research", "batch", "trivial"}
-VALID_MODES = {"draft", "execute", "review"}
-VALID_PRIORITIES = {"low", "medium", "high"}
-VALID_PRIVACY = {"normal", "sensitive", "local_only"}
-VALID_QUOTA = {"normal", "low", "critical"}
-VALID_SPEED = {"normal", "fast"}
+VALID_MODELS = {item.value for item in Model}
+VALID_TASK_TYPES = {item.value for item in TaskType}
+VALID_MODES = {item.value for item in Mode}
+VALID_PRIORITIES = {item.value for item in Priority}
+VALID_PRIVACY = {item.value for item in Privacy}
+VALID_QUOTA = {item.value for item in Quota}
+VALID_SPEED = {item.value for item in Speed}
 VALID_POLICY_FIELDS = {"task_type", "mode", "priority", "privacy", "quota", "speed", "has_code", "has_logs"}
 VALID_BOOLEAN_POLICY_FIELDS = {"has_code", "has_logs"}
 VALID_POLICY_VALUES = {
@@ -55,6 +50,31 @@ def _validate_policy_value(errors: list[str], path: str, field: str, value: obje
     if value not in valid_values:
         allowed = ", ".join(sorted(valid_values))
         _err(errors, f"{path}.{field} כולל ערך לא חוקי: {value} (מותר: {allowed})")
+
+
+def _collect_referenced_models(config: dict, default_model: object, base_by_task: dict, mode_overrides: dict, reviewers: dict, policy_overrides: list) -> set[str]:
+    referenced = set()
+    if default_model in VALID_MODELS:
+        referenced.add(default_model)
+
+    referenced.update(model for model in base_by_task.values() if model in VALID_MODELS)
+
+    for mapping in mode_overrides.values():
+        if isinstance(mapping, dict):
+            referenced.update(model for model in mapping.values() if model in VALID_MODELS)
+
+    for mapping in reviewers.values():
+        if isinstance(mapping, dict):
+            referenced.update(model for model in mapping.values() if model in VALID_MODELS)
+
+    for override in policy_overrides:
+        if isinstance(override, dict):
+            force = override.get("force")
+            if force in VALID_MODELS:
+                referenced.add(force)
+
+    referenced.update(VALID_MODELS)
+    return referenced
 
 
 def validate_router_config(config: dict) -> dict:
@@ -120,15 +140,14 @@ def validate_router_config(config: dict) -> dict:
                     _warn(warnings, f"fallbacks.{model} כולל כפילות של {item}")
                 seen_items.add(item)
 
-        referenced_models = {default_model} | {model for model in base_by_task.values() if model in VALID_MODELS}
-        for model in sorted(referenced_models):
-            if model and model not in fallbacks:
-                _warn(warnings, f"fallbacks חסר עבור מודל בשימוש: {model}")
-
     mode_overrides = config.get("mode_overrides", {})
-    if mode_overrides and not isinstance(mode_overrides, dict):
+    if mode_overrides is None:
+        _err(errors, "mode_overrides לא יכול להיות null")
+        mode_overrides = {}
+    elif not isinstance(mode_overrides, dict):
         _err(errors, "mode_overrides חייב להיות mapping")
-    elif isinstance(mode_overrides, dict):
+        mode_overrides = {}
+    else:
         for mode, mapping in mode_overrides.items():
             if mode not in VALID_MODES:
                 _err(errors, f"mode_overrides כולל mode לא חוקי: {mode}")
@@ -142,9 +161,13 @@ def validate_router_config(config: dict) -> dict:
                     _err(errors, f"mode_overrides.{mode}.{task_type} כולל מודל לא חוקי: {model}")
 
     reviewers = config.get("reviewers", {})
-    if reviewers and not isinstance(reviewers, dict):
+    if reviewers is None:
+        _err(errors, "reviewers לא יכול להיות null")
+        reviewers = {}
+    elif not isinstance(reviewers, dict):
         _err(errors, "reviewers חייב להיות mapping")
-    elif isinstance(reviewers, dict):
+        reviewers = {}
+    else:
         for priority, mapping in reviewers.items():
             if priority not in VALID_PRIORITIES:
                 _err(errors, f"reviewers כולל priority לא חוקי: {priority}")
@@ -159,9 +182,13 @@ def validate_router_config(config: dict) -> dict:
 
     policy_overrides = config.get("policy_overrides", [])
     valid_policy_entries: list[dict[str, object]] = []
-    if policy_overrides and not isinstance(policy_overrides, list):
+    if policy_overrides is None:
+        _err(errors, "policy_overrides לא יכול להיות null")
+        policy_overrides = []
+    elif not isinstance(policy_overrides, list):
         _err(errors, "policy_overrides חייב להיות list")
-    elif isinstance(policy_overrides, list):
+        policy_overrides = []
+    else:
         seen_names: dict[str, int] = {}
         seen_signatures: dict[tuple[tuple[str, object], ...], int] = {}
 
@@ -238,6 +265,18 @@ def validate_router_config(config: dict) -> dict:
                             f"{entry['path']} לא יופעל כי {prior['path']} נתפס קודם עבור אותם תנאים או כלל רחב יותר",
                         )
                     break
+
+    referenced_models = _collect_referenced_models(
+        config,
+        default_model,
+        base_by_task,
+        mode_overrides,
+        reviewers,
+        policy_overrides,
+    )
+    for model in sorted(referenced_models):
+        if model not in fallbacks:
+            _err(errors, f"fallbacks חסר עבור מודל אפשרי: {model}")
 
     return {"valid": not errors, "errors": errors, "warnings": warnings}
 

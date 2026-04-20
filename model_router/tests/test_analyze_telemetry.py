@@ -79,7 +79,16 @@ def test_analyze_cli_outputs_json(tmp_path: Path):
             "timestamp": "2026-04-20T10:00:00+00:00",
             "event_type": "decision",
             "request_id": "1",
-            "input": {"task_type": "coding", "priority": "high", "quota": "normal"},
+            "input": {
+                "task_type": "coding",
+                "mode": "execute",
+                "priority": "high",
+                "privacy": "normal",
+                "quota": "normal",
+                "speed": "fast",
+                "has_code": True,
+                "has_logs": False,
+            },
             "decision": {"primary_model": "gpt-5.4", "reviewer": None, "trace": []},
         }
     ]
@@ -96,3 +105,40 @@ def test_analyze_cli_outputs_json(tmp_path: Path):
     payload = json.loads(result.stdout)
     assert payload["total_decisions"] == 1
     assert payload["primary_models"]["gpt-5.4"] == 1
+
+
+
+def test_join_decisions_with_feedback_preserves_extended_input_fields():
+    events = [
+        {
+            "timestamp": "2026-04-20T10:00:00+00:00",
+            "event_type": "decision",
+            "request_id": "r1",
+            "input": {
+                "task_type": "coding",
+                "mode": "execute",
+                "priority": "high",
+                "privacy": "sensitive",
+                "quota": "critical",
+                "speed": "fast",
+                "has_code": True,
+                "has_logs": True,
+            },
+            "decision": {"primary_model": "gpt-5.4", "reviewer": None, "trace": []},
+        }
+    ]
+
+    summary = summarize(events)
+    joined = summary["joined"]["total_joined_rows"]
+    assert joined == 1
+
+    from analyze_telemetry import split_events, latest_feedback_by_request_id, join_decisions_with_feedback
+
+    decisions, feedbacks = split_events(events)
+    latest_feedback = latest_feedback_by_request_id(feedbacks)
+    rows = join_decisions_with_feedback(decisions, latest_feedback)
+    assert rows[0]["mode"] == "execute"
+    assert rows[0]["privacy"] == "sensitive"
+    assert rows[0]["speed"] == "fast"
+    assert rows[0]["has_code"] is True
+    assert rows[0]["has_logs"] is True
