@@ -11,6 +11,9 @@ import sys
 from datetime import datetime
 from typing import Any, Dict, List
 
+if sys.platform != "win32":
+    import fcntl
+
 logger = logging.getLogger(__name__)
 
 
@@ -52,7 +55,6 @@ def save_trajectory(trajectory: List[Dict[str, Any]], model: str,
     try:
         with open(filename, "a", encoding="utf-8") as f:
             if sys.platform != "win32":
-                import fcntl
                 fcntl.flock(f, fcntl.LOCK_EX)
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
             f.flush()
