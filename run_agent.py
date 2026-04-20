@@ -4411,6 +4411,10 @@ class AIAgent:
     def _chat_messages_to_responses_input(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Convert internal chat-style messages to Responses input items."""
         items: List[Dict[str, Any]] = []
+        # call_ids of function_call items skipped due to empty/missing name.
+        # Their paired function_call_output items must also be skipped to
+        # prevent orphan outputs that cause HTTP 400 (issue #11411).
+        _skipped_call_ids: set = set()
         seen_item_ids: set = set()
 
         for msg in messages:
@@ -4472,6 +4476,13 @@ class AIAgent:
                             fn = tc.get("function", {})
                             fn_name = fn.get("name")
                             if not isinstance(fn_name, str) or not fn_name.strip():
+                                # Track the call_id so the paired function_call_output
+                                # is also skipped — an orphan output with no matching
+                                # function_call causes the provider to reconstruct name
+                                # as an empty string, triggering HTTP 400 (issue #11411).
+                                _bad_id = tc.get("id") or tc.get("call_id")
+                                if isinstance(_bad_id, str) and _bad_id.strip():
+                                    _skipped_call_ids.add(_bad_id.strip())
                                 continue
 
                             embedded_call_id, embedded_response_item_id = self._split_responses_tool_id(
@@ -4522,6 +4533,14 @@ class AIAgent:
                     if isinstance(raw_tool_call_id, str) and raw_tool_call_id.strip():
                         call_id = raw_tool_call_id.strip()
                 if not isinstance(call_id, str) or not call_id.strip():
+                    continue
+                # Skip outputs whose paired function_call was dropped due to
+                # an empty/missing name — an orphan output triggers HTTP 400.
+                if call_id.strip() in _skipped_call_ids:
+                    logger.debug(
+                        "Responses serializer: dropping orphan function_call_output "
+                        "for skipped call_id %r (issue #11411)", call_id
+                    )
                     continue
                 items.append({
                     "type": "function_call_output",
