@@ -100,8 +100,8 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         id="google",
         name="Google AI Studio",
         auth_type="api_key",
-        inference_base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-        api_key_env_vars=("GOOGLE_GENERATIVE_AI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"),
+        inference_base_url="https://generativelanguage.googleapis.com/v1beta",
+        api_key_env_vars=("GOOGLE_API_KEY", "GEMINI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"),
         base_url_env_var="GOOGLE_BASE_URL",
     ),
 

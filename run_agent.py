@@ -699,7 +699,7 @@ class AIAgent:
 
         if self.api_mode == "google_genai":
             from agent.google_adapter import build_google_client
-            self._google_client = build_google_client(api_key=api_key)
+            self._google_client = build_google_client(api_key=api_key, base_url=base_url)
             self.client = None
             self._client_kwargs = {}
             if not self.quiet_mode:
@@ -4122,7 +4122,7 @@ class AIAgent:
             elif fb_api_mode == "google_genai":
                 from agent.google_adapter import build_google_client
                 self.api_key = fb_client.api_key
-                self._google_client = build_google_client(api_key=self.api_key)
+                self._google_client = build_google_client(api_key=self.api_key, base_url=fb_client.base_url)
                 self.client = None
                 self._client_kwargs = {}
             else:
