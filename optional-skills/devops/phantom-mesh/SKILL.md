@@ -181,4 +181,47 @@ Key settings:
 - Ghost hash changes if file content changes
 - `seed` from `.ghost` requires source file next to it or at stored path
 - Transport is disabled by default — enable in config for multi-node mesh routing
-- Works over localhost TCP for testing between two terminals on the same machine
+
+### Installation gotcha (Python 3.9)
+
+`pip install -e .` fails because `pyproject.toml` uses `setuptools.backends._legacy` which is not available on Python 3.9. Install dependencies directly:
+
+```bash
+pip3 install "rns>=0.9.0" "rich>=14.0.0" "textual>=0.90.0"
+```
+
+Then run via `python3 phantom.py <cmd>` (no `pip install` needed — it's a pure Python project).
+
+### Ghost file location — seeder destinations
+
+After starting a seeder, the **library ghost** (at `$PHANTOM_DATA/ghosts/<name>.ghost`) gets updated with the seeder's destination hash. The ghost file **next to the original source file does NOT get updated** (unless `source_path` was set).
+
+When downloading, always use the library ghost:
+
+```bash
+# Seed (updates library ghost)
+python3 phantom.py seed myfile.bin
+
+# Download using library ghost (has seeder dests)
+python3 phantom.py download "$HOME/Library/Application Support/ReticulumPhantom/ghosts/myfile.bin.ghost"
+```
+
+Not the original `myfile.bin.ghost` next to the source — it won't have the seeder destination.
+
+### Same-process seed+download doesn't work
+
+You cannot seed and download in the same Python process. RNS shared instance has no mesh routing for intra-process destinations. Use two separate CLI invocations:
+
+```bash
+# Terminal 1
+python3 phantom.py seed myfile.bin
+
+# Terminal 2 (after seeder is running)
+python3 phantom.py download "/path/to/library/ghost/myfile.bin.ghost"
+```
+
+Both processes share the RNS socket automatically (default `share_instance = Yes`), so the leecher discovers the seeder via the mesh announce system.
+
+### Auto-seed after download bug
+
+After a successful download, the auto-seed feature crashes with `__init__() missing 1 required positional argument: 'identity'` in the `cmd_download()` function. The download itself completes fine — this only affects the post-download auto-reseed. Workaround: manually seed after download with `phantom seed <file>`.
