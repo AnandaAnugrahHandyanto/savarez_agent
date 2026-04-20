@@ -455,8 +455,8 @@ class GatewayStreamConsumer:
             if self._accumulated and self._message_id:
                 try:
                     _best_effort_ok = bool(await self._send_or_edit(self._accumulated))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("Best-effort send on cancellation failed: %s", e)
             # Only confirm final delivery if the best-effort send above
             # actually succeeded OR if the final response was already
             # confirmed before we were cancelled.  Previously this
@@ -593,8 +593,8 @@ class GatewayStreamConsumer:
                         )
                         if result.success:
                             self._last_sent_text = clean_text
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning("edit_message during streaming failed: %s", e)
                 self._already_sent = True
                 self._final_response_sent = True
                 return
