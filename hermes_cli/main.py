@@ -4080,6 +4080,15 @@ def cmd_webhook(args):
     webhook_command(args)
 
 
+def cmd_github_app(args):
+    """GitHub App authentication management."""
+    from hermes_cli.github_app import github_app_command
+    rc = github_app_command(args)
+    if isinstance(rc, int) and rc != 0:
+        import sys as _sys
+        _sys.exit(rc)
+
+
 def cmd_doctor(args):
     """Check configuration and dependencies."""
     from hermes_cli.doctor import run_doctor
@@ -5905,6 +5914,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "import",
         "completion",
         "logs",
+        "github-app",
     }
     _SESSION_FLAGS = {"-c", "--continue", "-r", "--resume"}
 
@@ -7022,6 +7032,41 @@ For more help on a command:
         "message. Zero LLM cost. Requires --deliver to be a real target "
         "(not 'log').",
     )
+    wh_sub.add_argument(
+        "--github-app",
+        dest="github_app",
+        default="",
+        help=(
+            "Bind this subscription to a configured GitHub App (see "
+            "'hermes github-app list').  Webhooks arriving at "
+            "/webhooks/app/<app>  are fanned out to every route bound to "
+            "the app; an installation token is minted and injected as "
+            "GH_TOKEN / GITHUB_TOKEN for the agent run."
+        ),
+    )
+    wh_sub.add_argument(
+        "--filter",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help=(
+            "Payload filter — repeat to add multiple conditions "
+            "(ALL must match). Dot-notation for nested keys. "
+            "Short-circuits before agent runs (zero token cost). "
+            "Example: --filter action=closed --filter pull_request.merged=true "
+            "--filter pull_request.base.ref=dev"
+        ),
+    )
+    wh_sub.add_argument(
+        "--auto-approve",
+        action="store_true",
+        help=(
+            "Bypass the dangerous-command approval gate for agent runs "
+            "triggered by this webhook. Required for unattended webhook "
+            "execution — there's no user to respond to approval prompts. "
+            "Equivalent to /yolo but scoped per-webhook-task."
+        ),
+    )
 
     webhook_subparsers.add_parser(
         "list", aliases=["ls"], help="List all dynamic subscriptions"
@@ -7041,6 +7086,49 @@ For more help on a command:
     )
 
     webhook_parser.set_defaults(func=cmd_webhook)
+
+    # =========================================================================
+    # github-app command
+    # =========================================================================
+    gha_parser = subparsers.add_parser(
+        "github-app",
+        help="Manage GitHub App authentication (JWT + installation tokens)",
+        description=(
+            "Mint and inspect GitHub App installation tokens using the "
+            "private key configured under platforms.webhook.extra.github_apps "
+            "in ~/.hermes/config.yaml.  Tokens are cached at "
+            "~/.hermes/cache/github-app-tokens.json and shared with the "
+            "webhook adapter."
+        ),
+    )
+    gha_sub = gha_parser.add_subparsers(dest="github_app_action")
+
+    gha_sub.add_parser("list", help="List configured GitHub Apps and their reachability")
+
+    gha_inst = gha_sub.add_parser("installations", help="List installations for an app")
+    gha_inst.add_argument("app", help="Configured app name")
+
+    gha_tok = gha_sub.add_parser(
+        "token",
+        help="Print a fresh installation token (just the token, for $(...) use)",
+    )
+    gha_tok.add_argument("app", help="Configured app name")
+    gha_tok.add_argument(
+        "--installation", type=int, default=None,
+        help="Installation id (required if the app has >1 installation)",
+    )
+
+    gha_git = gha_sub.add_parser(
+        "setup-git",
+        help="Configure git credential helper to use hermes-minted tokens for github.com",
+    )
+    gha_git.add_argument("app", nargs="?", default=None, help="Configured app name (auto-picked if only one app is configured)")
+    gha_git.add_argument(
+        "--dry-run", action="store_true",
+        help="Print what would be changed without modifying git config",
+    )
+
+    gha_parser.set_defaults(func=cmd_github_app)
 
     # =========================================================================
     # doctor command
