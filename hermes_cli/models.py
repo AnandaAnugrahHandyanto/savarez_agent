@@ -1781,6 +1781,11 @@ def probe_api_models(
     headers: dict[str, str] = {"User-Agent": _HERMES_USER_AGENT}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
+    # Anthropic native API uses x-api-key, not Bearer auth
+    if normalized.startswith("https://api.anthropic.com"):
+        headers.pop("Authorization", None)
+        headers["x-api-key"] = api_key
+        headers["anthropic-version"] = "2023-06-01"
     if normalized.startswith(COPILOT_BASE_URL):
         headers.update(copilot_default_headers())
 
