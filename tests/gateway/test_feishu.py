@@ -10,6 +10,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
+from gateway.platforms.base import ProcessingOutcome
+
 try:
     import lark_oapi
     _HAS_LARK_OAPI = True
@@ -638,83 +640,54 @@ class TestAdapterBehavior(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
-    @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
-    def test_add_ack_reaction_uses_ok_emoji(self):
-        from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
-
-        adapter = FeishuAdapter(PlatformConfig())
-        captured = {}
-
-        class _ReactionAPI:
-            def create(self, request):
-                captured["request"] = request
-                return SimpleNamespace(
-                    success=lambda: True,
-                    data=SimpleNamespace(reaction_id="r_typing"),
-                )
-
-        adapter._client = SimpleNamespace(
-            im=SimpleNamespace(v1=SimpleNamespace(message_reaction=_ReactionAPI()))
-        )
-
-        async def _direct(func, *args, **kwargs):
-            return func(*args, **kwargs)
-
-        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
-            reaction_id = asyncio.run(adapter._add_ack_reaction("om_msg"))
-
-        self.assertEqual(reaction_id, "r_typing")
-        self.assertEqual(captured["request"].request_body.reaction_type["emoji_type"], "OK")
-
-    @patch.dict(os.environ, {}, clear=True)
-    def test_add_ack_reaction_logs_warning_on_failure(self):
-        from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
-
-        adapter = FeishuAdapter(PlatformConfig())
-
-        class _ReactionAPI:
-            def create(self, request):
-                raise RuntimeError("boom")
-
-        adapter._client = SimpleNamespace(
-            im=SimpleNamespace(v1=SimpleNamespace(message_reaction=_ReactionAPI()))
-        )
-
-        async def _direct(func, *args, **kwargs):
-            return func(*args, **kwargs)
-
-        with (
-            patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct),
-            self.assertLogs("gateway.platforms.feishu", level="WARNING") as logs,
-        ):
-            reaction_id = asyncio.run(adapter._add_ack_reaction("om_msg"))
-
-        self.assertIsNone(reaction_id)
-        self.assertTrue(
-            any("Failed to add ack reaction to om_msg" in entry for entry in logs.output),
-            logs.output,
-        )
-
-    @patch.dict(os.environ, {}, clear=True)
-    def test_ack_reaction_events_are_ignored_to_avoid_feedback_loops(self):
+    def test_bot_origin_reactions_are_dropped_to_avoid_feedback_loops(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._loop = object()
+
+        for emoji in ("Typing", "CrossMark"):
+            event = SimpleNamespace(
+                message_id="om_msg",
+                operator_type="bot",
+                reaction_type=SimpleNamespace(emoji_type=emoji),
+            )
+            data = SimpleNamespace(event=event)
+            with patch(
+                "gateway.platforms.feishu.asyncio.run_coroutine_threadsafe"
+            ) as run_threadsafe:
+                adapter._on_reaction_event("im.message.reaction.created_v1", data)
+            run_threadsafe.assert_not_called()
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_user_reaction_with_managed_emoji_is_still_routed(self):
+        # Operator-origin filter is enough to prevent feedback loops; we must
+        # not additionally swallow user-origin reactions just because their
+        # emoji happens to collide with a lifecycle emoji.
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._loop = SimpleNamespace(is_closed=lambda: False)
+
         event = SimpleNamespace(
             message_id="om_msg",
             operator_type="user",
-            reaction_type=SimpleNamespace(emoji_type="OK"),
+            reaction_type=SimpleNamespace(emoji_type="Typing"),
         )
         data = SimpleNamespace(event=event)
 
-        with patch("gateway.platforms.feishu.asyncio.run_coroutine_threadsafe") as run_threadsafe:
-            adapter._on_reaction_event("im.message.reaction.created_v1", data)
+        def _close_coro_and_return_future(coro, _loop):
+            coro.close()
+            return SimpleNamespace(add_done_callback=lambda _: None)
 
-        run_threadsafe.assert_not_called()
+        with patch(
+            "gateway.platforms.feishu.asyncio.run_coroutine_threadsafe",
+            side_effect=_close_coro_and_return_future,
+        ) as run_threadsafe:
+            adapter._on_reaction_event("im.message.reaction.created_v1", data)
+        run_threadsafe.assert_called_once()
 
     @patch.dict(os.environ, {}, clear=True)
     @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
@@ -766,7 +739,6 @@ class TestAdapterBehavior(unittest.TestCase):
         from gateway.session import SessionSource
 
         adapter = FeishuAdapter(PlatformConfig())
-        adapter._add_ack_reaction = AsyncMock(return_value=None)
         adapter.handle_message = AsyncMock()
         source = SessionSource(
             platform=adapter.platform,
@@ -3373,3 +3345,140 @@ class TestSenderNameResolution(unittest.TestCase):
             result = asyncio.run(adapter._resolve_sender_name_from_api("ou_broken"))
 
         self.assertIsNone(result)
+
+
+@unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
+class TestProcessingReactions(unittest.TestCase):
+    """on_processing_start is a no-op (typing is handled by send_typing).
+    on_processing_complete adds CrossMark on FAILURE, nothing otherwise."""
+
+    @staticmethod
+    def _run(coro):
+        return asyncio.run(coro)
+
+    def _build_adapter(
+        self,
+        create_success: bool = True,
+        delete_success: bool = True,
+        next_reaction_id: str = "r1",
+    ):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        tracker = SimpleNamespace(
+            create_calls=[],
+            delete_calls=[],
+            next_reaction_id=next_reaction_id,
+            create_success=create_success,
+            delete_success=delete_success,
+        )
+
+        def _create(request):
+            tracker.create_calls.append(
+                request.request_body.reaction_type["emoji_type"]
+            )
+            if tracker.create_success:
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(reaction_id=tracker.next_reaction_id),
+                )
+            return SimpleNamespace(
+                success=lambda: False, code=99, msg="rejected", data=None,
+            )
+
+        def _delete(request):
+            tracker.delete_calls.append(request.reaction_id)
+            return SimpleNamespace(
+                success=lambda: tracker.delete_success,
+                code=0 if tracker.delete_success else 99,
+                msg="success" if tracker.delete_success else "rejected",
+            )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message_reaction=SimpleNamespace(create=_create, delete=_delete),
+                ),
+            ),
+        )
+        return adapter, tracker
+
+    @staticmethod
+    def _event(message_id: str = "om_msg"):
+        return SimpleNamespace(message_id=message_id)
+
+    def _patch_to_thread(self):
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        return patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct)
+
+    # ------------------------------------------------------------------ start
+    @patch.dict(os.environ, {}, clear=True)
+    def test_start_is_noop(self):
+        """on_processing_start is a no-op; typing is managed by send_typing."""
+        adapter, tracker = self._build_adapter(next_reaction_id="r_typing")
+        with self._patch_to_thread():
+            self._run(adapter.on_processing_start(self._event()))
+        self.assertEqual(tracker.create_calls, [])
+        self.assertNotIn("om_msg", adapter._pending_processing_reactions)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_start_is_idempotent_noop(self):
+        adapter, tracker = self._build_adapter(next_reaction_id="r_typing")
+        with self._patch_to_thread():
+            self._run(adapter.on_processing_start(self._event()))
+            self._run(adapter.on_processing_start(self._event()))
+        self.assertEqual(tracker.create_calls, [])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_start_noop_regardless_of_create_result(self):
+        adapter, tracker = self._build_adapter(create_success=False)
+        with self._patch_to_thread():
+            self._run(adapter.on_processing_start(self._event()))
+        self.assertEqual(tracker.create_calls, [])
+        self.assertNotIn("om_msg", adapter._pending_processing_reactions)
+
+    # --------------------------------------------------------------- complete
+    @patch.dict(os.environ, {}, clear=True)
+    def test_success_is_noop(self):
+        adapter, tracker = self._build_adapter()
+        with self._patch_to_thread():
+            self._run(
+                adapter.on_processing_complete(self._event(), ProcessingOutcome.SUCCESS)
+            )
+        self.assertEqual(tracker.create_calls, [])
+        self.assertEqual(tracker.delete_calls, [])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_failure_adds_cross_mark(self):
+        adapter, tracker = self._build_adapter()
+        with self._patch_to_thread():
+            self._run(
+                adapter.on_processing_complete(self._event(), ProcessingOutcome.FAILURE)
+            )
+        self.assertEqual(tracker.create_calls, ["CrossMark"])
+        self.assertEqual(tracker.delete_calls, [])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_cancelled_is_noop(self):
+        adapter, tracker = self._build_adapter()
+        with self._patch_to_thread():
+            self._run(
+                adapter.on_processing_complete(self._event(), ProcessingOutcome.CANCELLED)
+            )
+        self.assertEqual(tracker.create_calls, [])
+        self.assertEqual(tracker.delete_calls, [])
+
+    # ------------------------------------------------------------- env toggle
+    @patch.dict(os.environ, {"FEISHU_REACTIONS": "false"}, clear=True)
+    def test_env_disable_short_circuits_failure_hook(self):
+        adapter, tracker = self._build_adapter()
+        with self._patch_to_thread():
+            self._run(adapter.on_processing_start(self._event()))
+            self._run(
+                adapter.on_processing_complete(self._event(), ProcessingOutcome.FAILURE)
+            )
+        self.assertEqual(tracker.create_calls, [])
+        self.assertEqual(tracker.delete_calls, [])
