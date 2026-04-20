@@ -19,12 +19,35 @@ suppress delivery.
 
 import logging
 import threading
+import subprocess
+import os
 
 logger = logging.getLogger("hooks.boot-md")
 
 from hermes_constants import get_hermes_home
 HERMES_HOME = get_hermes_home()
 BOOT_FILE = HERMES_HOME / "BOOT.md"
+BOOT_NOTIFY_SCRIPT = HERMES_HOME / "send_boot_notification.py"
+
+
+def _run_boot_notify() -> None:
+    """直接调用Python脚本发送启动通知，不走AI agent。"""
+    if not BOOT_NOTIFY_SCRIPT.exists():
+        return
+    try:
+        result = subprocess.run(
+            ["python3", str(BOOT_NOTIFY_SCRIPT)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={**os.environ, "HERMES_SESSION_PLATFORM": "feishu"},
+        )
+        if result.returncode == 0:
+            logger.info("boot notify: notification sent successfully")
+        else:
+            logger.error("boot notify: script failed: %s", result.stderr.strip())
+    except Exception as e:
+        logger.error("boot notify: failed to run script: %s", e)
 
 
 def _build_boot_prompt(content: str) -> str:
@@ -45,6 +68,11 @@ def _build_boot_prompt(content: str) -> str:
 def _run_boot_agent(content: str) -> None:
     """Spawn a one-shot agent session to execute the boot instructions."""
     try:
+        # Set HERMES_SESSION_PLATFORM so send_message's check_fn passes.
+        # Without this, the check_fn sees no active gateway session and blocks
+        # the tool even when the gateway IS running with a feishu adapter.
+        os.environ.setdefault("HERMES_SESSION_PLATFORM", "feishu")
+
         from run_agent import AIAgent
 
         prompt = _build_boot_prompt(content)
@@ -66,6 +94,10 @@ def _run_boot_agent(content: str) -> None:
 
 async def handle(event_type: str, context: dict) -> None:
     """Gateway startup handler — run BOOT.md if it exists."""
+    # 先用subprocess直接发通知，不走AI agent
+    t1 = threading.Thread(target=_run_boot_notify, name="boot-notify", daemon=True)
+    t1.start()
+
     if not BOOT_FILE.exists():
         return
 
