@@ -278,6 +278,7 @@ AUTHOR_MAP = {
     "jarvischer@gmail.com": "maxchernin",
     "levantam.98.2324@gmail.com": "LVT382009",
     "zhurongcheng@rcrai.com": "heykb",
+    "105142614+VTRiot@users.noreply.github.com": "VTRiot",
 }
 
 
