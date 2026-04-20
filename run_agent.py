@@ -48,7 +48,10 @@ from hermes_constants import get_hermes_home
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
 from hermes_cli.env_loader import load_hermes_dotenv
-from hermes_cli.timeouts import get_provider_request_timeout
+from hermes_cli.timeouts import (
+    get_provider_request_timeout,
+    get_provider_stale_timeout,
+)
 
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
@@ -366,6 +369,89 @@ def _sanitize_surrogates(text: str) -> str:
     if _SURROGATE_RE.search(text):
         return _SURROGATE_RE.sub('\ufffd', text)
     return text
+
+
+def _chat_content_to_responses_parts(content: Any) -> List[Dict[str, Any]]:
+    """Convert chat-style multimodal content to Responses API input parts.
+
+    Input:  ``[{"type":"text"|"image_url", ...}]`` (native OpenAI Chat format)
+    Output: ``[{"type":"input_text"|"input_image", ...}]`` (Responses format)
+
+    Returns an empty list when ``content`` is not a list or contains no
+    recognized parts — callers fall back to the string path.
+    """
+    if not isinstance(content, list):
+        return []
+    converted: List[Dict[str, Any]] = []
+    for part in content:
+        if isinstance(part, str):
+            if part:
+                converted.append({"type": "input_text", "text": part})
+            continue
+        if not isinstance(part, dict):
+            continue
+        ptype = str(part.get("type") or "").strip().lower()
+        if ptype in {"text", "input_text", "output_text"}:
+            text = part.get("text")
+            if isinstance(text, str) and text:
+                converted.append({"type": "input_text", "text": text})
+            continue
+        if ptype in {"image_url", "input_image"}:
+            image_ref = part.get("image_url")
+            detail = part.get("detail")
+            if isinstance(image_ref, dict):
+                url = image_ref.get("url")
+                detail = image_ref.get("detail", detail)
+            else:
+                url = image_ref
+            if not isinstance(url, str) or not url:
+                continue
+            image_part: Dict[str, Any] = {"type": "input_image", "image_url": url}
+            if isinstance(detail, str) and detail.strip():
+                image_part["detail"] = detail.strip()
+            converted.append(image_part)
+    return converted
+
+
+def _summarize_user_message_for_log(content: Any) -> str:
+    """Return a short text summary of a user message for logging/trajectory.
+
+    Multimodal messages arrive as a list of ``{type:"text"|"image_url", ...}``
+    parts from the API server.  Logging, spinner previews, and trajectory
+    files all want a plain string — this helper extracts the first chunk of
+    text and notes any attached images.  Returns an empty string for empty
+    lists and ``str(content)`` for unexpected scalar types.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        text_bits: List[str] = []
+        image_count = 0
+        for part in content:
+            if isinstance(part, str):
+                if part:
+                    text_bits.append(part)
+                continue
+            if not isinstance(part, dict):
+                continue
+            ptype = str(part.get("type") or "").strip().lower()
+            if ptype in {"text", "input_text", "output_text"}:
+                text = part.get("text")
+                if isinstance(text, str) and text:
+                    text_bits.append(text)
+            elif ptype in {"image_url", "input_image"}:
+                image_count += 1
+        summary = " ".join(text_bits).strip()
+        if image_count:
+            note = f"[{image_count} image{'s' if image_count != 1 else ''}]"
+            summary = f"{note} {summary}" if summary else note
+        return summary
+    try:
+        return str(content)
+    except Exception:
+        return ""
 
 
 def _sanitize_structure_surrogates(payload: Any) -> bool:
@@ -2048,7 +2134,10 @@ class AIAgent:
             return
         try:
             from agent.auxiliary_client import get_text_auxiliary_client
-            from agent.model_metadata import get_model_context_length
+            from agent.model_metadata import (
+                MINIMUM_CONTEXT_LENGTH,
+                get_model_context_length,
+            )
 
             client, aux_model = get_text_auxiliary_client(
                 "compression",
@@ -2078,25 +2167,54 @@ class AIAgent:
                 config_context_length=getattr(self, "_aux_compression_context_length_config", None),
             )
 
+            # Hard floor: the auxiliary compression model must have at least
+            # MINIMUM_CONTEXT_LENGTH (64K) tokens of context.  The main model
+            # is already required to meet this floor (checked earlier in
+            # __init__), so the compression model must too — otherwise it
+            # cannot summarise a full threshold-sized window of main-model
+            # content.  Mirrors the main-model rejection pattern.
+            if aux_context and aux_context < MINIMUM_CONTEXT_LENGTH:
+                raise ValueError(
+                    f"Auxiliary compression model {aux_model} has a context "
+                    f"window of {aux_context:,} tokens, which is below the "
+                    f"minimum {MINIMUM_CONTEXT_LENGTH:,} required by Hermes "
+                    f"Agent.  Choose a compression model with at least "
+                    f"{MINIMUM_CONTEXT_LENGTH // 1000}K context (set "
+                    f"auxiliary.compression.model in config.yaml), or set "
+                    f"auxiliary.compression.context_length to override the "
+                    f"detected value if it is wrong."
+                )
+
             threshold = self.context_compressor.threshold_tokens
             if aux_context < threshold:
-                # Suggest a threshold that would fit the aux model,
-                # rounded down to a clean percentage.
-                safe_pct = int((aux_context / self.context_compressor.context_length) * 100)
+                # Auto-correct: lower the live session threshold so
+                # compression actually works this session.  The hard floor
+                # above guarantees aux_context >= MINIMUM_CONTEXT_LENGTH,
+                # so the new threshold is always >= 64K.
+                old_threshold = threshold
+                new_threshold = aux_context
+                self.context_compressor.threshold_tokens = new_threshold
+                # Keep threshold_percent in sync so future main-model
+                # context_length changes (update_model) re-derive from a
+                # sensible number rather than the original too-high value.
+                main_ctx = self.context_compressor.context_length
+                if main_ctx:
+                    self.context_compressor.threshold_percent = (
+                        new_threshold / main_ctx
+                    )
+                safe_pct = int((aux_context / main_ctx) * 100) if main_ctx else 50
                 msg = (
-                    f"⚠ Compression model ({aux_model}) context "
-                    f"is {aux_context:,} tokens, but the main model's "
-                    f"compression threshold is {threshold:,} tokens. "
-                    f"Context compression will not be possible — the "
-                    f"content to summarise will exceed the auxiliary "
-                    f"model's context window.\n"
-                    f"  Fix options (config.yaml):\n"
+                    f"⚠ Compression model ({aux_model}) context is "
+                    f"{aux_context:,} tokens, but the main model's "
+                    f"compression threshold was {old_threshold:,} tokens. "
+                    f"Auto-lowered this session's threshold to "
+                    f"{new_threshold:,} tokens so compression can run.\n"
+                    f"  To make this permanent, edit config.yaml — either:\n"
                     f"  1. Use a larger compression model:\n"
                     f"       auxiliary:\n"
                     f"         compression:\n"
-                    f"           model: <model-with-{threshold:,}+-context>\n"
-                    f"  2. Lower the compression threshold to fit "
-                    f"the current model:\n"
+                    f"           model: <model-with-{old_threshold:,}+-context>\n"
+                    f"  2. Lower the compression threshold:\n"
                     f"       compression:\n"
                     f"         threshold: 0.{safe_pct:02d}"
                 )
@@ -2105,12 +2223,17 @@ class AIAgent:
                 logger.warning(
                     "Auxiliary compression model %s has %d token context, "
                     "below the main model's compression threshold of %d "
-                    "tokens — compression summaries will fail or be "
-                    "severely truncated.",
+                    "tokens — auto-lowered session threshold to %d to "
+                    "keep compression working.",
                     aux_model,
                     aux_context,
-                    threshold,
+                    old_threshold,
+                    new_threshold,
                 )
+        except ValueError:
+            # Hard rejections (aux below minimum context) must propagate
+            # so the session refuses to start.
+            raise
         except Exception as exc:
             logger.debug(
                 "Compression feasibility check failed (non-fatal): %s", exc
@@ -2157,6 +2280,44 @@ class AIAgent:
         if cfg is not None:
             return cfg
         return float(os.getenv("HERMES_API_TIMEOUT", 1800.0))
+
+    def _resolved_api_call_stale_timeout_base(self) -> tuple[float, bool]:
+        """Resolve the base non-stream stale timeout and whether it is implicit.
+
+        Priority:
+          1. ``providers.<id>.models.<model>.stale_timeout_seconds``
+          2. ``providers.<id>.stale_timeout_seconds``
+          3. ``HERMES_API_CALL_STALE_TIMEOUT`` env var
+          4. 300.0s default
+
+        Returns ``(timeout_seconds, uses_implicit_default)`` so the caller can
+        preserve legacy behaviors that only apply when the user has *not*
+        explicitly configured a stale timeout, such as auto-disabling the
+        detector for local endpoints.
+        """
+        cfg = get_provider_stale_timeout(self.provider, self.model)
+        if cfg is not None:
+            return cfg, False
+
+        env_timeout = os.getenv("HERMES_API_CALL_STALE_TIMEOUT")
+        if env_timeout is not None:
+            return float(env_timeout), False
+
+        return 300.0, True
+
+    def _compute_non_stream_stale_timeout(self, messages: list[dict[str, Any]]) -> float:
+        """Compute the effective non-stream stale timeout for this request."""
+        stale_base, uses_implicit_default = self._resolved_api_call_stale_timeout_base()
+        base_url = getattr(self, "_base_url", None) or self.base_url or ""
+        if uses_implicit_default and base_url and is_local_endpoint(base_url):
+            return float("inf")
+
+        est_tokens = sum(len(str(v)) for v in messages) // 4
+        if est_tokens > 100_000:
+            return max(stale_base, 600.0)
+        if est_tokens > 50_000:
+            return max(stale_base, 450.0)
+        return stale_base
 
     def _is_openrouter_url(self) -> bool:
         """Return True when the base URL targets OpenRouter."""
@@ -4196,7 +4357,14 @@ class AIAgent:
 
             if role in {"user", "assistant"}:
                 content = msg.get("content", "")
-                content_text = str(content) if content is not None else ""
+                if isinstance(content, list):
+                    content_parts = _chat_content_to_responses_parts(content)
+                    content_text = "".join(
+                        p.get("text", "") for p in content_parts if p.get("type") == "input_text"
+                    )
+                else:
+                    content_parts = []
+                    content_text = str(content) if content is not None else ""
 
                 if role == "assistant":
                     # Replay encrypted reasoning items from previous turns
@@ -4219,7 +4387,9 @@ class AIAgent:
                                     seen_item_ids.add(item_id)
                                 has_codex_reasoning = True
 
-                    if content_text.strip():
+                    if content_parts:
+                        items.append({"role": "assistant", "content": content_parts})
+                    elif content_text.strip():
                         items.append({"role": "assistant", "content": content_text})
                     elif has_codex_reasoning:
                         # The Responses API requires a following item after each
@@ -4272,7 +4442,12 @@ class AIAgent:
                             })
                     continue
 
-                items.append({"role": role, "content": content_text})
+                # Non-assistant (user) role: emit multimodal parts when present,
+                # otherwise fall back to the text payload.
+                if content_parts:
+                    items.append({"role": role, "content": content_parts})
+                else:
+                    items.append({"role": role, "content": content_text})
                 continue
 
             if role == "tool":
@@ -4372,6 +4547,46 @@ class AIAgent:
                 content = item.get("content", "")
                 if content is None:
                     content = ""
+                if isinstance(content, list):
+                    # Multimodal content from ``_chat_messages_to_responses_input``
+                    # is already in Responses format (``input_text`` / ``input_image``).
+                    # Validate each part and pass through.
+                    validated: List[Dict[str, Any]] = []
+                    for part_idx, part in enumerate(content):
+                        if isinstance(part, str):
+                            if part:
+                                validated.append({"type": "input_text", "text": part})
+                            continue
+                        if not isinstance(part, dict):
+                            raise ValueError(
+                                f"Codex Responses input[{idx}].content[{part_idx}] must be an object or string."
+                            )
+                        ptype = str(part.get("type") or "").strip().lower()
+                        if ptype in {"input_text", "text", "output_text"}:
+                            text = part.get("text", "")
+                            if not isinstance(text, str):
+                                text = str(text or "")
+                            validated.append({"type": "input_text", "text": text})
+                        elif ptype in {"input_image", "image_url"}:
+                            image_ref = part.get("image_url", "")
+                            detail = part.get("detail")
+                            if isinstance(image_ref, dict):
+                                url = image_ref.get("url", "")
+                                detail = image_ref.get("detail", detail)
+                            else:
+                                url = image_ref
+                            if not isinstance(url, str):
+                                url = str(url or "")
+                            image_part: Dict[str, Any] = {"type": "input_image", "image_url": url}
+                            if isinstance(detail, str) and detail.strip():
+                                image_part["detail"] = detail.strip()
+                            validated.append(image_part)
+                        else:
+                            raise ValueError(
+                                f"Codex Responses input[{idx}].content[{part_idx}] has unsupported type {part.get('type')!r}."
+                            )
+                    normalized.append({"role": role, "content": validated})
+                    continue
                 if not isinstance(content, str):
                     content = str(content)
 
@@ -5594,18 +5809,9 @@ class AIAgent:
         # httpx timeout (default 1800s) with zero feedback.  The stale
         # detector kills the connection early so the main retry loop can
         # apply richer recovery (credential rotation, provider fallback).
-        _stale_base = float(os.getenv("HERMES_API_CALL_STALE_TIMEOUT", 300.0))
-        _base_url = getattr(self, "_base_url", None) or ""
-        if _stale_base == 300.0 and _base_url and is_local_endpoint(_base_url):
-            _stale_timeout = float("inf")
-        else:
-            _est_tokens = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
-            if _est_tokens > 100_000:
-                _stale_timeout = max(_stale_base, 600.0)
-            elif _est_tokens > 50_000:
-                _stale_timeout = max(_stale_base, 450.0)
-            else:
-                _stale_timeout = _stale_base
+        _stale_timeout = self._compute_non_stream_stale_timeout(
+            api_kwargs.get("messages", [])
+        )
 
         _call_start = time.time()
         self._touch_activity("waiting for non-streaming API response")
@@ -8335,6 +8541,11 @@ class AIAgent:
             }
             messages.append(tool_msg)
 
+            # ── Per-tool /steer drain ───────────────────────────────────
+            # Same as the sequential path: drain between each collected
+            # result so the steer lands as early as possible.
+            self._apply_pending_steer_to_tool_results(messages, 1)
+
         # ── Per-turn aggregate budget enforcement ─────────────────────────
         num_tools = len(parsed_calls)
         if num_tools > 0:
@@ -8698,6 +8909,12 @@ class AIAgent:
             }
             messages.append(tool_msg)
 
+            # ── Per-tool /steer drain ───────────────────────────────────
+            # Drain pending steer BETWEEN individual tool calls so the
+            # injection lands as soon as a tool finishes — not after the
+            # entire batch.  The model sees it on the next API iteration.
+            self._apply_pending_steer_to_tool_results(messages, 1)
+
             if not self.quiet_mode:
                 if self.verbose_logging:
                     print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s")
@@ -9005,7 +9222,8 @@ class AIAgent:
         self.iteration_budget = IterationBudget(self.max_iterations)
 
         # Log conversation turn start for debugging/observability
-        _msg_preview = (user_message[:80] + "...") if len(user_message) > 80 else user_message
+        _preview_text = _summarize_user_message_for_log(user_message)
+        _msg_preview = (_preview_text[:80] + "...") if len(_preview_text) > 80 else _preview_text
         _msg_preview = _msg_preview.replace("\n", " ")
         logger.info(
             "conversation turn: session=%s model=%s provider=%s platform=%s history=%d msg=%r",
@@ -9053,7 +9271,8 @@ class AIAgent:
         self._persist_user_message_idx = current_turn_user_idx
         
         if not self.quiet_mode:
-            self._safe_print(f"💬 Starting conversation: '{user_message[:60]}{'...' if len(user_message) > 60 else ''}'")
+            _print_preview = _summarize_user_message_for_log(user_message)
+            self._safe_print(f"💬 Starting conversation: '{_print_preview[:60]}{'...' if len(_print_preview) > 60 else ''}'")
         
         # ── System prompt (cached per session for prefix caching) ──
         # Built once on first call, reused for all subsequent calls.
@@ -11919,8 +12138,9 @@ class AIAgent:
         # Determine if conversation completed successfully
         completed = final_response is not None and api_call_count < self.max_iterations
 
-        # Save trajectory if enabled
-        self._save_trajectory(messages, user_message, completed)
+        # Save trajectory if enabled.  ``user_message`` may be a multimodal
+        # list of parts; the trajectory format wants a plain string.
+        self._save_trajectory(messages, _summarize_user_message_for_log(user_message), completed)
 
         # Clean up VM and browser for this task after conversation completes
         self._cleanup_task_resources(effective_task_id)

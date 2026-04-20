@@ -459,7 +459,7 @@ class TestCustomProviderCompatibility:
             migrate_config(interactive=False, quiet=True)
             raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
-        assert raw["_config_version"] == 19
+        assert raw["_config_version"] == 21
         assert raw["providers"]["openai-direct"] == {
             "api": "https://api.openai.com/v1",
             "api_key": "test-key",
@@ -610,7 +610,7 @@ class TestInterimAssistantMessageConfig:
             migrate_config(interactive=False, quiet=True)
             raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
-        assert raw["_config_version"] == 19
+        assert raw["_config_version"] == 21
         assert raw["display"]["tool_progress"] == "off"
         assert raw["display"]["interim_assistant_messages"] is True
         assert raw["display"]["still_working_interval"] == 600
@@ -666,6 +666,13 @@ class TestDiscordChannelPromptsConfig:
             migrate_config(interactive=False, quiet=True)
             raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
-        assert raw["_config_version"] == 19
+        assert raw["_config_version"] == 21
         assert raw["discord"]["auto_thread"] is True
         assert raw["discord"]["channel_prompts"] == {}
+
+
+class TestUserMessagePreviewConfig:
+    def test_default_config_preview_line_counts(self):
+        preview = DEFAULT_CONFIG["display"]["user_message_preview"]
+        assert preview["first_lines"] == 2
+        assert preview["last_lines"] == 2

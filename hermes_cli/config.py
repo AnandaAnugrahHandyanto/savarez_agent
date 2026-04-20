@@ -487,6 +487,7 @@ DEFAULT_CONFIG = {
             "base_url": "",        # direct OpenAI-compatible endpoint (takes precedence over provider)
             "api_key": "",         # API key for base_url (falls back to OPENAI_API_KEY)
             "timeout": 120,        # seconds — LLM API call timeout; vision payloads need generous timeout
+            "extra_body": {},      # OpenAI-compatible provider-specific request fields
             "download_timeout": 30,  # seconds — image HTTP download timeout; increase for slow connections
         },
         "web_extract": {
@@ -495,6 +496,7 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 360,        # seconds (6min) — per-attempt LLM summarization timeout; increase for slow local models
+            "extra_body": {},
         },
         "compression": {
             "provider": "auto",
@@ -502,6 +504,7 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 120,        # seconds — compression summarises large contexts; increase for local models
+            "extra_body": {},
         },
         "session_search": {
             "provider": "auto",
@@ -509,6 +512,8 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 30,
+            "extra_body": {},
+            "max_concurrency": 3,  # Clamp parallel summaries to avoid request-burst 429s on small providers
         },
         "skills_hub": {
             "provider": "auto",
@@ -516,6 +521,7 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 30,
+            "extra_body": {},
         },
         "approval": {
             "provider": "auto",
@@ -523,6 +529,7 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 30,
+            "extra_body": {},
         },
         "mcp": {
             "provider": "auto",
@@ -530,6 +537,7 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 30,
+            "extra_body": {},
         },
         "flush_memories": {
             "provider": "auto",
@@ -537,6 +545,7 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 30,
+            "extra_body": {},
         },
         "title_generation": {
             "provider": "auto",
@@ -544,6 +553,7 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 30,
+            "extra_body": {},
         },
     },
     
@@ -555,9 +565,14 @@ DEFAULT_CONFIG = {
         "bell_on_complete": False,
         "show_reasoning": False,
         "streaming": False,
+        "final_response_markdown": "strip",  # render | strip | raw
         "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch, skill_manage)
         "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
+        "user_message_preview": {  # CLI: how many submitted user-message lines to echo back in scrollback
+            "first_lines": 2,
+            "last_lines": 2,
+        },
         "interim_assistant_messages": True,  # Gateway: show natural mid-turn assistant status messages
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
         "tool_progress_overrides": {},  # DEPRECATED — use display.platforms instead
@@ -814,7 +829,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 19,
+    "_config_version": 21,
 }
 
 # =============================================================================
@@ -2495,6 +2510,72 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         if changed:
             save_config(config)
 
+    # ── Version 20 → 21: plugins are now opt-in; grandfather existing user plugins ──
+    # The loader now requires plugins to appear in ``plugins.enabled`` before
+    # loading. Existing installs had all discovered plugins loading by default
+    # (minus anything in ``plugins.disabled``). To avoid silently breaking
+    # those setups on upgrade, populate ``plugins.enabled`` with the set of
+    # currently-installed user plugins that aren't already disabled.
+    #
+    # Bundled plugins (shipped in the repo itself) are NOT grandfathered —
+    # they ship off for everyone, including existing users, so any user who
+    # wants one has to opt in explicitly.
+    if current_ver < 21:
+        config = read_raw_config()
+        plugins_cfg = config.get("plugins")
+        if not isinstance(plugins_cfg, dict):
+            plugins_cfg = {}
+        # Only migrate if the enabled allow-list hasn't been set yet.
+        if "enabled" not in plugins_cfg:
+            disabled = plugins_cfg.get("disabled", []) or []
+            if not isinstance(disabled, list):
+                disabled = []
+            disabled_set = set(disabled)
+
+            # Scan ``$HERMES_HOME/plugins/`` for currently installed user plugins.
+            grandfathered: List[str] = []
+            try:
+                from hermes_constants import get_hermes_home as _ghome
+                user_plugins_dir = _ghome() / "plugins"
+                if user_plugins_dir.is_dir():
+                    for child in sorted(user_plugins_dir.iterdir()):
+                        if not child.is_dir():
+                            continue
+                        manifest_file = child / "plugin.yaml"
+                        if not manifest_file.exists():
+                            manifest_file = child / "plugin.yml"
+                        if not manifest_file.exists():
+                            continue
+                        try:
+                            with open(manifest_file) as _mf:
+                                manifest = yaml.safe_load(_mf) or {}
+                        except Exception:
+                            manifest = {}
+                        name = manifest.get("name") or child.name
+                        if name in disabled_set:
+                            continue
+                        grandfathered.append(name)
+            except Exception:
+                grandfathered = []
+
+            plugins_cfg["enabled"] = grandfathered
+            config["plugins"] = plugins_cfg
+            save_config(config)
+            results["config_added"].append(
+                f"plugins.enabled (opt-in allow-list, {len(grandfathered)} grandfathered)"
+            )
+            if not quiet:
+                if grandfathered:
+                    print(
+                        f"  ✓ Plugins now opt-in: grandfathered "
+                        f"{len(grandfathered)} existing plugin(s) into plugins.enabled"
+                    )
+                else:
+                    print(
+                        "  ✓ Plugins now opt-in: no existing plugins to grandfather. "
+                        "Use `hermes plugins enable <name>` to activate."
+                    )
+
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
     
@@ -3390,6 +3471,10 @@ def show_config():
     print(f"  Personality:  {display.get('personality', 'kawaii')}")
     print(f"  Reasoning:    {'on' if display.get('show_reasoning', False) else 'off'}")
     print(f"  Bell:         {'on' if display.get('bell_on_complete', False) else 'off'}")
+    ump = display.get('user_message_preview', {}) if isinstance(display.get('user_message_preview', {}), dict) else {}
+    ump_first = ump.get('first_lines', 2)
+    ump_last = ump.get('last_lines', 2)
+    print(f"  User preview: first {ump_first} line(s), last {ump_last} line(s)")
 
     # Terminal
     print()
