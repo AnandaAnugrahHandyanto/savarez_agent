@@ -837,6 +837,33 @@ class TestKimiForCodingTemperature:
         assert chunks[1].choices == []
         assert hasattr(chunks[1], "usage")
 
+    def test_copilot_acp_stream_propagates_tool_call_finish_reason(self):
+        """Streaming tool calls must surface finish_reason='tool_calls' on the delta chunk."""
+        from agent.copilot_acp_client import CopilotACPClient
+
+        client = CopilotACPClient(
+            api_key="copilot-acp",
+            base_url="acp://copilot",
+            command="copilot",
+            args=["--acp", "--stdio"],
+        )
+        # Synthesize a response containing an OpenAI-style tool call block.
+        tool_call_json = (
+            '<tool_call>{"function": {"name": "read_file", "arguments": "{\\"path\\": \\"/tmp/x\\"}"}}</tool_call>'
+        )
+        client._run_prompt = lambda *args, **kwargs: (tool_call_json, "")
+
+        stream = client.chat.completions.create(
+            model="gpt-5.4-mini",
+            messages=[{"role": "user", "content": "hi"}],
+            stream=True,
+        )
+
+        chunks = list(stream)
+        assert chunks[0].choices[0].finish_reason == "tool_calls"
+        assert chunks[0].choices[0].delta.tool_calls
+        assert chunks[0].choices[0].delta.tool_calls[0].function.name == "read_file"
+
     @pytest.mark.parametrize(
         "model,expected",
         [

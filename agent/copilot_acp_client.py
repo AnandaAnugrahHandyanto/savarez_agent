@@ -384,8 +384,12 @@ class CopilotACPClient:
                 reasoning=reasoning_text or None,
                 reasoning_content=reasoning_text or None,
             )
+            # Propagate finish_reason on the delta-bearing chunk. The streaming
+            # accumulator in run_agent.py only inspects finish_reason on chunks
+            # that have choices; the empty-choices final chunk is for usage only.
+            # Without this, tool_calls silently degrade to finish_reason="stop".
             chunk = SimpleNamespace(
-                choices=[SimpleNamespace(delta=delta, index=0, finish_reason=None)],
+                choices=[SimpleNamespace(delta=delta, index=0, finish_reason=finish_reason)],
                 model=model or "copilot-acp",
             )
             final_chunk = SimpleNamespace(choices=[], usage=usage, model=model or "copilot-acp")
