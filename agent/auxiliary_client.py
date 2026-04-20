@@ -59,3 +59,13 @@ from agent.auxiliary.vision import (  # noqa: F401,E402
     _resolve_strict_vision_backend,
     _strict_vision_backend_available,
 )
+from agent.auxiliary.providers import (  # noqa: F401,E402
+    _AnthropicChatShim,
+    _AnthropicCompletionsAdapter,
+    _AsyncAnthropicChatShim,
+    _AsyncAnthropicCompletionsAdapter,
+    _AsyncCodexChatShim,
+    _AsyncCodexCompletionsAdapter,
+    _CodexChatShim,
+    _CodexCompletionsAdapter,
+)
