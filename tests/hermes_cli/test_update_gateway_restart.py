@@ -719,6 +719,33 @@ class TestGetServicePids:
         pids = gateway_cli._get_service_pids()
         assert 67890 in pids
 
+    def test_returns_launchd_pid_from_plist_style_output(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "is_linux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
+
+        def fake_run(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if "launchctl" in joined and "list" in joined:
+                return subprocess.CompletedProcess(
+                    cmd,
+                    0,
+                    stdout=(
+                        "{\n"
+                        "\t\"Label\" = \"ai.hermes.gateway\";\n"
+                        "\t\"PID\" = 7817;\n"
+                        "\t\"LastExitStatus\" = 19200;\n"
+                        "};\n"
+                    ),
+                    stderr="",
+                )
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        pids = gateway_cli._get_service_pids()
+        assert 7817 in pids
+
     def test_returns_empty_when_no_services(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_linux", lambda: False)
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
@@ -818,6 +845,33 @@ class TestFindGatewayPidsExclude:
         pids = gateway_cli.find_gateway_pids()
 
         assert pids == [100]
+
+
+class TestScanGatewayPids:
+    def test_uses_macos_safe_ps_args(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr("os.getpid", lambda: 999)
+
+        seen = []
+
+        def fake_run(cmd, **kwargs):
+            seen.append(cmd)
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout=(
+                    "100 /Users/brenner/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main gateway run --replace\n"
+                ),
+                stderr="",
+            )
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        pids = gateway_cli._scan_gateway_pids(set())
+
+        assert pids == [100]
+        assert seen == [["ps", "-A", "-ww", "-o", "pid=,command="]]
 
 
 # ---------------------------------------------------------------------------

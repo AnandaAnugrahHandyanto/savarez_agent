@@ -6,6 +6,7 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 
 import asyncio
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -59,6 +60,34 @@ class GatewayRuntimeSnapshot:
     def has_process_service_mismatch(self) -> bool:
         return self.service_installed and self.running and not self.service_running
 
+def _parse_launchctl_pid(output: str, label: str) -> int | None:
+    """Extract a launchd-managed PID from either tabular or plist-style output."""
+    stripped = output.strip()
+    if not stripped:
+        return None
+
+    for line in stripped.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[2] == label:
+            try:
+                pid = int(parts[0])
+            except ValueError:
+                continue
+            return pid if pid > 0 else None
+
+    plist_label = re.search(r'"Label"\s*=\s*"([^"]+)"\s*;', stripped)
+    if plist_label and plist_label.group(1) != label:
+        return None
+
+    plist_pid = re.search(r'"PID"\s*=\s*(\d+)\s*;', stripped)
+    if not plist_pid:
+        return None
+
+    pid = int(plist_pid.group(1))
+    return pid if pid > 0 else None
+
+
+
 def _get_service_pids() -> set:
     """Return PIDs currently managed by systemd or launchd gateway services.
 
@@ -106,16 +135,9 @@ def _get_service_pids() -> set:
                 capture_output=True, text=True, timeout=5,
             )
             if result.returncode == 0:
-                # Output: "PID\tStatus\tLabel" header, then one data line
-                for line in result.stdout.strip().splitlines():
-                    parts = line.split()
-                    if len(parts) >= 3 and parts[2] == label:
-                        try:
-                            pid = int(parts[0])
-                            if pid > 0:
-                                pids.add(pid)
-                        except ValueError:
-                            pass
+                pid = _parse_launchctl_pid(result.stdout, label)
+                if pid is not None:
+                    pids.add(pid)
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
 
@@ -245,8 +267,11 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                             pass
                     current_cmd = ""
         else:
+            ps_cmd = ["ps", "-A", "-ww", "-o", "pid=,command="] if is_macos() else [
+                "ps", "-A", "eww", "-o", "pid=,command="
+            ]
             result = subprocess.run(
-                ["ps", "-A", "eww", "-o", "pid=,command="],
+                ps_cmd,
                 capture_output=True,
                 text=True,
                 timeout=10,
