@@ -167,11 +167,11 @@ def copilot_activate(args):
             )
             sys.exit(1)
 
-        # Build attach command
-        container = os.environ.get("CONTAINER_NAME", "ryanwalden-ryanwalden")
+        # Build attach command — uses cloud relay, works from any terminal
+        # with copilot CLI authenticated to the same GitHub account.
         attach_cmd = None
         if session_id:
-            attach_cmd = f"docker exec -it {container} copilot --connect={session_id}"
+            attach_cmd = f"copilot --connect={session_id}"
 
         db.update_copilot_job_remote(
             job_id=job_id,

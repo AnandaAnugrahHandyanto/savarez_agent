@@ -86,6 +86,7 @@ def build_copilot_command(
         "-p", prompt,
         "--allow-all",
         "--silent",
+        "--remote",
         "--no-auto-update",
         "--no-ask-user",
     ]
