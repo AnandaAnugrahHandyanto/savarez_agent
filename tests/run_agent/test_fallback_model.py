@@ -35,6 +35,10 @@ def _make_agent(fallback_model=None):
         patch("run_agent.OpenAI"),
     ):
         agent = AIAgent(
+            model="gpt-4.1",
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
             api_key="test-key",
             quiet_mode=True,
             skip_context_files=True,
