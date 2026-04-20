@@ -1126,7 +1126,7 @@ def detect_provider_for_model(
             return (resolved_provider, default_models[0])
 
     # Aggregators list other providers' models — never auto-switch TO them
-    _AGGREGATORS = {"nous", "openrouter", "fastrouter"}
+    _AGGREGATORS = {"nous", "openrouter", "fastrouter", "ai-gateway", "kilocode"}
 
     # If the model belongs to the current provider's catalog, don't suggest switching
     current_models = _PROVIDER_MODELS.get(current_provider, [])

@@ -115,8 +115,9 @@ class TestResolveProvider:
         from hermes_cli.auth import resolve_provider
 
         # Clear all other provider env vars
-        for var in ["OPENAI_API_KEY", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY",
-                     "ANTHROPIC_TOKEN", "GOOGLE_API_KEY", "DEEPSEEK_API_KEY"]:
+        for var in ["OPENAI_API_KEY", "OPENROUTER_API_KEY", "FASTROUTER_API_KEY",
+                     "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "GOOGLE_API_KEY",
+                     "DEEPSEEK_API_KEY"]:
             monkeypatch.delenv(var, raising=False)
 
         # Set AWS credentials

@@ -124,7 +124,7 @@ class TestProviderRegistry:
 # =============================================================================
 
 PROVIDER_ENV_VARS = (
-    "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
+    "OPENROUTER_API_KEY", "FASTROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
     "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
     "KIMI_API_KEY", "KIMI_BASE_URL", "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
