@@ -338,6 +338,18 @@ def _probe_launchd_service_running() -> bool:
         return False
     try:
         result = subprocess.run(
+            ["launchctl", "print", f"{_launchd_domain()}/{get_launchd_label()}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        return False
+    if result.returncode == 0:
+        stdout = result.stdout or ""
+        return "state = running" in stdout
+    try:
+        fallback = subprocess.run(
             ["launchctl", "list", get_launchd_label()],
             capture_output=True,
             text=True,
@@ -345,7 +357,7 @@ def _probe_launchd_service_running() -> bool:
         )
     except subprocess.TimeoutExpired:
         return False
-    return result.returncode == 0
+    return fallback.returncode == 0
 
 
 def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot:

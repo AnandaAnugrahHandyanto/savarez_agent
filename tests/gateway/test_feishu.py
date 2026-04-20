@@ -498,8 +498,8 @@ class TestAdapterModule(unittest.TestCase):
             }
         )
 
-        self.assertIsNone(settings.ws_ping_interval)
-        self.assertIsNone(settings.ws_ping_timeout)
+        self.assertEqual(settings.ws_ping_interval, 30)
+        self.assertEqual(settings.ws_ping_timeout, 60)
 
     def test_runtime_ws_overrides_reapply_after_sdk_configure(self):
         import sys
@@ -521,6 +521,9 @@ class TestAdapterModule(unittest.TestCase):
             def start(self):
                 conf = SimpleNamespace(ReconnectNonce=99, ReconnectInterval=88, PingInterval=77)
                 self._configure(conf)
+                fake_client_module.loop.run_until_complete(
+                    fake_client_module.websockets.connect("wss://example.test/socket")
+                )
                 raise RuntimeError("stop test client")
 
         fake_client = _FakeWSClient()
@@ -555,6 +558,103 @@ class TestAdapterModule(unittest.TestCase):
         self.assertEqual(fake_client._reconnect_nonce, 2)
         self.assertEqual(fake_client._reconnect_interval, 3)
         self.assertEqual(fake_client._ping_interval, 4)
+        fake_client_module.websockets.connect.assert_awaited_once()
+        _, kwargs = fake_client_module.websockets.connect.await_args
+        self.assertEqual(kwargs["ping_interval"], 4)
+        self.assertEqual(kwargs["ping_timeout"], 5)
+        self.assertIsNone(kwargs["proxy"])
+
+    def test_runtime_ws_wrapper_tracks_connect_and_disconnect(self):
+        import sys
+        from types import ModuleType
+
+        class _FakeWSClient:
+            def __init__(self):
+                self._reconnect_nonce = 30
+                self._reconnect_interval = 120
+                self._ping_interval = 120
+
+            async def _connect(self):
+                self._conn = await fake_client_module.websockets.connect("wss://example.test/socket")
+                return self._conn
+
+            async def _disconnect(self):
+                self._conn = None
+
+            def start(self):
+                fake_client_module.loop.run_until_complete(self._connect())
+                fake_client_module.loop.run_until_complete(self._disconnect())
+                raise RuntimeError("stop test client")
+
+        fake_client = _FakeWSClient()
+        fake_adapter = SimpleNamespace(
+            _ws_thread_loop=None,
+            _ws_reconnect_nonce=2,
+            _ws_reconnect_interval=3,
+            _ws_ping_interval=4,
+            _ws_ping_timeout=5,
+            _note_ws_connected=Mock(),
+            _note_ws_disconnected=Mock(),
+        )
+        fake_client_module = ModuleType("lark_oapi.ws.client")
+        fake_client_module.loop = None
+        fake_client_module.websockets = SimpleNamespace(
+            connect=AsyncMock(return_value=SimpleNamespace(closed=False))
+        )
+        fake_ws_module = ModuleType("lark_oapi.ws")
+        fake_ws_module.client = fake_client_module
+        fake_root_module = ModuleType("lark_oapi")
+        fake_root_module.ws = fake_ws_module
+
+        original_modules = sys.modules.copy()
+        sys.modules["lark_oapi"] = fake_root_module
+        sys.modules["lark_oapi.ws"] = fake_ws_module
+        sys.modules["lark_oapi.ws.client"] = fake_client_module
+        try:
+            from gateway.platforms.feishu import _run_official_feishu_ws_client
+
+            _run_official_feishu_ws_client(fake_client, fake_adapter)
+        finally:
+            sys.modules.clear()
+            sys.modules.update(original_modules)
+
+        fake_adapter._note_ws_connected.assert_called_once()
+        self.assertGreaterEqual(fake_adapter._note_ws_disconnected.call_count, 1)
+
+    def test_ws_health_watcher_flags_worker_exit(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._running = True
+        adapter._connection_mode = "websocket"
+        adapter._ws_shutdown_requested = False
+        adapter._ws_future = Mock(done=Mock(return_value=True), exception=Mock(return_value=None))
+        adapter._ws_client = SimpleNamespace(_conn=SimpleNamespace(closed=False))
+        adapter._notify_fatal_error = AsyncMock()
+
+        asyncio.run(asyncio.wait_for(adapter._ws_health_watcher(interval=0.01), timeout=0.2))
+
+        self.assertEqual(adapter.fatal_error_code, "feishu_ws_worker_exit")
+        adapter._notify_fatal_error.assert_awaited_once()
+
+    def test_ws_health_watcher_flags_stalled_disconnect(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._running = True
+        adapter._connection_mode = "websocket"
+        adapter._ws_shutdown_requested = False
+        adapter._ws_future = Mock(done=Mock(return_value=False))
+        adapter._ws_client = SimpleNamespace(_conn=None)
+        adapter._ws_disconnect_since_monotonic = time.monotonic() - 999
+        adapter._notify_fatal_error = AsyncMock()
+
+        asyncio.run(asyncio.wait_for(adapter._ws_health_watcher(interval=0.01), timeout=0.2))
+
+        self.assertEqual(adapter.fatal_error_code, "feishu_ws_stalled")
+        adapter._notify_fatal_error.assert_awaited_once()
 
 
 class TestAdapterBehavior(unittest.TestCase):

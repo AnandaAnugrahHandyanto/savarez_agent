@@ -46,9 +46,9 @@ from gateway.platforms.feishu import FeishuAdapter
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_adapter() -> FeishuAdapter:
+def _make_adapter(extra: dict | None = None) -> FeishuAdapter:
     """Create a FeishuAdapter with mocked internals."""
-    config = PlatformConfig(enabled=True)
+    config = PlatformConfig(enabled=True, extra=extra or {})
     adapter = FeishuAdapter(config)
     adapter._client = MagicMock()
     return adapter
@@ -91,13 +91,17 @@ class TestFeishuExecApproval:
     async def test_sends_interactive_card(self):
         adapter = _make_adapter()
 
-        mock_response = SimpleNamespace(
+        mock_card_response = SimpleNamespace(
             success=lambda: True,
             data=SimpleNamespace(message_id="msg_001"),
         )
+        mock_text_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_001_fallback"),
+        )
         with patch.object(
             adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
-            return_value=mock_response,
+            side_effect=[mock_card_response, mock_text_response],
         ) as mock_send:
             result = await adapter.send_exec_approval(
                 chat_id="oc_12345",
@@ -109,16 +113,18 @@ class TestFeishuExecApproval:
         assert result.success is True
         assert result.message_id == "msg_001"
 
-        mock_send.assert_called_once()
-        kwargs = mock_send.call_args[1]
-        assert kwargs["chat_id"] == "oc_12345"
-        assert kwargs["msg_type"] == "interactive"
+        assert mock_send.await_count == 2
+
+        card_kwargs = mock_send.await_args_list[0].kwargs
+        assert card_kwargs["chat_id"] == "oc_12345"
+        assert card_kwargs["msg_type"] == "interactive"
 
         # Verify card payload contains the command and buttons
-        card = json.loads(kwargs["payload"])
+        card = json.loads(card_kwargs["payload"])
         assert card["header"]["template"] == "orange"
         assert "rm -rf /important" in card["elements"][0]["content"]
         assert "dangerous deletion" in card["elements"][0]["content"]
+        assert "If the buttons fail" in card["elements"][2]["content"]
 
         # Check buttons
         actions = card["elements"][1]["actions"]
@@ -128,17 +134,26 @@ class TestFeishuExecApproval:
             "approve_once", "approve_session", "approve_always", "deny"
         ]
 
+        text_kwargs = mock_send.await_args_list[1].kwargs
+        assert text_kwargs["chat_id"] == "oc_12345"
+        assert text_kwargs["msg_type"] == "text"
+        assert "Approval fallback" in json.loads(text_kwargs["payload"])["text"]
+
     @pytest.mark.asyncio
     async def test_stores_approval_state(self):
         adapter = _make_adapter()
 
-        mock_response = SimpleNamespace(
+        mock_card_response = SimpleNamespace(
             success=lambda: True,
             data=SimpleNamespace(message_id="msg_002"),
         )
+        mock_text_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_002_fallback"),
+        )
         with patch.object(
             adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
-            return_value=mock_response,
+            side_effect=[mock_card_response, mock_text_response],
         ):
             await adapter.send_exec_approval(
                 chat_id="oc_12345",
@@ -166,20 +181,24 @@ class TestFeishuExecApproval:
     async def test_truncates_long_command(self):
         adapter = _make_adapter()
 
-        mock_response = SimpleNamespace(
+        mock_card_response = SimpleNamespace(
             success=lambda: True,
             data=SimpleNamespace(message_id="msg_003"),
         )
+        mock_text_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_003_fallback"),
+        )
         with patch.object(
             adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
-            return_value=mock_response,
+            side_effect=[mock_card_response, mock_text_response],
         ) as mock_send:
             long_cmd = "x" * 5000
             await adapter.send_exec_approval(
                 chat_id="oc_12345", command=long_cmd, session_key="s"
             )
 
-        card = json.loads(mock_send.call_args[1]["payload"])
+        card = json.loads(mock_send.await_args_list[0].kwargs["payload"])
         content = card["elements"][0]["content"]
         assert "..." in content
         assert len(content) < 5000
@@ -188,13 +207,20 @@ class TestFeishuExecApproval:
     async def test_multiple_approvals_get_unique_ids(self):
         adapter = _make_adapter()
 
-        mock_response = SimpleNamespace(
+        mock_card_response = SimpleNamespace(
             success=lambda: True,
             data=SimpleNamespace(message_id="msg_x"),
         )
+        mock_text_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_x_fallback"),
+        )
         with patch.object(
             adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
-            return_value=mock_response,
+            side_effect=[
+                mock_card_response, mock_text_response,
+                mock_card_response, mock_text_response,
+            ],
         ):
             await adapter.send_exec_approval(
                 chat_id="oc_1", command="cmd1", session_key="s1"
@@ -206,6 +232,55 @@ class TestFeishuExecApproval:
         assert len(adapter._approval_state) == 2
         ids = list(adapter._approval_state.keys())
         assert ids[0] != ids[1]
+
+    @pytest.mark.asyncio
+    async def test_primary_card_success_survives_text_fallback_failure(self):
+        adapter = _make_adapter()
+
+        mock_card_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_004"),
+        )
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+            side_effect=[mock_card_response, RuntimeError("text fallback failed")],
+        ):
+            result = await adapter.send_exec_approval(
+                chat_id="oc_12345", command="echo test", session_key="session-4"
+            )
+
+        assert result.success is True
+        assert result.message_id == "msg_004"
+        assert len(adapter._approval_state) == 1
+
+    @pytest.mark.asyncio
+    async def test_text_mode_sends_plain_text_only(self):
+        adapter = _make_adapter({"exec_approval_mode": "text"})
+
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_text_001"),
+        )
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+            return_value=mock_response,
+        ) as mock_send:
+            result = await adapter.send_exec_approval(
+                chat_id="oc_12345",
+                command="rm -rf /important",
+                session_key="agent:main:feishu:group:oc_12345",
+                description="dangerous deletion",
+            )
+
+        assert result.success is True
+        assert result.message_id == "msg_text_001"
+        mock_send.assert_awaited_once()
+        kwargs = mock_send.await_args.kwargs
+        assert kwargs["msg_type"] == "text"
+        text_payload = json.loads(kwargs["payload"])["text"]
+        assert "Dangerous command requires approval" in text_payload
+        assert "/approve always" in text_payload
+        assert not adapter._approval_state
 
 
 # ===========================================================================
@@ -322,16 +397,24 @@ class _FakeCallBackCard:
         self.data = None
 
 
+class _FakeCallBackToast:
+    def __init__(self):
+        self.type = None
+        self.content = None
+
+
 class _FakeP2Response:
     def __init__(self):
         self.card = None
+        self.toast = None
 
 
 @pytest.fixture(autouse=False)
 def _patch_callback_card_types(monkeypatch):
-    """Provide real-ish P2CardActionTriggerResponse / CallBackCard for tests."""
+    """Provide real-ish callback response/card/toast types for tests."""
     monkeypatch.setattr(feishu_module, "P2CardActionTriggerResponse", _FakeP2Response)
     monkeypatch.setattr(feishu_module, "CallBackCard", _FakeCallBackCard)
+    monkeypatch.setattr(feishu_module, "CallBackToast", _FakeCallBackToast)
 
 
 class TestCardActionCallbackResponse:
@@ -347,6 +430,9 @@ class TestCardActionCallbackResponse:
 
         assert response is not None
         assert response.card is None
+        assert response.toast is not None
+        assert response.toast.type == "warning"
+        assert response.toast.content == "Hermes 未就绪，请稍后重试"
         mock_submit.assert_not_called()
 
     def test_returns_card_for_approve_action(self, _patch_callback_card_types):
@@ -364,6 +450,9 @@ class TestCardActionCallbackResponse:
 
         assert response is not None
         assert response.card is not None
+        assert response.toast is not None
+        assert response.toast.type == "info"
+        assert response.toast.content == "已收到，正在处理"
         assert response.card.type == "raw"
         card = response.card.data
         assert card["header"]["template"] == "green"
@@ -382,6 +471,8 @@ class TestCardActionCallbackResponse:
             response = adapter._on_card_action_trigger(data)
 
         assert response.card is not None
+        assert response.toast is not None
+        assert response.toast.type == "info"
         card = response.card.data
         assert card["header"]["template"] == "red"
         assert "Denied" in card["header"]["title"]["content"]
@@ -397,6 +488,9 @@ class TestCardActionCallbackResponse:
 
         assert response is not None
         assert response.card is None
+        assert response.toast is not None
+        assert response.toast.type == "warning"
+        assert response.toast.content == "审批信息缺失，请重新发起"
         mock_submit.assert_not_called()
 
     def test_no_card_for_non_approval_action(self, _patch_callback_card_types):

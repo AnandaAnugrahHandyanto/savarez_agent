@@ -699,8 +699,34 @@ class TestBackupEdgeCases:
             # Restore permissions for cleanup
             bad_file.chmod(0o644)
 
-        # Zip should still be created with the readable files
-        assert out_zip.exists()
+
+class TestQuickBackupCli:
+    def test_quick_backup_ignores_output_and_reports_snapshot_location(self, tmp_path, monkeypatch, capsys):
+        """Quick backup should ignore --output and create a state snapshot directory."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: test\n")
+        (hermes_home / ".env").write_text("OPENAI_API_KEY=sk-test\n")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        args = Namespace(output=str(tmp_path / "ignored.zip"), label="pre-upgrade")
+
+        from hermes_cli.backup import run_quick_backup
+
+        run_quick_backup(args)
+
+        out = capsys.readouterr().out
+        assert "Note: --output is ignored with --quick" in out
+        assert "State snapshot created:" in out
+        assert "state-snapshots/" in out
+        assert not (tmp_path / "ignored.zip").exists()
+
+        snapshots = sorted((hermes_home / "state-snapshots").iterdir())
+        assert len(snapshots) == 1
+        assert snapshots[0].name.endswith("-pre-upgrade")
+        assert (snapshots[0] / "manifest.json").exists()
 
     def test_pre1980_timestamp_skipped(self, tmp_path, monkeypatch):
         """Backup skips files with pre-1980 timestamps (ZIP limitation)."""

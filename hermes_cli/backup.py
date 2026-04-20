@@ -645,6 +645,11 @@ def prune_quick_snapshots(
 def run_quick_backup(args) -> None:
     """CLI entry point for hermes backup --quick."""
     label = getattr(args, "label", None)
+    if getattr(args, "output", None):
+        print(
+            "Note: --output is ignored with --quick; snapshots are stored under "
+            f"{display_hermes_home()}/state-snapshots/."
+        )
     snap_id = create_quick_snapshot(label=label)
     if snap_id:
         print(f"State snapshot created: {snap_id}")

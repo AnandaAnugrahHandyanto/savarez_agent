@@ -394,6 +394,44 @@ class TestLaunchdServiceRecovery:
 
 
 class TestGatewayServiceDetection:
+    def test_probe_launchd_service_running_prefers_launchctl_print(self, monkeypatch, tmp_path):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist/>\n", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
+
+        calls = []
+
+        def fake_run(cmd, capture_output=True, text=True, timeout=10, **kwargs):
+            calls.append(cmd)
+            if cmd == ["launchctl", "print", "gui/501/ai.hermes.gateway"]:
+                return SimpleNamespace(returncode=0, stdout="state = running\n", stderr="")
+            raise AssertionError(f"Unexpected command: {cmd}")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli._probe_launchd_service_running() is True
+        assert calls == [["launchctl", "print", "gui/501/ai.hermes.gateway"]]
+
+    def test_probe_launchd_service_running_returns_false_when_print_is_not_running(self, monkeypatch, tmp_path):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist/>\n", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
+
+        def fake_run(cmd, capture_output=True, text=True, timeout=10, **kwargs):
+            if cmd == ["launchctl", "print", "gui/501/ai.hermes.gateway"]:
+                return SimpleNamespace(returncode=0, stdout="state = waiting\n", stderr="")
+            raise AssertionError(f"Unexpected command: {cmd}")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli._probe_launchd_service_running() is False
+
     def test_supports_systemd_services_requires_systemctl_binary(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
         monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
