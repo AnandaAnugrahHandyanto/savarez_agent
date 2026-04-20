@@ -1,5 +1,6 @@
 """Local execution environment — spawn-per-call with session snapshot."""
 
+import logging
 import os
 import platform
 import shutil
@@ -10,6 +11,7 @@ import tempfile
 from tools.environments.base import BaseEnvironment, _pipe_stdin
 
 _IS_WINDOWS = platform.system() == "Windows"
+logger = logging.getLogger(__name__)
 
 
 # Hermes-internal env vars that should NOT leak into terminal subprocesses.
@@ -138,6 +140,32 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     return sanitized
 
 
+def _normalize_local_cwd(cwd: str | None, *, fallback: str | None = None) -> str:
+    """Resolve user-relative / invalid working directories for local subprocesses."""
+    home = os.path.expanduser("~")
+
+    base_dir = os.path.expanduser(fallback or "") if fallback else ""
+    if base_dir and not os.path.isabs(base_dir):
+        base_dir = os.path.abspath(base_dir)
+    if not base_dir or not os.path.isdir(base_dir):
+        base_dir = home if os.path.isdir(home) else os.getcwd()
+
+    raw = (cwd or "").strip()
+    if not raw:
+        return base_dir
+
+    candidate = os.path.expanduser(raw)
+    if not os.path.isabs(candidate):
+        candidate = os.path.abspath(os.path.join(base_dir, candidate))
+
+    if os.path.isdir(candidate):
+        return candidate
+
+    fallback_dir = home if os.path.isdir(home) else base_dir
+    logger.warning("Invalid local cwd %r, falling back to %s", cwd, fallback_dir)
+    return fallback_dir
+
+
 def _find_bash() -> str:
     """Find bash for command execution."""
     if not _IS_WINDOWS:
@@ -222,8 +250,20 @@ class LocalEnvironment(BaseEnvironment):
     """
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
-        super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
+        normalized_cwd = _normalize_local_cwd(cwd, fallback=os.getcwd())
+        super().__init__(cwd=normalized_cwd, timeout=timeout, env=env)
         self.init_session()
+
+    def execute(self, command: str, cwd: str = "", *,
+                timeout: int | None = None,
+                stdin_data: str | None = None) -> dict:
+        normalized_cwd = _normalize_local_cwd(cwd, fallback=self.cwd)
+        return super().execute(
+            command,
+            cwd=normalized_cwd,
+            timeout=timeout,
+            stdin_data=stdin_data,
+        )
 
     def get_temp_dir(self) -> str:
         """Return a shell-safe writable temp dir for local execution.

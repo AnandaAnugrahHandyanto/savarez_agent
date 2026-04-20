@@ -10,6 +10,7 @@ See: https://github.com/NousResearch/hermes-agent/issues/1264
 
 import os
 import threading
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from tools.environments.local import (
@@ -110,6 +111,18 @@ class TestProviderEnvBlocklist:
 
         for var in extra_provider_vars:
             assert var not in result_env, f"{var} leaked into subprocess env"
+
+    def test_execute_expands_tilde_cwd(self):
+        env = LocalEnvironment(cwd="/tmp", timeout=10, env={})
+        result = env.execute("pwd", cwd="~")
+        assert result["returncode"] == 0
+        assert result["output"].strip() == str(Path.home())
+
+    def test_invalid_cwd_falls_back_to_home(self):
+        env = LocalEnvironment(cwd="/tmp", timeout=10, env={})
+        result = env.execute("pwd", cwd="/definitely-missing-hermes-cwd")
+        assert result["returncode"] == 0
+        assert result["output"].strip() == str(Path.home())
 
     def test_tool_and_gateway_vars_are_stripped(self):
         """Tool and gateway secrets/config must not leak into subprocess env."""
