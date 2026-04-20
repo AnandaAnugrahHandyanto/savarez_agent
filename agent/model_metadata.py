@@ -123,10 +123,16 @@ DEFAULT_CONTEXT_LENGTHS = {
     "gpt-4": 128000,
     # Google
     "gemini": 1048576,
-    # Gemma (open models served via AI Studio)
-    "gemma-4-31b": 256000,
-    "gemma-3": 131072,
-    "gemma": 8192,  # fallback for older gemma models
+	# Gemma (open models served via AI Studio, Ollama Cloud, etc.)
+	# Gemma 4 family (256K context) — include Ollama-style naming
+	"gemma-4-31b": 262144,
+	"gemma-4-27b": 262144,
+	"gemma4": 262144, # Ollama-style: gemma4:31b-cloud, gemma4:27b
+	# Gemma 3 family (128K context) — include Ollama-style naming
+	"gemma-3": 131072,
+	"gemma3": 131072, # Ollama-style: gemma3:27b, gemma3:12b
+	# Older Gemma models (8K context)
+	"gemma": 8192, # fallback for older gemma models
     # DeepSeek
     "deepseek": 128000,
     # Meta

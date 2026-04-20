@@ -176,11 +176,18 @@ class TestGeminiContextLength:
         with patch("agent.models_dev.lookup_models_dev_context", return_value=None), \
              patch("agent.model_metadata.fetch_model_metadata", return_value={}):
             ctx = get_model_context_length("gemma-4-31b-it", provider="gemini")
-        assert ctx == 256000
+        assert ctx == 262144  # 256K context (256 * 1024)
 
     def test_gemini_3_context(self):
         ctx = get_model_context_length("gemini-3.1-pro-preview", provider="gemini")
         assert ctx == 1048576
+    def test_gemma4_ollama_style_context(self):
+        """Test Ollama Cloud naming style (gemma4:31b-cloud)."""
+        with patch("agent.models_dev.lookup_models_dev_context", return_value=None), \
+            patch("agent.model_metadata.fetch_model_metadata", return_value={}):
+            ctx = get_model_context_length("gemma4:31b-cloud")
+            assert ctx == 262144  # 256K context
+
 
 
 # ── Agent Init (no SyntaxError) ──
