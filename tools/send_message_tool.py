@@ -513,19 +513,20 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
-    # --- Non-Telegram/Discord platforms ---
-    if media_files and not message.strip():
+    # --- Non-Telegram/Discord/Matrix/Weixin/SIGNAL platforms without native media support (WhatsApp, Slack, etc.) ---
+    if platform not in (Platform.TELEGRAM, Platform.DISCORD, Platform.MATRIX, Platform.WEIXIN, Platform.SIGNAL) and media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, and weixin; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, and signal; "
                 f"target {platform.value} had only media attachments"
             )
         }
+    # Warn for platforms that don't accept media_files in their send function
     warning = None
-    if media_files:
+    if platform not in (Platform.TELEGRAM, Platform.DISCORD, Platform.MATRIX, Platform.WEIXIN, Platform.SIGNAL) and media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, and weixin"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, and signal"
         )
 
     last_result = None
@@ -535,7 +536,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         elif platform == Platform.WHATSAPP:
             result = await _send_whatsapp(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SIGNAL:
-            result = await _send_signal(pconfig.extra, chat_id, chunk)
+            result = await _send_signal(pconfig.extra, chat_id, chunk, media_files)
         elif platform == Platform.EMAIL:
             result = await _send_email(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SMS:
@@ -971,8 +972,12 @@ async def _send_whatsapp(extra, chat_id, message):
         return _error(f"WhatsApp send failed: {e}")
 
 
-async def _send_signal(extra, chat_id, message):
-    """Send via signal-cli JSON-RPC API."""
+async def _send_signal(extra, chat_id, message, media_files=None):
+    """Send via signal-cli JSON-RPC API.
+
+    Supports both text-only and text-with-attachments (images/audio/documents).
+    Attachments are sent as an 'attachments' array in the JSON-RPC params.
+    """
     try:
         import httpx
     except ImportError:
@@ -989,6 +994,18 @@ async def _send_signal(extra, chat_id, message):
         else:
             params["recipient"] = [chat_id]
 
+        # Add attachments if media_files are present
+        valid_media = media_files or []
+        attachment_paths = []
+        for media_path, _is_voice in valid_media:
+            if os.path.exists(media_path):
+                attachment_paths.append(media_path)
+            else:
+                logger.warning("Signal media file not found, skipping: %s", media_path)
+
+        if attachment_paths:
+            params["attachments"] = attachment_paths
+
         payload = {
             "jsonrpc": "2.0",
             "method": "send",
@@ -1002,7 +1019,12 @@ async def _send_signal(extra, chat_id, message):
             data = resp.json()
             if "error" in data:
                 return _error(f"Signal RPC error: {data['error']}")
-            return {"success": True, "platform": "signal", "chat_id": chat_id}
+
+            # Return warning for any skipped media files
+            result = {"success": True, "platform": "signal", "chat_id": chat_id}
+            if len(attachment_paths) < len(valid_media):
+                result["warnings"] = [f"Some media files were skipped (not found on disk)"]
+            return result
     except Exception as e:
         return _error(f"Signal send failed: {e}")
 
