@@ -4373,9 +4373,7 @@ For more help on a command:
         help="Step-by-step migration guide from openclaw-honcho to Hermes Honcho",
     )
 
-    def cmd_honcho(args):
-        from honcho_integration.cli import honcho_command
-        honcho_command(args)
+    from hermes_cli.cmd_handlers.honcho_handler import cmd_honcho  # noqa: E402,F401
 
     honcho_parser.set_defaults(func=cmd_honcho)
 
