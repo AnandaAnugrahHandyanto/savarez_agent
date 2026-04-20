@@ -20,6 +20,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **GitHub Copilot ACP** | `hermes model` (spawns local `copilot --acp --stdio`) |
 | **Anthropic** | `hermes model` (Claude Pro/Max via Claude Code auth, Anthropic API key, or manual setup-token) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
+| **EUrouter** | `EUROUTER_API_KEY` in `~/.hermes/.env` (provider: `eurouter`; aliases: `eu-router`, `eur`) |
 | **AI Gateway** | `AI_GATEWAY_API_KEY` in `~/.hermes/.env` (provider: `ai-gateway`) |
 | **z.ai / GLM** | `GLM_API_KEY` in `~/.hermes/.env` (provider: `zai`) |
 | **Kimi / Moonshot** | `KIMI_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding`) |
@@ -237,6 +238,30 @@ model:
 | `COPILOT_GITHUB_TOKEN` | GitHub token for Copilot API (first priority) |
 | `HERMES_COPILOT_ACP_COMMAND` | Override the Copilot CLI binary path (default: `copilot`) |
 | `HERMES_COPILOT_ACP_ARGS` | Override ACP args (default: `--acp --stdio`) |
+
+### EUrouter
+
+EUrouter is an EU-resident OpenAI-compatible gateway that accepts the same `vendor/model` slugs you already use with OpenRouter. If you already know the model ID you want, switching is just a provider and API-key change.
+
+```bash
+# EUrouter gateway
+hermes chat --provider eurouter --model anthropic/claude-sonnet-4.6
+# Requires: EUROUTER_API_KEY in ~/.hermes/.env
+
+# Optional base URL override
+EUROUTER_BASE_URL=https://api.eurouter.ai/api/v1 hermes chat --provider eurouter --model openai/gpt-5.4
+```
+
+Or set it permanently in `config.yaml`:
+```yaml
+model:
+  provider: "eurouter"
+  default: "anthropic/claude-sonnet-4.6"
+```
+
+:::tip One-line OpenRouter switch
+If you already use OpenRouter-format model IDs like `anthropic/claude-sonnet-4.6` or `openai/gpt-5.4`, you can usually switch to EUrouter by changing only `provider` and the API key. The model slug stays the same.
+:::
 
 ### First-Class Chinese AI Providers
 
