@@ -33,16 +33,21 @@ class TestInterruptPropagationToChild(unittest.TestCase):
         agent._active_children = []
         agent._active_children_lock = threading.Lock()
         agent.quiet_mode = True
-        # ``AIAgent.__init__`` sets ``provider`` (run_agent.py:736).  The
-        # client-creation path at ``_create_openai_client``
-        # (run_agent.py:4660, 4671) accesses ``self.provider`` directly —
-        # not via ``getattr`` — so a bare agent built with ``__new__``
-        # that reaches that path (e.g. under xdist when the mocked-client
-        # short-circuit doesn't engage) raises
-        # ``AttributeError: 'AIAgent' object has no attribute 'provider'``.
-        # Seed the attribute defensively so these interrupt tests don't
-        # depend on worker-import ordering.
+        # ``AIAgent.__init__`` sets ``provider`` / ``model`` / ``base_url``
+        # (run_agent.py:708, 734, 736).  Several code paths reached by
+        # ``_interruptible_api_call`` — specifically ``_create_openai_client``
+        # at run_agent.py:4660, 4671, and downstream — access these
+        # attributes directly, not via ``getattr``.  Under pytest-xdist the
+        # mocked-client short-circuit at ``_create_request_openai_client``
+        # (``isinstance(primary_client, Mock)``) doesn't always engage, so
+        # a bare agent built with ``__new__`` trips on AttributeError when
+        # the test was supposed to be exercising only the interrupt path.
+        # Seed all three core identity attrs defensively — keeps these
+        # tests independent of worker-import ordering and matches what
+        # ``__init__`` would produce.
         agent.provider = ""
+        agent.model = ""
+        agent.base_url = ""
         return agent
 
     def test_parent_interrupt_sets_child_flag(self):
