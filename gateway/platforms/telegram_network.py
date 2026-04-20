@@ -39,8 +39,18 @@ _DOH_PROVIDERS: list[dict] = [
 ]
 
 # Last-resort IPs when DoH is also blocked.  These are stable Telegram Bot API
-# endpoints in the 149.154.160.0/20 block (same seed used by OpenClaw).
-_SEED_FALLBACK_IPS: list[str] = ["149.154.167.220"]
+# endpoints spread across DC1-DC5 (149.154.160.0/20 and 91.108.4.0/22 blocks).
+# Multiple IPs allow rotation when a single seed goes stale or unreachable.
+# Sources: Telegram Bot API documentation + MTProto DC address list (public).
+# YG: validate these against https://core.telegram.org/resources/cidr.txt
+_SEED_FALLBACK_IPS: list[str] = [
+    "149.154.167.220",  # DC2 EU (original seed)
+    "149.154.167.51",   # DC2 EU (alt)
+    "149.154.175.50",   # DC1 US
+    "149.154.175.100",  # DC3 US
+    "149.154.167.91",   # DC4 EU
+    "91.108.56.116",    # DC5 EU
+]
 
 
 def _resolve_proxy_url() -> str | None:
@@ -107,6 +117,16 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                     )
                     continue
                 logger.warning("[Telegram] Fallback IP %s failed: %s", ip, exc)
+                # If the sticky IP just failed, clear it so the next request
+                # doesn't re-try the dead IP first before finding a live one.
+                if ip == self._sticky_ip:
+                    async with self._sticky_lock:
+                        if self._sticky_ip == ip:
+                            self._sticky_ip = None
+                            logger.warning(
+                                "[Telegram] Sticky fallback IP %s is dead; clearing — next working IP will become sticky",
+                                ip,
+                            )
                 continue
 
         if last_error is None:
