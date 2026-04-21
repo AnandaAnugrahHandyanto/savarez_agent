@@ -95,8 +95,8 @@ class TestToolLoopTracking:
         result = agent._check_tool_loop([tc], ["search result"])
         assert result["action"] == "none"
 
-    def test_second_call_triggers_nudge(self):
-        """Second identical call should trigger level 1 nudge."""
+    def test_second_call_no_action(self):
+        """Second identical call should still be 'none'."""
         agent = make_agent()
         tc = make_tc("web_search", '{"query": "test"}')
         
@@ -104,47 +104,60 @@ class TestToolLoopTracking:
         r1 = agent._check_tool_loop([tc], ["result 1"])
         assert r1["action"] == "none"
         
-        # Second call (repeat)
+        # Second call
         r2 = agent._check_tool_loop([tc], ["result 2"])
-        assert r2["action"] == "nudge"
-        assert r2.get("nudge_level") == 1
+        assert r2["action"] == "none"
 
-    def test_third_call_triggers_stronger_nudge(self):
-        """Third identical call should trigger level 2 nudge."""
+    def test_third_call_triggers_nudge(self):
+        """Third identical call should trigger level 1 nudge."""
         agent = make_agent()
         tc = make_tc("web_search", '{"query": "test"}')
         
         agent._check_tool_loop([tc], ["result 1"])  # 1st
-        agent._check_tool_loop([tc], ["result 2"])  # 2nd (nudge)
+        agent._check_tool_loop([tc], ["result 2"])  # 2nd
         r3 = agent._check_tool_loop([tc], ["result 3"])  # 3rd
         
         assert r3["action"] == "nudge"
-        assert r3.get("nudge_level") == 2
+        assert r3.get("nudge_level") == 1
 
-    def test_fourth_call_triggers_reprompt(self):
-        """Fourth identical call should trigger reprompt."""
+    def test_fourth_call_triggers_stronger_nudge(self):
+        """Fourth identical call should trigger level 2 nudge."""
+        agent = make_agent()
+        tc = make_tc("web_search", '{"query": "test"}')
+        
+        agent._check_tool_loop([tc], ["result 1"])  # 1st
+        agent._check_tool_loop([tc], ["result 2"])  # 2nd
+        agent._check_tool_loop([tc], ["result 3"])  # 3rd (nudge)
+        r4 = agent._check_tool_loop([tc], ["result 4"])  # 4th
+        
+        assert r4["action"] == "nudge"
+        assert r4.get("nudge_level") == 2
+
+    def test_fifth_call_triggers_reprompt(self):
+        """Fifth identical call should trigger reprompt."""
         agent = make_agent()
         tc = make_tc("web_search", '{"query": "test"}')
         
         agent._check_tool_loop([tc], ["r1"])  # 1st
-        agent._check_tool_loop([tc], ["r2"])  # 2nd (nudge)
-        agent._check_tool_loop([tc], ["r3"])  # 3rd (stronger nudge)
-        r4 = agent._check_tool_loop([tc], ["r4"])  # 4th
+        agent._check_tool_loop([tc], ["r2"])  # 2nd
+        agent._check_tool_loop([tc], ["r3"])  # 3rd (nudge)
+        agent._check_tool_loop([tc], ["r4"])  # 4th (stronger nudge)
+        r5 = agent._check_tool_loop([tc], ["r5"])  # 5th
         
-        assert r4["action"] == "reprompt"
+        assert r5["action"] == "reprompt"
         assert agent._loop_reprompt_issued is True
 
-    def test_fifth_call_triggers_hard_stop(self):
-        """Fifth identical call should trigger hard stop."""
+    def test_sixth_call_triggers_hard_stop(self):
+        """Sixth identical call should trigger hard stop."""
         agent = make_agent()
         tc = make_tc("web_search", '{"query": "test"}')
         
-        for i in range(1, 5):
+        for i in range(1, 6):
             agent._check_tool_loop([tc], [f"r{i}"])
         
-        r5 = agent._check_tool_loop([tc], ["r5"])
-        assert r5["action"] == "stop"
-        assert r5["repeat_count"] == 5
+        r6 = agent._check_tool_loop([tc], ["r6"])
+        assert r6["action"] == "stop"
+        assert r6["repeat_count"] == 6
 
     def test_different_tools_not_tracked_together(self):
         """Different tool names should have separate counters."""
@@ -156,13 +169,21 @@ class TestToolLoopTracking:
         agent._check_tool_loop([tc1], ["result1"])
         agent._check_tool_loop([tc2], ["result2"])
         
-        # Second call to web_search (should trigger nudge)
+        # Second call to web_search (should not trigger yet)
         r3 = agent._check_tool_loop([tc1], ["result3"])
-        assert r3["action"] == "nudge"
+        assert r3["action"] == "none"
         
-        # Second call to terminal (should also trigger nudge - separate counter)
+        # Second call to terminal (should also not trigger yet)
         r4 = agent._check_tool_loop([tc2], ["result4"])
-        assert r4["action"] == "nudge"
+        assert r4["action"] == "none"
+        
+        # Third call to web_search (should trigger nudge)
+        r5 = agent._check_tool_loop([tc1], ["result5"])
+        assert r5["action"] == "nudge"
+        
+        # Third call to terminal (should also trigger nudge - separate counter)
+        r6 = agent._check_tool_loop([tc2], ["result6"])
+        assert r6["action"] == "nudge"
 
     def test_different_args_not_tracked_together(self):
         """Same tool with different args should have separate counters."""
@@ -174,13 +195,21 @@ class TestToolLoopTracking:
         agent._check_tool_loop([tc1], ["result1"])
         agent._check_tool_loop([tc2], ["result2"])
         
-        # Second call to first args (should trigger nudge)
+        # Second call to first args (should not trigger yet)
         r3 = agent._check_tool_loop([tc1], ["result3"])
-        assert r3["action"] == "nudge"
+        assert r3["action"] == "none"
         
-        # Second call to second args (should also trigger nudge - separate counter)
+        # Second call to second args (should also not trigger yet)
         r4 = agent._check_tool_loop([tc2], ["result4"])
-        assert r4["action"] == "nudge"
+        assert r4["action"] == "none"
+        
+        # Third call to first args (should trigger nudge)
+        r5 = agent._check_tool_loop([tc1], ["result5"])
+        assert r5["action"] == "nudge"
+        
+        # Third call to second args (should also trigger nudge - separate counter)
+        r6 = agent._check_tool_loop([tc2], ["result6"])
+        assert r6["action"] == "nudge"
 
     def test_empty_results_not_tracked(self):
         """Tools with empty results should not be tracked."""
@@ -194,9 +223,13 @@ class TestToolLoopTracking:
         r2 = agent._check_tool_loop([tc], [""])
         assert r2["action"] == "none"
         
-        # Third call with result (should trigger nudge since counter is still at 1)
+        # Third call with result (should not trigger nudge since counter is still at 1)
         r3 = agent._check_tool_loop([tc], ["result2"])
-        assert r3["action"] == "nudge"
+        assert r3["action"] == "none"
+        
+        # Fourth call with result (should trigger nudge since counter is at 2)
+        r4 = agent._check_tool_loop([tc], ["result3"])
+        assert r4["action"] == "nudge"
 
     def test_no_tool_calls_returns_none(self):
         """Empty tool_calls list should return 'none'."""
@@ -217,11 +250,12 @@ class TestNudgeMessages:
         tc = make_tc("web_search", '{"query": "test"}')
         
         agent._check_tool_loop([tc], ["this is a very long result that should be truncated"])
-        r2 = agent._check_tool_loop([tc], ["another result"])
+        agent._check_tool_loop([tc], ["another result"])
+        r3 = agent._check_tool_loop([tc], ["third result"])
         
-        assert "previous turn" in r2["nudge_message"].lower()
-        assert "web_search" in r2["nudge_message"]
-        assert "test" in r2["nudge_message"]
+        assert "previous turn" in r3["nudge_message"].lower()
+        assert "web_search" in r3["nudge_message"]
+        assert "test" in r3["nudge_message"]
 
     def test_nudge_level_2_message(self):
         """Level 2 nudge should mention consecutive attempts."""
@@ -230,23 +264,24 @@ class TestNudgeMessages:
         
         agent._check_tool_loop([tc], ["r1"])
         agent._check_tool_loop([tc], ["r2"])
-        r3 = agent._check_tool_loop([tc], ["r3"])
+        agent._check_tool_loop([tc], ["r3"])
+        r4 = agent._check_tool_loop([tc], ["r4"])
         
-        assert "consecutively" in r3["nudge_message"].lower()
-        assert "web_search" in r3["nudge_message"]
+        assert "consecutively" in r4["nudge_message"].lower()
+        assert "web_search" in r4["nudge_message"]
 
     def test_reprompt_message(self):
         """Reprompt should mention user intervention."""
         agent = make_agent()
         tc = make_tc("web_search", '{"query": "test"}')
         
-        for i in range(1, 4):
+        for i in range(1, 5):
             agent._check_tool_loop([tc], [f"r{i}"])
         
-        r4 = agent._check_tool_loop([tc], ["r4"])
+        r5 = agent._check_tool_loop([tc], ["r5"])
         
-        assert "user to intervene" in r4["nudge_message"].lower()
-        assert "web_search" in r4["nudge_message"]
+        assert "user to intervene" in r5["nudge_message"].lower()
+        assert "web_search" in r5["nudge_message"]
 
 
 # ---------------------------------------------------------------------------
@@ -281,10 +316,14 @@ class TestEdgeCases:
         r1 = agent._check_tool_loop([tc1, tc2], ["result1", "result2"])
         assert r1["action"] == "none"
         
-        # Second turn with both tools (both should trigger nudge)
+        # Second turn with both tools (should not trigger yet)
         r2 = agent._check_tool_loop([tc1, tc2], ["result3", "result4"])
+        assert r2["action"] == "none"
+        
+        # Third turn with both tools (both should trigger nudge)
+        r3 = agent._check_tool_loop([tc1, tc2], ["result5", "result6"])
         # Only the first matching tool triggers the return
-        assert r2["action"] == "nudge"
+        assert r3["action"] == "nudge"
 
     def test_tool_name_with_special_characters(self):
         """Tool names with underscores/hyphens should work."""
@@ -292,8 +331,9 @@ class TestEdgeCases:
         tc = make_tc("read_file", '{"path": "/tmp/test"}')
         
         agent._check_tool_loop([tc], ["result1"])
-        r2 = agent._check_tool_loop([tc], ["result2"])
-        assert r2["action"] == "nudge"
+        agent._check_tool_loop([tc], ["result2"])
+        r3 = agent._check_tool_loop([tc], ["result3"])
+        assert r3["action"] == "nudge"
 
     def test_large_arguments_handled(self):
         """Large argument strings should not cause issues."""
@@ -305,4 +345,7 @@ class TestEdgeCases:
         assert r1["action"] == "none"
         
         r2 = agent._check_tool_loop([tc], ["result2"])
-        assert r2["action"] == "nudge"
+        assert r2["action"] == "none"
+        
+        r3 = agent._check_tool_loop([tc], ["result3"])
+        assert r3["action"] == "nudge"
