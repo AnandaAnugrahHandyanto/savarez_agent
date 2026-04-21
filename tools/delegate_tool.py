@@ -280,6 +280,8 @@ def _build_child_agent(
     # ACP transport overrides — lets a non-ACP parent spawn ACP child agents
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
+    # Provider-specific custom headers (e.g. from custom_providers[].headers)
+    override_default_headers: Optional[dict] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -354,6 +356,9 @@ def _build_child_agent(
     effective_api_mode = override_api_mode or getattr(parent_agent, "api_mode", None)
     effective_acp_command = override_acp_command or getattr(parent_agent, "acp_command", None)
     effective_acp_args = list(override_acp_args if override_acp_args is not None else (getattr(parent_agent, "acp_args", []) or []))
+    # Resolve provider-specific custom headers: delegation override > parent inherit.
+    # Ensures custom_providers[].headers propagate to subagents in inherit mode.
+    effective_default_headers = override_default_headers or getattr(parent_agent, "_default_headers", None)
 
     # Resolve reasoning config: delegation override > parent inherit
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
@@ -403,6 +408,7 @@ def _build_child_agent(
         provider_sort=parent_agent.provider_sort,
         tool_progress_callback=child_progress_cb,
         iteration_budget=None,  # fresh budget per subagent
+        default_headers=effective_default_headers,
     )
     child._print_fn = getattr(parent_agent, '_print_fn', None)
     # Set delegation depth so children can't spawn grandchildren
@@ -786,6 +792,7 @@ def delegate_task(
                 override_acp_args=task_acp_args if task_acp_args is not None else (
                     acp_args if acp_args is not None else creds.get("args")
                 ),
+                override_default_headers=creds.get("default_headers"),
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -1080,6 +1087,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         "api_mode": runtime.get("api_mode"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
+        "default_headers": runtime.get("default_headers"),
     }
 
 

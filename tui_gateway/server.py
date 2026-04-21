@@ -933,6 +933,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "platform": "tui",
         "session_db": _get_db(),
         "fallback_model": getattr(agent, "_fallback_model", None),
+        "default_headers": getattr(agent, "_default_headers", None),
     }
 
 
@@ -965,9 +966,15 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
     system_prompt = cfg.get("agent", {}).get("system_prompt", "") or ""
     if not system_prompt:
         system_prompt = _resolve_personality_prompt(cfg)
+    # Resolve provider-level default_headers (e.g. custom_provider.headers)
+    _default_headers = None
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        _default_headers = resolve_runtime_provider(requested=None).get("default_headers")
+    except Exception:
+        pass
     return AIAgent(
-        model=_resolve_model(),
-        quiet_mode=True,
+        model=_resolve_model(), quiet_mode=True,
         verbose_logging=_load_tool_progress_mode() == "verbose",
         reasoning_config=_load_reasoning_config(),
         service_tier=_load_service_tier(),
@@ -975,6 +982,7 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         platform="tui",
         session_id=session_id or key, session_db=_get_db(),
         ephemeral_system_prompt=system_prompt or None,
+        default_headers=_default_headers,
         **_agent_cbs(sid),
     )
 
