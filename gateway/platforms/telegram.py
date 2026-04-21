@@ -2329,16 +2329,80 @@ class TelegramAdapter(BasePlatformAdapter):
         cleaned = re.sub(rf"(?i)@{username}\b[,:\-]*\s*", "", text).strip()
         return cleaned or text
 
+    def _is_in_assigned_topic(self, message: Message) -> bool:
+        """Check whether a message is in a forum topic assigned to this bot.
+
+        Returns True when:
+        - The bot has NO ``group_topics`` configured (backward compatibility)
+        - The message is a DM (not a group/supergroup chat)
+        - The message's ``message_thread_id`` belongs to one of the bot's
+          assigned topics for the chat
+
+        Returns False when:
+        - The bot has ``group_topics`` configured for this chat but the
+          message is in a different topic or in the general topic (no thread_id)
+        """
+        group_topics_config: list = self.config.extra.get("group_topics", [])
+        if not group_topics_config:
+            return True  # No topic routing configured — backward compat
+
+        if not self._is_group_chat(message):
+            return True  # DMs are never filtered by topic
+
+        chat = getattr(message, "chat", None)
+        if not chat:
+            return True
+
+        chat_id_str = str(getattr(chat, "id", ""))
+
+        # Find if this chat has any group_topics entries at all
+        chat_has_topics = False
+        for chat_entry in group_topics_config:
+            if str(chat_entry.get("chat_id", "")) == chat_id_str:
+                chat_has_topics = True
+                break
+
+        if not chat_has_topics:
+            return True  # No topic config for this chat — don't filter
+
+        # The chat has group_topics configured; check if the message's
+        # thread_id is among the bot's assigned topics
+        thread_id_raw = getattr(message, "message_thread_id", None)
+        if thread_id_raw is None:
+            # Message is in the general topic (no thread_id) — don't process
+            # unless explicitly mentioned (handled by caller)
+            return False
+
+        thread_id_str = str(thread_id_raw)
+
+        for chat_entry in group_topics_config:
+            if str(chat_entry.get("chat_id", "")) == chat_id_str:
+                for topic in chat_entry.get("topics", []):
+                    tid = topic.get("thread_id")
+                    if tid is not None and str(tid) == thread_id_str:
+                        return True
+                # Checked all topics for this chat — none matched
+                return False
+
+        # Shouldn't reach here (chat_has_topics was True above), but be safe
+        return False
+
     def _should_process_message(self, message: Message, *, is_command: bool = False) -> bool:
         """Apply Telegram group trigger rules.
 
         DMs remain unrestricted. Group/supergroup messages are accepted when:
         - the chat is explicitly allowlisted in ``free_response_chats``
         - ``require_mention`` is disabled
-        - the message is a command
+        - the message is a command (subject to topic isolation when
+          ``group_topics`` is configured)
         - the message replies to the bot
-        - the bot is @mentioned
+        - the bot is @mentioned (always allowed, even from other topics)
         - the text/caption matches a configured regex wake-word pattern
+          (always allowed, even from other topics)
+
+        When ``group_topics`` is configured, a bot only processes messages
+        in its own assigned topic(s) — unless explicitly @mentioned or
+        matching a mention_pattern, which enables cross-topic invocation.
         """
         if not self._is_group_chat(message):
             return True
@@ -2352,14 +2416,26 @@ class TelegramAdapter(BasePlatformAdapter):
         if str(getattr(getattr(message, "chat", None), "id", "")) in self._telegram_free_response_chats():
             return True
         if not self._telegram_require_mention():
+            # Even with require_mention off, respect topic isolation
+            if not self._is_in_assigned_topic(message):
+                # In wrong topic — only allow if explicitly mentioned
+                return self._message_mentions_bot(message) or self._message_matches_mention_patterns(message)
             return True
+        # Explicit @mention or mention_pattern match always overrides topic isolation
+        if self._message_mentions_bot(message):
+            return True
+        if self._message_matches_mention_patterns(message):
+            return True
+        # Topic isolation: if the bot has group_topics configured and the
+        # message is not in an assigned topic, reject it regardless of
+        # command/reply status.
+        if not self._is_in_assigned_topic(message):
+            return False
         if is_command:
             return True
         if self._is_reply_to_bot(message):
             return True
-        if self._message_mentions_bot(message):
-            return True
-        return self._message_matches_mention_patterns(message)
+        return False
 
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
