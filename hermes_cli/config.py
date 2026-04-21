@@ -703,6 +703,20 @@ DEFAULT_CONFIG = {
     # always goes to ~/.hermes/skills/.
     "skills": {
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+        # Substitute ${HERMES_SKILL_DIR} and ${HERMES_SESSION_ID} in SKILL.md
+        # content with the absolute skill directory and the active session id
+        # before the agent sees it.  Lets skill authors reference bundled
+        # scripts without the agent having to join paths.
+        "template_vars": True,
+        # Pre-execute inline shell snippets written as !`cmd` in SKILL.md
+        # body.  Their stdout is inlined into the skill message before the
+        # agent reads it, so skills can inject dynamic context (dates, git
+        # state, detected tool versions, …).  Off by default because any
+        # content from the skill author runs on the host without approval;
+        # only enable for skill sources you trust.
+        "inline_shell": False,
+        # Timeout (seconds) for each !`cmd` snippet when inline_shell is on.
+        "inline_shell_timeout": 10,
     },
 
     # Honcho AI-native memory -- reads ~/.honcho/config.json as single source of truth.
