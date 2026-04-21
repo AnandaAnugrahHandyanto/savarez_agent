@@ -8032,266 +8032,284 @@ class AIAgent:
                     args_preview = args_str[:self.log_prefix_chars] + "..." if len(args_str) > self.log_prefix_chars else args_str
                     print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())}) - {args_preview}")
 
-            if _block_msg is None:
+            _track_tool_activity = _block_msg is None
+            if _track_tool_activity:
                 self._current_tool = function_name
                 self._touch_activity(f"executing tool: {function_name}")
 
             # Set activity callback for long-running tool execution (terminal
             # commands, etc.) so the gateway's inactivity monitor doesn't kill
             # the agent while a command is running.
-            if _block_msg is None:
+            if _track_tool_activity:
                 try:
                     from tools.environments.base import set_activity_callback
                     set_activity_callback(self._touch_activity)
                 except Exception:
                     pass
 
-            if _block_msg is None and self.tool_progress_callback:
-                try:
-                    preview = _build_tool_preview(function_name, function_args)
-                    self.tool_progress_callback("tool.started", function_name, preview, function_args)
-                except Exception as cb_err:
-                    logging.debug(f"Tool progress callback error: {cb_err}")
-
-            if _block_msg is None and self.tool_start_callback:
-                try:
-                    self.tool_start_callback(tool_call.id, function_name, function_args)
-                except Exception as cb_err:
-                    logging.debug(f"Tool start callback error: {cb_err}")
-
-            # Checkpoint: snapshot working dir before file-mutating tools
-            if _block_msg is None and function_name in ("write_file", "patch") and self._checkpoint_mgr.enabled:
-                try:
-                    file_path = function_args.get("path", "")
-                    if file_path:
-                        work_dir = self._checkpoint_mgr.get_working_dir_for_path(file_path)
-                        self._checkpoint_mgr.ensure_checkpoint(
-                            work_dir, f"before {function_name}"
-                        )
-                except Exception:
-                    pass  # never block tool execution
-
-            # Checkpoint before destructive terminal commands
-            if _block_msg is None and function_name == "terminal" and self._checkpoint_mgr.enabled:
-                try:
-                    cmd = function_args.get("command", "")
-                    if _is_destructive_command(cmd):
-                        cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
-                        self._checkpoint_mgr.ensure_checkpoint(
-                            cwd, f"before terminal: {cmd[:60]}"
-                        )
-                except Exception:
-                    pass  # never block tool execution
-
-            tool_start_time = time.time()
-
-            if _block_msg is not None:
-                # Tool blocked by plugin policy — return error without executing.
-                function_result = json.dumps({"error": _block_msg}, ensure_ascii=False)
-                tool_duration = 0.0
-            elif function_name == "todo":
-                from tools.todo_tool import todo_tool as _todo_tool
-                function_result = _todo_tool(
-                    todos=function_args.get("todos"),
-                    merge=function_args.get("merge", False),
-                    store=self._todo_store,
-                )
-                tool_duration = time.time() - tool_start_time
-                if self._should_emit_quiet_tool_messages():
-                    self._vprint(f"  {_get_cute_tool_message_impl('todo', function_args, tool_duration, result=function_result)}")
-            elif function_name == "session_search":
-                if not self._session_db:
-                    function_result = json.dumps({"success": False, "error": "Session database not available."})
-                else:
-                    from tools.session_search_tool import session_search as _session_search
-                    function_result = _session_search(
-                        query=function_args.get("query", ""),
-                        role_filter=function_args.get("role_filter"),
-                        limit=function_args.get("limit", 3),
-                        db=self._session_db,
-                        current_session_id=self.session_id,
-                    )
-                tool_duration = time.time() - tool_start_time
-                if self._should_emit_quiet_tool_messages():
-                    self._vprint(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
-            elif function_name == "memory":
-                target = function_args.get("target", "memory")
-                from tools.memory_tool import memory_tool as _memory_tool
-                function_result = _memory_tool(
-                    action=function_args.get("action"),
-                    target=target,
-                    content=function_args.get("content"),
-                    old_text=function_args.get("old_text"),
-                    store=self._memory_store,
-                )
-                # Bridge: notify external memory provider of built-in memory writes
-                if self._memory_manager and function_args.get("action") in ("add", "replace"):
+            try:
+                if _block_msg is None and self.tool_progress_callback:
                     try:
-                        self._memory_manager.on_memory_write(
-                            function_args.get("action", ""),
-                            target,
-                            function_args.get("content", ""),
+                        preview = _build_tool_preview(function_name, function_args)
+                        self.tool_progress_callback("tool.started", function_name, preview, function_args)
+                    except Exception as cb_err:
+                        logging.debug(f"Tool progress callback error: {cb_err}")
+
+                if _block_msg is None and self.tool_start_callback:
+                    try:
+                        self.tool_start_callback(tool_call.id, function_name, function_args)
+                    except Exception as cb_err:
+                        logging.debug(f"Tool start callback error: {cb_err}")
+
+                # Checkpoint: snapshot working dir before file-mutating tools
+                if _block_msg is None and function_name in ("write_file", "patch") and self._checkpoint_mgr.enabled:
+                    try:
+                        file_path = function_args.get("path", "")
+                        if file_path:
+                            work_dir = self._checkpoint_mgr.get_working_dir_for_path(file_path)
+                            self._checkpoint_mgr.ensure_checkpoint(
+                                work_dir, f"before {function_name}"
+                            )
+                    except Exception:
+                        pass  # never block tool execution
+
+                # Checkpoint before destructive terminal commands
+                if _block_msg is None and function_name == "terminal" and self._checkpoint_mgr.enabled:
+                    try:
+                        cmd = function_args.get("command", "")
+                        if _is_destructive_command(cmd):
+                            cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
+                            self._checkpoint_mgr.ensure_checkpoint(
+                                cwd, f"before terminal: {cmd[:60]}"
+                            )
+                    except Exception:
+                        pass  # never block tool execution
+
+                tool_start_time = time.time()
+                _tool_completed = False
+
+                if _block_msg is not None:
+                    # Tool blocked by plugin policy — return error without executing.
+                    function_result = json.dumps({"error": _block_msg}, ensure_ascii=False)
+                    tool_duration = 0.0
+                elif function_name == "todo":
+                    from tools.todo_tool import todo_tool as _todo_tool
+                    function_result = _todo_tool(
+                        todos=function_args.get("todos"),
+                        merge=function_args.get("merge", False),
+                        store=self._todo_store,
+                    )
+                    tool_duration = time.time() - tool_start_time
+                    if self._should_emit_quiet_tool_messages():
+                        self._vprint(f"  {_get_cute_tool_message_impl('todo', function_args, tool_duration, result=function_result)}")
+                elif function_name == "session_search":
+                    if not self._session_db:
+                        function_result = json.dumps({"success": False, "error": "Session database not available."})
+                    else:
+                        from tools.session_search_tool import session_search as _session_search
+                        function_result = _session_search(
+                            query=function_args.get("query", ""),
+                            role_filter=function_args.get("role_filter"),
+                            limit=function_args.get("limit", 3),
+                            db=self._session_db,
+                            current_session_id=self.session_id,
                         )
+                    tool_duration = time.time() - tool_start_time
+                    if self._should_emit_quiet_tool_messages():
+                        self._vprint(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
+                elif function_name == "memory":
+                    target = function_args.get("target", "memory")
+                    from tools.memory_tool import memory_tool as _memory_tool
+                    function_result = _memory_tool(
+                        action=function_args.get("action"),
+                        target=target,
+                        content=function_args.get("content"),
+                        old_text=function_args.get("old_text"),
+                        store=self._memory_store,
+                    )
+                    # Bridge: notify external memory provider of built-in memory writes
+                    if self._memory_manager and function_args.get("action") in ("add", "replace"):
+                        try:
+                            self._memory_manager.on_memory_write(
+                                function_args.get("action", ""),
+                                target,
+                                function_args.get("content", ""),
+                            )
+                        except Exception:
+                            pass
+                    tool_duration = time.time() - tool_start_time
+                    if self._should_emit_quiet_tool_messages():
+                        self._vprint(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")
+                elif function_name == "clarify":
+                    from tools.clarify_tool import clarify_tool as _clarify_tool
+                    function_result = _clarify_tool(
+                        question=function_args.get("question", ""),
+                        choices=function_args.get("choices"),
+                        callback=self.clarify_callback,
+                    )
+                    tool_duration = time.time() - tool_start_time
+                    if self._should_emit_quiet_tool_messages():
+                        self._vprint(f"  {_get_cute_tool_message_impl('clarify', function_args, tool_duration, result=function_result)}")
+                elif function_name == "delegate_task":
+                    from tools.delegate_tool import delegate_task as _delegate_task
+                    tasks_arg = function_args.get("tasks")
+                    if tasks_arg and isinstance(tasks_arg, list):
+                        spinner_label = f"🔀 delegating {len(tasks_arg)} tasks"
+                    else:
+                        goal_preview = (function_args.get("goal") or "")[:30]
+                        spinner_label = f"🔀 {goal_preview}" if goal_preview else "🔀 delegating"
+                    spinner = None
+                    if self._should_emit_quiet_tool_messages() and self._should_start_quiet_spinner():
+                        face = random.choice(KawaiiSpinner.get_waiting_faces())
+                        spinner = KawaiiSpinner(f"{face} {spinner_label}", spinner_type='dots', print_fn=self._print_fn)
+                        spinner.start()
+                    self._delegate_spinner = spinner
+                    _delegate_result = None
+                    try:
+                        function_result = _delegate_task(
+                            goal=function_args.get("goal"),
+                            context=function_args.get("context"),
+                            toolsets=function_args.get("toolsets"),
+                            tasks=tasks_arg,
+                            max_iterations=function_args.get("max_iterations"),
+                            parent_agent=self,
+                        )
+                        _delegate_result = function_result
+                    finally:
+                        self._delegate_spinner = None
+                        tool_duration = time.time() - tool_start_time
+                        cute_msg = _get_cute_tool_message_impl('delegate_task', function_args, tool_duration, result=_delegate_result)
+                        if spinner:
+                            spinner.stop(cute_msg)
+                        elif self._should_emit_quiet_tool_messages():
+                            self._vprint(f"  {cute_msg}")
+                elif self._context_engine_tool_names and function_name in self._context_engine_tool_names:
+                    # Context engine tools (lcm_grep, lcm_describe, lcm_expand, etc.)
+                    spinner = None
+                    if self._should_emit_quiet_tool_messages():
+                        face = random.choice(KawaiiSpinner.get_waiting_faces())
+                        emoji = _get_tool_emoji(function_name)
+                        preview = _build_tool_preview(function_name, function_args) or function_name
+                        spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=self._print_fn)
+                        spinner.start()
+                    _ce_result = None
+                    try:
+                        function_result = self.context_compressor.handle_tool_call(function_name, function_args, messages=messages)
+                        _ce_result = function_result
+                    except Exception as tool_error:
+                        function_result = json.dumps({"error": f"Context engine tool '{function_name}' failed: {tool_error}"})
+                        logger.error("context_engine.handle_tool_call raised for %s: %s", function_name, tool_error, exc_info=True)
+                    finally:
+                        tool_duration = time.time() - tool_start_time
+                        cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_ce_result)
+                        if spinner:
+                            spinner.stop(cute_msg)
+                        elif self._should_emit_quiet_tool_messages():
+                            self._vprint(f"  {cute_msg}")
+                elif self._memory_manager and self._memory_manager.has_tool(function_name):
+                    # Memory provider tools (hindsight_retain, honcho_search, etc.)
+                    # These are not in the tool registry — route through MemoryManager.
+                    spinner = None
+                    if self._should_emit_quiet_tool_messages() and self._should_start_quiet_spinner():
+                        face = random.choice(KawaiiSpinner.get_waiting_faces())
+                        emoji = _get_tool_emoji(function_name)
+                        preview = _build_tool_preview(function_name, function_args) or function_name
+                        spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=self._print_fn)
+                        spinner.start()
+                    _mem_result = None
+                    try:
+                        function_result = self._memory_manager.handle_tool_call(function_name, function_args)
+                        _mem_result = function_result
+                    except Exception as tool_error:
+                        function_result = json.dumps({"error": f"Memory tool '{function_name}' failed: {tool_error}"})
+                        logger.error("memory_manager.handle_tool_call raised for %s: %s", function_name, tool_error, exc_info=True)
+                    finally:
+                        tool_duration = time.time() - tool_start_time
+                        cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_mem_result)
+                        if spinner:
+                            spinner.stop(cute_msg)
+                        elif self._should_emit_quiet_tool_messages():
+                            self._vprint(f"  {cute_msg}")
+                elif self.quiet_mode:
+                    spinner = None
+                    if self._should_emit_quiet_tool_messages() and self._should_start_quiet_spinner():
+                        face = random.choice(KawaiiSpinner.get_waiting_faces())
+                        emoji = _get_tool_emoji(function_name)
+                        preview = _build_tool_preview(function_name, function_args) or function_name
+                        spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=self._print_fn)
+                        spinner.start()
+                    _spinner_result = None
+                    try:
+                        function_result = handle_function_call(
+                            function_name, function_args, effective_task_id,
+                            tool_call_id=tool_call.id,
+                            session_id=self.session_id or "",
+                            enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                            skip_pre_tool_call_hook=True,
+                        )
+                        _spinner_result = function_result
+                    except Exception as tool_error:
+                        function_result = f"Error executing tool '{function_name}': {tool_error}"
+                        logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
+                    finally:
+                        tool_duration = time.time() - tool_start_time
+                        cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_spinner_result)
+                        if spinner:
+                            spinner.stop(cute_msg)
+                        elif self._should_emit_quiet_tool_messages():
+                            self._vprint(f"  {cute_msg}")
+                else:
+                    try:
+                        function_result = handle_function_call(
+                            function_name, function_args, effective_task_id,
+                            tool_call_id=tool_call.id,
+                            session_id=self.session_id or "",
+                            enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                            skip_pre_tool_call_hook=True,
+                        )
+                    except Exception as tool_error:
+                        function_result = f"Error executing tool '{function_name}': {tool_error}"
+                        logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
+                    tool_duration = time.time() - tool_start_time
+
+                result_preview = function_result if self.verbose_logging else (
+                    function_result[:200] if len(function_result) > 200 else function_result
+                )
+
+                # Log tool errors to the persistent error log so [error] tags
+                # in the UI always have a corresponding detailed entry on disk.
+                _is_error_result, _ = _detect_tool_failure(function_name, function_result)
+                if _is_error_result:
+                    logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
+                else:
+                    logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, len(function_result))
+
+                if self.tool_progress_callback:
+                    try:
+                        self.tool_progress_callback(
+                            "tool.completed", function_name, None, None,
+                            duration=tool_duration, is_error=_is_error_result,
+                        )
+                    except Exception as cb_err:
+                        logging.debug(f"Tool progress callback error: {cb_err}")
+
+                _tool_completed = True
+                self._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s)")
+            finally:
+                # Always clear per-tool activity state. Without this, abnormal
+                # tool exits can leave stale diagnostics like
+                # "executing tool: terminal" in gateway inactivity timeouts.
+                if _track_tool_activity:
+                    try:
+                        from tools.environments.base import set_activity_callback
+                        set_activity_callback(None)
                     except Exception:
                         pass
-                tool_duration = time.time() - tool_start_time
-                if self._should_emit_quiet_tool_messages():
-                    self._vprint(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")
-            elif function_name == "clarify":
-                from tools.clarify_tool import clarify_tool as _clarify_tool
-                function_result = _clarify_tool(
-                    question=function_args.get("question", ""),
-                    choices=function_args.get("choices"),
-                    callback=self.clarify_callback,
-                )
-                tool_duration = time.time() - tool_start_time
-                if self._should_emit_quiet_tool_messages():
-                    self._vprint(f"  {_get_cute_tool_message_impl('clarify', function_args, tool_duration, result=function_result)}")
-            elif function_name == "delegate_task":
-                from tools.delegate_tool import delegate_task as _delegate_task
-                tasks_arg = function_args.get("tasks")
-                if tasks_arg and isinstance(tasks_arg, list):
-                    spinner_label = f"🔀 delegating {len(tasks_arg)} tasks"
-                else:
-                    goal_preview = (function_args.get("goal") or "")[:30]
-                    spinner_label = f"🔀 {goal_preview}" if goal_preview else "🔀 delegating"
-                spinner = None
-                if self._should_emit_quiet_tool_messages() and self._should_start_quiet_spinner():
-                    face = random.choice(KawaiiSpinner.get_waiting_faces())
-                    spinner = KawaiiSpinner(f"{face} {spinner_label}", spinner_type='dots', print_fn=self._print_fn)
-                    spinner.start()
-                self._delegate_spinner = spinner
-                _delegate_result = None
-                try:
-                    function_result = _delegate_task(
-                        goal=function_args.get("goal"),
-                        context=function_args.get("context"),
-                        toolsets=function_args.get("toolsets"),
-                        tasks=tasks_arg,
-                        max_iterations=function_args.get("max_iterations"),
-                        parent_agent=self,
-                    )
-                    _delegate_result = function_result
-                finally:
-                    self._delegate_spinner = None
-                    tool_duration = time.time() - tool_start_time
-                    cute_msg = _get_cute_tool_message_impl('delegate_task', function_args, tool_duration, result=_delegate_result)
-                    if spinner:
-                        spinner.stop(cute_msg)
-                    elif self._should_emit_quiet_tool_messages():
-                        self._vprint(f"  {cute_msg}")
-            elif self._context_engine_tool_names and function_name in self._context_engine_tool_names:
-                # Context engine tools (lcm_grep, lcm_describe, lcm_expand, etc.)
-                spinner = None
-                if self._should_emit_quiet_tool_messages():
-                    face = random.choice(KawaiiSpinner.get_waiting_faces())
-                    emoji = _get_tool_emoji(function_name)
-                    preview = _build_tool_preview(function_name, function_args) or function_name
-                    spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=self._print_fn)
-                    spinner.start()
-                _ce_result = None
-                try:
-                    function_result = self.context_compressor.handle_tool_call(function_name, function_args, messages=messages)
-                    _ce_result = function_result
-                except Exception as tool_error:
-                    function_result = json.dumps({"error": f"Context engine tool '{function_name}' failed: {tool_error}"})
-                    logger.error("context_engine.handle_tool_call raised for %s: %s", function_name, tool_error, exc_info=True)
-                finally:
-                    tool_duration = time.time() - tool_start_time
-                    cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_ce_result)
-                    if spinner:
-                        spinner.stop(cute_msg)
-                    elif self._should_emit_quiet_tool_messages():
-                        self._vprint(f"  {cute_msg}")
-            elif self._memory_manager and self._memory_manager.has_tool(function_name):
-                # Memory provider tools (hindsight_retain, honcho_search, etc.)
-                # These are not in the tool registry — route through MemoryManager.
-                spinner = None
-                if self._should_emit_quiet_tool_messages() and self._should_start_quiet_spinner():
-                    face = random.choice(KawaiiSpinner.get_waiting_faces())
-                    emoji = _get_tool_emoji(function_name)
-                    preview = _build_tool_preview(function_name, function_args) or function_name
-                    spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=self._print_fn)
-                    spinner.start()
-                _mem_result = None
-                try:
-                    function_result = self._memory_manager.handle_tool_call(function_name, function_args)
-                    _mem_result = function_result
-                except Exception as tool_error:
-                    function_result = json.dumps({"error": f"Memory tool '{function_name}' failed: {tool_error}"})
-                    logger.error("memory_manager.handle_tool_call raised for %s: %s", function_name, tool_error, exc_info=True)
-                finally:
-                    tool_duration = time.time() - tool_start_time
-                    cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_mem_result)
-                    if spinner:
-                        spinner.stop(cute_msg)
-                    elif self._should_emit_quiet_tool_messages():
-                        self._vprint(f"  {cute_msg}")
-            elif self.quiet_mode:
-                spinner = None
-                if self._should_emit_quiet_tool_messages() and self._should_start_quiet_spinner():
-                    face = random.choice(KawaiiSpinner.get_waiting_faces())
-                    emoji = _get_tool_emoji(function_name)
-                    preview = _build_tool_preview(function_name, function_args) or function_name
-                    spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=self._print_fn)
-                    spinner.start()
-                _spinner_result = None
-                try:
-                    function_result = handle_function_call(
-                        function_name, function_args, effective_task_id,
-                        tool_call_id=tool_call.id,
-                        session_id=self.session_id or "",
-                        enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
-                        skip_pre_tool_call_hook=True,
-                    )
-                    _spinner_result = function_result
-                except Exception as tool_error:
-                    function_result = f"Error executing tool '{function_name}': {tool_error}"
-                    logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
-                finally:
-                    tool_duration = time.time() - tool_start_time
-                    cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_spinner_result)
-                    if spinner:
-                        spinner.stop(cute_msg)
-                    elif self._should_emit_quiet_tool_messages():
-                        self._vprint(f"  {cute_msg}")
-            else:
-                try:
-                    function_result = handle_function_call(
-                        function_name, function_args, effective_task_id,
-                        tool_call_id=tool_call.id,
-                        session_id=self.session_id or "",
-                        enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
-                        skip_pre_tool_call_hook=True,
-                    )
-                except Exception as tool_error:
-                    function_result = f"Error executing tool '{function_name}': {tool_error}"
-                    logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
-                tool_duration = time.time() - tool_start_time
+                    if self._current_tool == function_name:
+                        self._current_tool = None
+                    if not _tool_completed:
+                        self._touch_activity(f"tool exited without completion: {function_name}")
 
-            result_preview = function_result if self.verbose_logging else (
-                function_result[:200] if len(function_result) > 200 else function_result
-            )
-
-            # Log tool errors to the persistent error log so [error] tags
-            # in the UI always have a corresponding detailed entry on disk.
-            _is_error_result, _ = _detect_tool_failure(function_name, function_result)
-            if _is_error_result:
-                logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
-            else:
-                logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, len(function_result))
-
-            if self.tool_progress_callback:
-                try:
-                    self.tool_progress_callback(
-                        "tool.completed", function_name, None, None,
-                        duration=tool_duration, is_error=_is_error_result,
-                    )
-                except Exception as cb_err:
-                    logging.debug(f"Tool progress callback error: {cb_err}")
-
-            self._current_tool = None
-            self._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s)")
 
             if self.verbose_logging:
                 logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
