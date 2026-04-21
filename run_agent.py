@@ -4256,6 +4256,132 @@ class AIAgent:
 
         return None
 
+    @staticmethod
+    def _hash_tool_args(args: str) -> str:
+        """Normalize and hash tool arguments for cross-turn comparison.
+        
+        Sorts JSON keys and strips whitespace so minor formatting differences
+        don't prevent loop detection. Returns first 16 chars of SHA256 hash.
+        """
+        import hashlib
+        try:
+            normalized = json.dumps(json.loads(args), sort_keys=True, separators=(',', ':'))
+            return hashlib.sha256(normalized.encode()).hexdigest()[:16]
+        except (json.JSONDecodeError, TypeError):
+            # Fallback: hash the raw string
+            return hashlib.sha256(args.strip().encode()).hexdigest()[:16]
+
+    def _check_tool_loop(self, tool_calls: list, tool_results: list) -> dict:
+        """Check for cross-turn tool call loops and apply escalation.
+        
+        Tracks (tool_name, args_hash) pairs across turns. After each tool
+        execution, records which tools were called. On the next turn, checks
+        if the model repeats the same (tool, args) pair.
+        
+        Args:
+            tool_calls: List of tool call objects from the current assistant message
+            tool_results: List of tool result strings corresponding to tool_calls
+            
+        Returns:
+            dict with keys:
+              - action: "none", "nudge", "reprompt", or "stop"
+              - nudge_message: (if action is "nudge" or "reprompt") The message to inject
+              - result_preview: (if action is "nudge" or "reprompt") Preview of the last result
+              - tool_name: (if action is "nudge" or "reprompt") The repeated tool name
+              - args: (if action is "nudge" or "reprompt") The repeated tool arguments
+        """
+        if not tool_calls:
+            return {"action": "none"}
+        
+        # Load config thresholds
+        max_repeats_nudge = 2
+        max_repeats_reprompt = 4
+        max_repeats_stop = 5
+        
+        # Load loop_detection config from user's config.yaml
+        try:
+            from hermes_cli.config import get_hermes_home, get_config_path
+            import yaml
+            config_path = get_config_path()
+            if config_path.exists():
+                with open(config_path, "r", encoding="utf-8") as f:
+                    user_config = yaml.safe_load(f) or {}
+                loop_config = (
+                    user_config.get("agent", {}).get("loop_detection", {})
+                    if isinstance(user_config.get("agent"), dict)
+                    else {}
+                )
+                if loop_config.get("enabled", True):
+                    max_repeats_nudge = loop_config.get("max_repeats_before_nudge", max_repeats_nudge)
+                    max_repeats_reprompt = loop_config.get("max_repeats_before_reprompt", max_repeats_reprompt)
+                    max_repeats_stop = loop_config.get("max_repeats_before_stop", max_repeats_stop)
+                else:
+                    return {"action": "none"}
+        except Exception:
+            # Config load failed — use defaults
+            pass
+        
+        # Track each tool call in this turn
+        for tc, result in zip(tool_calls, tool_results):
+            tool_name = tc.function.name
+            args_hash = self._hash_tool_args(tc.function.arguments)
+            key = f"{tool_name}::{args_hash}"
+            
+            # Only track tools with non-empty results
+            if not result or not result.strip():
+                continue
+            
+            # Update repeat counter
+            current_count = self._tool_repeat_tracker.get(key, 0) + 1
+            self._tool_repeat_tracker[key] = current_count
+            
+            # Check if we've hit a threshold
+            if current_count == max_repeats_nudge:
+                # Level 1: targeted nudge
+                result_preview = result[:200].replace('\n', ' ')
+                args_str = tc.function.arguments[:100].replace('\n', ' ')
+                return {
+                    "action": "nudge",
+                    "nudge_level": 1,
+                    "nudge_message": f"You called `{tool_name}({args_str})` on the previous turn and received this result: `{result_preview}`. Please process this result instead of calling the same tool again.",
+                    "result_preview": result_preview,
+                    "tool_name": tool_name,
+                    "args": tc.function.arguments,
+                }
+            elif current_count == max_repeats_nudge + 1:
+                # Level 2: stronger nudge
+                result_preview = result[:200].replace('\n', ' ')
+                args_str = tc.function.arguments[:100].replace('\n', ' ')
+                return {
+                    "action": "nudge",
+                    "nudge_level": 2,
+                    "nudge_message": f"You have called `{tool_name}({args_str})` {current_count} times consecutively without making progress. The result was: `{result_preview}`. Do NOT call this tool again with the same arguments. Take a different approach or respond with your final answer.",
+                    "result_preview": result_preview,
+                    "tool_name": tool_name,
+                    "args": tc.function.arguments,
+                }
+            elif current_count == max_repeats_reprompt:
+                # Level 3: break + re-prompt
+                result_preview = result[:200].replace('\n', ' ')
+                self._loop_reprompt_issued = True
+                return {
+                    "action": "reprompt",
+                    "nudge_message": f"You called `{tool_name}` with the same arguments {current_count} times. Pay close attention to the tool signature and the responses you received. Further attempts will require the user to intervene.",
+                    "result_preview": result_preview,
+                    "tool_name": tool_name,
+                    "args": tc.function.arguments,
+                }
+            elif current_count >= max_repeats_stop:
+                # Level 4: hard stop
+                self._loop_reprompt_issued = True
+                return {
+                    "action": "stop",
+                    "tool_name": tool_name,
+                    "repeat_count": current_count,
+                }
+        
+        return {"action": "none"}
+
     def _invalidate_system_prompt(self):
         """
         Invalidate the cached system prompt, forcing a rebuild on the next turn.
@@ -8612,6 +8738,10 @@ class AIAgent:
         self._last_content_tools_all_housekeeping = False
         self._mute_post_response = False
         self._unicode_sanitization_passes = 0
+        
+        # Tool loop detection — tracks (tool_name, args_hash) across turns
+        self._tool_repeat_tracker: Dict[str, int] = {}  # {(tool_name, args_hash): repeat_count}
+        self._loop_reprompt_issued = False  # whether re-prompt was already delivered this turn
 
         # Pre-turn connection health check: detect and clean up dead TCP
         # connections left over from provider outages or dropped streams.
@@ -11202,6 +11332,96 @@ class AIAgent:
 
                     self._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
 
+                    # Collect tool results from messages (appended by _execute_tool_calls)
+                    _tool_results = []
+                    for m in messages:
+                        if isinstance(m, dict) and m.get("role") == "tool":
+                            _tool_results.append(m.get("content", ""))
+                    
+                    # ── Cross-turn tool loop detection ──────────────────
+                    _loop_result = self._check_tool_loop(
+                        assistant_message.tool_calls, _tool_results
+                    )
+                    if _loop_result["action"] == "nudge":
+                        # Level 1-2: inject targeted nudge
+                        nudge_level = _loop_result.get("nudge_level", 1)
+                        repeat_count = self._tool_repeat_tracker.get(
+                            f"{_loop_result['tool_name']}::{self._hash_tool_args(_loop_result['args'])}", 0
+                        )
+                        if nudge_level == 1:
+                            logger.warning(
+                                "Tool loop detected: %s repeated %d times — injecting nudge",
+                                _loop_result["tool_name"],
+                                repeat_count,
+                            )
+                            self._emit_status(
+                                f"⚠️ Model repeated `{_loop_result['tool_name']}` — nudging to process results"
+                            )
+                        else:
+                            logger.warning(
+                                "Tool loop persistent: %s repeated %d times — stronger nudge",
+                                _loop_result["tool_name"],
+                                repeat_count,
+                            )
+                            self._emit_status(
+                                f"⚠️ Model still repeating `{_loop_result['tool_name']}` — stronger warning"
+                            )
+                        # Append empty assistant message + nudge (mirrors post-tool empty nudge pattern)
+                        _nudge_msg = self._build_assistant_message(assistant_message, finish_reason)
+                        _nudge_msg["content"] = "(empty)"
+                        messages.append(_nudge_msg)
+                        messages.append({
+                            "role": "user",
+                            "content": _loop_result["nudge_message"],
+                        })
+                        continue
+                    elif _loop_result["action"] == "reprompt":
+                        # Level 3: break + re-prompt + continue
+                        logger.warning(
+                            "Tool loop detected: %s repeated %d times — breaking for re-prompt",
+                            _loop_result["tool_name"],
+                            self._tool_repeat_tracker.get(
+                                f"{_loop_result['tool_name']}::{self._hash_tool_args(_loop_result['args'])}", 0
+                            ),
+                        )
+                        self._emit_status(
+                            f"⚠️ Model stuck in tool loop — breaking for re-prompt"
+                        )
+                        # Inject re-prompt message and continue (don't exit loop)
+                        _reprompt_msg = self._build_assistant_message(assistant_message, finish_reason)
+                        _reprompt_msg["content"] = "(empty)"
+                        messages.append(_reprompt_msg)
+                        messages.append({
+                            "role": "user",
+                            "content": _loop_result["nudge_message"],
+                        })
+                        # Append the last tool result so the model has the context it missed
+                        last_result = _tool_results[-1] if _tool_results else ""
+                        if last_result:
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": assistant_message.tool_calls[-1].id,
+                                "content": last_result,
+                            })
+                        continue
+                    elif _loop_result["action"] == "stop":
+                        # Level 4: hard stop
+                        logger.warning(
+                            "Tool loop terminated: %s repeated %d times — hard stop",
+                            _loop_result["tool_name"],
+                            _loop_result["repeat_count"],
+                        )
+                        self._emit_status(
+                            f"❌ Model entered tool loop calling `{_loop_result['tool_name']}` "
+                            f"{_loop_result['repeat_count']} times — terminated"
+                        )
+                        # Append assistant message and break
+                        assistant_msg = self._build_assistant_message(assistant_message, finish_reason)
+                        messages.append(assistant_msg)
+                        _turn_exit_reason = "tool_loop_terminated"
+                        final_response = ""
+                        break
+                    
                     # Reset per-turn retry counters after successful tool
                     # execution so a single truncation doesn't poison the
                     # entire conversation.

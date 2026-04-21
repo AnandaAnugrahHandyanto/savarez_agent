@@ -376,6 +376,15 @@ DEFAULT_CONFIG = {
         # Sends a status message every N seconds so the user knows the
         # agent hasn't died during long tasks.  0 = disable notifications.
         "gateway_notify_interval": 600,
+        # Cross-turn tool loop detection — tracks (tool_name, args) pairs
+        # across turns and applies escalation when the model repeats the same
+        # tool call without making progress.
+        "loop_detection": {
+            "enabled": True,
+            "max_repeats_before_nudge": 2,    # repeat count at which to inject nudge
+            "max_repeats_before_reprompt": 4, # repeat count at which to break and re-prompt
+            "max_repeats_before_stop": 5,     # repeat count at which to hard stop
+        },
     },
     
     "terminal": {
