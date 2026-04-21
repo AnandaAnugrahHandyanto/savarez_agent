@@ -1048,9 +1048,9 @@ class TestFindGatewayPidsExclude:
 
 class TestGatewayModeWritesExitCodeEarly:
     """When running as ``hermes update --gateway``, the exit code marker must be
-    written *before* the gateway restart attempt.  Without this, systemd's
-    ``KillMode=mixed`` kills the update process (and its wrapping shell) during
-    the cgroup teardown, so the shell epilogue that normally writes the exit
+    written *before* the gateway restart attempt. Without this, systemd's
+    cgroup teardown kills the update process (and its wrapping shell) during
+    restart, so the shell epilogue that normally writes the exit
     code never executes.  The new gateway's update watcher then polls for 30
     minutes and sends a spurious timeout message.
     """

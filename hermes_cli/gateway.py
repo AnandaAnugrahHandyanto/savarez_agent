@@ -1847,6 +1847,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
         hermes_home = _hermes_home_for_target_user(home_dir)
+        pid_path = f"{hermes_home}/gateway.pid"
         profile_arg = _profile_arg(hermes_home)
         # Remap all paths that may resolve under the calling user's home
         # (e.g. /root/) to the target user's home so the service can
@@ -1871,7 +1872,9 @@ StartLimitIntervalSec=0
 Type=simple
 User={username}
 Group={group_name}
+ExecStartPre=/usr/bin/rm -f {pid_path}
 ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run --replace
+ExecStopPost=/usr/bin/rm -f {pid_path}
 WorkingDirectory={working_dir}
 Environment="HOME={home_dir}"
 Environment="USER={username}"
@@ -1884,7 +1887,7 @@ RestartSec=60
 RestartMaxDelaySec=300
 RestartSteps=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
-KillMode=mixed
+KillMode=control-group
 KillSignal=SIGTERM
 ExecReload=/bin/kill -USR1 $MAINPID
 TimeoutStopSec={restart_timeout}
@@ -1896,6 +1899,7 @@ WantedBy=multi-user.target
 """
 
     hermes_home = str(get_hermes_home().resolve())
+    pid_path = f"{hermes_home}/gateway.pid"
     profile_arg = _profile_arg(hermes_home)
     path_entries.extend(_build_user_local_paths(Path.home(), path_entries))
     path_entries.extend(_build_wsl_interop_paths(path_entries))
@@ -1909,7 +1913,9 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
+ExecStartPre=/usr/bin/rm -f {pid_path}
 ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run --replace
+ExecStopPost=/usr/bin/rm -f {pid_path}
 WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
@@ -1919,7 +1925,7 @@ RestartSec=60
 RestartMaxDelaySec=300
 RestartSteps=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
-KillMode=mixed
+KillMode=control-group
 KillSignal=SIGTERM
 ExecReload=/bin/kill -USR1 $MAINPID
 TimeoutStopSec={restart_timeout}
