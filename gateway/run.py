@@ -978,6 +978,100 @@ import weakref as _weakref
 _gateway_runner_ref: _weakref.ref = lambda: None
 
 
+def _sanitize_agent_error(error) -> str:
+    """Extract a safe, user-facing summary from an agent error payload.
+
+    Agent errors frequently contain the full upstream HTTP response body,
+    including JSON with ``request_id``, billing URLs, provider-specific
+    error codes, and other internal details that should never reach a
+    group chat. This helper produces a short human-readable summary:
+
+      - HTTP status code if extractable
+      - The "message" field from Anthropic/OpenAI-style error bodies,
+        stripped of URLs and IDs
+      - Falls back to a generic "upstream error" string when nothing
+        safe can be extracted
+
+    Caller is responsible for deciding whether to surface the result at
+    all (e.g. silence contract in group chats).
+    """
+    if error is None:
+        return "no details available"
+    import json as _json
+    import re as _re
+
+    s = str(error)
+    if not s:
+        return "unknown error"
+
+    # Try to extract an HTTP status code (e.g. "HTTP 429", "Error code: 400")
+    status = None
+    m = _re.search(r"(?:HTTP |Error code:\s*|status[:\s]+)(\d{3})", s)
+    if m:
+        status = m.group(1)
+
+    # Try to parse the first JSON body in the error string — common shape:
+    # { "type": "error", "error": { "type": "...", "message": "..." } }
+    msg = None
+    try:
+        brace_start = s.find("{")
+        if brace_start >= 0:
+            blob = s[brace_start:]
+            try:
+                parsed = _json.loads(blob)
+            except Exception:
+                # Try tolerant single-quote parse via ast.literal_eval
+                # which handles Python repr dicts with embedded apostrophes
+                # correctly (unlike a blind ' -> " replace).
+                try:
+                    import ast as _ast
+                    parsed = _ast.literal_eval(blob)
+                except Exception:
+                    parsed = None
+            if isinstance(parsed, dict):
+                err = parsed.get("error")
+                if isinstance(err, dict):
+                    msg = err.get("message") or err.get("type")
+                elif isinstance(err, str):
+                    msg = err
+                msg = msg or parsed.get("message")
+    except Exception:
+        msg = None
+
+    # Regex fallback for messages that don't parse cleanly but follow the
+    # Anthropic/OpenAI shape: ...'message': 'foo'... or ..."message": "foo"...
+    if not msg:
+        rm = _re.search(r"['\"]message['\"]\s*:\s*['\"]((?:[^'\"\\]|\\.){1,400}?)['\"]", s)
+        if rm:
+            msg = rm.group(1)
+
+    # Last-resort: first line of the raw string, with URLs/IDs stripped
+    if not msg:
+        first_line = s.splitlines()[0]
+        first_line = _re.sub(r"https?://\S+", "", first_line)
+        first_line = _re.sub(r"req_[A-Za-z0-9]{6,}", "", first_line)
+        first_line = first_line.strip(" -:,")
+        if first_line and len(first_line) < 200:
+            msg = first_line
+
+    # Final scrub of the chosen message
+    if msg:
+        msg = _re.sub(r"https?://\S+", "", msg)
+        msg = _re.sub(r"req_[A-Za-z0-9]{6,}", "", msg)
+        msg = msg.strip()
+        # Hard cap so a rogue message can't blow past platform limits
+        if len(msg) > 160:
+            msg = msg[:157] + "..."
+
+    if status and msg:
+        return f"HTTP {status}: {msg}"
+    if status:
+        return f"HTTP {status}"
+    if msg:
+        return msg
+    return "upstream error"
+
+
 class GatewayRunner:
     """
     Main gateway controller.
@@ -6609,9 +6703,18 @@ class GatewayRunner:
                             "/reset to start fresh."
                         )
                     else:
+                        # Sanitize the raw error before surfacing to the
+                        # chat. str(error_detail) frequently contains the
+                        # full Anthropic/OpenAI HTTP response body
+                        # including JSON payloads, request_ids, and
+                        # billing-endpoint URLs. Extract only the
+                        # human-readable status + message.
+                        # (kaito-err-leak-fix)
+                        _safe_detail = _sanitize_agent_error(error_detail)
                         response = (
-                            f"The request failed: {str(error_detail)[:300]}\n"
-                            "Try again or use /reset to start a fresh session."
+                            f"⚠️ The request failed ({_safe_detail}).\n"
+                            "Try again, /reset for a fresh session, "
+                            "or contact the owner if this persists."
                         )
 
             # If the agent's session_id changed during compression, update
@@ -13888,12 +13991,24 @@ class GatewayRunner:
             _resolved_model = getattr(_agent, "model", None) if _agent else None
 
             if not final_response:
-                error_msg = f"⚠️ {result['error']}" if result.get("error") else ""
+                # Do NOT include raw result['error'] here — it can contain
+                # the full Anthropic/OpenAI HTTP response body including
+                # request IDs, error codes, and billing-context strings. That
+                # content then flows through as a normal chat message and
+                # bypasses the silence_allowed / status-callback suppression
+                # that protects group chats. Leave final_response empty and
+                # let the outer handler (see process_message, the
+                # `if not response and agent_result.get("failed")` branch)
+                # decide what the user actually sees — that branch has access
+                # to silence_allowed, context-overflow detection, and proper
+                # sanitization. The full error is still propagated in the
+                # "error" field below for logging and telemetry. (kaito-err-leak-fix)
                 return {
-                    "final_response": error_msg,
+                    "final_response": "",
                     "messages": result.get("messages", []),
                     "api_calls": result.get("api_calls", 0),
                     "failed": result.get("failed", False),
+                    "error": result.get("error"),
                     "compression_exhausted": result.get("compression_exhausted", False),
                     "tools": tools_holder[0] or [],
                     "history_offset": len(agent_history),
