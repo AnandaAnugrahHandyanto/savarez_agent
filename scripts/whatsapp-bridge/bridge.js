@@ -89,6 +89,36 @@ function getContextInfo(messageContent) {
   return {};
 }
 
+function formatContactCard(messageContent) {
+  if (!messageContent || typeof messageContent !== 'object') return '';
+
+  const lines = [];
+  const pushLine = (label, value) => {
+    if (value === undefined || value === null || value === '') return;
+    lines.push(`${label}: ${String(value)}`);
+  };
+
+  if (messageContent.displayName) pushLine('Name', messageContent.displayName);
+  if (messageContent.vcard) {
+    const phoneMatch = String(messageContent.vcard).match(/TEL[^:]*:(.+)/i);
+    if (phoneMatch?.[1]) pushLine('Phone', phoneMatch[1].trim());
+  }
+
+  if (Array.isArray(messageContent.contacts)) {
+    for (const contact of messageContent.contacts) {
+      if (!contact || typeof contact !== 'object') continue;
+      pushLine('Contact', contact.displayName || contact.vcard || contact.vcardFormattedName || '');
+      pushLine('Phone', contact.phoneNumber || contact.internationalNumber || contact.whatsappId || '');
+    }
+  }
+
+  if (lines.length > 0) {
+    return `[contact card]\n${lines.join('\n')}`;
+  }
+
+  return '[contact card received]';
+}
+
 mkdirSync(SESSION_DIR, { recursive: true });
 
 // Build LID → phone reverse map from session files (lid-mapping-{phone}.json)
@@ -308,6 +338,12 @@ async function startSocket() {
         } catch (err) {
           console.error('[bridge] Failed to download document:', err.message);
         }
+      } else if (messageContent.contactMessage) {
+        body = formatContactCard(messageContent.contactMessage);
+        mediaType = 'contact';
+      } else if (messageContent.contactsArrayMessage) {
+        body = formatContactCard(messageContent.contactsArrayMessage);
+        mediaType = 'contact';
       }
 
       // For media without caption, use a placeholder so the API message is never empty
