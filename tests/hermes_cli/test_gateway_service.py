@@ -93,6 +93,18 @@ class TestGeneratedSystemdUnits:
         assert f"RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
         assert "TimeoutStopSec=60" in unit
 
+    def test_user_unit_includes_brainctl_env_from_profile_files(self, tmp_path, monkeypatch):
+        (tmp_path / ".env").write_text(
+            "BRAINCTL_HOME=/tmp/profile-home\nBRAIN_DB=/tmp/profile-home/brain.db\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: tmp_path)
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert 'Environment="BRAINCTL_HOME=/tmp/profile-home"' in unit
+        assert 'Environment="BRAIN_DB=/tmp/profile-home/brain.db"' in unit
+
     def test_user_unit_includes_resolved_node_directory_in_path(self, monkeypatch):
         monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: "/home/test/.nvm/versions/node/v24.14.0/bin/node" if cmd == "node" else None)
 

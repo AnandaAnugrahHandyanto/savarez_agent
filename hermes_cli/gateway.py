@@ -1178,6 +1178,72 @@ def _hermes_home_for_target_user(target_home_dir: str) -> str:
         return str(current_hermes)
 
 
+def _service_env_overrides(hermes_home: str | os.PathLike | None = None) -> dict[str, str]:
+    """Return service-level env vars that must be present in the launched process.
+
+    These values are needed by long-lived gateway processes before any runtime
+    config bridging can happen. Read them from the target profile's `.env`
+    first, then let `config.yaml` override when it defines the same keys.
+    """
+    home = Path(hermes_home or get_hermes_home()).resolve()
+    wanted = ("BRAINCTL_HOME", "BRAIN_DB", "BRAIN_DB_FEDERATION")
+    resolved: dict[str, str] = {}
+
+    env_path = home / ".env"
+    if env_path.exists():
+        try:
+            from dotenv import dotenv_values
+
+            env_values = dotenv_values(env_path)
+            for key in wanted:
+                value = env_values.get(key)
+                if value not in (None, ""):
+                    resolved[key] = str(value)
+        except Exception:
+            pass
+
+    config_path = home / "config.yaml"
+    if config_path.exists():
+        try:
+            import yaml as _yaml
+            from hermes_cli.config import _expand_env_vars
+
+            with open(config_path, encoding="utf-8") as f:
+                cfg = _yaml.safe_load(f) or {}
+            cfg = _expand_env_vars(cfg)
+
+            def _find_key(node, target_key):
+                if isinstance(node, dict):
+                    if target_key in node and isinstance(node[target_key], (str, int, float, bool)):
+                        return str(node[target_key])
+                    for value in node.values():
+                        found = _find_key(value, target_key)
+                        if found not in (None, ""):
+                            return found
+                elif isinstance(node, list):
+                    for item in node:
+                        found = _find_key(item, target_key)
+                        if found not in (None, ""):
+                            return found
+                return None
+
+            for key in wanted:
+                value = _find_key(cfg, key)
+                if value not in (None, ""):
+                    resolved[key] = value
+        except Exception:
+            pass
+
+    return resolved
+
+
+def _systemd_env_lines(hermes_home: str | os.PathLike | None = None) -> str:
+    overrides = _service_env_overrides(hermes_home)
+    if not overrides:
+        return ""
+    return "\n".join(f'Environment="{key}={value}"' for key, value in overrides.items()) + "\n"
+
+
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
@@ -1200,6 +1266,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         username, group_name, home_dir = _system_service_identity(run_as_user)
         hermes_home = _hermes_home_for_target_user(home_dir)
         profile_arg = _profile_arg(hermes_home)
+        extra_env_lines = _systemd_env_lines(hermes_home)
         # Remap all paths that may resolve under the calling user's home
         # (e.g. /root/) to the target user's home so the service can
         # actually access them.
@@ -1231,7 +1298,7 @@ Environment="LOGNAME={username}"
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
-Restart=on-failure
+{extra_env_lines}Restart=on-failure
 RestartSec=30
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
@@ -1247,6 +1314,7 @@ WantedBy=multi-user.target
 
     hermes_home = str(get_hermes_home().resolve())
     profile_arg = _profile_arg(hermes_home)
+    extra_env_lines = _systemd_env_lines(hermes_home)
     path_entries.extend(_build_user_local_paths(Path.home(), path_entries))
     path_entries.extend(common_bin_paths)
     sane_path = ":".join(path_entries)
@@ -1263,7 +1331,7 @@ WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
-Restart=on-failure
+{extra_env_lines}Restart=on-failure
 RestartSec=30
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
@@ -1660,10 +1728,21 @@ def _launchd_domain() -> str:
     return f"gui/{os.getuid()}"
 
 
+def _launchd_env_xml(hermes_home: str | os.PathLike | None = None) -> str:
+    overrides = _service_env_overrides(hermes_home)
+    if not overrides:
+        return ""
+    return "\n".join(
+        f"        <key>{key}</key>\n        <string>{value}</string>"
+        for key, value in overrides.items()
+    ) + "\n"
+
+
 def generate_launchd_plist() -> str:
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
     hermes_home = str(get_hermes_home().resolve())
+    extra_env_xml = _launchd_env_xml(hermes_home)
     log_dir = get_hermes_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     label = get_launchd_label()
@@ -1728,7 +1807,7 @@ def generate_launchd_plist() -> str:
         <string>{venv_dir}</string>
         <key>HERMES_HOME</key>
         <string>{hermes_home}</string>
-    </dict>
+{extra_env_xml}    </dict>
     
     <key>RunAtLoad</key>
     <true/>

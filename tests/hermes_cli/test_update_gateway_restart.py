@@ -156,6 +156,20 @@ class TestLaunchdPlistPath:
         assert "<key>VIRTUAL_ENV</key>" in plist
         assert "<key>HERMES_HOME</key>" in plist
 
+    def test_plist_includes_brainctl_env_from_profile_files(self, tmp_path, monkeypatch):
+        (tmp_path / ".env").write_text(
+            "BRAINCTL_HOME=/tmp/profile-home\nBRAIN_DB=/tmp/profile-home/brain.db\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: tmp_path)
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "<key>BRAINCTL_HOME</key>" in plist
+        assert "<string>/tmp/profile-home</string>" in plist
+        assert "<key>BRAIN_DB</key>" in plist
+        assert "<string>/tmp/profile-home/brain.db</string>" in plist
+
     def test_plist_path_includes_venv_bin(self):
         plist = gateway_cli.generate_launchd_plist()
         detected = gateway_cli._detect_venv_dir()
