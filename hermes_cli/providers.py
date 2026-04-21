@@ -23,6 +23,13 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from hermes_cli.provider_contracts import (
+    BYTEPLUS_PROVIDER,
+    BYTEPLUS_STANDARD_BASE_URL,
+    VOLCENGINE_PROVIDER,
+    VOLCENGINE_STANDARD_BASE_URL,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -155,6 +162,16 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_env_var="OLLAMA_BASE_URL",
     ),
+    VOLCENGINE_PROVIDER: HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("VOLCENGINE_API_KEY",),
+        base_url_override=VOLCENGINE_STANDARD_BASE_URL,
+    ),
+    BYTEPLUS_PROVIDER: HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("BYTEPLUS_API_KEY",),
+        base_url_override=BYTEPLUS_STANDARD_BASE_URL,
+    ),
 }
 
 
@@ -261,6 +278,10 @@ ALIASES: Dict[str, str] = {
     # xiaomi
     "mimo": "xiaomi",
     "xiaomi-mimo": "xiaomi",
+    "volcengine-coding-plan": VOLCENGINE_PROVIDER,
+    "volcengine_coding_plan": VOLCENGINE_PROVIDER,
+    "byteplus-coding-plan": BYTEPLUS_PROVIDER,
+    "byteplus_coding_plan": BYTEPLUS_PROVIDER,
 
     # bedrock
     "aws": "bedrock",
@@ -293,6 +314,8 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
     "xiaomi": "Xiaomi MiMo",
+    VOLCENGINE_PROVIDER: "Volcengine",
+    BYTEPLUS_PROVIDER: "BytePlus",
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",
