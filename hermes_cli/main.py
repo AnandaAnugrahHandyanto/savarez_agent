@@ -4372,12 +4372,25 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             print("Install Node.js, then run:  cd web && npm install && npm run build")
         return not fatal
     print("→ Building web UI...")
-    r1 = subprocess.run([npm, "install", "--silent"], cwd=web_dir, capture_output=True)
+
+    def _relay(result: "subprocess.CompletedProcess") -> None:
+        """Print captured npm output so users can see *why* a step failed."""
+        for blob in (result.stdout, result.stderr):
+            if not blob:
+                continue
+            text = blob.decode("utf-8", errors="replace").rstrip() if isinstance(blob, bytes) else blob.rstrip()
+            if text:
+                print(text)
+
+    r1 = subprocess.run(
+        [npm, "install", "--silent"], cwd=web_dir, capture_output=True
+    )
     if r1.returncode != 0:
         print(
             f"  {'✗' if fatal else '⚠'} Web UI npm install failed"
             + ("" if fatal else " (hermes web will not be available)")
         )
+        _relay(r1)
         if fatal:
             print("  Run manually:  cd web && npm install && npm run build")
         return False
@@ -4387,6 +4400,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             f"  {'✗' if fatal else '⚠'} Web UI build failed"
             + ("" if fatal else " (hermes web will not be available)")
         )
+        _relay(r2)
         if fatal:
             print("  Run manually:  cd web && npm install && npm run build")
         return False
