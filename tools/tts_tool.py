@@ -406,7 +406,18 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
     """
     import requests
 
-    api_key = os.getenv("MINIMAX_API_KEY", "")
+    # Derive URL + key from the active provider when available (handles CN
+    # region automatically); fall back to env var + default URL.
+    derived_base = ""
+    api_key = ""
+    try:
+        from hermes_cli.provider_native_tools import native_api_url, native_credential
+        derived_base = native_api_url("/v1/t2a_v2")
+        api_key = native_credential()
+    except Exception:
+        pass
+    if not api_key:
+        api_key = os.getenv("MINIMAX_API_KEY", "")
     if not api_key:
         raise ValueError("MINIMAX_API_KEY not set. Get one at https://platform.minimax.io/")
 
@@ -416,7 +427,7 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
     speed = mm_config.get("speed", tts_config.get("speed", 1))
     vol = mm_config.get("vol", 1)
     pitch = mm_config.get("pitch", 0)
-    base_url = mm_config.get("base_url", DEFAULT_MINIMAX_BASE_URL)
+    base_url = mm_config.get("base_url") or derived_base or DEFAULT_MINIMAX_BASE_URL
 
     # Determine audio format from output extension
     if output_path.endswith(".wav"):

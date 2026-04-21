@@ -465,7 +465,15 @@ async def vision_analyze_tool(
 
         logger.info("Analyzing image: %s", image_url[:60])
         logger.info("User prompt: %s", user_prompt[:100])
-        
+
+        # Try provider-native VLM when available and vision is not pinned.
+        try:
+            native_result = _native_vision_analyze(image_url, user_prompt)
+            if native_result is not None:
+                return native_result
+        except Exception as _exc:
+            logger.debug("provider-native vision dispatch skipped: %s", _exc)
+
         # Determine if this is a local file path or a remote URL
         # Strip file:// scheme so file URIs resolve as local paths.
         resolved_url = image_url
@@ -686,6 +694,12 @@ async def vision_analyze_tool(
 def check_vision_requirements() -> bool:
     """Check if the configured runtime vision path can resolve a client."""
     try:
+        from hermes_cli.provider_native_tools import provider_has_native_tool, _safe_load_config
+        if provider_has_native_tool("vision", _safe_load_config()):
+            return True
+    except Exception:
+        pass
+    try:
         from agent.auxiliary_client import resolve_vision_provider_client
 
         _provider, client, _model = resolve_vision_provider_client()
@@ -781,6 +795,77 @@ def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
     )
     model = os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
     return vision_analyze_tool(image_url, full_prompt, model)
+
+
+# ─── Provider-native VLM ──────────────────────────────────────────────────
+
+_VLM_SUPPORTED_MIME = {"image/jpeg", "image/png", "image/webp"}
+
+
+def _native_vision_analyze(image_source, user_prompt):
+    """Dispatch to the native provider's VLM, or return None to fall through."""
+    import base64 as _b64
+    import mimetypes
+    import ssl
+    import urllib.error
+    import urllib.request
+    from hermes_cli.provider_native_tools import native_api_url, native_credential
+
+    try:
+        from hermes_cli.config import load_config
+        _cfg = load_config()
+        _vis_provider = (_cfg.get("auxiliary") or {}).get("vision", {}).get("provider", "")
+        if str(_vis_provider).strip().lower() not in ("", "auto", "main"):
+            return None
+    except Exception:
+        pass
+
+    url = native_api_url("/v1/coding_plan/vlm")
+    key = native_credential()
+    if not url or not key:
+        return None
+
+    src = (image_source or "").strip()
+    if not src:
+        return None
+    if not src.startswith(("data:", "http://", "https://")):
+        if src.startswith("file://"):
+            src = src[len("file://"):]
+        path = Path(os.path.expanduser(src))
+        if not path.is_file():
+            return None
+        mime, _ = mimetypes.guess_type(str(path))
+        if not mime or mime not in _VLM_SUPPORTED_MIME:
+            return None
+        data = _b64.b64encode(path.read_bytes()).decode()
+        src = f"data:{mime};base64,{data}"
+
+    payload = json.dumps({"prompt": user_prompt, "image_url": src},
+                         ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=payload, method="POST",
+        headers={"Authorization": f"Bearer {key}",
+                 "Content-Type": "application/json"},
+    )
+    try:
+        ctx = ssl.create_default_context()
+        with urllib.request.urlopen(req, timeout=60, context=ctx) as resp:
+            body = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except (urllib.error.HTTPError, urllib.error.URLError):
+        return None
+
+    base_resp = body.get("base_resp") or {}
+    if isinstance(base_resp, dict) and base_resp.get("status_code") not in (0, None):
+        return json.dumps({
+            "success": False,
+            "error": f"VLM error {base_resp.get('status_code')}: "
+                     f"{base_resp.get('status_msg', '')}",
+        }, ensure_ascii=False)
+
+    content = body.get("content")
+    if not isinstance(content, str) or not content.strip():
+        return None
+    return json.dumps({"success": True, "analysis": content}, ensure_ascii=False)
 
 
 registry.register(

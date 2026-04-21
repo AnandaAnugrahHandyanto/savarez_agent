@@ -621,6 +621,16 @@ def image_generate_tool(
         "generation_time": 0,
     }
 
+    # Provider-native dispatch.
+    try:
+        from hermes_cli.provider_native_tools import provider_has_native_tool, _safe_load_config
+        if provider_has_native_tool("image_gen", _safe_load_config()):
+            result = _native_image_generate(prompt, aspect_ratio, num_images or 1, output_format or "png")
+            if result is not None:
+                return result
+    except Exception as _exc:
+        logger.debug("provider-native image dispatch skipped: %s", _exc)
+
     start_time = datetime.datetime.now()
 
     try:
@@ -744,6 +754,12 @@ def check_fal_api_key() -> bool:
 def check_image_generation_requirements() -> bool:
     """True if FAL credentials and fal_client SDK are both available."""
     try:
+        from hermes_cli.provider_native_tools import provider_has_native_tool, _safe_load_config
+        if provider_has_native_tool("image_gen", _safe_load_config()):
+            return True
+    except Exception:
+        pass
+    try:
         if not check_fal_api_key():
             return False
         fal_client  # noqa: F401 — SDK presence check
@@ -817,6 +833,76 @@ IMAGE_GENERATE_SCHEMA = {
         "required": ["prompt"],
     },
 }
+
+
+# ─── Provider-native image generation ─────────────────────────────────────
+
+_RATIO_ALIAS = {"landscape": "16:9", "portrait": "9:16", "square": "1:1"}
+_VALID_RATIOS = {"1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9"}
+
+
+def _native_image_generate(prompt, aspect_ratio, num_images, output_format):
+    """Generate via the native provider's image API, or return None."""
+    import ssl
+    import urllib.error
+    import urllib.request
+    from hermes_cli.provider_native_tools import native_api_url, native_credential
+
+    url = native_api_url("/v1/image_generation")
+    key = native_credential()
+    if not url or not key:
+        return None
+
+    ratio = _RATIO_ALIAS.get((aspect_ratio or "").lower(), aspect_ratio)
+    if ratio not in _VALID_RATIOS:
+        ratio = "16:9"
+
+    payload = {
+        "model": "image-01",
+        "prompt": (prompt or "").strip(),
+        "aspect_ratio": ratio,
+        "n": max(1, min(4, int(num_images or 1))),
+        "response_format": "url",
+    }
+    try:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            method="POST",
+            headers={"Authorization": f"Bearer {key}",
+                     "Content-Type": "application/json"},
+        )
+        ctx = ssl.create_default_context()
+        with urllib.request.urlopen(req, timeout=120, context=ctx) as resp:
+            body = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as exc:
+        return json.dumps({"success": False, "error": f"image API HTTP {exc.code}"})
+    except (urllib.error.URLError, json.JSONDecodeError) as exc:
+        return json.dumps({"success": False, "error": str(exc)})
+
+    base = body.get("base_resp") or {}
+    if isinstance(base, dict) and base.get("status_code") not in (0, None):
+        return json.dumps({"success": False,
+                           "error": f"image API error {base.get('status_code')}: "
+                                    f"{base.get('status_msg', '')}"})
+
+    data = body.get("data") or {}
+    urls = []
+    if isinstance(data, dict):
+        for k in ("image_urls", "urls"):
+            v = data.get(k)
+            if isinstance(v, list):
+                urls = [u for u in v if isinstance(u, str) and u.startswith("http")]
+                break
+    if not urls:
+        return json.dumps({"success": False, "error": "image API returned no URL(s)"})
+
+    return json.dumps({
+        "success": True,
+        "image": urls[0],
+        "model": "image-01",
+        "aspect_ratio": ratio,
+    }, ensure_ascii=False)
 
 
 def _handle_image_generate(args, **kw):

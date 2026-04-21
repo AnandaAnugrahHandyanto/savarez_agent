@@ -21,6 +21,11 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 
 from hermes_cli.nous_subscription import get_nous_subscription_features
+from hermes_cli.provider_native_tools import (
+    apply_provider_native_tool_defaults,
+    describe_changes as describe_native_tool_changes,
+    get_native_tools as _provider_native_tools,
+)
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 from utils import base_url_hostname
 from hermes_constants import get_optional_skills_dir
@@ -845,9 +850,25 @@ def setup_model_provider(config: dict, *, quick: bool = False):
 
 
     # Tool Gateway prompt is already shown by _model_flow_nous() above.
+
+    # Wire tool defaults for chat providers that serve TTS / image / vision
+    # natively on the same credential.  Self-gates on the active provider's
+    # base_url; a no-op for providers not in the registry.
+    native_changes = apply_provider_native_tool_defaults(config)
+    if native_changes:
+        print()
+        print_success(
+            "The same credential also unlocks the following — wired automatically:"
+        )
+        print(describe_native_tool_changes(native_changes, config))
+
     save_config(config)
 
-    if not quick and selected_provider != "nous":
+    if (
+        not quick
+        and selected_provider != "nous"
+        and "tts" not in _provider_native_tools(config)
+    ):
         _setup_tts_provider(config)
 
 
