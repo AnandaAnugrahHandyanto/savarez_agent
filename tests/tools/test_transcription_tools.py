@@ -481,6 +481,76 @@ class TestTranscribeLocalExtended:
         assert result["success"] is False
         assert "CUDA out of memory" in result["error"]
 
+    def test_cuda_library_error_retries_on_cpu(self, tmp_path):
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        mock_segment = MagicMock()
+        mock_segment.text = "fallback ok"
+        mock_info = MagicMock()
+        mock_info.language = "pt"
+        mock_info.duration = 1.0
+
+        gpu_model = MagicMock()
+        gpu_model.transcribe.side_effect = RuntimeError(
+            "Library libcublas.so.12 is not found or cannot be loaded"
+        )
+
+        cpu_model = MagicMock()
+        cpu_model.transcribe.return_value = ([mock_segment], mock_info)
+
+        mock_whisper_cls = MagicMock(side_effect=[gpu_model, cpu_model])
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None), \
+             patch("tools.transcription_tools._local_model_cache_key", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is True
+        assert result["transcript"] == "fallback ok"
+        assert mock_whisper_cls.call_count == 2
+        assert mock_whisper_cls.call_args_list[0].kwargs["device"] == "auto"
+        assert mock_whisper_cls.call_args_list[1].kwargs["device"] == "cpu"
+        assert mock_whisper_cls.call_args_list[1].kwargs["compute_type"] == "int8"
+
+    def test_cpu_fallback_is_reused_on_next_call(self, tmp_path):
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        mock_segment = MagicMock()
+        mock_segment.text = "fallback ok"
+        mock_info = MagicMock()
+        mock_info.language = "pt"
+        mock_info.duration = 1.0
+
+        gpu_model = MagicMock()
+        gpu_model.transcribe.side_effect = RuntimeError(
+            "Library libcublas.so.12 is not found or cannot be loaded"
+        )
+
+        cpu_model = MagicMock()
+        cpu_model.transcribe.return_value = ([mock_segment], mock_info)
+        unexpected_model = MagicMock()
+        unexpected_model.transcribe.return_value = ([mock_segment], mock_info)
+
+        mock_whisper_cls = MagicMock(side_effect=[gpu_model, cpu_model, unexpected_model])
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None), \
+             patch("tools.transcription_tools._local_model_cache_key", None):
+            from tools.transcription_tools import _transcribe_local
+            first = _transcribe_local(str(audio), "base")
+            second = _transcribe_local(str(audio), "base")
+
+        assert first["success"] is True
+        assert second["success"] is True
+        assert mock_whisper_cls.call_count == 2
+
     def test_multiple_segments_joined(self, tmp_path):
         audio = tmp_path / "test.ogg"
         audio.write_bytes(b"fake")
