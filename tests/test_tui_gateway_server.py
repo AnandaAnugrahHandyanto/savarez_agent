@@ -6,6 +6,8 @@ import types
 from pathlib import Path
 from unittest.mock import patch
 
+import yaml
+
 from tui_gateway import server
 
 
@@ -228,6 +230,30 @@ def test_config_set_model_global_persists(monkeypatch):
     assert saved["model"]["default"] == "anthropic/claude-sonnet-4.6"
     assert saved["model"]["provider"] == "anthropic"
     assert saved["model"]["base_url"] == "https://api.anthropic.com"
+
+
+def test_save_cfg_uses_atomic_write_and_preserves_existing_config_on_failure(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump({"existing": True}), encoding="utf-8")
+
+    server._hermes_home = tmp_path
+    server._cfg_cache = None
+    server._cfg_mtime = None
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr("utils.atomic_yaml_write", _boom)
+
+    with patch.object(server, "_cfg_lock"):
+        try:
+            server._save_cfg({"new": True})
+        except RuntimeError as exc:
+            assert str(exc) == "disk full"
+        else:
+            raise AssertionError("expected _save_cfg to raise")
+
+    assert yaml.safe_load(config_path.read_text(encoding="utf-8")) == {"existing": True}
 
 
 def test_config_set_personality_rejects_unknown_name(monkeypatch):
