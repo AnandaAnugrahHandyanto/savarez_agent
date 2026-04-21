@@ -77,7 +77,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home
-from utils import atomic_yaml_write, is_truthy_value
+from utils import atomic_json_write, atomic_yaml_write, is_truthy_value
 _hermes_home = get_hermes_home()
 
 # Load environment variables from ~/.hermes/.env first.
@@ -1061,6 +1061,110 @@ class GatewayRunner:
     def _queue_during_drain_enabled(self) -> bool:
         return self._restart_requested and self._busy_input_mode == "queue"
 
+    def _restart_pending_events_path(self) -> Path:
+        return _hermes_home / ".restart_pending_events.json"
+
+    def _serialize_pending_event(self, event: MessageEvent) -> dict[str, Any]:
+        return {
+            "text": event.text,
+            "message_type": event.message_type.value,
+            "message_id": event.message_id,
+            "channel_prompt": event.channel_prompt,
+            "media_urls": list(event.media_urls or []),
+            "media_types": list(event.media_types or []),
+            "reply_to_message_id": event.reply_to_message_id,
+            "reply_to_text": event.reply_to_text,
+            "internal": bool(event.internal),
+            "source": event.source.to_dict() if event.source else None,
+        }
+
+    def _deserialize_pending_event(self, payload: dict[str, Any]) -> MessageEvent | None:
+        source_payload = payload.get("source")
+        if not source_payload:
+            return None
+        try:
+            source = SessionSource.from_dict(source_payload)
+            message_type = MessageType(payload.get("message_type", MessageType.TEXT.value))
+        except Exception:
+            return None
+        return MessageEvent(
+            text=str(payload.get("text") or ""),
+            message_type=message_type,
+            source=source,
+            message_id=payload.get("message_id"),
+            media_urls=list(payload.get("media_urls") or []),
+            media_types=list(payload.get("media_types") or []),
+            reply_to_message_id=payload.get("reply_to_message_id"),
+            reply_to_text=payload.get("reply_to_text"),
+            channel_prompt=payload.get("channel_prompt"),
+            internal=bool(payload.get("internal", False)),
+        )
+
+    def _persist_restart_pending_events(self) -> int:
+        checkpoint_path = self._restart_pending_events_path()
+        serialized: list[dict[str, Any]] = []
+        for adapter in self.adapters.values():
+            pending = getattr(adapter, "_pending_messages", None)
+            if not isinstance(pending, dict):
+                continue
+            for session_key, event in pending.items():
+                if not isinstance(event, MessageEvent):
+                    continue
+                if not getattr(event, "text", None) and not getattr(event, "media_urls", None):
+                    continue
+                serialized.append(
+                    {
+                        "session_key": session_key,
+                        "event": self._serialize_pending_event(event),
+                    }
+                )
+
+        if not serialized:
+            try:
+                checkpoint_path.unlink()
+            except FileNotFoundError:
+                pass
+            except Exception:
+                logger.debug("Failed removing stale restart pending checkpoint", exc_info=True)
+            return 0
+
+        atomic_json_write(checkpoint_path, serialized)
+        return len(serialized)
+
+    def _restore_restart_pending_events(self) -> int:
+        checkpoint_path = self._restart_pending_events_path()
+        if not checkpoint_path.exists():
+            return 0
+        try:
+            payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning("Failed to read restart pending checkpoint: %s", e)
+            try:
+                checkpoint_path.unlink()
+            except Exception:
+                pass
+            return 0
+
+        restored = 0
+        for item in payload if isinstance(payload, list) else []:
+            if not isinstance(item, dict):
+                continue
+            session_key = str(item.get("session_key") or "").strip()
+            event = self._deserialize_pending_event(item.get("event") or {})
+            if not session_key or event is None or not event.source:
+                continue
+            adapter = self.adapters.get(event.source.platform)
+            if not adapter or not hasattr(adapter, "_pending_messages"):
+                continue
+            merge_pending_message_event(adapter._pending_messages, session_key, event, merge_text=True)
+            restored += 1
+
+        try:
+            checkpoint_path.unlink()
+        except Exception:
+            pass
+        return restored
+
     def _update_runtime_status(self, gateway_state: Optional[str] = None, exit_reason: Optional[str] = None) -> None:
         try:
             from gateway.status import write_runtime_status
@@ -1805,13 +1909,20 @@ class GatewayRunner:
         # This prevents unwanted auto-resets after `hermes update`,
         # `hermes gateway restart`, or `/restart`.
         _clean_marker = _hermes_home / ".clean_shutdown"
-        if _clean_marker.exists():
+        _previous_clean_shutdown = _clean_marker.exists()
+        if _previous_clean_shutdown:
             logger.info("Previous gateway exited cleanly — skipping session suspension")
             try:
                 _clean_marker.unlink()
             except Exception:
                 pass
         else:
+            try:
+                self._restart_pending_events_path().unlink()
+            except FileNotFoundError:
+                pass
+            except Exception:
+                logger.debug("Failed removing stale restart pending checkpoint", exc_info=True)
             try:
                 suspended = self.session_store.suspend_recently_active()
                 if suspended:
@@ -1967,6 +2078,16 @@ class GatewayRunner:
         })
         
         if connected_count > 0:
+            if _previous_clean_shutdown:
+                try:
+                    restored_pending = self._restore_restart_pending_events()
+                    if restored_pending:
+                        logger.info(
+                            "Restored %d queued pending event(s) from previous restart",
+                            restored_pending,
+                        )
+                except Exception as e:
+                    logger.warning("Pending restart-event restore failed: %s", e)
             logger.info("Gateway running with %s platform(s)", connected_count)
         
         # Build initial channel directory for send_message name resolution
@@ -2334,6 +2455,17 @@ class GatewayRunner:
                 _task.cancel()
             self._background_tasks.clear()
 
+            if self._restart_requested:
+                try:
+                    persisted_pending = self._persist_restart_pending_events()
+                    if persisted_pending:
+                        logger.info(
+                            "Persisted %d queued pending event(s) for restart resume",
+                            persisted_pending,
+                        )
+                except Exception as e:
+                    logger.warning("Failed to persist restart pending events: %s", e)
+
             self.adapters.clear()
             self._running_agents.clear()
             self._pending_messages.clear()
@@ -2365,13 +2497,16 @@ class GatewayRunner:
 
             # Write a clean-shutdown marker so the next startup knows this
             # wasn't a crash.  suspend_recently_active() only needs to run
-            # after unexpected exits.  However, if the drain timed out and
-            # agents were force-interrupted, their sessions may be in an
-            # incomplete state (trailing tool response, no final assistant
-            # message).  Skip the marker in that case so the next startup
-            # suspends those sessions — giving users a clean slate instead
-            # of resuming a half-finished tool loop.
-            if not timed_out:
+            # after unexpected exits.
+            #
+            # If a user-requested restart times out while draining, preserve the
+            # session mapping anyway so the next inbound message can resume from
+            # the existing transcript.  The auto-continue path handles trailing
+            # tool results by prepending an interruption note on the next turn.
+            # Unexpected shutdowns still skip the marker so crash recovery can
+            # suspend potentially-corrupt in-flight sessions.
+            preserve_resume_context = not timed_out or self._restart_requested
+            if preserve_resume_context:
                 try:
                     (_hermes_home / ".clean_shutdown").touch()
                 except Exception:

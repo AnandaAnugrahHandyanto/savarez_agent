@@ -242,3 +242,76 @@ async def test_shutdown_notification_send_failure_does_not_block():
 
     # Should not raise
     await runner._notify_active_sessions_of_shutdown()
+
+
+def test_persist_restart_pending_events_writes_serialized_checkpoint(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner, adapter = make_restart_runner()
+
+    source = make_restart_source(chat_id="777", chat_type="thread")
+    event = MessageEvent(
+        text="resume me after restart",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="msg-restart",
+        channel_prompt="channel prompt",
+    )
+    session_key = build_session_key(source)
+    adapter._pending_messages[session_key] = event
+
+    written = runner._persist_restart_pending_events()
+
+    assert written == 1
+    checkpoint = tmp_path / ".restart_pending_events.json"
+    assert checkpoint.exists()
+    payload = checkpoint.read_text(encoding="utf-8")
+    assert "resume me after restart" in payload
+    assert "msg-restart" in payload
+
+
+def test_restore_restart_pending_events_rehydrates_adapter_queue(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner, adapter = make_restart_runner()
+    checkpoint = tmp_path / ".restart_pending_events.json"
+    checkpoint.write_text(
+        """
+[
+  {
+    "session_key": "agent:main:telegram:thread:777:u1:777",
+    "event": {
+      "text": "resume me after restart",
+      "message_type": "text",
+      "message_id": "msg-restart",
+      "channel_prompt": "channel prompt",
+      "media_urls": [],
+      "media_types": [],
+      "reply_to_message_id": null,
+      "reply_to_text": null,
+      "internal": false,
+      "source": {
+        "platform": "telegram",
+        "chat_id": "777",
+        "chat_name": null,
+        "chat_type": "thread",
+        "user_id": "u1",
+        "user_name": null,
+        "thread_id": null,
+        "chat_topic": null
+      }
+    }
+  }
+]
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    restored = runner._restore_restart_pending_events()
+
+    assert restored == 1
+    session_key = "agent:main:telegram:thread:777:u1:777"
+    assert session_key in adapter._pending_messages
+    restored_event = adapter._pending_messages[session_key]
+    assert restored_event.text == "resume me after restart"
+    assert restored_event.message_id == "msg-restart"
+    assert restored_event.channel_prompt == "channel prompt"
+    assert not checkpoint.exists()
