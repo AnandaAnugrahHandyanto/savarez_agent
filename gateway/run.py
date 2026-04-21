@@ -180,6 +180,10 @@ if _config_path.exists():
         if _agent_cfg and isinstance(_agent_cfg, dict):
             if "max_turns" in _agent_cfg:
                 os.environ["HERMES_MAX_ITERATIONS"] = str(_agent_cfg["max_turns"])
+            if "max_api_retries" in _agent_cfg and "HERMES_MAX_API_RETRIES" not in os.environ:
+                os.environ["HERMES_MAX_API_RETRIES"] = str(_agent_cfg["max_api_retries"])
+            if "max_stream_retries" in _agent_cfg and "HERMES_STREAM_RETRIES" not in os.environ:
+                os.environ["HERMES_STREAM_RETRIES"] = str(_agent_cfg["max_stream_retries"])
             # Bridge agent.gateway_timeout → HERMES_AGENT_TIMEOUT env var.
             # Env var from .env takes precedence (already in os.environ).
             if "gateway_timeout" in _agent_cfg and "HERMES_AGENT_TIMEOUT" not in os.environ:

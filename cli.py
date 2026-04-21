@@ -247,6 +247,8 @@ def load_cli_config() -> Dict[str, Any]:
         },
         "agent": {
             "max_turns": 90,  # Default max tool-calling iterations (shared with subagents)
+            "max_api_retries": 3,
+            "max_stream_retries": 2,
             "verbose": False,
             "system_prompt": "",
             "prefill_messages_file": "",
@@ -385,8 +387,9 @@ def load_cli_config() -> Dict[str, Any]:
             logger.warning("Failed to load cli-config.yaml: %s", e)
 
     # Expand ${ENV_VAR} references in config values before bridging to env vars.
-    from hermes_cli.config import _expand_env_vars
+    from hermes_cli.config import _expand_env_vars, _normalize_agent_retry_config
     defaults = _expand_env_vars(defaults)
+    defaults = _normalize_agent_retry_config(defaults)
 
     # Apply terminal config to environment variables (so terminal_tool picks them up)
     terminal_config = defaults.get("terminal", {})
@@ -1706,6 +1709,18 @@ class HermesCLI:
             self.max_turns = int(os.getenv("HERMES_MAX_ITERATIONS"))
         else:
             self.max_turns = 90
+
+        from hermes_cli.config import _coerce_non_negative_int
+
+        agent_cfg = CLI_CONFIG.get("agent", {}) or {}
+        self.max_api_retries = _coerce_non_negative_int(
+            agent_cfg.get("max_api_retries"),
+            default=3,
+        )
+        self.max_stream_retries = _coerce_non_negative_int(
+            agent_cfg.get("max_stream_retries"),
+            default=2,
+        )
         
         # Parse and validate toolsets
         self.enabled_toolsets = toolsets
@@ -2876,8 +2891,8 @@ class HermesCLI:
                 acp_args=runtime.get("args"),
                 credential_pool=runtime.get("credential_pool"),
                 max_iterations=self.max_turns,
-                max_api_retries=int(CLI_CONFIG.get("agent", {}).get("max_api_retries", 3)),
-                max_stream_retries=int(CLI_CONFIG.get("agent", {}).get("max_stream_retries", 2)),
+                max_api_retries=self.max_api_retries,
+                max_stream_retries=self.max_stream_retries,
                 enabled_toolsets=self.enabled_toolsets,
                 verbose_logging=self.verbose,
                 quiet_mode=not self.verbose,
@@ -5619,6 +5634,8 @@ class HermesCLI:
                     acp_command=turn_route["runtime"].get("command"),
                     acp_args=turn_route["runtime"].get("args"),
                     max_iterations=self.max_turns,
+                    max_api_retries=self.max_api_retries,
+                    max_stream_retries=self.max_stream_retries,
                     enabled_toolsets=self.enabled_toolsets,
                     quiet_mode=True,
                     verbose_logging=False,
@@ -5757,6 +5774,8 @@ class HermesCLI:
                     acp_command=turn_route["runtime"].get("command"),
                     acp_args=turn_route["runtime"].get("args"),
                     max_iterations=8,
+                    max_api_retries=self.max_api_retries,
+                    max_stream_retries=self.max_stream_retries,
                     enabled_toolsets=[],
                     quiet_mode=True,
                     verbose_logging=False,

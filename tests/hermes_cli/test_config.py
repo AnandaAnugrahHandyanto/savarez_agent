@@ -65,6 +65,8 @@ class TestLoadConfigDefaults:
             config = load_config()
             assert config["model"] == DEFAULT_CONFIG["model"]
             assert config["agent"]["max_turns"] == DEFAULT_CONFIG["agent"]["max_turns"]
+            assert config["agent"]["max_api_retries"] == DEFAULT_CONFIG["agent"]["max_api_retries"]
+            assert config["agent"]["max_stream_retries"] == DEFAULT_CONFIG["agent"]["max_stream_retries"]
             assert "max_turns" not in config
             assert "terminal" in config
             assert config["terminal"]["backend"] == "local"
@@ -78,6 +80,20 @@ class TestLoadConfigDefaults:
             config = load_config()
             assert config["agent"]["max_turns"] == 42
             assert "max_turns" not in config
+
+    def test_invalid_agent_retry_values_fall_back_to_defaults(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config_path = tmp_path / "config.yaml"
+            config_path.write_text(
+                "agent:\n"
+                "  max_api_retries: -1\n"
+                "  max_stream_retries: bogus\n",
+                encoding="utf-8",
+            )
+
+            config = load_config()
+            assert config["agent"]["max_api_retries"] == DEFAULT_CONFIG["agent"]["max_api_retries"]
+            assert config["agent"]["max_stream_retries"] == DEFAULT_CONFIG["agent"]["max_stream_retries"]
 
 
 class TestSaveAndLoadRoundtrip:
@@ -441,6 +457,6 @@ class TestInterimAssistantMessageConfig:
             migrate_config(interactive=False, quiet=True)
             raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
-        assert raw["_config_version"] == 16
+        assert raw["_config_version"] == 17
         assert raw["display"]["tool_progress"] == "off"
         assert raw["display"]["interim_assistant_messages"] is True

@@ -161,6 +161,10 @@ Edit `~/.hermes/config.yaml`:
 
 ```yaml
 model: openrouter/nous/hermes-3-llama-3.1-70b
+
+agent:
+  max_api_retries: 5
+  max_stream_retries: 5
 ```
 
 Or set the `HERMES_MODEL` environment variable.

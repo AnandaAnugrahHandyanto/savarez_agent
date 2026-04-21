@@ -41,6 +41,7 @@ from typing import List, Dict, Any, Optional
 from openai import OpenAI
 import fire
 from datetime import datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
@@ -76,7 +77,6 @@ from hermes_constants import OPENROUTER_BASE_URL
 
 # Agent internals extracted to agent/ package for modularity
 from agent.memory_manager import build_memory_context_block
-from agent.retry_utils import jittered_backoff
 from agent.error_classifier import classify_api_error, FailoverReason
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
@@ -570,8 +570,8 @@ class AIAgent:
         checkpoint_max_snapshots: int = 50,
         pass_session_id: bool = False,
         persist_session: bool = True,
-        max_api_retries: int = 3,
-        max_stream_retries: int = 1,
+        max_api_retries: Optional[int] = None,
+        max_stream_retries: Optional[int] = None,
     ):
         """
         Initialize the AI Agent.
@@ -616,8 +616,16 @@ class AIAgent:
 
         self.model = model
         self.max_iterations = max_iterations
-        self.max_api_retries = max_api_retries
-        self.max_stream_retries = max_stream_retries
+        self.max_api_retries = self._resolve_retry_limit(
+            max_api_retries,
+            default=3,
+            env_var="HERMES_MAX_API_RETRIES",
+        )
+        self.max_stream_retries = self._resolve_retry_limit(
+            max_stream_retries,
+            default=2,
+            env_var="HERMES_STREAM_RETRIES",
+        )
         # Shared iteration budget — parent creates, children inherit.
         # Consumed by every LLM turn across parent + all subagents.
         self.iteration_budget = iteration_budget or IterationBudget(max_iterations)
@@ -2644,6 +2652,101 @@ class AIAgent:
 
         return context
 
+    @staticmethod
+    def _coerce_retry_limit(value: Any, *, default: int) -> int:
+        """Parse retry config/env values as non-negative integers."""
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return default
+        return parsed if parsed >= 0 else default
+
+    @classmethod
+    def _resolve_retry_limit(
+        cls,
+        value: Any,
+        *,
+        default: int,
+        env_var: str | None = None,
+    ) -> int:
+        if value is None and env_var:
+            value = os.getenv(env_var)
+        return cls._coerce_retry_limit(value, default=default)
+
+    @staticmethod
+    def _parse_retry_after_delay(value: Any, *, now: Optional[float] = None) -> Optional[float]:
+        """Parse Retry-After / reset timestamps into a delay in seconds."""
+        if value in (None, ""):
+            return None
+
+        now_ts = time.time() if now is None else now
+
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            numeric = None
+
+        if numeric is not None:
+            if numeric >= now_ts:
+                return max(0.0, numeric - now_ts)
+            return max(0.0, numeric)
+
+        try:
+            parsed_dt = parsedate_to_datetime(str(value))
+        except (TypeError, ValueError, IndexError, OverflowError):
+            return None
+
+        if parsed_dt.tzinfo is None:
+            parsed_dt = parsed_dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+        return max(0.0, parsed_dt.timestamp() - now_ts)
+
+    def _rate_limit_retry_after_delay(self, api_error: Exception) -> Optional[float]:
+        """Return a capped Retry-After/reset delay for rate-limited responses."""
+        response = getattr(api_error, "response", None)
+        headers = getattr(response, "headers", None)
+        if headers and hasattr(headers, "get"):
+            raw_retry_after = headers.get("retry-after") or headers.get("Retry-After")
+            parsed_delay = self._parse_retry_after_delay(raw_retry_after)
+            if parsed_delay is not None:
+                return min(parsed_delay, 300.0)
+
+        context = self._extract_api_error_context(api_error)
+        parsed_delay = self._parse_retry_after_delay(context.get("reset_at"))
+        if parsed_delay is not None:
+            return min(parsed_delay, 300.0)
+        return None
+
+    def _compute_retry_wait_time(
+        self,
+        *,
+        retry_count: int,
+        is_rate_limited: bool,
+        api_error: Optional[Exception] = None,
+    ) -> float:
+        """Compute the outer retry wait time for the next API attempt."""
+        retry_index = max(0, retry_count - 1)
+
+        if is_rate_limited:
+            retry_after = None
+            if api_error is not None:
+                retry_after = self._rate_limit_retry_after_delay(api_error)
+            if retry_after is not None:
+                return retry_after
+
+            base_delay = min(5.0 * (2 ** retry_index), 300.0)
+            jitter = random.uniform(-0.2, 0.2) * base_delay
+            return min(300.0, max(0.0, base_delay + jitter))
+
+        return min(float(2 ** retry_index), 60.0)
+
+    def _effective_max_stream_retries(self) -> int:
+        """Return the validated stream retry budget, even on partially-built agents."""
+        return self._resolve_retry_limit(
+            getattr(self, "max_stream_retries", None),
+            default=2,
+            env_var="HERMES_STREAM_RETRIES",
+        )
+
     def _usage_summary_for_api_request_hook(self, response: Any) -> Optional[Dict[str, Any]]:
         """Token buckets for ``post_api_request`` plugins (no raw ``response`` object)."""
         if response is None:
@@ -4254,7 +4357,7 @@ class AIAgent:
         import httpx as _httpx
 
         active_client = client or self._ensure_primary_openai_client(reason="codex_stream_direct")
-        max_stream_retries = self.max_stream_retries
+        max_stream_retries = self._effective_max_stream_retries()
         has_tool_calls = False
         first_delta_fired = False
         # Accumulate streamed text so we can recover if get_final_response()
@@ -5159,7 +5262,7 @@ class AIAgent:
         def _call():
             import httpx as _httpx
 
-            _max_stream_retries = int(os.getenv("HERMES_STREAM_RETRIES", self.max_stream_retries))
+            _max_stream_retries = self._effective_max_stream_retries()
 
             try:
                 for _stream_attempt in range(_max_stream_retries + 1):
@@ -8062,7 +8165,8 @@ class AIAgent:
             
             api_start_time = time.time()
             retry_count = 0
-            max_retries = 3
+            max_retries = self.max_api_retries
+            max_attempts = max_retries + 1
             primary_recovery_attempted = False
             max_compression_attempts = 3
             codex_auth_retry_attempted=False
@@ -8077,7 +8181,7 @@ class AIAgent:
             response = None  # Guard against UnboundLocalError if all retries fail
             api_kwargs = None  # Guard against UnboundLocalError in except handler
 
-            while retry_count < max_retries:
+            while retry_count < max_attempts:
                 try:
                     self._reset_stream_delivery_tracking()
                     api_kwargs = self._build_api_kwargs(api_messages)
@@ -8264,13 +8368,13 @@ class AIAgent:
                             if self.verbose_logging:
                                 logging.debug(f"Response attributes for invalid response: {resp_attrs}")
                         
-                        self._vprint(f"{self.log_prefix}⚠️  Invalid API response (attempt {retry_count}/{max_retries}): {', '.join(error_details)}", force=True)
+                        self._vprint(f"{self.log_prefix}⚠️  Invalid API response (attempt {retry_count}/{max_attempts}): {', '.join(error_details)}", force=True)
                         self._vprint(f"{self.log_prefix}   🏢 Provider: {provider_name}", force=True)
                         cleaned_provider_error = self._clean_error_message(error_msg)
                         self._vprint(f"{self.log_prefix}   📝 Provider message: {cleaned_provider_error}", force=True)
                         self._vprint(f"{self.log_prefix}   ⏱️  Response time: {api_duration:.2f}s (fast response often indicates rate limiting)", force=True)
                         
-                        if retry_count >= max_retries:
+                        if retry_count >= max_attempts:
                             # Try fallback before giving up
                             self._emit_status(f"⚠️ Max retries ({max_retries}) for invalid responses — trying fallback...")
                             if self._try_activate_fallback():
@@ -8289,9 +8393,10 @@ class AIAgent:
                                 "failed": True  # Mark as failure for filtering
                             }
                         
-                        # Longer backoff for rate limiting (likely cause of None choices)
-                        # Jittered exponential: 5s base, 120s cap + random jitter
-                        wait_time = jittered_backoff(retry_count, base_delay=5.0, max_delay=120.0)
+                        wait_time = self._compute_retry_wait_time(
+                            retry_count=retry_count,
+                            is_rate_limited=True,
+                        )
                         self._vprint(f"{self.log_prefix}⏳ Retrying in {wait_time}s (extended backoff for possible rate limit)...", force=True)
                         logging.warning(f"Invalid API response (retry {retry_count}/{max_retries}): {', '.join(error_details)} | Provider: {provider_name}")
                         
@@ -8789,7 +8894,7 @@ class AIAgent:
                     logger.warning(
                         "API call failed (attempt %s/%s) error_type=%s %s summary=%s",
                         retry_count,
-                        max_retries,
+                        max_attempts,
                         error_type,
                         self._client_log_context(),
                         _error_summary,
@@ -8799,7 +8904,7 @@ class AIAgent:
                     _base = getattr(self, "base_url", "unknown")
                     _model = getattr(self, "model", "unknown")
                     _status_code_str = f" [HTTP {status_code}]" if status_code else ""
-                    self._vprint(f"{self.log_prefix}⚠️  API call failed (attempt {retry_count}/{max_retries}): {error_type}{_status_code_str}", force=True)
+                    self._vprint(f"{self.log_prefix}⚠️  API call failed (attempt {retry_count}/{max_attempts}): {error_type}{_status_code_str}", force=True)
                     self._vprint(f"{self.log_prefix}   🔌 Provider: {_provider}  Model: {_model}", force=True)
                     self._vprint(f"{self.log_prefix}   🌐 Endpoint: {_base}", force=True)
                     self._vprint(f"{self.log_prefix}   📝 Error: {_error_summary}", force=True)
@@ -9198,7 +9303,7 @@ class AIAgent:
                             "error": str(api_error),
                         }
 
-                    if retry_count >= max_retries:
+                    if retry_count >= max_attempts:
                         # Before falling back, try rebuilding the primary
                         # client once for transient transport errors (stale
                         # connection pool, TCP reset).  Only attempted once
@@ -9281,27 +9386,20 @@ class AIAgent:
                             "error": _final_summary,
                         }
 
-                    # For rate limits, respect the Retry-After header if present
-                    _retry_after = None
+                    wait_time = self._compute_retry_wait_time(
+                        retry_count=retry_count,
+                        is_rate_limited=is_rate_limited,
+                        api_error=api_error,
+                    )
                     if is_rate_limited:
-                        _resp_headers = getattr(getattr(api_error, "response", None), "headers", None)
-                        if _resp_headers and hasattr(_resp_headers, "get"):
-                            _ra_raw = _resp_headers.get("retry-after") or _resp_headers.get("Retry-After")
-                            if _ra_raw:
-                                try:
-                                    _retry_after = min(int(_ra_raw), 120)  # Cap at 2 minutes
-                                except (TypeError, ValueError):
-                                    pass
-                    wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
-                    if is_rate_limited:
-                        self._emit_status(f"⏱️ Rate limit reached. Waiting {wait_time}s before retry (attempt {retry_count + 1}/{max_retries})...")
+                        self._emit_status(f"⏱️ Rate limit reached. Waiting {wait_time}s before retry (attempt {retry_count + 1}/{max_attempts})...")
                     else:
-                        self._emit_status(f"⏳ Retrying in {wait_time}s (attempt {retry_count}/{max_retries})...")
+                        self._emit_status(f"⏳ Retrying in {wait_time}s (attempt {retry_count + 1}/{max_attempts})...")
                     logger.warning(
                         "Retrying API call in %ss (attempt %s/%s) %s error=%s",
                         wait_time,
-                        retry_count,
-                        max_retries,
+                        retry_count + 1,
+                        max_attempts,
                         self._client_log_context(),
                         api_error,
                     )

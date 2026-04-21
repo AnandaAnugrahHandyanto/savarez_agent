@@ -3852,8 +3852,9 @@ class TestDeadRetryCode:
     def test_no_unreachable_max_retries_after_backoff(self):
         import inspect
         source = inspect.getsource(AIAgent.run_conversation)
-        occurrences = source.count("if retry_count >= max_retries:")
+        assert "max_attempts = max_retries + 1" in source
+        occurrences = source.count("if retry_count >= max_attempts:")
         assert occurrences == 2, (
-            f"Expected 2 occurrences of 'if retry_count >= max_retries:' "
+            f"Expected 2 occurrences of 'if retry_count >= max_attempts:' "
             f"but found {occurrences}"
         )

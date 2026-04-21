@@ -85,6 +85,23 @@ class TestMaxTurnsResolution:
         assert isinstance(cli.max_turns, int) and cli.max_turns == 90
 
 
+class TestRetryResolution:
+    def test_retry_defaults_are_present(self):
+        cli = _make_cli()
+        assert cli.max_api_retries == 3
+        assert cli.max_stream_retries == 2
+
+    def test_retry_config_values_are_honored(self):
+        cli = _make_cli(config_overrides={"agent": {"max_api_retries": 5, "max_stream_retries": 4}})
+        assert cli.max_api_retries == 5
+        assert cli.max_stream_retries == 4
+
+    def test_invalid_retry_values_fall_back(self):
+        cli = _make_cli(config_overrides={"agent": {"max_api_retries": -1, "max_stream_retries": "bogus"}})
+        assert cli.max_api_retries == 3
+        assert cli.max_stream_retries == 2
+
+
 class TestVerboseAndToolProgress:
     def test_default_verbose_is_bool(self):
         cli = _make_cli()

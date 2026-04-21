@@ -472,6 +472,14 @@ agent:
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration
   max_turns: 60
 
+  # Full-request retry budget for retryable API failures (429/5xx/transient transport).
+  # 0 = fail immediately after the first error, 3 = initial attempt + up to 3 retries.
+  max_api_retries: 3
+
+  # Streaming reconnect budget for dropped/read-timeout streams.
+  # Only applies to streaming requests; non-streaming calls use max_api_retries only.
+  max_stream_retries: 2
+
   # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).
   # The agent can run indefinitely when actively calling tools or receiving
   # API responses.  Only fires after the agent has been idle for this duration.

@@ -334,6 +334,8 @@ DEFAULT_CONFIG = {
     "toolsets": ["hermes-cli"],
     "agent": {
         "max_turns": 90,
+        "max_api_retries": 3,
+        "max_stream_retries": 2,
         # Inactivity timeout for gateway agent execution (seconds).
         # The agent can run indefinitely as long as it's actively calling
         # tools or receiving API responses.  Only fires when the agent has
@@ -716,7 +718,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 16,
+    "_config_version": 17,
 }
 
 # =============================================================================
@@ -2227,6 +2229,33 @@ def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
     return config
 
 
+def _coerce_non_negative_int(value: Any, *, default: int) -> int:
+    """Parse a config value as a non-negative integer with fallback."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= 0 else default
+
+
+def _normalize_agent_retry_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize retry counts under agent.* with backward-compatible defaults."""
+    config = dict(config)
+    agent_config = dict(config.get("agent") or {})
+
+    agent_config["max_api_retries"] = _coerce_non_negative_int(
+        agent_config.get("max_api_retries"),
+        default=DEFAULT_CONFIG["agent"]["max_api_retries"],
+    )
+    agent_config["max_stream_retries"] = _coerce_non_negative_int(
+        agent_config.get("max_stream_retries"),
+        default=DEFAULT_CONFIG["agent"]["max_stream_retries"],
+    )
+
+    config["agent"] = agent_config
+    return config
+
+
 
 def read_raw_config() -> Dict[str, Any]:
     """Read ~/.hermes/config.yaml as-is, without merging defaults or migrating.
@@ -2270,7 +2299,11 @@ def load_config() -> Dict[str, Any]:
         except Exception as e:
             print(f"Warning: Failed to load config: {e}")
     
-    return _expand_env_vars(_normalize_root_model_keys(_normalize_max_turns_config(config)))
+    return _expand_env_vars(
+        _normalize_root_model_keys(
+            _normalize_agent_retry_config(_normalize_max_turns_config(config))
+        )
+    )
 
 
 _SECURITY_COMMENT = """
@@ -2377,7 +2410,9 @@ def save_config(config: Dict[str, Any]):
 
     ensure_hermes_home()
     config_path = get_config_path()
-    normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
+    normalized = _normalize_root_model_keys(
+        _normalize_agent_retry_config(_normalize_max_turns_config(config))
+    )
 
     # Build optional commented-out sections for features that are off by
     # default or only relevant when explicitly configured.
