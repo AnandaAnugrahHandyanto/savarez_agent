@@ -4,7 +4,8 @@ import sys
 
 from tui_gateway.server import dispatch, resolve_skin, write_json
 
-signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+if hasattr(signal, "SIGPIPE"):
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 

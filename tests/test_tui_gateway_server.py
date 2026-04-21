@@ -1,4 +1,6 @@
 import json
+import importlib
+import signal
 import sys
 import threading
 import time
@@ -56,6 +58,30 @@ def test_write_json_returns_false_on_broken_pipe(monkeypatch):
     monkeypatch.setattr(server, "_real_stdout", _BrokenStdout())
 
     assert server.write_json({"ok": True}) is False
+
+
+def test_tui_entry_import_tolerates_missing_sigpipe(monkeypatch):
+    fake_server = types.ModuleType("tui_gateway.server")
+    fake_server.handle_request = lambda req: req
+    fake_server.resolve_skin = lambda: {}
+    fake_server.write_json = lambda obj: True
+
+    calls = []
+
+    monkeypatch.setitem(sys.modules, "tui_gateway.server", fake_server)
+    monkeypatch.delattr("signal.SIGPIPE", raising=False)
+    monkeypatch.setattr(
+        "signal.signal",
+        lambda sig, handler: calls.append((sig, handler)),
+    )
+    sys.modules.pop("tui_gateway.entry", None)
+
+    try:
+        importlib.import_module("tui_gateway.entry")
+    finally:
+        sys.modules.pop("tui_gateway.entry", None)
+
+    assert calls == [(signal.SIGINT, signal.SIG_IGN)]
 
 
 def test_status_callback_emits_kind_and_text():
