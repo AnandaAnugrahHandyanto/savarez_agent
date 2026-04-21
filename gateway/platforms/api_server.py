@@ -2627,7 +2627,13 @@ class APIServerAdapter(BasePlatformAdapter):
 
         try:
             mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
-            self._app = web.Application(middlewares=mws)
+            # client_max_size bounds how much aiohttp will buffer when reading
+            # a request body.  Default is 1 MiB — too small for multimodal
+            # requests carrying a base64-encoded image.  Align with the
+            # MAX_REQUEST_BYTES cap so body_limit_middleware is actually the
+            # authoritative gate (rather than aiohttp silently truncating
+            # payloads and turning them into "Invalid JSON in request body").
+            self._app = web.Application(middlewares=mws, client_max_size=MAX_REQUEST_BYTES)
             self._app["api_server_adapter"] = self
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get("/health/detailed", self._handle_health_detailed)

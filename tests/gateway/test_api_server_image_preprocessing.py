@@ -282,13 +282,15 @@ class TestPreprocessMessageImages:
 
     @pytest.mark.asyncio
     async def test_vision_tool_failure_produces_neutral_note(self, monkeypatch, caplog):
-        _force_allow_safe_url(monkeypatch)
+        # Use a data: URL (bypasses the http SSRF check and therefore any
+        # cross-test pollution of tools.url_safety) — we care about the
+        # failure-note behavior, not the URL validator.
         _install_vision_stub(monkeypatch, _failing_vision)
         messages = [{
             "role": "user",
             "content": [
                 {"type": "text", "text": "look"},
-                {"type": "image_url", "image_url": {"url": "https://example.com/x.png"}},
+                {"type": "image_url", "image_url": {"url": _tiny_png_data_url()}},
             ],
         }]
         with caplog.at_level("WARNING"):
@@ -306,12 +308,11 @@ class TestPreprocessMessageImages:
 
     @pytest.mark.asyncio
     async def test_vision_tool_exception_does_not_leak(self, monkeypatch, caplog):
-        _force_allow_safe_url(monkeypatch)
         _install_vision_stub(monkeypatch, _raising_vision)
         messages = [{
             "role": "user",
             "content": [
-                {"type": "image_url", "image_url": {"url": "https://example.com/x.png"}},
+                {"type": "image_url", "image_url": {"url": _tiny_png_data_url()}},
             ],
         }]
         with caplog.at_level("WARNING"):
