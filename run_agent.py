@@ -1432,6 +1432,11 @@ class AIAgent:
         # the LLM into a different strategy.
         self._consecutive_tool_calls: list[tuple[str, str]] = []
         self._circuit_breaker_threshold: int = 5
+        # Per-tool failure retry counter: tracks consecutive failures
+        # for a tool regardless of argument changes.  Prevents the LLM
+        # from retrying different variations of a failing tool call.
+        self._tool_failure_count: dict[str, int] = {}
+        self._tool_failure_threshold: int = 5
         if not skip_memory:
             try:
                 mem_config = _agent_cfg.get("memory", {})
@@ -2146,6 +2151,67 @@ class AIAgent:
             "api_key": getattr(self, "api_key", "") or "",
             "api_mode": getattr(self, "api_mode", "") or "",
         }
+
+    def _check_tool_failure(self, tool_name: str, result: str) -> str | None:
+        """Check if a tool result indicates failure and update retry counter.
+
+        Returns an error message if the retry threshold is reached, forcing the
+        LLM to change strategy. Returns None if the tool is still within limits.
+
+        A result is considered a **failure** if it contains:
+        - An "error" field (tool explicitly reported an error)
+        - A "BLOCKED" marker (tool-level circuit breaker triggered)
+        - "total_count": 0 with no matches (empty search result)
+
+        A result is considered a **success** if it has actual data, in which
+        case the retry counter is reset to 0.
+        """
+        import json
+        try:
+            data = json.loads(result)
+        except (json.JSONDecodeError, TypeError):
+            # Not JSON — treat as success (be conservative)
+            self._tool_failure_count[tool_name] = 0
+            return None
+
+        if not isinstance(data, dict):
+            self._tool_failure_count[tool_name] = 0
+            return None
+
+        # Check for failure conditions
+        if "error" in data:
+            is_failure = True
+        elif "BLOCKED" in str(data):
+            is_failure = True
+        elif data.get("total_count") == 0 and data.get("total_count") is not None:
+            # Empty result counts as failure for search-type tools
+            is_failure = True
+        elif data.get("total_count", 0) > 0:
+            # Has data — success, reset counter
+            self._tool_failure_count[tool_name] = 0
+            return None
+        else:
+            # Unknown format — treat as success (be conservative)
+            self._tool_failure_count[tool_name] = 0
+            return None
+
+        # Count this as a failure
+        self._tool_failure_count[tool_name] = self._tool_failure_count.get(tool_name, 0) + 1
+        if self._tool_failure_count[tool_name] >= self._tool_failure_threshold:
+            count = self._tool_failure_count[tool_name]
+            msg = (
+                f"[Tool retry threshold reached] Tool '{tool_name}' has failed "
+                f"{count} consecutive times (different arguments each time). "
+                f"STOP retrying with different parameters. "
+                f"Analyze why it's failing and try a completely different approach."
+            )
+            logger.warning(
+                "Tool retry threshold reached: %s (%d consecutive failures)",
+                tool_name, count,
+            )
+            return msg
+
+        return None
 
     def _check_compression_model_feasibility(self) -> None:
         """Warn at session start if the auxiliary compression model's context
@@ -7660,6 +7726,14 @@ class AIAgent:
                 self._consecutive_tool_calls.clear()
                 return json.dumps({"error": msg}, ensure_ascii=False)
 
+        # ── Failure retry counter: detect consecutive tool failures ──────
+        # Tracks how many times a tool has returned an error/empty result
+        # in a row, regardless of argument changes.  Prevents the LLM from
+        # retrying different variations of a failing tool call.
+        _cb_retry_msg = self._check_tool_failure(function_name, function_result)
+        if _cb_retry_msg is not None:
+            return json.dumps({"error": _cb_retry_msg}, ensure_ascii=False)
+
         if function_name == "todo":
             from tools.todo_tool import todo_tool as _todo_tool
             return _todo_tool(
@@ -8208,6 +8282,10 @@ class AIAgent:
                 tool_duration = time.time() - tool_start_time
                 if self._should_emit_quiet_tool_messages():
                     self._vprint(f"  {_get_cute_tool_message_impl('todo', function_args, tool_duration, result=function_result)}")
+                # Check failure retry counter
+                _cb_retry_msg = self._check_tool_failure(function_name, function_result)
+                if _cb_retry_msg is not None:
+                    function_result = json.dumps({"error": _cb_retry_msg}, ensure_ascii=False)
             elif function_name == "session_search":
                 if not self._session_db:
                     function_result = json.dumps({"success": False, "error": "Session database not available."})
@@ -8223,6 +8301,10 @@ class AIAgent:
                 tool_duration = time.time() - tool_start_time
                 if self._should_emit_quiet_tool_messages():
                     self._vprint(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
+                # Check failure retry counter
+                _cb_retry_msg = self._check_tool_failure(function_name, function_result)
+                if _cb_retry_msg is not None:
+                    function_result = json.dumps({"error": _cb_retry_msg}, ensure_ascii=False)
             elif function_name == "memory":
                 target = function_args.get("target", "memory")
                 from tools.memory_tool import memory_tool as _memory_tool
@@ -8246,6 +8328,10 @@ class AIAgent:
                 tool_duration = time.time() - tool_start_time
                 if self._should_emit_quiet_tool_messages():
                     self._vprint(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")
+                # Check failure retry counter
+                _cb_retry_msg = self._check_tool_failure(function_name, function_result)
+                if _cb_retry_msg is not None:
+                    function_result = json.dumps({"error": _cb_retry_msg}, ensure_ascii=False)
             elif function_name == "clarify":
                 from tools.clarify_tool import clarify_tool as _clarify_tool
                 function_result = _clarify_tool(
@@ -8256,6 +8342,10 @@ class AIAgent:
                 tool_duration = time.time() - tool_start_time
                 if self._should_emit_quiet_tool_messages():
                     self._vprint(f"  {_get_cute_tool_message_impl('clarify', function_args, tool_duration, result=function_result)}")
+                # Check failure retry counter
+                _cb_retry_msg = self._check_tool_failure(function_name, function_result)
+                if _cb_retry_msg is not None:
+                    function_result = json.dumps({"error": _cb_retry_msg}, ensure_ascii=False)
             elif function_name == "delegate_task":
                 tasks_arg = function_args.get("tasks")
                 if tasks_arg and isinstance(tasks_arg, list):
@@ -8281,6 +8371,10 @@ class AIAgent:
                         spinner.stop(cute_msg)
                     elif self._should_emit_quiet_tool_messages():
                         self._vprint(f"  {cute_msg}")
+                    # Check failure retry counter (inside finally so it always runs)
+                    _cb_retry_msg = self._check_tool_failure(function_name, function_result)
+                    if _cb_retry_msg is not None:
+                        function_result = json.dumps({"error": _cb_retry_msg}, ensure_ascii=False)
             elif self._context_engine_tool_names and function_name in self._context_engine_tool_names:
                 # Context engine tools (lcm_grep, lcm_describe, lcm_expand, etc.)
                 spinner = None
@@ -8304,6 +8398,10 @@ class AIAgent:
                         spinner.stop(cute_msg)
                     elif self._should_emit_quiet_tool_messages():
                         self._vprint(f"  {cute_msg}")
+                    # Check failure retry counter
+                    _cb_retry_msg = self._check_tool_failure(function_name, function_result)
+                    if _cb_retry_msg is not None:
+                        function_result = json.dumps({"error": _cb_retry_msg}, ensure_ascii=False)
             elif self._memory_manager and self._memory_manager.has_tool(function_name):
                 # Memory provider tools (hindsight_retain, honcho_search, etc.)
                 # These are not in the tool registry — route through MemoryManager.
@@ -8328,6 +8426,10 @@ class AIAgent:
                         spinner.stop(cute_msg)
                     elif self._should_emit_quiet_tool_messages():
                         self._vprint(f"  {cute_msg}")
+                    # Check failure retry counter
+                    _cb_retry_msg = self._check_tool_failure(function_name, function_result)
+                    if _cb_retry_msg is not None:
+                        function_result = json.dumps({"error": _cb_retry_msg}, ensure_ascii=False)
             elif self.quiet_mode:
                 spinner = None
                 if self._should_emit_quiet_tool_messages() and self._should_start_quiet_spinner():
@@ -8356,6 +8458,10 @@ class AIAgent:
                         spinner.stop(cute_msg)
                     elif self._should_emit_quiet_tool_messages():
                         self._vprint(f"  {cute_msg}")
+                    # Check failure retry counter
+                    _cb_retry_msg = self._check_tool_failure(function_name, function_result)
+                    if _cb_retry_msg is not None:
+                        function_result = json.dumps({"error": _cb_retry_msg}, ensure_ascii=False)
             else:
                 try:
                     function_result = handle_function_call(
@@ -8369,6 +8475,10 @@ class AIAgent:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
                     logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
                 tool_duration = time.time() - tool_start_time
+                # Check failure retry counter (generic tool path)
+                _cb_retry_msg = self._check_tool_failure(function_name, function_result)
+                if _cb_retry_msg is not None:
+                    function_result = json.dumps({"error": _cb_retry_msg}, ensure_ascii=False)
 
             result_preview = function_result if self.verbose_logging else (
                 function_result[:200] if len(function_result) > 200 else function_result
