@@ -963,6 +963,32 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 f"— last activity: {_last_desc}"
             )
 
+        # Check if the agent reported a failure (e.g. 403 auth, context overflow).
+        # run_conversation() returns {"failed": True, "completed": False, "error": "..."}
+        # on non-retryable API errors — we must propagate that as a cron failure,
+        # not silently swallow it.
+        agent_failed = result.get("failed") or not result.get("completed", True)
+        if agent_failed:
+            agent_error = result.get("error") or "Agent reported failure (no error detail)"
+            logger.error("Job '%s' agent returned failure: %s", job_name, agent_error)
+            output = f"""# Cron Job: {job_name} (FAILED)
+
+**Job ID:** {job_id}
+**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
+**Schedule:** {job.get('schedule_display', 'N/A')}
+
+## Prompt
+
+{prompt}
+
+## Error
+
+```
+{agent_error}
+```
+"""
+            return False, output, "", agent_error
+
         final_response = result.get("final_response", "") or ""
         # Strip leaked placeholder text that upstream may inject on empty completions.
         if final_response.strip() == "(No response generated)":
@@ -970,7 +996,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # Use a separate variable for log display; keep final_response clean
         # for delivery logic (empty response = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
-        
+
         output = f"""# Cron Job: {job_name}
 
 **Job ID:** {job_id}
@@ -985,7 +1011,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
 {logged_response}
 """
-        
+
         logger.info("Job '%s' completed successfully", job_name)
         return True, output, final_response, None
         
