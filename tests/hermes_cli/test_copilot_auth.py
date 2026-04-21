@@ -35,6 +35,12 @@ class TestTokenValidation:
         valid, msg = validate_copilot_token("")
         assert valid is False
 
+    def test_invalid_token_rejected(self):
+        from hermes_cli.copilot_auth import validate_copilot_token
+        valid, msg = validate_copilot_token("not_a_github_token")
+        assert valid is False
+        assert "Supported token prefixes" in msg
+
 
 
 class TestResolveToken:
@@ -83,6 +89,16 @@ class TestResolveToken:
         monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
         monkeypatch.delenv("GH_TOKEN", raising=False)
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        with patch("hermes_cli.copilot_auth._try_gh_cli_token", return_value="gho_from_cli"):
+            token, source = resolve_copilot_token()
+        assert token == "gho_from_cli"
+        assert source == "gh auth token"
+
+    def test_invalid_env_token_falls_back_to_gh_cli(self, monkeypatch):
+        from hermes_cli.copilot_auth import resolve_copilot_token
+        monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.setenv("GITHUB_TOKEN", "not_a_github_token")
         with patch("hermes_cli.copilot_auth._try_gh_cli_token", return_value="gho_from_cli"):
             token, source = resolve_copilot_token()
         assert token == "gho_from_cli"
