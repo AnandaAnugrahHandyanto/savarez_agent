@@ -332,8 +332,9 @@ def _paths_overlap(left: Path, right: Path) -> bool:
     if not left_parts or not right_parts:
         # Empty paths shouldn't reach here (guarded upstream), but be safe.
         return bool(left_parts) == bool(right_parts) and bool(left_parts)
-    common_len = min(len(left_parts), len(right_parts))
-    return left_parts[:common_len] == right_parts[:common_len]
+    if len(left_parts) < len(right_parts):
+        return left_parts == right_parts[:len(left_parts)]
+    return right_parts == left_parts[:len(right_parts)]
 
 
 
