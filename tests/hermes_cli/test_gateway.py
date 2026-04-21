@@ -253,6 +253,10 @@ def test_find_gateway_pids_falls_back_to_pid_file_when_process_scan_fails(monkey
     monkeypatch.setattr(gateway, "_get_service_pids", lambda: set())
     monkeypatch.setattr(gateway, "is_windows", lambda: False)
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
+    # _append_unique_pid now also excludes ancestor PIDs (#13242). Stub the
+    # ancestor check so this fallback test doesn't shell out to `ps -o ppid=`
+    # for every candidate pid (321 is a fake service pid, not a real ancestor).
+    monkeypatch.setattr(gateway, "_is_pid_ancestor_of_current_process", lambda pid: False)
 
     def fake_run(cmd, **kwargs):
         if cmd[:4] == ["ps", "-A", "eww", "-o"]:
@@ -262,6 +266,34 @@ def test_find_gateway_pids_falls_back_to_pid_file_when_process_scan_fails(monkey
     monkeypatch.setattr(gateway.subprocess, "run", fake_run)
 
     assert gateway.find_gateway_pids() == [321]
+
+
+def test_append_unique_pid_excludes_current_process_ancestors(monkeypatch):
+    """#13242: `hermes gateway run` from an interactive CLI saw the CLI
+    process itself in `ps aux` and concluded 'already running'. The fix
+    extends `_append_unique_pid` to exclude not just `os.getpid()` but the
+    entire ancestor chain (parent shell, launcher, tmux/screen, etc.).
+    """
+    # Simulate: current pid = 5000, its parent = 4000 (a "hermes" CLI process
+    # that ps picked up and would have been returned). `_append_unique_pid`
+    # must reject BOTH 5000 (current) and 4000 (ancestor).
+    monkeypatch.setattr("os.getpid", lambda: 5000)
+
+    parent_chain = {5000: 4000, 4000: 1}  # pid 4000 is the direct parent
+
+    def fake_parent(pid):
+        return parent_chain.get(pid, 0)
+
+    monkeypatch.setattr(gateway, "_get_parent_pid", fake_parent)
+
+    pids: list[int] = []
+    gateway._append_unique_pid(pids, 5000, set())  # current
+    gateway._append_unique_pid(pids, 4000, set())  # ancestor
+    gateway._append_unique_pid(pids, 7777, set())  # unrelated real gateway
+    assert pids == [7777], (
+        "_append_unique_pid must exclude current pid AND its ancestor chain "
+        "so the CLI invoker doesn't self-detect as a running gateway (#13242)"
+    )
 
 
 # ---------------------------------------------------------------------------

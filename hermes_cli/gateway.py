@@ -180,6 +180,14 @@ def _append_unique_pid(pids: list[int], pid: int | None, exclude_pids: set[int])
         return
     if pid == os.getpid() or pid in exclude_pids or pid in pids:
         return
+    # Exclude the CLI invoker's ancestor chain (parent shell, launcher, tmux
+    # session, etc.). Otherwise `hermes gateway run` from an interactive CLI
+    # gets a self false-positive: `ps aux` matches the current hermes CLI
+    # and/or its ancestor, and the gateway decides it's already running and
+    # exits immediately. The same ancestor-detection helper is already used
+    # by `_request_gateway_self_restart`. (#13242)
+    if _is_pid_ancestor_of_current_process(pid):
+        return
     pids.append(pid)
 
 
