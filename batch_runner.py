@@ -57,6 +57,17 @@ ALL_POSSIBLE_TOOLS = set(TOOL_TO_TOOLSET_MAP.keys())
 DEFAULT_TOOL_STATS = {'count': 0, 'success': 0, 'failure': 0}
 
 
+def _merge_completed_prompts(
+    completed_prompts: List[Any],
+    batch_results: List[Dict[str, Any]],
+) -> List[Any]:
+    """Return the unique completed prompt ids from checkpoint and batch results."""
+    merged = set(completed_prompts or [])
+    for batch_result in batch_results:
+        merged.update(batch_result.get("completed_prompts", []) or [])
+    return sorted(merged)
+
+
 def _normalize_tool_stats(tool_stats: Dict[str, Dict[str, int]]) -> Dict[str, Dict[str, int]]:
     """
     Normalize tool_stats to include all possible tools with consistent schema.
@@ -951,13 +962,10 @@ class BatchRunner:
                     root_logger.setLevel(original_level)
         
         # Aggregate all batch statistics and update checkpoint
-        all_completed_prompts = list(completed_prompts_set)
+        all_completed_prompts = _merge_completed_prompts(list(completed_prompts_set), results)
         total_reasoning_stats = {"total_assistant_turns": 0, "turns_with_reasoning": 0, "turns_without_reasoning": 0}
         
         for batch_result in results:
-            # Add newly completed prompts
-            all_completed_prompts.extend(batch_result.get("completed_prompts", []))
-            
             # Aggregate tool stats
             for tool_name, stats in batch_result.get("tool_stats", {}).items():
                 if tool_name not in total_tool_stats:
@@ -1288,4 +1296,3 @@ def main(
 
 if __name__ == "__main__":
     fire.Fire(main)
-

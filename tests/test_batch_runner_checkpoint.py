@@ -12,7 +12,7 @@ import pytest
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from batch_runner import BatchRunner, _process_batch_worker
+from batch_runner import BatchRunner, _merge_completed_prompts, _process_batch_worker
 
 
 @pytest.fixture
@@ -157,6 +157,20 @@ class TestResumePreservesProgress:
 
         assert checkpoint_data["completed_prompts"] == []
         assert checkpoint_data["run_name"] == "test_run"
+
+
+class TestCompletedPromptAggregation:
+    """Final checkpoint aggregation should not duplicate incremental progress."""
+
+    def test_final_checkpoint_dedupes_incremental_and_batch_results(self):
+        existing = [0, 1, 2]
+        batch_results = [
+            {"completed_prompts": [1, 2, 3]},
+            {"completed_prompts": [3, 4]},
+            {"completed_prompts": []},
+        ]
+
+        assert _merge_completed_prompts(existing, batch_results) == [0, 1, 2, 3, 4]
 
 
 class TestBatchWorkerResumeBehavior:
