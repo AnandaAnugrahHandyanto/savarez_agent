@@ -353,11 +353,13 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
                         pass
             except Exception:
                 pass
-            # llama.cpp exposes /v1/props (older builds used /props without the /v1 prefix)
+            # llama.cpp exposes /props at server root (not under /v1 prefix per httplib routes)
+            # Strip /v1 from base_url to access server root, then try both endpoint paths
             try:
-                r = client.get(f"{server_url}/v1/props")
+                base = server_url.rstrip("/").replace("/v1", "")
+                r = client.get(f"{base}/props")  # llama.cpp standard endpoint (server root)
                 if r.status_code != 200:
-                    r = client.get(f"{server_url}/props")  # fallback for older builds
+                    r = client.get(f"{base}/v1/props")  # fallback for builds/configs using /v1 path
                 if r.status_code == 200 and "default_generation_settings" in r.text:
                     return "llamacpp"
             except Exception:
@@ -603,11 +605,12 @@ def fetch_endpoint_model_metadata(
             )
             if is_llamacpp:
                 try:
-                    # Try /v1/props first (current llama.cpp); fall back to /props for older builds
+                    # llama.cpp /props endpoint is at server root (not under /v1 prefix)
+                    # Base URL already stripped of /v1, so try /props first, then /v1/props fallback
                     base = candidate.rstrip("/").replace("/v1", "")
-                    props_resp = requests.get(base + "/v1/props", headers=headers, timeout=5)
+                    props_resp = requests.get(base + "/props", headers=headers, timeout=5)
                     if not props_resp.ok:
-                        props_resp = requests.get(base + "/props", headers=headers, timeout=5)
+                        props_resp = requests.get(base + "/v1/props", headers=headers, timeout=5)
                     if props_resp.ok:
                         props = props_resp.json()
                         gen_settings = props.get("default_generation_settings", {})
