@@ -1102,14 +1102,16 @@ class GatewayRunner:
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         """Build the effective model/runtime config for a single turn.
 
-        Always uses the session's primary model/provider.  If `/fast` is
+        Uses the session's primary model/provider by default, but may route
+        obviously simple prompts to a configured cheap model. If `/fast` is
         enabled and the model supports Priority Processing / Anthropic fast
         mode, attach `request_overrides` so the API call is marked
         accordingly.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
+        from agent.smart_routing import build_route_notice, resolve_turn_route
 
-        runtime = {
+        default_runtime = {
             "api_key": runtime_kwargs.get("api_key"),
             "base_url": runtime_kwargs.get("base_url"),
             "provider": runtime_kwargs.get("provider"),
@@ -1118,11 +1120,13 @@ class GatewayRunner:
             "args": list(runtime_kwargs.get("args") or []),
             "credential_pool": runtime_kwargs.get("credential_pool"),
         }
+        effective_model, runtime = resolve_turn_route(user_message, model, default_runtime)
         route = {
-            "model": model,
+            "model": effective_model,
             "runtime": runtime,
+            "route_notice": build_route_notice(model, default_runtime, effective_model, runtime),
             "signature": (
-                model,
+                effective_model,
                 runtime["provider"],
                 runtime["base_url"],
                 runtime["api_mode"],
@@ -4415,6 +4419,9 @@ class GatewayRunner:
                 return None
 
             response = agent_result.get("final_response") or ""
+            route_notice = turn_route.get("route_notice")
+            if route_notice:
+                response = f"{route_notice}\n\n{response}" if response else route_notice
 
             # Convert the agent's internal "(empty)" sentinel into a
             # user-friendly message.  "(empty)" means the model failed to
@@ -6449,6 +6456,8 @@ class GatewayRunner:
             response = result.get("final_response", "") if result else ""
             if not response and result and result.get("error"):
                 response = f"Error: {result['error']}"
+            if turn_route.get("route_notice"):
+                response = f"{turn_route['route_notice']}\n\n{response}" if response else turn_route["route_notice"]
 
             # Extract media files from the response
             if response:

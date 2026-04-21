@@ -34,7 +34,8 @@ class TestCliTurnRoutePool:
 
         from cli import HermesCLI
         bound = HermesCLI._resolve_turn_agent_config.__get__(shell)
-        route = bound("test message")
+        with patch("agent.smart_routing._load_smart_routing_config", return_value={}):
+            route = bound("test message")
 
         assert route["runtime"]["credential_pool"] is fake_pool
 
@@ -61,7 +62,8 @@ class TestGatewayTurnRoutePool:
         }
 
         bound = GatewayRunner._resolve_turn_agent_config.__get__(runner)
-        route = bound("test message", "gpt-5.4", runtime_kwargs)
+        with patch("agent.smart_routing._load_smart_routing_config", return_value={}):
+            route = bound("test message", "gpt-5.4", runtime_kwargs)
 
         assert route["runtime"]["credential_pool"] is fake_pool
 

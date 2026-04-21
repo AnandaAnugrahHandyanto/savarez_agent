@@ -200,8 +200,34 @@ def test_runtime_resolution_rebuilds_agent_on_routing_change(monkeypatch):
     assert shell.api_mode == "codex_responses"
 
 
+def test_cli_turn_routing_adds_user_visible_notice_when_cheap_route_applies(monkeypatch):
+    cli = _import_cli()
+    monkeypatch.setattr("agent.smart_routing._load_smart_routing_config", lambda: {
+        "enabled": True,
+        "max_simple_chars": 500,
+        "max_simple_words": 80,
+        "cheap_model": {
+            "provider": "custom",
+            "model": "qwen_qwen3.5-9b",
+            "base_url": "http://192.168.4.135:1234/v1",
+        },
+    })
+    shell = cli.HermesCLI(model="gpt-5.4", compact=True, max_turns=1)
+    shell.provider = "openai-codex"
+    shell.api_mode = "codex_responses"
+    shell.base_url = "https://chatgpt.com/backend-api/codex"
+    shell.api_key = "sk-primary"
+
+    result = shell._resolve_turn_agent_config("what time is it in tokyo?")
+
+    assert result["model"] == "qwen_qwen3.5-9b"
+    assert result["route_notice"] == "⚡ Smart routing: using qwen_qwen3.5-9b via custom for this turn."
+
+
+
 def test_cli_turn_routing_uses_primary_when_disabled(monkeypatch):
     cli = _import_cli()
+    monkeypatch.setattr("agent.smart_routing._load_smart_routing_config", lambda: {})
     shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
     shell.provider = "openrouter"
     shell.api_mode = "chat_completions"
@@ -212,6 +238,7 @@ def test_cli_turn_routing_uses_primary_when_disabled(monkeypatch):
 
     assert result["model"] == "gpt-5"
     assert result["runtime"]["provider"] == "openrouter"
+    assert result["route_notice"] is None
 
 
 def test_cli_prefers_config_provider_over_stale_env_override(monkeypatch):

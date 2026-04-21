@@ -8,7 +8,7 @@ import logging
 import threading
 from typing import Optional
 
-from agent.auxiliary_client import call_llm
+from agent.auxiliary_client import call_llm, extract_content_or_reasoning
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ def generate_title(user_message: str, assistant_response: str, timeout: float = 
             temperature=0.3,
             timeout=timeout,
         )
-        title = (response.choices[0].message.content or "").strip()
+        title = extract_content_or_reasoning(response).strip()
         # Clean up: remove quotes, trailing punctuation, prefixes like "Title: "
         title = title.strip('"\'')
         if title.lower().startswith("title:"):

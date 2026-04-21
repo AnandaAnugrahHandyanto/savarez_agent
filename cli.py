@@ -3083,14 +3083,16 @@ class HermesCLI:
     def _resolve_turn_agent_config(self, user_message: str) -> dict:
         """Build the effective model/runtime config for a single user turn.
 
-        Always uses the session's primary model/provider.  If the user has
+        Uses the session's primary model/provider by default, but may route
+        obviously simple prompts to a configured cheap model. If the user has
         toggled `/fast` on and the current model supports Priority
         Processing / Anthropic fast mode, attach `request_overrides` so the
         API call is marked accordingly.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
+        from agent.smart_routing import build_route_notice, resolve_turn_route
 
-        runtime = {
+        default_runtime = {
             "api_key": self.api_key,
             "base_url": self.base_url,
             "provider": self.provider,
@@ -3099,11 +3101,13 @@ class HermesCLI:
             "args": list(self.acp_args or []),
             "credential_pool": getattr(self, "_credential_pool", None),
         }
+        effective_model, runtime = resolve_turn_route(user_message, self.model, default_runtime)
         route = {
-            "model": self.model,
+            "model": effective_model,
             "runtime": runtime,
+            "route_notice": build_route_notice(self.model, default_runtime, effective_model, runtime),
             "signature": (
-                self.model,
+                effective_model,
                 runtime["provider"],
                 runtime["base_url"],
                 runtime["api_mode"],
@@ -6175,6 +6179,8 @@ class HermesCLI:
         _cprint("  You can continue chatting — results will appear when done.\n")
 
         turn_route = self._resolve_turn_agent_config(prompt)
+        if turn_route.get("route_notice"):
+            _cprint(f"  {turn_route['route_notice']}")
 
         def run_background():
             try:
@@ -8127,6 +8133,8 @@ class HermesCLI:
         turn_route = self._resolve_turn_agent_config(message)
         if turn_route["signature"] != self._active_agent_route_signature:
             self.agent = None
+        if turn_route.get("route_notice"):
+            _cprint(f"  {turn_route['route_notice']}")
 
         # Initialize agent if needed
         if self.agent is None:
