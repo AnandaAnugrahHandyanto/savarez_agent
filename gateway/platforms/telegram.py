@@ -1711,33 +1711,99 @@ class TelegramAdapter(BasePlatformAdapter):
         """Send audio as a native Telegram voice message or audio file."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
-        
+
         try:
             import os
             if not os.path.exists(audio_path):
                 return SendResult(success=False, error=self._missing_media_path_error("Audio", audio_path))
-            
-            with open(audio_path, "rb") as audio_file:
-                # .ogg files -> send as voice (round playable bubble)
-                if audio_path.endswith((".ogg", ".opus")):
-                    _voice_thread = self._metadata_thread_id(metadata)
-                    msg = await self._bot.send_voice(
-                        chat_id=int(chat_id),
-                        voice=audio_file,
-                        caption=caption[:1024] if caption else None,
-                        reply_to_message_id=int(reply_to) if reply_to else None,
-                        message_thread_id=self._message_thread_id_for_send(_voice_thread),
-                    )
-                else:
-                    # .mp3 and others -> send as audio file
-                    _audio_thread = self._metadata_thread_id(metadata)
-                    msg = await self._bot.send_audio(
-                        chat_id=int(chat_id),
-                        audio=audio_file,
-                        caption=caption[:1024] if caption else None,
-                        reply_to_message_id=int(reply_to) if reply_to else None,
-                        message_thread_id=self._message_thread_id_for_send(_audio_thread),
-                    )
+
+            try:
+                from telegram.error import NetworkError as _NetErr
+            except ImportError:
+                _NetErr = OSError  # type: ignore[misc,assignment]
+
+            try:
+                from telegram.error import BadRequest as _BadReq
+            except ImportError:
+                _BadReq = None  # type: ignore[assignment,misc]
+
+            try:
+                from telegram.error import TimedOut as _TimedOut
+            except (ImportError, AttributeError):
+                _TimedOut = None  # type: ignore[assignment,misc]
+
+            send_as_voice = audio_path.endswith((".ogg", ".opus"))
+            thread_id = self._metadata_thread_id(metadata)
+            effective_thread_id = self._message_thread_id_for_send(thread_id)
+            reply_to_id = int(reply_to) if reply_to else None
+
+            msg = None
+            for _send_attempt in range(3):
+                try:
+                    with open(audio_path, "rb") as audio_file:
+                        send_kwargs = {
+                            "chat_id": int(chat_id),
+                            "caption": caption[:1024] if caption else None,
+                            "reply_to_message_id": reply_to_id,
+                            "message_thread_id": effective_thread_id,
+                        }
+                        if send_as_voice:
+                            send_kwargs["voice"] = audio_file
+                            msg = await self._bot.send_voice(**send_kwargs)
+                        else:
+                            send_kwargs["audio"] = audio_file
+                            msg = await self._bot.send_audio(**send_kwargs)
+                    break
+                except _NetErr as send_err:
+                    if _BadReq and isinstance(send_err, _BadReq):
+                        if self._is_thread_not_found_error(send_err) and effective_thread_id is not None:
+                            logger.warning(
+                                "[%s] Thread %s not found during voice/audio send, retrying without message_thread_id",
+                                self.name,
+                                effective_thread_id,
+                            )
+                            effective_thread_id = None
+                            continue
+                        err_lower = str(send_err).lower()
+                        if "message to be replied not found" in err_lower and reply_to_id is not None:
+                            logger.warning(
+                                "[%s] Voice/audio reply target deleted, retrying without reply_to: %s",
+                                self.name,
+                                send_err,
+                            )
+                            reply_to_id = None
+                            continue
+                        raise
+                    if _TimedOut and isinstance(send_err, _TimedOut):
+                        raise
+                    if _send_attempt < 2:
+                        wait = 2 ** _send_attempt
+                        logger.warning(
+                            "[%s] Network error on voice/audio send (attempt %d/3), retrying in %ds: %s",
+                            self.name,
+                            _send_attempt + 1,
+                            wait,
+                            send_err,
+                        )
+                        await asyncio.sleep(wait)
+                        continue
+                    raise
+                except Exception as send_err:
+                    retry_after = getattr(send_err, "retry_after", None)
+                    if retry_after is not None or "retry after" in str(send_err).lower():
+                        if _send_attempt < 2:
+                            wait = float(retry_after) if retry_after is not None else 1.0
+                            logger.warning(
+                                "[%s] Telegram flood control on voice/audio send (attempt %d/3), retrying in %.1fs: %s",
+                                self.name,
+                                _send_attempt + 1,
+                                wait,
+                                send_err,
+                            )
+                            await asyncio.sleep(wait)
+                            continue
+                    raise
+
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             logger.error(
@@ -1746,7 +1812,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 e,
                 exc_info=True,
             )
-            return await super().send_voice(chat_id, audio_path, caption, reply_to)
+            return await super().send_voice(
+                chat_id=chat_id,
+                audio_path=audio_path,
+                caption=caption,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
     
     async def send_image_file(
         self,

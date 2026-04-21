@@ -355,3 +355,85 @@ async def test_send_retries_retry_after_errors():
     assert result.success is True
     assert result.message_id == "300"
     assert attempt[0] == 2
+
+
+@pytest.mark.asyncio
+async def test_send_voice_retries_without_thread_on_thread_not_found(tmp_path):
+    """Voice sends should retry without thread_id when Telegram rejects the topic."""
+    adapter = _make_adapter()
+    audio_path = tmp_path / "reply.ogg"
+    audio_path.write_bytes(b"ogg-bytes")
+
+    call_log = []
+
+    async def mock_send_voice(**kwargs):
+        call_log.append(dict(kwargs))
+        tid = kwargs.get("message_thread_id")
+        if tid is not None:
+            raise FakeBadRequest("Message thread not found")
+        return SimpleNamespace(message_id=401)
+
+    adapter._bot = SimpleNamespace(send_voice=mock_send_voice, send_audio=None)
+
+    result = await adapter.send_voice(
+        chat_id="123",
+        audio_path=str(audio_path),
+        metadata={"thread_id": "99999"},
+    )
+
+    assert result.success is True
+    assert result.message_id == "401"
+    assert len(call_log) == 2
+    assert call_log[0]["message_thread_id"] == 99999
+    assert call_log[1]["message_thread_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_send_voice_retries_without_reply_target_when_missing(tmp_path):
+    """Voice sends should recover when the replied-to Telegram message vanished."""
+    adapter = _make_adapter()
+    audio_path = tmp_path / "reply.ogg"
+    audio_path.write_bytes(b"ogg-bytes")
+
+    call_log = []
+
+    async def mock_send_voice(**kwargs):
+        call_log.append(dict(kwargs))
+        reply_to = kwargs.get("reply_to_message_id")
+        if reply_to is not None:
+            raise FakeBadRequest("Message to be replied not found")
+        return SimpleNamespace(message_id=402)
+
+    adapter._bot = SimpleNamespace(send_voice=mock_send_voice, send_audio=None)
+
+    result = await adapter.send_voice(
+        chat_id="123",
+        audio_path=str(audio_path),
+        reply_to="50",
+    )
+
+    assert result.success is True
+    assert result.message_id == "402"
+    assert len(call_log) == 2
+    assert call_log[0]["reply_to_message_id"] == 50
+    assert call_log[1]["reply_to_message_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_send_voice_mp3_uses_send_audio(tmp_path):
+    """Non-OGG audio should go through Telegram send_audio, not send_voice."""
+    adapter = _make_adapter()
+    audio_path = tmp_path / "reply.mp3"
+    audio_path.write_bytes(b"mp3-bytes")
+
+    send_voice = pytest.fail
+
+    async def mock_send_audio(**kwargs):
+        return SimpleNamespace(message_id=403)
+
+    adapter._bot = SimpleNamespace(send_voice=send_voice, send_audio=mock_send_audio)
+
+    result = await adapter.send_voice(chat_id="123", audio_path=str(audio_path))
+
+    assert result.success is True
+    assert result.message_id == "403"
