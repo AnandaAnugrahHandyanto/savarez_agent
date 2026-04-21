@@ -23,6 +23,7 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
+import { formatContactCard } from './contact-card.js';
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync } from 'fs';
 import { randomBytes } from 'crypto';
 import qrcode from 'qrcode-terminal';
@@ -87,36 +88,6 @@ function getContextInfo(messageContent) {
     }
   }
   return {};
-}
-
-function formatContactCard(messageContent) {
-  if (!messageContent || typeof messageContent !== 'object') return '';
-
-  const lines = [];
-  const pushLine = (label, value) => {
-    if (value === undefined || value === null || value === '') return;
-    lines.push(`${label}: ${String(value)}`);
-  };
-
-  if (messageContent.displayName) pushLine('Name', messageContent.displayName);
-  if (messageContent.vcard) {
-    const phoneMatch = String(messageContent.vcard).match(/TEL[^:]*:(.+)/i);
-    if (phoneMatch?.[1]) pushLine('Phone', phoneMatch[1].trim());
-  }
-
-  if (Array.isArray(messageContent.contacts)) {
-    for (const contact of messageContent.contacts) {
-      if (!contact || typeof contact !== 'object') continue;
-      pushLine('Contact', contact.displayName || contact.vcard || contact.vcardFormattedName || '');
-      pushLine('Phone', contact.phoneNumber || contact.internationalNumber || contact.whatsappId || '');
-    }
-  }
-
-  if (lines.length > 0) {
-    return `[contact card]\n${lines.join('\n')}`;
-  }
-
-  return '[contact card received]';
 }
 
 mkdirSync(SESSION_DIR, { recursive: true });
