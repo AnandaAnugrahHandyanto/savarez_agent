@@ -399,23 +399,50 @@ def session_search(
                     break
             return sid
 
+        def _is_compression_session(session_id: str) -> bool:
+            """Check if a session was ended due to context compression."""
+            try:
+                session = db.get_session(session_id)
+                if session and session.get("end_reason") == "compression":
+                    return True
+            except Exception:
+                pass
+            return False
+
         current_lineage_root = (
             _resolve_to_parent(current_session_id) if current_session_id else None
         )
 
         # Group by resolved (parent) session_id, dedup, skip the current
-        # session lineage. Compression and delegation create child sessions
-        # that still belong to the same active conversation.
+        # session lineage — but NOT compression parents whose content is no
+        # longer in the agent's context window.
+        #
+        # Context compaction splits the active session: the parent is closed
+        # with end_reason="compression" and a new child becomes the active
+        # session.  The parent's messages were summarized and the originals
+        # are no longer visible to the agent.  Excluding those parents from
+        # search results creates a "memory black hole" — the agent can't
+        # recall details that were compacted away.
+        #
+        # We still exclude:
+        #  - The current active session (agent has that context)
+        #  - Delegation children that resolve to the current lineage root,
+        #    UNLESS they are compression-ended sessions whose content the
+        #    agent no longer has.
         seen_sessions = {}
         for result in raw_results:
             raw_sid = result["session_id"]
             resolved_sid = _resolve_to_parent(raw_sid)
-            # Skip the current session lineage — the agent already has that
-            # context, even if older turns live in parent fragments.
-            if current_lineage_root and resolved_sid == current_lineage_root:
-                continue
+            # Always skip the current active session itself
             if current_session_id and raw_sid == current_session_id:
                 continue
+            # For sessions in the current lineage, only skip if they are
+            # NOT compression-ended (i.e. their content is still available
+            # to the agent).  Compression parents have been summarized and
+            # their original messages are gone from context.
+            if current_lineage_root and resolved_sid == current_lineage_root:
+                if not _is_compression_session(raw_sid):
+                    continue
             if resolved_sid not in seen_sessions:
                 result = dict(result)
                 result["session_id"] = resolved_sid

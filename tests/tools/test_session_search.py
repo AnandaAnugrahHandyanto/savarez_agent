@@ -320,8 +320,8 @@ class TestSessionSearch:
         assert result["sessions_searched"] == 1
         assert current_sid not in [r.get("session_id") for r in result.get("results", [])]
 
-    def test_current_child_session_excludes_parent_lineage(self):
-        """Compression/delegation parents should be excluded for the active child session."""
+    def test_current_child_session_excludes_delegation_parent_lineage(self):
+        """Delegation parents (non-compression) should be excluded for the active child session."""
         from unittest.mock import MagicMock
         from tools.session_search_tool import session_search
 
@@ -335,6 +335,7 @@ class TestSessionSearch:
             if session_id == "child_sid":
                 return {"parent_session_id": "parent_sid"}
             if session_id == "parent_sid":
+                # No end_reason — this is a delegation parent, not compression
                 return {"parent_session_id": None}
             return None
 
@@ -348,6 +349,47 @@ class TestSessionSearch:
         assert result["count"] == 0
         assert result["results"] == []
         assert result["sessions_searched"] == 0
+
+    def test_compression_parent_not_excluded_from_search(self):
+        """Compression-ended parents should be searchable — the agent no longer
+        has their content after context compaction."""
+        from unittest.mock import MagicMock, AsyncMock, patch as _patch
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        # FTS5 returns a match from the compression-ended parent session
+        mock_db.search_messages.return_value = [
+            {"session_id": "parent_sid", "content": "important detail from earlier",
+             "source": "cli", "session_started": 1709500000, "model": "test"},
+        ]
+
+        def _get_session(session_id):
+            if session_id == "child_sid":
+                return {"parent_session_id": "parent_sid"}
+            if session_id == "parent_sid":
+                # This parent was ended due to compression — its content
+                # was summarized and is no longer in the agent's context
+                return {"parent_session_id": None, "end_reason": "compression"}
+            return None
+
+        mock_db.get_session.side_effect = _get_session
+        mock_db.get_messages_as_conversation.return_value = [
+            {"role": "user", "content": "tell me about X"},
+            {"role": "assistant", "content": "important detail from earlier"},
+        ]
+
+        with _patch("tools.session_search_tool.async_call_llm",
+                     new_callable=AsyncMock,
+                     side_effect=RuntimeError("no provider")):
+            result = json.loads(session_search(
+                query="important detail", db=mock_db,
+                current_session_id="child_sid",
+            ))
+
+        assert result["success"] is True
+        # The compression parent should NOT be excluded — it should appear
+        assert result["sessions_searched"] == 1
+        assert result["count"] == 1
 
     def test_limit_none_coerced_to_default(self):
         """Model sends limit=null → should fall back to 3, not TypeError."""
