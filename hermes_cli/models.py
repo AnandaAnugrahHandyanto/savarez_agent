@@ -325,6 +325,21 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "glm-4.7",
         "MiniMax-M2.5",
     ],
+    "routstr": [
+        "claude-opus-4-6",
+        "claude-sonnet-4-6",
+        "gpt-5.4",
+        "gpt-5.3-codex",
+        "gemini-3.1-pro-preview",
+        "gemini-3-flash-preview",
+        "deepseek-v3.2",
+        "grok-4.1-fast",
+        "glm-5",
+        "kimi-k2.5",
+        "minimax-m27",
+        "qwen3.5-397b-a17b",
+        "qwen3-coder-480b-a35b-instruct",
+    ],
     # Curated HF model list — only agentic models that map to OpenRouter defaults.
     "huggingface": [
         "moonshotai/Kimi-K2.5",
@@ -594,6 +609,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("opencode-zen",   "OpenCode Zen",             "OpenCode Zen (35+ curated models, pay-as-you-go)"),
     ProviderEntry("opencode-go",    "OpenCode Go",              "OpenCode Go (open models, $10/month subscription)"),
     ProviderEntry("bedrock",        "AWS Bedrock",              "AWS Bedrock (Claude, Nova, Llama, DeepSeek — IAM or API key)"),
+    ProviderEntry("routstr",        "Routstr",                  "Routstr (decentralized Bitcoin AI — Cashu eCash micropayments)"),
 ]
 
 # Derived dicts — used throughout the codebase
@@ -661,6 +677,8 @@ _PROVIDER_ALIASES = {
     "nemotron": "nvidia",
     "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
     "ollama_cloud": "ollama-cloud",
+    "routstr-ai": "routstr",
+    "bitcoin-ai": "routstr",
 }
 
 
@@ -1511,6 +1529,12 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         live = fetch_ollama_cloud_models(force_refresh=force_refresh)
         if live:
             return live
+    if normalized == "routstr":
+        node_url = os.getenv("ROUTSTR_NODE_URL", "").strip().rstrip("/")
+        if node_url:
+            live = fetch_api_models(None, node_url + "/v1")
+            if live:
+                return live
     if normalized == "custom":
         base_url = _get_custom_base_url()
         if base_url:
