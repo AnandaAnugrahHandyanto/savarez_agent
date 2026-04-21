@@ -363,7 +363,7 @@ def test_codex_setup_uses_runtime_access_token_for_live_model_list(tmp_path, mon
 
 
 def test_modal_setup_can_use_nous_subscription_without_modal_creds(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("HERMES_ENABLE_NOUS_MANAGED_TOOLS", "1")
+    monkeypatch.setattr("hermes_cli.setup.managed_nous_tools_enabled", lambda: True)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     config = load_config()
 
@@ -405,7 +405,7 @@ def test_modal_setup_can_use_nous_subscription_without_modal_creds(tmp_path, mon
 
 
 def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_ENABLE_NOUS_MANAGED_TOOLS", "1")
+    monkeypatch.setattr("hermes_cli.setup.managed_nous_tools_enabled", lambda: True)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
     monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)
@@ -467,6 +467,7 @@ def test_offer_launch_chat_execs_fresh_process(monkeypatch):
 
     monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(setup_mod, "_resolve_hermes_chat_argv", lambda: ["/usr/local/bin/hermes", "chat"])
+    monkeypatch.setattr(setup_mod, "_reattach_stdin_to_tty", lambda: True)
 
     exec_calls = []
 
@@ -487,6 +488,46 @@ def test_offer_launch_chat_manual_fallback_when_unresolvable(monkeypatch, capsys
 
     monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(setup_mod, "_resolve_hermes_chat_argv", lambda: None)
+
+    setup_mod._offer_launch_chat()
+
+    captured = capsys.readouterr()
+    assert "Run 'hermes chat' manually" in captured.out
+
+
+def test_reattach_stdin_to_tty_noop_when_stdin_is_already_a_tty(monkeypatch):
+    from hermes_cli import setup as setup_mod
+
+    monkeypatch.setattr(setup_mod.sys.stdin, "isatty", lambda: True)
+
+    assert setup_mod._reattach_stdin_to_tty() is True
+
+
+def test_reattach_stdin_to_tty_rebinds_dev_tty(monkeypatch):
+    from hermes_cli import setup as setup_mod
+
+    calls = []
+
+    monkeypatch.setattr(setup_mod.sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(setup_mod.os, "open", lambda path, flags: calls.append(("open", path, flags)) or 42)
+    monkeypatch.setattr(setup_mod.os, "dup2", lambda src, dst: calls.append(("dup2", src, dst)))
+    monkeypatch.setattr(setup_mod.os, "close", lambda fd: calls.append(("close", fd)))
+    monkeypatch.setattr(setup_mod.os, "name", "posix")
+
+    assert setup_mod._reattach_stdin_to_tty() is True
+    assert calls == [
+        ("open", "/dev/tty", setup_mod.os.O_RDONLY),
+        ("dup2", 42, 0),
+        ("close", 42),
+    ]
+
+
+def test_offer_launch_chat_manual_fallback_when_tty_unavailable(monkeypatch, capsys):
+    from hermes_cli import setup as setup_mod
+
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(setup_mod, "_resolve_hermes_chat_argv", lambda: ["/usr/local/bin/hermes", "chat"])
+    monkeypatch.setattr(setup_mod, "_reattach_stdin_to_tty", lambda: False)
 
     setup_mod._offer_launch_chat()
 
