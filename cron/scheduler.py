@@ -42,10 +42,13 @@ logger = logging.getLogger(__name__)
 
 # Valid delivery platforms — used to validate user-supplied platform names
 # in cron delivery targets, preventing env var enumeration via crafted names.
+# Must stay in sync with the platform_map inside _deliver_result() below; see
+# gh-13707 for why this list previously included "webhook" which had no
+# matching entry in platform_map and therefore failed every delivery.
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "telegram", "discord", "slack", "whatsapp", "signal",
     "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
-    "wecom", "wecom_callback", "weixin", "sms", "email", "webhook", "bluebubbles",
+    "wecom", "wecom_callback", "weixin", "sms", "email", "bluebubbles",
     "qqbot",
 })
 

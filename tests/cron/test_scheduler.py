@@ -263,6 +263,18 @@ class TestResolveDeliveryTarget:
             "thread_id": None,
         }
 
+    def test_webhook_not_in_known_delivery_platforms(self):
+        """Regression for gh-13707: webhook is not a cron delivery platform.
+
+        The gateway run.py explicitly filters Platform.WEBHOOK out of messaging
+        platforms, and _deliver_result's platform_map does not include webhook,
+        so advertising it as a known cron delivery target only produced
+        'unknown platform webhook' failures at delivery time.
+        """
+        from cron.scheduler import _KNOWN_DELIVERY_PLATFORMS
+
+        assert "webhook" not in _KNOWN_DELIVERY_PLATFORMS
+
 
 class TestDeliverResultWrapping:
     """Verify that cron deliveries are wrapped with header/footer and no longer mirrored."""
