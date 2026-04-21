@@ -120,8 +120,6 @@ def render_overlays(img_path: Path, panel_id: str, lettering: dict[str, Any]) ->
         for line in lines:
             draw.text((box[0] + 40, y), line, font=balloon_font, fill=(25, 25, 25, 255))
             y += 38
-        tail = [(box[0] + 90, box[3] - 8), (box[0] + 135, box[3] - 8), (box[0] + 112, box[3] + 40)]
-        draw.polygon(tail, fill=(248, 248, 248, 235), outline=(20, 20, 20, 255))
         top -= box_h + 36
 
     image.convert("RGB").save(img_path)

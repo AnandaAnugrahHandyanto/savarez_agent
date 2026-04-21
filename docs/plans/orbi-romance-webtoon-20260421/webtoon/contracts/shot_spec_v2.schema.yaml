@@ -1,0 +1,299 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+type: object
+additionalProperties: false
+required:
+  - episode
+  - prompt_schema_version
+  - style_preset
+  - style_anchor
+  - continuity_bible_ref
+  - panels
+properties:
+  episode:
+    type: string
+    minLength: 1
+  prompt_schema_version:
+    type: integer
+    const: 2
+  style_preset:
+    type: string
+    minLength: 1
+  style_anchor:
+    type: object
+    additionalProperties: false
+    required:
+      - positive
+      - negative
+    properties:
+      positive:
+        type: string
+        minLength: 1
+      negative:
+        type: array
+        minItems: 1
+        items:
+          type: string
+          minLength: 1
+  continuity_bible_ref:
+    type: string
+    minLength: 1
+  panels:
+    type: array
+    minItems: 1
+    items:
+      type: object
+      additionalProperties: false
+      required:
+        - panel_id
+        - block_id
+        - scene_id
+        - beat_purpose
+        - visible_characters
+        - camera
+        - framing
+        - blocking
+        - gesture
+        - micro_expression
+        - prop_focus
+        - background_continuity
+        - negative_space_for_lettering
+        - must_show
+        - must_not_show
+        - continuity_refs
+      properties:
+        panel_id:
+          type: string
+          minLength: 1
+        block_id:
+          type: string
+          minLength: 1
+        scene_id:
+          type: string
+          minLength: 1
+        beat_purpose:
+          type: string
+          minLength: 1
+        visible_characters:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            minLength: 1
+        camera:
+          type: object
+          additionalProperties: false
+          required:
+            - angle
+            - height
+            - lens_feel
+            - motion
+          properties:
+            angle:
+              type: string
+              minLength: 1
+            height:
+              type: string
+              minLength: 1
+            lens_feel:
+              type: string
+              minLength: 1
+            motion:
+              type: string
+              minLength: 1
+        framing:
+          type: object
+          additionalProperties: false
+          required:
+            - shot_size
+            - subject_priority
+            - depth_layers
+          properties:
+            shot_size:
+              type: string
+              minLength: 1
+            subject_priority:
+              type: array
+              minItems: 1
+              items:
+                type: string
+                minLength: 1
+            depth_layers:
+              type: array
+              minItems: 1
+              items:
+                type: string
+                minLength: 1
+        blocking:
+          type: object
+          additionalProperties: false
+          required:
+            - character_positions
+            - eyelines
+            - contact_state
+          properties:
+            character_positions:
+              type: object
+              minProperties: 1
+              additionalProperties:
+                type: string
+                minLength: 1
+            eyelines:
+              type: object
+              minProperties: 1
+              additionalProperties:
+                type: string
+                minLength: 1
+            contact_state:
+              type: string
+              minLength: 1
+        gesture:
+          type: object
+          minProperties: 1
+          additionalProperties:
+            type: string
+            minLength: 1
+        micro_expression:
+          type: object
+          minProperties: 1
+          additionalProperties:
+            type: string
+            minLength: 1
+        prop_focus:
+          type: object
+          additionalProperties: false
+          required:
+            - primary_prop
+            - secondary_props
+          properties:
+            primary_prop:
+              type: string
+              minLength: 1
+            secondary_props:
+              type: array
+              items:
+                type: string
+                minLength: 1
+        background_continuity:
+          type: object
+          additionalProperties: false
+          required:
+            - location_state
+            - persistent_elements
+            - forbidden_absences
+          properties:
+            location_state:
+              type: string
+              minLength: 1
+            persistent_elements:
+              type: array
+              minItems: 1
+              items:
+                type: string
+                minLength: 1
+            forbidden_absences:
+              type: array
+              minItems: 1
+              items:
+                type: string
+                minLength: 1
+        negative_space_for_lettering:
+          type: object
+          additionalProperties: false
+          required:
+            - caption_zones
+            - balloon_zones
+            - avoid_regions
+          properties:
+            caption_zones:
+              $ref: "#/$defs/zoneArray"
+            balloon_zones:
+              $ref: "#/$defs/zoneArray"
+            avoid_regions:
+              $ref: "#/$defs/zoneArray"
+        must_show:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            minLength: 1
+        must_not_show:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            minLength: 1
+        continuity_refs:
+          type: object
+          additionalProperties: false
+          required:
+            - previous_panel
+            - next_panel
+            - scene_link
+            - outfit_states
+            - reference_priority
+            - allowed_drift
+            - forbidden_drift
+          properties:
+            previous_panel:
+              type:
+                - string
+                - "null"
+            next_panel:
+              type:
+                - string
+                - "null"
+            scene_link:
+              type: string
+              minLength: 1
+            outfit_states:
+              type: object
+              minProperties: 1
+              additionalProperties:
+                type: string
+                minLength: 1
+            reference_priority:
+              type: array
+              minItems: 1
+              items:
+                type: string
+                enum:
+                  - previous_panel
+                  - scene_anchor
+                  - character_anchor
+                  - location_anchor
+            allowed_drift:
+              type: array
+              items:
+                type: string
+                minLength: 1
+            forbidden_drift:
+              type: array
+              items:
+                type: string
+                minLength: 1
+$defs:
+  zoneArray:
+    type: array
+    items:
+      type: object
+      additionalProperties: false
+      required:
+        - zone_id
+        - x
+        - y
+        - w
+        - h
+      properties:
+        zone_id:
+          type: string
+          minLength: 1
+        x:
+          type: number
+        y:
+          type: number
+        w:
+          type: number
+        h:
+          type: number
+        note:
+          type: string

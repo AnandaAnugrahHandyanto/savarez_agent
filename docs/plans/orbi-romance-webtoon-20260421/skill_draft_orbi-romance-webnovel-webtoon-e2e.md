@@ -50,12 +50,9 @@ description: Orbi 감성 기반 자극적 연애물을 5화 웹소설과 웹툰 
 - 생성 이미지 안에 한글 장문을 넣지 말고 후처리 전제 식자를 사용한다.
 
 ## Render branch
-### Preferred
-- fal + FLUX.2 Pro live lane when credentials/backend are ready
-
-### Safe fallback
-- storyboard fallback renderer로 패널 카드와 longscroll PNG 생성
-- 각 패널에 장면 요약, 대사/캡션, 감정 태그를 넣어 검수 가능한 산출물을 만든다.
+- 기본이자 필수 경로는 fal + FLUX.2 Pro live lane이다.
+- 웹툰 e2e 파이프라인은 storyboard fallback 없이 live fal 산출을 기준으로 완료 판정한다.
+- 각 화는 실제 생성된 패널 PNG와 longscroll PNG, live manifest를 남긴다.
 
 ## Verification checklist
 - [ ] signal/bible/pitch 존재

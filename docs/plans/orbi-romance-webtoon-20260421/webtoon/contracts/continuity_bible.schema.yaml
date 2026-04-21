@@ -1,0 +1,240 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+type: object
+additionalProperties: false
+required:
+  - contract_version
+  - series_id
+  - characters
+  - outfit_states
+  - location_states
+  - scene_links
+  - reference_priority
+  - drift_policy
+properties:
+  contract_version:
+    type: integer
+    minimum: 1
+  series_id:
+    type: string
+    minLength: 1
+  characters:
+    type: object
+    minProperties: 1
+    additionalProperties:
+      type: object
+      additionalProperties: false
+      required:
+        - canonical_name
+        - role
+        - identity_core
+        - visual_invariants
+        - default_expression_baseline
+        - forbidden_drift
+        - anchor_props
+      properties:
+        canonical_name:
+          type: string
+          minLength: 1
+        role:
+          type: string
+          minLength: 1
+        identity_core:
+          type: object
+          minProperties: 1
+        visual_invariants:
+          type: object
+          additionalProperties:
+            type: array
+            minItems: 1
+            items:
+              type: string
+              minLength: 1
+        default_expression_baseline:
+          type: object
+          minProperties: 1
+          additionalProperties:
+            type: string
+            minLength: 1
+        forbidden_drift:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            minLength: 1
+        anchor_props:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            minLength: 1
+  outfit_states:
+    type: object
+    minProperties: 1
+    additionalProperties:
+      type: object
+      additionalProperties: false
+      required:
+        - character_id
+        - garments
+        - carry_props
+        - allowed_variation
+        - forbidden_variation
+      properties:
+        character_id:
+          type: string
+          minLength: 1
+        garments:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            minLength: 1
+        carry_props:
+          type: array
+          items:
+            type: string
+            minLength: 1
+        allowed_variation:
+          type: array
+          items:
+            type: string
+            minLength: 1
+        forbidden_variation:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            minLength: 1
+  location_states:
+    type: object
+    minProperties: 1
+    additionalProperties:
+      type: object
+      additionalProperties: false
+      required:
+        - setting
+        - persistent_elements
+        - required_negative_space
+        - forbidden_elements
+      properties:
+        setting:
+          type: string
+          minLength: 1
+        persistent_elements:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            minLength: 1
+        required_negative_space:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            minLength: 1
+        forbidden_elements:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            minLength: 1
+  scene_links:
+    type: object
+    minProperties: 1
+    additionalProperties:
+      type: object
+      additionalProperties: false
+      required:
+        - episode
+        - location_state
+        - characters
+        - outfit_by_character
+        - previous_scene_id
+        - next_scene_id
+        - default_reference_priority
+      properties:
+        episode:
+          type: string
+          minLength: 1
+        location_state:
+          type: string
+          minLength: 1
+        characters:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            minLength: 1
+        outfit_by_character:
+          type: object
+          minProperties: 1
+          additionalProperties:
+            type: string
+            minLength: 1
+        previous_scene_id:
+          type:
+            - string
+            - "null"
+        next_scene_id:
+          type:
+            - string
+            - "null"
+        default_reference_priority:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            enum:
+              - previous_panel
+              - scene_anchor
+              - character_anchor
+              - location_anchor
+  reference_priority:
+    type: object
+    additionalProperties: false
+    required:
+      - default_stack
+      - reset_shot_exceptions
+      - forbidden_priority_pairs
+    properties:
+      default_stack:
+        type: array
+        minItems: 1
+        items:
+          type: string
+          enum:
+            - previous_panel
+            - scene_anchor
+            - character_anchor
+            - location_anchor
+      reset_shot_exceptions:
+        type: array
+        items:
+          type: string
+          minLength: 1
+      forbidden_priority_pairs:
+        type: array
+        items:
+          type: array
+          minItems: 2
+          maxItems: 2
+          items:
+            type: string
+            minLength: 1
+  drift_policy:
+    type: object
+    additionalProperties: false
+    required:
+      - allowed_drift
+      - forbidden_drift
+    properties:
+      allowed_drift:
+        type: array
+        items:
+          type: string
+          minLength: 1
+      forbidden_drift:
+        type: array
+        items:
+          type: string
+          minLength: 1

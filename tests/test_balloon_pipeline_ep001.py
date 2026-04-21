@@ -380,7 +380,7 @@ def test_ranked_speech_candidates_prefer_speaker_local_when_valid(placements_by_
     assert any(candidate["zone_id"] == "speech_top_right" for candidate in p06["rejected_candidates"])
 
 
-def test_tail_routing_provenance_matches_resolved_anchor_and_policy(placements_by_id: dict[str, dict]) -> None:
+def test_speech_attachment_provenance_matches_resolved_anchor_contract(placements_by_id: dict[str, dict]) -> None:
     p02 = placements_by_id["l01"]
     p06 = placements_by_id["l03"]
     p08 = placements_by_id["l06"]
@@ -448,7 +448,7 @@ def test_p08_speech_manifest_lines_fit_safe_box(
     assert p08["tail_cross_ratio"] <= 0.02
 
 
-def test_speech_tail_pixels_are_rendered_in_output_panels(placement_manifest: dict) -> None:
+def test_speech_tail_pixels_are_not_rendered_in_output_panels(placement_manifest: dict) -> None:
     expected_tail_ids = {"l01", "l03", "l06"}
     font_path = placement_manifest["font_path"]
 
@@ -473,4 +473,4 @@ def test_speech_tail_pixels_are_rendered_in_output_panels(placement_manifest: di
                 rendered_image=rendered_image,
                 tail_points=placement["tail_points"],
             )
-            assert changed_pixels > 0, f"Speech tail for {placement['id']} was not rendered"
+            assert changed_pixels == 0, f"Speech tail for {placement['id']} should not be rendered"

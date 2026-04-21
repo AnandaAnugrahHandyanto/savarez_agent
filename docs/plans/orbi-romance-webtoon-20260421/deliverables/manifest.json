@@ -1,4 +1,18 @@
 {
+  "canonical_mappings": {
+    "phase": "phase1_non_destructive_mapping",
+    "project_manifest": "/home/orbibot/.zeroclaw/workspace/hermes-agent/projects/orbi-romance-20260421/manifest.json",
+    "pipeline_index": "/home/orbibot/.zeroclaw/workspace/hermes-agent/pipeline/INDEX.json",
+    "artifact_index": "/home/orbibot/.zeroclaw/workspace/hermes-agent/artifacts/INDEX.json"
+  },
+  "continuity_bible": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/continuity_bible.yaml",
+  "contract_schemas": {
+    "continuity_bible": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/contracts/continuity_bible.schema.yaml",
+    "shot_spec_v2": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/contracts/shot_spec_v2.schema.yaml",
+    "render_queue_qc": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/contracts/render_queue_qc.schema.yaml",
+    "qc_manifest": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/contracts/qc_manifest.schema.yaml"
+  },
+  "validator_entrypoint": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/scripts/validate_webtoon_contracts.py",
   "episodes": [
     {
       "episode": "ep001",
@@ -7,7 +21,9 @@
       "panel_prompts": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/panel_prompts.yaml",
       "lettering_script": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/lettering_script.yaml",
       "render_queue": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/render_queue.yaml",
-      "longscroll": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/renders/ep001/ep001_longscroll.png"
+      "longscroll": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/renders/ep001/ep001_longscroll.png",
+      "render_manifest": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_manifest_ep001.json",
+      "render_mode": "live_fal_flux2_pro"
     },
     {
       "episode": "ep002",
@@ -16,7 +32,9 @@
       "panel_prompts": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep002/panel_prompts.yaml",
       "lettering_script": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep002/lettering_script.yaml",
       "render_queue": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep002/render_queue.yaml",
-      "longscroll": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/renders/ep002/ep002_longscroll.png"
+      "longscroll": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/renders/ep002/ep002_longscroll.png",
+      "render_manifest": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep002/generated_fal_live_manifest_ep002.json",
+      "render_mode": "live_fal_flux2_pro"
     },
     {
       "episode": "ep003",
@@ -25,7 +43,9 @@
       "panel_prompts": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep003/panel_prompts.yaml",
       "lettering_script": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep003/lettering_script.yaml",
       "render_queue": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep003/render_queue.yaml",
-      "longscroll": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/renders/ep003/ep003_longscroll.png"
+      "longscroll": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/renders/ep003/ep003_longscroll.png",
+      "render_manifest": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep003/generated_fal_live_manifest_ep003.json",
+      "render_mode": "live_fal_flux2_pro"
     },
     {
       "episode": "ep004",
@@ -34,7 +54,9 @@
       "panel_prompts": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep004/panel_prompts.yaml",
       "lettering_script": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep004/lettering_script.yaml",
       "render_queue": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep004/render_queue.yaml",
-      "longscroll": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/renders/ep004/ep004_longscroll.png"
+      "longscroll": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/renders/ep004/ep004_longscroll.png",
+      "render_manifest": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep004/generated_fal_live_manifest_ep004.json",
+      "render_mode": "live_fal_flux2_pro"
     },
     {
       "episode": "ep005",
@@ -43,7 +65,9 @@
       "panel_prompts": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep005/panel_prompts.yaml",
       "lettering_script": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep005/lettering_script.yaml",
       "render_queue": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep005/render_queue.yaml",
-      "longscroll": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/renders/ep005/ep005_longscroll.png"
+      "longscroll": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/renders/ep005/ep005_longscroll.png",
+      "render_manifest": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep005/generated_fal_live_manifest_ep005.json",
+      "render_mode": "live_fal_flux2_pro"
     }
   ]
 }

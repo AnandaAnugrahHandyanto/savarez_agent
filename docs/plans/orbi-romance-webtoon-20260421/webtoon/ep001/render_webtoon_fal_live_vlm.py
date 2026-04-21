@@ -216,15 +216,12 @@ def draw_speech(
     max_height = max(50, box[3] - box[1] - padding_y * 2)
     font, lines, line_height = fit_font(draw, text, max_width, max_height, start_size=30, min_size=20, line_gap=8)
     draw.rounded_rectangle(box, radius=46, fill=(248, 248, 248, 240), outline=(20, 20, 20, 255), width=3)
-    tail = build_tail(box, anchor)
-    if tail:
-        draw.polygon(tail, fill=(248, 248, 248, 240), outline=(20, 20, 20, 255))
     text_height = len(lines) * line_height - 8
     y = box[1] + max(padding_y, (box[3] - box[1] - text_height) // 2)
     for line in lines:
         draw.text((box[0] + padding_x, y), line, font=font, fill=(25, 25, 25, 255))
         y += line_height
-    return {"font_size": getattr(font, "size", None), "line_count": len(lines), "tail_points": tail}
+    return {"font_size": getattr(font, "size", None), "line_count": len(lines), "tail_points": None}
 
 
 def ensure_source_panels(manifest: dict[str, Any]) -> dict[str, Path]:

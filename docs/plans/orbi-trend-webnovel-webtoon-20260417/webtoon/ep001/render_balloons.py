@@ -241,7 +241,7 @@ def measure_box_for_zone(
 
 
 def should_draw_tail(placement: PlacementCandidate) -> bool:
-    return bool(placement.tail_points) and placement.template == "speech"
+    return False
 
 
 def render_shape(base: Image.Image, placement: PlacementCandidate, font_path: str | None) -> None:

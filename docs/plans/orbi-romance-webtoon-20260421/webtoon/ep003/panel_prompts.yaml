@@ -1,91 +1,731 @@
 episode: ep003
-prompt_schema_version: 1
-style_preset: clean_korean_webtoon_storyboard
+prompt_schema_version: 2
+style_preset: clean_korean_romance_webtoon_hardened
 style_anchor:
-  positive: clean Korean webtoon storyboard, polished manhwa composition, expressive
-    faces, strong emotional contrast, vertical mobile webtoon panel, no readable text
+  positive: clean Korean romance webtoon illustration, polished digital manhwa acting,
+    cinematic emotional readability, vertical mobile panel staging, no readable text
     inside image
   negative:
+  - planning-board phrasing
+  - thumbnail-sheet layout
+  - temporary layout language
   - readable text in image
   - speech bubbles rendered by model
   - watermark
   - logo
   - western comic page layout
-characters:
-  protagonist:
-    role: 강시윤, 20세, 지방 국립대 1학년 반수생
-    visual: slim Korean male student, black hoodie, tired eyes, sharp but defensive
-      expression
-  heroine:
-    role: 윤서하, 계약학과 재학생
-    visual: sharp-faced Korean female student, dark jacket, cool expression, controlled
-      posture
-  sora:
-    role: 한소라, 스터디 메이트
-    visual: soft but observant Korean female student, casual campus wear
-  minwoo:
-    role: 조민우, 과 선배
-    visual: well-groomed Korean male senior, smug expression
-  mother:
-    role: 시윤의 어머니
-    visual: middle-aged Korean woman, restrained disappointment
+continuity_bible_ref: /home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/continuity_bible.yaml
 panels:
 - panel_id: p01
   block_id: b01
-  shot: insert_prop
-  prompt: 단톡방으로 퍼진 우산 사진 캡처, clean Korean webtoon storyboard, emotional readability,
-    dramatic lighting, no visible letters or UI text
+  scene_id: ep003_groupchat_photo_aftershock
+  beat_purpose: social fallout detonates before the protagonist can control the rumor
   visible_characters:
   - protagonist
+  camera:
+    angle: top-down insert tilted toward the phone and umbrella image memory
+    height: above desk eye-line
+    lens_feel: compressed close detail without fisheye distortion
+    motion: frozen notification shock
+  framing:
+    shot_size: insert_prop
+    subject_priority:
+    - rumor image
+    - protagonist hand tension
+    depth_layers:
+    - foreground unreadable study-app ui glow
+    - midground umbrella-photo silhouette
+    - background desk clutter fade
+  blocking:
+    character_positions:
+      protagonist: only hand and hoodie edge enter from lower frame
+    eyelines:
+      protagonist: eyeline pulled down into the phone screen
+    contact_state: thumb clenches the phone edge while the other hand stops mid-reach
+  gesture:
+    protagonist: tense fingers bracing around the phone as if trying not to drop it
+  micro_expression:
+    protagonist: jaw tightens off-frame while panic leaks through the grip
+  prop_focus:
+    primary_prop: unreadable study-app UI carrying the umbrella-photo rumor
+    secondary_props:
+    - admissions-prep notebook edge
+    - cracked phone case
+  background_continuity:
+    location_state: campus_groupchat_memory
+    persistent_elements:
+    - unreadable study-app UI blocks
+    - umbrella-photo silhouette framing
+    - social-pressure notification glow
+    forbidden_absences:
+    - umbrella-photo silhouette
+    - phone-screen glow
+  negative_space_for_lettering:
+    caption_zones:
+    - zone_id: p01_caption_top
+      x: 0.08
+      y: 0.04
+      w: 0.84
+      h: 0.14
+      note: reserve headline runway for the opening caption
+    balloon_zones: []
+    avoid_regions:
+    - zone_id: p01_phone_center
+      x: 0.20
+      y: 0.26
+      w: 0.60
+      h: 0.42
+      note: keep the rumor image and phone silhouette readable
+  must_show:
+  - unreadable study-app UI with umbrella-photo silhouette
+  - protagonist hoodie cuff and hand tension
+  - social rumor pressure through notification glow
+  must_not_show:
+  - readable Korean text
+  - literal comic-panel borders
+  - unrelated bystanders
+  continuity_refs:
+    previous_panel: null
+    next_panel: p02
+    scene_link: ep003_groupchat_photo_aftershock
+    outfit_states:
+      protagonist: protagonist_black_hoodie_campus
+    reference_priority:
+    - scene_anchor
+    - character_anchor
+    - location_anchor
+    - previous_panel
+    allowed_drift:
+    - abstracted unreadable phone UI
+    forbidden_drift:
+    - hairstyle reset
+    - wardrobe swap outside declared outfit state
 - panel_id: p02
   block_id: b02
-  shot: medium_two_shot
-  prompt: 카페 구석에서 계약하듯 마주 앉은 두 사람, clean Korean webtoon storyboard, emotional readability,
-    dramatic lighting, no visible letters or UI text
-  visible_characters:
-  - protagonist
-- panel_id: p03
-  block_id: b03
-  shot: close_up
-  prompt: 서로 조건을 교환하는 손과 노트북 메모, clean Korean webtoon storyboard, emotional readability,
-    dramatic lighting, no visible letters or UI text
-  visible_characters:
-  - protagonist
-- panel_id: p04
-  block_id: b04
-  shot: medium_two_shot
-  prompt: 도서관과 카페를 오가며 자연스러워지는 페이크 연애 몽타주, clean Korean webtoon storyboard, emotional
-    readability, dramatic lighting, no visible letters or UI text
-  visible_characters:
-  - protagonist
-- panel_id: p05
-  block_id: b05
-  shot: medium_two_shot
-  prompt: 사람들 앞에서 팔을 잡고 데리러 와달라 말하는 서하, clean Korean webtoon storyboard, emotional
-    readability, dramatic lighting, no visible letters or UI text
+  scene_id: ep003_cafe_fake_dating_contract
+  beat_purpose: heroine proposes the fake relationship as a cold strategic fix
   visible_characters:
   - protagonist
   - heroine
+  camera:
+    angle: oblique two-shot from the side of the cafe table
+    height: seated eye-line
+    lens_feel: medium intimacy with subtle compression
+    motion: stillness charged by negotiation
+  framing:
+    shot_size: medium_two_shot
+    subject_priority:
+    - heroine proposal posture
+    - protagonist defensive stare
+    depth_layers:
+    - foreground espresso cup rim
+    - midground table between them
+    - background warm cafe blur
+  blocking:
+    character_positions:
+      protagonist: left side of frame leaning back with shoulders guarded
+      heroine: right side of frame leaning in just enough to control the space
+    eyelines:
+      protagonist: locked on heroine with suspicion
+      heroine: level direct eye contact that feels pre-calculated
+    contact_state: no contact, table edge acts as a negotiation barrier
+  gesture:
+    protagonist: one hand stays near the table edge while the other retreats toward his lap
+    heroine: fingers rest near the espresso cup as she delivers the terms without flinching
+  micro_expression:
+    protagonist: disbelief flashes before he hardens back into sarcasm
+    heroine: calm precision with no visible embarrassment
+  prop_focus:
+    primary_prop: espresso cup and laptop forming a controlled negotiation table
+    secondary_props:
+    - silver laptop
+    - cafe table edge
+  background_continuity:
+    location_state: campus_cafe_corner
+    persistent_elements:
+    - small table
+    - espresso cup
+    - warm practical lighting
+    forbidden_absences:
+    - table boundary between them
+    - warm cafe corner lighting
+  negative_space_for_lettering:
+    caption_zones: []
+    balloon_zones:
+    - zone_id: p02_balloon_upper_right
+      x: 0.58
+      y: 0.09
+      w: 0.28
+      h: 0.17
+      note: open zone near heroine for the fake-dating line
+    avoid_regions:
+    - zone_id: p02_face_pair
+      x: 0.17
+      y: 0.18
+      w: 0.58
+      h: 0.42
+      note: preserve both faces and the negotiation eyeline
+  must_show:
+  - heroine occupying the emotional upper hand
+  - protagonist guarded in black hoodie
+  - warm cafe table as a contract stage
+  must_not_show:
+  - romantic softness
+  - literal readable menu text
+  - extra background friends
+  continuity_refs:
+    previous_panel: p01
+    next_panel: p03
+    scene_link: ep003_cafe_fake_dating_contract
+    outfit_states:
+      protagonist: protagonist_black_hoodie_campus
+      heroine: heroine_dark_jacket_campus
+    reference_priority:
+    - scene_anchor
+    - character_anchor
+    - location_anchor
+    - previous_panel
+    allowed_drift:
+    - lighting temperature shift across locations
+    forbidden_drift:
+    - hairstyle reset
+    - generic idol glam acting
+- panel_id: p03
+  block_id: b03
+  scene_id: ep003_terms_closeup
+  beat_purpose: the deal becomes concrete through hands, notebook edge, and exchanged constraints
+  visible_characters:
+  - protagonist
+  - heroine
+  camera:
+    angle: close tabletop angle focused on hands and tools, not faces
+    height: table height
+    lens_feel: close compression on hands and objects
+    motion: static contract beat
+  framing:
+    shot_size: close_up
+    subject_priority:
+    - exchanging hands
+    - notebook and laptop edge
+    depth_layers:
+    - foreground hand overlap
+    - midground notebook edge
+    - background cafe blur
+  blocking:
+    character_positions:
+      protagonist: left hand enters from lower left with hesitation
+      heroine: right hand extends cleanly from upper right in total control
+    eyelines:
+      protagonist: implied downward attention on the terms
+      heroine: implied downward attention with zero hesitation
+    contact_state: fingertips almost meeting over the negotiation surface
+  gesture:
+    protagonist: fingers hover before committing to the deal
+    heroine: hand extends steadily like a contract already decided
+  micro_expression:
+    protagonist: unease bleeds into reluctant acceptance off-frame
+    heroine: cool certainty remains even in an unseen close detail
+  prop_focus:
+    primary_prop: notebook and laptop edge carrying the sense of terms without readable text
+    secondary_props:
+    - espresso cup rim
+    - admissions-prep notebook corner
+  background_continuity:
+    location_state: tabletop_terms_closeup
+    persistent_elements:
+    - notebook or laptop edge
+    - hands exchanging control
+    forbidden_absences:
+    - both hands in frame
+    - negotiation surface
+  negative_space_for_lettering:
+    caption_zones:
+    - zone_id: p03_caption_top
+      x: 0.09
+      y: 0.05
+      w: 0.78
+      h: 0.12
+      note: caption strip above the hands
+    balloon_zones: []
+    avoid_regions:
+    - zone_id: p03_hands_center
+      x: 0.18
+      y: 0.24
+      w: 0.64
+      h: 0.38
+      note: preserve the almost-handshake and notebook detail
+  must_show:
+  - hands exchanging control over a notebook or laptop edge
+  - clean unreadable prop detail instead of prose text
+  - atmosphere of calculated agreement
+  must_not_show:
+  - readable notes
+  - courtroom symbolism
+  - detached floating hands with no surface context
+  continuity_refs:
+    previous_panel: p02
+    next_panel: p04
+    scene_link: ep003_terms_closeup
+    outfit_states:
+      protagonist: protagonist_black_hoodie_campus
+      heroine: heroine_dark_jacket_campus
+    reference_priority:
+    - location_anchor
+    - character_anchor
+    - scene_anchor
+    - previous_panel
+    allowed_drift:
+    - abstracted unreadable phone UI
+    forbidden_drift:
+    - wardrobe swap outside declared outfit state
+    - literal legal-contract paperwork
+- panel_id: p04
+  block_id: b04
+  scene_id: ep003_fake_dating_montage
+  beat_purpose: the fake relationship becomes dangerously natural through compressed routine
+  visible_characters:
+  - protagonist
+  - heroine
+  camera:
+    angle: montage composite with one dominant shared frame
+    height: chest height
+    lens_feel: medium cinematic breadth
+    motion: glide through repeated campus routine
+  framing:
+    shot_size: medium_two_shot
+    subject_priority:
+    - pair rhythm
+    - repeated library and cafe cues
+    depth_layers:
+    - foreground passing campus motion
+    - midground shared routine beat
+    - background blended library-cafe continuity
+  blocking:
+    character_positions:
+      protagonist: slightly behind heroine yet moving in sync with her rhythm
+      heroine: half-step ahead, effortless in public closeness
+    eyelines:
+      protagonist: glances toward heroine despite trying not to linger
+      heroine: eyes forward as if this intimacy is strategic muscle memory
+    contact_state: near-contact that reads practiced even when not fully touching
+  gesture:
+    protagonist: shoulders loosen despite himself as the routine keeps repeating
+    heroine: movement stays economical and unembarrassed, as if fake dating is another task
+  micro_expression:
+    protagonist: guardedness slips into reluctant familiarity
+    heroine: controlled calm with a hint of private satisfaction
+  prop_focus:
+    primary_prop: repeated campus routine markers like books and cafe carry items
+    secondary_props:
+    - library table edge
+    - takeaway cup silhouette
+  background_continuity:
+    location_state: campus_montage_loop
+    persistent_elements:
+    - library or cafe repetition
+    - moving-between-spaces energy
+    - fake-dating rhythm cues
+    forbidden_absences:
+    - both campus environments implied
+    - shared routine energy
+  negative_space_for_lettering:
+    caption_zones: []
+    balloon_zones:
+    - zone_id: p04_balloon_upper_right
+      x: 0.63
+      y: 0.10
+      w: 0.24
+      h: 0.16
+      note: floating zone for the montage line
+    avoid_regions:
+    - zone_id: p04_pair_center
+      x: 0.16
+      y: 0.20
+      w: 0.60
+      h: 0.46
+      note: keep the pair rhythm and repeated environment cues visible
+  must_show:
+  - fake-dating routine starting to feel natural
+  - repeated campus spaces compressed into one image
+  - both characters sharing a practiced rhythm
+  must_not_show:
+  - literal multi-panel collage borders
+  - cartoon slapstick
+  - readable signage
+  continuity_refs:
+    previous_panel: p03
+    next_panel: p05
+    scene_link: ep003_fake_dating_montage
+    outfit_states:
+      protagonist: protagonist_black_hoodie_campus
+      heroine: heroine_dark_jacket_campus
+    reference_priority:
+    - scene_anchor
+    - character_anchor
+    - location_anchor
+    - previous_panel
+    allowed_drift:
+    - montage compression between library and cafe beats
+    forbidden_drift:
+    - hairstyle reset
+    - unrelated location swap
+- panel_id: p05
+  block_id: b05
+  scene_id: ep003_public_claim_scene
+  beat_purpose: heroine claims him in public and forces him to play along under witness pressure
+  visible_characters:
+  - protagonist
+  - heroine
+  camera:
+    angle: medium public two-shot with witness pressure around the edge
+    height: standing chest height
+    lens_feel: medium with slight crowd compression
+    motion: sudden interruption in a public corridor
+  framing:
+    shot_size: medium_two_shot
+    subject_priority:
+    - heroine grabbing his arm
+    - protagonist caught under public attention
+    depth_layers:
+    - foreground implied crowd shoulders
+    - midground arm-grab contact
+    - background corridor depth
+  blocking:
+    character_positions:
+      protagonist: center-left, halted mid-step as attention lands on him
+      heroine: center-right, closing distance and pulling his arm into frame
+    eyelines:
+      protagonist: eyes cut toward heroine with startled compliance
+      heroine: eyes stay level and performative for the watching crowd
+    contact_state: heroine grips protagonist arm while he freezes before answering
+  gesture:
+    protagonist: body tenses as he gets dragged into the public performance
+    heroine: hand grips his arm with practiced authority
+  micro_expression:
+    protagonist: panic flashes before he forces agreement
+    heroine: public confidence covers the calculation underneath
+  prop_focus:
+    primary_prop: heroine hand on protagonist arm in the corridor
+    secondary_props:
+    - crowd shoulder silhouettes
+    - corridor vanishing line
+  background_continuity:
+    location_state: campus_public_corridor
+    persistent_elements:
+    - corridor vanishing line
+    - public foot-traffic implication
+    - arm-grab staging lane
+    forbidden_absences:
+    - corridor depth
+    - public witness pressure
+  negative_space_for_lettering:
+    caption_zones:
+    - zone_id: p05_caption_top
+      x: 0.09
+      y: 0.04
+      w: 0.78
+      h: 0.13
+      note: reserve top lane for the command caption
+    balloon_zones: []
+    avoid_regions:
+    - zone_id: p05_arm_grab
+      x: 0.21
+      y: 0.22
+      w: 0.54
+      h: 0.42
+      note: preserve the arm grip, faces, and public pressure line
+  must_show:
+  - heroine physically claiming him in public
+  - protagonist frozen under witness pressure
+  - corridor crowd implication
+  must_not_show:
+  - empty private background
+  - comedic romance softness
+  - readable campus signs
+  continuity_refs:
+    previous_panel: p04
+    next_panel: p06
+    scene_link: ep003_public_claim_scene
+    outfit_states:
+      protagonist: protagonist_black_hoodie_campus
+      heroine: heroine_dark_jacket_campus
+    reference_priority:
+    - scene_anchor
+    - character_anchor
+    - location_anchor
+    - previous_panel
+    allowed_drift:
+    - lighting temperature shift across locations
+    forbidden_drift:
+    - wardrobe swap outside declared outfit state
+    - removed public witness pressure
 - panel_id: p06
   block_id: b06
-  shot: close_up
-  prompt: 복도 끝에서 장면을 목격한 소라, clean Korean webtoon storyboard, emotional readability,
-    dramatic lighting, no visible letters or UI text
+  scene_id: ep003_sora_witness
+  beat_purpose: sora sees enough to understand the lie before anyone explains it
   visible_characters:
   - protagonist
   - sora
+  camera:
+    angle: long corridor witness shot with sora in emotional focus
+    height: standing eye-line
+    lens_feel: medium-long compression down the hallway
+    motion: caught mid-stop at the far end of the corridor
+  framing:
+    shot_size: close_up
+    subject_priority:
+    - sora hurt recognition
+    - protagonist caught in the edge of her line of sight
+    depth_layers:
+    - foreground corridor blur
+    - midground sora reaction
+    - background protagonist and corridor depth
+  blocking:
+    character_positions:
+      protagonist: background edge of frame, partially turned away after the public scene
+      sora: foreground-right focus, stopped cold in the corridor
+    eyelines:
+      protagonist: angled away, not yet facing the damage
+      sora: locked on protagonist with disbelief and hurt
+    contact_state: no contact, the distance itself becomes the rupture
+  gesture:
+    protagonist: shoulders remain half-turned as if still inside the lie
+    sora: one hand tightens around her phone while she halts mid-step
+  micro_expression:
+    protagonist: guilt arrives too late to protect anyone
+    sora: wounded disbelief hardens into accusation
+  prop_focus:
+    primary_prop: sora phone held tight as she witnesses the aftermath
+    secondary_props:
+    - corridor depth line
+    - protagonist shoulder silhouette
+  background_continuity:
+    location_state: campus_public_corridor
+    persistent_elements:
+    - corridor vanishing line
+    - public foot-traffic implication
+    - arm-grab staging lane
+    forbidden_absences:
+    - corridor depth
+    - sora phone silhouette
+  negative_space_for_lettering:
+    caption_zones:
+    - zone_id: p06_caption_top
+      x: 0.08
+      y: 0.05
+      w: 0.80
+      h: 0.13
+      note: reserve top caption band for sora's cutting line
+    balloon_zones: []
+    avoid_regions:
+    - zone_id: p06_sora_face
+      x: 0.28
+      y: 0.20
+      w: 0.36
+      h: 0.34
+      note: keep sora reaction and protagonist silhouette unobstructed
+  must_show:
+  - sora catching the lie in one look
+  - protagonist reduced to the guilty edge of frame
+  - phone and corridor distance reinforcing the rupture
+  must_not_show:
+  - cheerful expression from sora
+  - crowded slapstick background
+  - readable device text
+  continuity_refs:
+    previous_panel: p05
+    next_panel: p07
+    scene_link: ep003_sora_witness
+    outfit_states:
+      protagonist: protagonist_black_hoodie_campus
+      sora: sora_casual_campus
+    reference_priority:
+    - scene_anchor
+    - character_anchor
+    - location_anchor
+    - previous_panel
+    allowed_drift:
+    - lighting temperature shift across locations
+    forbidden_drift:
+    - generic idol glam acting
+    - removed corridor depth
 - panel_id: p07
   block_id: b07
-  shot: medium_two_shot
-  prompt: 밤에 오가는 메시지와 허리 감각 회상, clean Korean webtoon storyboard, emotional readability,
-    dramatic lighting, no visible letters or UI text
+  scene_id: ep003_late_night_texts
+  beat_purpose: late-night messages collide with the memory of physical closeness
   visible_characters:
   - protagonist
+  - heroine
+  camera:
+    angle: layered close frame combining phone glow and body-memory fragment
+    height: chest-to-hand level
+    lens_feel: intimate close compression
+    motion: suspended after-midnight recall
+  framing:
+    shot_size: medium_two_shot
+    subject_priority:
+    - protagonist reaction to the message
+    - heroine memory fragment at his waistline
+    depth_layers:
+    - foreground unreadable message glow
+    - midground protagonist tension
+    - background memory-flash silhouette
+  blocking:
+    character_positions:
+      protagonist: dominant in frame holding the phone close in the dark
+      heroine: partial memory silhouette at the frame edge near his waistline
+    eyelines:
+      protagonist: dragged between the unreadable message UI and the physical memory
+      heroine: memory-presence only, implied by the recalled touch
+    contact_state: remembered waist contact rather than present-tense touch
+  gesture:
+    protagonist: thumb hovers over the screen while his torso stiffens at the memory
+    heroine: recalled hand placement stays precise and disarming
+  micro_expression:
+    protagonist: pulse-drop shock as the message names what he wanted to ignore
+    heroine: remembered composure feels almost teasing in retrospect
+  prop_focus:
+    primary_prop: unreadable message glow tied to the waist-contact memory
+    secondary_props:
+    - cracked phone case
+    - body-memory silhouette
+  background_continuity:
+    location_state: night_message_memory
+    persistent_elements:
+    - unreadable message UI glow
+    - dark campus-night palette
+    - memory-flash body fragment
+    forbidden_absences:
+    - phone glow
+    - body-memory fragment
+  negative_space_for_lettering:
+    caption_zones: []
+    balloon_zones:
+    - zone_id: p07_balloon_upper_center
+      x: 0.34
+      y: 0.08
+      w: 0.30
+      h: 0.16
+      note: open pocket above the phone for the late-night message line
+    avoid_regions:
+    - zone_id: p07_phone_memory
+      x: 0.20
+      y: 0.22
+      w: 0.58
+      h: 0.42
+      note: keep the phone glow and waist-contact memory unobstructed
+  must_show:
+  - protagonist reacting alone in the dark
+  - unreadable message glow
+  - recalled waist-contact intimacy
+  must_not_show:
+  - readable chat text
+  - sunny lighting
+  - literal flashback frame border
+  continuity_refs:
+    previous_panel: p06
+    next_panel: p08
+    scene_link: ep003_late_night_texts
+    outfit_states:
+      protagonist: protagonist_black_hoodie_campus
+      heroine: heroine_dark_jacket_campus
+    reference_priority:
+    - previous_panel
+    - scene_anchor
+    - character_anchor
+    - location_anchor
+    allowed_drift:
+    - abstracted unreadable phone UI
+    forbidden_drift:
+    - readable chat bubbles
+    - removed body-memory cue
 - panel_id: p08
   block_id: b08
-  shot: close_up
-  prompt: 소라의 음성메시지 파형, clean Korean webtoon storyboard, emotional readability, dramatic
-    lighting, no visible letters or UI text
+  scene_id: ep003_voice_confession_hook
+  beat_purpose: sora's voice confession becomes the cliffhanger that corners him emotionally
   visible_characters:
   - protagonist
   - sora
+  camera:
+    angle: close emotional hook with phone audio-wave glow and the confession hanging in space
+    height: face-and-phone level
+    lens_feel: intimate close-up
+    motion: frozen just before he answers
+  framing:
+    shot_size: close_up
+    subject_priority:
+    - protagonist stunned reaction
+    - sora voice-message presence through waveform memory
+    depth_layers:
+    - foreground phone glow
+    - midground protagonist face
+    - background sora memory-presence silhouette
+  blocking:
+    character_positions:
+      protagonist: center frame locked in place by the message
+      sora: implied behind or beside the waveform as remembered presence only
+    eyelines:
+      protagonist: trapped on the phone as if the audio is louder than the room
+      sora: memory-presence aimed directly at him through the confession
+    contact_state: no contact, just the unbearable intimacy of the voice note
+  gesture:
+    protagonist: fingers freeze around the phone as he forgets to breathe
+    sora: remembered presence leans emotionally forward through the audio
+  micro_expression:
+    protagonist: shock opens into helplessness he cannot hide
+    sora: vulnerable resolve carries through the unseen voice
+  prop_focus:
+    primary_prop: unreadable voice-message waveform and phone glow
+    secondary_props:
+    - cracked phone case
+    - sora memory silhouette
+  background_continuity:
+    location_state: night_message_memory
+    persistent_elements:
+    - unreadable message UI glow
+    - dark campus-night palette
+    - memory-flash body fragment
+    forbidden_absences:
+    - phone glow
+    - waveform-like audio presence
+  negative_space_for_lettering:
+    caption_zones:
+    - zone_id: p08_caption_top
+      x: 0.08
+      y: 0.05
+      w: 0.82
+      h: 0.13
+      note: reserve the final confession caption band
+    balloon_zones: []
+    avoid_regions:
+    - zone_id: p08_face_phone
+      x: 0.22
+      y: 0.22
+      w: 0.52
+      h: 0.38
+      note: preserve the stunned face and waveform-lit phone
+  must_show:
+  - protagonist stunned by the voice confession
+  - unreadable voice-message waveform presence
+  - sora as memory-presence rather than literal live conversation
+  must_not_show:
+  - readable phone transcript
+  - cheerful ending energy
+  - extra bystanders
+  continuity_refs:
+    previous_panel: p07
+    next_panel: null
+    scene_link: ep003_voice_confession_hook
+    outfit_states:
+      protagonist: protagonist_black_hoodie_campus
+      sora: sora_casual_campus
+    reference_priority:
+    - previous_panel
+    - scene_anchor
+    - character_anchor
+    - location_anchor
+    allowed_drift:
+    - abstracted unreadable phone UI
+    forbidden_drift:
+    - readable transcript text
+    - generic reaction-face acting

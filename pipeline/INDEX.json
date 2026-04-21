@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "phase": "phase1_non_destructive_mapping",
+  "purpose": "Canonical index for pipeline/runtime entrypoints while legacy docs/plans paths remain operational.",
+  "canonical_home": "pipeline/",
+  "legacy_runtime_entrypoints": {
+    "romance_live_episode_runner": {
+      "kind": "renderer",
+      "canonical_role": "live render runner",
+      "legacy_path": "docs/plans/orbi-romance-webtoon-20260421/webtoon/render_webtoon_fal_live_episode.py"
+    },
+    "romance_storyboard_renderer": {
+      "kind": "renderer",
+      "canonical_role": "storyboard fallback renderer",
+      "legacy_path": "docs/plans/orbi-romance-webtoon-20260421/storyboard_renderer.py"
+    },
+    "romance_storyboard_cli": {
+      "kind": "script",
+      "canonical_role": "storyboard fallback command",
+      "legacy_path": "docs/plans/orbi-romance-webtoon-20260421/scripts/render_storyboard.py"
+    },
+    "balloon_zone_analyzer": {
+      "kind": "analyzer",
+      "canonical_role": "balloon analysis baseline",
+      "legacy_path": "docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/analyze_balloon_zones.py"
+    },
+    "balloon_overlay_renderer": {
+      "kind": "renderer",
+      "canonical_role": "balloon overlay baseline",
+      "legacy_path": "docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/render_balloons.py"
+    },
+    "balloon_layout_utils": {
+      "kind": "library",
+      "canonical_role": "balloon layout utility baseline",
+      "legacy_path": "docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/balloon_layout_utils.py"
+    }
+  },
+  "protected_baseline_tests": [
+    "tests/test_balloon_pipeline_ep001.py",
+    "tests/test_balloon_pipeline_ep001_live.py",
+    "tests/test_tail_less_contracts.py",
+    "tests/test_webtoon_prompt_schema_ep001.py"
+  ]
+}

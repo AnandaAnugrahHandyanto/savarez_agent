@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "phase": "phase1_non_destructive_mapping",
+  "purpose": "Canonical artifact index while generated files remain in legacy output directories.",
+  "canonical_home": "artifacts/",
+  "artifact_sets": {
+    "orbi-romance-20260421": {
+      "canonical_role": "romance generated output set",
+      "legacy_project_root": "docs/plans/orbi-romance-webtoon-20260421",
+      "episodes": [
+        {
+          "episode": "ep001",
+          "longscroll": "docs/plans/orbi-romance-webtoon-20260421/renders/ep001/ep001_longscroll.png",
+          "panel_dir": "docs/plans/orbi-romance-webtoon-20260421/renders/ep001/panels",
+          "raw_generation_dir": "docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_ep001",
+          "render_manifest": "docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_manifest_ep001.json"
+        },
+        {
+          "episode": "ep002",
+          "longscroll": "docs/plans/orbi-romance-webtoon-20260421/renders/ep002/ep002_longscroll.png",
+          "panel_dir": "docs/plans/orbi-romance-webtoon-20260421/renders/ep002/panels",
+          "raw_generation_dir": "docs/plans/orbi-romance-webtoon-20260421/webtoon/ep002/generated_fal_live_ep002",
+          "render_manifest": "docs/plans/orbi-romance-webtoon-20260421/webtoon/ep002/generated_fal_live_manifest_ep002.json"
+        },
+        {
+          "episode": "ep003",
+          "longscroll": "docs/plans/orbi-romance-webtoon-20260421/renders/ep003/ep003_longscroll.png",
+          "panel_dir": "docs/plans/orbi-romance-webtoon-20260421/renders/ep003/panels",
+          "raw_generation_dir": "docs/plans/orbi-romance-webtoon-20260421/webtoon/ep003/generated_fal_live_ep003",
+          "render_manifest": "docs/plans/orbi-romance-webtoon-20260421/webtoon/ep003/generated_fal_live_manifest_ep003.json"
+        },
+        {
+          "episode": "ep004",
+          "longscroll": "docs/plans/orbi-romance-webtoon-20260421/renders/ep004/ep004_longscroll.png",
+          "panel_dir": "docs/plans/orbi-romance-webtoon-20260421/renders/ep004/panels",
+          "raw_generation_dir": "docs/plans/orbi-romance-webtoon-20260421/webtoon/ep004/generated_fal_live_ep004",
+          "render_manifest": "docs/plans/orbi-romance-webtoon-20260421/webtoon/ep004/generated_fal_live_manifest_ep004.json"
+        },
+        {
+          "episode": "ep005",
+          "longscroll": "docs/plans/orbi-romance-webtoon-20260421/renders/ep005/ep005_longscroll.png",
+          "panel_dir": "docs/plans/orbi-romance-webtoon-20260421/renders/ep005/panels",
+          "raw_generation_dir": "docs/plans/orbi-romance-webtoon-20260421/webtoon/ep005/generated_fal_live_ep005",
+          "render_manifest": "docs/plans/orbi-romance-webtoon-20260421/webtoon/ep005/generated_fal_live_manifest_ep005.json"
+        }
+      ]
+    }
+  }
+}

@@ -1,33 +1,33 @@
 {
-  "mode": "v3-character-consistency",
-  "dry_run": false,
-  "manifest_only": false,
+  "mode": "v3-character-consistency-dry-run",
+  "dry_run": true,
+  "manifest_only": true,
   "anchors": {
     "location_master": {
-      "url": "https://v3b.fal.media/files/b/0a96faa4/zEZO1fX5kKhRGC4IpI6dq_jDTZIzW3.png",
+      "url": "dry-run://location_master",
       "prompt": "clean Korean webtoon cartoon illustration, polished digital manhwa style, 2D cel shading, expressive line art, soft cinematic lighting, consistent same apartment study room, emotionally readable faces, vertical mobile webtoon panel, vertical mobile webtoon panel, clean composition, keep open areas free of any text-like marks, Busan apartment study room at night, cluttered desk with mock exam papers and laptop, stacked prep books, blue-gray shadows, cramped but lived-in middle-class bedroom, avoid low quality, extra fingers, malformed hands, unreadable korean text in image, overdesigned sci-fi UI, western comic page layout, text, letters, logos, watermarks, dialogue bubbles, readable monitor text, inconsistent face design"
     },
     "character_views": {
       "protagonist": {
         "portrait_3q": {
-          "url": "https://v3b.fal.media/files/b/0a96faa6/V_qcnsWL8ntDxqO5monzV_NM9ayrB4.png",
+          "url": "dry-run://protagonist.portrait_3q",
           "view_class": "portrait",
           "prompt": "clean Korean webtoon cartoon illustration, polished digital manhwa style, 2D cel shading, expressive line art, soft cinematic lighting, consistent same apartment study room, emotionally readable faces, vertical mobile webtoon panel, vertical mobile webtoon panel, clean composition, keep open areas free of any text-like marks, shoulders-up three-quarter portrait with laptop glow spill, protagonist identity lock, 19-year-old Korean male student, late teen, not adult office worker, slim, narrow shoulders, soft black hair, slight center-part fringe, low-volume side silhouette, pale oval face, tired narrow eyes, soft jawline, black zip hoodie, light gray training pants, soft black hair, pale oval face, black zip hoodie, sleep-deprived, defensive, tightly held mouth, eyes widen before posture changes, avoid low quality, extra fingers, malformed hands, unreadable korean text in image, overdesigned sci-fi UI, western comic page layout, text, letters, logos, watermarks, dialogue bubbles, readable monitor text, inconsistent face design, no different haircut, no broad athletic build, no adult-looking facial proportions"
         },
         "desk_halfbody": {
-          "url": "https://v3b.fal.media/files/b/0a96faa8/IBmiGgJvxQ0CDWZWa6vJZ_OX7FLtVL.png",
+          "url": "dry-run://protagonist.desk_halfbody",
           "view_class": "seated_medium",
           "prompt": "clean Korean webtoon cartoon illustration, polished digital manhwa style, 2D cel shading, expressive line art, soft cinematic lighting, consistent same apartment study room, emotionally readable faces, vertical mobile webtoon panel, vertical mobile webtoon panel, clean composition, keep open areas free of any text-like marks, half-body seated at desk with laptop glow and tense posture, protagonist identity lock, 19-year-old Korean male student, late teen, not adult office worker, slim, narrow shoulders, soft black hair, slight center-part fringe, low-volume side silhouette, pale oval face, tired narrow eyes, soft jawline, black zip hoodie, light gray training pants, soft black hair, pale oval face, black zip hoodie, sleep-deprived, defensive, tightly held mouth, eyes widen before posture changes, avoid low quality, extra fingers, malformed hands, unreadable korean text in image, overdesigned sci-fi UI, western comic page layout, text, letters, logos, watermarks, dialogue bubbles, readable monitor text, inconsistent face design, no different haircut, no broad athletic build, no adult-looking facial proportions"
         }
       },
       "mother": {
         "portrait_front": {
-          "url": "https://v3b.fal.media/files/b/0a96faaa/ADxPxPXw_btc2ezyfwTs-_9uTvtr23.png",
+          "url": "dry-run://mother.portrait_front",
           "view_class": "portrait",
           "prompt": "clean Korean webtoon cartoon illustration, polished digital manhwa style, 2D cel shading, expressive line art, soft cinematic lighting, consistent same apartment study room, emotionally readable faces, vertical mobile webtoon panel, vertical mobile webtoon panel, clean composition, keep open areas free of any text-like marks, shoulders-up front portrait with restrained cold expression, mother identity lock, Korean mother in late 40s, middle-aged, composed, not youthful student, slim-to-average, slightly narrow posture, dark brown hair tied low, clean center part, neat tucked side profile, long oval face, restrained brows, tired sharp eyes, simple beige homewear set, minimal neckline buttons, dark brown hair tied low, long oval face, simple beige homewear set, emotionally restrained, observant, cold restraint before open shock, avoid low quality, extra fingers, malformed hands, unreadable korean text in image, overdesigned sci-fi UI, western comic page layout, text, letters, logos, watermarks, dialogue bubbles, readable monitor text, inconsistent face design, no bob cut, no bright makeup, no youthful face proportions"
         },
         "doorway_fullbody": {
-          "url": "https://v3b.fal.media/files/b/0a96faab/RtJ2FSKZlWTe1BF67D0aA_94KLeQUL.png",
+          "url": "dry-run://mother.doorway_fullbody",
           "view_class": "standing_full",
           "prompt": "clean Korean webtoon cartoon illustration, polished digital manhwa style, 2D cel shading, expressive line art, soft cinematic lighting, consistent same apartment study room, emotionally readable faces, vertical mobile webtoon panel, vertical mobile webtoon panel, clean composition, keep open areas free of any text-like marks, full-body doorway stance with held arms and hallway backlight, mother identity lock, Korean mother in late 40s, middle-aged, composed, not youthful student, slim-to-average, slightly narrow posture, dark brown hair tied low, clean center part, neat tucked side profile, long oval face, restrained brows, tired sharp eyes, simple beige homewear set, minimal neckline buttons, dark brown hair tied low, long oval face, simple beige homewear set, emotionally restrained, observant, cold restraint before open shock, avoid low quality, extra fingers, malformed hands, unreadable korean text in image, overdesigned sci-fi UI, western comic page layout, text, letters, logos, watermarks, dialogue bubbles, readable monitor text, inconsistent face design, no bob cut, no bright makeup, no youthful face proportions"
         }
@@ -37,7 +37,7 @@
   "panels": [
     {
       "panel_id": "p01",
-      "url": "https://v3b.fal.media/files/b/0a96faad/_yJ7EMyQIc7RCZ26ziWnP_qhgc8X3W.png",
+      "url": "dry-run://panel:p01",
       "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v3/p01.png",
       "block_id": "b01",
       "shot": "extreme_close_up",
@@ -64,13 +64,13 @@
             "label": "location_master",
             "source": "anchor",
             "source_panel": null,
-            "url": "https://v3b.fal.media/files/b/0a96faa4/zEZO1fX5kKhRGC4IpI6dq_jDTZIzW3.png"
+            "url": "dry-run://location_master"
           },
           {
             "label": "protagonist.desk_halfbody",
             "source": "character_sheet",
             "source_panel": null,
-            "url": "https://v3b.fal.media/files/b/0a96faa8/IBmiGgJvxQ0CDWZWa6vJZ_OX7FLtVL.png"
+            "url": "dry-run://protagonist.desk_halfbody"
           }
         ],
         "skipped_refs": [
@@ -98,7 +98,7 @@
     },
     {
       "panel_id": "p02",
-      "url": "https://v3b.fal.media/files/b/0a96fab0/mjp1fj3qinpKaN1mz7ruc_wlHeg3jJ.png",
+      "url": "dry-run://panel:p02",
       "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v3/p02.png",
       "block_id": "b02",
       "shot": "over_shoulder",
@@ -128,25 +128,25 @@
             "label": "location_master",
             "source": "anchor",
             "source_panel": null,
-            "url": "https://v3b.fal.media/files/b/0a96faa4/zEZO1fX5kKhRGC4IpI6dq_jDTZIzW3.png"
+            "url": "dry-run://location_master"
           },
           {
             "label": "mother.portrait_front",
             "source": "character_sheet",
             "source_panel": null,
-            "url": "https://v3b.fal.media/files/b/0a96faaa/ADxPxPXw_btc2ezyfwTs-_9uTvtr23.png"
+            "url": "dry-run://mother.portrait_front"
           },
           {
             "label": "protagonist.desk_halfbody",
             "source": "character_sheet",
             "source_panel": null,
-            "url": "https://v3b.fal.media/files/b/0a96faa8/IBmiGgJvxQ0CDWZWa6vJZ_OX7FLtVL.png"
+            "url": "dry-run://protagonist.desk_halfbody"
           },
           {
             "label": "prev_panel",
             "source": "panel:p01",
             "source_panel": "p01",
-            "url": "https://v3b.fal.media/files/b/0a96faad/_yJ7EMyQIc7RCZ26ziWnP_qhgc8X3W.png"
+            "url": "dry-run://panel:p01"
           }
         ],
         "skipped_refs": [
@@ -187,7 +187,7 @@
     },
     {
       "panel_id": "p03",
-      "url": "https://v3b.fal.media/files/b/0a96fab3/0N0T0K8___Kwkm1Tcnpni_8u6ZJ0jN.png",
+      "url": "dry-run://panel:p03",
       "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v3/p03.png",
       "block_id": "b03",
       "shot": "insert_screen",
@@ -214,19 +214,19 @@
             "label": "location_master",
             "source": "anchor",
             "source_panel": null,
-            "url": "https://v3b.fal.media/files/b/0a96faa4/zEZO1fX5kKhRGC4IpI6dq_jDTZIzW3.png"
+            "url": "dry-run://location_master"
           },
           {
             "label": "protagonist.portrait_3q",
             "source": "character_sheet",
             "source_panel": null,
-            "url": "https://v3b.fal.media/files/b/0a96faa6/V_qcnsWL8ntDxqO5monzV_NM9ayrB4.png"
+            "url": "dry-run://protagonist.portrait_3q"
           },
           {
             "label": "scene_ref:protagonist",
             "source": "panel:p01",
             "source_panel": "p01",
-            "url": "https://v3b.fal.media/files/b/0a96faad/_yJ7EMyQIc7RCZ26ziWnP_qhgc8X3W.png"
+            "url": "dry-run://panel:p01"
           }
         ],
         "skipped_refs": [
@@ -249,7 +249,7 @@
     },
     {
       "panel_id": "p04",
-      "url": "https://v3b.fal.media/files/b/0a96fab5/IF9NtYQgG7TQNfvqt2zhl_5CGPcF7R.png",
+      "url": "dry-run://panel:p04",
       "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v3/p04.png",
       "block_id": "b04",
       "shot": "split_focus",
@@ -276,13 +276,13 @@
             "label": "location_master",
             "source": "anchor",
             "source_panel": null,
-            "url": "https://v3b.fal.media/files/b/0a96faa4/zEZO1fX5kKhRGC4IpI6dq_jDTZIzW3.png"
+            "url": "dry-run://location_master"
           },
           {
             "label": "protagonist.portrait_3q",
             "source": "character_sheet",
             "source_panel": null,
-            "url": "https://v3b.fal.media/files/b/0a96faa6/V_qcnsWL8ntDxqO5monzV_NM9ayrB4.png"
+            "url": "dry-run://protagonist.portrait_3q"
           }
         ],
         "skipped_refs": [
@@ -316,7 +316,7 @@
     },
     {
       "panel_id": "p05",
-      "url": "https://v3b.fal.media/files/b/0a96fab8/lYFPkSenUCZkK0xYg0Ag__uZLOgVj0.png",
+      "url": "dry-run://panel:p05",
       "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v3/p05.png",
       "block_id": "b05",
       "shot": "hand_closeup",
@@ -343,19 +343,19 @@
             "label": "location_master",
             "source": "anchor",
             "source_panel": null,
-            "url": "https://v3b.fal.media/files/b/0a96faa4/zEZO1fX5kKhRGC4IpI6dq_jDTZIzW3.png"
+            "url": "dry-run://location_master"
           },
           {
             "label": "protagonist.desk_halfbody",
             "source": "character_sheet",
             "source_panel": null,
-            "url": "https://v3b.fal.media/files/b/0a96faa8/IBmiGgJvxQ0CDWZWa6vJZ_OX7FLtVL.png"
+            "url": "dry-run://protagonist.desk_halfbody"
           },
           {
             "label": "scene_ref:protagonist",
             "source": "panel:p04",
             "source_panel": "p04",
-            "url": "https://v3b.fal.media/files/b/0a96fab5/IF9NtYQgG7TQNfvqt2zhl_5CGPcF7R.png"
+            "url": "dry-run://panel:p04"
           }
         ],
         "skipped_refs": [
@@ -378,7 +378,7 @@
     },
     {
       "panel_id": "p06",
-      "url": "https://v3b.fal.media/files/b/0a96fabb/dA0IY6A4JIX4Xw3cXqV9z_rNA88sU8.png",
+      "url": "dry-run://panel:p06",
       "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v3/p06.png",
       "block_id": "b06",
       "shot": "doorway_reveal",
@@ -408,41 +408,41 @@
             "label": "location_master",
             "source": "anchor",
             "source_panel": null,
-            "url": "https://v3b.fal.media/files/b/0a96faa4/zEZO1fX5kKhRGC4IpI6dq_jDTZIzW3.png"
+            "url": "dry-run://location_master"
           },
           {
             "label": "mother.doorway_fullbody",
             "source": "character_sheet",
             "source_panel": null,
-            "url": "https://v3b.fal.media/files/b/0a96faab/RtJ2FSKZlWTe1BF67D0aA_94KLeQUL.png"
+            "url": "dry-run://mother.doorway_fullbody"
           },
           {
             "label": "mother.portrait_front",
             "source": "character_sheet",
             "source_panel": null,
-            "url": "https://v3b.fal.media/files/b/0a96faaa/ADxPxPXw_btc2ezyfwTs-_9uTvtr23.png"
+            "url": "dry-run://mother.portrait_front"
           },
           {
             "label": "protagonist.desk_halfbody",
             "source": "character_sheet",
             "source_panel": null,
-            "url": "https://v3b.fal.media/files/b/0a96faa8/IBmiGgJvxQ0CDWZWa6vJZ_OX7FLtVL.png"
+            "url": "dry-run://protagonist.desk_halfbody"
           },
           {
             "label": "protagonist.last_strong_ref.seated_medium",
             "source": "panel:p02",
             "source_panel": "p02",
-            "url": "https://v3b.fal.media/files/b/0a96fab0/mjp1fj3qinpKaN1mz7ruc_wlHeg3jJ.png"
+            "url": "dry-run://panel:p02"
           }
         ],
         "skipped_refs": [
           {
-            "label": "mother.last_strong_ref.portrait",
+            "label": "mother.last_strong_ref.standing_full",
             "source": "strong_ref",
             "reason": "missing_strong_ref"
           },
           {
-            "label": "mother.last_strong_ref.standing_full",
+            "label": "mother.last_strong_ref.portrait",
             "source": "strong_ref",
             "reason": "missing_strong_ref"
           },
@@ -487,7 +487,7 @@
     },
     {
       "panel_id": "p07",
-      "url": "https://v3b.fal.media/files/b/0a96fabe/-5e0LavkG8-cb8duOTGxi_ivHw4IYY.png",
+      "url": "dry-run://panel:p07",
       "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v3/p07.png",
       "block_id": "b07",
       "shot": "text_focus_prop",
@@ -517,25 +517,25 @@
             "label": "location_master",
             "source": "anchor",
             "source_panel": null,
-            "url": "https://v3b.fal.media/files/b/0a96faa4/zEZO1fX5kKhRGC4IpI6dq_jDTZIzW3.png"
+            "url": "dry-run://location_master"
           },
           {
             "label": "mother.doorway_fullbody",
             "source": "character_sheet",
             "source_panel": null,
-            "url": "https://v3b.fal.media/files/b/0a96faab/RtJ2FSKZlWTe1BF67D0aA_94KLeQUL.png"
+            "url": "dry-run://mother.doorway_fullbody"
           },
           {
             "label": "protagonist.portrait_3q",
             "source": "character_sheet",
             "source_panel": null,
-            "url": "https://v3b.fal.media/files/b/0a96faa6/V_qcnsWL8ntDxqO5monzV_NM9ayrB4.png"
+            "url": "dry-run://protagonist.portrait_3q"
           },
           {
             "label": "scene_ref:mother+protagonist",
             "source": "panel:p06",
             "source_panel": "p06",
-            "url": "https://v3b.fal.media/files/b/0a96fabb/dA0IY6A4JIX4Xw3cXqV9z_rNA88sU8.png"
+            "url": "dry-run://panel:p06"
           }
         ],
         "skipped_refs": [
@@ -565,7 +565,7 @@
     },
     {
       "panel_id": "p08",
-      "url": "https://v3b.fal.media/files/b/0a96fac2/5yHjx7BFn5dL2yeZxpRmL_h37JZR5w.png",
+      "url": "dry-run://panel:p08",
       "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v3/p08.png",
       "block_id": "b08",
       "shot": "final_cliffhanger",
@@ -595,43 +595,43 @@
             "label": "location_master",
             "source": "anchor",
             "source_panel": null,
-            "url": "https://v3b.fal.media/files/b/0a96faa4/zEZO1fX5kKhRGC4IpI6dq_jDTZIzW3.png"
+            "url": "dry-run://location_master"
           },
           {
             "label": "mother.doorway_fullbody",
             "source": "character_sheet",
             "source_panel": null,
-            "url": "https://v3b.fal.media/files/b/0a96faab/RtJ2FSKZlWTe1BF67D0aA_94KLeQUL.png"
+            "url": "dry-run://mother.doorway_fullbody"
           },
           {
             "label": "mother.portrait_front",
             "source": "character_sheet",
             "source_panel": null,
-            "url": "https://v3b.fal.media/files/b/0a96faaa/ADxPxPXw_btc2ezyfwTs-_9uTvtr23.png"
+            "url": "dry-run://mother.portrait_front"
           },
           {
             "label": "protagonist.portrait_3q",
             "source": "character_sheet",
             "source_panel": null,
-            "url": "https://v3b.fal.media/files/b/0a96faa6/V_qcnsWL8ntDxqO5monzV_NM9ayrB4.png"
+            "url": "dry-run://protagonist.portrait_3q"
           },
           {
             "label": "protagonist.desk_halfbody",
             "source": "character_sheet",
             "source_panel": null,
-            "url": "https://v3b.fal.media/files/b/0a96faa8/IBmiGgJvxQ0CDWZWa6vJZ_OX7FLtVL.png"
+            "url": "dry-run://protagonist.desk_halfbody"
           },
           {
-            "label": "mother.last_strong_ref.portrait",
+            "label": "mother.last_strong_ref.standing_full",
             "source": "panel:p06",
             "source_panel": "p06",
-            "url": "https://v3b.fal.media/files/b/0a96fabb/dA0IY6A4JIX4Xw3cXqV9z_rNA88sU8.png"
+            "url": "dry-run://panel:p06"
           },
           {
             "label": "protagonist.last_strong_ref.portrait",
             "source": "panel:p04",
             "source_panel": "p04",
-            "url": "https://v3b.fal.media/files/b/0a96fab5/IF9NtYQgG7TQNfvqt2zhl_5CGPcF7R.png"
+            "url": "dry-run://panel:p04"
           }
         ],
         "skipped_refs": [
@@ -646,7 +646,7 @@
             "reason": "continuity_reset_shot"
           },
           {
-            "label": "mother.last_strong_ref.standing_full",
+            "label": "mother.last_strong_ref.portrait",
             "source": "panel:p06",
             "reason": "duplicate_url_preserved_by_precedence"
           },
@@ -697,10 +697,7 @@
       720,
       1072
     ],
-    "longscroll": [
-      720,
-      9316
-    ]
+    "longscroll": null
   },
-  "longscroll": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v3/ep001_fal_longscroll.png"
+  "longscroll": null
 }

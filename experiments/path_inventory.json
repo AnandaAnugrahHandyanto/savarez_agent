@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "phase": "phase2_reference_audit",
+  "purpose": "Inventory current experiments index mappings so later relocations can distinguish dated contexts from runtime baselines.",
+  "experiments": {
+    "20260417-balloon-baseline": {
+      "canonical_role": "runtime and overlay baseline reference",
+      "legacy_path": {
+        "path": "docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001",
+        "path_style": "repo_relative",
+        "contract_kind": "legacy_experiment_root"
+      },
+      "representative_files": [
+        {
+          "path": "docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/analyze_balloon_zones.py",
+          "path_style": "repo_relative"
+        },
+        {
+          "path": "docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/render_balloons.py",
+          "path_style": "repo_relative"
+        },
+        {
+          "path": "docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/balloon_layout_utils.py",
+          "path_style": "repo_relative"
+        }
+      ]
+    },
+    "20260420-tail-less-policy": {
+      "canonical_role": "tail-less balloon policy reference",
+      "legacy_path": {
+        "path": "docs/plans/orbi-live-webtoon-20260420",
+        "path_style": "repo_relative",
+        "contract_kind": "legacy_experiment_root"
+      },
+      "representative_files": [
+        {
+          "path": "docs/plans/orbi-live-webtoon-20260420/codex_balloon_notail_context.md",
+          "path_style": "repo_relative"
+        },
+        {
+          "path": "docs/plans/orbi-live-webtoon-20260420/codex_notail_renderer_context.md",
+          "path_style": "repo_relative"
+        }
+      ]
+    },
+    "20260420-codex-contexts": {
+      "canonical_role": "dated implementation and tuning contexts",
+      "legacy_path": {
+        "path": "docs/plans/orbi-trend-webnovel-webtoon-20260420",
+        "path_style": "repo_relative",
+        "contract_kind": "legacy_experiment_root"
+      },
+      "representative_files": [
+        {
+          "path": "docs/plans/orbi-trend-webnovel-webtoon-20260420/codex_balloon_attachment_iteration_context.md",
+          "path_style": "repo_relative"
+        },
+        {
+          "path": "docs/plans/orbi-trend-webnovel-webtoon-20260420/codex_balloon_attachment_iteration2_context.md",
+          "path_style": "repo_relative"
+        },
+        {
+          "path": "docs/plans/orbi-trend-webnovel-webtoon-20260420/codex_balloon_pipeline_context.md",
+          "path_style": "repo_relative"
+        },
+        {
+          "path": "docs/plans/orbi-trend-webnovel-webtoon-20260420/codex_character_consistency_implementation_context.md",
+          "path_style": "repo_relative"
+        }
+      ]
+    },
+    "20260421-vlm-observation-mvp": {
+      "canonical_role": "romance VLM and live-render implementation contexts",
+      "legacy_path": {
+        "path": "docs/plans/orbi-romance-webtoon-20260421",
+        "path_style": "repo_relative",
+        "contract_kind": "legacy_experiment_root"
+      },
+      "representative_files": [
+        {
+          "path": "docs/plans/orbi-romance-webtoon-20260421/codex_balloon_metadata_strategy_context.md",
+          "path_style": "repo_relative"
+        },
+        {
+          "path": "docs/plans/orbi-romance-webtoon-20260421/codex_balloon_vlm_mvp_context.md",
+          "path_style": "repo_relative"
+        },
+        {
+          "path": "docs/plans/orbi-romance-webtoon-20260421/codex_fal_live_ep001_context.md",
+          "path_style": "repo_relative"
+        },
+        {
+          "path": "docs/plans/orbi-romance-webtoon-20260421/codex_orbi_romance_e2e_context.md",
+          "path_style": "repo_relative"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,415 @@
+contract_version: 1
+series_id: orbi_romance_20260421
+characters:
+  protagonist:
+    canonical_name: 강시윤
+    role: admissions-track transfer-prep student
+    identity_core:
+      age_impression: late teen Korean male student
+      body_build: slim, narrow-shouldered, tension held in neck and hands
+      narrative_pressure: defensive pride masking fear of falling behind
+    visual_invariants:
+      hair:
+        - soft black hair
+        - slight center-part fringe
+        - low-volume silhouette
+      face:
+        - pale oval face
+        - tired narrow eyes
+        - sharp mouth tension when cornered
+      wardrobe:
+        - black zip hoodie
+        - muted campus basics
+    default_expression_baseline:
+      neutral: sleep-deprived restraint
+      stress: eyes widen before posture breaks
+    forbidden_drift:
+      - no broad athletic build
+      - no bright dyed hair
+      - no adult office-worker styling
+    anchor_props:
+      - cracked phone case
+      - admissions-prep notebook
+  heroine:
+    canonical_name: 윤서하
+    role: contract-department scholarship student
+    identity_core:
+      age_impression: early twenties Korean female student
+      body_build: lean, upright, controlled posture
+      narrative_pressure: precision and status anxiety hidden behind calm delivery
+    visual_invariants:
+      hair:
+        - dark straight hair
+        - controlled silhouette
+      face:
+        - sharp eyes
+        - composed expression line
+        - clean jawline
+      wardrobe:
+        - dark tailored campus jacket
+        - understated smart-casual layers
+    default_expression_baseline:
+      neutral: cool calculation with minimal wasted motion
+      pressure: composure thins before voice does
+    forbidden_drift:
+      - no bubbly school-idol styling
+      - no oversized streetwear silhouette
+      - no warm goofy facial acting
+    anchor_props:
+      - silver laptop
+      - espresso cup
+  sora:
+    canonical_name: 한소라
+    role: study mate and emotional truth-teller
+    identity_core:
+      age_impression: early twenties Korean female student
+      body_build: soft, observant campus silhouette
+      narrative_pressure: empathetic concern sharpened into jealousy
+    visual_invariants:
+      hair:
+        - natural dark hair
+        - practical campus styling
+      face:
+        - open eyes
+        - soft but alert mouth line
+      wardrobe:
+        - casual campus wear
+        - practical outer layer
+    default_expression_baseline:
+      neutral: observant warmth
+      hurt: concern turns tight and glassy
+    forbidden_drift:
+      - no aggressive glam styling
+      - no severe angular posture
+      - no unreadable poker-face acting
+    anchor_props:
+      - phone with voice-message screen
+      - campus tote
+  minwoo:
+    canonical_name: 조민우
+    role: older campus senior who weaponizes gossip
+    identity_core:
+      age_impression: mid twenties Korean male senior
+      body_build: confident, well-groomed senior silhouette
+      narrative_pressure: social dominance through casual needling
+    visual_invariants:
+      hair:
+        - polished dark hair
+      face:
+        - smug smile line
+        - evaluating gaze
+      wardrobe:
+        - neat senior-campus styling
+    default_expression_baseline:
+      neutral: amused superiority
+      provocation: small smile before escalation
+    forbidden_drift:
+      - no sloppy student styling
+      - no timid body language
+    anchor_props:
+      - gossip-thread phone
+  mother:
+    canonical_name: 시윤의 어머니
+    role: restrained middle-aged parent
+    identity_core:
+      age_impression: middle-aged Korean woman
+      body_build: slim-to-average, slightly narrowed posture
+      narrative_pressure: disappointment expressed through control rather than volume
+    visual_invariants:
+      hair:
+        - dark hair tied low
+        - clean center part
+      face:
+        - long oval face
+        - tired sharp eyes
+      wardrobe:
+        - simple beige homewear
+    default_expression_baseline:
+      neutral: emotionally restrained observation
+      anger: cold restraint before open reaction
+    forbidden_drift:
+      - no youthful makeup styling
+      - no bob cut
+      - no playful expressions
+    anchor_props:
+      - home hallway backlight
+outfit_states:
+  protagonist_black_hoodie_campus:
+    character_id: protagonist
+    garments:
+      - black zip hoodie
+      - neutral campus pants
+    carry_props:
+      - cracked phone case
+    allowed_variation:
+      - sleeve crease changes
+      - backpack strap presence
+    forbidden_variation:
+      - no suit jacket
+      - no bright varsity styling
+  heroine_dark_jacket_campus:
+    character_id: heroine
+    garments:
+      - dark structured jacket
+      - clean knit inner layer
+    carry_props:
+      - silver laptop
+      - espresso cup
+    allowed_variation:
+      - jacket open or closed
+      - cup or laptop in hand
+    forbidden_variation:
+      - no pastel idol look
+      - no oversized hoodie
+  sora_casual_campus:
+    character_id: sora
+    garments:
+      - casual campus outer layer
+      - soft neutral basics
+    carry_props:
+      - phone
+      - tote
+    allowed_variation:
+      - tote side switch
+      - cardigan drape changes
+    forbidden_variation:
+      - no severe formalwear
+      - no glam party styling
+location_states:
+  campus_groupchat_memory:
+    setting: abstracted campus gossip-memory space
+    persistent_elements:
+      - unreadable study-app UI blocks
+      - umbrella-photo silhouette framing
+      - social-pressure notification glow
+    required_negative_space:
+      - top caption runway
+      - lower-third speech-safe pocket
+    forbidden_elements:
+      - readable phone text
+      - desktop office UI
+  campus_cafe_corner:
+    setting: quiet campus-adjacent cafe corner
+    persistent_elements:
+      - small table
+      - espresso cup
+      - warm practical lighting
+    required_negative_space:
+      - upper caption band
+      - right-side balloon pocket
+    forbidden_elements:
+      - crowded bar interior
+      - luxury restaurant cues
+  tabletop_terms_closeup:
+    setting: close tabletop negotiation detail
+    persistent_elements:
+      - notebook or laptop edge
+      - hands exchanging control
+    required_negative_space:
+      - top caption strip
+      - lower balloon pocket
+    forbidden_elements:
+      - readable memo text
+      - courtroom paperwork styling
+  campus_montage_loop:
+    setting: compressed campus routine montage
+    persistent_elements:
+      - library or cafe repetition
+      - moving-between-spaces energy
+      - fake-dating rhythm cues
+    required_negative_space:
+      - upper caption float
+      - center-right balloon pocket
+    forbidden_elements:
+      - full comic-page grid
+      - literal montage panel borders
+  campus_public_corridor:
+    setting: public campus corridor with witnesses nearby
+    persistent_elements:
+      - corridor vanishing line
+      - public foot-traffic implication
+      - arm-grab staging lane
+    required_negative_space:
+      - upper caption lane
+      - upper-right balloon pocket
+    forbidden_elements:
+      - empty black void
+      - isolated studio backdrop
+  night_message_memory:
+    setting: abstracted late-night message and body-memory space
+    persistent_elements:
+      - unreadable message UI glow
+      - dark campus-night palette
+      - memory-flash body fragment
+    required_negative_space:
+      - top caption runway
+      - mid-lower balloon pocket
+    forbidden_elements:
+      - readable chat bubbles
+      - photoreal phone mockup
+scene_links:
+  ep002_rain_photo:
+    episode: ep002
+    location_state: campus_public_corridor
+    characters:
+      - protagonist
+      - heroine
+    outfit_by_character:
+      protagonist: protagonist_black_hoodie_campus
+      heroine: heroine_dark_jacket_campus
+    previous_scene_id: null
+    next_scene_id: ep003_groupchat_photo_aftershock
+    default_reference_priority:
+      - scene_anchor
+      - character_anchor
+      - location_anchor
+      - previous_panel
+  ep003_groupchat_photo_aftershock:
+    episode: ep003
+    location_state: campus_groupchat_memory
+    characters:
+      - protagonist
+    outfit_by_character:
+      protagonist: protagonist_black_hoodie_campus
+    previous_scene_id: ep002_rain_photo
+    next_scene_id: ep003_cafe_fake_dating_contract
+    default_reference_priority:
+      - scene_anchor
+      - character_anchor
+      - location_anchor
+      - previous_panel
+  ep003_cafe_fake_dating_contract:
+    episode: ep003
+    location_state: campus_cafe_corner
+    characters:
+      - protagonist
+      - heroine
+    outfit_by_character:
+      protagonist: protagonist_black_hoodie_campus
+      heroine: heroine_dark_jacket_campus
+    previous_scene_id: ep003_groupchat_photo_aftershock
+    next_scene_id: ep003_terms_closeup
+    default_reference_priority:
+      - scene_anchor
+      - character_anchor
+      - location_anchor
+      - previous_panel
+  ep003_terms_closeup:
+    episode: ep003
+    location_state: tabletop_terms_closeup
+    characters:
+      - protagonist
+      - heroine
+    outfit_by_character:
+      protagonist: protagonist_black_hoodie_campus
+      heroine: heroine_dark_jacket_campus
+    previous_scene_id: ep003_cafe_fake_dating_contract
+    next_scene_id: ep003_fake_dating_montage
+    default_reference_priority:
+      - location_anchor
+      - character_anchor
+      - scene_anchor
+      - previous_panel
+  ep003_fake_dating_montage:
+    episode: ep003
+    location_state: campus_montage_loop
+    characters:
+      - protagonist
+      - heroine
+    outfit_by_character:
+      protagonist: protagonist_black_hoodie_campus
+      heroine: heroine_dark_jacket_campus
+    previous_scene_id: ep003_terms_closeup
+    next_scene_id: ep003_public_claim_scene
+    default_reference_priority:
+      - scene_anchor
+      - character_anchor
+      - location_anchor
+      - previous_panel
+  ep003_public_claim_scene:
+    episode: ep003
+    location_state: campus_public_corridor
+    characters:
+      - protagonist
+      - heroine
+    outfit_by_character:
+      protagonist: protagonist_black_hoodie_campus
+      heroine: heroine_dark_jacket_campus
+    previous_scene_id: ep003_fake_dating_montage
+    next_scene_id: ep003_sora_witness
+    default_reference_priority:
+      - scene_anchor
+      - character_anchor
+      - location_anchor
+      - previous_panel
+  ep003_sora_witness:
+    episode: ep003
+    location_state: campus_public_corridor
+    characters:
+      - protagonist
+      - sora
+    outfit_by_character:
+      protagonist: protagonist_black_hoodie_campus
+      sora: sora_casual_campus
+    previous_scene_id: ep003_public_claim_scene
+    next_scene_id: ep003_late_night_texts
+    default_reference_priority:
+      - scene_anchor
+      - character_anchor
+      - location_anchor
+      - previous_panel
+  ep003_late_night_texts:
+    episode: ep003
+    location_state: night_message_memory
+    characters:
+      - protagonist
+      - heroine
+    outfit_by_character:
+      protagonist: protagonist_black_hoodie_campus
+      heroine: heroine_dark_jacket_campus
+    previous_scene_id: ep003_sora_witness
+    next_scene_id: ep003_voice_confession_hook
+    default_reference_priority:
+      - previous_panel
+      - scene_anchor
+      - character_anchor
+      - location_anchor
+  ep003_voice_confession_hook:
+    episode: ep003
+    location_state: night_message_memory
+    characters:
+      - protagonist
+      - sora
+    outfit_by_character:
+      protagonist: protagonist_black_hoodie_campus
+      sora: sora_casual_campus
+    previous_scene_id: ep003_late_night_texts
+    next_scene_id: null
+    default_reference_priority:
+      - previous_panel
+      - scene_anchor
+      - character_anchor
+      - location_anchor
+reference_priority:
+  default_stack:
+    - scene_anchor
+    - character_anchor
+    - location_anchor
+    - previous_panel
+  reset_shot_exceptions:
+    - prop_insert
+    - phone_ui_memory
+    - montage_bridge
+  forbidden_priority_pairs:
+    - - previous_panel
+      - previous_panel
+drift_policy:
+  allowed_drift:
+    - lighting temperature shift across locations
+    - abstracted unreadable phone UI
+    - montage compression between library and cafe beats
+  forbidden_drift:
+    - hairstyle reset
+    - wardrobe swap outside declared outfit state
+    - age-up facial proportions
+    - generic idol glam acting

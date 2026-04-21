@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "phase": "phase1_non_destructive_mapping",
+  "purpose": "Canonical project index while project source files remain in legacy docs/plans locations.",
+  "canonical_home": "projects/",
+  "projects": {
+    "orbi-romance-20260421": {
+      "canonical_role": "romance project source of truth",
+      "canonical_manifest": "projects/orbi-romance-20260421/manifest.json",
+      "legacy_path": "docs/plans/orbi-romance-webtoon-20260421"
+    }
+  }
+}

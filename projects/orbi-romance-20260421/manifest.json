@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "phase": "phase1_non_destructive_mapping",
+  "project": "orbi-romance-20260421",
+  "purpose": "Canonical project manifest that forwards to the existing romance project paths.",
+  "legacy_project_root": "docs/plans/orbi-romance-webtoon-20260421",
+  "source_documents": {
+    "signal": "docs/plans/orbi-romance-webtoon-20260421/00_signal.md",
+    "series_bible": "docs/plans/orbi-romance-webtoon-20260421/01_series_bible.md",
+    "deliverables_manifest": "docs/plans/orbi-romance-webtoon-20260421/deliverables/manifest.json",
+    "series_pitch": "docs/plans/orbi-romance-webtoon-20260421/deliverables/series_pitch.md",
+    "webnovel_full": "docs/plans/orbi-romance-webtoon-20260421/deliverables/webnovel_full.md"
+  },
+  "episodes": [
+    {
+      "episode": "ep001",
+      "novel": "docs/plans/orbi-romance-webtoon-20260421/novel/ep001.md",
+      "webtoon_spec_dir": "docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001",
+      "render_artifacts": "docs/plans/orbi-romance-webtoon-20260421/renders/ep001"
+    },
+    {
+      "episode": "ep002",
+      "novel": "docs/plans/orbi-romance-webtoon-20260421/novel/ep002.md",
+      "webtoon_spec_dir": "docs/plans/orbi-romance-webtoon-20260421/webtoon/ep002",
+      "render_artifacts": "docs/plans/orbi-romance-webtoon-20260421/renders/ep002"
+    },
+    {
+      "episode": "ep003",
+      "novel": "docs/plans/orbi-romance-webtoon-20260421/novel/ep003.md",
+      "webtoon_spec_dir": "docs/plans/orbi-romance-webtoon-20260421/webtoon/ep003",
+      "render_artifacts": "docs/plans/orbi-romance-webtoon-20260421/renders/ep003"
+    },
+    {
+      "episode": "ep004",
+      "novel": "docs/plans/orbi-romance-webtoon-20260421/novel/ep004.md",
+      "webtoon_spec_dir": "docs/plans/orbi-romance-webtoon-20260421/webtoon/ep004",
+      "render_artifacts": "docs/plans/orbi-romance-webtoon-20260421/renders/ep004"
+    },
+    {
+      "episode": "ep005",
+      "novel": "docs/plans/orbi-romance-webtoon-20260421/novel/ep005.md",
+      "webtoon_spec_dir": "docs/plans/orbi-romance-webtoon-20260421/webtoon/ep005",
+      "render_artifacts": "docs/plans/orbi-romance-webtoon-20260421/renders/ep005"
+    }
+  ],
+  "notes": [
+    "Phase 1 intentionally does not move source, runtime, or artifact files.",
+    "Legacy docs/plans/orbi-romance-webtoon-20260421 paths remain protected until a later compatibility-backed move."
+  ]
+}

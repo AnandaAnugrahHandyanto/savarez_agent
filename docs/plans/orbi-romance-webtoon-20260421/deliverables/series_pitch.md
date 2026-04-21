@@ -6,7 +6,7 @@
 ## Format
 - 5-episode launch package
 - Webnovel-first with webtoon adaptation files per episode
-- Orbi-native admissions romance with storyboard fallback rendering lane
+- Orbi-native admissions romance with live fal + FLUX.2 Pro rendering lane
 
 ## Core Hook
 약대를 노리며 반수 중인 남주와 반도체 계약학과 장학생 여주가 서로의 약점을 덮기 위해 가짜 연애를 시작한다. 그런데 둘이 제일 싫어하는 건 상대가 아니라, 상대가 너무 정확하게 자기 열등감을 건드린다는 사실이다.
@@ -29,8 +29,8 @@
 - Five full prose episodes
 - Combined reading edition
 - Webtoon adaptation files for each episode
-- Storyboard fallback render queue and generated longscroll PNG outputs
+- Live fal render queue and generated longscroll PNG outputs
 - Repo-local skill draft for repeating the workflow
 
 ## Production Note
-라이브 이미지 백엔드가 명확하지 않을 경우에도 산출물이 멈추지 않도록, 이번 패키지는 세로 스크롤용 storyboard fallback renderer를 같이 제공한다.
+이번 패키지의 웹툰 산출은 live fal + FLUX.2 Pro 렌더를 기본이자 필수 경로로 사용한다. 스토리보드 fallback은 대표 산출 경로로 쓰지 않는다.

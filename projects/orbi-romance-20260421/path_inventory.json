@@ -1,0 +1,356 @@
+{
+  "schema_version": 1,
+  "phase": "phase2_reference_audit",
+  "purpose": "Inventory current romance project path contracts across canonical project overlays and the legacy deliverables manifest.",
+  "manifest_files": {
+    "projects/orbi-romance-20260421/manifest.json": {
+      "default_path_style": "repo_relative",
+      "legacy_project_root": {
+        "path": "docs/plans/orbi-romance-webtoon-20260421",
+        "path_style": "repo_relative",
+        "contract_kind": "legacy_project_root"
+      },
+      "source_documents": [
+        {
+          "key": "signal",
+          "path": "docs/plans/orbi-romance-webtoon-20260421/00_signal.md",
+          "path_style": "repo_relative",
+          "contract_kind": "legacy_source_document"
+        },
+        {
+          "key": "series_bible",
+          "path": "docs/plans/orbi-romance-webtoon-20260421/01_series_bible.md",
+          "path_style": "repo_relative",
+          "contract_kind": "legacy_source_document"
+        },
+        {
+          "key": "deliverables_manifest",
+          "path": "docs/plans/orbi-romance-webtoon-20260421/deliverables/manifest.json",
+          "path_style": "repo_relative",
+          "contract_kind": "legacy_source_document"
+        },
+        {
+          "key": "series_pitch",
+          "path": "docs/plans/orbi-romance-webtoon-20260421/deliverables/series_pitch.md",
+          "path_style": "repo_relative",
+          "contract_kind": "legacy_source_document"
+        },
+        {
+          "key": "webnovel_full",
+          "path": "docs/plans/orbi-romance-webtoon-20260421/deliverables/webnovel_full.md",
+          "path_style": "repo_relative",
+          "contract_kind": "legacy_source_document"
+        }
+      ],
+      "episodes": [
+        {
+          "episode": "ep001",
+          "novel": {
+            "path": "docs/plans/orbi-romance-webtoon-20260421/novel/ep001.md",
+            "path_style": "repo_relative"
+          },
+          "webtoon_spec_dir": {
+            "path": "docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001",
+            "path_style": "repo_relative"
+          },
+          "render_artifacts": {
+            "path": "docs/plans/orbi-romance-webtoon-20260421/renders/ep001",
+            "path_style": "repo_relative"
+          }
+        },
+        {
+          "episode": "ep002",
+          "novel": {
+            "path": "docs/plans/orbi-romance-webtoon-20260421/novel/ep002.md",
+            "path_style": "repo_relative"
+          },
+          "webtoon_spec_dir": {
+            "path": "docs/plans/orbi-romance-webtoon-20260421/webtoon/ep002",
+            "path_style": "repo_relative"
+          },
+          "render_artifacts": {
+            "path": "docs/plans/orbi-romance-webtoon-20260421/renders/ep002",
+            "path_style": "repo_relative"
+          }
+        },
+        {
+          "episode": "ep003",
+          "novel": {
+            "path": "docs/plans/orbi-romance-webtoon-20260421/novel/ep003.md",
+            "path_style": "repo_relative"
+          },
+          "webtoon_spec_dir": {
+            "path": "docs/plans/orbi-romance-webtoon-20260421/webtoon/ep003",
+            "path_style": "repo_relative"
+          },
+          "render_artifacts": {
+            "path": "docs/plans/orbi-romance-webtoon-20260421/renders/ep003",
+            "path_style": "repo_relative"
+          }
+        },
+        {
+          "episode": "ep004",
+          "novel": {
+            "path": "docs/plans/orbi-romance-webtoon-20260421/novel/ep004.md",
+            "path_style": "repo_relative"
+          },
+          "webtoon_spec_dir": {
+            "path": "docs/plans/orbi-romance-webtoon-20260421/webtoon/ep004",
+            "path_style": "repo_relative"
+          },
+          "render_artifacts": {
+            "path": "docs/plans/orbi-romance-webtoon-20260421/renders/ep004",
+            "path_style": "repo_relative"
+          }
+        },
+        {
+          "episode": "ep005",
+          "novel": {
+            "path": "docs/plans/orbi-romance-webtoon-20260421/novel/ep005.md",
+            "path_style": "repo_relative"
+          },
+          "webtoon_spec_dir": {
+            "path": "docs/plans/orbi-romance-webtoon-20260421/webtoon/ep005",
+            "path_style": "repo_relative"
+          },
+          "render_artifacts": {
+            "path": "docs/plans/orbi-romance-webtoon-20260421/renders/ep005",
+            "path_style": "repo_relative"
+          }
+        }
+      ]
+    },
+    "docs/plans/orbi-romance-webtoon-20260421/deliverables/manifest.json": {
+      "default_path_style": "absolute",
+      "canonical_mappings": [
+        {
+          "key": "phase",
+          "path": "phase1_non_destructive_mapping",
+          "path_style": "literal"
+        },
+        {
+          "key": "project_manifest",
+          "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/projects/orbi-romance-20260421/manifest.json",
+          "path_style": "absolute"
+        },
+        {
+          "key": "pipeline_index",
+          "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/pipeline/INDEX.json",
+          "path_style": "absolute"
+        },
+        {
+          "key": "artifact_index",
+          "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/artifacts/INDEX.json",
+          "path_style": "absolute"
+        }
+      ],
+      "episodes": [
+        {
+          "episode": "ep001",
+          "render_mode": "live_fal_flux2_pro",
+          "fields": [
+            {
+              "key": "novel",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/novel/ep001.md",
+              "path_style": "absolute"
+            },
+            {
+              "key": "scroll_plan",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/scroll_plan.yaml",
+              "path_style": "absolute"
+            },
+            {
+              "key": "panel_prompts",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/panel_prompts.yaml",
+              "path_style": "absolute"
+            },
+            {
+              "key": "lettering_script",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/lettering_script.yaml",
+              "path_style": "absolute"
+            },
+            {
+              "key": "render_queue",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/render_queue.yaml",
+              "path_style": "absolute"
+            },
+            {
+              "key": "longscroll",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/renders/ep001/ep001_longscroll.png",
+              "path_style": "absolute"
+            },
+            {
+              "key": "render_manifest",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_manifest_ep001.json",
+              "path_style": "absolute"
+            }
+          ]
+        },
+        {
+          "episode": "ep002",
+          "render_mode": "live_fal_flux2_pro",
+          "fields": [
+            {
+              "key": "novel",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/novel/ep002.md",
+              "path_style": "absolute"
+            },
+            {
+              "key": "scroll_plan",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep002/scroll_plan.yaml",
+              "path_style": "absolute"
+            },
+            {
+              "key": "panel_prompts",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep002/panel_prompts.yaml",
+              "path_style": "absolute"
+            },
+            {
+              "key": "lettering_script",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep002/lettering_script.yaml",
+              "path_style": "absolute"
+            },
+            {
+              "key": "render_queue",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep002/render_queue.yaml",
+              "path_style": "absolute"
+            },
+            {
+              "key": "longscroll",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/renders/ep002/ep002_longscroll.png",
+              "path_style": "absolute"
+            },
+            {
+              "key": "render_manifest",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep002/generated_fal_live_manifest_ep002.json",
+              "path_style": "absolute"
+            }
+          ]
+        },
+        {
+          "episode": "ep003",
+          "render_mode": "live_fal_flux2_pro",
+          "fields": [
+            {
+              "key": "novel",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/novel/ep003.md",
+              "path_style": "absolute"
+            },
+            {
+              "key": "scroll_plan",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep003/scroll_plan.yaml",
+              "path_style": "absolute"
+            },
+            {
+              "key": "panel_prompts",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep003/panel_prompts.yaml",
+              "path_style": "absolute"
+            },
+            {
+              "key": "lettering_script",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep003/lettering_script.yaml",
+              "path_style": "absolute"
+            },
+            {
+              "key": "render_queue",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep003/render_queue.yaml",
+              "path_style": "absolute"
+            },
+            {
+              "key": "longscroll",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/renders/ep003/ep003_longscroll.png",
+              "path_style": "absolute"
+            },
+            {
+              "key": "render_manifest",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep003/generated_fal_live_manifest_ep003.json",
+              "path_style": "absolute"
+            }
+          ]
+        },
+        {
+          "episode": "ep004",
+          "render_mode": "live_fal_flux2_pro",
+          "fields": [
+            {
+              "key": "novel",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/novel/ep004.md",
+              "path_style": "absolute"
+            },
+            {
+              "key": "scroll_plan",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep004/scroll_plan.yaml",
+              "path_style": "absolute"
+            },
+            {
+              "key": "panel_prompts",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep004/panel_prompts.yaml",
+              "path_style": "absolute"
+            },
+            {
+              "key": "lettering_script",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep004/lettering_script.yaml",
+              "path_style": "absolute"
+            },
+            {
+              "key": "render_queue",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep004/render_queue.yaml",
+              "path_style": "absolute"
+            },
+            {
+              "key": "longscroll",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/renders/ep004/ep004_longscroll.png",
+              "path_style": "absolute"
+            },
+            {
+              "key": "render_manifest",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep004/generated_fal_live_manifest_ep004.json",
+              "path_style": "absolute"
+            }
+          ]
+        },
+        {
+          "episode": "ep005",
+          "render_mode": "live_fal_flux2_pro",
+          "fields": [
+            {
+              "key": "novel",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/novel/ep005.md",
+              "path_style": "absolute"
+            },
+            {
+              "key": "scroll_plan",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep005/scroll_plan.yaml",
+              "path_style": "absolute"
+            },
+            {
+              "key": "panel_prompts",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep005/panel_prompts.yaml",
+              "path_style": "absolute"
+            },
+            {
+              "key": "lettering_script",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep005/lettering_script.yaml",
+              "path_style": "absolute"
+            },
+            {
+              "key": "render_queue",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep005/render_queue.yaml",
+              "path_style": "absolute"
+            },
+            {
+              "key": "longscroll",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/renders/ep005/ep005_longscroll.png",
+              "path_style": "absolute"
+            },
+            {
+              "key": "render_manifest",
+              "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep005/generated_fal_live_manifest_ep005.json",
+              "path_style": "absolute"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
