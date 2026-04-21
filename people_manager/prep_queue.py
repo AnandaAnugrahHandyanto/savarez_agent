@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .reminder_log import append_reminder_log
+from .schedule_store import load_schedule_registry
 from .storage import get_people_manager_root, get_report_path
 
 QUEUE_DIRNAME = "prep-queue"
@@ -232,6 +233,39 @@ def _record_state(
 
 
 
+def _override_blocks_event(event: dict[str, Any]) -> bool:
+    registry = load_schedule_registry()
+    schedule = registry.get("profiles", {}).get(str(event.get("profile_slug") or "")) or {}
+    meeting_at = str(event.get("meeting_at") or "")
+    has_active_match = False
+    has_inactive_match = False
+    for override in schedule.get("overrides", []) or []:
+        if str(override.get("kind") or "") != "reschedule_once":
+            continue
+        if str(override.get("effective_meeting_at") or "") != meeting_at:
+            continue
+        if str(override.get("status") or "") == "active":
+            has_active_match = True
+        else:
+            has_inactive_match = True
+    return has_inactive_match and not has_active_match
+
+
+
+def _suppress_if_blocked(event: dict[str, Any], *, at: datetime, actor: str, note: str) -> dict[str, Any] | None:
+    if not _override_blocks_event(event):
+        return None
+    return _record_state(
+        event,
+        state="cancelled_override",
+        at=at,
+        actor=actor,
+        note=note,
+        delivery_outcome="cancelled_override",
+    )
+
+
+
 def claim_next_for_miya(*, now: datetime, actor: str = "miya") -> dict[str, Any] | None:
     candidates = [
         event
@@ -247,6 +281,14 @@ def claim_next_for_miya(*, now: datetime, actor: str = "miya") -> dict[str, Any]
             if not fresh:
                 continue
             if fresh.get("state") not in {"queued_for_miya", "failed"} or fresh.get("delivery_outcome"):
+                continue
+            suppressed = _suppress_if_blocked(
+                fresh,
+                at=now,
+                actor=actor,
+                note="Override is no longer active; suppressing queued occurrence.",
+            )
+            if suppressed is not None:
                 continue
             fresh["claimed_by"] = actor
             return _record_state(fresh, state="claimed_by_miya", at=now, actor=actor)
@@ -295,6 +337,14 @@ def mark_sent_by_miya(
             note=note or "Founder-facing fallback already sent; suppressing late Miya completion.",
             delivery_outcome="fallback_sent",
         )
+    suppressed = _suppress_if_blocked(
+        event,
+        at=sent_at,
+        actor=actor,
+        note=note or "Override is no longer active; suppressing Miya completion.",
+    )
+    if suppressed is not None:
+        return suppressed
     return _record_state(
         event,
         state="sent_by_miya",
@@ -312,6 +362,14 @@ def fallback_candidates(*, now: datetime) -> list[dict[str, Any]]:
         if not event.get("fallback_allowed", True):
             continue
         if event.get("delivery_outcome"):
+            continue
+        if _override_blocks_event(event):
+            _suppress_if_blocked(
+                event,
+                at=now,
+                actor="scheduler",
+                note="Override is no longer active; suppressing queued occurrence before fallback.",
+            )
             continue
         if get_transition_lock_path(str(event.get("dedupe_key")), lock_name="fallback-send").exists():
             continue

@@ -208,3 +208,33 @@ def find_report_by_name(name: str) -> dict[str, Any] | None:
         if meta.get("normalized_name") == normalized or meta.get("slug") == slugify_name(name):
             return meta
     return None
+
+
+
+def resolve_report_by_name(name: str) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    registry = load_registry()
+    reports = list(registry["reports"].values())
+    normalized = normalize_name(name)
+    slug = slugify_name(name)
+
+    for meta in reports:
+        if meta.get("normalized_name") == normalized or meta.get("slug") == slug:
+            return meta, []
+
+    first_token = normalized.split(" ", 1)[0] if normalized else ""
+    if not first_token:
+        return None, []
+
+    matches = []
+    for meta in reports:
+        meta_name = str(meta.get("name") or "")
+        meta_first = normalize_name(meta_name).split(" ", 1)[0]
+        if meta_first.startswith(first_token):
+            matches.append(meta)
+
+    if len(matches) == 1:
+        return matches[0], []
+    if len(matches) > 1:
+        matches.sort(key=lambda item: str(item.get("name") or ""))
+        return None, matches
+    return None, []

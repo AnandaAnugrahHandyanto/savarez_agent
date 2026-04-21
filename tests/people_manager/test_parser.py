@@ -96,5 +96,36 @@ def test_parse_under_manage_prompt():
     assert parsed.prompt_variant == "under_managing"
 
 
+def test_parse_adhoc_one_on_one_prep_variants():
+    parsed = parse_message("1o1 prep Fiona")
+    assert parsed is not None
+    assert parsed.action == "prep"
+    assert parsed.report_name == "Fiona"
+    assert parsed.prompt_variant == "short"
+
+    parsed = parse_message("1:1 Thomas")
+    assert parsed is not None
+    assert parsed.action == "prep"
+    assert parsed.report_name == "Thomas"
+    assert parsed.prompt_variant == "short"
+
+    parsed = parse_message("Prep Alice Chen")
+    assert parsed is not None
+    assert parsed.action == "prep"
+    assert parsed.prompt_variant == "short"
+
+
+
+def test_parse_reschedule_once_phrase():
+    parsed = parse_message("Alex 1:1 rescheduled (one-off) to tomorrow 2:45pm")
+
+    assert parsed is not None
+    assert parsed.action == "reschedule_once"
+    assert parsed.report_name == "Alex"
+    assert parsed.body == "tomorrow 2:45pm"
+    assert parsed.is_mutating is True
+
+
+
 def test_parse_unknown_returns_none():
     assert parse_message("Alice seems good") is None

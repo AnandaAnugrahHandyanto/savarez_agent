@@ -30,6 +30,27 @@ def _append_log(report: dict[str, Any], *, entry_type: str, facts: list[str], mi
     return report
 
 
+def append_structured_log(
+    report: dict[str, Any],
+    *,
+    entry_type: str,
+    lane_id: str,
+    raw_text: str,
+    facts: list[str] | None = None,
+    michael_judgment: list[str] | None = None,
+    resulting_actions: list[str] | None = None,
+) -> dict[str, Any]:
+    return _append_log(
+        report,
+        entry_type=entry_type,
+        facts=facts or [],
+        michael_judgment=michael_judgment or [],
+        lane_id=lane_id,
+        raw_text=raw_text,
+        resulting_actions=resulting_actions,
+    )
+
+
 def _split_facts_and_judgment(text: str) -> tuple[list[str], list[str]]:
     text = (text or "").strip()
     if not text:

@@ -132,3 +132,48 @@ def test_due_reminders_skip_malformed_schedule_entries(tmp_path, monkeypatch):
     due = due_reminders(now=_make_now(2026, 4, 20, 13, 10))
 
     assert [entry["profile_slug"] for entry in due] == ["thomas-zhu"]
+
+
+
+def test_due_reminders_prefers_active_reschedule_override_and_reports_base_occurrence(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    from people_manager.schedule_store import due_reminders, save_schedule_registry
+
+    create_report("Thomas Zhu", "COO", "Own operating cadence")
+    save_schedule_registry(
+        {
+            "version": 1,
+            "timezone": "Asia/Singapore",
+            "profiles": {
+                "thomas-zhu": {
+                    "name": "Thomas Zhu",
+                    "enabled": True,
+                    "delivery_target": "origin",
+                    "meeting": {"type": "weekly", "weekday": 1, "time": "13:15"},
+                    "prep_offset_minutes": 5,
+                    "template_style": "ultra_short_telegram",
+                    "overrides": [
+                        {
+                            "override_id": "ovr_1",
+                            "kind": "reschedule_once",
+                            "original_meeting_at": "2026-04-20T13:15:00+08:00",
+                            "effective_meeting_at": "2026-04-21T14:45:00+08:00",
+                            "status": "active",
+                            "created_at": "2026-04-20T11:00:00+08:00",
+                            "source": {"message_text": "Thomas 1:1 rescheduled (one-off) to tomorrow 2:45pm"},
+                        }
+                    ],
+                }
+            },
+        }
+    )
+
+    due = due_reminders(now=_make_now(2026, 4, 21, 14, 40))
+
+    assert len(due) == 1
+    assert due[0]["meeting_at"].isoformat() == "2026-04-21T14:45:00+08:00"
+    assert due[0]["prep_at"].isoformat() == "2026-04-21T14:40:00+08:00"
+    assert due[0]["base_meeting_at"].isoformat() == "2026-04-20T13:15:00+08:00"
+    assert due[0]["base_prep_at"].isoformat() == "2026-04-20T13:10:00+08:00"
+    assert due[0]["override"]["override_id"] == "ovr_1"

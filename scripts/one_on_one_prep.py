@@ -36,10 +36,13 @@ from people_manager.reminder_log import (
 from people_manager.schedule_store import (
     DEFAULT_PREP_OFFSET_MINUTES,
     DEFAULT_TEMPLATE_STYLE,
+    cancel_override,
+    consume_override_for_occurrence,
+    create_reschedule_override,
     due_reminders,
     load_schedule_registry,
-    next_meeting_occurrence,
     next_schedule_times,
+    resolve_schedule_occurrence,
     save_schedule_registry,
 )
 from people_manager.storage import get_people_manager_root, load_report
@@ -100,17 +103,42 @@ def _render_due_entry(entry: dict[str, Any]) -> str:
 
 
 
-def _schedule_times_for_output(schedule: dict[str, Any], *, now: datetime, timezone_name: str) -> tuple[str | None, str | None]:
+def _schedule_times_for_output(schedule: dict[str, Any], *, now: datetime, timezone_name: str) -> dict[str, str | None]:
     try:
-        meeting_at, prep_at = next_schedule_times(schedule, now=now, timezone_name=timezone_name)
-        return meeting_at.isoformat(), prep_at.isoformat()
+        resolved = resolve_schedule_occurrence(schedule, now=now, timezone_name=timezone_name)
+        return {
+            "base_meeting_at": resolved["base_meeting_at"].isoformat(),
+            "base_prep_at": resolved["base_prep_at"].isoformat(),
+            "effective_meeting_at": resolved["meeting_at"].isoformat(),
+            "effective_prep_at": resolved["prep_at"].isoformat(),
+            "active_override": str((resolved.get("override") or {}).get("override_id") or "none"),
+        }
     except Exception:
-        return None, None
+        return {
+            "base_meeting_at": None,
+            "base_prep_at": None,
+            "effective_meeting_at": None,
+            "effective_prep_at": None,
+            "active_override": None,
+        }
 
 
 
 def _reports_root() -> Path:
     return get_people_manager_root() / "reports"
+
+
+def _consume_override_from_event(event: dict[str, Any], *, sent_at: datetime) -> None:
+    try:
+        meeting_at = datetime.fromisoformat(str(event["meeting_at"]))
+    except Exception:
+        return
+    consume_override_for_occurrence(str(event["profile_slug"]), meeting_at=meeting_at, consumed_at=sent_at)
+
+
+def _default_reschedule_message(schedule: dict[str, Any], *, effective_meeting_at: str) -> str:
+    name = str(schedule.get("name") or schedule.get("slug") or "1:1")
+    return f"{name} 1:1 rescheduled (one-off) to {effective_meeting_at}"
 
 
 
@@ -121,11 +149,14 @@ def cmd_list(args: argparse.Namespace) -> int:
     print(f"Schedule registry: {get_people_manager_root() / 'schedules' / 'one_on_ones.json'}")
     for slug, schedule in sorted(registry.get("profiles", {}).items()):
         meeting = schedule.get("meeting", {})
-        next_meeting_at, next_prep_at = _schedule_times_for_output(schedule, now=now, timezone_name=timezone_name)
+        times = _schedule_times_for_output(schedule, now=now, timezone_name=timezone_name)
         print(
             f"{slug}: enabled={schedule.get('enabled', True)} type={meeting.get('type')} "
             f"target={schedule.get('delivery_target', 'origin')} "
-            f"next_meeting_at={next_meeting_at or 'invalid'} next_prep_at={next_prep_at or 'invalid'}"
+            f"next_meeting_at={times['effective_meeting_at'] or 'invalid'} next_prep_at={times['effective_prep_at'] or 'invalid'} "
+            f"base_meeting_at={times['base_meeting_at'] or 'invalid'} base_prep_at={times['base_prep_at'] or 'invalid'} "
+            f"effective_meeting_at={times['effective_meeting_at'] or 'invalid'} effective_prep_at={times['effective_prep_at'] or 'invalid'} "
+            f"active_override={times['active_override'] or 'none'}"
         )
     return 0
 
@@ -139,10 +170,11 @@ def cmd_show(args: argparse.Namespace) -> int:
     if not schedule:
         print(f"Schedule not found for {args.slug}", file=sys.stderr)
         return 1
-    next_meeting_at, next_prep_at = _schedule_times_for_output(schedule, now=now, timezone_name=timezone_name)
+    times = _schedule_times_for_output(schedule, now=now, timezone_name=timezone_name)
     payload = dict(schedule)
-    payload["next_meeting_at"] = next_meeting_at
-    payload["next_prep_at"] = next_prep_at
+    payload["next_meeting_at"] = times["effective_meeting_at"]
+    payload["next_prep_at"] = times["effective_prep_at"]
+    payload.update(times)
     print(json.dumps({args.slug: payload}, indent=2, sort_keys=True))
     return 0
 
@@ -160,12 +192,14 @@ def cmd_preview(args: argparse.Namespace) -> int:
         print(f"Report not found for {args.slug}", file=sys.stderr)
         return 1
     now = _parse_now(args.now, timezone_name)
-    meeting_at = next_meeting_occurrence(schedule["meeting"], now=now, timezone_name=timezone_name)
-    prep_offset = int(schedule.get("prep_offset_minutes", DEFAULT_PREP_OFFSET_MINUTES))
-    prep_at = meeting_at - timedelta(minutes=prep_offset)
-    print(render_prep_note(report, minutes_until=prep_offset))
-    print(f"meeting_at={meeting_at.isoformat()}")
-    print(f"prep_at={prep_at.isoformat()}")
+    resolved = resolve_schedule_occurrence(schedule, now=now, timezone_name=timezone_name)
+    print(render_prep_note(report, minutes_until=_minutes_until({"meeting_at": resolved["meeting_at"], "prep_at": resolved["prep_at"]})))
+    print(f"meeting_at={resolved['meeting_at'].isoformat()}")
+    print(f"prep_at={resolved['prep_at'].isoformat()}")
+    print(f"base_meeting_at={resolved['base_meeting_at'].isoformat()}")
+    print(f"base_prep_at={resolved['base_prep_at'].isoformat()}")
+    print(f"effective_meeting_at={resolved['meeting_at'].isoformat()}")
+    print(f"effective_prep_at={resolved['prep_at'].isoformat()}")
     return 0
 
 
@@ -180,7 +214,10 @@ def cmd_due_now(args: argparse.Namespace) -> int:
     timezone_name = str(registry.get("timezone") or "Asia/Singapore")
     now = _parse_now(args.now, timezone_name)
     for entry in _due_entries(now):
-        print(f"{entry['profile_slug']} due at {entry['prep_at'].isoformat()} for meeting {entry['meeting_at'].isoformat()}")
+        print(
+            f"{entry['profile_slug']} due at {entry['prep_at'].isoformat()} for meeting {entry['meeting_at'].isoformat()} "
+            f"base_meeting_at={entry['base_meeting_at'].isoformat()} effective_meeting_at={entry['meeting_at'].isoformat()}"
+        )
     return 0
 
 
@@ -218,6 +255,7 @@ def cmd_miya_mark_sent(args: argparse.Namespace) -> int:
         return 1
     sent_at = datetime.fromisoformat(args.sent_at)
     updated = mark_sent_by_miya(args.dedupe_key, sent_at=sent_at)
+    _consume_override_from_event(updated, sent_at=sent_at)
     print(f"{updated['state']} {updated['profile_slug']} dedupe_key={updated['dedupe_key']}")
     return 0
 
@@ -253,6 +291,7 @@ def cmd_run_fallback(args: argparse.Namespace) -> int:
                 sent_at=now,
                 note="Minimal deterministic fallback sent after Miya SLA miss.",
             )
+            _consume_override_from_event(updated, sent_at=now)
             print(f"fallback-sent {updated['profile_slug']} dedupe_key={updated['dedupe_key']}")
         finally:
             release_transition_lock(dedupe_key, lock_name="fallback-send")
@@ -296,6 +335,7 @@ def cmd_run_once(args: argparse.Namespace) -> int:
                     "status": "sent",
                 }
             )
+            consume_override_for_occurrence(profile_slug, meeting_at=meeting_at, consumed_at=now)
             print(f"sent {profile_slug} for {meeting_at.isoformat()}")
         finally:
             release_occurrence_claim(profile_slug, meeting_at)
@@ -420,6 +460,68 @@ def cmd_remove(args: argparse.Namespace) -> int:
     print(f"Removed schedule for {args.slug}")
     return 0
 
+
+
+def cmd_reschedule_once(args: argparse.Namespace) -> int:
+    registry = load_schedule_registry()
+    timezone_name = str(registry.get("timezone") or "Asia/Singapore")
+    now = _parse_now(getattr(args, "now", None), timezone_name)
+    schedule = registry.get("profiles", {}).get(args.slug)
+    if not schedule:
+        print(f"Schedule not found for {args.slug}", file=sys.stderr)
+        return 1
+    effective_meeting_at = _parse_now(args.effective_meeting_at, timezone_name)
+    try:
+        override = create_reschedule_override(
+            args.slug,
+            effective_meeting_at=effective_meeting_at,
+            now=now,
+            source={
+                "platform": "local",
+                "lane": "scripts.one_on_one_prep",
+                "message_text": args.message_text or _default_reschedule_message(schedule, effective_meeting_at=effective_meeting_at.isoformat()),
+            },
+            override_id=args.override_id,
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(f"saved override {override['override_id']} original_meeting_at={override['original_meeting_at']} effective_meeting_at={override['effective_meeting_at']}")
+    return 0
+
+
+def cmd_cancel_override(args: argparse.Namespace) -> int:
+    registry = load_schedule_registry()
+    timezone_name = str(registry.get("timezone") or "Asia/Singapore")
+    now = _parse_now(getattr(args, "now", None), timezone_name)
+    try:
+        override = cancel_override(args.slug, now=now, override_id=getattr(args, "override_id", None))
+    except KeyError:
+        print(f"Schedule not found for {args.slug}", file=sys.stderr)
+        return 1
+    if not override:
+        print(f"No active override found for {args.slug}", file=sys.stderr)
+        return 1
+    print(f"cancelled override {override['override_id']} effective_meeting_at={override['effective_meeting_at']}")
+    return 0
+
+
+def cmd_overrides(args: argparse.Namespace) -> int:
+    registry = load_schedule_registry()
+    schedule = registry.get("profiles", {}).get(args.slug)
+    if not schedule:
+        print(f"Schedule not found for {args.slug}", file=sys.stderr)
+        return 1
+    overrides = schedule.get("overrides", []) or []
+    if not overrides:
+        print(f"{args.slug}: no overrides")
+        return 0
+    for override in overrides:
+        print(
+            f"{args.slug} override_id={override.get('override_id', 'none')} kind={override.get('kind')} status={override.get('status')} "
+            f"original_meeting_at={override.get('original_meeting_at')} effective_meeting_at={override.get('effective_meeting_at')}"
+        )
+    return 0
 
 
 def cmd_log(args: argparse.Namespace) -> int:
@@ -552,6 +654,24 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--now")
     run_parser.add_argument("--dry-run", action="store_true")
     run_parser.set_defaults(func=cmd_run_once)
+
+    reschedule_parser = subparsers.add_parser("reschedule-once")
+    reschedule_parser.add_argument("slug")
+    reschedule_parser.add_argument("--effective-meeting-at", required=True)
+    reschedule_parser.add_argument("--now")
+    reschedule_parser.add_argument("--message-text")
+    reschedule_parser.add_argument("--override-id")
+    reschedule_parser.set_defaults(func=cmd_reschedule_once)
+
+    cancel_override_parser = subparsers.add_parser("cancel-override")
+    cancel_override_parser.add_argument("slug")
+    cancel_override_parser.add_argument("--override-id")
+    cancel_override_parser.add_argument("--now")
+    cancel_override_parser.set_defaults(func=cmd_cancel_override)
+
+    overrides_parser = subparsers.add_parser("overrides")
+    overrides_parser.add_argument("slug")
+    overrides_parser.set_defaults(func=cmd_overrides)
 
     add_parser = subparsers.add_parser("add")
     add_parser.add_argument("--slug", required=True)

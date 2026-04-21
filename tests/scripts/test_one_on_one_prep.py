@@ -1,3 +1,6 @@
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from people_manager.storage import create_report
 
 
@@ -241,6 +244,51 @@ def test_list_and_show_include_next_occurrence_visibility(tmp_path, monkeypatch,
 
 
 
+def test_reschedule_once_commands_surface_base_vs_effective_occurrence(tmp_path, monkeypatch, capsys):
+    _install_schedule(tmp_path, monkeypatch)
+    from people_manager.schedule_store import load_schedule_registry
+    from scripts.one_on_one_prep import main
+
+    assert main(
+        [
+            "reschedule-once",
+            "thomas-zhu",
+            "--effective-meeting-at",
+            "2026-04-21T14:45:00+08:00",
+            "--now",
+            "2026-04-20T11:00:00+08:00",
+            "--message-text",
+            "Thomas Zhu 1:1 rescheduled (one-off) to tomorrow 2:45pm",
+        ]
+    ) == 0
+
+    registry = load_schedule_registry()
+    override = registry["profiles"]["thomas-zhu"]["overrides"][0]
+    assert override["original_meeting_at"] == "2026-04-20T13:15:00+08:00"
+    assert override["effective_meeting_at"] == "2026-04-21T14:45:00+08:00"
+
+    assert main(["overrides", "thomas-zhu"]) == 0
+    overrides_output = capsys.readouterr().out
+    assert "status=active" in overrides_output
+    assert "effective_meeting_at=2026-04-21T14:45:00+08:00" in overrides_output
+
+    assert main(["list", "--now", "2026-04-20T11:00:00+08:00"]) == 0
+    list_output = capsys.readouterr().out
+    assert "base_meeting_at=2026-04-20T13:15:00+08:00" in list_output
+    assert "effective_meeting_at=2026-04-21T14:45:00+08:00" in list_output
+
+    assert main(["preview", "thomas-zhu", "--now", "2026-04-20T11:00:00+08:00"]) == 0
+    preview_output = capsys.readouterr().out
+    assert "base_meeting_at=2026-04-20T13:15:00+08:00" in preview_output
+    assert "effective_meeting_at=2026-04-21T14:45:00+08:00" in preview_output
+
+    assert main(["due-now", "--now", "2026-04-21T14:40:00+08:00"]) == 0
+    due_output = capsys.readouterr().out
+    assert "base_meeting_at=2026-04-20T13:15:00+08:00" in due_output
+    assert "effective_meeting_at=2026-04-21T14:45:00+08:00" in due_output
+
+
+
 def test_enqueue_due_creates_queue_event_with_dedupe_key(tmp_path, monkeypatch):
     _install_schedule(tmp_path, monkeypatch)
     from people_manager.prep_queue import list_queue_events
@@ -257,6 +305,72 @@ def test_enqueue_due_creates_queue_event_with_dedupe_key(tmp_path, monkeypatch):
     assert event["state"] == "queued_for_miya"
     assert event["delivery_outcome"] is None
     assert event["deadline_at"] == "2026-04-20T13:11:00+08:00"
+
+
+
+def test_rescheduled_occurrence_uses_effective_timestamp_and_is_consumed_when_sent(tmp_path, monkeypatch):
+    _install_schedule(tmp_path, monkeypatch)
+    from people_manager.prep_queue import load_queue_event
+    from people_manager.schedule_store import load_schedule_registry
+    from scripts.one_on_one_prep import main
+
+    assert main(
+        [
+            "reschedule-once",
+            "thomas-zhu",
+            "--effective-meeting-at",
+            "2026-04-21T14:45:00+08:00",
+            "--now",
+            "2026-04-20T11:00:00+08:00",
+        ]
+    ) == 0
+    assert main(["enqueue-due", "--now", "2026-04-21T14:40:00+08:00"]) == 0
+    event = load_queue_event("thomas-zhu::2026-04-21T14:45:00+08:00")
+    assert event is not None
+    assert event["meeting_at"] == "2026-04-21T14:45:00+08:00"
+    assert event["dedupe_key"] == "thomas-zhu::2026-04-21T14:45:00+08:00"
+
+    assert main(
+        [
+            "miya-mark-sent",
+            "--dedupe-key",
+            "thomas-zhu::2026-04-21T14:45:00+08:00",
+            "--sent-at",
+            "2026-04-21T14:40:20+08:00",
+        ]
+    ) == 0
+
+    override = load_schedule_registry()["profiles"]["thomas-zhu"]["overrides"][0]
+    assert override["status"] == "consumed"
+    assert override["consumed_at"] == "2026-04-21T14:40:20+08:00"
+
+
+
+def test_earlier_reschedule_consumption_suppresses_original_recurring_slot(tmp_path, monkeypatch):
+    _install_schedule(tmp_path, monkeypatch)
+    from people_manager.schedule_store import due_reminders
+    from scripts.one_on_one_prep import main
+
+    monkeypatch.setattr(
+        "scripts.one_on_one_prep.send_telegram_message",
+        lambda text, delivery_target: {"success": True},
+    )
+
+    assert main(
+        [
+            "reschedule-once",
+            "thomas-zhu",
+            "--effective-meeting-at",
+            "2026-04-20T09:00:00+08:00",
+            "--now",
+            "2026-04-20T08:00:00+08:00",
+        ]
+    ) == 0
+    assert main(["run-once", "--now", "2026-04-20T08:55:30+08:00"]) == 0
+
+    due = due_reminders(now=datetime(2026, 4, 20, 13, 10, tzinfo=ZoneInfo("Asia/Singapore")))
+
+    assert due == []
 
 
 
@@ -380,3 +494,123 @@ def test_enqueue_and_fallback_are_idempotent_across_retries(tmp_path, monkeypatc
     assert main(["run-fallback", "--now", "2026-04-20T13:11:05+08:00"]) == 0
     assert main(["run-fallback", "--now", "2026-04-20T13:11:40+08:00"]) == 0
     assert len(sent_messages) == 1
+
+
+
+def test_cancel_override_falls_back_to_recurring_cadence(tmp_path, monkeypatch, capsys):
+    _install_schedule(tmp_path, monkeypatch)
+    from scripts.one_on_one_prep import main
+
+    assert main(
+        [
+            "reschedule-once",
+            "thomas-zhu",
+            "--effective-meeting-at",
+            "2026-04-21T14:45:00+08:00",
+            "--now",
+            "2026-04-20T11:00:00+08:00",
+        ]
+    ) == 0
+    assert main(["cancel-override", "thomas-zhu", "--now", "2026-04-20T11:05:00+08:00"]) == 0
+    assert main(["list", "--now", "2026-04-20T11:05:00+08:00"]) == 0
+    output = capsys.readouterr().out
+
+    assert "effective_meeting_at=2026-04-20T13:15:00+08:00" in output
+    assert "active_override=none" in output
+
+
+
+def test_cancelled_override_is_not_claimable_or_sent_after_queueing(tmp_path, monkeypatch, capsys):
+    _install_schedule(tmp_path, monkeypatch)
+    from people_manager.prep_queue import load_queue_event
+    from scripts.one_on_one_prep import main
+
+    monkeypatch.setattr(
+        "scripts.one_on_one_prep.send_telegram_message",
+        lambda text, delivery_target: {"success": True},
+    )
+
+    assert main(
+        [
+            "reschedule-once",
+            "thomas-zhu",
+            "--effective-meeting-at",
+            "2026-04-21T14:45:00+08:00",
+            "--now",
+            "2026-04-20T11:00:00+08:00",
+        ]
+    ) == 0
+    assert main(["enqueue-due", "--now", "2026-04-21T14:40:00+08:00"]) == 0
+    assert main(["cancel-override", "thomas-zhu", "--now", "2026-04-21T14:40:10+08:00"]) == 0
+    assert main(["miya-claim-next", "--now", "2026-04-21T14:40:20+08:00"]) == 0
+    claim_output = capsys.readouterr().out
+
+    event = load_queue_event("thomas-zhu::2026-04-21T14:45:00+08:00")
+
+    assert "No queued occurrences for Miya" in claim_output
+    assert event["state"] == "cancelled_override"
+    assert event["delivery_outcome"] == "cancelled_override"
+
+
+
+def test_reschedule_once_rejects_conflicting_active_override(tmp_path, monkeypatch, capsys):
+    _install_schedule(tmp_path, monkeypatch)
+    from scripts.one_on_one_prep import main
+
+    assert main(
+        [
+            "reschedule-once",
+            "thomas-zhu",
+            "--effective-meeting-at",
+            "2026-04-21T14:45:00+08:00",
+            "--now",
+            "2026-04-20T11:00:00+08:00",
+        ]
+    ) == 0
+    exit_code = main(
+        [
+            "reschedule-once",
+            "thomas-zhu",
+            "--effective-meeting-at",
+            "2026-04-22T09:30:00+08:00",
+            "--now",
+            "2026-04-20T11:01:00+08:00",
+        ]
+    )
+    output = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "active override already exists" in output.err.lower()
+
+
+
+def test_original_already_sent_keeps_history_and_schedules_additional_one_off(tmp_path, monkeypatch):
+    _install_schedule(tmp_path, monkeypatch)
+    from people_manager.reminder_log import load_reminder_entries
+    from scripts.one_on_one_prep import main
+
+    sent_messages = []
+    monkeypatch.setattr(
+        "scripts.one_on_one_prep.send_telegram_message",
+        lambda text, delivery_target: sent_messages.append((text, delivery_target)) or {"success": True},
+    )
+
+    assert main(["run-once", "--now", "2026-04-20T13:10:30+08:00"]) == 0
+    assert main(
+        [
+            "reschedule-once",
+            "thomas-zhu",
+            "--effective-meeting-at",
+            "2026-04-20T14:45:00+08:00",
+            "--now",
+            "2026-04-20T13:11:00+08:00",
+        ]
+    ) == 0
+    assert main(["run-once", "--now", "2026-04-20T14:40:30+08:00"]) == 0
+
+    entries = load_reminder_entries(month="2026-04", profile_slug="thomas-zhu", limit=10)
+    meeting_times = [entry.get("meeting_at") for entry in entries if entry.get("status") == "sent"]
+
+    assert "2026-04-20T13:15:00+08:00" in meeting_times
+    assert "2026-04-20T14:45:00+08:00" in meeting_times
+    assert len(sent_messages) == 2

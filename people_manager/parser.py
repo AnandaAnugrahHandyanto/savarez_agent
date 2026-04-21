@@ -8,6 +8,7 @@ from .constants import (
     ACTION_NEW_REPORT,
     ACTION_ONE_ON_ONE,
     ACTION_PREP,
+    ACTION_RESCHEDULE_ONCE,
     ACTION_REVIEW,
     ACTION_TEAM_QUESTION,
     ACTION_TEAM_SCAN,
@@ -44,13 +45,22 @@ def parse_message(text: str) -> ParserResult | None:
             is_mutating=True,
         )
 
+    reschedule_match = re.match(r"(?i)^(.+?)\s+1:1\s+rescheduled\s+\(one-off\)\s+to\s+(.+)$", raw)
+    if reschedule_match:
+        return ParserResult(
+            action=ACTION_RESCHEDULE_ONCE,
+            raw_text=raw,
+            report_name=reschedule_match.group(1).strip(),
+            body=reschedule_match.group(2).strip(),
+            is_mutating=True,
+        )
+
     patterns = [
         (r"(?i)^update\s+(.+?):\s*(.+)$", ACTION_UPDATE, True),
         (r"(?i)^1:1\s+(.+?):\s*(.+)$", ACTION_ONE_ON_ONE, True),
         (r"(?i)^assessment\s+(.+?):\s*(.+)$", ACTION_ASSESSMENT, True),
         (r"(?i)^todo\s+for\s+me\s+on\s+(.+?):\s*(.+)$", ACTION_TODO_MANAGER, True),
         (r"(?i)^todo\s+(.+?):\s*(.+)$", ACTION_TODO_REPORT, True),
-        (r"(?i)^prep\s+(.+)$", ACTION_PREP, False),
         (r"(?i)^review\s+(.+)$", ACTION_REVIEW, False),
         (r"(?i)^challenge\s+my\s+view\s+of\s+(.+)$", ACTION_CHALLENGE, False),
     ]
@@ -58,7 +68,19 @@ def parse_message(text: str) -> ParserResult | None:
         match = re.match(pattern, raw)
         if not match:
             continue
-        if action in {ACTION_PREP, ACTION_REVIEW, ACTION_CHALLENGE}:
+        if action in {ACTION_REVIEW, ACTION_CHALLENGE}:
             return ParserResult(action=action, raw_text=raw, report_name=match.group(1).strip(), is_mutating=is_mutating)
         return ParserResult(action=action, raw_text=raw, report_name=match.group(1).strip(), body=match.group(2).strip(), is_mutating=is_mutating)
+
+    prep_patterns = [
+        r"(?i)^prep\s+(.+)$",
+        r"(?i)^1o1\s+prep\s+(.+)$",
+        r"(?i)^1:1\s+prep\s+(.+)$",
+        r"(?i)^1o1\s+(.+)$",
+        r"(?i)^1:1\s+(.+)$",
+    ]
+    for pattern in prep_patterns:
+        match = re.match(pattern, raw)
+        if match:
+            return ParserResult(action=ACTION_PREP, raw_text=raw, report_name=match.group(1).strip(), prompt_variant="short", is_mutating=False)
     return None

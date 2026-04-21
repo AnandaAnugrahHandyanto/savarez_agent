@@ -42,6 +42,17 @@ def test_cli_unmatched_text_falls_through(monkeypatch):
     assert result is None
 
 
+
+def test_cli_people_workspace_fastpath_intercepts_adhoc_1o1_prep(monkeypatch):
+    cli = _make_cli()
+
+    monkeypatch.setattr("cli.handle_people_message", lambda text, lane_id, workspace: "Fiona Cao 1:1\n- family summer travels")
+
+    result = cli._maybe_handle_people_manager_input("1o1 prep Fiona")
+
+    assert result.startswith("Fiona Cao 1:1")
+
+
 def test_workspace_switch_is_session_only(monkeypatch):
     cli = _make_cli()
     cli.personalities = {}

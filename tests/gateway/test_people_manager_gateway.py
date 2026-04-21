@@ -63,6 +63,21 @@ async def test_people_workspace_read_message_intercepts(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_people_workspace_fastpath_intercepts_adhoc_one_on_one_prep(monkeypatch):
+    runner = _make_runner()
+    event = _make_event("1o1 prep Fiona")
+
+    monkeypatch.setattr(
+        "gateway.run.handle_people_message",
+        lambda text, lane_id, workspace: "Fiona Cao 1:1\n- family summer travels",
+    )
+
+    result = await runner._maybe_handle_people_manager_message(event)
+
+    assert result.startswith("Fiona Cao 1:1")
+
+
+@pytest.mark.asyncio
 async def test_non_people_workspace_does_not_intercept(monkeypatch):
     runner = _make_runner()
     runner._workspace_by_session_key = {}
