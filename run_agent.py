@@ -9478,11 +9478,17 @@ class AIAgent:
 
                         # A response is "thinking exhausted" only when the model
                         # actually produced reasoning blocks but no visible text after
-                        # them.  Models that do not use <think> tags (e.g. GLM-4.7 on
+                        # them AND the response was truncated due to hitting max_tokens.
+                        # Models that do not use <think> tags (e.g. GLM-4.7 on
                         # NVIDIA Build, minimax) may return content=None or an empty
                         # string for unrelated reasons — treat those as normal
                         # truncations that deserve continuation retries, not as
                         # thinking-budget exhaustion.
+                        #
+                        # CRITICAL: finish_reason must be "length" — this is the ONLY
+                        # reliable signal that output tokens were exhausted. finish_reason
+                        # "stop" means the model stopped naturally and should NOT trigger
+                        # this error, regardless of think tag presence.
                         _has_think_tags = bool(
                             _trunc_content and re.search(
                                 r'<(?:think|thinking|reasoning|REASONING_SCRATCHPAD)[^>]*>',
@@ -9491,7 +9497,8 @@ class AIAgent:
                             )
                         )
                         _thinking_exhausted = (
-                            not _trunc_has_tool_calls
+                            finish_reason == "length"
+                            and not _trunc_has_tool_calls
                             and _has_think_tags
                             and (
                                 (_trunc_content is not None and not self._has_content_after_think_block(_trunc_content))
@@ -9577,6 +9584,20 @@ class AIAgent:
                             if assistant_message.tool_calls:
                                 if truncated_tool_call_retries < 1:
                                     truncated_tool_call_retries += 1
+                                    # The model produced truncated tool_call.arguments.
+                                    # Retrying with the same messages almost always
+                                    # produces the same truncation. If the context is
+                                    # already near the limit, compress first so the
+                                    # model has more headroom for complete JSON output.
+                                    compressor = self.context_compressor
+                                    _ctx_len = getattr(compressor, "context_length", 200000) if compressor else 200000
+                                    if approx_tokens > _ctx_len * 0.85:
+                                        self._vprint(
+                                            f"{self.log_prefix}🗜️  Truncated tool call + context ~{approx_tokens:,}/{_ctx_len:,} tokens — compressing before retry...",
+                                            force=True,
+                                        )
+                                        restart_with_compressed_messages = True
+                                        break
                                     self._vprint(
                                         f"{self.log_prefix}⚠️  Truncated tool call detected — retrying API call...",
                                         force=True,
