@@ -11,7 +11,7 @@ from gateway.config import PlatformConfig
 from gateway.config import GatewayConfig, HomeChannel, Platform, _apply_env_overrides
 from gateway.platforms.base import SendResult
 from gateway.platforms import weixin
-from gateway.platforms.weixin import ContextTokenStore, WeixinAdapter
+from gateway.platforms.weixin import ContextTokenStore, WeixinAdapter, send_weixin_direct
 from tools.send_message_tool import _parse_target_ref, _send_to_platform
 
 
@@ -307,6 +307,40 @@ class TestWeixinSendMessageIntegration:
             "hello",
             media_files=[("/tmp/demo.png", False)],
         )
+
+    def test_send_weixin_direct_avoids_cross_loop_live_adapter_reuse(self):
+        class _DummyClientSession:
+            def __init__(self, *args, **kwargs):
+                self.closed = False
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                self.closed = True
+                return False
+
+        live_adapter = AsyncMock()
+        live_adapter._send_session = type("_LiveSession", (), {"closed": False})()
+        live_adapter.send.side_effect = AssertionError("should not reuse live adapter across loops")
+
+        with patch.dict(weixin._LIVE_ADAPTERS, {"test-token": live_adapter}, clear=True), \
+             patch.object(weixin.ContextTokenStore, "restore", return_value=None), \
+             patch.object(weixin.ContextTokenStore, "get", return_value=None), \
+             patch("gateway.platforms.weixin.aiohttp.ClientSession", _DummyClientSession), \
+             patch.object(WeixinAdapter, "send", new=AsyncMock(return_value=SendResult(success=True, message_id="msg-direct"))):
+            result = asyncio.run(
+                send_weixin_direct(
+                    extra={"account_id": "test-account"},
+                    token="test-token",
+                    chat_id="wxid_test123",
+                    message="hello from cron",
+                )
+            )
+
+        assert result["success"] is True
+        assert result["message_id"] == "msg-direct"
+        live_adapter.send.assert_not_awaited()
 
 
 class TestWeixinChunkDelivery:
