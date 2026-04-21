@@ -1075,6 +1075,27 @@ def test_opencode_zen_claude_defaults_to_messages(monkeypatch):
     assert resolved["base_url"] == "https://opencode.ai/zen"
 
 
+def test_opencode_zen_kimi_free_ignores_stale_anthropic_api_mode(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-zen")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "opencode-zen",
+            "default": "kimi-k2.5-free",
+            "api_mode": "anthropic_messages",
+        },
+    )
+    monkeypatch.setenv("OPENCODE_ZEN_API_KEY", "test-opencode-zen-key")
+    monkeypatch.delenv("OPENCODE_ZEN_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="opencode-zen")
+
+    assert resolved["provider"] == "opencode-zen"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://opencode.ai/zen/v1"
+
+
 def test_opencode_go_minimax_defaults_to_messages(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-go")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {"default": "minimax-m2.5"})
@@ -1102,7 +1123,7 @@ def test_opencode_go_glm_defaults_to_chat_completions(monkeypatch):
     assert resolved["base_url"] == "https://opencode.ai/zen/go/v1"
 
 
-def test_opencode_go_configured_api_mode_still_overrides_default(monkeypatch):
+def test_opencode_go_stale_api_mode_does_not_override_model_family(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-go")
     monkeypatch.setattr(
         rp,
@@ -1119,7 +1140,7 @@ def test_opencode_go_configured_api_mode_still_overrides_default(monkeypatch):
     resolved = rp.resolve_runtime_provider(requested="opencode-go")
 
     assert resolved["provider"] == "opencode-go"
-    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["api_mode"] == "anthropic_messages"
 
 
 def test_named_custom_provider_anthropic_api_mode(monkeypatch):

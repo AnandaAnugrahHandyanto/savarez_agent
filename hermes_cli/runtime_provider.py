@@ -146,6 +146,18 @@ def _parse_api_mode(raw: Any) -> Optional[str]:
     return None
 
 
+def _opencode_runtime_api_mode(provider: str, model_cfg: Dict[str, Any]) -> str:
+    """Derive the OpenCode transport from the configured default model.
+
+    OpenCode stores an ``api_mode`` alongside the selected model, but that
+    value can become stale when the default model changes.  The model family
+    is the runtime source of truth.
+    """
+    from hermes_cli.models import opencode_model_api_mode
+
+    return opencode_model_api_mode(provider, model_cfg.get("default", ""))
+
+
 def _resolve_runtime_from_pool_entry(
     *,
     provider: str,
@@ -196,11 +208,10 @@ def _resolve_runtime_from_pool_entry(
             if cfg_base_url:
                 base_url = cfg_base_url
         configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-        if configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
+        if provider in ("opencode-zen", "opencode-go"):
+            api_mode = _opencode_runtime_api_mode(provider, model_cfg)
+        elif configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
             api_mode = configured_mode
-        elif provider in ("opencode-zen", "opencode-go"):
-            from hermes_cli.models import opencode_model_api_mode
-            api_mode = opencode_model_api_mode(provider, model_cfg.get("default", ""))
         else:
             # Auto-detect Anthropic-compatible endpoints (/anthropic suffix,
             # api.openai.com → codex_responses, api.x.ai → codex_responses).
@@ -974,11 +985,10 @@ def resolve_runtime_provider(
             configured_provider = str(model_cfg.get("provider") or "").strip().lower()
             # Only honor persisted api_mode when it belongs to the same provider family.
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-            if configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
+            if provider in ("opencode-zen", "opencode-go"):
+                api_mode = _opencode_runtime_api_mode(provider, model_cfg)
+            elif configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
                 api_mode = configured_mode
-            elif provider in ("opencode-zen", "opencode-go"):
-                from hermes_cli.models import opencode_model_api_mode
-                api_mode = opencode_model_api_mode(provider, model_cfg.get("default", ""))
             else:
                 # Auto-detect Anthropic-compatible endpoints by URL convention
                 # (e.g. https://api.minimax.io/anthropic, https://dashscope.../anthropic)

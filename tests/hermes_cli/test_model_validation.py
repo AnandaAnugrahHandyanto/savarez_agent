@@ -368,6 +368,7 @@ class TestCopilotNormalization:
         assert opencode_model_api_mode("opencode-zen", "opencode-zen/claude-sonnet-4-6") == "anthropic_messages"
         assert opencode_model_api_mode("opencode-zen", "gemini-3-flash") == "chat_completions"
         assert opencode_model_api_mode("opencode-zen", "minimax-m2.5") == "chat_completions"
+        assert opencode_model_api_mode("opencode-zen", "kimi-k2.5-free") == "chat_completions"
 
     def test_opencode_go_api_modes_match_docs(self):
         assert opencode_model_api_mode("opencode-go", "glm-5.1") == "chat_completions"
