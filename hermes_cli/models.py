@@ -455,6 +455,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "phala/kimi-k2.5",
         "phala/uncensored-24b",
     ],
+    "venice": [
+        "e2ee-glm-5",
+        "e2ee-qwen3-5-122b-a10b",
+        "e2ee-gpt-oss-120b-p",
+        "e2ee-uncensored-24b-p",
+    ],
     "bedrock": [
         "us.anthropic.claude-sonnet-4-6",
         "us.anthropic.claude-opus-4-6-v1",
@@ -833,6 +839,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("ai-gateway",     "Vercel AI Gateway",        "Vercel AI Gateway"),
     ProviderEntry("near-ai",        "NEAR AI",                  "NEAR AI Cloud (TEE-attested — Intel TDX + NVIDIA GPU verified)"),
     ProviderEntry("redpill",        "Redpill / Phala",          "Redpill / Phala Cloud (TEE-attested — TDX + GPU + compose hash)"),
+    ProviderEntry("venice",         "Venice",                   "Venice AI (TEE-attested — Intel TDX + NVIDIA GPU re-verified against Phala/NRAS)"),
 ]
 
 # Derived dicts — used throughout the codebase

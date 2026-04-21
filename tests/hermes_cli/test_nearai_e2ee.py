@@ -113,7 +113,7 @@ class TestEd25519Roundtrip:
 class TestSigningKeyDerivation:
     def test_pub_key_derives_to_correct_address(self):
         """keccak256(pubkey[1:]) → last 20 bytes == Ethereum address."""
-        from eth_keys.datatypes import PublicKey as _EthPubKey
+        _EthPubKey = pytest.importorskip("eth_keys.datatypes").PublicKey
 
         priv = ec.generate_private_key(ec.SECP256K1(), default_backend())
         pub_bytes_full = priv.public_key().public_bytes(
@@ -126,7 +126,7 @@ class TestSigningKeyDerivation:
         assert len(eth_addr) == 42
 
     def test_wrong_pub_key_gives_different_address(self):
-        from eth_keys.datatypes import PublicKey as _EthPubKey
+        _EthPubKey = pytest.importorskip("eth_keys.datatypes").PublicKey
 
         priv1 = ec.generate_private_key(ec.SECP256K1(), default_backend())
         priv2 = ec.generate_private_key(ec.SECP256K1(), default_backend())
@@ -195,6 +195,9 @@ def _near_api_key():
 def _redpill_api_key():
     return os.environ.get("REDPILL_API_KEY", "") or _read_env_file(os.path.expanduser("~/.hermes-near-test/.env"), "REDPILL_API_KEY")
 
+def _venice_api_key():
+    return os.environ.get("VENICE_API_KEY", "") or _read_env_file(os.path.expanduser("~/.hermes-near-test/.env"), "VENICE_API_KEY")
+
 
 @pytest.mark.skipif(not _near_api_key(), reason="NEAR_API_KEY not found — live attestation test skipped")
 class TestNearAILiveAttestation:
@@ -233,6 +236,122 @@ class TestRedpillLiveAttestation:
         msg = data["choices"][0]["message"]
         response_text = msg.get("content") or msg.get("reasoning_content") or msg.get("reasoning")
         assert response_text, f"No response text in message fields: {list(msg.keys())}"
+
+
+# ---------------------------------------------------------------------------
+# Venice live attestation + full E2EE chat roundtrip
+# ---------------------------------------------------------------------------
+
+@pytest.mark.integration
+@pytest.mark.skipif(not _venice_api_key(), reason="VENICE_API_KEY not found — live Venice test skipped")
+class TestVeniceLiveAttestation:
+    MODEL = "e2ee-qwen3-5-122b-a10b"
+    BASE_URL = "https://api.venice.ai/api/v1"
+
+    def test_full_attestation_returns_signing_key(self):
+        from hermes_cli.attestation import verify_attestation
+        report = verify_attestation(
+            "venice",
+            {"api_key": _venice_api_key(), "base_url": self.BASE_URL, "model": self.MODEL},
+            {"enabled": True, "strict": True},
+        )
+        assert report.valid, f"Attestation failed: {report.error}"
+        assert report.signing_public_key is not None
+        # Venice returns the uncompressed key with the 04 prefix (65 bytes); other providers strip it (64).
+        assert len(bytes.fromhex(report.signing_public_key)) in (64, 65)
+        assert report.signing_algo in ("ecdsa", "ed25519")
+
+    def test_e2ee_chat_roundtrip(self):
+        """Full E2EE chat through VeniceE2EETransport — encrypts prompt, decrypts reply."""
+        import httpx as _httpx
+        from hermes_cli.attestation import verify_attestation
+        from hermes_cli.e2ee_transport import VeniceE2EETransport
+
+        api_key = _venice_api_key()
+        report = verify_attestation(
+            "venice",
+            {"api_key": api_key, "base_url": self.BASE_URL, "model": self.MODEL},
+            {"enabled": True, "strict": True},
+        )
+        assert report.valid, f"Attestation failed: {report.error}"
+
+        transport = VeniceE2EETransport(
+            report.signing_public_key, report.signing_algo or "ecdsa",
+            inner=_httpx.HTTPTransport(),
+        )
+        with _httpx.Client(
+            transport=transport, base_url=self.BASE_URL, timeout=120.0,
+            headers={"Authorization": f"Bearer {api_key}"},
+        ) as client:
+            resp = client.post(
+                "/chat/completions",
+                json={
+                    "model": self.MODEL,
+                    "messages": [{"role": "user", "content": "reply with a single word: pong"}],
+                    "max_tokens": 20,
+                    "stream": False,
+                },
+            )
+        assert resp.status_code == 200, resp.text
+        content = resp.json()["choices"][0]["message"].get("content", "")
+        assert content, f"No decrypted content returned"
+
+
+# ---------------------------------------------------------------------------
+# NEAR AI live E2EE chat roundtrip (picks a model that currently passes attestation)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.integration
+@pytest.mark.skipif(not _near_api_key(), reason="NEAR_API_KEY not found — live near-ai E2EE test skipped")
+class TestNearAILiveE2EEChat:
+    BASE_URL = "https://cloud-api.near.ai"
+
+    def test_e2ee_chat_roundtrip(self):
+        """Probe near-ai models, pick one that passes GPU attestation, run E2EE chat through it."""
+        import httpx as _httpx
+        from hermes_cli.attestation import verify_attestation, probe_models_for_provider
+        from hermes_cli.e2ee_transport import E2EETransport
+        from hermes_cli.models import _PROVIDER_MODELS
+
+        api_key = _near_api_key()
+        candidates = _PROVIDER_MODELS.get("near-ai", [])
+        assert candidates, "near-ai has no curated models"
+        passing = probe_models_for_provider(
+            "near-ai", api_key, self.BASE_URL, candidates,
+            {"enabled": True, "strict": True},
+        )
+        if not passing:
+            pytest.skip("No near-ai models currently pass GPU attestation")
+        model = passing[0]
+
+        report = verify_attestation(
+            "near-ai",
+            {"api_key": api_key, "base_url": self.BASE_URL, "model": model},
+            {"enabled": True, "strict": True},
+        )
+        assert report.valid and report.signing_public_key
+
+        transport = E2EETransport(
+            report.signing_public_key, report.signing_algo or "ecdsa",
+            inner=_httpx.HTTPTransport(),
+        )
+        with _httpx.Client(
+            transport=transport, base_url=self.BASE_URL, timeout=120.0,
+            headers={"Authorization": f"Bearer {api_key}"},
+        ) as client:
+            resp = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": "reply with a single word: pong"}],
+                    "max_tokens": 20,
+                    "stream": False,
+                },
+            )
+        assert resp.status_code == 200, resp.text
+        msg = resp.json()["choices"][0]["message"]
+        content = msg.get("content") or msg.get("reasoning_content") or msg.get("reasoning")
+        assert content, f"No decrypted content in fields: {list(msg.keys())}"
 
 
 # ---------------------------------------------------------------------------
@@ -483,3 +602,114 @@ class TestRedpillShapeDispatch:
         )
         assert r.valid is False
         assert "Unrecognized attestation response format" in (r.error or "")
+
+
+# ---------------------------------------------------------------------------
+# Venice attestation — Phala-shape TDX + optional NVIDIA GPU, all re-verified.
+# ---------------------------------------------------------------------------
+
+class TestVeniceAttestation:
+    def setup_method(self):
+        from hermes_cli.attestation import _MODEL_ATTESTATION_CACHE, _ATTESTATION_CACHE
+        _MODEL_ATTESTATION_CACHE.clear()
+        _ATTESTATION_CACHE.clear()
+
+    def teardown_method(self):
+        from hermes_cli.attestation import _MODEL_ATTESTATION_CACHE, _ATTESTATION_CACHE
+        _MODEL_ATTESTATION_CACHE.clear()
+        _ATTESTATION_CACHE.clear()
+
+    def _fake_get(self, body, status_code=200):
+        class _Resp:
+            def __init__(self):
+                self.status_code = status_code
+            def json(self_inner):
+                return body
+            def raise_for_status(self_inner):
+                if status_code >= 400:
+                    raise requests.HTTPError(f"HTTP {status_code}")
+        return _Resp()
+
+    def test_missing_api_key(self):
+        from hermes_cli import attestation as att_mod
+        r = att_mod._verify_venice_attestation({"model": "e2ee-glm-5"}, {})
+        assert r.valid is False
+        assert "API key" in (r.error or "")
+
+    def test_missing_model(self):
+        from hermes_cli import attestation as att_mod
+        r = att_mod._verify_venice_attestation({"api_key": "k"}, {})
+        assert r.valid is False
+        assert "model" in (r.error or "").lower()
+
+    def test_404_returns_no_tee(self, monkeypatch):
+        from hermes_cli import attestation as att_mod
+        monkeypatch.setattr(att_mod.requests, "get", lambda *a, **kw: self._fake_get({}, status_code=404))
+        r = att_mod._verify_venice_attestation(
+            {"api_key": "k", "model": "no-tee-model"}, {},
+        )
+        assert r.valid is False
+        assert "404" in (r.error or "")
+
+    def test_tdx_failure_propagates(self, monkeypatch):
+        from hermes_cli import attestation as att_mod
+        att_body = {
+            "intel_quote": "deadbeef",
+            "signing_address": "0x" + "11" * 20,
+            "nonce_source": "client",
+        }
+        monkeypatch.setattr(att_mod.requests, "get", lambda *a, **kw: self._fake_get(att_body))
+
+        class _P:
+            def json(self_inner):
+                return {"quote": {"verified": False, "message": "stubbed"}}
+        monkeypatch.setattr(att_mod.requests, "post", lambda *a, **kw: _P())
+
+        r = att_mod._verify_venice_attestation(
+            {"api_key": "k", "model": "e2ee-glm-5"}, {},
+        )
+        assert r.valid is False
+        assert "TDX quote verification failed" in (r.error or "")
+
+    def test_report_data_binding_enforced(self, monkeypatch):
+        from hermes_cli import attestation as att_mod
+        # Verifier returns verified=True but with zero report_data — binding must fail.
+        test_nonce = "55" * 32
+        monkeypatch.setattr(att_mod.secrets, "token_hex", lambda n: test_nonce)
+        att_body = {
+            "intel_quote": "deadbeef",
+            "signing_address": "0x" + "22" * 20,
+            "nonce_source": "client",
+        }
+        monkeypatch.setattr(att_mod.requests, "get", lambda *a, **kw: self._fake_get(att_body))
+
+        class _P:
+            def json(self_inner):
+                return {"quote": {"verified": True, "body": {"reportdata": "00" * 64}}}
+        monkeypatch.setattr(att_mod.requests, "post", lambda *a, **kw: _P())
+
+        r = att_mod._verify_venice_attestation(
+            {"api_key": "k", "model": "e2ee-glm-5"}, {},
+        )
+        assert r.valid is False
+        assert "bind" in (r.error or "").lower()
+
+    def test_verify_attestation_dispatches_venice(self, monkeypatch):
+        # Smoke-test the top-level dispatcher routes venice to the venice handler.
+        from hermes_cli import attestation as att_mod
+        called = []
+        def fake(creds, config):
+            called.append(creds.get("model"))
+            return att_mod.AttestationReport(
+                valid=True, provider="venice", attestation_type="tdx+gpu",
+                verified_at="", details={}, signing_public_key="beef", signing_algo="ecdsa",
+            )
+        monkeypatch.setattr(att_mod, "_verify_venice_attestation", fake)
+        monkeypatch.setattr(att_mod, "_live_tls_fingerprint", lambda *a, **kw: None)
+        r = att_mod.verify_attestation(
+            "venice",
+            {"api_key": "k", "base_url": "https://api.venice.ai/api/v1", "model": "e2ee-glm-5"},
+            {},
+        )
+        assert r.valid is True and r.provider == "venice"
+        assert called == ["e2ee-glm-5"]
