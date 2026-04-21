@@ -1301,6 +1301,40 @@ class TestExecuteToolCalls:
         assert len(messages[0]["content"]) < 150_000
         assert ("Truncated" in messages[0]["content"] or "<persisted-output>" in messages[0]["content"])
 
+    def test_tool_cleanup_clears_terminal_activity_callback_after_success(self, agent):
+        tc = _mock_tool_call(name="terminal", arguments='{"command":"pwd"}', call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        callbacks = []
+
+        def _record_callback(cb):
+            callbacks.append(cb)
+
+        with patch("tools.environments.base.set_activity_callback", side_effect=_record_callback), \
+             patch("run_agent.handle_function_call", return_value="ok"):
+            agent._execute_tool_calls(mock_msg, messages, "task-1")
+
+        assert callbacks == [agent._touch_activity, None]
+        assert agent._current_tool is None
+
+    def test_tool_cleanup_clears_terminal_state_on_base_exception(self, agent):
+        tc = _mock_tool_call(name="terminal", arguments='{"command":"pwd"}', call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        callbacks = []
+
+        def _record_callback(cb):
+            callbacks.append(cb)
+
+        with patch("tools.environments.base.set_activity_callback", side_effect=_record_callback), \
+             patch("run_agent.handle_function_call", side_effect=KeyboardInterrupt("boom")):
+            with pytest.raises(KeyboardInterrupt):
+                agent._execute_tool_calls(mock_msg, messages, "task-1")
+
+        assert callbacks == [agent._touch_activity, None]
+        assert agent._current_tool is None
+        assert agent.get_activity_summary()["current_tool"] is None
+
     def test_quiet_tool_output_suppressed_when_progress_callback_present(self, agent):
         tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
