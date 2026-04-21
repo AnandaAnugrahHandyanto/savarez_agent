@@ -9265,21 +9265,17 @@ class GatewayRunner:
             if not adapter:
                 return
 
-            # Skip tool progress for platforms that don't support message
-            # editing (e.g. iMessage/BlueBubbles) — each progress update
-            # would become a separate message bubble, which is noisy.
+            # For platforms that don't support message editing (e.g. WeCom),
+            # send each progress update as a new message instead of trying to
+            # edit a single placeholder. Platforms that truly want to suppress
+            # progress should declare SUPPORTS_MESSAGE_EDITING = False and
+            # skip the progress coroutine at a higher level.
             from gateway.platforms.base import BasePlatformAdapter as _BaseAdapter
-            if type(adapter).edit_message is _BaseAdapter.edit_message:
-                while not progress_queue.empty():
-                    try:
-                        progress_queue.get_nowait()
-                    except Exception:
-                        break
-                return
+            _adapter_supports_edit = type(adapter).edit_message is not _BaseAdapter.edit_message
 
             progress_lines = []      # Accumulated tool lines
             progress_msg_id = None   # ID of the progress message to edit
-            can_edit = True          # False once an edit fails (platform doesn't support it)
+            can_edit = _adapter_supports_edit  # False once an edit fails (platform doesn't support it)
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
             _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
 
