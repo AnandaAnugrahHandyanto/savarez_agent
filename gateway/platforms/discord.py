@@ -3637,6 +3637,9 @@ if DISCORD_AVAILABLE:
             self.resolved = True
             model_id = interaction.data["values"][0]
 
+            # Defer immediately to avoid Discord's ~3s interaction timeout (error 10062)
+            await interaction.response.defer()
+
             try:
                 result_text = await self.on_model_selected(
                     str(interaction.channel_id),
@@ -3647,7 +3650,7 @@ if DISCORD_AVAILABLE:
                 result_text = f"Error switching model: {exc}"
 
             self.clear_items()
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 embed=discord.Embed(
                     title="⚙ Model Switched",
                     description=result_text,
