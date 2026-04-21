@@ -77,7 +77,7 @@ hermes memory setup        # select "honcho"
 |-----|---------|-------------|
 | `apiKey` | -- | API key from [app.honcho.dev](https://app.honcho.dev) |
 | `baseUrl` | -- | Base URL for self-hosted Honcho |
-| `peerName` | -- | User peer identity |
+| `peerName` | -- | User peer identity. When set, this is the stable human peer across transports; leave unset in shared multi-user gateway deployments so runtime `user_id` can identify each user. |
 | `aiPeer` | host key | AI peer identity (one per profile) |
 | `workspace` | host key | Shared workspace ID |
 | `contextTokens` | `null` (uncapped) | Token budget for auto-injected context per turn. Truncates at word boundaries |

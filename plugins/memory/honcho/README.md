@@ -124,7 +124,7 @@ For every key, resolution order is: **host block > root > env var > default**.
 | `environment` | string | `"production"` | SDK environment mapping |
 | `enabled` | bool | auto | Master toggle. Auto-enables when `apiKey` or `baseUrl` present |
 | `workspace` | string | host key | Honcho workspace ID. Shared environment — all profiles in the same workspace can see the same user identity and related memories |
-| `peerName` | string | — | User peer identity |
+| `peerName` | string | — | User peer identity. When set, this is the stable human peer across transports; leave unset in shared multi-user gateway deployments so runtime `user_id` can identify each user. |
 | `aiPeer` | string | host key | AI peer identity |
 
 ### Memory & Recall

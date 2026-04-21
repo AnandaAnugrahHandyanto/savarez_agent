@@ -77,7 +77,7 @@ You do not need to configure this -- it is automatic based on session state.
 
 Honcho models conversations as interactions between **peers**. Hermes creates two peers per session:
 
-- **User peer** (`peerName`): represents the human. Honcho builds a user representation from observed messages.
+- **User peer** (`peerName`): represents the human. When set, it is the stable human identity across transports; leave it unset in shared multi-user gateway deployments so runtime `user_id` can identify each user. Honcho builds a user representation from observed messages.
 - **AI peer** (`aiPeer`): represents this Hermes instance. Each profile gets its own AI peer so agents develop independent views.
 
 ### Observation

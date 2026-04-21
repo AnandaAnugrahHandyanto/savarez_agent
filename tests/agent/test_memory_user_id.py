@@ -252,8 +252,8 @@ class TestHonchoUserIdScoping:
         assert mock_cfg.peer_name == "static-user"
         assert mock_manager_cls.call_args.kwargs["runtime_user_peer_name"] == "discord_user_789"
 
-    def test_session_manager_prefers_runtime_user_id_over_config_peer_name(self):
-        """Session manager should isolate gateway users even when config peer_name is static."""
+    def test_session_manager_prefers_config_peer_name_over_runtime_user_id(self):
+        """Explicit peer_name should remain authoritative over gateway user_id."""
         from plugins.memory.honcho.session import HonchoSessionManager
 
         mock_cfg = MagicMock()
@@ -282,7 +282,7 @@ class TestHonchoUserIdScoping:
         ):
             session = manager.get_or_create("discord:channel-1")
 
-        assert session.user_peer_id == "discord_user_789"
+        assert session.user_peer_id == "static-user"
 
     def test_no_user_id_preserves_config_peer_name(self):
         """Without user_id, the config peer_name should be preserved."""
