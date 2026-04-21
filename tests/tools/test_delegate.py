@@ -561,6 +561,44 @@ class TestDelegateObservability(unittest.TestCase):
             result = json.loads(delegate_task(goal="Test max iter", parent_agent=parent))
             self.assertEqual(result["results"][0]["exit_reason"], "max_iterations")
 
+    @patch("tools.delegate_tool._load_config")
+    def test_tool_trace_omitted_when_config_disabled(self, mock_cfg):
+        """When include_tool_trace is false, tool_trace should be absent from results."""
+        mock_cfg.return_value = {"include_tool_trace": False}
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 100
+            mock_child.session_completion_tokens = 50
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [
+                    {"role": "assistant", "tool_calls": [
+                        {"id": "tc_1", "function": {"name": "web_search", "arguments": '{"query": "test"}'}}
+                    ]},
+                    {"role": "tool", "tool_call_id": "tc_1", "content": '{"results": [1,2,3]}'},
+                    {"role": "assistant", "content": "done"},
+                ],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Test no trace", parent_agent=parent))
+            entry = result["results"][0]
+
+            # Other observability fields should still be present
+            self.assertEqual(entry["status"], "completed")
+            self.assertEqual(entry["model"], "claude-sonnet-4-6")
+            self.assertEqual(entry["exit_reason"], "completed")
+            self.assertIn("tokens", entry)
+
+            # tool_trace should be completely absent
+            self.assertNotIn("tool_trace", entry)
+
 
 class TestBlockedTools(unittest.TestCase):
     def test_blocked_tools_constant(self):

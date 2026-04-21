@@ -691,6 +691,7 @@ DEFAULT_CONFIG = {
                                # independent of the parent's max_iterations)
         "reasoning_effort": "",  # reasoning effort for subagents: "xhigh", "high", "medium",
                                  # "low", "minimal", "none" (empty = inherit parent's level)
+        "include_tool_trace": True,  # When false, omit tool_trace from delegate_task results to save tokens
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts

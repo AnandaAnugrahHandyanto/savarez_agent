@@ -592,8 +592,13 @@ def _run_single_child(
                 "input": _input_tokens if isinstance(_input_tokens, (int, float)) else 0,
                 "output": _output_tokens if isinstance(_output_tokens, (int, float)) else 0,
             },
-            "tool_trace": tool_trace,
         }
+
+        # Conditionally include tool_trace based on delegation config
+        cfg = _load_config()
+        if cfg.get("include_tool_trace", True):
+            entry["tool_trace"] = tool_trace
+
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
 
