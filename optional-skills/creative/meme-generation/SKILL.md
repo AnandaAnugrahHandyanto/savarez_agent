@@ -37,7 +37,8 @@ Do not use this skill for generic photo editing, video memes, or free-form image
 ## References
 
 - Curated template list: `references/curated-templates.md`
-- Template selection heuristics, matching examples, and usage examples: `references/meme-generation.md`
+- Template selection heuristics and Imgflip source notes: `references/meme-generation.md`
+- Usage examples: `references/examples.md`
 - Script behavior and deterministic rendering: `scripts/generate_meme.py`
 
 ## Pitfalls
