@@ -149,11 +149,16 @@ def copilot_launch(args):
     if connect_handle != job_id:
         db.update_copilot_job_signal_ref(job_id, connect_handle)
 
+    prompt_delivery_warning = result.get("prompt_delivery_warning")
+
     # For dry-run, the process already completed synchronously.
     if getattr(args, "dry_run", False):
         print(f"  State: {_state_badge('done')}")
     else:
         print(f"  State: 🟢 running")
+
+    if prompt_delivery_warning:
+        print(f"  Warning: {prompt_delivery_warning}", file=sys.stderr)
 
     print(f"\n  Connect: copilot --connect={connect_handle}")
     print(f"  Resume:  copilot --resume={connect_handle}")
