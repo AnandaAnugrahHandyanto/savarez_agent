@@ -37,7 +37,7 @@ import time
 import threading
 from types import SimpleNamespace
 import uuid
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from openai import OpenAI
 import fire
 from datetime import datetime
@@ -7319,6 +7319,106 @@ class AIAgent:
         """
         return self.api_mode != "codex_responses"
 
+    def _build_api_messages_for_attempt(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        current_turn_user_idx: int,
+        active_system_prompt: str,
+        ext_prefetch_cache: str,
+        plugin_user_context: str,
+    ) -> Tuple[List[Dict[str, Any]], int, int]:
+        """Build provider-ready API messages from canonical conversation state.
+
+        This must run per API attempt rather than once per turn because retry
+        paths can activate provider/model fallback and change ``api_mode``,
+        prompt-caching rules, and tool-call sanitization requirements. Reusing a
+        payload prepared for a previous backend can make the fallback appear to
+        lose context.
+        """
+        api_messages = []
+        for idx, msg in enumerate(messages):
+            api_msg = msg.copy()
+
+            if idx == current_turn_user_idx and msg.get("role") == "user":
+                _injections = []
+                if ext_prefetch_cache:
+                    _fenced = build_memory_context_block(ext_prefetch_cache)
+                    if _fenced:
+                        _injections.append(_fenced)
+                if plugin_user_context:
+                    _injections.append(plugin_user_context)
+                if _injections:
+                    _base = api_msg.get("content", "")
+                    if isinstance(_base, str):
+                        api_msg["content"] = _base + "\n\n" + "\n\n".join(_injections)
+
+            if msg.get("role") == "assistant":
+                reasoning_text = msg.get("reasoning")
+                if reasoning_text:
+                    api_msg["reasoning_content"] = reasoning_text
+
+            api_msg.pop("reasoning", None)
+            api_msg.pop("finish_reason", None)
+            api_msg.pop("_thinking_prefill", None)
+
+            if self._should_sanitize_tool_calls():
+                self._sanitize_tool_calls_for_strict_api(api_msg)
+
+            api_messages.append(api_msg)
+
+        effective_system = active_system_prompt or ""
+        if self.ephemeral_system_prompt:
+            effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+        if effective_system:
+            api_messages = [{"role": "system", "content": effective_system}] + api_messages
+
+        if self.prefill_messages:
+            sys_offset = 1 if effective_system else 0
+            for idx, pfm in enumerate(self.prefill_messages):
+                api_messages.insert(sys_offset + idx, pfm.copy())
+
+        if self._use_prompt_caching:
+            api_messages = apply_anthropic_cache_control(
+                api_messages,
+                cache_ttl=self._cache_ttl,
+                native_anthropic=self._use_native_cache_layout,
+            )
+
+        api_messages = self._sanitize_api_messages(api_messages)
+
+        for am in api_messages:
+            if isinstance(am.get("content"), str):
+                am["content"] = am["content"].strip()
+        for am in api_messages:
+            tcs = am.get("tool_calls")
+            if not tcs:
+                continue
+            new_tcs = []
+            for tc in tcs:
+                if isinstance(tc, dict) and "function" in tc:
+                    try:
+                        args_obj = json.loads(tc["function"]["arguments"])
+                        tc = {**tc, "function": {
+                            **tc["function"],
+                            "arguments": json.dumps(
+                                args_obj, separators=(",", ":"), sort_keys=True,
+                            ),
+                        }}
+                    except Exception:
+                        tc["function"]["arguments"] = _repair_tool_call_arguments(
+                            tc["function"]["arguments"],
+                            tc["function"].get("name", "?"),
+                        )
+                new_tcs.append(tc)
+            am["tool_calls"] = new_tcs
+
+        _sanitize_messages_surrogates(api_messages)
+
+        total_chars = sum(len(str(msg)) for msg in api_messages)
+        approx_tokens = estimate_messages_tokens_rough(api_messages)
+        return api_messages, total_chars, approx_tokens
+
     def flush_memories(self, messages: list = None, min_turns: int = None):
         """Give the model one turn to persist memories before context is lost.
 
@@ -9079,171 +9179,8 @@ class AIAgent:
                         existing = getattr(self, "_pending_steer", None)
                         self._pending_steer = (existing + "\n" + _pre_api_steer) if existing else _pre_api_steer
 
-            # Prepare messages for API call
-            # If we have an ephemeral system prompt, prepend it to the messages
-            # Note: Reasoning is embedded in content via <think> tags for trajectory storage.
-            # However, providers like Moonshot AI require a separate 'reasoning_content' field
-            # on assistant messages with tool_calls. We handle both cases here.
-            api_messages = []
-            for idx, msg in enumerate(messages):
-                api_msg = msg.copy()
-
-                # Inject ephemeral context into the current turn's user message.
-                # Sources: memory manager prefetch + plugin pre_llm_call hooks
-                # with target="user_message" (the default).  Both are
-                # API-call-time only — the original message in `messages` is
-                # never mutated, so nothing leaks into session persistence.
-                if idx == current_turn_user_idx and msg.get("role") == "user":
-                    _injections = []
-                    if _ext_prefetch_cache:
-                        _fenced = build_memory_context_block(_ext_prefetch_cache)
-                        if _fenced:
-                            _injections.append(_fenced)
-                    if _plugin_user_context:
-                        _injections.append(_plugin_user_context)
-                    if _injections:
-                        _base = api_msg.get("content", "")
-                        if isinstance(_base, str):
-                            api_msg["content"] = _base + "\n\n" + "\n\n".join(_injections)
-
-                # For ALL assistant messages, pass reasoning back to the API
-                # This ensures multi-turn reasoning context is preserved
-                if msg.get("role") == "assistant":
-                    reasoning_text = msg.get("reasoning")
-                    if reasoning_text:
-                        # Add reasoning_content for API compatibility (Moonshot AI, Novita, OpenRouter)
-                        api_msg["reasoning_content"] = reasoning_text
-
-                # Remove 'reasoning' field - it's for trajectory storage only
-                # We've copied it to 'reasoning_content' for the API above
-                if "reasoning" in api_msg:
-                    api_msg.pop("reasoning")
-                # Remove finish_reason - not accepted by strict APIs (e.g. Mistral)
-                if "finish_reason" in api_msg:
-                    api_msg.pop("finish_reason")
-                # Strip internal thinking-prefill marker
-                api_msg.pop("_thinking_prefill", None)
-                # Strip Codex Responses API fields (call_id, response_item_id) for
-                # strict providers like Mistral, Fireworks, etc. that reject unknown fields.
-                # Uses new dicts so the internal messages list retains the fields
-                # for Codex Responses compatibility.
-                if self._should_sanitize_tool_calls():
-                    self._sanitize_tool_calls_for_strict_api(api_msg)
-                # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
-                # The signature field helps maintain reasoning continuity
-                api_messages.append(api_msg)
-
-            # Build the final system message: cached prompt + ephemeral system prompt.
-            # Ephemeral additions are API-call-time only (not persisted to session DB).
-            # External recall context is injected into the user message, not the system
-            # prompt, so the stable cache prefix remains unchanged.
-            effective_system = active_system_prompt or ""
-            if self.ephemeral_system_prompt:
-                effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
-            # NOTE: Plugin context from pre_llm_call hooks is injected into the
-            # user message (see injection block above), NOT the system prompt.
-            # This is intentional — system prompt modifications break the prompt
-            # cache prefix.  The system prompt is reserved for Hermes internals.
-            if effective_system:
-                api_messages = [{"role": "system", "content": effective_system}] + api_messages
-
-            # Inject ephemeral prefill messages right after the system prompt
-            # but before conversation history. Same API-call-time-only pattern.
-            if self.prefill_messages:
-                sys_offset = 1 if effective_system else 0
-                for idx, pfm in enumerate(self.prefill_messages):
-                    api_messages.insert(sys_offset + idx, pfm.copy())
-
-            # Apply Anthropic prompt caching for Claude models on native
-            # Anthropic, OpenRouter, and third-party Anthropic-compatible
-            # gateways. Auto-detected: if ``_use_prompt_caching`` is set,
-            # inject cache_control breakpoints (system + last 3 messages)
-            # to reduce input token costs by ~75% on multi-turn
-            # conversations. Layout is chosen per endpoint by
-            # ``_anthropic_prompt_cache_policy``.
-            if self._use_prompt_caching:
-                api_messages = apply_anthropic_cache_control(
-                    api_messages,
-                    cache_ttl=self._cache_ttl,
-                    native_anthropic=self._use_native_cache_layout,
-                )
-
-            # Safety net: strip orphaned tool results / add stubs for missing
-            # results before sending to the API.  Runs unconditionally — not
-            # gated on context_compressor — so orphans from session loading or
-            # manual message manipulation are always caught.
-            api_messages = self._sanitize_api_messages(api_messages)
-
-            # Normalize message whitespace and tool-call JSON for consistent
-            # prefix matching.  Ensures bit-perfect prefixes across turns,
-            # which enables KV cache reuse on local inference servers
-            # (llama.cpp, vLLM, Ollama) and improves cache hit rates for
-            # cloud providers.  Operates on api_messages (the API copy) so
-            # the original conversation history in `messages` is untouched.
-            for am in api_messages:
-                if isinstance(am.get("content"), str):
-                    am["content"] = am["content"].strip()
-            for am in api_messages:
-                tcs = am.get("tool_calls")
-                if not tcs:
-                    continue
-                new_tcs = []
-                for tc in tcs:
-                    if isinstance(tc, dict) and "function" in tc:
-                        try:
-                            args_obj = json.loads(tc["function"]["arguments"])
-                            tc = {**tc, "function": {
-                                **tc["function"],
-                                "arguments": json.dumps(
-                                    args_obj, separators=(",", ":"),
-                                    sort_keys=True,
-                                ),
-                            }}
-                        except Exception:
-                            tc["function"]["arguments"] = _repair_tool_call_arguments(
-                                tc["function"]["arguments"],
-                                tc["function"].get("name", "?"),
-                            )
-                    new_tcs.append(tc)
-                am["tool_calls"] = new_tcs
-
-            # Proactively strip any surrogate characters before the API call.
-            # Models served via Ollama (Kimi K2.5, GLM-5, Qwen) can return
-            # lone surrogates (U+D800-U+DFFF) that crash json.dumps() inside
-            # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
-            _sanitize_messages_surrogates(api_messages)
-
-            # Calculate approximate request size for logging
-            total_chars = sum(len(str(msg)) for msg in api_messages)
-            approx_tokens = estimate_messages_tokens_rough(api_messages)
-            
             # Thinking spinner for quiet mode (animated during API call)
             thinking_spinner = None
-            
-            if not self.quiet_mode:
-                self._vprint(f"\n{self.log_prefix}🔄 Making API call #{api_call_count}/{self.max_iterations}...")
-                self._vprint(f"{self.log_prefix}   📊 Request size: {len(api_messages)} messages, ~{approx_tokens:,} tokens (~{total_chars:,} chars)")
-                self._vprint(f"{self.log_prefix}   🔧 Available tools: {len(self.tools) if self.tools else 0}")
-            else:
-                # Animated thinking spinner in quiet mode
-                face = random.choice(KawaiiSpinner.get_thinking_faces())
-                verb = random.choice(KawaiiSpinner.get_thinking_verbs())
-                if self.thinking_callback:
-                    # CLI TUI mode: use prompt_toolkit widget instead of raw spinner
-                    # (works in both streaming and non-streaming modes)
-                    self.thinking_callback(f"{face} {verb}...")
-                elif not self._has_stream_consumers() and self._should_start_quiet_spinner():
-                    # Raw KawaiiSpinner only when no streaming consumers and the
-                    # spinner output has a safe sink.
-                    spinner_type = random.choice(['brain', 'sparkle', 'pulse', 'moon', 'star'])
-                    thinking_spinner = KawaiiSpinner(f"{face} {verb}...", spinner_type=spinner_type, print_fn=self._print_fn)
-                    thinking_spinner.start()
-            
-            # Log request details if verbose
-            if self.verbose_logging:
-                logging.debug(f"API Request - Model: {self.model}, Messages: {len(messages)}, Tools: {len(self.tools) if self.tools else 0}")
-                logging.debug(f"Last message role: {messages[-1]['role'] if messages else 'none'}")
-                logging.debug(f"Total message size: ~{approx_tokens:,} tokens")
             
             api_start_time = time.time()
             retry_count = 0
@@ -9261,8 +9198,42 @@ class AIAgent:
             finish_reason = "stop"
             response = None  # Guard against UnboundLocalError if all retries fail
             api_kwargs = None  # Guard against UnboundLocalError in except handler
+            api_messages = []
+            total_chars = 0
+            approx_tokens = 0
 
             while retry_count < max_retries:
+                api_messages, total_chars, approx_tokens = self._build_api_messages_for_attempt(
+                    messages,
+                    current_turn_user_idx=current_turn_user_idx,
+                    active_system_prompt=active_system_prompt,
+                    ext_prefetch_cache=_ext_prefetch_cache,
+                    plugin_user_context=_plugin_user_context,
+                )
+                if not self.quiet_mode:
+                    self._vprint(f"\n{self.log_prefix}🔄 Making API call #{api_call_count}/{self.max_iterations}...")
+                    self._vprint(f"{self.log_prefix}   📊 Request size: {len(api_messages)} messages, ~{approx_tokens:,} tokens (~{total_chars:,} chars)")
+                    self._vprint(f"{self.log_prefix}   🔧 Available tools: {len(self.tools) if self.tools else 0}")
+                else:
+                    # Animated thinking spinner in quiet mode
+                    face = random.choice(KawaiiSpinner.get_thinking_faces())
+                    verb = random.choice(KawaiiSpinner.get_thinking_verbs())
+                    if self.thinking_callback:
+                        # CLI TUI mode: use prompt_toolkit widget instead of raw spinner
+                        # (works in both streaming and non-streaming modes)
+                        self.thinking_callback(f"{face} {verb}...")
+                    elif not self._has_stream_consumers() and self._should_start_quiet_spinner():
+                        # Raw KawaiiSpinner only when no streaming consumers and the
+                        # spinner output has a safe sink.
+                        spinner_type = random.choice(['brain', 'sparkle', 'pulse', 'moon', 'star'])
+                        thinking_spinner = KawaiiSpinner(f"{face} {verb}...", spinner_type=spinner_type, print_fn=self._print_fn)
+                        thinking_spinner.start()
+
+                # Log request details if verbose
+                if self.verbose_logging:
+                    logging.debug(f"API Request - Model: {self.model}, Messages: {len(messages)}, Tools: {len(self.tools) if self.tools else 0}")
+                    logging.debug(f"Last message role: {messages[-1]['role'] if messages else 'none'}")
+                    logging.debug(f"Total message size: ~{approx_tokens:,} tokens")
                 # ── Nous Portal rate limit guard ──────────────────────
                 # If another session already recorded that Nous is rate-
                 # limited, skip the API call entirely.  Each attempt
