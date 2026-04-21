@@ -99,22 +99,40 @@ def sanitize_prompt_for_policy(prompt: str) -> str:
         "메시지": "unreadable study-app UI",
         "음성메시지": "unreadable study-app UI",
         "노트북 메모": "exam-prep props",
-        "강시윤": "male student",
-        "윤서하": "female student",
-        "한소라": "female student",
-        "조민우": "male senior student",
+        "강시윤": "college student",
+        "윤서하": "college student",
+        "한소라": "college student",
+        "조민우": "college senior",
         "시윤의 어머니": "middle-aged Korean woman",
-        "시윤": "male student",
-        "서하": "female student",
-        "소라": "female student",
-        "민우": "male senior student",
+        "시윤": "college student",
+        "서하": "college student",
+        "소라": "college student",
+        "민우": "college senior",
         "지방 국립대": "regional university",
         "대학": "campus",
+        "admissions-track transfer-prep student": "college student under exam pressure",
+        "contract-department scholarship student": "college student under scholarship pressure",
+        "male senior student": "college senior",
+        "male student": "college student",
+        "female student": "college student",
+        "grabbing his arm": "reaching toward his sleeve",
+        "hand grips his arm": "hand catches his sleeve",
+        "gets dragged into the public performance": "gets pulled into the public scene",
+        "public performance": "public scene",
+        "witness pressure": "crowd attention",
+        "public witness": "crowd attention",
+        "wounded disbelief": "hurt surprise",
+        "vulnerable resolve": "steady resolve",
     }
     sanitized = prompt
     for original, replacement in replacements.items():
         sanitized = sanitized.replace(original, replacement)
     sanitized = re.sub(r"\b\d+세\b", "college-age", sanitized)
+    sanitized = re.sub(r"public\s+campus\s+corridor", "campus corridor", sanitized)
+    sanitized = re.sub(r"scene characters [^,|]+", "scene characters college student pair", sanitized)
+    sanitized = re.sub(r"forbidden absences [^,|]+", "forbidden absences corridor depth and crowd cues", sanitized)
+    sanitized = sanitized.replace("must show heroine physically claiming him in public", "must show one student initiating public contact")
+    sanitized = sanitized.replace("protagonist frozen under witness pressure", "protagonist frozen under crowd attention")
     sanitized = re.sub(r"\s+", " ", sanitized).strip(" ,")
     return sanitized
 

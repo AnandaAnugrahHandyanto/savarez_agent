@@ -13,6 +13,10 @@ candidate_policy:
   - p02
   - p03
   - p04
+  - p05
+  - p06
+  - p07
+  - p08
   non_reviewed_panel_policy:
     review_status: not_reviewed_pilot_exception
     reason_template: pilot exception retained from pre-hardening live render; panel not yet rerendered with multi-candidate review

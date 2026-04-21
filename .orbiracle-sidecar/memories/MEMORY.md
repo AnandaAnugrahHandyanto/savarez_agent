@@ -15,3 +15,7 @@ For company-wiki, default toward Obsidian as the primary query surface: Dataview
 사용자 정정: Duct Tape는 아직 API가 공개되지 않았고 공식 출시 전 단계로 취급해야 한다. 웹툰 툴체인 제안 시 즉시 사용 가능한 공개 API처럼 전제하면 안 된다.
 §
 사용자가 '비둘기관리자' 문체로 글을 요청하면, 오르비 운영자 캐릭터 톤(구구, 공지/이벤트형 카피, CTA 포함)을 반영해 HTML 본문 중심으로 작성한다. 직접 게시가 아니라 붙여넣기용 HTML 초안 제공이 기본이다.
+§
+In the user's webtoon pipeline, end-to-end outputs should be treated as valid only when produced via live FAL generation; storyboard/fallback renders should not count as completion artifacts.
+§
+For this user's webtoon post-processing contract, speech balloons are tail-less across lanes; regressions should be prevented by tests rather than lane-specific behavior.

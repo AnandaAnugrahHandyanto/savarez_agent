@@ -670,7 +670,7 @@
     "session_key": "agent:main:slack:group:C0APZA7B1DH:1776750925.936589",
     "session_id": "20260421_055527_49457147",
     "created_at": "2026-04-21T05:55:27.499070",
-    "updated_at": "2026-04-21T08:28:58.263743",
+    "updated_at": "2026-04-21T09:26:43.639300",
     "display_name": "C0APZA7B1DH",
     "platform": "slack",
     "chat_type": "group",
@@ -679,7 +679,7 @@
     "cache_read_tokens": 0,
     "cache_write_tokens": 0,
     "total_tokens": 0,
-    "last_prompt_tokens": 310078,
+    "last_prompt_tokens": 367919,
     "estimated_cost_usd": 0.0,
     "cost_status": "unknown",
     "memory_flushed": false,
@@ -750,6 +750,35 @@
       "user_id": "U083T2U07HV",
       "user_name": "\ud5c8\uc608\ucc2c",
       "thread_id": "1776758505.306969",
+      "chat_topic": null
+    }
+  },
+  "agent:main:slack:group:C0APZA7B1DH:1776762410.533729": {
+    "session_key": "agent:main:slack:group:C0APZA7B1DH:1776762410.533729",
+    "session_id": "20260421_090652_df9a1f0b",
+    "created_at": "2026-04-21T09:06:52.000574",
+    "updated_at": "2026-04-21T09:17:25.745461",
+    "display_name": "C0APZA7B1DH",
+    "platform": "slack",
+    "chat_type": "group",
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cache_read_tokens": 0,
+    "cache_write_tokens": 0,
+    "total_tokens": 0,
+    "last_prompt_tokens": 44747,
+    "estimated_cost_usd": 0.0,
+    "cost_status": "unknown",
+    "memory_flushed": false,
+    "suspended": false,
+    "origin": {
+      "platform": "slack",
+      "chat_id": "C0APZA7B1DH",
+      "chat_name": "C0APZA7B1DH",
+      "chat_type": "group",
+      "user_id": "U083T2U07HV",
+      "user_name": "\ud5c8\uc608\ucc2c",
+      "thread_id": "1776762410.533729",
       "chat_topic": null
     }
   }
