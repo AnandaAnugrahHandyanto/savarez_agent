@@ -112,10 +112,16 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, req, t }: Clarify
       sel === choices.length ? setTyping(true) : choices[sel] && onAnswer(choices[sel]!)
     }
 
-    const n = parseInt(ch)
+    const n = parseInt(ch, 10)
 
     if (n >= 1 && n <= choices.length) {
       onAnswer(choices[n - 1]!)
+
+      return
+    }
+
+    if (n === choices.length + 1) {
+      setTyping(true)
     }
   })
 
@@ -149,7 +155,7 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, req, t }: Clarify
         </Text>
       ))}
 
-      <Text color={t.color.dim}>↑/↓ select · Enter confirm · 1-{choices.length} quick pick · Esc/Ctrl+C cancel</Text>
+      <Text color={t.color.dim}>↑/↓ select · Enter confirm · 1-{choices.length + 1} quick pick · Esc/Ctrl+C cancel</Text>
     </Box>
   )
 }
