@@ -776,6 +776,22 @@ class TestDetectVenvDir:
         assert result is None
 
 
+class TestServiceProjectRoot:
+    def test_prefers_active_venv_parent_over_transient_project_root(self, tmp_path, monkeypatch):
+        stable_root = tmp_path / "installed" / "hermes-agent"
+        (stable_root / "hermes_cli").mkdir(parents=True)
+        venv = stable_root / "venv"
+        venv.mkdir(parents=True)
+
+        monkeypatch.setattr("sys.prefix", str(venv))
+        monkeypatch.setattr("sys.base_prefix", "/usr")
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path / "tmp-worktree")
+
+        result = gateway_cli._service_project_root()
+
+        assert result == stable_root
+
+
 class TestSystemUnitHermesHome:
     """HERMES_HOME in system units must reference the target user, not root."""
 
@@ -1118,6 +1134,26 @@ class TestProfileArg:
         plist_path = gateway_cli.get_launchd_plist_path()
 
         assert plist_path == machine_home / "Library" / "LaunchAgents" / "ai.hermes.gateway-orcha.plist"
+
+    def test_launchd_plist_remaps_default_home_to_real_user_home(self, tmp_path, monkeypatch):
+        temp_home = tmp_path / "temp-home"
+        temp_home.mkdir()
+        temp_hermes_home = temp_home / ".hermes"
+        temp_hermes_home.mkdir()
+        machine_home = tmp_path / "machine-home"
+        machine_home.mkdir()
+        project = machine_home / ".hermes" / "hermes-agent"
+        project.mkdir(parents=True)
+
+        monkeypatch.setattr(Path, "home", lambda: temp_home)
+        monkeypatch.setenv("HERMES_HOME", str(temp_hermes_home))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: temp_hermes_home)
+        monkeypatch.setattr(gateway_cli, "_service_project_root", lambda: project)
+        monkeypatch.setattr(pwd, "getpwuid", lambda uid: SimpleNamespace(pw_dir=str(machine_home)))
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert f"<string>{machine_home / '.hermes'}</string>" in plist
 
 
 class TestRemapPathForUser:

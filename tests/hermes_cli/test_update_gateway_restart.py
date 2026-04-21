@@ -136,6 +136,12 @@ class TestLaunchdPlistPath:
         assert "<key>VIRTUAL_ENV</key>" in plist
         assert "<key>HERMES_HOME</key>" in plist
 
+    def test_plist_uses_keepalive_true(self):
+        plist = gateway_cli.generate_launchd_plist()
+        assert "<key>KeepAlive</key>" in plist
+        assert "<true/>" in plist
+        assert "SuccessfulExit" not in plist
+
     def test_plist_path_includes_venv_bin(self):
         plist = gateway_cli.generate_launchd_plist()
         detected = gateway_cli._detect_venv_dir()
@@ -614,6 +620,12 @@ class TestServicePidExclusion:
                 [SERVICE_PID] if not exclude_pids else
                 [p for p in [SERVICE_PID] if p not in exclude_pids]
             ),
+        ), patch("gateway.status.get_running_pid", return_value=12345), patch(
+            "hermes_cli.gateway.launchd_restart_for_update",
+            return_value={"ok": True, "checks": {}},
+        ), patch(
+            "hermes_cli.gateway.format_launchd_restart_report",
+            return_value=[],
         ), patch("os.kill") as mock_kill:
             cmd_update(mock_args)
 
@@ -700,6 +712,12 @@ class TestServicePidExclusion:
             gateway_cli, "_get_service_pids", return_value={SERVICE_PID}
         ), patch.object(
             gateway_cli, "find_gateway_pids", side_effect=fake_find,
+        ), patch("gateway.status.get_running_pid", return_value=12345), patch(
+            "hermes_cli.gateway.launchd_restart_for_update",
+            return_value={"ok": True, "checks": {}},
+        ), patch(
+            "hermes_cli.gateway.format_launchd_restart_report",
+            return_value=[],
         ), patch("os.kill") as mock_kill:
             cmd_update(mock_args)
 

@@ -749,6 +749,22 @@ def _detect_venv_dir() -> Path | None:
     return None
 
 
+def _service_project_root() -> Path:
+    """Return the stable project root to persist in service definitions.
+
+    Hermes updates and tests sometimes execute code from a temporary checkout
+    while still using the installed virtualenv. In that case ``PROJECT_ROOT``
+    points at a transient worktree, but the service should continue launching
+    from the installed repo next to the active venv.
+    """
+    venv = _detect_venv_dir()
+    if venv is not None:
+        candidate = venv.parent.resolve()
+        if (candidate / "hermes_cli").is_dir():
+            return candidate
+    return PROJECT_ROOT
+
+
 def get_python_path() -> str:
     venv = _detect_venv_dir()
     if venv is not None:
@@ -829,12 +845,13 @@ def _hermes_home_for_target_user(target_home_dir: str) -> str:
 
 
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
+    project_root = _service_project_root()
     python_path = get_python_path()
-    working_dir = str(PROJECT_ROOT)
+    working_dir = str(project_root)
     detected_venv = _detect_venv_dir()
-    venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
-    venv_bin = str(detected_venv / "bin") if detected_venv else str(PROJECT_ROOT / "venv" / "bin")
-    node_bin = str(PROJECT_ROOT / "node_modules" / ".bin")
+    venv_dir = str(detected_venv) if detected_venv else str(project_root / "venv")
+    venv_bin = str(detected_venv / "bin") if detected_venv else str(project_root / "venv" / "bin")
+    node_bin = str(project_root / "node_modules" / ".bin")
 
     path_entries = [venv_bin, node_bin]
     resolved_node = shutil.which("node")
@@ -1293,22 +1310,24 @@ def _launchd_domain() -> str:
 
 
 def generate_launchd_plist() -> str:
+    project_root = _service_project_root()
     python_path = get_python_path()
-    working_dir = str(PROJECT_ROOT)
-    hermes_home = str(get_hermes_home().resolve())
-    log_dir = get_hermes_home() / "logs"
+    working_dir = str(project_root)
+    current_hermes_home = get_hermes_home().resolve()
+    hermes_home = Path(_hermes_home_for_target_user(str(_launchd_user_home()))).resolve()
+    log_dir = hermes_home / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     label = get_launchd_label()
-    profile_arg = _profile_arg(hermes_home)
+    profile_arg = _profile_arg(str(current_hermes_home))
     # Build a sane PATH for the launchd plist.  launchd provides only a
     # minimal default (/usr/bin:/bin:/usr/sbin:/sbin) which misses Homebrew,
     # nvm, cargo, etc.  We prepend venv/bin and node_modules/.bin (matching
     # the systemd unit), then capture the user's full shell PATH so every
     # user-installed tool (node, ffmpeg, …) is reachable.
     detected_venv = _detect_venv_dir()
-    venv_bin = str(detected_venv / "bin") if detected_venv else str(PROJECT_ROOT / "venv" / "bin")
-    venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
-    node_bin = str(PROJECT_ROOT / "node_modules" / ".bin")
+    venv_bin = str(detected_venv / "bin") if detected_venv else str(project_root / "venv" / "bin")
+    venv_dir = str(detected_venv) if detected_venv else str(project_root / "venv")
+    node_bin = str(project_root / "node_modules" / ".bin")
     # Resolve the directory containing the node binary (e.g. Homebrew, nvm)
     # so it's explicitly in PATH even if the user's shell PATH changes later.
     priority_dirs = [venv_bin, node_bin]
@@ -1359,17 +1378,14 @@ def generate_launchd_plist() -> str:
         <key>VIRTUAL_ENV</key>
         <string>{venv_dir}</string>
         <key>HERMES_HOME</key>
-        <string>{hermes_home}</string>
+        <string>{str(hermes_home)}</string>
     </dict>
     
     <key>RunAtLoad</key>
     <true/>
     
     <key>KeepAlive</key>
-    <dict>
-        <key>SuccessfulExit</key>
-        <false/>
-    </dict>
+    <true/>
     
     <key>StandardOutPath</key>
     <string>{log_dir}/gateway.log</string>
@@ -1479,7 +1495,7 @@ def launchd_stop():
     target = f"{_launchd_domain()}/{label}"
     # bootout unloads the service definition so KeepAlive doesn't respawn
     # the process.  A plain `kill SIGTERM` only signals the process — launchd
-    # immediately restarts it because KeepAlive.SuccessfulExit = false.
+    # immediately restarts it because KeepAlive=true.
     # `hermes gateway start` re-bootstraps when it detects the job is unloaded.
     try:
         subprocess.run(["launchctl", "bootout", target], check=True, timeout=90)
