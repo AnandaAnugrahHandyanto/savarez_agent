@@ -8123,6 +8123,7 @@ class AIAgent:
                     question=function_args.get("question", ""),
                     choices=function_args.get("choices"),
                     callback=self.clarify_callback,
+                    session_key=getattr(self, '_gateway_session_key', None) or self.session_id,
                 )
                 tool_duration = time.time() - tool_start_time
                 if self._should_emit_quiet_tool_messages():
