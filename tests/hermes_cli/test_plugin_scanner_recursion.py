@@ -8,6 +8,7 @@ still opt-in; exclusive kind skipped; unknown kinds → standalone warning).
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any, Dict
 
@@ -157,6 +158,17 @@ class TestCategoryNamespaceRecursion:
 
 
 class TestKindField:
+    @pytest.fixture(autouse=True)
+    def _reset_plugins_logger(self):
+        """Let caplog see plugin warnings even after prior tests alter logging."""
+        plugins_logger = logging.getLogger("hermes_cli.plugins")
+        previous_level = plugins_logger.level
+        plugins_logger.setLevel(logging.NOTSET)
+        try:
+            yield
+        finally:
+            plugins_logger.setLevel(previous_level)
+
     def test_default_kind_is_standalone(self, tmp_path, monkeypatch):
         import os
         hermes_home = Path(os.environ["HERMES_HOME"])  # set by hermetic conftest fixture
@@ -196,7 +208,7 @@ class TestKindField:
         )
         _enable(hermes_home, "p1")
 
-        with caplog.at_level("WARNING"):
+        with caplog.at_level("WARNING", logger="hermes_cli.plugins"):
             mgr = PluginManager()
             mgr.discover_and_load()
 

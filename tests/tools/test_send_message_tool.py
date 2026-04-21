@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -22,6 +23,21 @@ from tools.send_message_tool import (
 
 def _run_async_immediately(coro):
     return asyncio.run(coro)
+
+
+@contextmanager
+def _session_env_context(values):
+    """Set gateway contextvars for this test and restore the previous state."""
+    from gateway.session_context import _VAR_MAP
+
+    tokens = []
+    try:
+        for name, value in values.items():
+            tokens.append((name, _VAR_MAP[name].set(value)))
+        yield
+    finally:
+        for name, token in reversed(tokens):
+            _VAR_MAP[name].reset(token)
 
 
 def _make_config():
@@ -78,6 +94,11 @@ class TestSendMessageTool:
             },
             clear=False,
         ), \
+             _session_env_context({
+                 "HERMES_CRON_AUTO_DELIVER_PLATFORM": "telegram",
+                 "HERMES_CRON_AUTO_DELIVER_CHAT_ID": "-1001",
+                 "HERMES_CRON_AUTO_DELIVER_THREAD_ID": "",
+             }), \
              patch("gateway.config.load_gateway_config", return_value=config), \
              patch("tools.interrupt.is_interrupted", return_value=False), \
              patch("model_tools._run_async", side_effect=_run_async_immediately), \

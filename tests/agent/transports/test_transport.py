@@ -1,6 +1,7 @@
 """Tests for the transport ABC, registry, and AnthropicTransport."""
 
 import pytest
+import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -53,6 +54,26 @@ class TestTransportRegistry:
 
     def test_get_unregistered_returns_none(self):
         assert get_transport("nonexistent_mode") is None
+
+    def test_get_transport_discovers_missing_mode_from_partial_registry(self):
+        import agent.transports as transports
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        saved_registry = dict(_REGISTRY)
+        saved_anthropic_module = sys.modules.pop("agent.transports.anthropic", None)
+        try:
+            _REGISTRY.clear()
+            _REGISTRY["chat_completions"] = ChatCompletionsTransport
+
+            t = transports.get_transport("anthropic_messages")
+
+            assert t is not None
+            assert t.api_mode == "anthropic_messages"
+        finally:
+            _REGISTRY.clear()
+            _REGISTRY.update(saved_registry)
+            if saved_anthropic_module is not None:
+                sys.modules["agent.transports.anthropic"] = saved_anthropic_module
 
     def test_anthropic_registered_on_import(self):
         import agent.transports.anthropic  # noqa: F401

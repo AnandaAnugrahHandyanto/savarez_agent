@@ -296,7 +296,7 @@ class ChatCompletionsTransport(ProviderTransport):
         """
         choice = response.choices[0]
         msg = choice.message
-        finish_reason = choice.finish_reason or "stop"
+        finish_reason = getattr(choice, "finish_reason", None) or "stop"
 
         tool_calls = None
         if msg.tool_calls:
@@ -318,7 +318,7 @@ class ChatCompletionsTransport(ProviderTransport):
                             pass
                     tc_provider_data["extra_content"] = extra
                 tool_calls.append(ToolCall(
-                    id=tc.id,
+                    id=getattr(tc, "id", None) or f"call_{len(tool_calls)}",
                     name=tc.function.name,
                     arguments=tc.function.arguments,
                     provider_data=tc_provider_data or None,

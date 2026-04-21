@@ -2039,7 +2039,7 @@ class AIAgent:
         new_norm = (new_provider or "").strip().lower()
         if old_norm and new_norm and old_norm != new_norm:
             self._fallback_chain = [
-                entry for entry in self._fallback_chain
+                entry for entry in getattr(self, "_fallback_chain", [])
                 if (entry.get("provider") or "").strip().lower() not in {old_norm, new_norm}
             ]
             self._fallback_model = self._fallback_chain[0] if self._fallback_chain else None
@@ -2322,7 +2322,9 @@ class AIAgent:
         passed as a per-call ``timeout=`` kwarg, overriding the client-level
         timeout the AIAgent.__init__ path configured.
         """
-        cfg = get_provider_request_timeout(self.provider, self.model)
+        provider = getattr(self, "provider", "")
+        model = getattr(self, "model", "")
+        cfg = get_provider_request_timeout(provider, model)
         if cfg is not None:
             return cfg
         return float(os.getenv("HERMES_API_TIMEOUT", 1800.0))
@@ -2341,7 +2343,9 @@ class AIAgent:
         explicitly configured a stale timeout, such as auto-disabling the
         detector for local endpoints.
         """
-        cfg = get_provider_stale_timeout(self.provider, self.model)
+        provider = getattr(self, "provider", "")
+        model = getattr(self, "model", "")
+        cfg = get_provider_stale_timeout(provider, model)
         if cfg is not None:
             return cfg, False
 
@@ -2354,7 +2358,7 @@ class AIAgent:
     def _compute_non_stream_stale_timeout(self, messages: list[dict[str, Any]]) -> float:
         """Compute the effective non-stream stale timeout for this request."""
         stale_base, uses_implicit_default = self._resolved_api_call_stale_timeout_base()
-        base_url = getattr(self, "_base_url", None) or self.base_url or ""
+        base_url = getattr(self, "_base_url", "") or ""
         if uses_implicit_default and base_url and is_local_endpoint(base_url):
             return float("inf")
 
@@ -3964,13 +3968,15 @@ class AIAgent:
 
         # 2. Clean terminal sandbox environments
         try:
-            cleanup_vm(task_id)
+            from tools import terminal_tool as _terminal_tool
+            _terminal_tool.cleanup_vm(task_id)
         except Exception:
             pass
 
         # 3. Clean browser daemon sessions
         try:
-            cleanup_browser(task_id)
+            from tools import browser_tool as _browser_tool
+            _browser_tool.cleanup_browser(task_id)
         except Exception:
             pass
 
