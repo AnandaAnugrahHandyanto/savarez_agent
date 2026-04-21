@@ -468,3 +468,41 @@ async def test_discord_voice_linked_parent_thread_still_requires_mention(adapter
     await adapter._handle_message(message)
 
     adapter.handle_message.assert_not_awaited()
+
+
+class TestDiscordEnvPrecedenceOverConfig:
+    """Regression for gh-13685: env var must win over config.yaml, matching
+    the documented precedence for the discord channel."""
+
+    def test_env_require_mention_overrides_config_true(self, adapter, monkeypatch):
+        monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+        adapter.config.extra["require_mention"] = True
+        assert adapter._discord_require_mention() is False
+
+    def test_env_require_mention_overrides_config_false(self, adapter, monkeypatch):
+        monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+        adapter.config.extra["require_mention"] = False
+        assert adapter._discord_require_mention() is True
+
+    def test_config_require_mention_used_when_env_unset(self, adapter, monkeypatch):
+        monkeypatch.delenv("DISCORD_REQUIRE_MENTION", raising=False)
+        adapter.config.extra["require_mention"] = False
+        assert adapter._discord_require_mention() is False
+
+    def test_default_require_mention_when_neither_set(self, adapter, monkeypatch):
+        monkeypatch.delenv("DISCORD_REQUIRE_MENTION", raising=False)
+        adapter.config.extra.pop("require_mention", None)
+        assert adapter._discord_require_mention() is True
+
+    def test_env_free_response_channels_overrides_config(self, adapter, monkeypatch):
+        monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "111,222")
+        adapter.config.extra["free_response_channels"] = ["999"]
+        assert adapter._discord_free_response_channels() == {"111", "222"}
+
+    def test_empty_env_free_response_channels_falls_through_to_config(self, adapter, monkeypatch):
+        # Empty env value should not mask a non-empty config list — otherwise
+        # unset vs. empty becomes indistinguishable. Treat empty string as
+        # "env not actively set" and fall through to config.yaml.
+        monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
+        adapter.config.extra["free_response_channels"] = ["555"]
+        assert adapter._discord_free_response_channels() == {"555"}

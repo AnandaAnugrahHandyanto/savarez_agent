@@ -2478,19 +2478,34 @@ class DiscordAdapter(BasePlatformAdapter):
         return resolve_channel_prompt(self.config.extra, channel_id, parent_id)
 
     def _discord_require_mention(self) -> bool:
-        """Return whether Discord channel messages require a bot mention."""
+        """Return whether Discord channel messages require a bot mention.
+
+        Precedence matches the documented contract for the discord channel
+        (config.yaml applied as defaults; the equivalent env var wins when
+        set): DISCORD_REQUIRE_MENTION > config.yaml require_mention > default
+        True. (#13685)
+        """
+        env_value = os.getenv("DISCORD_REQUIRE_MENTION")
+        if env_value is not None:
+            return env_value.lower() not in ("false", "0", "no", "off")
         configured = self.config.extra.get("require_mention")
         if configured is not None:
             if isinstance(configured, str):
                 return configured.lower() not in ("false", "0", "no", "off")
             return bool(configured)
-        return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no", "off")
+        return True
 
     def _discord_free_response_channels(self) -> set:
-        """Return Discord channel IDs where no bot mention is required."""
-        raw = self.config.extra.get("free_response_channels")
-        if raw is None:
-            raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
+        """Return Discord channel IDs where no bot mention is required.
+
+        Precedence matches the documented contract (env wins over
+        config.yaml). (#13685)
+        """
+        env_value = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS")
+        if env_value is not None and env_value.strip():
+            raw: Any = env_value
+        else:
+            raw = self.config.extra.get("free_response_channels")
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         if isinstance(raw, str) and raw.strip():
