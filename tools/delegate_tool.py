@@ -27,6 +27,13 @@ from typing import Any, Dict, List, Optional
 
 from toolsets import TOOLSETS
 
+# Ensure .env is loaded so subagents have access to provider API keys
+from hermes_cli.env_loader import load_hermes_dotenv
+from pathlib import Path
+_hermes_home = Path.home() / ".hermes"
+_project_env = Path(__file__).parent / ".env"
+load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
+
 
 # Tools that children must never have access to
 DELEGATE_BLOCKED_TOOLS = frozenset([
