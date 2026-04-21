@@ -109,7 +109,7 @@ class TestAgentCloseMethod:
             agent._active_children_lock = threading.Lock()
             agent.client = None
 
-            with patch("run_agent.process_registry") as mock_registry, \
+            with patch("tools.process_registry.process_registry") as mock_registry, \
                  patch("run_agent.cleanup_vm") as mock_cleanup_vm, \
                  patch("run_agent.cleanup_browser") as mock_cleanup_browser:
                 agent.close()
@@ -170,7 +170,7 @@ class TestAgentCloseMethod:
             agent.client = None
 
             with patch(
-                "run_agent.process_registry"
+                "tools.process_registry.process_registry"
             ) as mock_reg, patch(
                 "run_agent.cleanup_vm"
             ) as mock_vm, patch(
