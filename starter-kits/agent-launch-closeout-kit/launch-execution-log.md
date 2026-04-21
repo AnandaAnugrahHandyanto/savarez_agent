@@ -1,0 +1,57 @@
+# Launch Execution Log — Agent Launch Closeout Kit
+
+## Purpose
+Track launch execution separately from product proof so the operator can close the final mile without reopening scope.
+
+## Product proof anchor
+- Product: `starter-kits/agentic-cron-orchestration-kit/`
+- Ship line: starter-workflow claim only
+- Proof artifact: `starter-kits/agentic-cron-orchestration-kit/qa/clean-room-proof-run-2026-04-17.md`
+- Proof command / reference: `bash starter-kits/agentic-cron-orchestration-kit/scripts/preflight.sh`
+- Key metric: fresh-context proof recorded at **1.74 minutes**
+- Hidden setup contract to disclose: inject the exact note paths and workspace path into the prompt templates before claiming a fresh-context run.
+
+## Launch thread
+- Status: pending publish
+- Source file: `starter-kits/agentic-cron-orchestration-kit/launch/launch-thread.md`
+- Publish runbook: `starter-kits/agent-launch-closeout-kit/publish-runbook.md`
+- Primary attachment: short walkthrough cut using `starter-kits/agentic-cron-orchestration-kit/launch/demo-captions.srt`
+- Fallback attachment: proof-artifact still showing **1.74 minutes**
+- Record after publish:
+  - URL:
+  - Timestamp:
+  - Attachment used:
+  - Notes:
+
+## Demo walkthrough
+- Status: pending capture
+- Source files:
+  - `starter-kits/agentic-cron-orchestration-kit/launch/demo-outline.md`
+  - `starter-kits/agent-launch-closeout-kit/demo-capture-runbook.md`
+  - `starter-kits/agentic-cron-orchestration-kit/launch/demo-captions.srt`
+- Done criteria:
+  - `Preflight OK` visible
+  - path-injection requirement shown explicitly
+  - proof artifact with **1.74 minutes** shown explicitly
+  - note/checklist outcome shown explicitly
+- Record after capture:
+  - Recording path:
+  - Duration:
+  - Edited asset path:
+  - Posted URL (if published):
+  - Notes:
+
+## Cross-note closeout
+- [ ] Launch thread posted
+- [ ] Publish URL + timestamp recorded here and in weekly notes
+- [ ] Demo walkthrough captured
+- [ ] Final attachment choice recorded here
+- [ ] Weekly factory note updated with launch execution result
+- [ ] Pipeline note updated with launch execution result
+- [ ] CEO note updated with launch execution result
+- [ ] Ship checklist updated with launch execution result
+
+## Next move
+1. Publish the launch thread against the proved starter-workflow line.
+2. If demo capture is still not ready, attach the proof-artifact still and do not delay publish.
+3. Capture the walkthrough immediately after posting and log the asset path here.
