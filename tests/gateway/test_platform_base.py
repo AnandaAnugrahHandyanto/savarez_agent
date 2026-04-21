@@ -3,11 +3,15 @@
 import os
 from unittest.mock import patch
 
+import pytest
+
 from gateway.platforms.base import (
     BasePlatformAdapter,
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
     MessageEvent,
     MessageType,
+    cache_audio_from_bytes,
+    cache_image_from_bytes,
     safe_url_for_log,
     utf16_len,
     _prefix_within_utf16_limit,
@@ -44,6 +48,21 @@ class TestSafeUrlForLog:
         assert safe_url_for_log(url, max_len=3) == "..."
         assert safe_url_for_log(url, max_len=2) == ".."
         assert safe_url_for_log(url, max_len=0) == ""
+
+
+class TestInboundMediaCaps:
+    def test_cache_image_from_bytes_rejects_oversized_payload(self, monkeypatch):
+        monkeypatch.setenv("HERMES_MAX_INBOUND_MEDIA_BYTES", "12")
+        png_bytes = b"\x89PNG\r\n\x1a\n" + (b"x" * 16)
+
+        with pytest.raises(ValueError, match="Inbound image payload is too large"):
+            cache_image_from_bytes(png_bytes, ext=".png")
+
+    def test_cache_audio_from_bytes_rejects_oversized_payload(self, monkeypatch):
+        monkeypatch.setenv("HERMES_MAX_INBOUND_MEDIA_BYTES", "4")
+
+        with pytest.raises(ValueError, match="Inbound audio payload is too large"):
+            cache_audio_from_bytes(b"x" * 8, ext=".ogg")
 
 
 # ---------------------------------------------------------------------------
@@ -581,4 +600,3 @@ class TestTruncateMessageUtf16:
             assert fence_count % 2 == 0, (
                 f"Chunk {i} has unbalanced fences ({fence_count})"
             )
-

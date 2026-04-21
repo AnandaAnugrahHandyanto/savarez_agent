@@ -383,3 +383,23 @@ class TestIncomingDocumentHandling:
         assert event.message_type == MessageType.PHOTO
         assert event.media_urls == ["/tmp/cached_image.png"]
         assert event.media_types == ["image/png"]
+
+    @pytest.mark.asyncio
+    async def test_oversized_image_attachment_skips_authenticated_read(self, adapter, monkeypatch):
+        """Known oversized image attachments should not be read into memory."""
+        monkeypatch.setenv("HERMES_MAX_INBOUND_MEDIA_BYTES", "100")
+        att = make_attachment(
+            filename="huge.png",
+            content_type="image/png",
+            size=101,
+            url="https://cdn.discordapp.com/attachments/fake/huge.png",
+        )
+        att.read = AsyncMock(return_value=b"\x89PNG\r\n\x1a\n")
+
+        msg = make_message([att])
+        await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_urls == [att.url]
+        att.read.assert_not_called()
