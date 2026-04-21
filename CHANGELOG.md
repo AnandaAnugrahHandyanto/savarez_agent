@@ -4,6 +4,80 @@
 
 ---
 
+## 2026-04-21 - 同步上游最新变更 (v2026.4.21) 🚀
+
+### 🎨 TUI 改进
+- **剪贴板和快捷键改进**：
+  - 修复 macOS 上的 Ctrl+C 回归问题，移除双重剪贴板写入
+  - 在 macOS 上使用 pbcopy 进行复制操作
+  - 在 macOS 输入字段中启用剪贴板快捷键
+  - 在 clarify 模式下恢复剪贴板快捷键
+  - 在 macOS 上使用 Command 快捷键
+  - 启用右键粘贴功能
+- **时间显示改进**：
+  - 在会话总时长旁边显示距上次用户消息的时间
+  - 将上次消息时间从状态栏移至提示右侧
+  - 改进 elapsed 计时器，仅在 FaceTicker 中显示
+- **性能优化**：
+  - 重构内存和 resize 助手，清理传递
+  - debounce resize RPC + column-aware useVirtualHistory
+  - 修复 Node V8 OOM + GatewayClient 内存泄漏
+- **显示修复**：
+  - 将 MEDIA: 渲染为可点击的文件芯片，移除音频指令
+  - 修复 markdown 中单词内下划线的斜体显示
+  - 使 "/tools list" 显示真实颜色而非 "?[32m" 等
+  - 自动展开错误时的 Activity
+- **主题和横幅**：
+  - 通过主题路由 update-behind 横幅，自动检测连字支持
+
+### 🔧 模型和提供商改进
+- **新增 Kimi-K2.6 模型**：
+  - 在 HuggingFace provider 添加 moonshotai/Kimi-K2.6
+  - 在 kimi-coding、kimi-coding-cn 和 moonshot provider 添加 kimi-k2.6
+  - 在 OpenRouter 和 Nous Portal 用 kimi-k2.6 替换 kimi-k2.5
+- **Kimi 模型修复**：
+  - 为 Kimi/Moonshot 模型完全省略 temperature 参数
+- **新适配器**：
+  - 提取 codex_responses 逻辑到专用适配器
+  - 添加 Gemini 原生适配器支持
+
+### 📱 平台改进
+- **Signal**：添加媒体投递支持
+- **WhatsApp**：添加与 WeCom/WeiXin 相同的 dm_policy 和 group_policy 对等性
+- **Telegram**：
+  - 在 MarkdownV2 链接中正确处理括号
+  - 为 DM topics 添加可操作的错误提示（Topics 模式未启用时）
+  - 缓存入站视频并接受 mp4 上传
+- **Discord**：在频道中正确处理 /slash 命令
+- **插件系统**：
+  - 在 Telegram 菜单中发布插件斜杠命令
+  - 在 config.yaml 中启用插件以进行延迟发现测试
+
+### 🔐 安全改进
+- **上下文压缩**：从上下文压缩输入和输出中编辑敏感信息
+- **文件工具**：为工作目录解析相对路径（TERMINAL_CWD）
+
+### ⚙️ Cron 和调度改进
+- **并行作业执行**：运行到期作业以防止串行 tick 饥饿
+- **修复清理孤立的云浏览器守护进程**
+
+### 🐛 其他修复
+- **Gateway**：使用持久化的会话来源进行关闭通知
+- **Agent**：在 API 发送前修复格式错误的 tool_call 参数
+- **Compression**：从压缩触发器中排除完成令牌
+- **Session Search**：当消息 id 为空时恢复同会话上下文
+- **Steer**：在每次 API 调用前排空 pending steer（而不仅仅是之后）
+- **Install**：对带空格的路径引用 PYTHON_PATH 和 UV_CMD
+- **Model Switch**：在 Section 3 中为 custom: slug 注册 seen_slugs
+
+### 🔨 CI/CD 改进
+- **Nix 支持**：
+  - 自动 lockfile 修复以保持 main 在 nix 上构建
+  - 在所有 lockfile 更改上运行 CI
+  - 添加 nix-lockfile-check 和 nix-lockfile-fix 工作流
+
+---
+
 ## 2026-04-19 - 同步上游最新变更 (v2026.4.19) 🚀
 
 ### 🔧 核心修复

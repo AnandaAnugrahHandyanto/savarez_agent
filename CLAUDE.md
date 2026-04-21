@@ -1,6 +1,6 @@
 # Hermes Agent - AI 上下文文档
 
-> 更新时间：2026-04-19 | 当前版本：v2026.4.19 | 上游版本：v2026.4.19
+> 更新时间：2026-04-21 | 当前版本：v2026.4.21 | 上游版本：v2026.4.21 | 本地修改：zai-coding-cn provider
 
 ## 项目愿景
 
@@ -539,6 +539,68 @@ run_agent.py, cli.py, batch_runner.py, environments/
 - **思考标签处理**：Hermes 会自动从 assistant 内容中移除 `<thinking>`、`<thought>`、`<reasoning>` 等标签，防止它们泄漏到消息平台、会话转录和上下文压缩中
 - **Codex 认证**：Hermes 拥有独立的 Codex 认证状态，不再与 Codex CLI 共享 `~/.codex/auth.json`
 - **Cron 任务安全**：默认情况下，cron 任务中的危险命令会被阻止（`approvals.cron_mode: deny`），需要 agent 寻找替代方案
+
+## 本地修改 (Local Modifications)
+
+本版本相对于上游 [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) 包含以下本地修改：
+
+### Z.AI China Coding Plan Provider 🇨🇳
+
+**功能**：为 Z.AI 添加中国 Coding Plan 端点支持，优先使用更便宜的 Coding Plan API
+
+**修改内容**：
+
+1. **新增 Provider** (`hermes_cli/auth.py:167-172`)
+   ```python
+   "zai-coding-cn": ProviderConfig(
+       id="zai-coding-cn",
+       name="Z.AI / GLM (China Coding Plan)",
+       auth_type="api_key",
+       inference_base_url="https://open.bigmodel.cn/api/coding/paas/v4",
+       api_key_env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
+       base_url_env_var="GLM_BASE_URL",
+   )
+   ```
+
+2. **端点检测优先级** (`hermes_cli/auth.py:440-444`)
+   ```python
+   ZAI_ENDPOINTS = [
+       # 优先尝试 Coding Plan 端点（更便宜）
+       ("coding-cn",     "https://open.bigmodel.cn/api/coding/paas/v4", ...),
+       ("coding-global", "https://api.z.ai/api/coding/paas/v4",  ...),
+       # 然后尝试普通端点
+       ("cn",            "https://open.bigmodel.cn/api/paas/v4", ...),
+       ("global",        "https://api.z.ai/api/paas/v4",        ...),
+   ]
+   ```
+
+3. **模型别名** (`hermes_cli/models.py:593-595`)
+   ```python
+   "glm-cn": "zai-coding-cn",
+   "zai-cn": "zai-coding-cn",
+   "zhipu-cn": "zai-coding-cn",
+   ```
+
+4. **URL 解析优先级**：配置文件 > 自动检测 > 环境变量
+
+**使用方法**：
+```bash
+# 使用环境变量
+export GLM_API_KEY="your-api-key"
+hermes model zai-coding-cn
+
+# 或在配置文件中设置
+hermes config set provider zai-coding-cn
+```
+
+**提交信息**：
+- 提交：`29da0316` feat(zai): add China Coding Plan provider and fix endpoint priority
+- 日期：2026-04-17
+
+**优势**：
+- 💰 **更便宜**：Coding Plan 端点通常比普通端点便宜 50%
+- 🚀 **更快速**：专门针对代码生成优化的端点
+- 🎯 **更准确**：针对编程任务优化的模型
 
 ## 相关资源
 
