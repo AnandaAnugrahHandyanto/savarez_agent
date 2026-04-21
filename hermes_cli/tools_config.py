@@ -200,6 +200,13 @@ TOOL_CATEGORIES = {
                 "override_env_vars": ["FIRECRAWL_API_KEY", "FIRECRAWL_API_URL"],
             },
             {
+                "name": "Google Gemini",
+                "badge": "free · no extra key",
+                "tag": "Google Search grounding via Gemini API — uses your existing GOOGLE_API_KEY",
+                "web_backend": "gemini",
+                "env_vars": [],
+            },
+            {
                 "name": "Firecrawl Cloud",
                 "badge": "★ recommended",
                 "tag": "Full-featured search, extract, and crawl",

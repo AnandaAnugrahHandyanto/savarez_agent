@@ -88,13 +88,14 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa"):
+    if configured in ("parallel", "firecrawl", "tavily", "exa", "gemini"):
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
     # available backend. Firecrawl also counts as available when the managed
     # tool gateway is configured for Nous subscribers.
     backend_candidates = (
+        ("gemini", _has_env("GOOGLE_API_KEY") or _has_env("GEMINI_API_KEY")),
         ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL") or _is_tool_gateway_ready()),
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("tavily", _has_env("TAVILY_API_KEY")),
@@ -109,6 +110,8 @@ def _get_backend() -> str:
 
 def _is_backend_available(backend: str) -> bool:
     """Return True when the selected backend is currently usable."""
+    if backend == "gemini":
+        return _has_env("GOOGLE_API_KEY") or _has_env("GEMINI_API_KEY")
     if backend == "exa":
         return _has_env("EXA_API_KEY")
     if backend == "parallel":
@@ -118,6 +121,75 @@ def _is_backend_available(backend: str) -> bool:
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
     return False
+
+# ─── Gemini Search (Google Search Grounding) ────────────────────────────────
+
+def _gemini_search(query: str, limit: int = 5) -> dict:
+    """Search the web using Gemini's native google_search grounding tool.
+
+    Uses the Gemini API's built-in Google Search capability — no third-party
+    search API key needed.  Only requires GOOGLE_API_KEY or GEMINI_API_KEY
+    (the same key used for the LLM provider).
+
+    Returns results in the same normalized format as other backends.
+    """
+    import httpx
+
+    api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY") or ""
+    if not api_key:
+        return {"success": False, "data": {"web": []}, "error": "No GOOGLE_API_KEY or GEMINI_API_KEY set"}
+
+    # Use gemini-2.5-flash for search — fast and cheap
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+
+    body = {
+        "contents": [{"parts": [{"text": query}]}],
+        "tools": [{"google_search": {}}],
+    }
+
+    try:
+        resp = httpx.post(url, json=body, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:
+        logger.warning("Gemini search failed: %s", exc)
+        return {"success": False, "data": {"web": []}, "error": str(exc)}
+
+    # Extract grounding chunks as web results
+    candidates = data.get("candidates", [])
+    if not candidates:
+        return {"success": True, "data": {"web": []}}
+
+    grounding = candidates[0].get("groundingMetadata", {})
+    chunks = grounding.get("groundingChunks", [])
+
+    web_results = []
+    for i, chunk in enumerate(chunks[:limit]):
+        web_info = chunk.get("web", {})
+        web_results.append({
+            "title": web_info.get("title", ""),
+            "url": web_info.get("uri", ""),
+            "description": "",  # grounding chunks don't include snippets
+            "position": i + 1,
+        })
+
+    # Also capture the grounded answer text as a special first result
+    answer_text = ""
+    parts = candidates[0].get("content", {}).get("parts", [])
+    if parts:
+        answer_text = parts[0].get("text", "")
+
+    if answer_text and web_results:
+        # Prepend the grounded answer as a summary entry
+        web_results.insert(0, {
+            "title": "Gemini Grounded Answer",
+            "url": "",
+            "description": answer_text[:500],
+            "position": 0,
+        })
+
+    return {"success": True, "data": {"web": web_results}}
+
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
 
@@ -1084,6 +1156,15 @@ def web_search_tool(query: str, limit: int = 5) -> str:
 
         # Dispatch to the configured backend
         backend = _get_backend()
+        if backend == "gemini":
+            response_data = _gemini_search(query, limit)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
         if backend == "parallel":
             response_data = _parallel_search(query, limit)
             debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
@@ -1971,7 +2052,7 @@ if __name__ == "__main__":
     else:
         print("❌ No web search backend configured")
         print(
-            "Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
+            "Set GOOGLE_API_KEY (Gemini grounding), EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
             f"{_firecrawl_backend_help_suffix()}"
         )
 
