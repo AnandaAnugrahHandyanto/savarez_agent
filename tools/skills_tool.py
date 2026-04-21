@@ -1189,6 +1189,13 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         skill_name = frontmatter.get(
             "name", skill_md.stem if not skill_dir else skill_dir.name
         )
+        available_skill_names = {s["name"] for s in _find_all_skills()}
+        related_skills_available = [
+            rs for rs in related_skills if rs in available_skill_names and rs != skill_name
+        ]
+        related_skills_missing = [
+            rs for rs in related_skills if rs not in available_skill_names
+        ]
         legacy_env_vars, _ = _collect_prerequisite_values(frontmatter)
         required_env_vars = _get_required_environment_variables(
             frontmatter, legacy_env_vars
@@ -1261,6 +1268,8 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
             "description": frontmatter.get("description", ""),
             "tags": tags,
             "related_skills": related_skills,
+            "related_skills_available": related_skills_available,
+            "related_skills_missing": related_skills_missing,
             "content": content,
             "path": rel_path,
             "skill_dir": str(skill_dir) if skill_dir else None,

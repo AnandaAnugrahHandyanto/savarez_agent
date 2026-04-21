@@ -354,6 +354,20 @@ class TestSkillView:
         assert "fine-tuning" in result["tags"]
         assert "llm" in result["tags"]
 
+    def test_view_related_skills_split_by_availability(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "reuse-helper")
+            _make_skill(
+                tmp_path,
+                "tagged",
+                frontmatter_extra="related_skills: [reuse-helper, missing-helper]\n",
+            )
+            raw = skill_view("tagged")
+        result = json.loads(raw)
+        assert result["related_skills"] == ["reuse-helper", "missing-helper"]
+        assert result["related_skills_available"] == ["reuse-helper"]
+        assert result["related_skills_missing"] == ["missing-helper"]
+
     def test_view_nonexistent_skills_dir(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "nope"):
             raw = skill_view("anything")

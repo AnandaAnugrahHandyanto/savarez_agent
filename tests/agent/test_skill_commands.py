@@ -372,6 +372,22 @@ Generate some audio.
         assert msg is not None
         assert 'file_path="<path>"' in msg
 
+    def test_includes_related_skill_hints(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "reuse-helper")
+            _make_skill(
+                tmp_path,
+                "test-skill",
+                frontmatter_extra="related_skills: [reuse-helper, missing-helper]\n",
+            )
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/test-skill", "do stuff")
+
+        assert msg is not None
+        assert "Related skills that may be relevant for this task" in msg
+        assert 'skill_view(name="reuse-helper")' in msg
+        assert "missing-helper" in msg
+
 
 class TestPlanSkillHelpers:
     def test_build_plan_path_uses_workspace_relative_dir_and_slugifies_request(self):
