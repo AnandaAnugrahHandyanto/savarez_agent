@@ -138,6 +138,7 @@ class HermesAgentLoop:
         max_turns: int = 30,
         task_id: Optional[str] = None,
         temperature: float = 1.0,
+        top_p: Optional[float] = None,
         max_tokens: Optional[int] = None,
         extra_body: Optional[Dict[str, Any]] = None,
         budget_config: Optional["BudgetConfig"] = None,
@@ -153,6 +154,7 @@ class HermesAgentLoop:
             max_turns: Maximum number of LLM calls before stopping
             task_id: Unique ID for terminal/browser session isolation
             temperature: Sampling temperature for generation
+            top_p: Nucleus sampling top_p (None = omit, use provider default)
             max_tokens: Max tokens per generation (None for server default)
             extra_body: Extra parameters passed to the OpenAI client's create() call.
                         Used for OpenRouter provider preferences, transforms, etc.
@@ -168,6 +170,7 @@ class HermesAgentLoop:
         self.max_turns = max_turns
         self.task_id = task_id or str(uuid.uuid4())
         self.temperature = temperature
+        self.top_p = top_p
         self.max_tokens = max_tokens
         self.extra_body = extra_body
         self.budget_config = budget_config or DEFAULT_BUDGET
@@ -211,6 +214,9 @@ class HermesAgentLoop:
                 "temperature": self.temperature,
             }
 
+            if self.top_p is not None:
+                chat_kwargs["top_p"] = self.top_p
+
             # Only pass tools if we have them
             if self.tool_schemas:
                 chat_kwargs["tools"] = self.tool_schemas
@@ -225,20 +231,35 @@ class HermesAgentLoop:
                 chat_kwargs["extra_body"] = self.extra_body
 
             # Make the API call -- standard OpenAI spec
+            # Retry on timeout/connection errors (provider queuing, rate limits)
             api_start = _time.monotonic()
-            try:
-                response = await self.server.chat_completion(**chat_kwargs)
-            except Exception as e:
-                api_elapsed = _time.monotonic() - api_start
-                logger.error("API call failed on turn %d (%.1fs): %s", turn + 1, api_elapsed, e)
-                return AgentResult(
-                    messages=messages,
-                    managed_state=self._get_managed_state(),
-                    turns_used=turn + 1,
-                    finished_naturally=False,
-                    reasoning_per_turn=reasoning_per_turn,
-                    tool_errors=tool_errors,
-                )
+            response = None
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    response = await self.server.chat_completion(**chat_kwargs)
+                    break
+                except Exception as e:
+                    api_elapsed = _time.monotonic() - api_start
+                    is_retryable = "timeout" in type(e).__name__.lower() or "connection" in type(e).__name__.lower()
+                    if is_retryable and attempt < max_retries - 1:
+                        wait = 2 ** attempt
+                        logger.warning(
+                            "[%s] API call timed out on turn %d attempt %d (%.1fs), retrying in %ds: %s",
+                            self.task_id[:8], turn + 1, attempt + 1, api_elapsed, wait, e,
+                        )
+                        await asyncio.sleep(wait)
+                        api_start = _time.monotonic()
+                        continue
+                    logger.error("API call failed on turn %d (%.1fs): %s", turn + 1, api_elapsed, e)
+                    return AgentResult(
+                        messages=messages,
+                        managed_state=self._get_managed_state(),
+                        turns_used=turn + 1,
+                        finished_naturally=False,
+                        reasoning_per_turn=reasoning_per_turn,
+                        tool_errors=tool_errors,
+                    )
 
             api_elapsed = _time.monotonic() - api_start
 

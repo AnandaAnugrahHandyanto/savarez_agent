@@ -15,15 +15,15 @@
 
 env:
   enabled_toolsets: ["terminal", "file"]
-  max_agent_turns: 60
+  max_agent_turns: 100
   max_token_length: 32000
-  agent_temperature: 0.8
+  agent_temperature: 1.0
   terminal_backend: "modal"
-  terminal_timeout: 300        # 5 min per command (builds, pip install)
-  tool_pool_size: 128          # thread pool for 89 parallel tasks
-  dataset_name: "NousResearch/terminal-bench-2"
+  terminal_timeout: 300 # 5 min per command (builds, pip install)
+  tool_pool_size: 128 # thread pool for 89 parallel tasks
+  dataset_name: "NousResearch/terminal-bench-2-verified-flattened"
   test_timeout: 600
-  task_timeout: 1800           # 30 min wall-clock per task, auto-FAIL if exceeded
+  task_timeout: 900 # 15 min wall-clock per task, auto-FAIL if exceeded
   tokenizer_name: "NousResearch/Hermes-3-Llama-3.1-8B"
   use_wandb: true
   wandb_name: "terminal-bench-2"
@@ -33,10 +33,15 @@ env:
   # Modal's blocking calls (App.lookup, etc.) deadlock when too many sandboxes
   # are created simultaneously inside thread pool workers via asyncio.run().
   max_concurrent_tasks: 8
+  extra_body:
+    provider:
+      order: ["DeepInfra"]
+      allow_fallbacks: false
 
 openai:
   base_url: "https://openrouter.ai/api/v1"
-  model_name: "anthropic/claude-opus-4.6"
+  model_name: "nvidia/nemotron-3-super-120b-a12b"
   server_type: "openai"
   health_check: false
+  timeout: 300 # 5 min per API call (default 1200s causes 20min stalls)
   # api_key loaded from OPENROUTER_API_KEY in .env

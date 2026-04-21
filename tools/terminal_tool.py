@@ -750,6 +750,7 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
         - modal_image: str -- Path to Dockerfile or Docker Hub image name
         - docker_image: str -- Docker image name
         - cwd: str -- Working directory inside the sandbox
+        - add_python: str -- Python version for Modal's add_python (for images without python on PATH)
 
     Args:
         task_id: The rollout's unique task identifier
@@ -876,7 +877,8 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                         ssh_config: dict = None, container_config: dict = None,
                         local_config: dict = None,
                         task_id: str = "default",
-                        host_cwd: str = None):
+                        host_cwd: str = None,
+                        add_python: str = None):
     """
     Create an execution environment for sandboxed command execution.
     
@@ -926,6 +928,8 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     
     elif env_type == "modal":
         sandbox_kwargs = {}
+        lifetime = cc.get("lifetime_seconds", 3600)
+        sandbox_kwargs["timeout"] = int(lifetime)
         if cpu > 0:
             sandbox_kwargs["cpu"] = cpu
         if memory > 0:
@@ -974,6 +978,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             image=image, cwd=cwd, timeout=timeout,
             modal_sandbox_kwargs=sandbox_kwargs,
             persistent_filesystem=persistent, task_id=task_id,
+            add_python=add_python,
         )
     
     elif env_type == "daytona":
@@ -1429,6 +1434,7 @@ def terminal_tool(
             image = ""
 
         cwd = overrides.get("cwd") or config["cwd"]
+        add_python = overrides.get("add_python")
         default_timeout = config["timeout"]
         effective_timeout = timeout or default_timeout
 
@@ -1510,6 +1516,7 @@ def terminal_tool(
                                 "modal_mode": config.get("modal_mode", "auto"),
                                 "docker_volumes": config.get("docker_volumes", []),
                                 "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
+                                "lifetime_seconds": config.get("lifetime_seconds", 3600),
                             }
 
                         local_config = None
@@ -1528,6 +1535,7 @@ def terminal_tool(
                             local_config=local_config,
                             task_id=effective_task_id,
                             host_cwd=config.get("host_cwd"),
+                            add_python=add_python,
                         )
                     except ImportError as e:
                         return json.dumps({
