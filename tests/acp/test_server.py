@@ -97,8 +97,8 @@ class TestAuthenticate:
     @pytest.mark.asyncio
     async def test_authenticate_with_provider_configured(self, agent, monkeypatch):
         monkeypatch.setattr(
-            "acp_adapter.server.has_provider",
-            lambda: True,
+            "acp_adapter.server.detect_provider",
+            lambda: "openrouter",
         )
         resp = await agent.authenticate(method_id="openrouter")
         assert isinstance(resp, AuthenticateResponse)
@@ -106,10 +106,19 @@ class TestAuthenticate:
     @pytest.mark.asyncio
     async def test_authenticate_without_provider(self, agent, monkeypatch):
         monkeypatch.setattr(
-            "acp_adapter.server.has_provider",
-            lambda: False,
+            "acp_adapter.server.detect_provider",
+            lambda: None,
         )
         resp = await agent.authenticate(method_id="openrouter")
+        assert resp is None
+
+    @pytest.mark.asyncio
+    async def test_authenticate_rejects_unadvertised_method(self, agent, monkeypatch):
+        monkeypatch.setattr(
+            "acp_adapter.server.detect_provider",
+            lambda: "openrouter",
+        )
+        resp = await agent.authenticate(method_id="anthropic")
         assert resp is None
 
 

@@ -351,7 +351,8 @@ class HermesACPAgent(acp.Agent):
         )
 
     async def authenticate(self, method_id: str, **kwargs: Any) -> AuthenticateResponse | None:
-        if has_provider():
+        provider = detect_provider()
+        if provider and method_id == provider:
             return AuthenticateResponse()
         return None
 
