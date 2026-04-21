@@ -11,6 +11,13 @@ Track launch execution separately from product proof so the operator can close t
 - Key metric: fresh-context proof recorded at **1.74 minutes**
 - Hidden setup contract to disclose: inject the exact note paths and workspace path into the prompt templates before claiming a fresh-context run.
 
+## Live browser auth
+- Status: blocked by logged-out publish session
+- Audit file: `starter-kits/agent-launch-closeout-kit/live-browser-auth-audit.md`
+- Marker state: `~/.hermes/state/x-access.json` says browser-session ready for `KelEvur`
+- Live browser result: `https://x.com/` shows the logged-out landing page and `compose/post` redirects into login
+- Consequence: do not mark publish unblocked until the actual Hermes publish session reaches a signed-in X surface
+
 ## Launch thread
 - Status: pending publish
 - Source file: `starter-kits/agentic-cron-orchestration-kit/launch/launch-thread.md`
@@ -52,6 +59,8 @@ Track launch execution separately from product proof so the operator can close t
 - [ ] Ship checklist updated with launch execution result
 
 ## Next move
-1. Publish the launch thread against the proved starter-workflow line.
-2. If demo capture is still not ready, attach the proof-artifact still and do not delay publish.
-3. Capture the walkthrough immediately after posting and log the asset path here.
+1. Run `bash starter-kits/agent-launch-closeout-kit/scripts/publish-preflight.sh` to verify required files and the claimed publish path.
+2. Verify the actual Hermes publish session is signed into X; if the browser still lands on the logged-out page or login flow, treat the browser-session marker as stale and keep publish blocked.
+3. Publish the launch thread against the proved starter-workflow line.
+4. If demo capture is still not ready, attach the proof-artifact still and do not delay publish.
+5. Capture the walkthrough immediately after posting and log the asset path here.

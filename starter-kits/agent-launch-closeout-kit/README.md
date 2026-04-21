@@ -37,6 +37,8 @@ The closeout kit is only credible if it can close that real gap cleanly.
 - [ ] Extract the canonical demo-capture path from `agentic-cron-orchestration-kit/launch/demo-capture-runbook.md`.
 - [ ] Assemble reusable closeout-kit files for publish, capture, logging, and asset indexing.
 - [ ] Validate the reusable files against the current pending-publish / pending-capture state as the before state.
+- [ ] Run `bash starter-kits/agent-launch-closeout-kit/scripts/publish-preflight.sh` and surface any publish-auth gap before attempting browser or `x-cli` publish.
+- [ ] Verify the live publish session is actually signed into X (the `x-access.json` marker is not enough by itself).
 - [ ] Run one real closeout cycle against the proof surface and record URL, timestamp, attachment, and asset path.
 - [ ] Tighten the kit to the proved path only and remove any broadened launch-system scope.
 - [ ] Freeze the kit with docs, checklist alignment, and retrospective-ready packaging.

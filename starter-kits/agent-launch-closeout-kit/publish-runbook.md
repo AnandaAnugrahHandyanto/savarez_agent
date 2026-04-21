@@ -24,20 +24,80 @@ Do not widen the claim to a fully proven four-job operating pack.
 - `starter-kits/agent-launch-closeout-kit/launch-execution-log.md`
 
 ## Canonical publish order
-1. Re-open the source launch thread and post it with no broader-claim edits.
-2. Attach the strongest proof-backed asset available:
+1. Run `bash starter-kits/agent-launch-closeout-kit/scripts/publish-preflight.sh` before touching browser publish or `x-cli` so missing auth or missing source files are surfaced explicitly.
+2. In the same publish environment, open `https://x.com/home` or `https://x.com/compose/post` and verify the session is actually signed in. If X shows the logged-out landing page, a login redirect, or `Already have an account?`, treat the browser-session marker as stale and stop.
+3. Re-open the source launch thread and post it with no broader-claim edits.
+4. Attach the strongest proof-backed asset available:
    - primary: short walkthrough cut using `demo-captions.srt`
    - fallback: screenshot or still from the proof artifact showing **1.74 minutes**
    - last fallback: screenshot of `Preflight OK`
-3. Keep the CTA narrow: this is the fastest honest path to one recurring workflow, not a control plane.
-4. Immediately record the post URL, timestamp, and attachment choice in `launch-execution-log.md`.
-5. Sync the weekly pipeline note, CEO note, factory note, and ship checklist from the same execution log.
+5. Keep the CTA narrow: this is the fastest honest path to one recurring workflow, not a control plane.
+6. Immediately record the post URL, timestamp, and attachment choice in `launch-execution-log.md`.
+7. Sync the weekly pipeline note, CEO note, factory note, and ship checklist from the same execution log.
 
 ## Launch guardrails
 - Never imply that unpublished demo capture blocks the product ship decision.
 - Never widen the claim beyond the current proof artifact.
 - Never hide the explicit path-injection requirement.
 - If demo capture is still pending, publish against the proved claim anyway.
+- Never treat `~/.hermes/state/x-access.json` as enough publish proof by itself; the live publish session still has to be signed in.
+- Use `live-browser-auth-audit.md` whenever the marker and the real browser session disagree.
+
+## Block-end verification
+Closeout work does not count as "done" because the thread text or runbook exists. End the block with recorded proof in `starter-kits/agent-launch-closeout-kit/launch-execution-log.md`.
+
+### After the publish block
+Before reporting that the launch thread is posted, run:
+
+```bash
+python3 - <<'PY'
+from pathlib import Path
+import re, sys
+text = Path('starter-kits/agent-launch-closeout-kit/launch-execution-log.md').read_text()
+missing = []
+if re.search(r'- Status: pending publish\b', text):
+    missing.append('publish status still pending')
+for label in ['URL', 'Timestamp', 'Attachment used']:
+    if re.search(rf'- {re.escape(label)}:\s*$', text, re.M):
+        missing.append(f'{label.lower()} blank')
+if missing:
+    print('Publish block not closed:')
+    for item in missing:
+        print(f'- {item}')
+    sys.exit(1)
+print('Publish block closed with recorded proof.')
+PY
+```
+
+### After the capture block
+Before reporting that walkthrough capture is done, run:
+
+```bash
+python3 - <<'PY'
+from pathlib import Path
+import re, sys
+text = Path('starter-kits/agent-launch-closeout-kit/launch-execution-log.md').read_text()
+missing = []
+if re.search(r'- Status: pending capture\b', text):
+    missing.append('capture status still pending')
+for label in ['Recording path', 'Duration', 'Edited asset path']:
+    if re.search(rf'- {re.escape(label)}:\s*$', text, re.M):
+        missing.append(f'{label.lower()} blank')
+if missing:
+    print('Capture block not closed:')
+    for item in missing:
+        print(f'- {item}')
+    sys.exit(1)
+print('Capture block closed with recorded proof.')
+PY
+```
+
+If either command fails, the work is still status narration. Update the execution log first, then sync the weekly notes from that proof source.
+
+## Live auth audit
+- Latest audit: `starter-kits/agent-launch-closeout-kit/live-browser-auth-audit.md`
+- Current finding: `x-access.json` says ready, but the live Hermes browser session still reaches X's logged-out/login surfaces.
+- Blocking condition to clear: signed-in composer or signed-in home surface in the actual publish session.
 
 ## Fill-before-publish fields
 - Product name: Agentic Cron Orchestration Kit
