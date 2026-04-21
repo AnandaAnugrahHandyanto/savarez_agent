@@ -133,9 +133,10 @@ class TestMaterializeDataUrl:
             _materialize_data_url(url)
 
     def test_oversize_payload_rejected(self):
-        # Synthetic 20 MiB "image" (well past _MAX_IMAGE_BYTES = 15 MiB).
-        from gateway.platforms.api_server import _MAX_IMAGE_BYTES
-        big = b"\x89PNG\r\n\x1a\n" + b"\x00" * (_MAX_IMAGE_BYTES + 1)
+        # Synthetic image one byte past MAX_IMAGE_BYTES — decoded-size gate
+        # must reject even when magic bytes are valid.
+        from gateway.platforms.api_server import MAX_IMAGE_BYTES
+        big = b"\x89PNG\r\n\x1a\n" + b"\x00" * (MAX_IMAGE_BYTES + 1)
         url = "data:image/png;base64," + base64.b64encode(big).decode()
         with pytest.raises(ValueError, match="per-image limit"):
             _materialize_data_url(url)

@@ -8,12 +8,16 @@ import pytest
 from aiohttp import web
 
 from gateway.platforms import api_server as api_server_module
-from gateway.platforms.api_server import _resolve_max_request_bytes
+from gateway.platforms.api_server import (
+    _resolve_max_image_bytes,
+    _resolve_max_request_bytes,
+)
 
 
 @pytest.fixture
 def env(monkeypatch):
     monkeypatch.delenv("API_SERVER_MAX_REQUEST_MB", raising=False)
+    monkeypatch.delenv("API_SERVER_MAX_IMAGE_MB", raising=False)
     return monkeypatch
 
 
@@ -52,6 +56,43 @@ class TestResolveMaxRequestBytes:
     def test_module_constant_reflects_default(self):
         # Sanity: the module-level constant captures the default at import time.
         assert api_server_module.MAX_REQUEST_BYTES >= 1_000_000
+
+
+class TestResolveMaxImageBytes:
+    """``API_SERVER_MAX_IMAGE_MB`` — per-image decoded-byte cap applied
+    inside ``_materialize_data_url`` before the base64 payload hits the
+    disk.  Complements ``MAX_REQUEST_BYTES`` (the request-level cap).
+    """
+
+    def test_default_is_50_mb(self, env):
+        assert _resolve_max_image_bytes() == 50 * 1024 * 1024
+
+    def test_env_override_integer_mb(self, env):
+        env.setenv("API_SERVER_MAX_IMAGE_MB", "100")
+        assert _resolve_max_image_bytes() == 100 * 1024 * 1024
+
+    def test_env_override_fractional_mb(self, env):
+        env.setenv("API_SERVER_MAX_IMAGE_MB", "2.5")
+        assert _resolve_max_image_bytes() == int(2.5 * 1024 * 1024)
+
+    def test_empty_env_uses_default(self, env):
+        env.setenv("API_SERVER_MAX_IMAGE_MB", "")
+        assert _resolve_max_image_bytes() == 50 * 1024 * 1024
+
+    def test_invalid_env_falls_back_to_default(self, env, caplog):
+        env.setenv("API_SERVER_MAX_IMAGE_MB", "nope")
+        with caplog.at_level("WARNING"):
+            assert _resolve_max_image_bytes() == 50 * 1024 * 1024
+        assert any("API_SERVER_MAX_IMAGE_MB" in r.getMessage() for r in caplog.records)
+
+    def test_non_positive_env_falls_back_to_default(self, env):
+        env.setenv("API_SERVER_MAX_IMAGE_MB", "0")
+        assert _resolve_max_image_bytes() == 50 * 1024 * 1024
+        env.setenv("API_SERVER_MAX_IMAGE_MB", "-1")
+        assert _resolve_max_image_bytes() == 50 * 1024 * 1024
+
+    def test_module_constant_reflects_default(self):
+        assert api_server_module.MAX_IMAGE_BYTES >= 1_000_000
 
 
 class TestAiohttpClientMaxSize:

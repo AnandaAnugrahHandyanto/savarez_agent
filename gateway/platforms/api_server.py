@@ -157,11 +157,31 @@ _IMAGE_MIME_SUFFIXES = {
     "image/jpg": ".jpg",
 }
 
-# Per-image cap on the decoded byte payload of a data: URL (15 MiB).
-# Paired with MAX_REQUEST_BYTES (the per-request cap) so that a single
-# oversize image can't sneak through, and so we don't decode > this much
-# attacker-controlled base64 into RAM.
-_MAX_IMAGE_BYTES = 15 * 1024 * 1024
+def _resolve_max_image_bytes() -> int:
+    """Resolve the per-image decoded-byte cap.
+
+    Paired with ``MAX_REQUEST_BYTES`` — the request-level cap bounds total
+    payload size; this additionally keeps any single base64 image from
+    decoding into an unreasonable amount of memory.  Default is 50 MiB,
+    which comfortably fits game screenshots, scanned documents, and
+    large photos.  Operators can tighten or loosen via the
+    ``API_SERVER_MAX_IMAGE_MB`` environment variable.
+    """
+    raw = os.getenv("API_SERVER_MAX_IMAGE_MB", "").strip()
+    if raw:
+        try:
+            mb = float(raw)
+            if mb > 0:
+                return int(mb * 1024 * 1024)
+        except ValueError:
+            logger.warning(
+                "Invalid API_SERVER_MAX_IMAGE_MB=%r; falling back to default",
+                raw,
+            )
+    return 50 * 1024 * 1024
+
+
+MAX_IMAGE_BYTES = _resolve_max_image_bytes()
 
 
 def _sniff_image_mime(data: bytes) -> Optional[str]:
@@ -213,7 +233,7 @@ def _materialize_data_url(url: str):
 
     Validates the payload by sniffing magic bytes — the caller-supplied
     MIME type is not trusted for anything but logging.  Payloads that
-    exceed ``_MAX_IMAGE_BYTES`` or don't match a known image format raise
+    exceed ``MAX_IMAGE_BYTES`` or don't match a known image format raise
     :class:`ValueError`.
     """
     import base64
@@ -232,10 +252,10 @@ def _materialize_data_url(url: str):
     except Exception as exc:  # binascii.Error, ValueError
         raise ValueError("invalid base64 payload in data: URL") from exc
 
-    if len(data) > _MAX_IMAGE_BYTES:
+    if len(data) > MAX_IMAGE_BYTES:
         raise ValueError(
             f"image payload exceeds per-image limit "
-            f"({len(data)} > {_MAX_IMAGE_BYTES} bytes)"
+            f"({len(data)} > {MAX_IMAGE_BYTES} bytes)"
         )
 
     sniffed_mime = _sniff_image_mime(data)
