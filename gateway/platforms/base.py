@@ -1713,6 +1713,7 @@ class BasePlatformAdapter(ABC):
                     self.name, cmd, session_key,
                 )
                 try:
+                    setattr(event, "_busy_session_bypass", True)
                     _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
                     response = await self._message_handler(event)
                     if response:

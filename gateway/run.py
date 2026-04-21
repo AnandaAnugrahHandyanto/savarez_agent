@@ -3221,15 +3221,21 @@ class GatewayRunner:
                 )
                 self._release_running_agent_state(_quick_key)
 
-        if _quick_key in self._running_agents:
+        _busy_session_bypass = bool(getattr(event, "_busy_session_bypass", False))
+        from hermes_cli.commands import resolve_command as _resolve_cmd_inner
+        _evt_cmd = event.get_command()
+        _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
+        _requires_busy_semantics = (
+            _busy_session_bypass
+            and _cmd_def_inner is not None
+            and _cmd_def_inner.name in ("queue", "model")
+        )
+
+        if _quick_key in self._running_agents or _requires_busy_semantics:
             if event.get_command() == "status":
                 return await self._handle_status_command(event)
 
             # Resolve the command once for all early-intercept checks below.
-            from hermes_cli.commands import (
-                ACTIVE_SESSION_BYPASS_COMMANDS as _DEDICATED_HANDLERS,
-                resolve_command as _resolve_cmd_inner,
-            )
             _evt_cmd = event.get_command()
             _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
 
@@ -3271,7 +3277,7 @@ class GatewayRunner:
                 return await self._handle_reset_command(event)
 
             # /queue <prompt> — queue without interrupting
-            if event.get_command() in ("queue", "q"):
+            if _cmd_def_inner and _cmd_def_inner.name == "queue":
                 queued_text = event.get_command_args().strip()
                 if not queued_text:
                     return "Usage: /queue <prompt>"
