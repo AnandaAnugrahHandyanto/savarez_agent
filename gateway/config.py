@@ -686,6 +686,16 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["TELEGRAM_REACTIONS"] = str(telegram_cfg["reactions"]).lower()
                 if "proxy_url" in telegram_cfg and not os.getenv("TELEGRAM_PROXY"):
                     os.environ["TELEGRAM_PROXY"] = str(telegram_cfg["proxy_url"]).strip()
+                if "preserve_group_thread_ids" in telegram_cfg:
+                    plat_data = platforms_data.setdefault(Platform.TELEGRAM.value, {})
+                    if not isinstance(plat_data, dict):
+                        plat_data = {}
+                        platforms_data[Platform.TELEGRAM.value] = plat_data
+                    extra = plat_data.setdefault("extra", {})
+                    if not isinstance(extra, dict):
+                        extra = {}
+                        plat_data["extra"] = extra
+                    extra["preserve_group_thread_ids"] = telegram_cfg["preserve_group_thread_ids"]
                 if "disable_link_previews" in telegram_cfg:
                     plat_data = platforms_data.setdefault(Platform.TELEGRAM.value, {})
                     if not isinstance(plat_data, dict):

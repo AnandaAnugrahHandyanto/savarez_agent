@@ -327,6 +327,10 @@ class TelegramAdapter(BasePlatformAdapter):
             return default
         return bool(value)
 
+    def _telegram_group_thread_ids_enabled(self) -> bool:
+        """Return whether raw Telegram group thread IDs should affect routing."""
+        return self._coerce_bool_extra("preserve_group_thread_ids", False)
+
     def _link_preview_kwargs(self) -> Dict[str, Any]:
         if not getattr(self, "_disable_link_previews", False):
             return {}
@@ -2965,13 +2969,12 @@ class TelegramAdapter(BasePlatformAdapter):
         elif chat.type == ChatType.CHANNEL:
             chat_type = "channel"
 
-        # Resolve DM topic name and skill binding
+        # Resolve DM/topic metadata.
         thread_id_raw = message.message_thread_id
         thread_id_str = str(thread_id_raw) if thread_id_raw is not None else None
-        if chat_type == "group" and thread_id_str is None and getattr(chat, "is_forum", False):
-            thread_id_str = self._GENERAL_TOPIC_THREAD_ID
         chat_topic = None
         topic_skill = None
+        explicit_group_topic = False
 
         if chat_type == "dm" and thread_id_str:
             topic_info = self._get_dm_topic_info(str(chat.id), thread_id_str)
@@ -2988,7 +2991,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         chat_topic = created_name
 
         elif chat_type == "group" and thread_id_str:
-            # Group/supergroup forum topic skill binding via config.extra['group_topics']
+            # Group/supergroup forum topic skill binding via config.extra['group_topics'].
             group_topics_config: list = self.config.extra.get("group_topics", [])
             for chat_entry in group_topics_config:
                 if str(chat_entry.get("chat_id", "")) == str(chat.id):
@@ -2997,8 +3000,16 @@ class TelegramAdapter(BasePlatformAdapter):
                         if tid is not None and str(tid) == thread_id_str:
                             chat_topic = topic.get("name")
                             topic_skill = topic.get("skill")
+                            explicit_group_topic = True
                             break
                     break
+
+        if chat_type == "group":
+            preserve_group_thread_ids = self._telegram_group_thread_ids_enabled()
+            if thread_id_str == self._GENERAL_TOPIC_THREAD_ID:
+                thread_id_str = None
+            elif not preserve_group_thread_ids and not explicit_group_topic:
+                thread_id_str = None
 
         # Build source
         source = self.build_source(

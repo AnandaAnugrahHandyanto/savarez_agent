@@ -561,6 +561,7 @@ def test_group_topic_skill_binding():
 
     assert event.auto_skill == "software-development"
     assert event.source.chat_topic == "Engineering"
+    assert event.source.thread_id == "5"
 
 
 def test_group_topic_skill_binding_second_topic():
@@ -606,6 +607,7 @@ def test_group_topic_no_skill_binding():
 
     assert event.auto_skill is None
     assert event.source.chat_topic == "General"
+    assert event.source.thread_id is None
 
 
 def test_group_topic_unmapped_thread_id():
@@ -628,6 +630,7 @@ def test_group_topic_unmapped_thread_id():
 
     assert event.auto_skill is None
     assert event.source.chat_topic is None
+    assert event.source.thread_id is None
 
 
 def test_group_topic_unmapped_chat_id():
@@ -650,6 +653,7 @@ def test_group_topic_unmapped_chat_id():
 
     assert event.auto_skill is None
     assert event.source.chat_topic is None
+    assert event.source.thread_id is None
 
 
 def test_group_topic_no_config():
@@ -665,6 +669,7 @@ def test_group_topic_no_config():
 
     assert event.auto_skill is None
     assert event.source.chat_topic is None
+    assert event.source.thread_id is None
 
 
 def test_group_topic_chat_id_int_string_coercion():
@@ -687,6 +692,76 @@ def test_group_topic_chat_id_int_string_coercion():
 
     assert event.auto_skill == "hermes-agent-dev"
     assert event.source.chat_topic == "Dev"
+    assert event.source.thread_id == "7"
+
+
+def test_group_thread_id_defaults_to_parent_session():
+    """Raw Telegram group thread IDs should not fragment sessions by default."""
+    from gateway.platforms.base import MessageType
+    from gateway.session import build_session_key
+
+    adapter = _make_adapter()
+
+    msg = _make_mock_message(
+        chat_id=-1001234567890,
+        chat_type=_ChatType.SUPERGROUP,
+        thread_id=17,
+        text="hello from a regular group",
+    )
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    parent_source = adapter.build_source(
+        chat_id="-1001234567890",
+        chat_type="group",
+        user_id="42",
+        user_name="Test User",
+    )
+
+    assert event.source.thread_id is None
+    assert build_session_key(
+        event.source,
+        group_sessions_per_user=True,
+        thread_sessions_per_user=False,
+    ) == build_session_key(
+        parent_source,
+        group_sessions_per_user=True,
+        thread_sessions_per_user=False,
+    )
+
+
+def test_group_thread_id_can_be_preserved_when_opted_in():
+    """Opt-in config should preserve raw Telegram group thread IDs."""
+    from gateway.platforms.base import MessageType
+    from gateway.session import build_session_key
+
+    adapter = _make_adapter()
+    adapter.config.extra["preserve_group_thread_ids"] = True
+
+    msg = _make_mock_message(
+        chat_id=-1001234567890,
+        chat_type=_ChatType.SUPERGROUP,
+        thread_id=17,
+        text="hello from a forum topic",
+    )
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    parent_source = adapter.build_source(
+        chat_id="-1001234567890",
+        chat_type="group",
+        user_id="42",
+        user_name="Test User",
+    )
+
+    assert event.source.thread_id == "17"
+    assert build_session_key(
+        event.source,
+        group_sessions_per_user=True,
+        thread_sessions_per_user=False,
+    ) != build_session_key(
+        parent_source,
+        group_sessions_per_user=True,
+        thread_sessions_per_user=False,
+    )
 
 
 # ── _build_message_event: from_user=None fallback in DMs ──
