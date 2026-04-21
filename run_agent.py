@@ -8423,8 +8423,13 @@ class AIAgent:
 
                 if self.tool_progress_callback:
                     try:
+                        # Pass a short result preview so the gateway can
+                        # update progress lines with completion status.
+                        _result_preview = None
+                        if function_result:
+                            _result_preview = function_result[:200] if len(function_result) > 200 else function_result
                         self.tool_progress_callback(
-                            "tool.completed", function_name, None, None,
+                            "tool.completed", function_name, _result_preview, None,
                             duration=tool_duration, is_error=is_error,
                         )
                     except Exception as cb_err:
@@ -8798,8 +8803,11 @@ class AIAgent:
 
             if self.tool_progress_callback:
                 try:
+                    _result_preview = None
+                    if function_result:
+                        _result_preview = function_result[:200] if len(function_result) > 200 else function_result
                     self.tool_progress_callback(
-                        "tool.completed", function_name, None, None,
+                        "tool.completed", function_name, _result_preview, None,
                         duration=tool_duration, is_error=_is_error_result,
                     )
                 except Exception as cb_err:
