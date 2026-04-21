@@ -12,6 +12,8 @@ from hermes_cli.auth import (
     AuthError,
     DEFAULT_CODEX_BASE_URL,
     PROVIDER_REGISTRY,
+    suppress_credential_source,
+    unsuppress_credential_source,
     _read_codex_tokens,
     _save_codex_tokens,
     _import_codex_cli_tokens,
@@ -149,6 +151,29 @@ def test_import_codex_cli_tokens(tmp_path, monkeypatch):
     }))
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
 
+    tokens = _import_codex_cli_tokens()
+    assert tokens is not None
+    assert tokens["access_token"] == "cli-at"
+    assert tokens["refresh_token"] == "cli-rt"
+
+
+def test_import_codex_cli_tokens_respects_suppression(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    codex_home = tmp_path / "codex-cli"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    codex_home.mkdir(parents=True, exist_ok=True)
+
+    (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
+    (codex_home / "auth.json").write_text(json.dumps({
+        "tokens": {"access_token": "cli-at", "refresh_token": "cli-rt"},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    suppress_credential_source("openai-codex", "device_code")
+    assert _import_codex_cli_tokens() is None
+
+    unsuppress_credential_source("openai-codex", "device_code")
     tokens = _import_codex_cli_tokens()
     assert tokens is not None
     assert tokens["access_token"] == "cli-at"

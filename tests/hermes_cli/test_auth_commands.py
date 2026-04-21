@@ -836,12 +836,15 @@ def test_unsuppress_credential_source_preserves_other_markers(tmp_path, monkeypa
 def test_auth_remove_codex_device_code_suppresses_reseed(tmp_path, monkeypatch):
     """Removing an auto-seeded openai-codex credential must mark the source as suppressed."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-cli"))
     monkeypatch.setattr(
         "agent.credential_pool._seed_from_singletons",
         lambda provider, entries: (False, {"device_code"}),
     )
     hermes_home = tmp_path / "hermes"
+    codex_home = tmp_path / "codex-cli"
     hermes_home.mkdir(parents=True, exist_ok=True)
+    codex_home.mkdir(parents=True, exist_ok=True)
 
     auth_store = {
         "version": 1,
@@ -866,8 +869,15 @@ def test_auth_remove_codex_device_code_suppresses_reseed(tmp_path, monkeypatch):
         },
     }
     (hermes_home / "auth.json").write_text(json.dumps(auth_store))
+    (codex_home / "auth.json").write_text(json.dumps({
+        "tokens": {
+            "access_token": "cli-token",
+            "refresh_token": "cli-refresh",
+        }
+    }))
 
     from types import SimpleNamespace
+    from hermes_cli.auth import _import_codex_cli_tokens
     from hermes_cli.auth_commands import auth_remove_command
 
     auth_remove_command(SimpleNamespace(provider="openai-codex", target="1"))
@@ -876,6 +886,8 @@ def test_auth_remove_codex_device_code_suppresses_reseed(tmp_path, monkeypatch):
     suppressed = updated.get("suppressed_sources", {})
     assert "openai-codex" in suppressed
     assert "device_code" in suppressed["openai-codex"]
+    assert "codex_cli" in suppressed["openai-codex"]
+    assert _import_codex_cli_tokens() is None
     # Tokens in providers state should also be cleared
     assert "openai-codex" not in updated.get("providers", {})
 
@@ -924,6 +936,7 @@ def test_auth_remove_codex_manual_source_suppresses_reseed(tmp_path, monkeypatch
     # Critical: manual:device_code source must also trigger the suppression path
     assert "openai-codex" in suppressed
     assert "device_code" in suppressed["openai-codex"]
+    assert "codex_cli" in suppressed["openai-codex"]
     assert "openai-codex" not in updated.get("providers", {})
 
 

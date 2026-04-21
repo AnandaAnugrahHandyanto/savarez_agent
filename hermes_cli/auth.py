@@ -68,6 +68,7 @@ DEFAULT_AGENT_KEY_MIN_TTL_SECONDS = 30 * 60  # 30 minutes
 ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120       # refresh 2 min before expiry
 DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS = 1     # poll at most every 1s
 DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
+CODEX_CLI_IMPORT_SOURCE = "codex_cli"
 DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
@@ -774,21 +775,31 @@ def write_credential_pool(provider_id: str, entries: List[Dict[str, Any]]) -> Pa
 
 def suppress_credential_source(provider_id: str, source: str) -> None:
     """Mark a credential source as suppressed so it won't be re-seeded."""
+    source = (source or "").strip()
+    sources = [source]
+    if provider_id == "openai-codex" and source in {"device_code", CODEX_CLI_IMPORT_SOURCE}:
+        sources = ["device_code", CODEX_CLI_IMPORT_SOURCE]
     with _auth_store_lock():
         auth_store = _load_auth_store()
         suppressed = auth_store.setdefault("suppressed_sources", {})
         provider_list = suppressed.setdefault(provider_id, [])
-        if source not in provider_list:
-            provider_list.append(source)
+        for item in sources:
+            if item and item not in provider_list:
+                provider_list.append(item)
         _save_auth_store(auth_store)
 
 
 def is_source_suppressed(provider_id: str, source: str) -> bool:
     """Check if a credential source has been suppressed by the user."""
     try:
+        source = (source or "").strip()
+        if provider_id == "openai-codex" and source in {"device_code", CODEX_CLI_IMPORT_SOURCE}:
+            source_aliases = {"device_code", CODEX_CLI_IMPORT_SOURCE}
+        else:
+            source_aliases = {source}
         auth_store = _load_auth_store()
         suppressed = auth_store.get("suppressed_sources", {})
-        return source in suppressed.get(provider_id, [])
+        return any(alias in suppressed.get(provider_id, []) for alias in source_aliases)
     except Exception:
         return False
 
@@ -798,15 +809,22 @@ def unsuppress_credential_source(provider_id: str, source: str) -> bool:
 
     Returns True if a marker was cleared, False if no marker existed.
     """
+    source = (source or "").strip()
+    if provider_id == "openai-codex" and source in {"device_code", CODEX_CLI_IMPORT_SOURCE}:
+        source_aliases = {"device_code", CODEX_CLI_IMPORT_SOURCE}
+    else:
+        source_aliases = {source}
     with _auth_store_lock():
         auth_store = _load_auth_store()
         suppressed = auth_store.get("suppressed_sources")
         if not isinstance(suppressed, dict):
             return False
         provider_list = suppressed.get(provider_id)
-        if not isinstance(provider_list, list) or source not in provider_list:
+        if not isinstance(provider_list, list) or not any(alias in provider_list for alias in source_aliases):
             return False
-        provider_list.remove(source)
+        for alias in source_aliases:
+            while alias in provider_list:
+                provider_list.remove(alias)
         if not provider_list:
             suppressed.pop(provider_id, None)
         if not suppressed:
@@ -1582,6 +1600,8 @@ def _import_codex_cli_tokens() -> Optional[Dict[str, str]]:
     Returns tokens dict if valid and not expired, None otherwise.
     Does NOT write to the shared file.
     """
+    if is_source_suppressed("openai-codex", CODEX_CLI_IMPORT_SOURCE):
+        return None
     codex_home = os.getenv("CODEX_HOME", "").strip()
     if not codex_home:
         codex_home = str(Path.home() / ".codex")
@@ -2979,6 +2999,8 @@ def login_command(args) -> None:
 
 def _login_openai_codex(args, pconfig: ProviderConfig) -> None:
     """OpenAI Codex login via device code flow. Tokens stored in ~/.hermes/auth.json."""
+    # Re-enable the Codex CLI import path for an explicit login flow.
+    unsuppress_credential_source("openai-codex", "device_code")
 
     # Check for existing Hermes-owned credentials
     try:
