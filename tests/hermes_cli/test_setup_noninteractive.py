@@ -168,7 +168,7 @@ class TestNonInteractiveSetup:
                 side_effect=lambda key: "sk-test" if key == "OPENROUTER_API_KEY" else "",
             ),
             patch("hermes_cli.auth.get_active_provider", return_value=None),
-            patch.object(setup_mod, "prompt_choice", return_value=3),
+            patch.object(setup_mod, "prompt_choice", return_value=4),
             patch.object(
                 setup_mod,
                 "SETUP_SECTIONS",
@@ -222,6 +222,7 @@ class TestNonInteractiveSetup:
             "Quick Setup - configure missing items only",
             "Full Setup - reconfigure everything",
             "Model & Provider",
+            "Speech-to-Text",
             "Terminal Backend",
             "Messaging Platforms (Gateway)",
             "Tools",
@@ -244,3 +245,19 @@ class TestNonInteractiveSetup:
         main_mod.main()
 
         assert received["section"] == "tts"
+
+    def test_main_accepts_stt_setup_section(self, monkeypatch):
+        """`hermes setup stt` should parse and dispatch like other setup sections."""
+        from hermes_cli import main as main_mod
+
+        received = {}
+
+        def fake_cmd_setup(args):
+            received["section"] = args.section
+
+        monkeypatch.setattr(main_mod, "cmd_setup", fake_cmd_setup)
+        monkeypatch.setattr("sys.argv", ["hermes", "setup", "stt"])
+
+        main_mod.main()
+
+        assert received["section"] == "stt"
