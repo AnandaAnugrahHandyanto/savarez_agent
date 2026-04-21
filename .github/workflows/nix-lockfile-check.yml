@@ -2,14 +2,6 @@ name: Nix Lockfile Check
 
 on:
   pull_request:
-    paths:
-      - 'ui-tui/package.json'
-      - 'ui-tui/package-lock.json'
-      - 'web/package.json'
-      - 'web/package-lock.json'
-      - 'nix/tui.nix'
-      - 'nix/web.nix'
-      - 'nix/lib.nix'
   workflow_dispatch:
 
 permissions:
@@ -27,11 +19,21 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
-      - uses: nixbuild/nix-quick-install-action@63ca48f939ee3b8d835f4126562537df0fee5b91  # v30
+      - uses: ./.github/actions/nix-setup
+
+      - name: Resolve head SHA
+        id: sha
+        shell: bash
+        run: |
+          FULL="${{ github.event.pull_request.head.sha || github.sha }}"
+          echo "full=$FULL" >> "$GITHUB_OUTPUT"
+          echo "short=${FULL:0:7}" >> "$GITHUB_OUTPUT"
 
       - name: Check lockfile hashes
         id: check
         continue-on-error: true
+        env:
+          LINK_SHA: ${{ steps.sha.outputs.full }}
         run: nix run .#fix-lockfiles -- --check
 
       - name: Post sticky PR comment (stale)
@@ -41,6 +43,8 @@ jobs:
           header: nix-lockfile-check
           message: |
             ### ⚠️ npm lockfile hash out of date
+
+            Checked against commit [`${{ steps.sha.outputs.short }}`](${{ github.server_url }}/${{ github.repository }}/commit/${{ steps.sha.outputs.full }}) (PR head at check time).
 
             The `hash = "sha256-..."` line in these nix files no longer matches the committed `package-lock.json`:
 

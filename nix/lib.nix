@@ -1,61 +1,111 @@
 # nix/lib.nix — Shared helpers for nix stuff
 { pkgs, npm-lockfile-fix }:
 {
-  # Shell script that refreshes node_modules, fixes the lockfile, and
-  # rewrites the `hash = "sha256-..."` line in the given nix file so
-  # fetchNpmDeps picks up the new package-lock.json.
-  mkUpdateLockfileScript =
+  # Returns a buildNpmPackage-compatible attrs set that provides:
+  #   patchPhase          — ensures lockfile has exactly one trailing newline
+  #   nativeBuildInputs   — [ updateLockfileScript ] (list, prepend with ++ for more)
+  #   passthru.devShellHook  — stamp-checked npm install + hash auto-update
+  #   passthru.npmLockfile   — metadata for mkFixLockfiles
+  #
+  # NOTE: npmConfigHook runs `diff` between the source lockfile and the
+  # npm-deps cache lockfile. fetchNpmDeps preserves whatever trailing
+  # newlines the lockfile has. The patchPhase normalizes to exactly one
+  # trailing newline so both sides always match.
+  #
+  # Usage:
+  #   npm = hermesNpmLib.mkNpmPassthru { folder = "ui-tui"; attr = "tui"; pname = "hermes-tui"; };
+  #   pkgs.buildNpmPackage (npm // { ... } # or:
+  #   pkgs.buildNpmPackage ({ ... } // npm)
+  mkNpmPassthru =
     {
-      name, # script binary name, e.g. "update_tui_lockfile"
       folder, # repo-relative folder with package.json, e.g. "ui-tui"
-      nixFile, # repo-relative nix file with the hash line, e.g. "nix/tui.nix"
-      attr, # flake package attr to build to cause the failure, e.g. "tui"
+      attr, # flake package attr, e.g. "tui"
+      pname, # e.g. "hermes-tui"
+      nixFile ? "nix/${attr}.nix", # defaults to nix/<attr>.nix
     }:
-    pkgs.writeShellScriptBin name ''
-      set -euox pipefail
-
-      REPO_ROOT=$(git rev-parse --show-toplevel)
-
-      cd "$REPO_ROOT/${folder}"
-      rm -rf node_modules/
-      npm cache clean --force
-      CI=true npm install
-      ${pkgs.lib.getExe npm-lockfile-fix} ./package-lock.json
-
-      NIX_FILE="$REPO_ROOT/${nixFile}"
-      sed -i "s/hash = \"[^\"]*\";/hash = \"\";/" $NIX_FILE
-      NIX_OUTPUT=$(nix build .#${attr} 2>&1 || true)
-      NEW_HASH=$(echo "$NIX_OUTPUT" | grep 'got:' | awk '{print $2}')
-      echo got new hash $NEW_HASH
-      sed -i "s|hash = \"[^\"]*\";|hash = \"$NEW_HASH\";|" $NIX_FILE
-      nix build .#${attr}
-      echo "Updated npm hash in $NIX_FILE to $NEW_HASH"
-    '';
-
-  # devShell bootstrap snippet: runs `npm install` in the target folder when
-  # package.json or package-lock.json has changed since the last install.
-  # Hashing happens in bash (not nix eval), and the post-install stamp is
-  # recomputed so a lockfile that npm rewrites during install still matches.
-  mkNpmDevShellHook =
     {
-      name, # project-unique stampfile name, e.g. "hermes-tui"
-      folder, # repo-relative folder with package.json + package-lock.json
-    }:
-    ''
-      _hermes_npm_stamp() {
-        sha256sum "${folder}/package.json" "${folder}/package-lock.json" \
-          2>/dev/null | sha256sum | awk '{print $1}'
-      }
-      STAMP=".nix-stamps/${name}"
-      STAMP_VALUE="$(_hermes_npm_stamp)"
-      if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP")" != "$STAMP_VALUE" ]; then
-        echo "${name}: installing npm dependencies..."
-        ( cd ${folder} && CI=true npm install --silent --no-fund --no-audit 2>/dev/null )
-        mkdir -p .nix-stamps
-        _hermes_npm_stamp > "$STAMP"
-      fi
-      unset -f _hermes_npm_stamp
-    '';
+      patchPhase = ''
+        runHook prePatch
+        # Normalize trailing newlines so source and npm-deps always match,
+        # regardless of what fetchNpmDeps preserves.
+        sed -i -z 's/\n*$/\n/' package-lock.json
+
+        # Make npmConfigHook's byte-for-byte diff newline-agnostic by
+        # replacing its hardcoded /nix/store/.../diff with a wrapper that
+        # normalizes trailing newlines on both sides before comparing.
+        mkdir -p "$TMPDIR/bin"
+        cat > "$TMPDIR/bin/diff" << DIFFWRAP
+        #!/bin/sh
+        f1=\$(mktemp) && sed -z 's/\n*$/\n/' "\$1" > "\$f1"
+        f2=\$(mktemp) && sed -z 's/\n*$/\n/' "\$2" > "\$f2"
+        ${pkgs.diffutils}/bin/diff "\$f1" "\$f2" && rc=0 || rc=\$?
+        rm -f "\$f1" "\$f2"
+        exit \$rc
+        DIFFWRAP
+        chmod +x "$TMPDIR/bin/diff"
+        export PATH="$TMPDIR/bin:$PATH"
+
+        runHook postPatch
+      '';
+
+      nativeBuildInputs = [
+        (pkgs.writeShellScriptBin "update_${attr}_lockfile" ''
+          set -euox pipefail
+
+          REPO_ROOT=$(git rev-parse --show-toplevel)
+
+          cd "$REPO_ROOT/${folder}"
+          rm -rf node_modules/
+          npm cache clean --force
+          CI=true npm install
+          ${pkgs.lib.getExe npm-lockfile-fix} ./package-lock.json
+
+          NIX_FILE="$REPO_ROOT/${nixFile}"
+          sed -i "s/hash = \"[^\"]*\";/hash = \"\";/" $NIX_FILE
+          NIX_OUTPUT=$(nix build .#${attr} 2>&1 || true)
+          NEW_HASH=$(echo "$NIX_OUTPUT" | grep 'got:' | awk '{print $2}')
+          echo got new hash $NEW_HASH
+          sed -i "s|hash = \"[^\"]*\";|hash = \"$NEW_HASH\";|" $NIX_FILE
+          nix build .#${attr}
+          echo "Updated npm hash in $NIX_FILE to $NEW_HASH"
+        '')
+      ];
+
+      passthru = {
+        devShellHook = pkgs.writeShellScript "npm-dev-hook-${pname}" ''
+          REPO_ROOT=$(git rev-parse --show-toplevel)
+
+          _hermes_npm_stamp() {
+            sha256sum "${folder}/package.json" "${folder}/package-lock.json" \
+              2>/dev/null | sha256sum | awk '{print $1}'
+          }
+          STAMP=".nix-stamps/${pname}"
+          STAMP_VALUE="$(_hermes_npm_stamp)"
+          if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP")" != "$STAMP_VALUE" ]; then
+            echo "${pname}: installing npm dependencies..."
+            ( cd ${folder} && CI=true npm install --silent --no-fund --no-audit 2>/dev/null )
+
+            # Auto-update the nix hash so it stays in sync with the lockfile
+            echo "${pname}: prefetching npm deps..."
+            NIX_FILE="$REPO_ROOT/${nixFile}"
+            if NEW_HASH=$(${pkgs.lib.getExe pkgs.prefetch-npm-deps} "${folder}/package-lock.json" 2>/dev/null); then
+              sed -i "s|hash = \"sha256-[A-Za-z0-9+/=]+\"|hash = \"$NEW_HASH\";|" "$NIX_FILE"
+              echo "${pname}: updated hash to $NEW_HASH"
+            else
+              echo "${pname}: warning: prefetch failed, run 'nix run .#fix-lockfiles -- --apply' manually" >&2
+            fi
+
+            mkdir -p .nix-stamps
+            _hermes_npm_stamp > "$STAMP"
+          fi
+          unset -f _hermes_npm_stamp
+        '';
+
+        npmLockfile = {
+          inherit attr folder nixFile;
+        };
+      };
+    };
 
   # Aggregate `fix-lockfiles` bin from a list of packages carrying
   #   passthru.npmLockfile = { attr; folder; nixFile; };
@@ -70,12 +120,10 @@
     }:
     let
       entries = map (p: p.passthru.npmLockfile) packages;
-      entryArgs = pkgs.lib.concatMapStringsSep " " (
-        e: "\"${e.attr}:${e.folder}:${e.nixFile}\""
-      ) entries;
+      entryArgs = pkgs.lib.concatMapStringsSep " " (e: "\"${e.attr}:${e.folder}:${e.nixFile}\"") entries;
     in
     pkgs.writeShellScriptBin "fix-lockfiles" ''
-      set -uo pipefail
+      set -uox pipefail
       MODE="''${1:---check}"
       case "$MODE" in
         --check|--apply) ;;
@@ -91,6 +139,15 @@
 
       REPO_ROOT="$(git rev-parse --show-toplevel)"
       cd "$REPO_ROOT"
+
+      # When running in GH Actions, emit Markdown links in the report pointing
+      # at the offending line of the nix file (and the lockfile) at the exact
+      # commit that was checked. LINK_SHA should be set by the workflow to the
+      # PR head SHA; falls back to GITHUB_SHA (which on pull_request is the
+      # test-merge commit, still browseable).
+      LINK_SERVER="''${GITHUB_SERVER_URL:-https://github.com}"
+      LINK_REPO="''${GITHUB_REPOSITORY:-}"
+      LINK_SHA="''${LINK_SHA:-''${GITHUB_SHA:-}}"
 
       STALE=0
       FIXED=0
@@ -113,11 +170,20 @@
           exit 1
         fi
 
+        HASH_LINE=$(grep -n 'hash = "sha256-' "$NIX_FILE" | head -1 | cut -d: -f1)
         OLD_HASH=$(grep -oE 'hash = "sha256-[^"]+"' "$NIX_FILE" | head -1 \
           | sed -E 's/hash = "(.*)"/\1/')
-        echo "    stale: $OLD_HASH -> $NEW_HASH"
+        LOCK_FILE="$FOLDER/package-lock.json"
+        echo "    stale: $NIX_FILE:$HASH_LINE $OLD_HASH -> $NEW_HASH"
         STALE=1
-        REPORT+="- \`$NIX_FILE\` (\`.#$ATTR\`): \`$OLD_HASH\` -> \`$NEW_HASH\`"$'\n'
+
+        if [ -n "$LINK_REPO" ] && [ -n "$LINK_SHA" ]; then
+          NIX_URL="$LINK_SERVER/$LINK_REPO/blob/$LINK_SHA/$NIX_FILE#L$HASH_LINE"
+          LOCK_URL="$LINK_SERVER/$LINK_REPO/blob/$LINK_SHA/$LOCK_FILE"
+          REPORT+="- [\`$NIX_FILE:$HASH_LINE\`]($NIX_URL) (\`.#$ATTR\`): \`$OLD_HASH\` → \`$NEW_HASH\` — lockfile: [\`$LOCK_FILE\`]($LOCK_URL)"$'\n'
+        else
+          REPORT+="- \`$NIX_FILE:$HASH_LINE\` (\`.#$ATTR\`): \`$OLD_HASH\` → \`$NEW_HASH\`"$'\n'
+        fi
 
         if [ "$MODE" = "--apply" ]; then
           sed -i "s|hash = \"sha256-[^\"]*\";|hash = \"$NEW_HASH\";|" "$NIX_FILE"

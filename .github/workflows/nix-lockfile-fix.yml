@@ -77,6 +77,20 @@ jobs:
             core.setOutput('owner', pr.head.repo.owner.login);
             core.setOutput('pr', String(pr.number));
 
+      # Wipe the sticky lockfile-check comment to a "running" state as soon
+      # as the job is authorized, so the user sees their click was picked up
+      # before the ~minute of nix build work.
+      - name: Mark sticky as running
+        if: steps.resolve.outputs.pr != ''
+        uses: marocchino/sticky-pull-request-comment@52423e01640425a022ef5fd42c6fb5f633a02728  # v2.9.1
+        with:
+          header: nix-lockfile-check
+          number: ${{ steps.resolve.outputs.pr }}
+          message: |
+            ### 🔄 Applying lockfile fix…
+
+            Triggered by @${{ github.actor }} — [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
+
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           repository: ${{ steps.resolve.outputs.owner }}/${{ steps.resolve.outputs.repo }}
@@ -84,7 +98,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - uses: nixbuild/nix-quick-install-action@63ca48f939ee3b8d835f4126562537df0fee5b91  # v30
+      - uses: ./.github/actions/nix-setup
 
       - name: Apply lockfile hashes
         id: apply
@@ -101,26 +115,35 @@ jobs:
           git commit -m "fix(nix): refresh npm lockfile hashes"
           git push
 
-      - name: Comment on PR (applied)
+      - name: Update sticky (applied)
         if: steps.apply.outputs.changed == 'true' && steps.resolve.outputs.pr != ''
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea  # v7.0.1
+        uses: marocchino/sticky-pull-request-comment@52423e01640425a022ef5fd42c6fb5f633a02728  # v2.9.1
         with:
-          script: |
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: Number('${{ steps.resolve.outputs.pr }}'),
-              body: 'Pushed a commit refreshing the npm lockfile hashes.',
-            });
+          header: nix-lockfile-check
+          number: ${{ steps.resolve.outputs.pr }}
+          message: |
+            ### ✅ Lockfile fix applied
 
-      - name: Comment on PR (already current)
+            Pushed a commit refreshing the npm lockfile hashes — [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
+
+      - name: Update sticky (already current)
         if: steps.apply.outputs.changed == 'false' && steps.resolve.outputs.pr != ''
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea  # v7.0.1
+        uses: marocchino/sticky-pull-request-comment@52423e01640425a022ef5fd42c6fb5f633a02728  # v2.9.1
         with:
-          script: |
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: Number('${{ steps.resolve.outputs.pr }}'),
-              body: 'npm lockfile hashes are already current — nothing to commit.',
-z            });
+          header: nix-lockfile-check
+          number: ${{ steps.resolve.outputs.pr }}
+          message: |
+            ### ✅ Lockfile hashes already current
+
+            Nothing to commit — [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
+
+      - name: Update sticky (failed)
+        if: failure() && steps.resolve.outputs.pr != ''
+        uses: marocchino/sticky-pull-request-comment@52423e01640425a022ef5fd42c6fb5f633a02728  # v2.9.1
+        with:
+          header: nix-lockfile-check
+          number: ${{ steps.resolve.outputs.pr }}
+          message: |
+            ### ❌ Lockfile fix failed
+
+            See the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for logs.

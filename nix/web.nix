@@ -4,10 +4,12 @@ let
   src = ../web;
   npmDeps = pkgs.fetchNpmDeps {
     inherit src;
-    hash = "sha256-Y0pOzdFG8BLjfvCLmsvqYpjxFjAQabXp1i7X9W/cCU4=";
+    hash = "sha256-TS/vrCHbdvXkPcAPxImKzAd2pdDCrKlgYZkXBMQ+TEg=";
   };
+
+  npm = hermesNpmLib.mkNpmPassthru { folder = "web"; attr = "web"; pname = "hermes-web"; };
 in
-pkgs.buildNpmPackage {
+pkgs.buildNpmPackage (npm // {
   pname = "hermes-web";
   version = "0.0.0";
   inherit src npmDeps;
@@ -24,25 +26,4 @@ pkgs.buildNpmPackage {
     cp -r dist $out
     runHook postInstall
   '';
-
-  nativeBuildInputs = [
-    (hermesNpmLib.mkUpdateLockfileScript {
-      name = "update_web_lockfile";
-      folder = "web";
-      nixFile = "nix/web.nix";
-      attr = "web";
-    })
-  ];
-
-  passthru = {
-    devShellHook = hermesNpmLib.mkNpmDevShellHook {
-      name = "hermes-web";
-      folder = "web";
-    };
-    npmLockfile = {
-      attr = "web";
-      folder = "web";
-      nixFile = "nix/web.nix";
-    };
-  };
-}
+})

@@ -4,23 +4,19 @@ let
   src = ../ui-tui;
   npmDeps = pkgs.fetchNpmDeps {
     inherit src;
-    hash = "sha256-BlxkTyn1x7ZQcj7pcMB5y5C2AyToT/CzxmtacTfEXmY=";
+    hash = "sha256-RU4qSHgJPMyfRSEJDzkG4+MReDZDc6QbTD2wisa5QE0=";
   };
+
+  npm = hermesNpmLib.mkNpmPassthru { folder = "ui-tui"; attr = "tui"; pname = "hermes-tui"; };
 
   packageJson = builtins.fromJSON (builtins.readFile (src + "/package.json"));
   version = packageJson.version;
 in
-pkgs.buildNpmPackage {
+pkgs.buildNpmPackage (npm // {
   pname = "hermes-tui";
   inherit src npmDeps version;
 
   doCheck = false;
-
-  patchPhase = ''
-    runHook prePatch
-    sed -i -z 's/\n$//' package-lock.json
-    runHook postPatch
-  '';
 
   installPhase = ''
     runHook preInstall
@@ -41,25 +37,4 @@ pkgs.buildNpmPackage {
 
     runHook postInstall
   '';
-
-  nativeBuildInputs = [
-    (hermesNpmLib.mkUpdateLockfileScript {
-      name = "update_tui_lockfile";
-      folder = "ui-tui";
-      nixFile = "nix/tui.nix";
-      attr = "tui";
-    })
-  ];
-
-  passthru = {
-    devShellHook = hermesNpmLib.mkNpmDevShellHook {
-      name = "hermes-tui";
-      folder = "ui-tui";
-    };
-    npmLockfile = {
-      attr = "tui";
-      folder = "ui-tui";
-      nixFile = "nix/tui.nix";
-    };
-  };
-}
+})
