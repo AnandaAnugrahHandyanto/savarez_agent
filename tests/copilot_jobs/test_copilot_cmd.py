@@ -94,6 +94,25 @@ class TestSlashLaunchDryRun:
         )
         assert "done" in out.lower() or "connect" in out.lower()
 
+    def test_launch_surfaces_prompt_delivery_warning(self, db):
+        fake_result = {
+            "session_id": "job-123",
+            "connect_id": "task-123",
+            "cmd": ["copilot"],
+            "proc": None,
+            "prompt_delivery_status": "unverified",
+            "prompt_delivery_warning": "Hermes could not determine the remote task ID.",
+        }
+
+        with patch("copilot_jobs.launcher.launch_copilot", return_value=fake_result):
+            out = _capture_slash(
+                "/copilot launch --repo warn-repo --repo-path /warn Respond"
+            )
+
+        assert "warning:" in out.lower()
+        assert "remote task id" in out.lower()
+        assert "copilot --connect=task-123" in out
+
 
 class TestSlashShow:
     def test_show_existing(self, db):

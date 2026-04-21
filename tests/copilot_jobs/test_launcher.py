@@ -2,13 +2,17 @@
 
 import json
 import os
+import signal
 import threading
 from pathlib import Path
 
 import pytest
 
 from copilot_jobs.launcher import (
+    _attempt_initial_prompt_delivery,
+    _ensure_initial_prompt_delivered,
     _parse_remote_task_id,
+    _remote_task_has_user_message,
     _resolve_copilot_bin,
     build_copilot_command,
     launch_copilot,
@@ -157,6 +161,79 @@ class TestParseRemoteTaskId:
         log_text = "Remote session active (steerable): https://github.com/org/repo/tasks/2c9fa2a9-5ee6-4504-9fd0-afa54132b304"
         assert _parse_remote_task_id(log_text, "requested-session") is None
 
+    def test_extracts_task_id_without_session_filter(self):
+        log_text = "Remote session active (steerable): https://github.com/org/repo/tasks/2c9fa2a9-5ee6-4504-9fd0-afa54132b304"
+        assert _parse_remote_task_id(log_text) == "2c9fa2a9-5ee6-4504-9fd0-afa54132b304"
+
+
+class TestInitialPromptDelivery:
+    def test_detects_existing_user_message(self):
+        assert _remote_task_has_user_message([
+            {"type": "session.start"},
+            {"type": "user.message"},
+        ]) is True
+
+    def test_skips_steering_when_prompt_is_already_present(self, monkeypatch):
+        monkeypatch.setattr(
+            "copilot_jobs.launcher._resolve_github_auth_token",
+            lambda: "token",
+        )
+        monkeypatch.setattr(
+            "copilot_jobs.launcher._list_remote_task_events",
+            lambda task_id, token: [{"type": "user.message"}],
+        )
+
+        steered = []
+        monkeypatch.setattr(
+            "copilot_jobs.launcher._steer_remote_task",
+            lambda task_id, prompt, token: steered.append((task_id, prompt, token)),
+        )
+
+        result = _ensure_initial_prompt_delivered("task-123", "fix it", check_timeout=0.0)
+
+        assert result == "already-submitted"
+        assert steered == []
+
+    def test_steers_when_no_user_message_is_observed(self, monkeypatch):
+        monkeypatch.setattr(
+            "copilot_jobs.launcher._resolve_github_auth_token",
+            lambda: "token",
+        )
+        monkeypatch.setattr(
+            "copilot_jobs.launcher._list_remote_task_events",
+            lambda task_id, token: [],
+        )
+
+        steered = []
+        monkeypatch.setattr(
+            "copilot_jobs.launcher._steer_remote_task",
+            lambda task_id, prompt, token: steered.append((task_id, prompt, token)),
+        )
+
+        result = _ensure_initial_prompt_delivered("task-123", "fix it", check_timeout=0.0)
+
+        assert result == "steered"
+        assert steered == [("task-123", "fix it", "token")]
+
+    def test_attempt_warns_when_task_id_is_missing(self):
+        result = _attempt_initial_prompt_delivery(None, "fix it")
+
+        assert result["status"] == "unverified"
+        assert "remote task ID" in result["warning"]
+
+    def test_attempt_warns_when_steering_fails(self, monkeypatch):
+        monkeypatch.setattr(
+            "copilot_jobs.launcher._ensure_initial_prompt_delivered",
+            lambda task_id, prompt: (_ for _ in ()).throw(
+                RuntimeError("Unable to resolve a GitHub auth token")
+            ),
+        )
+
+        result = _attempt_initial_prompt_delivery("task-123", "fix it")
+
+        assert result["status"] == "unverified"
+        assert "GitHub auth token" in result["warning"]
+
 
 # ---------------------------------------------------------------------------
 # launch_copilot
@@ -211,8 +288,9 @@ class TestLaunchCopilot:
         assert result["session_id"] == _TEST_SID
         assert len(spawned) == 1
         assert spawned[0][1] == "/test"
-        # --resume should be in the command
-        assert "--resume" in result["cmd"]
+        # Real launches no longer force --resume because Copilot skips
+        # startup prompt execution on resume paths.
+        assert "--resume" not in result["cmd"]
 
         # Wait for background thread to finish.
         completed.wait(timeout=5)
@@ -266,15 +344,46 @@ class TestLaunchCopilot:
             return DummyProc()
 
         monkeypatch.setattr("copilot_jobs.launcher._log_dir", lambda: tmp_path)
+        monkeypatch.setattr("copilot_jobs.launcher._snapshot_process_logs", lambda: {})
         monkeypatch.setattr("copilot_jobs.launcher.subprocess.Popen", fake_popen)
         monkeypatch.setattr("copilot_jobs.launcher.shutil.which", lambda name: "/resolved/copilot")
-        monkeypatch.setattr("copilot_jobs.launcher._wait_for_remote_task_id", lambda session_id: "task-123")
+        monkeypatch.setattr("copilot_jobs.launcher._wait_for_remote_task_id", lambda **kwargs: "task-123")
+        monkeypatch.setattr(
+            "copilot_jobs.launcher._ensure_initial_prompt_delivered",
+            lambda task_id, prompt: "steered",
+        )
 
         result = launch_copilot(repo, "test", session_id=_TEST_SID)
 
         assert result["cmd"][0] == "/resolved/copilot"
+        assert "--resume" not in result["cmd"]
         assert result["connect_id"] == "task-123"
         assert captured["args"][0] == "bash"
         assert captured["args"][1] == "-c"
         assert "script -eqfc" in captured["args"][2]
         assert captured["kwargs"]["cwd"] == "/test"
+
+    def test_real_launch_returns_warning_when_prompt_delivery_fails(self, monkeypatch, tmp_path):
+        repo = RepoEntry(slug="test-repo", path="/test")
+
+        class DummyProc:
+            pid = 4242
+
+        monkeypatch.setattr("copilot_jobs.launcher._log_dir", lambda: tmp_path)
+        monkeypatch.setattr("copilot_jobs.launcher._snapshot_process_logs", lambda: {})
+        monkeypatch.setattr(
+            "copilot_jobs.launcher.subprocess.Popen",
+            lambda *args, **kwargs: DummyProc(),
+        )
+        monkeypatch.setattr("copilot_jobs.launcher.shutil.which", lambda name: "/resolved/copilot")
+        monkeypatch.setattr("copilot_jobs.launcher._wait_for_remote_task_id", lambda **kwargs: "task-123")
+        monkeypatch.setattr(
+            "copilot_jobs.launcher._ensure_initial_prompt_delivered",
+            lambda task_id, prompt: (_ for _ in ()).throw(RuntimeError("steer failed")),
+        )
+
+        result = launch_copilot(repo, "test", session_id=_TEST_SID)
+
+        assert result["connect_id"] == "task-123"
+        assert result["prompt_delivery_status"] == "unverified"
+        assert "steer failed" in result["prompt_delivery_warning"]
