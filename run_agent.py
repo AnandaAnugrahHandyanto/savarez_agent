@@ -9597,6 +9597,12 @@ class AIAgent:
                                             f"{self.log_prefix}🗜️  Truncated tool call + context ~{approx_tokens:,}/{_ctx_len:,} tokens — compressing before retry...",
                                             force=True,
                                         )
+                                        messages, active_system_prompt = self._compress_context(
+                                            messages, system_message,
+                                            approx_tokens=approx_tokens,
+                                            task_id=effective_task_id,
+                                        )
+                                        conversation_history = None
                                         restart_with_compressed_messages = True
                                         break
                                     self._vprint(
