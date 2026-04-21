@@ -40,7 +40,7 @@ import weakref
 from types import SimpleNamespace
 import uuid
 from typing import List, Dict, Any, Optional
-from openai import OpenAI
+from openai import OpenAI, DefaultHttpxClient
 import fire
 from datetime import datetime
 from pathlib import Path
@@ -84,7 +84,7 @@ from agent.model_metadata import (
     fetch_model_metadata,
     estimate_tokens_rough, estimate_messages_tokens_rough, estimate_request_tokens_rough,
     get_next_probe_tier, parse_context_limit_from_error,
-    save_context_length,
+    save_context_length, is_local_endpoint,
 )
 from agent.context_compressor import ContextCompressor
 from agent.prompt_caching import apply_anthropic_cache_control
@@ -267,6 +267,25 @@ def _is_destructive_command(cmd: str) -> bool:
     return False
 
 
+def jittered_backoff(
+    retry_count: int,
+    *,
+    base_delay: float = 2.0,
+    max_delay: float = 60.0,
+    jitter_fraction: float = 0.25,
+) -> int:
+    """Return exponential backoff seconds with bounded random jitter.
+
+    retry_count starts at 1 for the first retry attempt.
+    """
+    attempt = max(1, int(retry_count))
+    raw_delay = min(base_delay * (2 ** (attempt - 1)), max_delay)
+    jitter_span = raw_delay * max(0.0, min(jitter_fraction, 1.0))
+    delay = raw_delay + random.uniform(-jitter_span, jitter_span)
+    # Keep status output/user behavior sane: at least 1s, integer seconds.
+    return max(1, int(round(delay)))
+
+
 def _should_parallelize_tool_batch(tool_calls) -> bool:
     """Return True when a tool-call batch is safe to run concurrently."""
     if len(tool_calls) <= 1:
@@ -419,6 +438,7 @@ class AIAgent:
         self,
         base_url: str = None,
         api_key: str = None,
+        proxy: str = None,
         provider: str = None,
         api_mode: str = None,
         acp_command: str = None,
@@ -513,6 +533,7 @@ class AIAgent:
         _install_safe_stdio()
 
         self.model = model
+        self.proxy = str(proxy or "").strip()
         self.max_iterations = max_iterations
         # Shared iteration budget — parent creates, children inherit.
         # Consumed by every LLM turn across parent + all subagents.
@@ -582,6 +603,7 @@ class AIAgent:
         self.stream_delta_callback = stream_delta_callback
         self.status_callback = status_callback
         self.tool_gen_callback = tool_gen_callback
+        self._disable_streaming = False
         self._last_reported_tool = None  # Track for "new tool" mode
         
         # Tool execution state — allows _vprint during tool execution
@@ -783,6 +805,7 @@ class AIAgent:
                     client_kwargs["default_headers"] = {
                         "User-Agent": "KimiCLI/1.3",
                     }
+                self._apply_proxy_to_client_kwargs(client_kwargs, self.proxy)
             else:
                 # No explicit creds — use the centralized provider router
                 from agent.auxiliary_client import resolve_provider_client
@@ -796,6 +819,7 @@ class AIAgent:
                     # Preserve any default_headers the router set
                     if hasattr(_routed_client, '_default_headers') and _routed_client._default_headers:
                         client_kwargs["default_headers"] = dict(_routed_client._default_headers)
+                    self._apply_proxy_to_client_kwargs(client_kwargs, self.proxy)
                 else:
                     # When the user explicitly chose a non-OpenRouter provider
                     # but no credentials were found, fail fast with a clear
@@ -817,6 +841,7 @@ class AIAgent:
                             "X-OpenRouter-Categories": "productivity,cli-agent",
                         },
                     }
+                    self._apply_proxy_to_client_kwargs(client_kwargs, self.proxy)
             
             self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
 
@@ -854,16 +879,56 @@ class AIAgent:
             except Exception as e:
                 raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
         
-        # Provider fallback — a single backup model/provider tried when the
-        # primary is exhausted (rate-limit, overload, connection failure).
-        # Config shape: {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}
+        # Provider fallback chain (A->B->C...). The first configured fallback
+        # entry is passed in as fallback_model; additional entries are loaded
+        # from config.yaml:fallback_providers.
         self._fallback_model = fallback_model if isinstance(fallback_model, dict) else None
+        self._fallback_chain: List[Dict[str, Any]] = []
+        self._fallback_cursor = -1
+        self._fallback_profiles_cache = None
         self._fallback_activated = False
         if self._fallback_model:
-            fb_p = self._fallback_model.get("provider", "")
-            fb_m = self._fallback_model.get("model", "")
-            if fb_p and fb_m and not self.quiet_mode:
-                print(f"🔄 Fallback model: {fb_m} ({fb_p})")
+            self._fallback_chain.append(dict(self._fallback_model))
+        for _fb in self._load_fallback_chain_from_config():
+            self._fallback_chain.append(_fb)
+        # Keep order, drop exact duplicates.
+        _seen_fb = set()
+        _unique_fb = []
+        for _fb in self._fallback_chain:
+            _pn = str(_fb.get("profile_name", "")).strip().lower()
+            if _pn:
+                # Profile identity is stronger than inline key/base_url for
+                # de-duplication because fallback_model and fallback_providers
+                # may represent the same profile with/without api_key field.
+                _k = (
+                    str(_fb.get("provider", "")).strip().lower(),
+                    str(_fb.get("model", "")).strip().lower(),
+                    str(_fb.get("base_url", "")).strip().rstrip("/").lower(),
+                    _pn,
+                )
+            else:
+                _k = (
+                    str(_fb.get("provider", "")).strip().lower(),
+                    str(_fb.get("model", "")).strip().lower(),
+                    str(_fb.get("base_url", "")).strip().rstrip("/").lower(),
+                    str(_fb.get("api_key", "")).strip(),
+                )
+            if _k in _seen_fb:
+                continue
+            _seen_fb.add(_k)
+            _unique_fb.append(_fb)
+        self._fallback_chain = _unique_fb
+        if self._fallback_chain and not self.quiet_mode:
+            _labels = []
+            for _fb in self._fallback_chain:
+                _n = (_fb.get("profile_name") or "").strip()
+                if _n:
+                    _labels.append(_n)
+                else:
+                    _labels.append(
+                        f"{(_fb.get('provider') or '').strip()}/{(_fb.get('model') or '').strip()}"
+                    )
+            print(f"🔄 Fallback chain: {' -> '.join(_labels)}")
 
         # Get available tools with filtering
         self.tools = get_tool_definitions(
@@ -1271,6 +1336,19 @@ class AIAgent:
                 self.status_callback("lifecycle", message)
             except Exception:
                 logger.debug("status_callback error in _emit_status", exc_info=True)
+
+    def _touch_activity(self, detail: str = "") -> None:
+        """Best-effort heartbeat for long waits/retry loops.
+
+        Gateway callers can optionally use this to keep inactivity monitors
+        informed that the agent is still alive during blocking operations.
+        """
+        if not self.status_callback:
+            return
+        try:
+            self.status_callback("activity", detail or "alive")
+        except Exception:
+            logger.debug("status_callback error in _touch_activity", exc_info=True)
 
     def _is_direct_openai_url(self, base_url: str = None) -> bool:
         """Return True when a base URL targets OpenAI's native API."""
@@ -2688,6 +2766,64 @@ class AIAgent:
         is present — so orphans from session loading or manual message
         manipulation are always caught.
         """
+        normalized_tool_calls = 0
+        generated_tool_call_ids = 0
+        for msg in messages:
+            if msg.get("role") != "assistant":
+                continue
+            tool_calls = msg.get("tool_calls")
+            if not isinstance(tool_calls, list):
+                continue
+            cleaned_calls: List[Dict[str, Any]] = []
+            for idx, tc in enumerate(tool_calls):
+                if not isinstance(tc, dict):
+                    continue
+                tc_clean = dict(tc)
+                fn = tc_clean.get("function")
+                if not isinstance(fn, dict):
+                    fn = {}
+
+                fn_name = fn.get("name")
+                if not isinstance(fn_name, str) or not fn_name.strip():
+                    fn_name = "unknown_tool"
+                    normalized_tool_calls += 1
+
+                fn_args = fn.get("arguments")
+                if isinstance(fn_args, (dict, list)):
+                    fn_args = json.dumps(fn_args, ensure_ascii=False)
+                    normalized_tool_calls += 1
+                elif fn_args is None:
+                    fn_args = "{}"
+                    normalized_tool_calls += 1
+                else:
+                    fn_args = str(fn_args)
+                fn_args = fn_args.strip() or "{}"
+                try:
+                    json.loads(fn_args)
+                except Exception:
+                    fn_args = "{}"
+                    normalized_tool_calls += 1
+
+                tc_id = tc_clean.get("id")
+                if not isinstance(tc_id, str) or not tc_id.strip():
+                    tc_clean["id"] = f"fc_{uuid.uuid4().hex[:24]}"
+                    generated_tool_call_ids += 1
+
+                tc_clean["type"] = "function"
+                tc_clean["function"] = {
+                    "name": fn_name.strip(),
+                    "arguments": fn_args,
+                }
+                cleaned_calls.append(tc_clean)
+            msg["tool_calls"] = cleaned_calls
+
+        if normalized_tool_calls or generated_tool_call_ids:
+            logger.debug(
+                "Pre-call sanitizer: normalized %d tool_call field(s), generated %d missing tool_call id(s)",
+                normalized_tool_calls,
+                generated_tool_call_ids,
+            )
+
         surviving_call_ids: set = set()
         for msg in messages:
             if msg.get("role") == "assistant":
@@ -2790,7 +2926,8 @@ class AIAgent:
 
         1. Try lowercase
         2. Try normalized (lowercase + hyphens/spaces -> underscores)
-        3. Try fuzzy match (difflib, cutoff=0.7)
+        3. Try repeated-name collapse (e.g. read_fileread_fileread_file)
+        4. Try fuzzy match (difflib, cutoff=0.7)
 
         Returns the repaired name if found in valid_tool_names, else None.
         """
@@ -2806,7 +2943,27 @@ class AIAgent:
         if normalized in self.valid_tool_names:
             return normalized
 
-        # 3. Fuzzy match
+        # 3. Collapse accidental repeated concatenations:
+        # "read_fileread_fileread_file" -> "read_file"
+        for candidate in self.valid_tool_names:
+            cand = str(candidate or "").strip().lower()
+            if not cand:
+                continue
+            # Exact repeated token form: candcand... (2+ times)
+            if re.fullmatch(rf"(?:{re.escape(cand)}){{2,}}", lowered):
+                return cand
+            if re.fullmatch(rf"(?:{re.escape(cand)}){{2,}}", normalized):
+                return cand
+            # Flat form (underscores dropped by model): readfilereadfile...
+            cand_flat = cand.replace("_", "")
+            low_flat = lowered.replace("_", "")
+            norm_flat = normalized.replace("_", "")
+            if cand_flat and re.fullmatch(rf"(?:{re.escape(cand_flat)}){{2,}}", low_flat):
+                return cand
+            if cand_flat and re.fullmatch(rf"(?:{re.escape(cand_flat)}){{2,}}", norm_flat):
+                return cand
+
+        # 4. Fuzzy match
         matches = get_close_matches(lowered, self.valid_tool_names, n=1, cutoff=0.7)
         if matches:
             return matches[0]
@@ -3422,7 +3579,53 @@ class AIAgent:
                 self._client_log_context(),
             )
             return client
-        client = OpenAI(**client_kwargs)
+        if self.provider == "google-gemini-cli" or str(client_kwargs.get("base_url", "")).startswith("cloudcode-pa://"):
+            from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
+
+            safe_kwargs = {
+                k: v for k, v in client_kwargs.items()
+                if k in {"api_key", "base_url", "default_headers", "project_id", "timeout"}
+            }
+            client = GeminiCloudCodeClient(**safe_kwargs)
+            logger.info(
+                "Gemini Cloud Code Assist client created (%s, shared=%s) %s",
+                reason,
+                shared,
+                self._client_log_context(),
+            )
+            return client
+        # For custom/direct endpoints, inject an explicit httpx client with
+        # conservative connection pool limits and keepalive settings.
+        # Without this, shared clients can reuse stale pooled connections that
+        # the server already closed, causing frequent APIConnectionError spikes.
+        kwargs = dict(client_kwargs)
+        if "http_client" not in kwargs:
+            _base = str(kwargs.get("base_url", "")).lower()
+            _is_aggregator = any(x in _base for x in ("openrouter.ai", "openai.com", "anthropic.com"))
+            if not _is_aggregator:
+                try:
+                    import httpx as _httpx
+                    kwargs["http_client"] = _httpx.Client(
+                        timeout=_httpx.Timeout(
+                            connect=10.0,
+                            read=300.0,
+                            write=30.0,
+                            pool=10.0,
+                        ),
+                        limits=_httpx.Limits(
+                            max_connections=10,
+                            max_keepalive_connections=2,
+                            keepalive_expiry=30.0,
+                        ),
+                    )
+                    logger.debug(
+                        "OpenAI client: injected explicit httpx client for custom endpoint (%s)",
+                        reason,
+                    )
+                except ImportError:
+                    pass
+
+        client = OpenAI(**kwargs)
         logger.info(
             "OpenAI client created (%s, shared=%s) %s",
             reason,
@@ -3430,6 +3633,24 @@ class AIAgent:
             self._client_log_context(),
         )
         return client
+
+    @staticmethod
+    def _normalize_proxy_url(value: Any) -> str:
+        proxy = str(value or "").strip()
+        return proxy.rstrip("/")
+
+    def _apply_proxy_to_client_kwargs(self, client_kwargs: dict, proxy_value: Any) -> None:
+        """Attach an explicit HTTP proxy transport to OpenAI-compatible clients."""
+        proxy_url = self._normalize_proxy_url(proxy_value)
+        if not proxy_url:
+            return
+        if self.provider in {"copilot-acp", "google-gemini-cli"}:
+            # Non-OpenAI transports (ACP/stdin and cloudcode adapter) don't
+            # accept OpenAI http_client kwargs.
+            return
+        # Ensure we never carry a stale transport when rotating profiles.
+        client_kwargs.pop("http_client", None)
+        client_kwargs["http_client"] = DefaultHttpxClient(proxy=proxy_url)
 
     def _close_openai_client(self, client: Any, *, reason: str, shared: bool) -> None:
         if client is None:
@@ -3707,6 +3928,9 @@ class AIAgent:
         Each worker thread gets its own OpenAI client instance. Interrupts only
         close that worker-local client, so retries and other requests never
         inherit a closed transport.
+
+        Includes stale-call detection so hung non-streaming requests are
+        aborted and handed back to the main retry/fallback loop.
         """
         result = {"response": None, "error": None}
         request_client_holder = {"client": None}
@@ -3732,10 +3956,73 @@ class AIAgent:
                 if request_client is not None:
                     self._close_request_openai_client(request_client, reason="request_complete")
 
+        _stale_base = float(os.getenv("HERMES_API_CALL_STALE_TIMEOUT", 300.0))
+        _base_url = getattr(self, "_base_url", None) or ""
+        if _stale_base == 300.0 and _base_url and is_local_endpoint(_base_url):
+            _stale_timeout = float("inf")
+        else:
+            _est_tokens = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
+            if _est_tokens > 100_000:
+                _stale_timeout = max(_stale_base, 600.0)
+            elif _est_tokens > 50_000:
+                _stale_timeout = max(_stale_base, 450.0)
+            else:
+                _stale_timeout = _stale_base
+
+        _call_start = time.time()
+        self._touch_activity("waiting for non-streaming API response")
         t = threading.Thread(target=_call, daemon=True)
         t.start()
+        _poll_count = 0
         while t.is_alive():
             t.join(timeout=0.3)
+            _poll_count += 1
+            if _poll_count % 100 == 0:
+                _elapsed = time.time() - _call_start
+                self._touch_activity(
+                    f"waiting for non-streaming response ({int(_elapsed)}s elapsed)"
+                )
+
+            _elapsed = time.time() - _call_start
+            if _elapsed > _stale_timeout:
+                _est_ctx = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
+                logger.warning(
+                    "Non-streaming API call stale for %.0fs (threshold %.0fs). model=%s context=~%s tokens. Killing connection.",
+                    _elapsed,
+                    _stale_timeout,
+                    api_kwargs.get("model", "unknown"),
+                    f"{_est_ctx:,}",
+                )
+                self._emit_status(
+                    f"⚠️ No response from provider for {int(_elapsed)}s "
+                    f"(non-streaming, model: {api_kwargs.get('model', 'unknown')}). Aborting call."
+                )
+                try:
+                    if self.api_mode == "anthropic_messages":
+                        from agent.anthropic_adapter import build_anthropic_client
+
+                        self._anthropic_client.close()
+                        self._anthropic_client = build_anthropic_client(
+                            self._anthropic_api_key,
+                            getattr(self, "_anthropic_base_url", None),
+                        )
+                    else:
+                        request_client = request_client_holder.get("client")
+                        if request_client is not None:
+                            self._close_request_openai_client(request_client, reason="stale_call_kill")
+                except Exception:
+                    pass
+                self._touch_activity(
+                    f"stale non-streaming call killed after {int(_elapsed)}s"
+                )
+                t.join(timeout=2.0)
+                if result["error"] is None and result["response"] is None:
+                    result["error"] = TimeoutError(
+                        f"Non-streaming API call timed out after {int(_elapsed)}s "
+                        f"with no response (threshold: {int(_stale_timeout)}s)"
+                    )
+                break
+
             if self._interrupt_requested:
                 # Force-close the in-flight worker-local HTTP connection to stop
                 # token generation without poisoning the shared client used to
@@ -3860,7 +4147,14 @@ class AIAgent:
             """Stream a chat completions response."""
             import httpx as _httpx
             _base_timeout = float(os.getenv("HERMES_API_TIMEOUT", 1800.0))
-            _stream_read_timeout = float(os.getenv("HERMES_STREAM_READ_TIMEOUT", 60.0))
+            _stream_read_timeout = float(os.getenv("HERMES_STREAM_READ_TIMEOUT", 120.0))
+            if _stream_read_timeout == 120.0 and self.base_url and is_local_endpoint(self.base_url):
+                _stream_read_timeout = _base_timeout
+                logger.debug(
+                    "Local provider detected (%s) — stream read timeout raised to %.0fs",
+                    self.base_url,
+                    _stream_read_timeout,
+                )
             stream_kwargs = {
                 **api_kwargs,
                 "stream": True,
@@ -4129,6 +4423,17 @@ class AIAgent:
                                 )
 
                         if _is_timeout or _is_conn_err or _is_sse_conn_err:
+                            # If another chain profile is available, don't spend
+                            # extra stream retries on the same profile. Bubble
+                            # immediately so the main loop can switch profile.
+                            if self._has_remaining_fallbacks():
+                                logger.info(
+                                    "Streaming failed (%s) with fallback chain available; "
+                                    "skipping stream retries for immediate profile switch.",
+                                    type(e).__name__,
+                                )
+                                result["error"] = e
+                                return
                             # Transient network / timeout error. Retry the
                             # streaming request with a fresh connection first.
                             if _stream_attempt < _max_stream_retries:
@@ -4140,6 +4445,10 @@ class AIAgent:
                                     type(e).__name__,
                                     e,
                                 )
+                                self._touch_activity(
+                                    f"stream retry {_stream_attempt + 2}/{_max_stream_retries + 1} "
+                                    f"after {type(e).__name__}"
+                                )
                                 # Close the stale request client before retry
                                 stale = request_client_holder.get("client")
                                 if stale is not None:
@@ -4149,8 +4458,7 @@ class AIAgent:
                                     request_client_holder["client"] = None
                                 continue
                             logger.warning(
-                                "Streaming exhausted %s retries on transient error, "
-                                "falling back to non-streaming: %s",
+                                "Streaming exhausted %s retries on transient error: %s",
                                 _max_stream_retries + 1,
                                 e,
                             )
@@ -4161,25 +4469,21 @@ class AIAgent:
                                 and "not supported" in _err_lower
                             )
                             if _is_stream_unsupported:
+                                self._disable_streaming = True
                                 self._safe_print(
                                     "\n⚠  Streaming is not supported for this "
-                                    "model/provider. Falling back to non-streaming.\n"
+                                    "model/provider. Switching to non-streaming.\n"
                                     "   To avoid this delay, set display.streaming: false "
                                     "in config.yaml\n"
                                 )
                             logger.info(
-                                "Streaming failed before delivery, falling back to non-streaming: %s",
+                                "Streaming failed before delivery: %s",
                                 e,
                             )
 
-                        try:
-                            # Reset stale timer — the non-streaming fallback
-                            # uses its own client; prevent the stale detector
-                            # from firing on stale timestamps from failed streams.
-                            last_chunk_time["t"] = time.time()
-                            result["response"] = self._interruptible_api_call(api_kwargs)
-                        except Exception as fallback_err:
-                            result["error"] = fallback_err
+                        # Bubble to the main retry loop so backoff, auth refresh,
+                        # and provider fallback remain centralized.
+                        result["error"] = e
                         return
             finally:
                 request_client = request_client_holder.get("client")
@@ -4222,6 +4526,9 @@ class AIAgent:
                 # Reset the timer so we don't kill repeatedly while
                 # the inner thread processes the closure.
                 last_chunk_time["t"] = time.time()
+                self._touch_activity(
+                    f"stale stream detected after {int(_stream_stale_timeout)}s, reconnecting"
+                )
 
             if self._interrupt_requested:
                 try:
@@ -4246,24 +4553,141 @@ class AIAgent:
 
     # ── Provider fallback ──────────────────────────────────────────────────
 
-    def _try_activate_fallback(self) -> bool:
-        """Switch to the configured fallback model/provider.
+    def _load_fallback_chain_from_config(self) -> List[Dict[str, Any]]:
+        """Load additional fallback candidates from config.yaml."""
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if not cfg_path.exists():
+                return []
+            with open(cfg_path, encoding="utf-8") as _f:
+                cfg = _y.safe_load(_f) or {}
+            items = cfg.get("fallback_providers", []) or []
+            out: List[Dict[str, Any]] = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                provider = (item.get("provider") or "").strip()
+                model = (item.get("model") or "").strip()
+                if not provider or not model:
+                    continue
+                out.append({
+                    "provider": provider,
+                    "model": model,
+                    "base_url": (item.get("base_url") or "").strip(),
+                    "api_key": (item.get("api_key") or "").strip(),
+                    "profile_name": (item.get("profile_name") or item.get("name") or "").strip(),
+                })
+            return out
+        except Exception:
+            return []
 
-        Called when the primary model is failing after retries.  Swaps the
-        OpenAI client, model slug, and provider in-place so the retry loop
-        can continue with the new backend.  One-shot: returns False if
-        already activated or not configured.
+    def _load_profile_key(self, profile_name: str) -> str:
+        """Resolve profile API key from model_profiles.json."""
+        return self._load_profile_value(profile_name, "api_key")
+
+    def _load_profile_proxy(self, profile_name: str) -> str:
+        """Resolve profile proxy URL from model_profiles.json."""
+        for key in ("proxy", "proxy_url", "http_proxy", "https_proxy"):
+            value = self._load_profile_value(profile_name, key)
+            if value:
+                return value
+        return ""
+
+    def _load_profile_value(self, profile_name: str, field: str) -> str:
+        """Resolve a single profile field from model_profiles.json."""
+        name = (profile_name or "").strip()
+        key = (field or "").strip()
+        if not key:
+            return ""
+        if not name:
+            return ""
+        try:
+            if self._fallback_profiles_cache is None:
+                p = _hermes_home / "model_profiles.json"
+                if p.exists():
+                    self._fallback_profiles_cache = json.loads(p.read_text(encoding="utf-8"))
+                else:
+                    self._fallback_profiles_cache = []
+            for item in (self._fallback_profiles_cache or []):
+                if not isinstance(item, dict):
+                    continue
+                if (item.get("name") or "").strip() == name:
+                    return str(item.get(key) or "").strip()
+        except Exception:
+            return ""
+        return ""
+
+    def _has_remaining_fallbacks(self) -> bool:
+        return bool(self._fallback_chain) and (self._fallback_cursor + 1) < len(self._fallback_chain)
+
+    def _next_fallback_candidate(self) -> tuple[int, Optional[Dict[str, Any]]]:
+        """Return the next fallback candidate index+config, skipping current identity."""
+        if not self._has_remaining_fallbacks():
+            return -1, None
+
+        def _norm(v: Any) -> str:
+            return str(v or "").strip().lower()
+
+        def _norm_url(v: Any) -> str:
+            s = str(v or "").strip().lower()
+            return s.rstrip("/")
+
+        cur_sig = (
+            _norm(self.provider),
+            _norm(self.model),
+            _norm_url(self.base_url),
+            str(self.api_key or "").strip(),
+            _norm_url(getattr(self, "proxy", "")),
+        )
+
+        for idx in range(self._fallback_cursor + 1, len(self._fallback_chain)):
+            fb = dict(self._fallback_chain[idx] or {})
+            if not fb:
+                continue
+            if fb.get("profile_name"):
+                # Prefer profile-bound secrets over inline config copies.
+                # Inline fallback api_key values in config can become stale.
+                _profile_key = self._load_profile_key(str(fb.get("profile_name")))
+                if _profile_key:
+                    fb["api_key"] = _profile_key
+                elif not fb.get("api_key"):
+                    fb["api_key"] = ""
+                _profile_proxy = self._load_profile_proxy(str(fb.get("profile_name")))
+                if _profile_proxy:
+                    fb["proxy"] = _profile_proxy
+                elif not fb.get("proxy"):
+                    fb["proxy"] = ""
+            cand_sig = (
+                _norm(fb.get("provider")),
+                _norm(fb.get("model")),
+                _norm_url(fb.get("base_url")),
+                str(fb.get("api_key") or "").strip(),
+                _norm_url(fb.get("proxy")),
+            )
+            if cand_sig == cur_sig:
+                continue
+            return idx, fb
+        return -1, None
+
+    def _try_activate_fallback(self) -> bool:
+        """Switch to the next configured fallback model/provider.
+
+        Called when the current model is failing. Swaps client/model/provider
+        in-place so the retry loop can continue with the next chain backend.
 
         Uses the centralized provider router (resolve_provider_client) for
         auth resolution and client construction — no duplicated provider→key
         mappings.
         """
-        if self._fallback_activated or not self._fallback_model:
+        idx, fb = self._next_fallback_candidate()
+        if not fb:
             return False
-
-        fb = self._fallback_model
         fb_provider = (fb.get("provider") or "").strip().lower()
         fb_model = (fb.get("model") or "").strip()
+        fb_api_key = (fb.get("api_key") or "").strip()
+        fb_base_url_override = (fb.get("base_url") or "").strip()
+        fb_proxy = self._normalize_proxy_url(fb.get("proxy"))
         if not fb_provider or not fb_model:
             return False
 
@@ -4295,6 +4719,8 @@ class AIAgent:
             self.provider = fb_provider
             self.base_url = fb_base_url
             self.api_mode = fb_api_mode
+            self.proxy = fb_proxy
+            self._fallback_cursor = idx
             self._fallback_activated = True
 
             if fb_api_mode == "anthropic_messages":
@@ -4309,13 +4735,49 @@ class AIAgent:
                 self.client = None
                 self._client_kwargs = {}
             else:
-                # Swap OpenAI client and config in-place
-                self.api_key = fb_client.api_key
-                self.client = fb_client
+                # Swap OpenAI-compatible client and config in-place.
+                # When fallback_model carries explicit credentials (e.g. chain
+                # profile B with a different API key), prefer those over
+                # provider defaults so A->B actually rotates credentials.
+                effective_api_key = fb_api_key or fb_client.api_key
+                effective_base_url = fb_base_url_override or fb_base_url
+                fb_default_headers = None
+                if hasattr(fb_client, "_default_headers") and fb_client._default_headers:
+                    fb_default_headers = dict(fb_client._default_headers)
+                if fb_proxy:
+                    fb_client_kwargs = {
+                        "api_key": effective_api_key,
+                        "base_url": effective_base_url,
+                    }
+                    if fb_default_headers:
+                        fb_client_kwargs["default_headers"] = fb_default_headers
+                    self._apply_proxy_to_client_kwargs(fb_client_kwargs, fb_proxy)
+                    self.client = self._create_openai_client(
+                        fb_client_kwargs,
+                        reason="fallback_switch",
+                        shared=True,
+                    )
+                elif fb_provider == "custom" and effective_api_key and effective_base_url:
+                    client_kwargs = {
+                        "api_key": effective_api_key,
+                        "base_url": effective_base_url,
+                    }
+                    if fb_default_headers:
+                        client_kwargs["default_headers"] = fb_default_headers
+                    self.client = OpenAI(**client_kwargs)
+                else:
+                    self.client = fb_client
+                self.api_key = effective_api_key
+                self.base_url = effective_base_url
+                self.proxy = fb_proxy
                 self._client_kwargs = {
-                    "api_key": fb_client.api_key,
-                    "base_url": fb_base_url,
+                    "api_key": effective_api_key,
+                    "base_url": effective_base_url,
                 }
+                if fb_default_headers:
+                    self._client_kwargs["default_headers"] = fb_default_headers
+                if fb_proxy:
+                    self._apply_proxy_to_client_kwargs(self._client_kwargs, fb_proxy)
 
             # Re-evaluate prompt caching for the new provider/model
             is_native_anthropic = fb_api_mode == "anthropic_messages"
@@ -4343,13 +4805,34 @@ class AIAgent:
                     fb_context_length * self.context_compressor.threshold_percent
                 )
 
+            runtime_profile = (fb.get("profile_name") or "").strip()
+            profile_suffix = f" ({runtime_profile})" if runtime_profile else ""
             self._emit_status(
-                f"🔄 Primary model failed — switching to fallback: "
-                f"{fb_model} via {fb_provider}"
+                f"🔄 Switching to fallback {idx + 1}/{len(self._fallback_chain)}: "
+                f"{fb_model} via {fb_provider}{profile_suffix}"
             )
+            # Write short-lived runtime profile signal for UI status.
+            # Needed when A/B/C share same provider+model+base_url but
+            # differ only by API key/account.
+            try:
+                runtime_home = os.getenv("HERMES_HOME", "/mnt/mmcblk2p4/.hermes")
+                runtime_file = os.path.join(runtime_home, "runtime_active_profile.json")
+                with open(runtime_file, "w", encoding="utf-8") as rf:
+                    json.dump(
+                        {
+                            "ts": int(time.time()),
+                            "profile_name": runtime_profile,
+                            "provider": fb_provider,
+                            "model": fb_model,
+                            "base_url": fb_base_url,
+                        },
+                        rf,
+                    )
+            except Exception:
+                pass
             logging.info(
-                "Fallback activated: %s → %s (%s)",
-                old_model, fb_model, fb_provider,
+                "Fallback activated: %s → %s (%s) profile=%s",
+                old_model, fb_model, fb_provider, (runtime_profile or "n/a"),
             )
             return True
         except Exception as e:
@@ -6364,7 +6847,9 @@ class AIAgent:
                             self.thinking_callback("")
 
                     _use_streaming = True
-                    if not self._has_stream_consumers():
+                    if getattr(self, "_disable_streaming", False):
+                        _use_streaming = False
+                    elif not self._has_stream_consumers():
                         # No display/TTS consumer. Still prefer streaming for
                         # health checking, but skip for Mock clients in tests
                         # (mocks return SimpleNamespace, not stream iterators).
@@ -6448,10 +6933,11 @@ class AIAgent:
                         # Eager fallback: empty/malformed responses are a common
                         # rate-limit symptom.  Switch to fallback immediately
                         # rather than retrying with extended backoff.
-                        if not self._fallback_activated:
+                        if self._has_remaining_fallbacks():
                             self._emit_status("⚠️ Empty/malformed response — switching to fallback...")
-                        if not self._fallback_activated and self._try_activate_fallback():
+                        if self._try_activate_fallback():
                             retry_count = 0
+                            compression_attempts = 0
                             continue
 
                         # Check for error field in response (some providers include this)
@@ -6487,10 +6973,22 @@ class AIAgent:
                             self._emit_status(f"⚠️ Max retries ({max_retries}) for invalid responses — trying fallback...")
                             if self._try_activate_fallback():
                                 retry_count = 0
+                                compression_attempts = 0
                                 continue
                             self._emit_status(f"❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
                             logging.error(f"{self.log_prefix}Invalid API response after {max_retries} retries.")
-                            self._persist_session(messages, conversation_history)
+                            # Avoid poisoning large sessions with repeated
+                            # malformed/empty failures (common under timeout
+                            # pressure). This reduces cases where /reset
+                            # becomes necessary after a failed turn.
+                            if approx_tokens > 50000 or len(api_messages) > 80:
+                                self._vprint(
+                                    f"{self.log_prefix}⚠️  Skipping session persistence "
+                                    f"for large failed turn to keep session usable.",
+                                    force=True,
+                                )
+                            else:
+                                self._persist_session(messages, conversation_history)
                             return {
                                 "messages": messages,
                                 "completed": False,
@@ -6499,13 +6997,18 @@ class AIAgent:
                                 "failed": True  # Mark as failure for filtering
                             }
                         
-                        # Longer backoff for rate limiting (likely cause of None choices)
-                        wait_time = min(5 * (2 ** (retry_count - 1)), 120)  # 5s, 10s, 20s, 40s, 80s, 120s
+                        # Longer backoff for invalid/malformed responses with jitter.
+                        wait_time = jittered_backoff(
+                            retry_count,
+                            base_delay=5.0,
+                            max_delay=120.0,
+                        )
                         self._vprint(f"{self.log_prefix}⏳ Retrying in {wait_time}s (extended backoff for possible rate limit)...", force=True)
                         logging.warning(f"Invalid API response (retry {retry_count}/{max_retries}): {', '.join(error_details)} | Provider: {provider_name}")
                         
                         # Sleep in small increments to stay responsive to interrupts
                         sleep_end = time.time() + wait_time
+                        _backoff_touch_counter = 0
                         while time.time() < sleep_end:
                             if self._interrupt_requested:
                                 self._vprint(f"{self.log_prefix}⚡ Interrupt detected during retry wait, aborting.", force=True)
@@ -6519,6 +7022,12 @@ class AIAgent:
                                     "interrupted": True,
                                 }
                             time.sleep(0.2)
+                            _backoff_touch_counter += 1
+                            if _backoff_touch_counter % 150 == 0:
+                                self._touch_activity(
+                                    f"retry backoff ({retry_count}/{max_retries}), "
+                                    f"{int(sleep_end - time.time())}s remaining"
+                                )
                         continue  # Retry the API call
 
                     # Check finish_reason before proceeding
@@ -6835,6 +7344,9 @@ class AIAgent:
 
                     retry_count += 1
                     elapsed_time = time.time() - api_start_time
+                    self._touch_activity(
+                        f"API error recovery (attempt {retry_count}/{max_retries})"
+                    )
                     
                     error_type = type(api_error).__name__
                     error_msg = str(api_error).lower()
@@ -6893,10 +7405,33 @@ class AIAgent:
                         or "usage limit" in error_msg
                         or "quota" in error_msg
                     )
-                    if is_rate_limited and not self._fallback_activated:
+                    if is_rate_limited and self._has_remaining_fallbacks():
                         self._emit_status("⚠️ Rate limited — switching to fallback provider...")
                         if self._try_activate_fallback():
                             retry_count = 0
+                            compression_attempts = 0
+                            continue
+
+                    # Eager fallback for timeout/network failures.
+                    # These are often endpoint/key-path specific and can be
+                    # resolved faster by moving to next chain profile than by
+                    # waiting through repeated retries on the same backend.
+                    is_timeout_or_network = (
+                        isinstance(api_error, (TimeoutError, ConnectionError))
+                        or "timed out" in error_msg
+                        or "read operation timed out" in error_msg
+                        or "read timeout" in error_msg
+                        or "connect timeout" in error_msg
+                        or "network error" in error_msg
+                        or "connection reset" in error_msg
+                        or "connection closed" in error_msg
+                        or "connection lost" in error_msg
+                    )
+                    if is_timeout_or_network and self._has_remaining_fallbacks():
+                        self._emit_status("⚠️ Timeout/network error — switching to next chain profile...")
+                        if self._try_activate_fallback():
+                            retry_count = 0
+                            compression_attempts = 0
                             continue
 
                     is_payload_too_large = (
@@ -7078,6 +7613,7 @@ class AIAgent:
                         self._emit_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
                         if self._try_activate_fallback():
                             retry_count = 0
+                            compression_attempts = 0
                             continue
                         self._dump_api_request_debug(
                             api_kwargs, reason="non_retryable_client_error", error=api_error,
@@ -7122,6 +7658,7 @@ class AIAgent:
                         self._emit_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
                         if self._try_activate_fallback():
                             retry_count = 0
+                            compression_attempts = 0
                             continue
                         _final_summary = self._summarize_api_error(api_error)
                         self._vprint(f"{self.log_prefix}❌ Max retries ({max_retries}) exceeded. Giving up.", force=True)
@@ -7164,7 +7701,22 @@ class AIAgent:
                         self._dump_api_request_debug(
                             api_kwargs, reason="max_retries_exhausted", error=api_error,
                         )
-                        self._persist_session(messages, conversation_history)
+                        # For timeout/network failures on large sessions, do
+                        # not persist the failed turn. Persisting it grows the
+                        # context and makes the next turn even more likely to
+                        # fail, which often leads to needing /reset.
+                        _skip_persist_timeout_growth = (
+                            is_timeout_or_network
+                            and (approx_tokens > 50000 or len(api_messages) > 80)
+                        )
+                        if _skip_persist_timeout_growth:
+                            self._vprint(
+                                f"{self.log_prefix}⚠️  Skipping session persistence "
+                                f"after timeout/network failure to keep session recoverable.",
+                                force=True,
+                            )
+                        else:
+                            self._persist_session(messages, conversation_history)
                         _final_response = f"API call failed after {max_retries} retries: {_final_summary}"
                         if _is_stream_drop:
                             _final_response += (
@@ -7184,7 +7736,27 @@ class AIAgent:
                             "error": _final_summary,
                         }
 
-                    wait_time = min(2 ** retry_count, 60)  # Exponential backoff: 2s, 4s, 8s, 16s, 32s, 60s, 60s
+                    wait_time = jittered_backoff(
+                        retry_count,
+                        base_delay=2.0,
+                        max_delay=60.0,
+                    )
+                    # Gemini Code Assist often returns explicit quota windows:
+                    # "quota will reset after Ns". Honor that to avoid wasteful
+                    # retries that fail right before capacity unlock.
+                    if is_rate_limited:
+                        try:
+                            import re as _re
+
+                            _rate_text = f"{_error_summary}\n{api_error}"
+                            _m = _re.search(r"reset after\s+(\d+)\s*s", _rate_text, flags=_re.IGNORECASE)
+                            if _m:
+                                _reset_after = int(_m.group(1))
+                                # Add a small buffer so we don't retry a fraction
+                                # before the provider's quota window fully opens.
+                                wait_time = max(wait_time, min(_reset_after + 1, 120))
+                        except Exception:
+                            pass
                     self._emit_status(f"⏳ Retrying in {wait_time}s (attempt {retry_count}/{max_retries})...")
                     logger.warning(
                         "Retrying API call in %ss (attempt %s/%s) %s error=%s",
@@ -7197,6 +7769,7 @@ class AIAgent:
                     # Sleep in small increments so we can respond to interrupts quickly
                     # instead of blocking the entire wait_time in one sleep() call
                     sleep_end = time.time() + wait_time
+                    _backoff_touch_counter = 0
                     while time.time() < sleep_end:
                         if self._interrupt_requested:
                             self._vprint(f"{self.log_prefix}⚡ Interrupt detected during retry wait, aborting.", force=True)
@@ -7210,6 +7783,12 @@ class AIAgent:
                                 "interrupted": True,
                             }
                         time.sleep(0.2)  # Check interrupt every 200ms
+                        _backoff_touch_counter += 1
+                        if _backoff_touch_counter % 150 == 0:
+                            self._touch_activity(
+                                f"error retry backoff ({retry_count}/{max_retries}), "
+                                f"{int(sleep_end - time.time())}s remaining"
+                            )
             
             # If the API call was interrupted, skip response processing
             if interrupted:
