@@ -137,6 +137,7 @@ Plugins can register callbacks for these lifecycle events. See the **[Event Hook
 |------|-----------|
 | [`pre_tool_call`](/docs/user-guide/features/hooks#pre_tool_call) | Before any tool executes |
 | [`post_tool_call`](/docs/user-guide/features/hooks#post_tool_call) | After any tool returns |
+| [`on_clarify`](/docs/user-guide/features/hooks#on_clarify) | Before the `clarify` tool blocks on user input |
 | [`pre_llm_call`](/docs/user-guide/features/hooks#pre_llm_call) | Once per turn, before the LLM loop — can return `{"context": "..."}` to [inject context into the user message](/docs/user-guide/features/hooks#pre_llm_call) |
 | [`post_llm_call`](/docs/user-guide/features/hooks#post_llm_call) | Once per turn, after the LLM loop (successful turns only) |
 | [`on_session_start`](/docs/user-guide/features/hooks#on_session_start) | New session created (first turn only) |

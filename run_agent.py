@@ -7603,6 +7603,9 @@ class AIAgent:
                 question=function_args.get("question", ""),
                 choices=function_args.get("choices"),
                 callback=self.clarify_callback,
+                session_id=self.session_id or "",
+                model=self.model or "",
+                platform=getattr(self, "platform", None) or "",
             )
         elif function_name == "delegate_task":
             from tools.delegate_tool import delegate_task as _delegate_task
@@ -8124,6 +8127,9 @@ class AIAgent:
                     question=function_args.get("question", ""),
                     choices=function_args.get("choices"),
                     callback=self.clarify_callback,
+                    session_id=self.session_id or "",
+                    model=self.model or "",
+                    platform=getattr(self, "platform", None) or "",
                 )
                 tool_duration = time.time() - tool_start_time
                 if self._should_emit_quiet_tool_messages():

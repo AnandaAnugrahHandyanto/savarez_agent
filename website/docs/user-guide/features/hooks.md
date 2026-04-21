@@ -239,6 +239,7 @@ def register(ctx):
 |------|-----------|---------|
 | [`pre_tool_call`](#pre_tool_call) | Before any tool executes | ignored |
 | [`post_tool_call`](#post_tool_call) | After any tool returns | ignored |
+| [`on_clarify`](#on_clarify) | Before the `clarify` tool blocks on user input | ignored |
 | [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | context injection |
 | [`post_llm_call`](#post_llm_call) | Once per turn, after the tool-calling loop | ignored |
 | [`on_session_start`](#on_session_start) | New session created (first turn only) | ignored |
@@ -344,6 +345,53 @@ def track_metrics(tool_name, result, **kwargs):
 
 def register(ctx):
     ctx.register_hook("post_tool_call", track_metrics)
+```
+
+---
+
+### `on_clarify`
+
+Fires inside the `clarify` tool, **after input validation** and **before** the tool blocks waiting for the user's answer. Use this when you want to react specifically to "the agent is about to ask the user a question" — for example, surfacing a desktop notification when the CLI window is minimized.
+
+This hook does **not** fire for:
+- Malformed `clarify` calls (empty question, missing callback, invalid `choices` type) — they short-circuit to an error before the hook runs.
+- Any other tool — this hook is specific to `clarify`. For general tool observation, use [`pre_tool_call`](#pre_tool_call) / [`post_tool_call`](#post_tool_call).
+
+**Callback signature:**
+
+```python
+def my_callback(question: str, choices: list[str] | None, session_id: str,
+                model: str, platform: str, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `question` | `str` | The validated, whitespace-stripped question the user will see |
+| `choices` | `list[str]` or `None` | Normalized multiple-choice list (stripped; trimmed to at most `MAX_CHOICES`). `None` for open-ended questions. |
+| `session_id` | `str` | Session identifier |
+| `model` | `str` | Model identifier |
+| `platform` | `str` | Where the session is running: `"cli"`, `"telegram"`, etc. |
+
+**Fires:** In `tools/clarify_tool.py`, inside `clarify_tool()`, after validation passes and before the platform callback blocks on user input. Fire-and-forget — there is no `post_clarify` counterpart because notification toasts typically auto-dismiss.
+
+**Return value:** Ignored.
+
+**Use cases:** Desktop notifications when the agent is blocked on input, analytics on how often the agent asks for clarification, audit logs.
+
+**Example — desktop notification (macOS):**
+
+```python
+import subprocess
+
+def notify_clarify(question, choices, **kwargs):
+    preview = question if len(question) < 80 else question[:77] + "..."
+    subprocess.run([
+        "osascript", "-e",
+        f'display notification "{preview}" with title "Hermes needs input"',
+    ], check=False)
+
+def register(ctx):
+    ctx.register_hook("on_clarify", notify_clarify)
 ```
 
 ---
