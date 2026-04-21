@@ -2344,6 +2344,51 @@ def validate_requested_model(
                 ),
             }
 
+    # Google AI Studio routes Gemini through the native Gemini API rather than
+    # an OpenAI-compatible /models endpoint. Validate against the curated
+    # catalog so /model switches keep working after the native adapter change.
+    if normalized == "gemini":
+        try:
+            catalog_models = provider_model_ids(normalized)
+        except Exception:
+            catalog_models = []
+        if catalog_models:
+            catalog_lower = {m.lower(): m for m in catalog_models}
+            requested_lower = requested_for_lookup.lower()
+            if requested_lower in catalog_lower:
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": None,
+                }
+            catalog_lower_list = list(catalog_lower.keys())
+            auto = get_close_matches(requested_lower, catalog_lower_list, n=1, cutoff=0.9)
+            if auto:
+                corrected = catalog_lower[auto[0]]
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "corrected_model": corrected,
+                    "message": f"Auto-corrected `{requested}` → `{corrected}`",
+                }
+            suggestions = get_close_matches(requested_lower, catalog_lower_list, n=3, cutoff=0.5)
+            suggestion_text = ""
+            if suggestions:
+                suggestion_text = "\n  Similar models: " + ", ".join(f"`{catalog_lower[s]}`" for s in suggestions)
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": False,
+                "message": (
+                    f"Note: `{requested}` was not found in the Google AI Studio catalog."
+                    f"{suggestion_text}"
+                    "\n  Google AI Studio does not expose a /models endpoint for the native Gemini API,"
+                    "\n  so Hermes cannot verify the model name over the wire."
+                ),
+            }
+
     # Probe the live API to check if the model actually exists
     api_models = fetch_api_models(api_key, base_url)
 
