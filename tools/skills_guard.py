@@ -22,6 +22,7 @@ Usage:
         print(format_scan_report(result))
 """
 
+import ast
 import re
 import hashlib
 from dataclasses import dataclass, field
@@ -527,6 +528,172 @@ INVISIBLE_CHARS = {
 # Scanning functions
 # ---------------------------------------------------------------------------
 
+def _ast_scan_python(content: str, rel_path: str) -> List[Finding]:
+    """AST-level check for Python bypasses of the line-based regex scanner.
+
+    The regex layer matches literal ``__import__("os")``, ``getattr(mod, "system")``,
+    ``eval("...")``, etc. Malicious skills evade it by constructing the argument
+    dynamically — ``__import__("o" + "s")``, ``importlib.import_module("".join(["o","s"]))``,
+    ``getattr(m, "sys" + "tem")``, ``exec(base64.b64decode(...))``.
+
+    Shell tokenization that looks like a string literal (``'o' + 's'``, ``"".join([...])``)
+    never matches a literal-anchored regex but always executes the same way at
+    runtime. This pass walks the Python AST and flags calls whose first argument
+    is NOT a ``Constant`` (string literal) node.
+
+    The heuristic is tight on purpose — we only flag the functions whose
+    legitimate uses almost always take a string literal in skill code:
+
+      - ``__import__(...)``
+      - ``importlib.import_module(...)``
+      - ``getattr(..., <non-literal>)`` where the second arg is an attribute name
+      - ``exec(...)``, ``eval(...)``, ``compile(...)``
+
+    Severity ``high`` → community verdict becomes ``caution`` → install blocked
+    per INSTALL_POLICY, but trusted skills can still pass (they get ``caution=allow``).
+
+    Findings are additive to the regex findings, not a replacement — a literal
+    ``__import__("os")`` keeps its existing ``python_import_os`` tag and this
+    pass doesn't double-flag it.
+    """
+    try:
+        tree = ast.parse(content)
+    except (SyntaxError, ValueError):
+        # Not valid Python (partial snippets, template files, etc.). The regex
+        # layer still runs independently; skip AST checks silently.
+        return []
+
+    findings: List[Finding] = []
+
+    def _is_constructed_str(node: ast.AST) -> bool:
+        """True if ``node`` is an expression that constructs a string from
+        pieces at runtime — the obfuscation signal we actually care about.
+
+        Matches:
+          - ``'a' + 'b'`` and nested chains (``BinOp(Add)``)
+          - ``''.join([...])`` / ``'x'.join([...])``
+          - ``'...'.format(...)`` / ``f'...'`` (JoinedStr)
+          - ``bytes.fromhex('...').decode()`` and similar decode chains
+          - ``codecs.decode(...)``, ``base64.b64decode(...)``
+
+        Does NOT match a plain ``Name`` reference — legit code that loops
+        over an allowlist (``for a in ATTRS: getattr(obj, a)``) passes.
+        """
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            return True
+        if isinstance(node, ast.JoinedStr):  # f"..." with formatted values
+            return True
+        if isinstance(node, ast.Call):
+            func = node.func
+            # "".join([...]) or any .join(...) / .format(...) / .decode(...)
+            if isinstance(func, ast.Attribute) and func.attr in (
+                "join", "format", "decode", "fromhex", "b64decode",
+                "b32decode", "b16decode", "a85decode", "b85decode",
+            ):
+                return True
+            # codecs.decode(...), base64.b64decode(...) as direct Attribute calls
+            if isinstance(func, ast.Attribute):
+                parent = func.value
+                if isinstance(parent, ast.Name) and parent.id in (
+                    "codecs", "base64", "binascii",
+                ):
+                    return True
+        return False
+
+    def _callee_name(node: ast.Call) -> str:
+        """Return the display name of the callee for finding messages."""
+        func = node.func
+        if isinstance(func, ast.Name):
+            return func.id
+        if isinstance(func, ast.Attribute):
+            # importlib.import_module → "importlib.import_module"
+            parts = []
+            cur: ast.AST = func
+            while isinstance(cur, ast.Attribute):
+                parts.append(cur.attr)
+                cur = cur.value
+            if isinstance(cur, ast.Name):
+                parts.append(cur.id)
+            return ".".join(reversed(parts))
+        return "<complex>"
+
+    def _record(node: ast.Call, pid: str, description: str) -> None:
+        try:
+            snippet = ast.unparse(node)
+        except (AttributeError, ValueError):
+            snippet = _callee_name(node) + "(...)"
+        if len(snippet) > 120:
+            snippet = snippet[:117] + "..."
+        findings.append(Finding(
+            pattern_id=pid,
+            severity="high",
+            category="obfuscation",
+            file=rel_path,
+            line=getattr(node, "lineno", 0),
+            match=snippet,
+            description=description,
+        ))
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+
+        name = _callee_name(node)
+        args = node.args
+
+        # __import__(<constructed-str>) — bypasses regex literal match
+        if name == "__import__" and args and _is_constructed_str(args[0]):
+            _record(
+                node,
+                "python_dynamic_import_dunder",
+                "__import__() with constructed string argument (obfuscated dynamic import)",
+            )
+            continue
+
+        # importlib.import_module(<constructed-str>) — same bypass via the
+        # importlib path, which had no regex coverage at all
+        if name in ("importlib.import_module", "import_module"):
+            if args and _is_constructed_str(args[0]):
+                _record(
+                    node,
+                    "python_importlib_dynamic",
+                    "importlib.import_module() with constructed string argument "
+                    "(obfuscated dynamic import)",
+                )
+                continue
+
+        # getattr(<obj>, <constructed-attr-name>) — the token-concat bypass:
+        # getattr(m, 'sys' + 'tem') → m.system
+        if name == "getattr" and len(args) >= 2 and _is_constructed_str(args[1]):
+            _record(
+                node,
+                "python_getattr_dynamic_attr",
+                "getattr() with constructed attribute name "
+                "(obfuscated attribute access)",
+            )
+            continue
+
+        # exec/eval with non-literal argument — catches exec(base64.b64decode(...)),
+        # eval("".join([...])), exec(codecs.decode(...)) etc.
+        if name in ("exec", "eval") and args and _is_constructed_str(args[0]):
+            _record(
+                node,
+                f"python_{name}_dynamic",
+                f"{name}() with constructed string argument "
+                "(decoded/assembled code execution)",
+            )
+            continue
+
+        if name == "compile" and args and _is_constructed_str(args[0]):
+            _record(
+                node,
+                "python_compile_dynamic",
+                "compile() with constructed string source argument",
+            )
+
+    return findings
+
+
 def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     """
     Scan a single file for threat patterns and invisible unicode characters.
@@ -588,6 +755,13 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
                     description=f"invisible unicode character {char_name} (possible text hiding/injection)",
                 ))
                 break  # one finding per line for invisible chars
+
+    # AST-level check for Python files — catches bypasses of the line-based
+    # regex layer (token concatenation, importlib dynamic imports, getattr
+    # with constructed attribute names, exec/eval with non-literal arguments).
+    # See GHSA-gqg7-3hwp-74rv and GHSA-vhq2-hm76-j85j.
+    if file_path.suffix.lower() == ".py":
+        findings.extend(_ast_scan_python(content, rel_path))
 
     return findings
 

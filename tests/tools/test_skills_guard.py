@@ -514,3 +514,174 @@ class TestSymlinkPrefixConfusionRegression:
         new_escapes = not resolved.is_relative_to(skill_dir_resolved)
         assert old_escapes is False
         assert new_escapes is False
+
+
+class TestAstDynamicImportDetection:
+    """Advisories GHSA-gqg7-3hwp-74rv and GHSA-vhq2-hm76-j85j reported that
+    the line-based regex scanner missed dynamic-import bypasses where the
+    argument is constructed at runtime via concatenation, ``''.join([...])``,
+    f-strings, or base64 decoding. The AST pass in ``_ast_scan_python``
+    catches these by flagging calls with constructed-string arguments.
+    """
+
+    def _scan(self, tmp_path: Path, payload: str):
+        skill = tmp_path / "test-skill"
+        skill.mkdir()
+        (skill / "SKILL.md").write_text("# test\n")
+        (skill / "script.py").write_text(payload)
+        return scan_skill(skill, source="community")
+
+    # --- bypasses the regex layer missed ---------------------------------
+
+    def test_token_concat_dunder_import_detected(self, tmp_path):
+        """GHSA-gqg7: __import__('o' + 's') bypasses the literal regex."""
+        result = self._scan(tmp_path, "_m = __import__('o' + 's')\n")
+        assert result.verdict in ("caution", "dangerous")
+        allowed, _ = should_allow_install(result)
+        assert allowed is False
+        assert any(f.pattern_id == "python_dynamic_import_dunder"
+                   for f in result.findings)
+
+    def test_importlib_join_bypass_detected(self, tmp_path):
+        """GHSA-vhq2: importlib.import_module(''.join([...])) bypass."""
+        result = self._scan(
+            tmp_path,
+            "import importlib\n"
+            "_m = importlib.import_module(''.join(['o','s']))\n",
+        )
+        assert result.verdict in ("caution", "dangerous")
+        assert any(f.pattern_id == "python_importlib_dynamic"
+                   for f in result.findings)
+
+    def test_getattr_token_concat_detected(self, tmp_path):
+        """GHSA-gqg7: getattr(m, 'sys' + 'tem') bypass."""
+        result = self._scan(
+            tmp_path,
+            "import os\n"
+            "getattr(os, 'sys' + 'tem')\n",
+        )
+        assert result.verdict in ("caution", "dangerous")
+        assert any(f.pattern_id == "python_getattr_dynamic_attr"
+                   for f in result.findings)
+
+    def test_getattr_join_bypass_detected(self, tmp_path):
+        result = self._scan(
+            tmp_path,
+            "import os\n"
+            "getattr(os, ''.join(['e','n','v','i','r','o','n']))\n",
+        )
+        assert any(f.pattern_id == "python_getattr_dynamic_attr"
+                   for f in result.findings)
+
+    def test_exec_base64_decode_detected(self, tmp_path):
+        """Classic exec(base64.b64decode(...)) RCE pattern."""
+        result = self._scan(
+            tmp_path,
+            "import base64\n"
+            "exec(base64.b64decode(b'aW1wb3J0IG9z').decode())\n",
+        )
+        assert any(f.pattern_id == "python_exec_dynamic"
+                   for f in result.findings)
+
+    def test_eval_string_join_detected(self, tmp_path):
+        """eval with ''.join(...) argument."""
+        result = self._scan(
+            tmp_path,
+            "eval(''.join(['1', '+', '2']))\n",
+        )
+        assert any(f.pattern_id == "python_eval_dynamic"
+                   for f in result.findings)
+
+    def test_fstring_import_detected(self, tmp_path):
+        """__import__(f'{var}') — f-string arguments are constructed strings."""
+        result = self._scan(
+            tmp_path,
+            "name = 'os'\n"
+            "_m = __import__(f'{name}')\n",
+        )
+        assert any(f.pattern_id == "python_dynamic_import_dunder"
+                   for f in result.findings)
+
+    def test_compile_constructed_source_detected(self, tmp_path):
+        result = self._scan(
+            tmp_path,
+            "compile('x' + 'y', '<s>', 'exec')\n",
+        )
+        assert any(f.pattern_id == "python_compile_dynamic"
+                   for f in result.findings)
+
+    # --- legitimate patterns MUST NOT false-positive --------------------
+
+    def test_getattr_variable_name_not_flagged(self, tmp_path):
+        """Looping getattr(obj, name) over an allowlist is legit."""
+        result = self._scan(
+            tmp_path,
+            "import os\n"
+            "for a in ['getcwd', 'getenv']:\n"
+            "    print(getattr(os, a))\n",
+        )
+        # regex layer has no `getattr(obj, var)` pattern, so no regex finding either
+        assert not any(f.pattern_id == "python_getattr_dynamic_attr"
+                       for f in result.findings)
+
+    def test_importlib_variable_argument_not_flagged(self, tmp_path):
+        """importlib.import_module(plugin_name) — legit dynamic plugin loading."""
+        result = self._scan(
+            tmp_path,
+            "import importlib\n"
+            "def load(name):\n"
+            "    return importlib.import_module(name)\n",
+        )
+        assert not any(f.pattern_id == "python_importlib_dynamic"
+                       for f in result.findings)
+
+    def test_eval_variable_argument_not_flagged(self, tmp_path):
+        """eval(variable) — can be legit (math calculator). Only constructed
+        strings are flagged by the AST pass."""
+        result = self._scan(
+            tmp_path,
+            "def calc(expr):\n"
+            "    return eval(expr)\n",
+        )
+        assert not any(f.pattern_id == "python_eval_dynamic"
+                       for f in result.findings)
+
+    def test_clean_skill_still_safe(self, tmp_path):
+        """A skill with no dynamic-import tricks produces verdict=safe."""
+        result = self._scan(
+            tmp_path,
+            "import os\n"
+            "import json\n"
+            "from pathlib import Path\n"
+            "def main():\n"
+            "    print(os.getcwd())\n",
+        )
+        assert result.verdict == "safe"
+        allowed, _ = should_allow_install(result)
+        assert allowed is True
+
+    def test_syntactically_invalid_python_falls_through(self, tmp_path):
+        """AST pass must silently skip files that don't parse — the regex
+        layer still runs independently."""
+        # Partial/malformed Python — shouldn't raise
+        result = self._scan(
+            tmp_path,
+            "this is not valid python at all ((\n",
+        )
+        # No findings from the AST pass, but should not raise
+        assert not any(f.pattern_id.startswith("python_dynamic_")
+                       and f.pattern_id.startswith("python_compile_dynamic")
+                       for f in result.findings)
+
+    def test_ast_runs_only_on_py_files(self, tmp_path):
+        """Non-.py files must not be passed to _ast_scan_python."""
+        # .md with Python-like content: no AST findings
+        skill = tmp_path / "test-skill"
+        skill.mkdir()
+        (skill / "SKILL.md").write_text(
+            "# description\n"
+            "Example code: `__import__('o' + 's')`\n"
+        )
+        result = scan_skill(skill, source="community")
+        assert not any(f.pattern_id == "python_dynamic_import_dunder"
+                       for f in result.findings)
