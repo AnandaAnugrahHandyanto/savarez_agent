@@ -7726,14 +7726,7 @@ class AIAgent:
                 self._consecutive_tool_calls.clear()
                 return json.dumps({"error": msg}, ensure_ascii=False)
 
-        # ── Failure retry counter: detect consecutive tool failures ──────
-        # Tracks how many times a tool has returned an error/empty result
-        # in a row, regardless of argument changes.  Prevents the LLM from
-        # retrying different variations of a failing tool call.
-        _cb_retry_msg = self._check_tool_failure(function_name, function_result)
-        if _cb_retry_msg is not None:
-            return json.dumps({"error": _cb_retry_msg}, ensure_ascii=False)
-
+        # ── Tool dispatch ───────────────────────────────────────────────
         if function_name == "todo":
             from tools.todo_tool import todo_tool as _todo_tool
             return _todo_tool(
