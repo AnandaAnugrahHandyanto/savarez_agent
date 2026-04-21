@@ -6158,17 +6158,26 @@ class GatewayRunner:
         audio_path = None
         actual_path = None
         try:
-            from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
+            from tools.tts_tool import (
+                text_to_speech_tool,
+                _strip_markdown_for_tts,
+                _load_tts_config,
+                _get_provider,
+            )
 
             tts_text = _strip_markdown_for_tts(text[:4000])
             if not tts_text:
                 return
 
-            # Use .mp3 extension so edge-tts conversion to opus works correctly.
-            # The TTS tool may convert to .ogg — use file_path from result.
+            provider = _get_provider(_load_tts_config())
+            prefers_native_ogg = (
+                event.source.platform.value == "telegram"
+                and provider in {"elevenlabs", "openai", "mistral", "gemini"}
+            )
+            requested_ext = ".ogg" if prefers_native_ogg else ".mp3"
             audio_path = os.path.join(
                 tempfile.gettempdir(), "hermes_voice",
-                f"tts_reply_{_uuid.uuid4().hex[:12]}.mp3",
+                f"tts_reply_{_uuid.uuid4().hex[:12]}{requested_ext}",
             )
             os.makedirs(os.path.dirname(audio_path), exist_ok=True)
 
