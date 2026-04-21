@@ -87,6 +87,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home
 from utils import atomic_yaml_write, is_truthy_value
+from tools.planner_store_tool import planner_store_tool
 _hermes_home = get_hermes_home()
 
 # Load environment variables from ~/.hermes/.env first.
@@ -3296,6 +3297,18 @@ class GatewayRunner:
         if canonical == "resume":
             return await self._handle_resume_command(event)
 
+        if canonical == "today":
+            return await self._handle_today_command(event)
+
+        if canonical == "inbox":
+            return await self._handle_inbox_command(event)
+
+        if canonical == "done":
+            return await self._handle_done_command(event)
+
+        if canonical == "review":
+            return await self._handle_review_command(event)
+
         if canonical == "branch":
             return await self._handle_branch_command(event)
 
@@ -5568,6 +5581,144 @@ class GatewayRunner:
             return raw.guild.id
         return None
 
+    def _planner_store_call(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        raw = planner_store_tool(args)
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return {"success": False, "error": "planner_store returned invalid JSON", "raw": raw}
+        if isinstance(data, dict):
+            return data
+        return {"success": False, "error": "planner_store returned unexpected payload", "raw": data}
+
+    @staticmethod
+    def _planner_error_message(payload: Dict[str, Any], fallback: str) -> str:
+        error = (payload or {}).get("error")
+        if error:
+            return f"⚠️ {error}"
+        return fallback
+
+    @staticmethod
+    def _planner_time_label(value: Optional[str]) -> str:
+        if not value:
+            return "без времени"
+        try:
+            dt = datetime.fromisoformat(value)
+            return dt.strftime("%H:%M")
+        except Exception:
+            return value
+
+    async def _handle_today_command(self, event: MessageEvent) -> str:
+        payload = self._planner_store_call({"action": "today"})
+        if not payload.get("success"):
+            return self._planner_error_message(payload, "⚠️ Не удалось собрать план на сегодня.")
+
+        lines = ["🗓️ План на сегодня"]
+
+        events = payload.get("events") or []
+        if events:
+            lines.append("\nСобытия:")
+            for evt in events[:10]:
+                title = evt.get("title") or evt.get("text") or evt.get("id") or "Без названия"
+                when = self._planner_time_label(evt.get("start_at"))
+                location = evt.get("location")
+                suffix = f" — {location}" if location else ""
+                lines.append(f"• {when} — {title}{suffix}")
+
+        reminders = payload.get("reminders") or []
+        if reminders:
+            lines.append("\nНапоминания:")
+            for rem in reminders[:10]:
+                text = rem.get("text") or rem.get("id") or "Без текста"
+                when = self._planner_time_label(rem.get("remind_at"))
+                lines.append(f"• {when} — {text}")
+
+        tasks_due_today = payload.get("tasks_due_today") or []
+        if tasks_due_today:
+            lines.append("\nЗадачи на сегодня:")
+            for task in tasks_due_today[:10]:
+                text = task.get("text") or task.get("id") or "Без текста"
+                due_time = task.get("due_time") or "без времени"
+                priority = task.get("priority") or "normal"
+                lines.append(f"• {due_time} — {text} [{priority}]")
+
+        overdue_tasks = payload.get("overdue_tasks") or []
+        if overdue_tasks:
+            lines.append("\nПросрочено:")
+            for task in overdue_tasks[:10]:
+                text = task.get("text") or task.get("id") or "Без текста"
+                due_date = task.get("due_date") or "без даты"
+                lines.append(f"• {text} — срок {due_date}")
+
+        if len(lines) == 1:
+            lines.append("\nНа сегодня пока пусто ✨")
+        return "\n".join(lines)
+
+    async def _handle_inbox_command(self, event: MessageEvent) -> str:
+        payload = self._planner_store_call({"action": "inbox"})
+        if not payload.get("success"):
+            return self._planner_error_message(payload, "⚠️ Не удалось открыть инбокс planner.")
+
+        lines = ["📥 Инбокс"]
+        tasks = payload.get("tasks") or []
+        notes = payload.get("recent_notes") or []
+
+        if tasks:
+            lines.append("\nЗадачи:")
+            for task in tasks[:15]:
+                text = task.get("text") or task.get("id") or "Без текста"
+                item_id = task.get("id") or "?"
+                lines.append(f"• {text} (`{item_id}`)")
+
+        if notes:
+            lines.append("\nЗаметки:")
+            for note in notes[:10]:
+                text = note.get("text") or note.get("id") or "Без текста"
+                lines.append(f"• {text}")
+
+        if len(lines) == 1:
+            lines.append("\nИнбокс пуст.")
+        return "\n".join(lines)
+
+    async def _handle_done_command(self, event: MessageEvent) -> str:
+        item_id = event.get_command_args().strip()
+        if not item_id:
+            return "Usage: `/done <item_id>`"
+
+        payload = self._planner_store_call({"action": "done", "id": item_id})
+        if not payload.get("success"):
+            return self._planner_error_message(payload, f"⚠️ Не удалось отметить `{item_id}` как выполненный.")
+
+        item = payload.get("item") or {}
+        label = item.get("text") or item.get("title") or item_id
+        resolved_id = item.get("id") or item_id
+        return f"✅ Готово: `{resolved_id}` — {label}"
+
+    async def _handle_review_command(self, event: MessageEvent) -> str:
+        payload = self._planner_store_call({"action": "review"})
+        if not payload.get("success"):
+            return self._planner_error_message(payload, "⚠️ Не удалось собрать обзор planner.")
+
+        lines = ["📘 Итоги дня"]
+        completed = payload.get("completed_today") or []
+        carryover = payload.get("carryover") or []
+
+        if completed:
+            lines.append("\nСделано сегодня:")
+            for task in completed[:15]:
+                text = task.get("text") or task.get("id") or "Без текста"
+                lines.append(f"• {text}")
+
+        if carryover:
+            lines.append("\nПеренести:")
+            for task in carryover[:15]:
+                text = task.get("text") or task.get("id") or "Без текста"
+                lines.append(f"• {text}")
+
+        if len(lines) == 1:
+            lines.append("\nПока без выполненных и без хвостов.")
+        return "\n".join(lines)
+
     async def _handle_voice_command(self, event: MessageEvent) -> str:
         """Handle /voice [on|off|tts|channel|leave|status] command."""
         args = event.get_command_args().strip().lower()
@@ -6743,7 +6894,7 @@ class GatewayRunner:
                 return f"📌 Session: `{session_id}`\nNo title set. Usage: `/title My Session Name`"
 
     async def _handle_resume_command(self, event: MessageEvent) -> str:
-        """Handle /resume command — switch to a previously-named session."""
+        """Handle /resume command — switch to any existing session by ID or title."""
         if not self._session_db:
             return "Session database not available."
 
@@ -6752,33 +6903,35 @@ class GatewayRunner:
         name = event.get_command_args().strip()
 
         if not name:
-            # List recent titled sessions for this user/platform
+            # List recent sessions across all sources so gateway users can hop
+            # into any existing conversation, not just same-platform titled ones.
             try:
-                user_source = source.platform.value if source.platform else None
-                sessions = self._session_db.list_sessions_rich(
-                    source=user_source, limit=10
-                )
-                titled = [s for s in sessions if s.get("title")]
-                if not titled:
+                sessions = self._session_db.list_sessions_rich(limit=10)
+                if not sessions:
                     return (
-                        "No named sessions found.\n"
-                        "Use `/title My Session` to name your current session, "
-                        "then `/resume My Session` to return to it later."
+                        "No sessions found yet.\n"
+                        "Send a message first, then use `/resume <session id or title>` "
+                        "to jump back into it later."
                     )
-                lines = ["📋 **Named Sessions**\n"]
-                for s in titled[:10]:
-                    title = s["title"]
+                lines = ["📋 **Recent Sessions**\n"]
+                for s in sessions[:10]:
+                    title = s.get("title") or s.get("preview") or "Untitled"
                     preview = s.get("preview", "")[:40]
                     preview_part = f" — _{preview}_" if preview else ""
-                    lines.append(f"• **{title}**{preview_part}")
-                lines.append("\nUsage: `/resume <session name>`")
+                    source_label = s.get("source") or "local"
+                    lines.append(
+                        f"• `{s['id']}` · **{title}** · `{source_label}`{preview_part}"
+                    )
+                lines.append("\nUsage: `/resume <session id or title>`")
                 return "\n".join(lines)
             except Exception as e:
-                logger.debug("Failed to list titled sessions: %s", e)
+                logger.debug("Failed to list sessions for resume: %s", e)
                 return f"Could not list sessions: {e}"
 
-        # Resolve the name to a session ID
-        target_id = self._session_db.resolve_session_by_title(name)
+        # Resolve exact/unique session ID first, then fall back to title lookup.
+        target_id = self._session_db.resolve_session_id(name)
+        if not target_id:
+            target_id = self._session_db.resolve_session_by_title(name)
         if not target_id:
             return (
                 f"No session found matching '**{name}**'.\n"
