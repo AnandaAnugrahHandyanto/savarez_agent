@@ -15,6 +15,7 @@ loaded) so this module never imports ``cli`` at import time -> no import cycle.
 from __future__ import annotations
 
 import sys
+from typing import Dict
 
 from rich.markup import escape as _escape
 
@@ -82,6 +83,16 @@ class CLIAgentSetupMixin:
         resolved_acp_command = runtime.get("command")
         resolved_acp_args = list(runtime.get("args") or [])
         resolved_credential_pool = runtime.get("credential_pool")
+        resolved_headers_raw = runtime.get("headers") or runtime.get("default_headers")
+        resolved_headers: Dict[str, str] = {}
+        if isinstance(resolved_headers_raw, dict):
+            for key, value in resolved_headers_raw.items():
+                if key is None or value is None:
+                    continue
+                key_str = str(key).strip()
+                value_str = str(value).strip()
+                if key_str and value_str:
+                    resolved_headers[key_str] = value_str
         # A callable api_key is a bearer-token provider (Azure Foundry
         # Entra ID — ``azure_identity_adapter.build_token_provider``).
         # The OpenAI SDK accepts ``Callable[[], str]`` for ``api_key`` and
@@ -118,10 +129,12 @@ class CLIAgentSetupMixin:
             or resolved_acp_command != self.acp_command
             or resolved_acp_args != self.acp_args
         )
+        headers_changed = resolved_headers != getattr(self, "_runtime_headers", {})
         self.provider = resolved_provider
         self.api_mode = resolved_api_mode
         self.acp_command = resolved_acp_command
         self.acp_args = resolved_acp_args
+        self._runtime_headers = resolved_headers
         self._credential_pool = resolved_credential_pool
         self._provider_source = runtime.get("source")
         self.api_key = api_key
@@ -165,7 +178,7 @@ class CLIAgentSetupMixin:
 
         # AIAgent/OpenAI client holds auth at init time, so rebuild if key,
         # routing, or the effective model changed.
-        if (credentials_changed or routing_changed or model_changed) and self.agent is not None:
+        if (credentials_changed or routing_changed or headers_changed or model_changed) and self.agent is not None:
             self.agent = None
             self._active_agent_route_signature = None
 
@@ -189,6 +202,7 @@ class CLIAgentSetupMixin:
             "command": self.acp_command,
             "args": list(self.acp_args or []),
             "credential_pool": getattr(self, "_credential_pool", None),
+            "headers": dict(getattr(self, "_runtime_headers", {}) or {}),
         }
         route = {
             "model": self.model,
@@ -200,6 +214,7 @@ class CLIAgentSetupMixin:
                 runtime["api_mode"],
                 runtime["command"],
                 tuple(runtime["args"]),
+                tuple(sorted(runtime["headers"].items())),
             ),
         }
 
@@ -338,12 +353,14 @@ class CLIAgentSetupMixin:
                 "command": self.acp_command,
                 "args": list(self.acp_args or []),
                 "credential_pool": getattr(self, "_credential_pool", None),
+                "headers": dict(getattr(self, "_runtime_headers", {}) or {}),
             }
             effective_model = model_override or self.model
             self.agent = AIAgent(
                 model=effective_model,
                 api_key=runtime.get("api_key"),
                 base_url=runtime.get("base_url"),
+                default_headers=runtime.get("headers"),
                 provider=runtime.get("provider"),
                 api_mode=runtime.get("api_mode"),
                 acp_command=runtime.get("command"),
@@ -414,6 +431,7 @@ class CLIAgentSetupMixin:
                 runtime.get("api_mode"),
                 runtime.get("command"),
                 tuple(runtime.get("args") or ()),
+                tuple(sorted((runtime.get("headers") or {}).items())),
             )
 
             # Force-create DB row on /title intent, then apply title.
