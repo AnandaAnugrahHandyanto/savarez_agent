@@ -1592,7 +1592,7 @@ class TelegramAdapter(BasePlatformAdapter):
         data = query.data
 
         # --- Commands picker callbacks ---
-        if data.startswith(("mc:", "cp:")):
+        if data.startswith(("mc:", "cp:", "cu:", "cc:")):
             chat_id = str(query.message.chat_id) if query.message else None
             if chat_id:
                 await self._handle_commands_picker_callback(query, data, chat_id)
@@ -1773,24 +1773,102 @@ class TelegramAdapter(BasePlatformAdapter):
         self, query: "CallbackQuery", data: str, chat_id: str
     ) -> None:
         """Handle inline keyboard callbacks from the commands picker."""
+        state = self._commands_picker_state.get(chat_id, {})
+
         if data.startswith("mc:"):
+            # Command button tapped — show description + Use / Cancel buttons in-place
             parts = data.split(":", 2)
             if len(parts) == 3:
                 cmd_name = parts[1]
-                state = self._commands_picker_state.get(chat_id, {})
+                page = int(parts[2]) if parts[2].isdigit() else 0
                 cmd_desc = next(
                     (c.get("description", "") for c in state.get("commands", []) if c.get("command") == cmd_name),
                     "",
                 )
-                on_selected = state.get("on_command_selected")
-                if on_selected:
-                    try:
-                        result_text = on_selected(cmd_name, cmd_desc)
-                        await query.answer(text=result_text, show_alert=False)
-                    except Exception:
-                        await query.answer(text=f"/{cmd_name}: {cmd_desc}", show_alert=True)
-                else:
-                    await query.answer(text=f"/{cmd_name}: {cmd_desc}" if cmd_desc else f"/{cmd_name}", show_alert=True)
+                text = (
+                    f"\u2699 `/{cmd_name}`\n\n"
+                    f"{cmd_desc}\n\n"
+                    f"_Tap **Use** to run this command, or **Back** to return._"
+                )
+                keyboard = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("\u25b6 Use", callback_data=f"cu:{cmd_name}:{page}"),
+                        InlineKeyboardButton("\u2717 Cancel", callback_data=f"cc:{page}"),
+                    ]
+                ])
+                try:
+                    msg_id = state.get("message_id")
+                    if msg_id:
+                        await self._bot.edit_message_text(
+                            chat_id=int(chat_id),
+                            message_id=msg_id,
+                            text=text,
+                            parse_mode=ParseMode.MARKDOWN,
+                            reply_markup=keyboard,
+                        )
+                    await query.answer()
+                except Exception as exc:
+                    logger.warning("Commands picker mc edit failed: %s", exc)
+                    await query.answer(text=f"/{cmd_name}: {cmd_desc}", show_alert=True)
+            return
+
+        if data.startswith("cu:"):
+            # Use — dispatch the command as a synthetic message event
+            parts = data.split(":", 2)
+            if len(parts) >= 2:
+                cmd_name = parts[1]
+                try:
+                    msg_id = state.get("message_id")
+                    if msg_id:
+                        await self._bot.edit_message_text(
+                            chat_id=int(chat_id),
+                            message_id=msg_id,
+                            text=f"\u25b6 Running `/{cmd_name}`\u2026",
+                            parse_mode=ParseMode.MARKDOWN,
+                            reply_markup=None,
+                        )
+                except Exception:
+                    pass
+                await query.answer()
+                try:
+                    user = getattr(query, "from_user", None)
+                    msg = query.message
+                    source = self.build_source(
+                        chat_id=chat_id,
+                        chat_name=getattr(getattr(msg, "chat", None), "title", None),
+                        chat_type="dm",
+                        user_id=str(user.id) if user else chat_id,
+                        user_name=user.full_name if user else None,
+                        thread_id=str(msg.message_thread_id) if msg and msg.message_thread_id else None,
+                    )
+                    synthetic = MessageEvent(
+                        text=f"/{cmd_name}",
+                        message_type=MessageType.COMMAND,
+                        source=source,
+                    )
+                    await self.handle_message(synthetic)
+                except Exception as exc:
+                    logger.error("Failed to dispatch command from picker: %s", exc)
+            return
+
+        if data.startswith("cc:"):
+            # Cancel — return to the picker page
+            try:
+                page = int(data.split(":", 1)[1])
+            except (ValueError, IndexError):
+                page = 0
+            commands = state.get("commands", [])
+            if not commands:
+                await query.answer()
+                return
+            result = await self.send_commands_picker(
+                chat_id=chat_id,
+                commands=commands,
+                current_page=page,
+                on_command_selected=state.get("on_command_selected"),
+                edit_message_id=state.get("message_id"),
+            )
+            await query.answer() if result.success else await query.answer(text="Failed to update picker.")
             return
 
         if data.startswith("cp:"):
@@ -1799,7 +1877,6 @@ class TelegramAdapter(BasePlatformAdapter):
             except (ValueError, IndexError):
                 await query.answer()
                 return
-            state = self._commands_picker_state.get(chat_id, {})
             commands = state.get("commands", [])
             if not commands:
                 await query.answer()
@@ -1811,10 +1888,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 on_command_selected=state.get("on_command_selected"),
                 edit_message_id=state.get("message_id"),
             )
-            if result.success:
-                await query.answer()
-            else:
-                await query.answer(text="Failed to update picker.")
+            await query.answer() if result.success else await query.answer(text="Failed to update picker.")
             return
 
         await query.answer()
