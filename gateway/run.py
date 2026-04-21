@@ -598,6 +598,7 @@ class GatewayRunner:
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
         self._smart_model_routing = self._load_smart_model_routing()
+        self._gateway_model_routing = self._load_gateway_model_routing()
 
         # Wire process registry into session store for reset protection
         from tools.process_registry import process_registry
@@ -981,8 +982,16 @@ class GatewayRunner:
 
         return model, runtime_kwargs
 
-    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
-        from agent.smart_model_routing import resolve_turn_route
+    def _resolve_turn_agent_config(
+        self,
+        user_message: str,
+        model: str,
+        runtime_kwargs: dict,
+        *,
+        source: "SessionSource | None" = None,
+        user_config: dict | None = None,
+    ) -> dict:
+        from agent.smart_model_routing import resolve_turn_route, choose_complex_model_route
         from hermes_cli.models import resolve_fast_mode_overrides
 
         primary = {
@@ -996,17 +1005,101 @@ class GatewayRunner:
             "credential_pool": runtime_kwargs.get("credential_pool"),
         }
         route = resolve_turn_route(user_message, getattr(self, "_smart_model_routing", {}), primary)
+        route_reason = "default"
+
+        routing_cfg = (
+            (user_config or {}).get("gateway_model_routing")
+            or getattr(self, "_gateway_model_routing", {})
+            or {}
+        )
+        session_override_active = False
+        session_key = None
+        if source is not None:
+            try:
+                session_key = self._session_key_for_source(source)
+                session_override_active = bool(
+                    getattr(self, "_session_model_overrides", {}).get(session_key)
+                )
+            except Exception:
+                session_override_active = False
+                session_key = None
+
+        if session_override_active:
+            route_reason = "session_override"
+
+        if not session_override_active:
+            complex_route = choose_complex_model_route(
+                user_message,
+                platform=(source.platform.value if source and source.platform else None),
+                routing_config=routing_cfg,
+            )
+            if complex_route:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+
+                explicit_api_key = None
+                api_key_env = str(complex_route.get("api_key_env") or "").strip()
+                if api_key_env:
+                    explicit_api_key = os.getenv(api_key_env) or None
+
+                try:
+                    escalated_runtime = resolve_runtime_provider(
+                        requested=complex_route.get("provider"),
+                        explicit_api_key=explicit_api_key,
+                        explicit_base_url=complex_route.get("base_url"),
+                    )
+                    route = {
+                        "model": complex_route.get("model"),
+                        "routing_reason": "gateway_complex_turn",
+                        "runtime": {
+                            "api_key": escalated_runtime.get("api_key"),
+                            "base_url": escalated_runtime.get("base_url"),
+                            "provider": escalated_runtime.get("provider"),
+                            "api_mode": escalated_runtime.get("api_mode"),
+                            "command": escalated_runtime.get("command"),
+                            "args": list(escalated_runtime.get("args") or []),
+                            "credential_pool": escalated_runtime.get("credential_pool"),
+                        },
+                        "label": f"gateway escalation → {complex_route.get('model')} ({escalated_runtime.get('provider')})",
+                        "signature": (
+                            complex_route.get("model"),
+                            escalated_runtime.get("provider"),
+                            escalated_runtime.get("base_url"),
+                            escalated_runtime.get("api_mode"),
+                            escalated_runtime.get("command"),
+                            tuple(escalated_runtime.get("args") or ()),
+                        ),
+                    }
+                    route_reason = "gateway_complex_turn"
+                except Exception:
+                    pass
+
+        if route.get("label") and route_reason == "default":
+            route_reason = "smart_model_routing"
+        route.setdefault("routing_reason", route_reason)
 
         service_tier = getattr(self, "_service_tier", None)
         if not service_tier:
             route["request_overrides"] = None
-            return route
+        else:
+            try:
+                overrides = resolve_fast_mode_overrides(route.get("model"))
+            except Exception:
+                overrides = None
+            route["request_overrides"] = overrides
 
-        try:
-            overrides = resolve_fast_mode_overrides(route.get("model"))
-        except Exception:
-            overrides = None
-        route["request_overrides"] = overrides
+        if source is not None:
+            try:
+                logger.info(
+                    "Gateway turn route: platform=%s session=%s base_model=%s effective_model=%s provider=%s reason=%s",
+                    source.platform.value if source.platform else "unknown",
+                    (session_key or "")[:48],
+                    model,
+                    route.get("model"),
+                    (route.get("runtime") or {}).get("provider"),
+                    route.get("routing_reason"),
+                )
+            except Exception:
+                pass
         return route
 
     async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:
@@ -1371,6 +1464,20 @@ class GatewayRunner:
                 with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
                 return cfg.get("smart_model_routing", {}) or {}
+        except Exception:
+            pass
+        return {}
+
+    @staticmethod
+    def _load_gateway_model_routing() -> dict:
+        """Load optional gateway-only complex-turn escalation routing config."""
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                return cfg.get("gateway_model_routing", {}) or {}
         except Exception:
             pass
         return {}
@@ -6099,7 +6206,13 @@ class GatewayRunner:
             reasoning_config = self._load_reasoning_config()
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
-            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            turn_route = self._resolve_turn_agent_config(
+                prompt,
+                model,
+                runtime_kwargs,
+                source=source,
+                user_config=user_config,
+            )
 
             def run_sync():
                 agent = AIAgent(
@@ -6266,7 +6379,13 @@ class GatewayRunner:
             platform_key = _platform_config_key(source.platform)
             reasoning_config = self._load_reasoning_config()
             self._service_tier = self._load_service_tier()
-            turn_route = self._resolve_turn_agent_config(question, model, runtime_kwargs)
+            turn_route = self._resolve_turn_agent_config(
+                question,
+                model,
+                runtime_kwargs,
+                source=source,
+                user_config=user_config,
+            )
             pr = self._provider_routing
 
             # Snapshot history from running agent or stored transcript
@@ -9143,7 +9262,13 @@ class GatewayRunner:
                 except Exception as _e:
                     logger.debug("interim_assistant_callback error: %s", _e)
 
-            turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            turn_route = self._resolve_turn_agent_config(
+                message,
+                model,
+                runtime_kwargs,
+                source=source,
+                user_config=user_config,
+            )
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool

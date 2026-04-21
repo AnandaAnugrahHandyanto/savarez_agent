@@ -1,5 +1,6 @@
 """Tests for gateway /fast support and Priority Processing routing."""
 
+import logging
 import sys
 import threading
 import types
@@ -54,6 +55,7 @@ def _make_runner():
     runner._provider_routing = {}
     runner._fallback_model = None
     runner._smart_model_routing = {}
+    runner._gateway_model_routing = {}
     runner._running_agents = {}
     runner._pending_model_notes = {}
     runner._session_db = None
@@ -132,6 +134,89 @@ def test_turn_route_skips_priority_processing_for_unsupported_models():
         route = gateway_run.GatewayRunner._resolve_turn_agent_config(runner, "hi", "gpt-5.3-codex", runtime_kwargs)
 
     assert route["request_overrides"] is None
+    assert route["routing_reason"] == "default"
+
+
+def test_turn_route_escalates_complex_telegram_prompt_to_strong_model(caplog):
+    runner = _make_runner()
+    runner._gateway_model_routing = {
+        "enabled": True,
+        "platforms": ["telegram", "slack"],
+        "strong_model": {"provider": "openai-codex", "model": "gpt-5.4"},
+    }
+    runtime_kwargs = {
+        "api_key": "gemini-key",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+        "provider": "openrouter",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": [],
+        "credential_pool": None,
+    }
+    source = _make_source()
+
+    with caplog.at_level(logging.INFO, logger="gateway.run"), patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value={
+        "api_key": "***",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+        "provider": "codex",
+        "api_mode": "responses",
+        "command": None,
+        "args": [],
+        "credential_pool": None,
+    }):
+        route = gateway_run.GatewayRunner._resolve_turn_agent_config(
+            runner,
+            "debug this traceback please",
+            "google/gemini-2.5-flash",
+            runtime_kwargs,
+            source=source,
+        )
+
+    assert route["model"] == "gpt-5.4"
+    assert route["runtime"]["provider"] == "codex"
+    assert route["routing_reason"] == "gateway_complex_turn"
+    assert "Gateway turn route:" in caplog.text
+    assert "effective_model=gpt-5.4" in caplog.text
+    assert "reason=gateway_complex_turn" in caplog.text
+
+
+def test_turn_route_keeps_explicit_session_override_ahead_of_auto_escalation(caplog):
+    runner = _make_runner()
+    runner._gateway_model_routing = {
+        "enabled": True,
+        "platforms": ["telegram", "slack"],
+        "strong_model": {"provider": "openai-codex", "model": "gpt-5.4"},
+    }
+    source = _make_source()
+    session_key = runner._session_key_for_source(source)
+    runner._session_model_overrides[session_key] = {
+        "model": "manual/model",
+        "provider": "openrouter",
+    }
+    runtime_kwargs = {
+        "api_key": "manual-key",
+        "base_url": "https://openrouter.ai/api/v1",
+        "provider": "openrouter",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": [],
+        "credential_pool": None,
+    }
+
+    with caplog.at_level(logging.INFO, logger="gateway.run"):
+        route = gateway_run.GatewayRunner._resolve_turn_agent_config(
+            runner,
+            "debug this traceback please",
+            "manual/model",
+            runtime_kwargs,
+            source=source,
+        )
+
+    assert route["model"] == "manual/model"
+    assert route["runtime"]["provider"] == "openrouter"
+    assert route["routing_reason"] == "session_override"
+    assert "effective_model=manual/model" in caplog.text
+    assert "reason=session_override" in caplog.text
 
 
 @pytest.mark.asyncio

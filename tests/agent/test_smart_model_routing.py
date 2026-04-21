@@ -1,4 +1,4 @@
-from agent.smart_model_routing import choose_cheap_model_route
+from agent.smart_model_routing import choose_cheap_model_route, choose_complex_model_route
 
 
 _BASE_CONFIG = {
@@ -59,3 +59,42 @@ def test_resolve_turn_route_falls_back_to_primary_when_route_runtime_cannot_be_r
     assert result["model"] == "anthropic/claude-sonnet-4"
     assert result["runtime"]["provider"] == "openrouter"
     assert result["label"] is None
+
+
+_GATEWAY_COMPLEX_CONFIG = {
+    "enabled": True,
+    "platforms": ["telegram", "slack"],
+    "max_simple_chars": 180,
+    "strong_model": {
+        "provider": "openai-codex",
+        "model": "gpt-5.4",
+    },
+}
+
+
+def test_complex_route_skips_non_target_platform():
+    assert choose_complex_model_route(
+        "debug this traceback please",
+        platform="discord",
+        routing_config=_GATEWAY_COMPLEX_CONFIG,
+    ) is None
+
+
+def test_complex_route_selects_strong_model_for_debug_prompt():
+    result = choose_complex_model_route(
+        "debug this traceback please",
+        platform="telegram",
+        routing_config=_GATEWAY_COMPLEX_CONFIG,
+    )
+    assert result is not None
+    assert result["provider"] == "openai-codex"
+    assert result["model"] == "gpt-5.4"
+    assert result["routing_reason"] == "complex_turn"
+
+
+def test_complex_route_skips_short_simple_prompt_even_on_target_platform():
+    assert choose_complex_model_route(
+        "hi there",
+        platform="telegram",
+        routing_config=_GATEWAY_COMPLEX_CONFIG,
+    ) is None

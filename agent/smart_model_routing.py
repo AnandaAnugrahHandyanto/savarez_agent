@@ -48,6 +48,14 @@ _COMPLEX_KEYWORDS = {
 _URL_RE = re.compile(r"https?://|www\.", re.IGNORECASE)
 
 
+def _normalize_platforms(value: Any) -> set[str]:
+    if isinstance(value, (list, tuple, set)):
+        return {str(v).strip().lower() for v in value if str(v).strip()}
+    if isinstance(value, str) and value.strip():
+        return {value.strip().lower()}
+    return set()
+
+
 def _coerce_bool(value: Any, default: bool = False) -> bool:
     return is_truthy_value(value, default=default)
 
@@ -104,6 +112,60 @@ def choose_cheap_model_route(user_message: str, routing_config: Optional[Dict[st
     route["provider"] = provider
     route["model"] = model
     route["routing_reason"] = "simple_turn"
+    return route
+
+
+def choose_complex_model_route(
+    user_message: str,
+    *,
+    platform: Optional[str],
+    routing_config: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Return the configured strong-model route when a gateway turn looks complex."""
+    cfg = routing_config or {}
+    if not _coerce_bool(cfg.get("enabled"), False):
+        return None
+
+    allowed_platforms = _normalize_platforms(cfg.get("platforms") or ())
+    platform_name = str(platform or "").strip().lower()
+    if allowed_platforms and platform_name not in allowed_platforms:
+        return None
+
+    strong_model = cfg.get("strong_model") or {}
+    if not isinstance(strong_model, dict):
+        return None
+    provider = str(strong_model.get("provider") or "").strip().lower()
+    model = str(strong_model.get("model") or "").strip()
+    if not provider or not model:
+        return None
+
+    text = (user_message or "").strip()
+    if not text:
+        return None
+
+    max_simple_chars = _coerce_int(cfg.get("max_simple_chars"), 180)
+    lowered = text.lower()
+    words = {token.strip(".,:;!?()[]{}\"'`") for token in lowered.split()}
+
+    is_complex = False
+    if len(text) > max_simple_chars:
+        is_complex = True
+    elif text.count("\n") > 1:
+        is_complex = True
+    elif "```" in text or "`" in text:
+        is_complex = True
+    elif _URL_RE.search(text) and (words & _COMPLEX_KEYWORDS):
+        is_complex = True
+    elif words & _COMPLEX_KEYWORDS:
+        is_complex = True
+
+    if not is_complex:
+        return None
+
+    route = dict(strong_model)
+    route["provider"] = provider
+    route["model"] = model
+    route["routing_reason"] = "complex_turn"
     return route
 
 

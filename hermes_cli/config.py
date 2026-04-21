@@ -476,6 +476,13 @@ DEFAULT_CONFIG = {
         "max_simple_words": 28,
         "cheap_model": {},
     },
+
+    "gateway_model_routing": {
+        "enabled": False,
+        "platforms": ["telegram", "slack"],
+        "max_simple_chars": 180,
+        "strong_model": {},
+    },
     
     # Auxiliary model config — provider:model for each side task.
     # Format: provider is the provider name, model is the model slug.
