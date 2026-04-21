@@ -599,6 +599,13 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
                 if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
                     os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
+                allowed_users = discord_cfg.get("allowed_users")
+                if allowed_users is None:
+                    allowed_users = discord_cfg.get("allow_from")
+                if allowed_users is not None and not os.getenv("DISCORD_ALLOWED_USERS"):
+                    if isinstance(allowed_users, list):
+                        allowed_users = ",".join(str(v) for v in allowed_users)
+                    os.environ["DISCORD_ALLOWED_USERS"] = str(allowed_users)
                 # ignored_channels: channels where bot never responds (even when mentioned)
                 ic = discord_cfg.get("ignored_channels")
                 if ic is not None and not os.getenv("DISCORD_IGNORED_CHANNELS"):

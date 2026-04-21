@@ -1290,6 +1290,84 @@ class DiscordAdapter(BasePlatformAdapter):
             return True
         return user_id in self._allowed_user_ids
 
+    def _message_mentions_self(self, message: DiscordMessage) -> bool:
+        """Return True when the current bot is explicitly mentioned."""
+        return bool(self._client and self._client.user and self._client.user in getattr(message, "mentions", []))
+
+    def _is_reply_to_self(self, message: DiscordMessage) -> bool:
+        """Return True when the message is an explicit reply to this bot's message."""
+        if not self._client or not self._client.user:
+            return False
+        ref = getattr(message, "reference", None)
+        if not ref:
+            return False
+        resolved = getattr(ref, "resolved", None)
+        if resolved is not None:
+            author = getattr(resolved, "author", None)
+            return bool(author and getattr(author, "id", None) == getattr(self._client.user, "id", None))
+        return False
+
+    def _looks_like_ack_only_bot_message(self, text: str) -> bool:
+        """Heuristic to suppress bot-to-bot acknowledgement loops.
+
+        Keep this intentionally narrow: short, low-information acknowledgements
+        that frequently create Discord ping-pong loops between agents.
+        """
+        text = (text or "").strip()
+        if not text:
+            return False
+        if len(text) > 160:
+            return False
+        lowered = text.lower()
+        if any(marker in lowered for marker in ("?", "```", "http://", "https://", "/", "todo", "fix", "patch", "implement", "test", "error", "traceback")):
+            return False
+
+        normalized = lowered
+        normalized = re.sub(r"<@!?\d+>", " ", normalized)
+        normalized = re.sub(r"\[[^\]]+\]", " ", normalized)
+        normalized = re.sub(r"\([^)]*\)", " ", normalized)
+        normalized = re.sub(r"[^\w\s가-힣]", " ", normalized)
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        if not normalized:
+            return False
+
+        ack_patterns = [
+            r"^확인했습니다$",
+            r"^네 확인했습니다$",
+            r"^알겠습니다$",
+            r"^좋습니다$",
+            r"^대기하겠습니다$",
+            r"^상태 알림으로 보고 여기서 멈춥니다$",
+            r"^상태 알림으로 보고 추가 응답 생략$",
+            r"^추가 액션 없이 유지하겠습니다$",
+            r"^작업 요청으로 취급하지 않고 추가 액션 없이 유지하겠습니다$",
+            r"^이 스레드는 대기 상태로 두겠습니다$",
+            r"^이 스레드는 대기 상태 유지로 두겠습니다$",
+            r"^필요한 요청이 들어오기 전까지 이 스레드는 대기로 두겠습니다$",
+            r"^ack(?:nowledged)?$",
+            r"^noted$",
+            r"^understood$",
+            r"^standing by$",
+            r"^will wait$",
+            r"^no additional action$",
+            r"^treat(?:ing)? .*status.*notification.*$",
+            r"^this message is .*system.*alert.*$",
+        ]
+        return any(re.fullmatch(pattern, normalized) for pattern in ack_patterns)
+
+    def _suppress_bot_loop_message(self, reason: str, message: DiscordMessage) -> None:
+        """Emit a structured log for bot-loop suppression decisions."""
+        logger.info(
+            "[%s] suppressed_bot_ack_loop reason=%s author_id=%s channel_id=%s thread_id=%s message_id=%s content=%r",
+            self.name,
+            reason,
+            getattr(getattr(message, "author", None), "id", None),
+            getattr(getattr(message, "channel", None), "id", None),
+            getattr(getattr(message, "channel", None), "parent_id", None) or getattr(getattr(message, "channel", None), "id", None),
+            getattr(message, "id", None),
+            (getattr(message, "content", "") or "")[:200],
+        )
+
     async def send_image_file(
         self,
         chat_id: str,
@@ -2469,15 +2547,28 @@ class DiscordAdapter(BasePlatformAdapter):
             is_voice_linked_channel = current_channel_id in voice_linked_ids
             is_free_channel = bool(channel_ids & free_channels) or is_voice_linked_channel
 
+            self_mentioned = self._message_mentions_self(message)
+            reply_to_self = self._is_reply_to_self(message)
+            author_is_bot = bool(getattr(message.author, "bot", False) or getattr(message, "webhook_id", None))
+            is_slash_like = bool((getattr(message, "content", "") or "").startswith("/"))
+
             # Skip the mention check if the message is in a thread where
             # the bot has previously participated (auto-created or replied in).
             in_bot_thread = is_thread and thread_id in self._threads
 
+            if author_is_bot and self._looks_like_ack_only_bot_message(message.content):
+                self._suppress_bot_loop_message("ack_only", message)
+                return
+
+            if author_is_bot and in_bot_thread and not self_mentioned and not reply_to_self and not is_slash_like:
+                self._suppress_bot_loop_message("thread_followup_requires_explicit_target", message)
+                return
+
             if require_mention and not is_free_channel and not in_bot_thread:
-                if self._client.user not in message.mentions:
+                if not self_mentioned and not reply_to_self:
                     return
 
-            if self._client.user and self._client.user in message.mentions:
+            if self_mentioned:
                 message.content = message.content.replace(f"<@{self._client.user.id}>", "").strip()
                 message.content = message.content.replace(f"<@!{self._client.user.id}>", "").strip()
 

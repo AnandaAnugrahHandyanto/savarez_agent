@@ -74,9 +74,11 @@ class FakeThread:
 
 
 @pytest.fixture
-def adapter(monkeypatch):
+def adapter(monkeypatch, tmp_path):
     monkeypatch.setattr(discord_platform.discord, "DMChannel", FakeDMChannel, raising=False)
     monkeypatch.setattr(discord_platform.discord, "Thread", FakeThread, raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("DISCORD_ALLOWED_CHANNELS", raising=False)
 
     config = PlatformConfig(enabled=True, token="fake-token")
     adapter = DiscordAdapter(config)
@@ -86,17 +88,18 @@ def adapter(monkeypatch):
     return adapter
 
 
-def make_message(*, channel, content: str, mentions=None):
-    author = SimpleNamespace(id=42, display_name="TestUser", name="TestUser")
+def make_message(*, channel, content: str, mentions=None, author_bot: bool = False, reference=None, webhook_id=None):
+    author = SimpleNamespace(id=42, display_name="TestUser", name="TestUser", bot=author_bot)
     return SimpleNamespace(
         id=123,
         content=content,
         mentions=list(mentions or []),
         attachments=[],
-        reference=None,
+        reference=reference,
         created_at=datetime.now(timezone.utc),
         channel=channel,
         author=author,
+        webhook_id=webhook_id,
     )
 
 
@@ -281,6 +284,87 @@ async def test_no_thread_with_auto_thread_disabled_is_noop(adapter, monkeypatch)
     adapter.handle_message.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_bot_ack_only_message_is_suppressed(adapter, monkeypatch, caplog):
+    """Short bot/app acknowledgements should be dropped to prevent ping-pong loops."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "mentions")
+    bot_user = adapter._client.user
+    message = make_message(
+        channel=FakeTextChannel(channel_id=500),
+        content=f"<@{bot_user.id}> 확인했습니다.",
+        mentions=[bot_user],
+        author_bot=True,
+    )
+
+    with caplog.at_level("INFO"):
+        await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+    assert "suppressed_bot_ack_loop reason=ack_only" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_bot_thread_followup_requires_explicit_target(adapter, monkeypatch, caplog):
+    """Bot authors no longer get free unmentioned follow-ups just because the bot joined the thread."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    parent = FakeTextChannel(channel_id=500, name="briefing")
+    thread = FakeThread(channel_id=501, name="thread", parent=parent)
+    adapter._threads.mark(str(thread.id))
+    message = make_message(
+        channel=thread,
+        content="구현 초안 올렸습니다. 검토 부탁드립니다.",
+        author_bot=True,
+    )
+
+    with caplog.at_level("INFO"):
+        await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+    assert "suppressed_bot_ack_loop reason=thread_followup_requires_explicit_target" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_human_thread_followup_still_allowed(adapter, monkeypatch):
+    """Human follow-ups in an active thread should still work without repeated mentions."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    parent = FakeTextChannel(channel_id=500, name="briefing")
+    thread = FakeThread(channel_id=501, name="thread", parent=parent)
+    adapter._threads.mark(str(thread.id))
+    message = make_message(
+        channel=thread,
+        content="추가 로그 붙였습니다.",
+        author_bot=False,
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_bot_reply_to_self_still_allowed(adapter, monkeypatch):
+    """Explicit replies to this bot remain valid even inside active threads."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    parent = FakeTextChannel(channel_id=500, name="briefing")
+    thread = FakeThread(channel_id=501, name="thread", parent=parent)
+    adapter._threads.mark(str(thread.id))
+    resolved = SimpleNamespace(author=adapter._client.user, content="이 경로로 답장해 주세요")
+    reference = SimpleNamespace(message_id=321, resolved=resolved)
+    message = make_message(
+        channel=thread,
+        content="구체 패치 순서 정리했습니다.",
+        author_bot=True,
+        reference=reference,
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+
+
 # ── config.py bridging ───────────────────────────────────────────────
 
 
@@ -324,6 +408,46 @@ def test_config_bridges_no_thread_channels(monkeypatch, tmp_path):
     assert os.getenv("DISCORD_NO_THREAD_CHANNELS") == "333"
 
 
+def test_config_bridges_allowed_users(monkeypatch, tmp_path):
+    """gateway/config.py bridges discord.allowed_users to DISCORD_ALLOWED_USERS."""
+    import yaml
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "discord": {
+            "allowed_users": ["111", "222"],
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "")
+
+    from gateway.config import load_gateway_config
+    load_gateway_config()
+
+    import os
+    assert os.getenv("DISCORD_ALLOWED_USERS") == "111,222"
+
+
+
+def test_config_bridges_allow_from_to_allowed_users(monkeypatch, tmp_path):
+    """gateway/config.py also accepts discord.allow_from for Discord allowlists."""
+    import yaml
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "discord": {
+            "allow_from": ["333"],
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "")
+
+    from gateway.config import load_gateway_config
+    load_gateway_config()
+
+    import os
+    assert os.getenv("DISCORD_ALLOWED_USERS") == "333"
+
+
+
 def test_config_env_var_takes_precedence(monkeypatch, tmp_path):
     """Env vars should take precedence over config.yaml values."""
     import yaml
@@ -331,14 +455,17 @@ def test_config_env_var_takes_precedence(monkeypatch, tmp_path):
     config_file.write_text(yaml.dump({
         "discord": {
             "ignored_channels": ["111"],
+            "allowed_users": ["222"],
         },
     }))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "999")
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "888")
 
     from gateway.config import load_gateway_config
     load_gateway_config()
 
     import os
-    # Env var should NOT be overwritten
+    # Env vars should NOT be overwritten
     assert os.getenv("DISCORD_IGNORED_CHANNELS") == "999"
+    assert os.getenv("DISCORD_ALLOWED_USERS") == "888"
