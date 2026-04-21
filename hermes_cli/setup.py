@@ -2390,11 +2390,24 @@ def setup_gateway(config: dict):
     for idx in selected:
         _configure_platform(platforms[idx])
 
-    # ── Gateway Service Setup ──
-    # Count any platform (built-in or plugin) the user configured during this
-    # setup pass — reuses ``_platform_status`` so plugin platforms like IRC
-    # are picked up without another hard-coded env-var list.
-    def _is_progress(status: str) -> bool:
+    # Some gateway setup flows persist config.yaml directly (for example NIM
+    # writes nim.instances). Re-sync the wizard's in-memory config so the
+    # final save_config(config) does not overwrite those changes with stale data.
+    _refreshed = load_config()
+    if "nim" in _refreshed:
+        config["nim"] = _refreshed["nim"]
+    else:
+        config.pop("nim", None)
+
+     nim_cfg = config.get("nim")
+     nim_instances = nim_cfg.get("instances", []) if isinstance(nim_cfg, dict) else []
+     nim_from_config = isinstance(nim_instances, list) and any(isinstance(item, dict) for item in nim_instances)
+ 
+     # ── Gateway Service Setup ──
+     # Count any platform (built-in or plugin) the user configured during this
+     # setup pass — reuses ``_platform_status`` so plugin platforms like IRC
+     # are picked up without another hard-coded env-var list.
+     def _is_progress(status: str) -> bool:
         s = status.lower()
         return not (
             s == "not configured"
@@ -2402,10 +2415,10 @@ def setup_gateway(config: dict):
             or s.startswith("plugin disabled")
         )
 
-    any_messaging = any(
-        _is_progress(_platform_status(p)) for p in _all_platforms()
-    )
-    if any_messaging:
+     any_messaging = any(
+         _is_progress(_platform_status(p)) for p in _all_platforms()
+     )
+     if any_messaging:
         print()
         print_info("━" * 50)
         print_success("Messaging platforms configured!")

@@ -321,6 +321,58 @@ def test_setup_gateway_marks_nim_configured_from_config_yaml(monkeypatch, tmp_pa
     assert nim_index in captured["pre_selected"]
 
 
+def test_setup_gateway_preserves_nim_config_saved_by_setup_flow(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(setup_mod, "get_env_value", lambda _key: "")
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *args, **kwargs: False)
+    monkeypatch.setattr("platform.system", lambda: "Linux")
+
+    import hermes_cli.gateway as gateway_mod
+
+    monkeypatch.setattr(gateway_mod, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway_mod, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway_mod, "_is_service_installed", lambda: False)
+    monkeypatch.setattr(gateway_mod, "_is_service_running", lambda: False)
+
+    nim_index = next(
+        i for i, (name, _env_var, _setup) in enumerate(setup_mod._GATEWAY_PLATFORMS)
+        if name == "NIM (NetEase IM)"
+    )
+    monkeypatch.setattr(setup_mod, "prompt_checklist", lambda *_args, **_kwargs: [nim_index])
+
+    def _fake_setup_nim():
+        config = load_config()
+        config["nim"] = {
+            "instances": [
+                {
+                    "enabled": True,
+                    "nimToken": "app|bot|secret",
+                    "p2p": {"policy": "open", "allowFrom": []},
+                }
+            ]
+        }
+        save_config(config)
+
+    monkeypatch.setattr(setup_mod, "_setup_nim", _fake_setup_nim)
+    patched_platforms = list(setup_mod._GATEWAY_PLATFORMS)
+    patched_platforms[nim_index] = (
+        "NIM (NetEase IM)",
+        "NIM_CREDENTIALS",
+        setup_mod._setup_nim,
+    )
+    monkeypatch.setattr(setup_mod, "_GATEWAY_PLATFORMS", patched_platforms)
+
+    config = load_config()
+    setup_mod.setup_gateway(config)
+    save_config(config)
+
+    saved = load_config()
+    assert saved["nim"]["instances"][0]["nimToken"] == "app|bot|secret"
+
+    out = capsys.readouterr().out
+    assert "Messaging platforms configured!" in out
+
+
 def test_setup_nim_compact_credentials_sets_open_defaults(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
