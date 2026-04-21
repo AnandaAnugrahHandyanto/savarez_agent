@@ -110,6 +110,42 @@ class TestGeneratedSystemdUnits:
         assert "TimeoutStopSec=60" in unit
         assert "WantedBy=multi-user.target" in unit
 
+    def test_user_unit_loads_hermes_env_file(self):
+        """The user-level unit must source ~/.hermes/.env so API keys in
+        that file (e.g. OPENROUTER_API_KEY, TELEGRAM_BOT_TOKEN) are visible
+        to the gateway process. The leading `-` makes it optional so the
+        unit still starts on fresh installs where .env does not yet exist.
+        """
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert "EnvironmentFile=-" in unit
+        # The envfile path must be anchored at HERMES_HOME, not a bare `.env`
+        # (which systemd would resolve relative to WorkingDirectory instead).
+        for line in unit.splitlines():
+            if line.startswith("EnvironmentFile="):
+                assert line.endswith("/.env"), f"unexpected EnvironmentFile: {line!r}"
+                assert "=-" in line, f"EnvironmentFile must be optional (leading -): {line!r}"
+                break
+        else:
+            raise AssertionError("user unit is missing EnvironmentFile directive")
+
+    def test_system_unit_loads_hermes_env_file(self):
+        """The system-level unit must source the target user's ~/.hermes/.env
+        so running `sudo hermes gateway install --system` produces a service
+        that can see API keys without a separate /etc/default/hermes-gateway
+        drop-in.
+        """
+        unit = gateway_cli.generate_systemd_unit(system=True)
+
+        assert "EnvironmentFile=-" in unit
+        for line in unit.splitlines():
+            if line.startswith("EnvironmentFile="):
+                assert line.endswith("/.env"), f"unexpected EnvironmentFile: {line!r}"
+                assert "=-" in line, f"EnvironmentFile must be optional (leading -): {line!r}"
+                break
+        else:
+            raise AssertionError("system unit is missing EnvironmentFile directive")
+
 
 class TestGatewayStopCleanup:
     def test_stop_only_kills_current_profile_by_default(self, tmp_path, monkeypatch):
