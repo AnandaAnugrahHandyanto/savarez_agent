@@ -1022,6 +1022,27 @@ class TestBuildApiKwargs:
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs["max_tokens"] == 4096
 
+    def test_custom_layofflabs_endpoint_sets_curl_user_agent(self):
+        with (
+            patch(
+                "run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI") as mock_openai,
+        ):
+            agent = AIAgent(
+                model="gpt-5.4",
+                provider="custom",
+                base_url="https://api.layofflabs.com/v1",
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        assert agent._client_kwargs["default_headers"]["User-Agent"] == "curl/8.5.0"
+        assert mock_openai.call_args.kwargs["default_headers"]["User-Agent"] == "curl/8.5.0"
+
 
     def test_qwen_portal_formats_messages_and_metadata(self, agent):
         agent.base_url = "https://portal.qwen.ai/v1"

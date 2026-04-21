@@ -603,6 +603,13 @@ def _qwen_portal_headers() -> dict:
     }
 
 
+def _custom_endpoint_headers(base_url: str) -> dict:
+    """Return compatibility headers for custom OpenAI-compatible endpoints."""
+    if "layofflabs.com" in (base_url or "").lower():
+        return {"User-Agent": "curl/8.5.0"}
+    return {}
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -1092,6 +1099,10 @@ class AIAgent:
                 elif "chatgpt.com" in effective_base.lower():
                     from agent.auxiliary_client import _codex_cloudflare_headers
                     client_kwargs["default_headers"] = _codex_cloudflare_headers(api_key)
+                else:
+                    custom_headers = _custom_endpoint_headers(effective_base)
+                    if custom_headers:
+                        client_kwargs["default_headers"] = custom_headers
             else:
                 # No explicit creds — use the centralized provider router
                 from agent.auxiliary_client import resolve_provider_client
@@ -5496,7 +5507,11 @@ class AIAgent:
                 self._client_kwargs.get("api_key", "")
             )
         else:
-            self._client_kwargs.pop("default_headers", None)
+            custom_headers = _custom_endpoint_headers(base_url)
+            if custom_headers:
+                self._client_kwargs["default_headers"] = custom_headers
+            else:
+                self._client_kwargs.pop("default_headers", None)
 
     def _swap_credential(self, entry) -> None:
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")

@@ -447,6 +447,20 @@ class TestExplicitProviderRouting:
             adapter = client.chat.completions
             assert adapter._is_oauth is False
 
+    def test_explicit_custom_layofflabs_sets_curl_user_agent(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_custom_runtime",
+            lambda: ("https://api.layofflabs.com/v1", "layofflabs-key", None),
+        )
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            client, model = resolve_provider_client("custom", model="gpt-5.4")
+
+        assert client is not None
+        assert model == "gpt-5.4"
+        assert mock_openai.call_args.kwargs["base_url"] == "https://api.layofflabs.com/v1"
+        assert mock_openai.call_args.kwargs["default_headers"]["User-Agent"] == "curl/8.5.0"
+
 class TestGetTextAuxiliaryClient:
     """Test the full resolution chain for get_text_auxiliary_client."""
 

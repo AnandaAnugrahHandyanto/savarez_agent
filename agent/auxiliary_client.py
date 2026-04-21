@@ -51,6 +51,14 @@ from hermes_constants import OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
 
+
+def _custom_endpoint_headers(base_url: str) -> dict:
+    """Return compatibility headers for custom OpenAI-compatible endpoints."""
+    if "layofflabs.com" in (base_url or "").lower():
+        return {"User-Agent": "curl/8.5.0"}
+    return {}
+
+
 # Module-level flag: only warn once per process about stale OPENAI_BASE_URL.
 _stale_base_url_warned = False
 
@@ -1111,8 +1119,9 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
         return None, None
     model = _read_main_model() or "gpt-4o-mini"
     logger.debug("Auxiliary client: custom endpoint (%s, api_mode=%s)", model, custom_mode or "chat_completions")
+    extra = {"default_headers": headers} if (headers := _custom_endpoint_headers(custom_base)) else {}
     if custom_mode == "codex_responses":
-        real_client = OpenAI(api_key=custom_key, base_url=custom_base)
+        real_client = OpenAI(api_key=custom_key, base_url=custom_base, **extra)
         return CodexAuxiliaryClient(real_client, model), model
     if custom_mode == "anthropic_messages":
         # Third-party Anthropic-compatible gateway (MiniMax, Zhipu GLM,
@@ -1126,12 +1135,12 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
                 "Custom endpoint declares api_mode=anthropic_messages but the "
                 "anthropic SDK is not installed — falling back to OpenAI-wire."
             )
-            return OpenAI(api_key=custom_key, base_url=custom_base), model
+            return OpenAI(api_key=custom_key, base_url=custom_base, **extra), model
         return (
             AnthropicAuxiliaryClient(real_client, model, custom_key, custom_base, is_oauth=False),
             model,
         )
-    return OpenAI(api_key=custom_key, base_url=custom_base), model
+    return OpenAI(api_key=custom_key, base_url=custom_base, **extra), model
 
 
 def _try_codex() -> Tuple[Optional[Any], Optional[str]]:
@@ -1658,7 +1667,10 @@ def resolve_provider_client(
                 provider,
             )
             extra = {}
-            if "api.kimi.com" in custom_base.lower():
+            custom_headers = _custom_endpoint_headers(custom_base)
+            if custom_headers:
+                extra["default_headers"] = custom_headers
+            elif "api.kimi.com" in custom_base.lower():
                 extra["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
             elif "api.githubcopilot.com" in custom_base.lower():
                 from hermes_cli.models import copilot_default_headers
@@ -1697,7 +1709,8 @@ def resolve_provider_client(
                     model or custom_entry.get("model") or _read_main_model() or "gpt-4o-mini",
                     provider,
                 )
-                client = OpenAI(api_key=custom_key, base_url=custom_base)
+                extra = {"default_headers": headers} if (headers := _custom_endpoint_headers(custom_base)) else {}
+                client = OpenAI(api_key=custom_key, base_url=custom_base, **extra)
                 client = _wrap_if_needed(client, final_model, custom_base)
                 logger.debug(
                     "resolve_provider_client: named custom provider %r (%s)",
