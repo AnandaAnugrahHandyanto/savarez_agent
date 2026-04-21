@@ -381,9 +381,9 @@ DEFAULT_CONFIG = {
         # tool call without making progress.
         "loop_detection": {
             "enabled": True,
-            "max_repeats_before_nudge": 2,    # repeat count at which to inject nudge
-            "max_repeats_before_reprompt": 4, # repeat count at which to break and re-prompt
-            "max_repeats_before_stop": 5,     # repeat count at which to hard stop
+            "max_repeats_before_nudge": 3,    # repeat count at which to inject nudge
+            "max_repeats_before_reprompt": 5, # repeat count at which to break and re-prompt
+            "max_repeats_before_stop": 6,     # repeat count at which to hard stop
         },
     },
     

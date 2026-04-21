@@ -4294,9 +4294,9 @@ class AIAgent:
             return {"action": "none"}
         
         # Load config thresholds
-        max_repeats_nudge = 2
-        max_repeats_reprompt = 4
-        max_repeats_stop = 5
+        max_repeats_nudge = 3
+        max_repeats_reprompt = 5
+        max_repeats_stop = 6
         
         # Load loop_detection config from user's config.yaml
         try:
