@@ -36,8 +36,9 @@ Do not use this skill for generic photo editing, video memes, or free-form image
 
 ## References
 
-- Template selection heuristics, matching examples, and usage examples live in `references/meme-generation.md`.
-- Script behavior and deterministic rendering live in `scripts/generate_meme.py`.
+- Curated template list: `references/curated-templates.md`
+- Template selection heuristics, matching examples, and usage examples: `references/meme-generation.md`
+- Script behavior and deterministic rendering: `scripts/generate_meme.py`
 
 ## Pitfalls
 
