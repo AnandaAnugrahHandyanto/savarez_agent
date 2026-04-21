@@ -3060,59 +3060,87 @@ class TestWebhookSecurity(unittest.TestCase):
 class TestDedupTTL(unittest.TestCase):
     """Tests for TTL-aware deduplication."""
 
-    @patch.dict(os.environ, {}, clear=True)
     def test_duplicate_within_ttl_is_rejected(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
 
-        adapter = FeishuAdapter(PlatformConfig())
-        with patch.object(adapter, "_persist_seen_message_ids"):
-            adapter._seen_message_ids = {"om_dup": time.time()}
-            adapter._seen_message_order = ["om_dup"]
-            self.assertTrue(adapter._is_duplicate("om_dup"))
+        with tempfile.TemporaryDirectory() as temp_home, \
+             patch.dict(os.environ, {"HERMES_HOME": temp_home}, clear=True):
+            adapter = FeishuAdapter(PlatformConfig())
+            with patch.object(adapter, "_persist_seen_message_ids"):
+                adapter._seen_message_ids = {"om_dup": time.time()}
+                adapter._seen_message_order = ["om_dup"]
+                self.assertTrue(adapter._is_duplicate("om_dup"))
 
-    @patch.dict(os.environ, {}, clear=True)
     def test_expired_entry_is_not_considered_duplicate(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter, _FEISHU_DEDUP_TTL_SECONDS
 
-        adapter = FeishuAdapter(PlatformConfig())
-        # Plant an entry that expired well past the TTL.
-        stale_ts = time.time() - _FEISHU_DEDUP_TTL_SECONDS - 60
-        adapter._seen_message_ids = {"om_old": stale_ts}
-        adapter._seen_message_order = ["om_old"]
-        with patch.object(adapter, "_persist_seen_message_ids"):
-            self.assertFalse(adapter._is_duplicate("om_old"))
+        with tempfile.TemporaryDirectory() as temp_home, \
+             patch.dict(os.environ, {"HERMES_HOME": temp_home}, clear=True):
+            adapter = FeishuAdapter(PlatformConfig())
+            # Plant an entry that expired well past the TTL.
+            stale_ts = time.time() - _FEISHU_DEDUP_TTL_SECONDS - 60
+            adapter._seen_message_ids = {"om_old": stale_ts}
+            adapter._seen_message_order = ["om_old"]
+            with patch.object(adapter, "_persist_seen_message_ids"):
+                self.assertFalse(adapter._is_duplicate("om_old"))
 
-    @patch.dict(os.environ, {}, clear=True)
     def test_persist_saves_timestamps_as_dict(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
 
-        adapter = FeishuAdapter(PlatformConfig())
-        ts = time.time()
-        adapter._seen_message_ids = {"om_ts1": ts}
-        adapter._seen_message_order = ["om_ts1"]
         with tempfile.TemporaryDirectory() as tmpdir:
-            adapter._dedup_state_path = Path(tmpdir) / "dedup.json"
-            adapter._persist_seen_message_ids()
-            saved = json.loads(adapter._dedup_state_path.read_text())
+            with patch.dict(os.environ, {"HERMES_HOME": tmpdir}, clear=True):
+                adapter = FeishuAdapter(PlatformConfig())
+                ts = time.time()
+                adapter._seen_message_ids = {"om_ts1": ts}
+                adapter._seen_message_order = ["om_ts1"]
+                adapter._dedup_state_path = Path(tmpdir) / "dedup.json"
+                adapter._persist_seen_message_ids()
+                saved = json.loads(adapter._dedup_state_path.read_text())
         self.assertIsInstance(saved["message_ids"], dict)
         self.assertAlmostEqual(saved["message_ids"]["om_ts1"], ts, places=1)
 
-    @patch.dict(os.environ, {}, clear=True)
     def test_load_backward_compat_list_format(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
 
-        adapter = FeishuAdapter(PlatformConfig())
         with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "dedup.json"
-            path.write_text(json.dumps({"message_ids": ["om_a", "om_b"]}), encoding="utf-8")
-            adapter._dedup_state_path = path
-            adapter._load_seen_message_ids()
+            with patch.dict(os.environ, {"HERMES_HOME": tmpdir}, clear=True):
+                adapter = FeishuAdapter(PlatformConfig())
+                path = Path(tmpdir) / "dedup.json"
+                path.write_text(json.dumps({"message_ids": ["om_a", "om_b"]}), encoding="utf-8")
+                adapter._dedup_state_path = path
+                adapter._load_seen_message_ids()
         self.assertIn("om_a", adapter._seen_message_ids)
         self.assertIn("om_b", adapter._seen_message_ids)
+
+    def test_load_skips_invalid_timestamp_entries(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(os.environ, {"HERMES_HOME": tmpdir}, clear=True):
+                adapter = FeishuAdapter(PlatformConfig())
+                valid_ts = time.time()
+                path = Path(tmpdir) / "dedup.json"
+                path.write_text(
+                    json.dumps({
+                        "message_ids": {
+                            "om_good": valid_ts,
+                            "om_bad": "not-a-number",
+                            "om_null": None,
+                        }
+                    }),
+                    encoding="utf-8",
+                )
+                adapter._dedup_state_path = path
+                adapter._load_seen_message_ids()
+
+        self.assertIn("om_good", adapter._seen_message_ids)
+        self.assertNotIn("om_bad", adapter._seen_message_ids)
+        self.assertNotIn("om_null", adapter._seen_message_ids)
 
 
 class TestGroupMentionAtAll(unittest.TestCase):
