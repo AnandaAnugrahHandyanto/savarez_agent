@@ -191,6 +191,39 @@ def _get_proxy_from_env() -> Optional[str]:
     return None
 
 
+def _custom_default_headers_for_base_url(base_url: str) -> Dict[str, str]:
+    normalized = (base_url or "").strip().rstrip("/").lower()
+    if not normalized:
+        return {}
+
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        providers = cfg.get("custom_providers")
+        if not isinstance(providers, list):
+            return {}
+
+        for entry in providers:
+            if not isinstance(entry, dict):
+                continue
+            entry_base = str(entry.get("base_url") or "").strip().rstrip("/").lower()
+            if entry_base != normalized:
+                continue
+            raw_headers = entry.get("headers")
+            if not isinstance(raw_headers, dict):
+                return {}
+            headers: Dict[str, str] = {}
+            for key, value in raw_headers.items():
+                if isinstance(key, str) and isinstance(value, (str, int, float, bool)):
+                    headers[key] = str(value)
+            return headers
+    except Exception:
+        return {}
+
+    return {}
+
+
 def _install_safe_stdio() -> None:
     """Wrap stdout/stderr so best-effort console output cannot crash the agent."""
     for stream_name in ("stdout", "stderr"):
@@ -1163,7 +1196,10 @@ class AIAgent:
                     client_kwargs["command"] = self.acp_command
                     client_kwargs["args"] = self.acp_args
                 effective_base = base_url
-                if base_url_host_matches(effective_base, "openrouter.ai"):
+                custom_headers = _custom_default_headers_for_base_url(effective_base)
+                if custom_headers:
+                    client_kwargs["default_headers"] = custom_headers
+                elif base_url_host_matches(effective_base, "openrouter.ai"):
                     client_kwargs["default_headers"] = {
                         "HTTP-Referer": "https://hermes-agent.nousresearch.com",
                         "X-OpenRouter-Title": "Hermes Agent",
@@ -1226,6 +1262,13 @@ class AIAgent:
                         "configuration."
                     )
             
+            if "default_headers" not in client_kwargs:
+                _cfg_headers = _custom_default_headers_for_base_url(
+                    str(client_kwargs.get("base_url", "") or "")
+                )
+                if _cfg_headers:
+                    client_kwargs["default_headers"] = _cfg_headers
+
             self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
 
             # Enable fine-grained tool streaming for Claude on OpenRouter.
@@ -5009,7 +5052,10 @@ class AIAgent:
     def _apply_client_headers_for_base_url(self, base_url: str) -> None:
         from agent.auxiliary_client import _AI_GATEWAY_HEADERS, _OR_HEADERS
 
-        if base_url_host_matches(base_url, "openrouter.ai"):
+        custom_headers = _custom_default_headers_for_base_url(base_url)
+        if custom_headers:
+            self._client_kwargs["default_headers"] = custom_headers
+        elif base_url_host_matches(base_url, "openrouter.ai"):
             self._client_kwargs["default_headers"] = dict(_OR_HEADERS)
         elif base_url_host_matches(base_url, "ai-gateway.vercel.sh"):
             self._client_kwargs["default_headers"] = dict(_AI_GATEWAY_HEADERS)
