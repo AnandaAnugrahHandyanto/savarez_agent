@@ -673,6 +673,12 @@ def _sanitize_structure_non_ascii(payload: Any) -> bool:
 # =========================================================================
 _QWEN_CODE_VERSION = "0.14.1"
 
+# Request override keys that are only valid for the Anthropic Messages API.
+# These are consumed by build_anthropic_kwargs() (via the fast_mode kwarg) and
+# must NOT be forwarded to OpenAI chat.completions or Codex Responses APIs,
+# which reject unknown top-level parameters with a TypeError.
+_ANTHROPIC_ONLY_REQUEST_OVERRIDES = frozenset({"speed"})
+
 
 def _qwen_portal_headers() -> dict:
     """Return default HTTP headers required by Qwen Portal API."""
@@ -6820,7 +6826,13 @@ class AIAgent:
                 kwargs["include"] = []
 
             if self.request_overrides:
-                kwargs.update(self.request_overrides)
+                # "speed" is consumed by the Anthropic Messages path (fast_mode
+                # kwarg in build_anthropic_kwargs); don't forward it to the
+                # OpenAI Responses API which rejects unknown parameters.
+                filtered = {k: v for k, v in self.request_overrides.items()
+                            if k not in _ANTHROPIC_ONLY_REQUEST_OVERRIDES}
+                if filtered:
+                    kwargs.update(filtered)
 
             if self.max_tokens is not None and not is_codex_backend:
                 kwargs["max_output_tokens"] = self.max_tokens
@@ -7081,8 +7093,14 @@ class AIAgent:
 
         # Priority Processing / generic request overrides (e.g. service_tier).
         # Applied last so overrides win over any defaults set above.
+        # "speed" is consumed by the Anthropic Messages path (fast_mode kwarg
+        # in build_anthropic_kwargs); don't forward it to the OpenAI
+        # chat.completions API which rejects unknown top-level parameters.
         if self.request_overrides:
-            api_kwargs.update(self.request_overrides)
+            filtered = {k: v for k, v in self.request_overrides.items()
+                        if k not in _ANTHROPIC_ONLY_REQUEST_OVERRIDES}
+            if filtered:
+                api_kwargs.update(filtered)
 
         return api_kwargs
 

@@ -11,6 +11,7 @@ from agent.prompt_caching import apply_anthropic_cache_control
 from agent.anthropic_adapter import (
     _is_oauth_token,
     _refresh_oauth_token,
+    _sanitize_oauth_system_text,
     _to_plain_data,
     _write_claude_code_credentials,
     build_anthropic_client,
@@ -1132,6 +1133,111 @@ class TestBuildAnthropicKwargs:
         )
         assert kwargs["max_tokens"] == 64_000
 
+    def test_oauth_system_prompt_sanitizes_brittle_hermes_phrases(self):
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are Hermes Agent from Nous Research.\n"
+                    "Do NOT save task progress, session outcomes, completed-work logs, or temporary TODO state to memory; use session_search to recall those from past transcripts.\n"
+                    "When the user references something from a past conversation or you suspect relevant cross-session context exists, use session_search to recall it before asking them to repeat themselves.\n"
+                    "When using a skill and finding it outdated, incomplete, or wrong, patch it immediately with skill_manage(action='patch') — don't wait to be asked.\n"
+                    "You have persistent memory across sessions with a memory tool.\n"
+                    "For media, include MEDIA:/absolute/path/to/file."
+                ),
+            },
+            {"role": "user", "content": "Hi"},
+        ]
+
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=messages,
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+        )
+
+        system_blocks = kwargs["system"]
+        assert isinstance(system_blocks, list)
+        combined_text = "\n".join(
+            block["text"]
+            for block in system_blocks
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+        assert "Hermes Agent" not in combined_text
+        assert "Nous Research" not in combined_text
+        assert "session_search" not in combined_text
+        assert "skill_manage" not in combined_text
+        assert "MEDIA:/absolute/path/to/file" not in combined_text
+        assert "Claude Code" in combined_text
+        assert "Anthropic" in combined_text
+        assert "history lookup" in combined_text
+        assert "update it immediately" in combined_text
+        assert "native attachment path" in combined_text
+
+    def test_oauth_tools_are_prefixed_after_sanitization(self):
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "session_search",
+                    "description": "Search history",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "toolu_1",
+                        "type": "function",
+                        "function": {"name": "session_search", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "toolu_1", "content": '{"ok": true}'},
+        ]
+
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=messages,
+            tools=tools,
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+        )
+
+        assert kwargs["tools"][0]["name"] == "mcp_session_search"
+        assistant_blocks = kwargs["messages"][0]["content"]
+        tool_use_block = next(block for block in assistant_blocks if block.get("type") == "tool_use")
+        assert tool_use_block["name"] == "mcp_session_search"
+
+
+class TestSanitizeOAuthSystemText:
+    def test_rewrites_known_false_positive_triggers(self):
+        text = (
+            "Hermes Agent from Nous Research uses session_search, skill_manage(action='patch'), "
+            "the memory tool, persistent memory across sessions, and MEDIA:/absolute/path/to/file."
+        )
+        sanitized = _sanitize_oauth_system_text(text)
+        assert "Hermes Agent" not in sanitized
+        assert "Nous Research" not in sanitized
+        assert "session_search" not in sanitized
+        assert "skill_manage(action='patch')" not in sanitized
+        assert "memory tool" not in sanitized
+        assert "persistent memory across sessions" not in sanitized
+        assert "MEDIA:/absolute/path/to/file" not in sanitized
+        assert "Claude Code" in sanitized
+        assert "Anthropic" in sanitized
+        assert "history lookup" in sanitized
+        assert "long-term notes tool" in sanitized
+        assert "long-term notes across sessions" in sanitized
+        assert "native attachment path" in sanitized
+
 
 # ---------------------------------------------------------------------------
 # Model output limit lookup
@@ -1659,3 +1765,15 @@ class TestToolChoice:
             tool_choice="search",
         )
         assert kwargs["tool_choice"] == {"type": "tool", "name": "search"}
+
+    def test_oauth_specific_tool_choice_is_prefixed(self):
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=self._DUMMY_TOOL,
+            max_tokens=4096,
+            reasoning_config=None,
+            tool_choice="test",
+            is_oauth=True,
+        )
+        assert kwargs["tool_choice"] == {"type": "tool", "name": "mcp_test"}

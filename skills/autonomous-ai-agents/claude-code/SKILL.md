@@ -1,18 +1,18 @@
 ---
 name: claude-code
-description: Delegate coding tasks to Claude Code (Anthropic's CLI agent). Use for building features, refactoring, PR reviews, and iterative coding. Requires the claude CLI installed.
-version: 2.2.0
+description: Delegate coding tasks to Claude Code (Anthropic's CLI agent) or the claude-max-api HTTP provider. Use for building features, refactoring, PR reviews, iterative coding, and OpenAI-compatible API access via localhost:3456. Supports CLI print mode, interactive tmux sessions, and zero-cost HTTP API calls powered by Claude Max subscription.
+version: 2.3.0
 author: Hermes Agent + Teknium
 license: MIT
 metadata:
   hermes:
-    tags: [Coding-Agent, Claude, Anthropic, Code-Review, Refactoring, PTY, Automation]
+    tags: [Coding-Agent, Claude, Anthropic, Code-Review, Refactoring, PTY, Automation, API-Proxy, OpenAI-Compatible]
     related_skills: [codex, hermes-agent, opencode]
 ---
 
 # Claude Code — Hermes Orchestration Guide
 
-Delegate coding tasks to [Claude Code](https://code.claude.com/docs/en/cli-reference) (Anthropic's autonomous coding agent CLI) via the Hermes terminal. Claude Code v2.x can read files, write code, run shell commands, spawn subagents, and manage git workflows autonomously.
+Delegate coding tasks to [Claude Code](https://code.claude.com/docs/en/cli-reference) (Anthropic's autonomous coding agent CLI) via the Hermes terminal or the **claude-max-api** HTTP provider. Claude Code v2.x can read files, write code, run shell commands, spawn subagents, and manage git workflows autonomously — and the API provider exposes this power over a standard OpenAI-compatible HTTP interface at zero marginal cost.
 
 ## Prerequisites
 
@@ -24,10 +24,11 @@ Delegate coding tasks to [Claude Code](https://code.claude.com/docs/en/cli-refer
 - **Health check:** `claude doctor` — checks auto-updater and installation health
 - **Version check:** `claude --version` (requires v2.x+)
 - **Update:** `claude update` or `claude upgrade`
+- **claude-max-api:** `npm install -g claude-max-api-proxy` + server at `~/.claude-max-api/` (see Mode 3 below)
 
-## Two Orchestration Modes
+## Three Orchestration Modes
 
-Hermes interacts with Claude Code in two fundamentally different ways. Choose based on the task.
+Hermes interacts with Claude Code in three fundamentally different ways. Choose based on the task.
 
 ### Mode 1: Print Mode (`-p`) — Non-Interactive (PREFERRED for most tasks)
 
@@ -76,6 +77,46 @@ terminal(command="tmux send-keys -t claude-work '/exit' Enter")
 - Tasks requiring human-in-the-loop decisions
 - Exploratory coding sessions
 - When you need to use Claude's slash commands (`/compact`, `/review`, `/model`)
+
+### Mode 3: claude-max-api — OpenAI-Compatible HTTP Provider
+
+The claude-max-api server exposes Claude through a standard OpenAI-compatible REST API at `http://127.0.0.1:3456`. It runs as a macOS LaunchAgent (always-on, auto-restart on crash) and spawns the `claude` CLI as a subprocess for each request. All billing goes through the flat-rate Claude Max subscription — zero per-token cost.
+
+```
+# Simple completion (non-streaming)
+terminal(command="curl -s http://127.0.0.1:3456/v1/chat/completions \
+  -H 'Authorization: Bearer sk-cmax-YOUR_KEY' \
+  -H 'Content-Type: application/json' \
+  -d '{\"model\":\"claude-sonnet-4\",\"messages\":[{\"role\":\"user\",\"content\":\"Explain the auth module in src/\"}]}'", timeout=120)
+
+# Streaming completion
+terminal(command="curl -N http://127.0.0.1:3456/v1/chat/completions \
+  -H 'Authorization: Bearer sk-cmax-YOUR_KEY' \
+  -H 'Content-Type: application/json' \
+  -d '{\"model\":\"claude-opus-4\",\"messages\":[{\"role\":\"user\",\"content\":\"Review this code for security issues\"}],\"stream\":true}'", timeout=180)
+```
+
+**When to use the HTTP provider:**
+- When you need an OpenAI SDK-compatible interface (drop-in replacement for any OpenAI client)
+- For services, tools, or agents that speak the OpenAI API protocol but not the Claude CLI
+- When you want zero per-token cost (flat-rate Max subscription billing)
+- For lightweight completions where you don't need Claude Code's file/tool capabilities
+- When running multiple concurrent requests without managing tmux sessions or CLI subprocesses
+
+**When NOT to use the HTTP provider:**
+- When you need Claude Code's built-in tools (Read, Edit, Write, Bash, etc.) — use Mode 1 or 2
+- For agentic loops with file system access — the API provides chat completions only, not tool use
+- When you need `--allowedTools`, `--max-turns`, or other CLI-specific agentic features
+
+**Available models:**
+
+| Model | ID |
+|---|---|
+| Claude Opus 4 | `claude-opus-4` |
+| Claude Sonnet 4 | `claude-sonnet-4` |
+| Claude Haiku 4 | `claude-haiku-4` |
+
+**Health check:** `curl -s http://127.0.0.1:3456/health` — returns status, uptime, and active key count.
 
 ## PTY Dialog Handling (CRITICAL for Interactive Mode)
 
@@ -669,6 +710,172 @@ Reference MCP resources in chat: `@github:issue://123`
 - **Output tokens:** `export MAX_MCP_OUTPUT_TOKENS=50000` — cap output from MCP servers to prevent context flooding
 - **Transports:** `stdio` (local process), `http` (remote), `sse` (server-sent events)
 
+## claude-max-api — Full Reference
+
+The claude-max-api server at `http://127.0.0.1:3456` provides an OpenAI-compatible API backed by your Claude Max subscription. It runs as a persistent macOS LaunchAgent (`com.claude-max-api`) with auto-restart, so it's always available without manual startup.
+
+### How It Works
+
+```
+Your app ──► claude-max-api (localhost:3456) ──► Claude Code CLI ──► Anthropic
+                                                    (Max subscription)
+```
+
+The server spawns the `claude` CLI as a subprocess for each request using `claude --print --output-format stream-json --model <model> <prompt>`. Authentication uses your Max subscription OAuth session stored in `~/.claude/` — no API keys or tokens are sent to Anthropic directly.
+
+### Installation & Setup
+
+```bash
+# 1. Install the CLI proxy package
+npm install -g claude-max-api-proxy
+
+# 2. Clone the server repo
+git clone https://github.com/MatthewSabia1/claude-max-api.git ~/.claude-max-api
+cd ~/.claude-max-api && npm install
+
+# 3. Authenticate Claude (if not already)
+claude auth login
+
+# 4. Start manually (or use the LaunchAgent)
+npm start
+```
+
+Open **http://127.0.0.1:3456** to access the dashboard, create API keys, and configure settings.
+
+### LaunchAgent (Always-On Background Service)
+
+The server is configured as a macOS LaunchAgent at `~/Library/LaunchAgents/com.claude-max-api.plist`:
+
+```bash
+# Check status
+launchctl print gui/$(id -u)/com.claude-max-api 2>&1 | head -5
+
+# Restart
+launchctl kill SIGTERM gui/$(id -u)/com.claude-max-api
+
+# Stop
+launchctl bootout gui/$(id -u)/com.claude-max-api
+
+# Start / reload
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.claude-max-api.plist
+
+# Logs
+tail -f ~/.openclaw/logs/claude-max-api.log
+tail -f ~/.openclaw/logs/claude-max-api.err.log
+```
+
+### API Keys
+
+Keys are prefixed with `sk-cmax-*` and managed from the dashboard or via the management API (localhost only, no auth required):
+
+```bash
+# Create a key
+curl -s http://127.0.0.1:3456/api/keys -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "hermes-agent", "userAgent": "cli"}'
+
+# List keys (secrets masked)
+curl -s http://127.0.0.1:3456/api/keys
+
+# Reveal full key secret
+curl -s http://127.0.0.1:3456/api/keys/<id>/reveal
+
+# Revoke a key
+curl -s http://127.0.0.1:3456/api/keys/<id> -X DELETE
+```
+
+Each key tracks `requestCount`, `lastUsedAt`, and supports a per-key `userAgent` override.
+
+### User-Agent Control
+
+Each request to Anthropic includes a User-Agent constructed by the CLI: `claude-cli/<version> (external, <entrypoint>)`. The `<entrypoint>` value controls how the request appears in Anthropic's systems:
+
+- **Per-key override:** Set `userAgent` when creating or updating a key
+- **Global default:** Set via dashboard Settings or `PATCH /api/settings { "defaultUserAgent": "cursor" }`
+- **Fallback:** `cli` (the default)
+
+Resolution order: **per-key** > **global setting** > **`cli`**
+
+Built-in presets: `cli`, `cursor`, `vscode`, `jetbrains` — or any custom string.
+
+### OpenAI-Compatible Endpoints
+
+```
+GET  /v1/models                  List available models
+POST /v1/chat/completions        Chat completion (streaming supported via stream: true)
+```
+
+Both endpoints require Bearer auth with an `sk-cmax-*` key. If no keys exist, auth is bypassed (grace mode for first-time setup).
+
+### Using with OpenAI SDKs
+
+Any OpenAI-compatible client library works as a drop-in:
+
+**Python (openai package):**
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://127.0.0.1:3456/v1",
+    api_key="sk-cmax-YOUR_KEY"
+)
+
+response = client.chat.completions.create(
+    model="claude-sonnet-4",
+    messages=[{"role": "user", "content": "Explain this codebase"}]
+)
+print(response.choices[0].message.content)
+```
+
+**Node.js (openai package):**
+```javascript
+import OpenAI from 'openai';
+
+const client = new OpenAI({
+  baseURL: 'http://127.0.0.1:3456/v1',
+  apiKey: 'sk-cmax-YOUR_KEY',
+});
+
+const completion = await client.chat.completions.create({
+  model: 'claude-sonnet-4',
+  messages: [{ role: 'user', content: 'Summarize recent changes' }],
+});
+console.log(completion.choices[0].message.content);
+```
+
+**curl (streaming):**
+```bash
+curl -N http://127.0.0.1:3456/v1/chat/completions \
+  -H "Authorization: Bearer sk-cmax-YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude-opus-4","messages":[{"role":"user","content":"Hello"}],"stream":true}'
+```
+
+### System Endpoints (No Auth)
+
+```
+GET  /health                     Status, uptime, active key count
+GET  /api/settings               Global settings (defaultUserAgent)
+PATCH /api/settings              Update global settings
+GET  /docs                       Swagger UI (interactive API explorer)
+GET  /openapi.json               OpenAPI 3.0 spec
+```
+
+### Mode 3 vs Mode 1 Decision Guide
+
+| Factor | Mode 1 (`claude -p`) | Mode 3 (claude-max-api) |
+|--------|----------------------|------------------------|
+| **Tool use** (Read/Edit/Bash) | Yes | No — chat completions only |
+| **Agentic loops** | Yes (`--max-turns`) | No — single-turn completions |
+| **File system access** | Yes | No |
+| **OpenAI SDK compatible** | No | Yes — drop-in replacement |
+| **Billing** | Per-token or Max | Max only (zero marginal cost) |
+| **Concurrency** | Manual subprocess management | HTTP server handles it |
+| **Streaming** | `--output-format stream-json` | SSE (`stream: true`) |
+| **Structured output** | `--json-schema` | Via prompt engineering |
+
+**Rule of thumb:** If the task needs files, tools, or agentic behavior, use Mode 1. If it needs a text completion or is feeding an OpenAI-compatible tool chain, use Mode 3.
+
 ## Monitoring Interactive Sessions
 
 ### Reading the TUI Status
@@ -729,16 +936,19 @@ Use `/context` in interactive mode to see a colored grid of context usage. Key t
 10. **Slash commands (like `/commit`) only work in interactive mode** — in `-p` mode, describe the task in natural language instead.
 11. **`--bare` skips OAuth** — requires `ANTHROPIC_API_KEY` env var or an `apiKeyHelper` in settings.
 12. **Context degradation is real** — AI output quality measurably degrades above 70% context window usage. Monitor with `/context` and proactively `/compact`.
+13. **Multiple installations can conflict** — `claude` may be installed via npm (homebrew), bun, and/or native installer. `claude update` may update one but not others, leaving a stale binary first in PATH. If `claude --version` shows an old version after updating, run `which -a claude` to find all installations and use the full path to the updated binary (e.g., `~/.bun/bin/claude`). Homebrew npm installs at `/opt/homebrew` cannot be updated without sudo — prefer the bun or native install path instead.
 
 ## Rules for Hermes Agents
 
-1. **Prefer print mode (`-p`) for single tasks** — cleaner, no dialog handling, structured output
-2. **Use tmux for multi-turn interactive work** — the only reliable way to orchestrate the TUI
-3. **Always set `workdir`** — keep Claude focused on the right project directory
-4. **Set `--max-turns` in print mode** — prevents infinite loops and runaway costs
-5. **Monitor tmux sessions** — use `tmux capture-pane -t <session> -p -S -50` to check progress
-6. **Look for the `❯` prompt** — indicates Claude is waiting for input (done or asking a question)
-7. **Clean up tmux sessions** — kill them when done to avoid resource leaks
-8. **Report results to user** — after completion, summarize what Claude did and what changed
-9. **Don't kill slow sessions** — Claude may be doing multi-step work; check progress instead
-10. **Use `--allowedTools`** — restrict capabilities to what the task actually needs
+1. **Prefer print mode (`-p`) for single coding tasks** — cleaner, no dialog handling, structured output
+2. **Use the HTTP API for completions** — when you need text generation without file/tool access, `http://127.0.0.1:3456/v1/chat/completions` is simpler than spawning CLI subprocesses and costs nothing extra
+3. **Use tmux for multi-turn interactive work** — the only reliable way to orchestrate the TUI
+4. **Always set `workdir`** — keep Claude focused on the right project directory
+5. **Set `--max-turns` in print mode** — prevents infinite loops and runaway costs
+6. **Monitor tmux sessions** — use `tmux capture-pane -t <session> -p -S -50` to check progress
+7. **Look for the `❯` prompt** — indicates Claude is waiting for input (done or asking a question)
+8. **Clean up tmux sessions** — kill them when done to avoid resource leaks
+9. **Report results to user** — after completion, summarize what Claude did and what changed
+10. **Don't kill slow sessions** — Claude may be doing multi-step work; check progress instead
+11. **Use `--allowedTools`** — restrict capabilities to what the task actually needs
+12. **Check API health before using** — `curl -s http://127.0.0.1:3456/health` confirms the claude-max-api server is running
