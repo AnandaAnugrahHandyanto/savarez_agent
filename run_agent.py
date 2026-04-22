@@ -6687,6 +6687,20 @@ class AIAgent:
                     content[-1]["cache_control"] = {"type": "ephemeral"}
                 break
 
+    def _tools_for_api(self):
+        """Return self.tools unless tool_use_enforcement is explicitly disabled.
+
+        When enforcement is set to false/never/no/off, tools are omitted from
+        API requests entirely — needed for models that reject the tools parameter
+        (e.g. deepseek-r1 via Ollama).
+        """
+        _enforce = self._tool_use_enforcement
+        if _enforce is False or (
+            isinstance(_enforce, str) and _enforce.lower() in ("false", "never", "no", "off")
+        ):
+            return None
+        return self.tools
+
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Build the keyword arguments dict for the active API mode."""
         if self.api_mode == "anthropic_messages":
@@ -6700,7 +6714,7 @@ class AIAgent:
             return _transport.build_kwargs(
                 model=self.model,
                 messages=anthropic_messages,
-                tools=self.tools,
+                tools=self._tools_for_api(),
                 max_tokens=ephemeral_out if ephemeral_out is not None else self.max_tokens,
                 reasoning_config=self.reasoning_config,
                 is_oauth=self._is_anthropic_oauth,
@@ -6722,7 +6736,7 @@ class AIAgent:
                 **build_converse_kwargs(
                     model=self.model,
                     messages=api_messages,
-                    tools=self.tools,
+                    tools=self._tools_for_api(),
                     max_tokens=self.max_tokens or 4096,
                     temperature=None,  # Let the model use its default
                     guardrail_config=guardrail,
@@ -6746,7 +6760,7 @@ class AIAgent:
             return _ct.build_kwargs(
                 model=self.model,
                 messages=api_messages,
-                tools=self.tools,
+                tools=self._tools_for_api(),
                 reasoning_config=self.reasoning_config,
                 session_id=getattr(self, "session_id", None),
                 max_tokens=self.max_tokens,
@@ -6852,7 +6866,7 @@ class AIAgent:
                 "sessionId": self.session_id or "hermes",
                 "promptId": str(uuid.uuid4()),
             }
-        if self.tools:
+        if self._tools_for_api():
             api_kwargs["tools"] = self.tools
 
         # ── max_tokens for chat_completions ──────────────────────────────
