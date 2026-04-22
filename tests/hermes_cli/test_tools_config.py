@@ -6,6 +6,7 @@ from hermes_cli.tools_config import (
     _DEFAULT_OFF_TOOLSETS,
     _apply_toolset_change,
     _configure_provider,
+    _get_effective_configurable_toolsets,
     _get_platform_tools,
     _platform_toolset_summary,
     _save_platform_tools,
@@ -28,6 +29,34 @@ def test_get_platform_tools_uses_default_when_platform_not_configured():
 
 def test_configurable_toolsets_include_messaging():
     assert any(ts_key == "messaging" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
+
+
+def test_effective_configurable_toolsets_dedupes_plugin_rows_for_builtin_keys():
+    with patch("hermes_cli.plugins.discover_plugins"), patch(
+        "hermes_cli.plugins.get_plugin_toolsets",
+        return_value=[
+            ("web", "🔌 Web", "plugin extends built-in web"),
+            ("browser", "🔌 Browser", "plugin extends built-in browser"),
+        ],
+    ):
+        effective = _get_effective_configurable_toolsets()
+
+    keys = [ts_key for ts_key, _, _ in effective]
+    assert keys.count("web") == 1
+    assert keys.count("browser") == 1
+
+
+def test_effective_configurable_toolsets_keeps_plugin_only_rows():
+    with patch("hermes_cli.plugins.discover_plugins"), patch(
+        "hermes_cli.plugins.get_plugin_toolsets",
+        return_value=[
+            ("web_search_plus", "🔌 Web Search Plus", "plugin-only toolset"),
+        ],
+    ):
+        effective = _get_effective_configurable_toolsets()
+
+    assert ("web_search_plus", "🔌 Web Search Plus", "plugin-only toolset") in effective
+
 
 def test_get_platform_tools_default_telegram_includes_messaging():
     enabled = _get_platform_tools({}, "telegram")

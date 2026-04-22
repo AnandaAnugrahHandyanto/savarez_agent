@@ -82,10 +82,16 @@ def _get_effective_configurable_toolsets():
     built-in toolsets in the TUI checklist.
     """
     result = list(CONFIGURABLE_TOOLSETS)
+    seen = {ts_key for ts_key, _, _ in result}
     try:
         from hermes_cli.plugins import discover_plugins, get_plugin_toolsets
         discover_plugins()  # idempotent — ensures plugins are loaded
-        result.extend(get_plugin_toolsets())
+        for toolset in get_plugin_toolsets():
+            ts_key = toolset[0]
+            if ts_key in seen:
+                continue
+            result.append(toolset)
+            seen.add(ts_key)
     except Exception:
         pass
     return result
