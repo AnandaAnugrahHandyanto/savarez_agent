@@ -1,3 +1,9 @@
+<h4 align="center">
+  English | <a href="./README.zh.md">中文</a>
+</h4>
+
+<br />
+
 # Hermes Agent (Fork)
 
 This is a **fork** of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
