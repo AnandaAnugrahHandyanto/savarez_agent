@@ -808,15 +808,28 @@ class GatewayRunner:
             if mode not in valid_modes:
                 continue
             key = str(chat_id)
-            # Skip legacy unprefixed keys (warn and skip)
-            if ":" not in key:
-                logger.warning(
-                    "Skipping legacy unprefixed voice mode key %r during migration. "
-                    "Re-enable voice mode on that chat to rebuild the prefixed key.",
+            if ":" in key:
+                result[key] = mode
+                continue
+            # Legacy pre-#12542 key. Keep "off" so auto-TTS suppression
+            # survives the migration (#14025); drop voice_only/all to
+            # avoid firing TTS on a platform the user never configured.
+            if mode == "off":
+                logger.info(
+                    "Preserving legacy unprefixed voice mode key %r (mode=off) "
+                    "for cross-adapter auto-TTS suppression. Run any /voice "
+                    "command on the affected chat to write a prefixed entry "
+                    "that supersedes this fallback on that platform.",
                     key,
                 )
-                continue
-            result[key] = mode
+                result[key] = mode
+            else:
+                logger.warning(
+                    "Skipping legacy unprefixed voice mode key %r (mode=%s) "
+                    "during migration. Re-enable voice mode on that chat to "
+                    "rebuild the prefixed key.",
+                    key, mode,
+                )
         return result
 
     def _save_voice_modes(self) -> None:
@@ -839,7 +852,12 @@ class GatewayRunner:
             disabled_chats.discard(chat_id)
 
     def _sync_voice_mode_state_to_adapter(self, adapter) -> None:
-        """Restore persisted /voice off state into a live platform adapter."""
+        """Restore persisted /voice off state into a live platform adapter.
+
+        Explicit platform-prefixed entries win; legacy pre-#12542 unprefixed
+        "off" rows act as a cross-platform fallback for chats that have no
+        prefixed entry yet (#14025).
+        """
         disabled_chats = getattr(adapter, "_auto_tts_disabled_chats", None)
         if not isinstance(disabled_chats, set):
             return
@@ -848,10 +866,18 @@ class GatewayRunner:
             return
         disabled_chats.clear()
         prefix = f"{platform.value}:"
-        disabled_chats.update(
-            key[len(prefix):] for key, mode in self._voice_mode.items()
-            if mode == "off" and key.startswith(prefix)
-        )
+
+        explicit_ids: set = set()
+        for key, mode in self._voice_mode.items():
+            if key.startswith(prefix):
+                chat_id = key[len(prefix):]
+                explicit_ids.add(chat_id)
+                if mode == "off":
+                    disabled_chats.add(chat_id)
+
+        for key, mode in self._voice_mode.items():
+            if mode == "off" and ":" not in key and key not in explicit_ids:
+                disabled_chats.add(key)
 
     async def _safe_adapter_disconnect(self, adapter, platform) -> None:
         """Call adapter.disconnect() defensively, swallowing any error.
