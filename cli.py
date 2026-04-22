@@ -8480,6 +8480,37 @@ class HermesCLI:
                             if stop_event is not None:
                                 stop_event.set()
                             self.agent.interrupt(interrupt_msg)
+                            # Clear any active overlay states that the interrupted agent
+                            # left behind — approval/clarify/sudo/secret prompts block input
+                            # (read_only condition or keypress filter) until explicitly reset.
+                            try:
+                                if self._approval_state:
+                                    try:
+                                        self._approval_state["response_queue"].put("deny")
+                                    except Exception:
+                                        pass
+                                    self._approval_state = None
+                                if self._clarify_state:
+                                    try:
+                                        self._clarify_state["response_queue"].put(None)
+                                    except Exception:
+                                        pass
+                                    self._clarify_state = None
+                                    self._clarify_freetext = False
+                                if self._sudo_state:
+                                    try:
+                                        self._sudo_state["response_queue"].put(None)
+                                    except Exception:
+                                        pass
+                                    self._sudo_state = None
+                                if self._secret_state:
+                                    try:
+                                        self._secret_state["response_queue"].put(None)
+                                    except Exception:
+                                        pass
+                                    self._secret_state = None
+                            except Exception:
+                                pass
                             # Debug: log to file (stdout may be devnull from redirect_stdout)
                             try:
                                 _dbg = _hermes_home / "interrupt_debug.log"
