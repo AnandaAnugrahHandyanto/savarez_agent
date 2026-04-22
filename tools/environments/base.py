@@ -469,23 +469,19 @@ class BaseEnvironment(ABC):
             idle_after_exit = 0
             try:
                 while True:
+                    # On Windows, select() does not support pipe FDs.
+                    # Use time.sleep-based polling instead.
+                    time.sleep(0.05)
                     try:
-                        ready, _, _ = select.select([fd], [], [], 0.1)
+                        chunk = os.read(fd, 4096)
                     except (ValueError, OSError):
-                        break  # fd already closed
-                    if ready:
-                        try:
-                            chunk = os.read(fd, 4096)
-                        except (ValueError, OSError):
-                            break
-                        if not chunk:
-                            break  # true EOF — all writers closed
-                        output_chunks.append(decoder.decode(chunk))
-                        idle_after_exit = 0
-                    elif proc.poll() is not None:
-                        # bash is gone and the pipe was idle for ~100ms.  Give
-                        # it two more cycles to catch any buffered tail, then
-                        # stop — otherwise we wait forever on a grandchild pipe.
+                        break
+                    if not chunk:
+                        break  # true EOF — all writers closed
+                    output_chunks.append(decoder.decode(chunk))
+                    idle_after_exit = 0
+                    if proc.poll() is not None:
+                        # bash is gone — give it two more cycles to flush buffered tail.
                         idle_after_exit += 1
                         if idle_after_exit >= 3:
                             break
