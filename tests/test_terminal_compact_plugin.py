@@ -39,6 +39,7 @@ def test_project_plugin_loads_and_rewrites_terminal_calls(monkeypatch):
     repo_root = Path(__file__).resolve().parents[1]
     monkeypatch.chdir(repo_root)
     monkeypatch.setenv("HERMES_ENABLE_PROJECT_PLUGINS", "true")
+    monkeypatch.setattr("hermes_cli.plugins._get_enabled_plugins", lambda: {"terminal_compact"})
 
     mgr = PluginManager()
     mgr.discover_and_load()
