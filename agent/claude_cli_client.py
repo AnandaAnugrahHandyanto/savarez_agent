@@ -1131,14 +1131,33 @@ class ClaudeCLIClient:
                     proc.kill()
                     rc = proc.wait()
 
+                try:
+                    stderr_tail = proc.stderr.read()
+                except Exception:
+                    stderr_tail = ""
+                if stderr_tail:
+                    stderr_lines.extend(line for line in stderr_tail.splitlines() if line)
+
                 stderr = "\n".join(part for part in stderr_lines if part).strip()
-                if rc != 0:
+                if rc != 0 and not fallback_assistant_text and not raw_text_parts and not isinstance(result_payload, dict):
                     raise RuntimeError(
                         f"Claude CLI returned exit code {rc}: {stderr or 'unknown error'}"
+                    )
+                if rc != 0:
+                    _debug_log(
+                        "stream_prompt:nonzero_with_result "
+                        f"rc={rc} stderr_len={len(stderr)} "
+                        f"has_result={isinstance(result_payload, dict)} "
+                        f"has_fallback={bool(fallback_assistant_text)} "
+                        f"raw_parts={len(raw_text_parts)}"
                     )
 
                 if fallback_assistant_text and not raw_text_parts:
                     raw_text_parts.append(fallback_assistant_text)
+                if not raw_text_parts and isinstance(result_payload, dict):
+                    result_text = str(result_payload.get("result") or "").strip()
+                    if result_text:
+                        raw_text_parts.append(result_text)
 
                 raw_text = "".join(raw_text_parts).strip()
                 tool_calls, cleaned_text = _extract_tool_calls_from_text(raw_text)
