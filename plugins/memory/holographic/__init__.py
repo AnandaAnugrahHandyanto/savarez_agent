@@ -22,7 +22,7 @@ import logging
 import re
 from typing import Any, Dict, List
 
-from agent.memory_provider import MemoryProvider
+from hermes_memory.memory_provider import MemoryProvider
 from tools.registry import tool_error
 from .store import MemoryStore
 from .retrieval import FactRetriever

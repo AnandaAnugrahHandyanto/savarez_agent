@@ -79,7 +79,7 @@ from tools.browser_tool import cleanup_browser
 from hermes_constants import OPENROUTER_BASE_URL
 
 # Agent internals extracted to agent/ package for modularity
-from agent.memory_manager import build_memory_context_block, sanitize_context
+from hermes_memory.memory_manager import build_memory_context_block, sanitize_context
 from agent.retry_utils import jittered_backoff
 from agent.error_classifier import classify_api_error, FailoverReason
 from agent.prompt_builder import (
@@ -1456,7 +1456,7 @@ class AIAgent:
                 _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
 
                 if _mem_provider_name:
-                    from agent.memory_manager import MemoryManager as _MemoryManager
+                    from hermes_memory.memory_manager import MemoryManager as _MemoryManager
                     from plugins.memory import load_memory_provider as _load_mem
                     self._memory_manager = _MemoryManager()
                     _mp = _load_mem(_mem_provider_name)

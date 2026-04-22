@@ -9,8 +9,8 @@ import os
 import pytest
 from unittest.mock import MagicMock, patch
 
-from agent.memory_provider import MemoryProvider
-from agent.memory_manager import MemoryManager
+from hermes_memory.memory_provider import MemoryProvider
+from hermes_memory.memory_manager import MemoryManager
 
 
 # ---------------------------------------------------------------------------

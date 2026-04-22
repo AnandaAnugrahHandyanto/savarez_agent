@@ -4519,7 +4519,7 @@ class TestMemoryContextSanitization:
     def test_sanitize_context_strips_full_block(self):
         """End-to-end: a user message with an embedded memory-context block
         is cleaned to just the actual user text."""
-        from agent.memory_manager import sanitize_context
+        from hermes_memory.memory_manager import sanitize_context
         user_text = "how is the honcho working"
         injected = (
             user_text + "\n\n"
