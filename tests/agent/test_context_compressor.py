@@ -242,6 +242,46 @@ class TestSummaryFailureCooldown:
         assert mock_call.call_count == 1
 
 
+class TestSummaryFallbackPreservesFocusTopic:
+    def test_focus_topic_preserved_on_model_not_found_fallback(self):
+        """When the summary model 404s, the retry with the main model must
+        keep the original focus_topic instead of silently dropping it."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test/main-model",
+                quiet_mode=True,
+            )
+            c.summary_model = "test/summary-model"
+
+        messages = [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+        # First call: summary model 404s -> triggers fallback retry.
+        # Second call (retry with main model): succeeds.
+        err_404 = Exception("model_not_found")
+        err_404.status_code = 404
+
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "summary text"
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err_404, mock_ok]) as mock_call:
+            result = c._generate_summary(messages, focus_topic="important topic")
+
+        assert result is not None
+        # summary_model was cleared (fell back to main model)
+        assert c.summary_model == ""
+        # The retry call should have been made (2 total calls)
+        assert mock_call.call_count == 2
+        # Verify focus_topic was forwarded to the retry call via the prompt
+        retry_call = mock_call.call_args_list[1]
+        retry_messages = retry_call.kwargs.get("messages", retry_call[1].get("messages", []))
+        prompt_text = retry_messages[0]["content"] if retry_messages else ""
+        assert "important topic" in prompt_text
+
+
 class TestSummaryPrefixNormalization:
     def test_legacy_prefix_is_replaced(self):
         summary = ContextCompressor._with_summary_prefix("[CONTEXT SUMMARY]: did work")
