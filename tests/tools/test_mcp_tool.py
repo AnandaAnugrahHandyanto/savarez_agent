@@ -324,6 +324,72 @@ class TestRunOnMCPLoopInterrupts:
             mcp_mod._mcp_loop = old_loop
             mcp_mod._mcp_thread = old_thread
 
+    def test_respect_interrupt_false_ignores_stale_flag(self):
+        """Registration paths must not be cancelled by a stale per-thread
+        interrupt flag left behind on a recycled executor worker (#14113)."""
+        import tools.mcp_tool as mcp_mod
+        from tools.interrupt import set_interrupt
+
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+
+        async def _quick_call():
+            return "registered"
+
+        old_loop = mcp_mod._mcp_loop
+        old_thread = mcp_mod._mcp_thread
+        mcp_mod._mcp_loop = loop
+        mcp_mod._mcp_thread = thread
+
+        waiter_tid = threading.current_thread().ident
+        set_interrupt(True, waiter_tid)  # simulate stale flag from a prior turn
+
+        try:
+            result = mcp_mod._run_on_mcp_loop(
+                _quick_call(), timeout=2, respect_interrupt=False,
+            )
+            assert result == "registered"
+        finally:
+            set_interrupt(False, waiter_tid)
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=2)
+            loop.close()
+            mcp_mod._mcp_loop = old_loop
+            mcp_mod._mcp_thread = old_thread
+
+    def test_respect_interrupt_default_still_cancels(self):
+        """Default (tool-call) path still honors user interrupts."""
+        import tools.mcp_tool as mcp_mod
+        from tools.interrupt import set_interrupt
+
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+
+        async def _slow_call():
+            await asyncio.sleep(5)
+            return "done"
+
+        old_loop = mcp_mod._mcp_loop
+        old_thread = mcp_mod._mcp_thread
+        mcp_mod._mcp_loop = loop
+        mcp_mod._mcp_thread = thread
+
+        waiter_tid = threading.current_thread().ident
+        set_interrupt(True, waiter_tid)
+
+        try:
+            with pytest.raises(InterruptedError, match="User sent a new message"):
+                mcp_mod._run_on_mcp_loop(_slow_call(), timeout=2)
+        finally:
+            set_interrupt(False, waiter_tid)
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=2)
+            loop.close()
+            mcp_mod._mcp_loop = old_loop
+            mcp_mod._mcp_thread = old_thread
+
 
 # ---------------------------------------------------------------------------
 # Tool registration (discovery + register)
@@ -986,6 +1052,42 @@ class TestSanitizeError:
         assert "sk-" not in result
         assert "token=" not in result
         assert result.count("[REDACTED]") == 3
+
+
+class TestFormatConnectError:
+    """Tests for _format_connect_error() actionable-message rendering."""
+
+    def test_naked_cancelled_error_has_actionable_message(self):
+        from tools.mcp_tool import _format_connect_error
+        result = _format_connect_error(asyncio.CancelledError())
+        assert "cancelled before the handshake" in result
+        assert "external cancel" in result
+        assert "#14113" in result
+        # Must not degrade to the bare class name it used to emit.
+        assert result != "CancelledError"
+
+    def test_cancelled_error_with_cause_falls_through(self):
+        """A CancelledError chained to a real cause should render the cause,
+        not the generic cancellation hint."""
+        from tools.mcp_tool import _format_connect_error
+        try:
+            try:
+                raise ConnectionRefusedError("connection refused")
+            except ConnectionRefusedError as real_cause:
+                raise asyncio.CancelledError() from real_cause
+        except asyncio.CancelledError as exc:
+            result = _format_connect_error(exc)
+        assert "connection refused" in result
+        assert "#14113" not in result
+
+    def test_missing_node_executable_unchanged(self):
+        """Regression guard: the existing FileNotFoundError → 'missing executable'
+        path is not affected by the new CancelledError branch."""
+        from tools.mcp_tool import _format_connect_error
+        exc = FileNotFoundError(2, "No such file or directory", "node")
+        result = _format_connect_error(exc)
+        assert "missing executable 'node'" in result
+        assert "PATH" in result
 
 
 # ---------------------------------------------------------------------------

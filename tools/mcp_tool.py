@@ -374,6 +374,18 @@ def _format_connect_error(exc: BaseException) -> str:
             )
         return _sanitize_error(message)
 
+    if (
+        isinstance(exc, asyncio.CancelledError)
+        and not getattr(exc, "__cause__", None)
+        and not getattr(exc, "__context__", None)
+    ):
+        return _sanitize_error(
+            "connection was cancelled before the handshake completed "
+            "(external cancel, not a timeout). If this reproduces under "
+            "launchd/systemd, attach gateway.log around the timestamp to "
+            "issue #14113."
+        )
+
     deduped: List[str] = []
     for item in _flatten_messages(exc):
         if item not in deduped:
@@ -1541,11 +1553,16 @@ def _ensure_mcp_loop():
         _mcp_thread.start()
 
 
-def _run_on_mcp_loop(coro, timeout: float = 30):
+def _run_on_mcp_loop(coro, timeout: float = 30, *, respect_interrupt: bool = True):
     """Schedule a coroutine on the MCP event loop and block until done.
 
     Poll in short intervals so the calling agent thread can honor user
     interrupts while the MCP work is still running on the background loop.
+
+    ``respect_interrupt`` defaults to True (the right semantics for in-flight
+    tool calls). Discovery/registration/probe call sites pass False so they
+    cannot be cancelled by a stale per-thread interrupt flag left behind on
+    a recycled executor worker after a prior turn was abandoned (#14113).
     """
     from tools.interrupt import is_interrupted
 
@@ -1557,7 +1574,7 @@ def _run_on_mcp_loop(coro, timeout: float = 30):
     deadline = None if timeout is None else time.monotonic() + timeout
 
     while True:
-        if is_interrupted():
+        if respect_interrupt and is_interrupted():
             future.cancel()
             raise InterruptedError("User sent a new message")
 
@@ -2400,7 +2417,10 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
 
     # Per-server timeouts are handled inside _discover_and_register_server.
     # The outer timeout is generous: 120s total for parallel discovery.
-    _run_on_mcp_loop(_discover_all(), timeout=120)
+    # respect_interrupt=False so a stale per-thread interrupt flag on a
+    # recycled executor worker cannot cancel registration before the
+    # stdio handshake completes (#14113).
+    _run_on_mcp_loop(_discover_all(), timeout=120, respect_interrupt=False)
 
     # Log a summary so ACP callers get visibility into what was registered.
     with _lock:
@@ -2565,7 +2585,8 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
         )
 
     try:
-        _run_on_mcp_loop(_probe_all(), timeout=120)
+        # respect_interrupt=False — see register_mcp_servers (#14113).
+        _run_on_mcp_loop(_probe_all(), timeout=120, respect_interrupt=False)
     except Exception as exc:
         logger.debug("MCP probe failed: %s", exc)
     finally:
