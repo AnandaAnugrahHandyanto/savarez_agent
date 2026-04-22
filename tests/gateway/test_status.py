@@ -51,6 +51,46 @@ class TestGatewayPidState:
         assert status.get_running_pid() is None
         assert not pid_path.exists()
 
+    def test_get_running_pid_cleans_up_stale_foreign_gateway_pid_file(self, tmp_path, monkeypatch):
+        """Regression: a gateway.pid left behind by a crashed process
+        (SIGKILL, power loss, launchd kill -9) must be removed by the
+        next startup's liveness check.
+
+        Before the fix, ``_cleanup_invalid_pid_path`` delegated to
+        ``remove_pid_file()``, whose safety guard ("PID doesn't match
+        our own — leave alone") was designed for --replace atexit
+        handoffs but incorrectly protected foreign *stale* records
+        during startup. The observable symptom on macOS + launchd
+        was an infinite respawn crash-loop emitting
+        ``"PID file race lost to another gateway instance. Exiting."``
+        because ``write_pid_file()``'s O_CREAT|O_EXCL kept tripping on
+        the surviving stale file.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+        dead_pid = 999999  # Forced dead via monkeypatched os.kill below.
+        assert dead_pid != os.getpid()
+        pid_path.write_text(json.dumps({
+            "pid": dead_pid,
+            "kind": "hermes-gateway",
+            "argv": ["/venv/bin/python", "-m", "hermes_cli.main", "gateway", "run"],
+            "start_time": None,  # macOS has no /proc — this is the real on-disk shape.
+        }))
+
+        def _simulate_dead(pid, sig):
+            if pid == dead_pid:
+                raise ProcessLookupError
+            return None
+
+        monkeypatch.setattr(status.os, "kill", _simulate_dead)
+
+        assert status.get_running_pid() is None
+        assert not pid_path.exists(), (
+            "Stale gateway.pid must be removed so the next write_pid_file() "
+            "O_CREAT|O_EXCL call can succeed — otherwise launchd respawn "
+            "crash-loops forever on 'PID file race lost'."
+        )
+
     def test_get_running_pid_accepts_gateway_metadata_when_cmdline_unavailable(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         pid_path = tmp_path / "gateway.pid"

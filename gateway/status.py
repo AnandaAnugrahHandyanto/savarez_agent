@@ -213,14 +213,26 @@ def _read_pid_record(pid_path: Optional[Path] = None) -> Optional[dict]:
 
 
 def _cleanup_invalid_pid_path(pid_path: Path, *, cleanup_stale: bool) -> None:
+    """Remove a verified-stale/invalid PID file.
+
+    The caller in ``get_running_pid`` only reaches this path after it has
+    established that the record is unreadable, names a dead process, or
+    references a PID whose identity no longer looks like a gateway — so
+    the file is ours to delete.
+
+    Must NOT call ``remove_pid_file()`` here: its "only unlink if PID
+    matches os.getpid()" guard protects live --replace atexit handoffs
+    but, at *startup*, wrongly preserves foreign stale records. On
+    macOS + launchd that preserved file caused ``write_pid_file()``'s
+    O_CREAT|O_EXCL to trip forever, producing an infinite respawn
+    crash-loop with the log line "PID file race lost to another gateway
+    instance. Exiting." (see crash report 2026-04-22).
+    """
     if not cleanup_stale:
         return
     try:
-        if pid_path == _get_pid_path():
-            remove_pid_file()
-        else:
-            pid_path.unlink(missing_ok=True)
-    except Exception:
+        pid_path.unlink(missing_ok=True)
+    except OSError:
         pass
 
 
