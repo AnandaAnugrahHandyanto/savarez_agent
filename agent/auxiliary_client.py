@@ -43,7 +43,10 @@ from pathlib import Path  # noqa: F401 — used by test mocks
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
-from openai import OpenAI
+try:
+    from openai import OpenAI
+except ImportError:  # optional dependency in lean test environments
+    OpenAI = None
 
 from agent.credential_pool import load_pool
 from hermes_cli.config import get_hermes_home

@@ -315,6 +315,7 @@ class TestBuiltinDiscovery:
             "tools.todo_tool",
             "tools.tts_tool",
             "tools.vision_tools",
+            "tools.brave_search_tool",
             "tools.web_tools",
         }
 

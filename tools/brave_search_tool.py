@@ -51,6 +51,7 @@ def _brave_headers() -> Dict[str, str]:
     return {
         "X-Subscription-Token": api_key,
         "Accept": "application/json",
+        "Accept-Encoding": "gzip",
     }
 
 
@@ -112,7 +113,6 @@ def brave_search(
     freshness: Optional[str] = None,
     extra_snippets: bool = False,
     summary: bool = False,
-    search_lang: Optional[str] = None,
 ) -> str:
     """Search the web using Brave Search."""
     query = (query or "").strip()
@@ -131,8 +131,6 @@ def brave_search(
         params["extra_snippets"] = True
     if summary:
         params["summary"] = True
-    if search_lang:
-        params["search_lang"] = search_lang
 
     try:
         response = httpx.get(
@@ -178,22 +176,30 @@ def _normalize_suggestions(payload: Dict[str, Any], count: int) -> List[str]:
     return suggestions
 
 
-def brave_suggest(query: str, count: int = 10, lang: Optional[str] = None) -> str:
+def brave_suggest(
+    query: str,
+    count: int = 10,
+    country: str = "US",
+    lang: Optional[str] = None,
+    rich: bool = False,
+) -> str:
     """Return Brave Search query suggestions."""
     query = (query or "").strip()
     if not query:
         return tool_error("Query is required")
 
     count = _safe_int(count, default=10, minimum=1, maximum=20)
-    params: Dict[str, Any] = {"q": query, "count": count}
+    params: Dict[str, Any] = {"q": query, "count": count, "country": country or "US"}
     if lang:
         params["lang"] = lang
+    if rich:
+        params["rich"] = True
 
     try:
         response = httpx.get(
             f"{_BRAVE_BASE_URL}/suggest/search",
             params=params,
-            headers=_brave_headers(),
+            headers={**_brave_headers(), "Accept-Encoding": "gzip"},
             timeout=60,
         )
         response.raise_for_status()
@@ -278,7 +284,7 @@ def brave_answers(query: str, model: str = _BRAVE_DEFAULT_MODEL) -> str:
         response = httpx.post(
             f"{_BRAVE_BASE_URL}/chat/completions",
             json=payload,
-            headers={**_brave_headers(), "Content-Type": "application/json"},
+            headers={**_brave_headers(), "Content-Type": "application/json", "Accept-Encoding": "gzip"},
             timeout=60,
         )
         response.raise_for_status()
@@ -341,10 +347,7 @@ BRAVE_SEARCH_SCHEMA = {
                 "default": False,
                 "description": "Request a Brave summary result when available",
             },
-            "search_lang": {
-                "type": "string",
-                "description": "Optional search language override",
-            },
+
         },
         "required": ["query"],
     },
@@ -367,9 +370,19 @@ BRAVE_SUGGEST_SCHEMA = {
                 "default": 10,
                 "description": "Maximum number of suggestions to return (1-20)",
             },
+            "country": {
+                "type": "string",
+                "default": "US",
+                "description": "Two-letter country code used for suggestions",
+            },
             "lang": {
                 "type": "string",
                 "description": "Optional language override",
+            },
+            "rich": {
+                "type": "boolean",
+                "default": False,
+                "description": "Request rich suggestions when available",
             },
         },
         "required": ["query"],
@@ -407,7 +420,6 @@ registry.register(
         freshness=args.get("freshness"),
         extra_snippets=bool(args.get("extra_snippets", False)),
         summary=bool(args.get("summary", False)),
-        search_lang=args.get("search_lang"),
     ),
     check_fn=check_brave_api_key,
     requires_env=["BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"],
@@ -422,7 +434,9 @@ registry.register(
     handler=lambda args, **kw: brave_suggest(
         args.get("query", ""),
         count=args.get("count", 10),
+        country=args.get("country", "US"),
         lang=args.get("lang"),
+        rich=bool(args.get("rich", False)),
     ),
     check_fn=check_brave_api_key,
     requires_env=["BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"],

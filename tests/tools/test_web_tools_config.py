@@ -259,6 +259,8 @@ class TestBackendSelection:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "TAVILY_API_KEY",
+        "BRAVE_SEARCH_API_KEY",
+        "BRAVE_API_KEY",
     )
 
     def setup_method(self):
@@ -324,6 +326,20 @@ class TestBackendSelection:
         with patch("tools.web_tools._load_web_config", return_value={"backend": "Tavily"}):
             assert _get_backend() == "tavily"
 
+    def test_config_brave(self):
+        """web.backend=brave in config → 'brave' when Brave key is present."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "brave"}), \
+             patch.dict(os.environ, {"BRAVE_SEARCH_API_KEY": "brave-test"}):
+            assert _get_backend() == "brave"
+
+    def test_config_brave_case_insensitive(self):
+        """web.backend=Brave (mixed case) → 'brave'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "Brave"}), \
+             patch.dict(os.environ, {"BRAVE_API_KEY": "brave-test"}):
+            assert _get_backend() == "brave"
+
     # ── Fallback (no web.backend in config) ───────────────────────────
 
     def test_fallback_parallel_only_key(self):
@@ -353,6 +369,13 @@ class TestBackendSelection:
         with patch("tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}):
             assert _get_backend() == "tavily"
+
+    def test_fallback_brave_only_key(self):
+        """Only Brave key set → 'brave'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"BRAVE_SEARCH_API_KEY": "brave-test"}):
+            assert _get_backend() == "brave"
 
     def test_fallback_tavily_with_firecrawl_prefers_firecrawl(self):
         """Tavily + Firecrawl keys, no config → 'firecrawl' (backward compat)."""
@@ -489,6 +512,8 @@ class TestCheckWebApiKey:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "TAVILY_API_KEY",
+        "BRAVE_SEARCH_API_KEY",
+        "BRAVE_API_KEY",
     )
 
     def setup_method(self):
@@ -532,6 +557,11 @@ class TestCheckWebApiKey:
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
 
+    def test_brave_key_only(self):
+        with patch.dict(os.environ, {"BRAVE_SEARCH_API_KEY": "brave-test"}):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
+
     def test_no_keys_returns_false(self):
         from tools.web_tools import check_web_api_key
         assert check_web_api_key() is False
@@ -571,6 +601,14 @@ class TestCheckWebApiKey:
                 with patch.dict(os.environ, {"FIRECRAWL_GATEWAY_URL": "http://127.0.0.1:3002"}, clear=False):
                     from tools.web_tools import check_web_api_key
                     assert check_web_api_key() is True
+
+
+def test_web_requires_env_includes_brave_keys():
+    from tools.web_tools import _web_requires_env
+
+    envs = _web_requires_env()
+    assert "BRAVE_SEARCH_API_KEY" in envs
+    assert "BRAVE_API_KEY" in envs
 
 
 def test_web_requires_env_includes_exa_key():

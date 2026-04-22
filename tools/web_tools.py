@@ -48,7 +48,10 @@ import re
 import asyncio
 from typing import List, Dict, Any, Optional
 import httpx
-from firecrawl import Firecrawl
+try:
+    from firecrawl import Firecrawl
+except ImportError:  # optional dependency for direct Firecrawl usage
+    Firecrawl = None
 from agent.auxiliary_client import (
     async_call_llm,
     extract_content_or_reasoning,
@@ -73,7 +76,7 @@ def _has_env(name: str) -> bool:
     val = os.getenv(name)
     return bool(val and val.strip())
 
-_SEARCH_BACKENDS = ("brave", "firecrawl", "parallel", "tavily", "exa")
+_SEARCH_BACKENDS = ("firecrawl", "parallel", "tavily", "exa", "brave")
 _CONTENT_BACKENDS = ("firecrawl", "parallel", "tavily", "exa")
 
 
@@ -89,31 +92,34 @@ def _load_web_config() -> dict:
     except (ImportError, Exception):
         return {}
 
-def _get_backend() -> str:
+def _get_backend(capability: str = "search") -> str:
     """Determine which web backend to use.
 
     Reads ``web.backend`` from config.yaml (set by ``hermes tools``).
     Falls back to whichever API key is present for users who configured
     keys manually without running setup.
-    """
-    configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa"):
-        return configured
 
-    # Fallback for manual / legacy config — pick the highest-priority
-    # available backend. Firecrawl also counts as available when the managed
-    # tool gateway is configured for Nous subscribers.
-    backend_candidates = (
-        ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL") or _is_tool_gateway_ready()),
-        ("parallel", _has_env("PARALLEL_API_KEY")),
-        ("tavily", _has_env("TAVILY_API_KEY")),
-        ("exa", _has_env("EXA_API_KEY")),
-    )
-    for backend, available in backend_candidates:
-        if available:
+    capability:
+      - ``search`` for web_search_tool
+      - ``content`` for web_extract_tool / web_crawl_tool
+    """
+    capability = (capability or "search").strip().lower()
+    configured = (_load_web_config().get("backend") or "").lower().strip()
+
+    if capability == "search":
+        if configured in _SEARCH_BACKENDS:
+            return configured
+        candidates = _SEARCH_BACKENDS
+    else:
+        if configured in _CONTENT_BACKENDS:
+            return configured
+        candidates = _CONTENT_BACKENDS
+
+    for backend in candidates:
+        if _is_backend_available(backend):
             return backend
 
-    return "firecrawl"  # default (backward compat)
+    return candidates[0] if candidates else "firecrawl"
 
 
 def _is_backend_available(backend: str) -> bool:
@@ -126,6 +132,8 @@ def _is_backend_available(backend: str) -> bool:
         return check_firecrawl_api_key()
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
+    if backend == "brave":
+        return bool(_brave_api_key())
     return False
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
@@ -198,6 +206,8 @@ def _web_requires_env() -> list[str]:
         "TAVILY_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
+        "BRAVE_SEARCH_API_KEY",
+        "BRAVE_API_KEY",
     ]
     if managed_nous_tools_enabled():
         requires.extend(
@@ -244,6 +254,12 @@ def _get_firecrawl_client():
 
     if _firecrawl_client is not None and _firecrawl_client_config == client_config:
         return _firecrawl_client
+
+    if Firecrawl is None:
+        raise ValueError(
+            "Firecrawl Python package is not installed. "
+            "Install the optional firecrawl dependency or configure a different web backend."
+        )
 
     _firecrawl_client = Firecrawl(**kwargs)
     _firecrawl_client_config = client_config
@@ -1046,7 +1062,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
     Search the web for information using available search API backend.
 
     This function provides a generic interface for web search that can work
-    with multiple backends (Parallel or Firecrawl).
+    with multiple backends (Brave, Parallel, Tavily, Exa, or Firecrawl).
 
     Note: This function returns search result metadata only (URLs, titles, descriptions).
     Use web_extract_tool to get full content from specific URLs.
@@ -1092,7 +1108,21 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             return tool_error("Interrupted", success=False)
 
         # Dispatch to the configured backend
-        backend = _get_backend()
+        backend = _get_backend("search")
+        if backend == "brave":
+            from tools.brave_search_tool import brave_search as _brave_search
+
+            result_json = _brave_search(query, count=limit)
+            try:
+                response_data = json.loads(result_json)
+            except json.JSONDecodeError:
+                response_data = {"success": False, "data": {"web": []}}
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
         if backend == "parallel":
             response_data = _parallel_search(query, limit)
             debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
@@ -1248,7 +1278,7 @@ async def web_extract_tool(
         if not safe_urls:
             results = []
         else:
-            backend = _get_backend()
+            backend = _get_backend("content")
 
             if backend == "parallel":
                 results = await _parallel_extract(safe_urls)
@@ -1550,7 +1580,7 @@ async def web_crawl_tool(
     try:
         effective_model = model or _get_default_summarizer_model()
         auxiliary_available = check_auxiliary_model()
-        backend = _get_backend()
+        backend = _get_backend("content")
 
         # Tavily supports crawl via its /crawl endpoint
         if backend == "tavily":
@@ -1931,9 +1961,9 @@ def check_firecrawl_api_key() -> bool:
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in ("exa", "parallel", "firecrawl", "tavily"):
+    if configured in _SEARCH_BACKENDS + _CONTENT_BACKENDS:
         return _is_backend_available(configured)
-    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily"))
+    return any(_is_backend_available(backend) for backend in _SEARCH_BACKENDS)
 
 
 def check_auxiliary_model() -> bool:
@@ -1960,9 +1990,11 @@ if __name__ == "__main__":
     default_summarizer_model = _get_default_summarizer_model()
 
     if web_available:
-        backend = _get_backend()
+        backend = _get_backend("search")
         print(f"✅ Web backend: {backend}")
-        if backend == "exa":
+        if backend == "brave":
+            print("   Using Brave Search API (https://api-dashboard.search.brave.com/)")
+        elif backend == "exa":
             print("   Using Exa API (https://exa.ai)")
         elif backend == "parallel":
             print("   Using Parallel API (https://parallel.ai)")
@@ -1980,7 +2012,7 @@ if __name__ == "__main__":
     else:
         print("❌ No web search backend configured")
         print(
-            "Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
+            "Set BRAVE_SEARCH_API_KEY, BRAVE_API_KEY, EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
             f"{_firecrawl_backend_help_suffix()}"
         )
 
