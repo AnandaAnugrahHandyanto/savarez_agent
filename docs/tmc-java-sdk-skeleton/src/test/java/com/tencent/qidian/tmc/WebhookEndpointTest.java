@@ -39,7 +39,7 @@ public class WebhookEndpointTest {
         registry.register(new WebhookEventHandler<TmcWebhookEvent>() {
             @Override
             public String supportEventType() {
-                return "segment.export.completed";
+                return "segment.batch.created";
             }
 
             @Override
@@ -66,7 +66,7 @@ public class WebhookEndpointTest {
                 })
                 .build();
 
-        endpoint.handle(url, query, "{\"eventType\":\"segment.export.completed\",\"eventId\":\"evt-1\"}");
-        assertEquals("segment.export.completed", handledType.get());
+        endpoint.handle(url, query, "{\"eventType\":\"segment.batch.created\",\"eventId\":\"evt-1\"}");
+        assertEquals("segment.batch.created", handledType.get());
     }
 }
