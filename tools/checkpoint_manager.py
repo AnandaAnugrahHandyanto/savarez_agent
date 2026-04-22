@@ -271,12 +271,54 @@ def _init_shadow_repo(shadow_repo: Path, working_dir: str) -> Optional[str]:
     return None
 
 
+# Directory names to prune when counting files.  These correspond to the
+# directory-style entries in DEFAULT_EXCLUDES (anything ending in "/") and
+# match common build/VCS/cache trees that can easily contain hundreds of
+# thousands of files.  Kept as a module-level constant so _dir_file_count
+# doesn't rebuild it on every call.  Glob-containing entries (e.g. ".env.*")
+# and file-style entries (e.g. "*.pyc") are filtered out — those are only
+# meaningful at git-add time, not while walking directories.
+def _build_prune_dir_names() -> frozenset:
+    names = set()
+    for entry in DEFAULT_EXCLUDES:
+        if not entry.endswith("/"):
+            continue
+        stripped = entry.rstrip("/")
+        # Skip nested paths ("a/b/") and globs ("*.cache/") — only bare dir
+        # names can be matched against os.walk's ``dirnames`` list.
+        if "/" in stripped or "*" in stripped:
+            continue
+        names.add(stripped)
+    return frozenset(names)
+
+
+_PRUNE_DIR_NAMES: frozenset[str] = _build_prune_dir_names()
+
+
 def _dir_file_count(path: str) -> int:
-    """Quick file count estimate (stops early if over _MAX_FILES)."""
+    """Quick file count estimate (stops early if over _MAX_FILES).
+
+    Uses ``os.walk`` with in-place ``dirs`` pruning so that massive build
+    subtrees (``node_modules/``, ``.venv/``, ``.git/``, ``.lake/``, ``target/``,
+    etc.) don't blow up the count or the walk time.  Without pruning, this
+    function previously walked every file under a project via
+    ``Path.rglob("*")``, which on a mathlib/Lake workspace (~140k compiled
+    artifacts) took ~1s of main-thread time on every checkpoint attempt —
+    even though the resulting count would exceed ``_MAX_FILES`` and the
+    snapshot was immediately skipped.
+
+    Note: only regular files are counted; the previous ``rglob("*")`` variant
+    also counted directories.  The current behaviour better matches the
+    function name and the downstream ``_MAX_FILES`` ceiling semantics.
+    Symlinks are not followed, preventing cycle-induced hangs.
+    """
     count = 0
     try:
-        for _ in Path(path).rglob("*"):
-            count += 1
+        for _root, dirnames, filenames in os.walk(path, followlinks=False):
+            # Prune expensive subtrees in-place.  os.walk honours mutations to
+            # ``dirnames`` only when invoked in top-down mode (the default).
+            dirnames[:] = [d for d in dirnames if d not in _PRUNE_DIR_NAMES]
+            count += len(filenames)
             if count > _MAX_FILES:
                 return count
     except (PermissionError, OSError):
