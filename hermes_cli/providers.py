@@ -100,11 +100,13 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     ),
     "zai-coding-cn": HermesOverlay(
         transport="openai_chat",
+        base_url_override="https://open.bigmodel.cn/api/coding/paas/v4",
         extra_env_vars=("GLM_CODING_API_KEY",),
         base_url_env_var="GLM_CODING_BASE_URL",
     ),
     "zai-coding-global": HermesOverlay(
         transport="openai_chat",
+        base_url_override="https://api.z.ai/api/coding/paas/v4",
         extra_env_vars=("ZAI_CODING_API_KEY",),
         base_url_env_var="ZAI_CODING_BASE_URL",
     ),
