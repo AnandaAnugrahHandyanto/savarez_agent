@@ -2145,11 +2145,33 @@ class FeishuAdapter(BasePlatformAdapter):
         return response
 
     async def _resolve_approval(self, approval_id: Any, choice: str, user_name: str) -> None:
-        """Pop approval state and unblock the waiting agent thread."""
+        """Pop approval state, update the card, and unblock the waiting agent thread."""
         state = self._approval_state.pop(approval_id, None)
         if not state:
             logger.debug("[Feishu] Approval %s already resolved or unknown", approval_id)
             return
+        # Update the approval card to show the resolution — do this BEFORE
+        # resolving the approval so the card is updated even if resolution
+        # fails.  Use the stored message_id so we don't depend on the
+        # callback response path which can fail with 220340 over some
+        # transports.
+        message_id = state.get("message_id")
+        if message_id and self._client:
+            try:
+                card_payload = json.dumps(
+                    self._build_resolved_approval_card(choice=choice, user_name=user_name),
+                    ensure_ascii=False,
+                )
+                body = self._build_update_message_body(msg_type="interactive", content=card_payload)
+                request = self._build_update_message_request(message_id=message_id, request_body=body)
+                response = await asyncio.to_thread(self._client.im.v1.message.update, request)
+                result = self._finalize_send_result(response, "approval card update failed")
+                if result.success:
+                    logger.debug("[Feishu] Updated approval card %s", message_id)
+                else:
+                    logger.warning("[Feishu] Failed to update approval card %s: %s", message_id, result.error)
+            except Exception as exc:
+                logger.warning("[Feishu] Failed to update approval card %s: %s", message_id, exc)
         try:
             from tools.approval import resolve_gateway_approval
             count = resolve_gateway_approval(state["session_key"], choice)
