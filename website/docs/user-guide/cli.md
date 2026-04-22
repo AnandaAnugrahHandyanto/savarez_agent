@@ -54,6 +54,8 @@ hermes -w -q "Fix issue #123"     # Single query in worktree
 
 The welcome banner shows your model, terminal backend, working directory, available tools, and installed skills at a glance.
 
+The terminal tab or window title updates live too. Before a session has a name it shows the active model, then switches to your session title plus the current activity once Hermes has one. Use `/title` if you want a stable topic label in your tab list.
+
 ### Status Bar
 
 A persistent status bar sits above the input area, updating in real time:
@@ -304,7 +306,7 @@ hermes -r 20260225_143052_a1b2c3           # Short form
 
 Resuming restores the full conversation history from SQLite. The agent sees all previous messages, tool calls, and responses — just as if you never left.
 
-Use `/title My Session Name` inside a chat to name the current session, or `hermes sessions rename <id> <title>` from the command line. Use `hermes sessions list` to browse past sessions.
+Use `/title My Session Name` inside a chat to name the current session, or `hermes sessions rename <id> <title>` from the command line. In the terminal interfaces, that title also becomes the tab or window label. Use `hermes sessions list` to browse past sessions.
 
 ### Session Storage
 

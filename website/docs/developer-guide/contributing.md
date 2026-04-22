@@ -81,8 +81,12 @@ hermes chat -q "Hello"
 ### Run Tests
 
 ```bash
-pytest tests/ -v
+scripts/run_tests.sh
+scripts/run_tests.sh tests/gateway/
+scripts/run_tests.sh tests/agent/test_foo.py::test_bar
 ```
+
+Use the wrapper instead of calling `pytest` directly. It pins CI-style defaults, strips credential env vars, and can fall back to the shared checkout venv when a worktree-local env is missing full-suite extras.
 
 ## Code Style
 
@@ -175,7 +179,7 @@ refactor/description   # Code restructuring
 
 ### Before Submitting
 
-1. **Run tests**: `pytest tests/ -v`
+1. **Run tests**: `scripts/run_tests.sh`
 2. **Test manually**: Run `hermes` and exercise the code path you changed
 3. **Check cross-platform impact**: Consider macOS and different Linux distros
 4. **Keep PRs focused**: One logical change per PR

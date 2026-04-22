@@ -139,13 +139,13 @@ Auto-titling only fires once per session and is skipped if you've already set a 
 
 ### Setting a Title Manually
 
-Use the `/title` slash command inside any chat session (CLI or gateway):
+Use the `/title` slash command inside any chat session, whether you're in the classic CLI, the TUI, or a gateway chat:
 
 ```
 /title my research project
 ```
 
-The title is applied immediately. If the session hasn't been created in the database yet (e.g., you run `/title` before sending your first message), it's queued and applied once the session starts.
+The title is applied immediately. If the session hasn't been created in the database yet (e.g., you run `/title` before sending your first message), it's queued and applied once the session starts. In the classic CLI and TUI, that title also updates the terminal tab or window title so the session stays easy to spot.
 
 You can also rename existing sessions from the command line:
 

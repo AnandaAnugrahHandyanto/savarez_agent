@@ -44,6 +44,7 @@ The classic CLI remains available as the default. Anything documented in [CLI In
 - **Non-blocking input** — type and queue messages before the session is ready. Your first prompt sends the moment the agent comes online.
 - **Rich overlays** — model picker, session picker, approval and clarification prompts all render as modal panels rather than inline flows.
 - **Live session panel** — tools and skills fill in progressively as they initialize.
+- **Topic-first terminal titles** — the tab follows your session title and live activity instead of staying on a generic model label.
 - **Mouse-friendly selection** — drag to highlight with a uniform background instead of SGR inverse. Copy with your terminal's normal copy gesture.
 - **Alternate-screen rendering** — differential updates mean no flicker when streaming, no scrollback clutter after you quit.
 - **Composer affordances** — inline paste-collapse for long snippets, `Cmd+V` / `Ctrl+V` text paste with clipboard-image fallback, bracketed-paste safety, and image/file-path attachment normalization.
@@ -86,6 +87,7 @@ All slash commands work unchanged. A few are TUI-owned — they produce richer o
 | `/help` | Overlay with categorized commands, arrow-key navigable |
 | `/sessions` | Modal session picker — preview, title, token totals, resume inline |
 | `/model` | Modal model picker grouped by provider, with cost hints |
+| `/title` | Show or set the session title, and immediately refresh the terminal tab title |
 | `/skin` | Live preview — theme change applies as you browse |
 | `/details` | Toggle verbose tool-call details in the transcript |
 | `/usage` | Rich token / cost / context panel |
