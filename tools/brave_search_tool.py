@@ -949,13 +949,13 @@ BRAVE_SEARCH_SCHEMA = {
 
 BRAVE_SUGGEST_SCHEMA = {
     "name": "brave_suggest",
-    "description": "Get Brave Search autocomplete suggestions for a query. Works best with BRAVE_AUTOSUGGEST_API_KEY.",
+    "description": "Get Brave Search autocomplete suggestions for a query. Use this for raw search-box completions, autocomplete-style suggestions, and likely next queries people would type. Works best with BRAVE_AUTOSUGGEST_API_KEY.",
     "parameters": {
         "type": "object",
         "properties": {
             "query": {
                 "type": "string",
-                "description": "Query prefix to autocomplete",
+                "description": "Query prefix to autocomplete, such as a partial search-box query",
             },
             "count": {
                 "type": "integer",
