@@ -662,9 +662,12 @@ def _build_child_agent(
 
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
-    child_pool = _resolve_child_credential_pool(effective_provider, parent_agent)
-    if child_pool is not None:
-        child._credential_pool = child_pool
+    # Skip pool binding when override_base_url is set — the child's explicit URL
+    # would be clobbered by pool credential entries that point to the parent's URL.
+    if not override_base_url:
+        child_pool = _resolve_child_credential_pool(effective_provider, parent_agent)
+        if child_pool is not None:
+            child._credential_pool = child_pool
 
     # Register child for interrupt propagation
     if hasattr(parent_agent, '_active_children'):

@@ -1058,6 +1058,40 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
 
             self.assertEqual(mock_child._credential_pool, mock_pool)
 
+    def test_override_base_url_skips_parent_pool(self):
+        """When override_base_url is set, child should not inherit parent's pool.
+
+        Otherwise _swap_credential() would clobber the child's explicit base_url
+        with the parent's endpoint from the shared pool entry on first API call.
+        """
+        parent = _make_mock_parent()
+        mock_pool = MagicMock()
+        parent._credential_pool = mock_pool
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Test pool skip",
+                context=None,
+                toolsets=["terminal"],
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                override_base_url="http://localhost:8001/v1",
+            )
+
+            self.assertNotEqual(mock_child._credential_pool, mock_pool)
+            # The override URL must reach the child — verify it is passed
+            # to AIAgent, not the parent's URL. This is the real regression:
+            # before the fix, pool sharing would clobber base_url on first
+            # API call via _swap_credential from the parent's pool entry.
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["base_url"], "http://localhost:8001/v1")
+
 
 class TestChildCredentialLeasing(unittest.TestCase):
     def test_run_single_child_acquires_and_releases_lease(self):
