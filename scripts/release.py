@@ -181,6 +181,7 @@ AUTHOR_MAP = {
     "fuleinist@gmail.com": "fuleinist",
     "jack.47@gmail.com": "JackTheGit",
     "dalvidjr2022@gmail.com": "Jr-kenny",
+    "mr@shu.io": "mrshu",
     "m@statecraft.systems": "mbierling",
     "balyan.sid@gmail.com": "alt-glitch",
     "oluwadareab12@gmail.com": "bennytimz",
