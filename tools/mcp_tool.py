@@ -2369,6 +2369,15 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 if hasattr(block, "text") and block.text:
                     parts.append(block.text)
                     continue
+                elif hasattr(block, "resource"):
+                    # EmbeddedResource blocks nest text inside block.resource.text
+                    # (MCP spec §5.6.2 — tools may return file content this way)
+                    res = block.resource
+                    if hasattr(res, "text") and res.text:
+                        parts.append(res.text)
+                    elif hasattr(res, "blob") and res.blob:
+                        parts.append(f"[binary resource: {getattr(res, 'uri', 'unknown')}]")
+                    continue
                 image_tag = _cache_mcp_image_block(block)
                 if image_tag:
                     parts.append(image_tag)
