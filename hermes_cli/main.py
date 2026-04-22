@@ -7436,18 +7436,19 @@ Examples:
         help="Back up Hermes home directory to a zip file",
         description="Create a zip archive of your entire Hermes configuration, "
         "skills, sessions, and data (excludes the hermes-agent codebase). "
-        "Use --quick for a fast snapshot of just critical state files.",
+        "Use --quick for a fast state snapshot of critical files stored under "
+        "~/.hermes/state-snapshots/.",
     )
     backup_parser.add_argument(
         "-o",
         "--output",
-        help="Output path for the zip file (default: ~/hermes-backup-<timestamp>.zip)",
+        help="Output path for the zip file (full backup only; ignored with --quick)",
     )
     backup_parser.add_argument(
         "-q",
         "--quick",
         action="store_true",
-        help="Quick snapshot: only critical state files (config, state.db, .env, auth, cron)",
+        help="Quick snapshot: copies critical state files into ~/.hermes/state-snapshots/ (ignores --output)",
     )
     backup_parser.add_argument(
         "-l", "--label", help="Label for the snapshot (only used with --quick)"

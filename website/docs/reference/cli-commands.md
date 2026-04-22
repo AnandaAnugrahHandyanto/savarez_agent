@@ -413,13 +413,13 @@ hermes debug share --local      # Print report to terminal (no upload)
 hermes backup [options]
 ```
 
-Create a zip archive of your Hermes configuration, skills, sessions, and data. The backup excludes the hermes-agent codebase itself.
+Create a zip archive of your Hermes configuration, skills, sessions, and data. The backup excludes the hermes-agent codebase itself. With `--quick`, Hermes switches to a state-snapshot mode and writes a labeled directory under `~/.hermes/state-snapshots/` instead of producing a zip file.
 
 | Option | Description |
 |--------|-------------|
-| `-o`, `--output <path>` | Output path for the zip file (default: `~/hermes-backup-<timestamp>.zip`). |
-| `-q`, `--quick` | Quick snapshot: only critical state files (config.yaml, state.db, .env, auth, cron jobs). Much faster than a full backup. |
-| `-l`, `--label <name>` | Label for the snapshot (only used with `--quick`). |
+| `-o`, `--output <path>` | Output path for the zip file (default: `~/hermes-backup-<timestamp>.zip`). Ignored with `--quick`. |
+| `-q`, `--quick` | Quick snapshot: copies only critical state files (config.yaml, state.db, .env, auth, cron jobs) into `~/.hermes/state-snapshots/`. Much faster than a full backup. |
+| `-l`, `--label <name>` | Label for the quick snapshot directory (only used with `--quick`). |
 
 The backup uses SQLite's `backup()` API for safe copying, so it works correctly even when Hermes is running (WAL-mode safe).
 
@@ -428,8 +428,8 @@ The backup uses SQLite's `backup()` API for safe copying, so it works correctly 
 ```bash
 hermes backup                           # Full backup to ~/hermes-backup-*.zip
 hermes backup -o /tmp/hermes.zip        # Full backup to specific path
-hermes backup --quick                   # Quick state-only snapshot
-hermes backup --quick --label "pre-upgrade"  # Quick snapshot with label
+hermes backup --quick                   # Quick state-only snapshot under ~/.hermes/state-snapshots/
+hermes backup --quick --label "pre-upgrade"  # Quick labeled snapshot directory
 ```
 
 ## `hermes import`
