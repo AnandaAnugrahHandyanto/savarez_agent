@@ -177,8 +177,12 @@ def parse_spar_review(text: str) -> SparReview:
     raw_issues = data.get("issues", [])
     if raw_issues is None:
         raw_issues = []
-    if not isinstance(raw_issues, list):
-        raise ValueError("review payload issues must be a list")
+    elif isinstance(raw_issues, str):
+        raw_issues = [raw_issues]
+    elif isinstance(raw_issues, dict):
+        raw_issues = [json.dumps(raw_issues, ensure_ascii=False)]
+    elif not isinstance(raw_issues, list):
+        raw_issues = [str(raw_issues)]
     issues = [str(item).strip() for item in raw_issues if str(item).strip()]
     fix = data.get("fix")
     if fix is not None:

@@ -48,6 +48,14 @@ def test_parse_spar_review_extracts_json_body():
     assert review.fix == "Handle null input."
 
 
+def test_parse_spar_review_coerces_scalar_issues():
+    review = spar.parse_spar_review(
+        '{"approved": false, "summary": "Missing edge case.", "issues": "Missing null handling", "fix": "Handle null input."}'
+    )
+
+    assert review.issues == ["Missing null handling"]
+
+
 @pytest.mark.asyncio
 async def test_spar_tool_material_rejection_triggers_single_fix_round(monkeypatch):
     monkeypatch.setattr(
