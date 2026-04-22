@@ -1167,6 +1167,10 @@ class AIAgent:
         # When running against an Ollama server, detect the model's max context
         # and pass num_ctx on every chat request so the full window is used.
         # User override: set model.ollama_num_ctx in config.yaml to cap VRAM use.
+        self._preserve_dots_config: bool = bool(
+            isinstance(_model_cfg, dict) and _model_cfg.get("preserve_dots")
+        )
+
         self._ollama_num_ctx: int | None = None
         _ollama_num_ctx_override = None
         if isinstance(_model_cfg, dict):
@@ -5220,7 +5224,11 @@ class AIAgent:
     def _anthropic_preserve_dots(self) -> bool:
         """True when using an anthropic-compatible endpoint that preserves dots in model names.
         Alibaba/DashScope keeps dots (e.g. qwen3.5-plus).
-        OpenCode Go keeps dots (e.g. minimax-m2.7)."""
+        OpenCode Go keeps dots (e.g. minimax-m2.7).
+        Users can also set model.preserve_dots: true in config.yaml for third-party
+        Bedrock-style proxies not covered by the built-in host list."""
+        if getattr(self, "_preserve_dots_config", False):
+            return True
         if (getattr(self, "provider", "") or "").lower() in {"alibaba", "opencode-go"}:
             return True
         base = (getattr(self, "base_url", "") or "").lower()
