@@ -26,20 +26,21 @@ Hermes Agent 是一个开源 AI Agent 框架，支持自主任务执行。它可
 这个 fork 专注于 **提高 CI 可靠性和防止工具调用循环**：
 
 ### 重试熔断机制改进
-- **降低失败阈值**：连续失败从 5 次降低到 3 次就触发重试熔断
-- **压缩模型建议**：当工具反复失败时，压缩模型（如果已配置）会提供一个"局外人视角"来打破循环
-- **通用降级提示**：即使没有配置压缩模型，也会给出一个简单的提示来阻止重复尝试
+
+- **压缩模型建议**：Hermes 可以配置一个专用模型用于上下文压缩。当工具反复失败时，我们利用这个压缩模型提供一个"局外人视角"来打破循环。你可以通过配置 `circuit_breaker.threshold` 来调整触发熔断的失败次数。
+- **通用降级提示**：即使没有配置压缩模型，也会给出一个简单的提示来阻止重复尝试。
 
 ### 测试修复
-- 修复 `test_minimax_provider.py` — 测试存根缺少 `_fallback_chain` 属性
-- 修复 `test_tips.py` — 截断 Tip 105 以满足 150 字符限制
-- 修复 `test_concurrent_interrupt.py` — 解决 `polling_tool` 未执行和签名不匹配问题
+
+- 修复了 CI 中的 3 个测试报错问题。
 
 ---
 
 ## 配置
 
 这个 fork 继承原仓库的所有配置。参见 [原仓库 README](https://github.com/NousResearch/hermes-agent) 获取安装说明。
+
+**语言配置**：在 `~/.hermes/config.yaml` 中设置 `approvals.language: zh` 可将 CLI 界面切换为中文。
 
 ---
 

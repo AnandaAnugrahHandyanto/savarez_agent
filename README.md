@@ -26,20 +26,21 @@ Hermes Agent is an open-source AI agent framework built for autonomous task exec
 This fork contains custom modifications focused on **improving CI reliability and tool-loop prevention**:
 
 ### Circuit Breaker Improvements
-- **Lowered failure threshold**: From 5 to 3 consecutive failures before triggering circuit breaker
-- **Compression model suggestions**: When a tool fails repeatedly, the compression model (if configured) provides a "fresh perspective" to break the loop
-- **Generic fallback**: Even without a compression model, a simple hint is provided to stop retrying the same approach
+
+- **Compression model suggestions**: Hermes allows configuring a dedicated model for context compression. When a tool fails repeatedly, we leverage this compression model to provide a "fresh perspective" to break the loop. You can adjust the failure count that triggers the circuit breaker via `circuit_breaker.threshold`.
+- **Generic fallback**: Even without a compression model, a simple hint is provided to stop retrying the same approach.
 
 ### Test Fixes
-- Fixed `test_minimax_provider.py` — missing `_fallback_chain` attribute in test stub
-- Fixed `test_tips.py` — truncated Tip 105 to meet 150-character limit
-- Fixed `test_concurrent_interrupt.py` — resolved `polling_tool` never running and signature mismatch
+
+- Fixed 3 test failures in CI.
 
 ---
 
 ## Configuration
 
 This fork inherits all configuration from the original repository. See the [original README](https://github.com/NousResearch/hermes-agent) for setup instructions.
+
+**Language**: Set `approvals.language: zh` in `~/.hermes/config.yaml` to switch the CLI interface to Chinese.
 
 ---
 
