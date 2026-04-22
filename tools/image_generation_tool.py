@@ -854,10 +854,11 @@ from tools.registry import registry, tool_error
 IMAGE_GENERATE_SCHEMA = {
     "name": "image_generate",
     "description": (
-        "Generate high-quality images from text prompts using FAL.ai. "
-        "The underlying model is user-configured (default: FLUX 2 Klein 9B, "
-        "sub-1s generation) and is not selectable by the agent. Returns a "
-        "single image URL. Display it using markdown: ![description](URL)"
+        "Generate high-quality images from text prompts. The underlying "
+        "backend (FAL, OpenAI, etc.) and model are user-configured and not "
+        "selectable by the agent. Returns either a URL or an absolute file "
+        "path in the `image` field; display it with markdown "
+        "![description](url-or-path) and the gateway will deliver it."
     ),
     "parameters": {
         "type": "object",
