@@ -262,20 +262,21 @@ class SessionDB:
             cursor.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
         else:
             current_version = row["version"] if isinstance(row, sqlite3.Row) else row[0]
+            target_version = current_version
             if current_version < 2:
                 # v2: add finish_reason column to messages
                 try:
                     cursor.execute("ALTER TABLE messages ADD COLUMN finish_reason TEXT")
                 except sqlite3.OperationalError:
                     pass  # Column already exists
-                cursor.execute("UPDATE schema_version SET version = 2")
+                target_version = 2
             if current_version < 3:
                 # v3: add title column to sessions
                 try:
                     cursor.execute("ALTER TABLE sessions ADD COLUMN title TEXT")
                 except sqlite3.OperationalError:
                     pass  # Column already exists
-                cursor.execute("UPDATE schema_version SET version = 3")
+                target_version = 3
             if current_version < 4:
                 # v4: add unique index on title (NULLs allowed, only non-NULL must be unique)
                 try:
@@ -285,7 +286,7 @@ class SessionDB:
                     )
                 except sqlite3.OperationalError:
                     pass  # Index already exists
-                cursor.execute("UPDATE schema_version SET version = 4")
+                target_version = 4
             if current_version < 5:
                 new_columns = [
                     ("cache_read_tokens", "INTEGER DEFAULT 0"),
@@ -309,7 +310,7 @@ class SessionDB:
                         cursor.execute(f'ALTER TABLE sessions ADD COLUMN "{safe_name}" {column_type}')
                     except sqlite3.OperationalError:
                         pass
-                cursor.execute("UPDATE schema_version SET version = 5")
+                target_version = 5
             if current_version < 6:
                 # v6: add reasoning columns to messages table — preserves assistant
                 # reasoning text and structured reasoning_details across gateway
@@ -328,7 +329,10 @@ class SessionDB:
                         )
                     except sqlite3.OperationalError:
                         pass  # Column already exists
-                cursor.execute("UPDATE schema_version SET version = 6")
+                target_version = 6
+            # Apply schema version update once at end (transactional)
+            if target_version > current_version:
+                cursor.execute("UPDATE schema_version SET version = ?", (target_version,))
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
