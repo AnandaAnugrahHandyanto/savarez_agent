@@ -399,6 +399,36 @@ class TestPrompt:
         assert state.history == expected_history
 
     @pytest.mark.asyncio
+    async def test_prompt_wires_stream_delta_callback(self, agent):
+        """prompt() should bridge live text deltas through ACP session updates."""
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        def _run_conversation(**kwargs):
+            assert callable(state.agent.stream_delta_callback)
+            state.agent.stream_delta_callback("live chunk")
+            return {
+                "final_response": "final message",
+                "messages": [],
+            }
+
+        state.agent.run_conversation = MagicMock(side_effect=_run_conversation)
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        prompt = [TextContentBlock(type="text", text="stream this")]
+        await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        streamed_updates = [
+            call[1].get("update") or call[0][1]
+            for call in mock_conn.session_update.call_args_list
+            if (call[1].get("update") or call[0][1]).session_update == "agent_message_chunk"
+        ]
+        assert any(update.content.text == "live chunk" for update in streamed_updates)
+
+    @pytest.mark.asyncio
     async def test_prompt_sends_final_message_update(self, agent):
         """The final response should be sent as an AgentMessageChunk."""
         new_resp = await agent.new_session(cwd=".")
