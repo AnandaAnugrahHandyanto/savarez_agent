@@ -7067,7 +7067,9 @@ class AIAgent:
         # This prevents thinking-capable models (Qwen3, etc.) from generating
         # <think> blocks and producing empty-response errors when the user has
         # set reasoning_effort: none.
-        if self.provider == "custom" and self.reasoning_config and isinstance(self.reasoning_config, dict):
+        _base = str(self.base_url or "").lower()
+        _is_ollama = "ollama" in _base or ":11434" in _base
+        if self.provider == "custom" and _is_ollama and self.reasoning_config and isinstance(self.reasoning_config, dict):
             _effort = (self.reasoning_config.get("effort") or "").strip().lower()
             _enabled = self.reasoning_config.get("enabled", True)
             if _effort == "none" or _enabled is False:
