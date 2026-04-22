@@ -172,7 +172,8 @@ class TestFileDedup(unittest.TestCase):
         # Second read — should get dedup stub
         r2 = json.loads(read_file_tool(self._tmpfile, task_id="dup"))
         self.assertTrue(r2.get("dedup"), "Second read should return dedup stub")
-        self.assertIn("unchanged", r2.get("content", ""))
+        self.assertNotIn("content", r2)
+        self.assertIn("unchanged", r2.get("error", ""))
 
     @patch("tools.file_tools._get_file_ops")
     def test_modified_file_not_deduped(self, mock_ops):
