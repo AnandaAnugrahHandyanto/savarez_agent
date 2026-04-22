@@ -6,7 +6,7 @@ adds latency to the user-facing reply.
 
 import logging
 import threading
-from typing import Optional
+from typing import Callable, Optional
 
 from agent.auxiliary_client import call_llm
 
@@ -61,6 +61,7 @@ def auto_title_session(
     session_id: str,
     user_message: str,
     assistant_response: str,
+    on_title: Optional[Callable[[str], None]] = None,
 ) -> None:
     """Generate and set a session title if one doesn't already exist.
 
@@ -88,6 +89,11 @@ def auto_title_session(
     try:
         session_db.set_session_title(session_id, title)
         logger.debug("Auto-generated session title: %s", title)
+        if on_title:
+            try:
+                on_title(title)
+            except Exception:
+                logger.debug("Auto-title callback failed", exc_info=True)
     except Exception as e:
         logger.debug("Failed to set auto-generated title: %s", e)
 
@@ -98,6 +104,7 @@ def maybe_auto_title(
     user_message: str,
     assistant_response: str,
     conversation_history: list,
+    on_title: Optional[Callable[[str], None]] = None,
 ) -> None:
     """Fire-and-forget title generation after the first exchange.
 
@@ -118,7 +125,7 @@ def maybe_auto_title(
 
     thread = threading.Thread(
         target=auto_title_session,
-        args=(session_db, session_id, user_message, assistant_response),
+        args=(session_db, session_id, user_message, assistant_response, on_title),
         daemon=True,
         name="auto-title",
     )

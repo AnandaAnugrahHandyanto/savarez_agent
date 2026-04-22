@@ -149,6 +149,11 @@ export interface SessionBranchResponse {
   title?: string
 }
 
+export interface SessionTitleResponse {
+  session_key?: string
+  title?: string
+}
+
 export interface SessionCloseResponse {
   ok?: boolean
 }

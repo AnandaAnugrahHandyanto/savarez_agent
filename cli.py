@@ -2035,6 +2035,68 @@ class HermesCLI:
             self._last_invalidate = now
             self._app.invalidate()
 
+    def _get_active_session_title(self) -> str:
+        """Return the best available session topic label for terminal title updates."""
+        try:
+            pending = str(getattr(self, "_pending_title", "") or "").strip()
+        except Exception:
+            pending = ""
+        title = pending
+        try:
+            session_db = getattr(self, "_session_db", None)
+            session_id = getattr(self, "session_id", "")
+            if session_db and session_id:
+                stored = str(session_db.get_session_title(session_id) or "").strip()
+                if stored:
+                    title = stored
+        except Exception:
+            pass
+        return title
+
+    def _compose_terminal_title(self) -> str:
+        """Compose a topic-first terminal title for the current session."""
+        title = self._get_active_session_title()
+        activity = str(getattr(self, "_spinner_text", "") or "").strip()
+
+        if title and activity:
+            return f"{title} · {activity} — Hermes"
+        if title:
+            return f"{title} — Hermes"
+        if activity:
+            return f"{activity} — Hermes"
+        return "Hermes"
+
+    def _update_terminal_title(self) -> None:
+        """Best-effort terminal tab/window title update for the prompt_toolkit UI."""
+        try:
+            app = getattr(self, "_app", None)
+            out = getattr(app, "output", None) if app else None
+            if not out or not hasattr(out, "set_title"):
+                return
+            out.set_title(self._compose_terminal_title())
+            if hasattr(out, "flush"):
+                out.flush()
+        except Exception:
+            pass
+
+    def _on_auto_title_ready(self, _title: str) -> None:
+        """Refresh UI chrome after async title generation completes."""
+        self._update_terminal_title()
+        self._invalidate(min_interval=0.0)
+
+    def _sync_session_id_from_agent(self) -> bool:
+        """Adopt the live agent session ID after child-session rollover."""
+        agent = getattr(self, "agent", None)
+        if not agent:
+            return False
+        next_session_id = getattr(agent, "session_id", None)
+        if not next_session_id or next_session_id == self.session_id:
+            return False
+        self.session_id = next_session_id
+        self._pending_title = None
+        self._update_terminal_title()
+        return True
+
     def _status_bar_context_style(self, percent_used: Optional[int]) -> str:
         if percent_used is None:
             return "class:status-bar-dim"
@@ -2489,6 +2551,7 @@ class HermesCLI:
             self._flush_reasoning_preview(force=True)
         self._spinner_text = text or ""
         self._tool_start_time = 0.0  # clear tool timer when switching to thinking
+        self._update_terminal_title()
         self._invalidate()
 
     # ── Streaming display ────────────────────────────────────────────────
@@ -3276,9 +3339,11 @@ class HermesCLI:
                     self._session_db.set_session_title(self.session_id, self._pending_title)
                     _cprint(f"  Session title applied: {self._pending_title}")
                     self._pending_title = None
+                    self._update_terminal_title()
                 except (ValueError, Exception) as e:
                     _cprint(f"  Could not apply pending title: {e}")
                     self._pending_title = None
+                    self._update_terminal_title()
             return True
         except Exception as e:
             ChatConsole().print(f"[bold red]Failed to initialize agent: {e}[/]")
@@ -4545,6 +4610,9 @@ class HermesCLI:
         self.conversation_history = []
         self._pending_title = None
         self._resumed = False
+        self._spinner_text = ""
+        self._tool_start_time = 0.0
+        self._update_terminal_title()
 
         if self.agent:
             self.agent.session_id = self.session_id
@@ -4620,6 +4688,9 @@ class HermesCLI:
         self.session_id = target_id
         self._resumed = True
         self._pending_title = None
+        self._spinner_text = ""
+        self._tool_start_time = 0.0
+        self._update_terminal_title()
 
         # Load conversation history (strip transcript-only metadata entries)
         restored = self._session_db.get_messages_as_conversation(target_id)
@@ -4744,6 +4815,9 @@ class HermesCLI:
         self.session_start = now
         self._pending_title = None
         self._resumed = True  # Prevents auto-title generation
+        self._spinner_text = ""
+        self._tool_start_time = 0.0
+        self._update_terminal_title()
 
         # Sync the agent
         if self.agent:
@@ -5910,6 +5984,7 @@ class HermesCLI:
                             try:
                                 if self._session_db.set_session_title(self.session_id, new_title):
                                     _cprint(f"  Session title set: {new_title}")
+                                    self._update_terminal_title()
                                 else:
                                     _cprint("  Session not found in database.")
                             except ValueError as e:
@@ -5923,6 +5998,7 @@ class HermesCLI:
                             else:
                                 self._pending_title = new_title
                                 _cprint(f"  Session title queued: {new_title} (will be saved on first message)")
+                                self._update_terminal_title()
                     else:
                         _cprint("  Session database not available.")
                 else:
@@ -6348,6 +6424,7 @@ class HermesCLI:
                 # Clear spinner only if no foreground agent owns it
                 if not self._agent_running:
                     self._spinner_text = ""
+                    self._update_terminal_title()
                 if self._app:
                     self._invalidate(min_interval=0)
 
@@ -6941,12 +7018,7 @@ class HermesCLI:
             # generation all point at the live continuation session, not the
             # ended parent. Without this, subsequent end_session() calls target
             # the already-closed parent and the child is orphaned.
-            if (
-                getattr(self.agent, "session_id", None)
-                and self.agent.session_id != self.session_id
-            ):
-                self.session_id = self.agent.session_id
-                self._pending_title = None
+            self._sync_session_id_from_agent()
             new_tokens = estimate_messages_tokens_rough(self.conversation_history)
             summary = summarize_manual_compression(
                 original_history,
@@ -7294,6 +7366,7 @@ class HermesCLI:
         """
         if event_type == "tool.completed":
             self._tool_start_time = 0.0
+            self._update_terminal_title()
             # Print stacked scrollback line for "all" / "new" modes
             if function_name and self.tool_progress_mode in ("all", "new"):
                 duration = kwargs.get("duration", 0.0)
@@ -7330,6 +7403,7 @@ class HermesCLI:
                 label = label[:_pl - 3] + "..."
             self._spinner_text = f"{emoji} {label}"
             self._tool_start_time = time.monotonic()
+            self._update_terminal_title()
             # Store args for stacked scrollback line on completion
             self._pending_tool_info.setdefault(function_name, []).append(
                 function_args if function_args is not None else {}
@@ -8540,13 +8614,7 @@ class HermesCLI:
             # and the exit summary all target the live child session rather
             # than the ended parent. Mirrors the gateway's post-run sync
             # (gateway/run.py around line 9983).
-            if (
-                self.agent
-                and getattr(self.agent, "session_id", None)
-                and self.agent.session_id != self.session_id
-            ):
-                self.session_id = self.agent.session_id
-                self._pending_title = None
+            self._sync_session_id_from_agent()
 
             # Get the final response
             response = result.get("final_response", "") if result else ""
@@ -8561,6 +8629,7 @@ class HermesCLI:
                         message,
                         response,
                         self.conversation_history,
+                        on_title=self._on_auto_title_ready,
                     )
                 except Exception:
                     pass
@@ -10375,6 +10444,8 @@ class HermesCLI:
             **({'cursor': _STEADY_CURSOR} if _STEADY_CURSOR is not None else {}),
         )
         self._app = app  # Store reference for clarify_callback
+        self._update_terminal_title()
+
 
         # ── Fix ghost status-bar lines on terminal resize ──────────────
         # When the terminal shrinks (e.g. un-maximize), the emulator reflows
@@ -10526,6 +10597,7 @@ class HermesCLI:
                         self._tool_start_time = 0.0
                         self._pending_tool_info.clear()
                         self._last_scrollback_tool = ""
+                        self._update_terminal_title()
 
                         app.invalidate()  # Refresh status line
 

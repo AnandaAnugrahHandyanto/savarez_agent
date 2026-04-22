@@ -7,6 +7,7 @@ import type {
   ImageAttachResponse,
   SessionBranchResponse,
   SessionCompressResponse,
+  SessionTitleResponse,
   SessionUsageResponse,
   VoiceToggleResponse
 } from '../../../gatewayTypes.js'
@@ -51,6 +52,33 @@ export const sessionCommands: SlashCommand[] = [
         ctx.guarded(() => {
           patchUiState(state => ({ ...state, bgTasks: new Set(state.bgTasks).add('btw:x') }))
           ctx.transcript.sys('btw running…')
+        })
+      )
+    }
+  },
+
+  {
+    help: 'show or set the session title',
+    name: 'title',
+    run: (arg, ctx) => {
+      const nextTitle = arg.trim()
+
+      ctx.gateway.rpc<SessionTitleResponse>('session.title', {
+        session_id: ctx.sid,
+        ...(nextTitle ? { title: nextTitle } : {})
+      }).then(
+        ctx.guarded<SessionTitleResponse>(r => {
+          const title = (r.title ?? '').trim()
+
+          if (title) {
+            patchUiState(state => ({
+              ...state,
+              info: state.info ? { ...state.info, title } : { model: '', skills: {}, title, tools: {} }
+            }))
+            return ctx.transcript.sys(nextTitle ? `title → ${title}` : `title: ${title}`)
+          }
+
+          ctx.transcript.sys('no title set · use /title <name>')
         })
       )
     }

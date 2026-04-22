@@ -29,6 +29,7 @@ import { $turnState, patchTurnState } from './turnStore.js'
 import { $uiState, getUiState, patchUiState } from './uiStore.js'
 import { useComposerState } from './useComposerState.js'
 import { useConfigSync } from './useConfigSync.js'
+import { buildTerminalTitle } from './terminalTitle.js'
 import { useInputHandlers } from './useInputHandlers.js'
 import { useLongRunToolCharms } from './useLongRunToolCharms.js'
 import { useSessionLifecycle } from './useSessionLifecycle.js'
@@ -315,10 +316,13 @@ export function useMainApp(gw: GatewayClient) {
   useConfigSync({ gw, setBellOnComplete, setVoiceEnabled, sid: ui.sid })
 
   // ── Terminal tab title ─────────────────────────────────────────────
-  // Show model name + status so users can identify the Hermes tab.
-  const shortModel = ui.info?.model?.replace(/^.*\//, '') ?? ''
-  const titleStatus = ui.busy ? '⏳' : '✓'
-  const terminalTitle = shortModel ? `${titleStatus} ${shortModel} — Hermes` : 'Hermes'
+  const terminalTitle = buildTerminalTitle({
+    busy: ui.busy,
+    fallbackLabel: 'Hermes',
+    model: ui.info?.model,
+    status: ui.status,
+    title: ui.info?.title
+  })
   useTerminalTitle(terminalTitle)
 
   useEffect(() => {

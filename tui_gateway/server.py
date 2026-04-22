@@ -626,6 +626,7 @@ def _probe_credentials(agent) -> str:
 def _session_info(agent) -> dict:
     info: dict = {
         "model": getattr(agent, "model", ""),
+        "title": "",
         "tools": {},
         "skills": {},
         "cwd": os.getcwd(),
@@ -663,6 +664,12 @@ def _session_info(agent) -> dict:
         from hermes_cli.config import recommended_update_command
         info["update_behind"] = get_update_result(timeout=0.5)
         info["update_command"] = recommended_update_command()
+    except Exception:
+        pass
+    try:
+        session_id = getattr(agent, "session_id", "") or ""
+        if session_id:
+            info["title"] = _get_db().get_session_title(session_id) or ""
     except Exception:
         pass
     return info
@@ -1318,6 +1325,9 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"title": _get_db().get_session_title(key) or "", "session_key": key})
     try:
         _get_db().set_session_title(key, title)
+        agent = session.get("agent")
+        if agent is not None:
+            _emit("session.info", params.get("session_id", ""), _session_info(agent))
         return _ok(rid, {"title": title})
     except Exception as e:
         return _err(rid, 5007, str(e))
@@ -1613,6 +1623,28 @@ def _(rid, params: dict) -> dict:
             else:
                 raw = str(result)
                 status = "complete"
+
+            if (
+                raw
+                and isinstance(result, dict)
+                and not result.get("error")
+                and not result.get("failed")
+                and not result.get("partial")
+                and not result.get("interrupted")
+            ):
+                try:
+                    from agent.title_generator import maybe_auto_title
+
+                    maybe_auto_title(
+                        _get_db(),
+                        getattr(agent, "session_id", sid),
+                        prompt,
+                        raw,
+                        result.get("messages", []) if isinstance(result.get("messages"), list) else [],
+                        on_title=lambda _title: _emit("session.info", sid, _session_info(agent)),
+                    )
+                except Exception:
+                    pass
 
             payload = {"text": raw, "usage": _get_usage(agent), "status": status}
             if last_reasoning:

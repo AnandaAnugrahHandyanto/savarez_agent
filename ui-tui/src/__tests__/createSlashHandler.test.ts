@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createSlashHandler } from '../app/createSlashHandler.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
-import { getUiState, resetUiState } from '../app/uiStore.js'
+import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 
 describe('createSlashHandler', () => {
   beforeEach(() => {
@@ -275,6 +275,38 @@ describe('createSlashHandler', () => {
     await vi.waitFor(() => {
       expect(ctx.transcript.send).toHaveBeenCalledWith(planMessage)
     })
+  })
+
+  it('routes /title locally through session.title and updates ui state immediately', async () => {
+    patchUiState({
+      info: { model: 'anthropic/claude-sonnet-4', skills: {}, tools: {} },
+      sid: 'sid-1'
+    })
+
+    const ctx = buildCtx({
+      gateway: {
+        gw: {
+          getLogTail: vi.fn(() => ''),
+          request: vi.fn(() => Promise.resolve({}))
+        },
+        rpc: vi.fn((method: string) => {
+          if (method === 'session.title') {
+            return Promise.resolve({ title: 'Topic Title' })
+          }
+
+          return Promise.resolve({})
+        })
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/title Topic Title')).toBe(true)
+
+    await vi.waitFor(() => {
+      expect(ctx.gateway.rpc).toHaveBeenCalledWith('session.title', { session_id: 'sid-1', title: 'Topic Title' })
+    })
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(getUiState().info?.title).toBe('Topic Title')
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('title → Topic Title')
   })
 })
 

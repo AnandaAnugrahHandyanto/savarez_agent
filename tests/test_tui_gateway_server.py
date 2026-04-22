@@ -5,7 +5,7 @@ import threading
 import time
 import types
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from tui_gateway import server
 
@@ -618,6 +618,76 @@ def test_session_info_includes_mcp_servers(monkeypatch):
     info = server._session_info(types.SimpleNamespace(tools=[], model=""))
 
     assert info["mcp_servers"] == fake_status
+
+
+def test_session_info_includes_session_title(monkeypatch):
+    fake_db = types.SimpleNamespace(get_session_title=lambda session_id: "Fix terminal tab titles")
+    monkeypatch.setattr(server, "_get_db", lambda: fake_db)
+
+    info = server._session_info(types.SimpleNamespace(tools=[], model="", session_id="sess-1"))
+
+    assert info["title"] == "Fix terminal tab titles"
+
+
+def test_session_title_emits_refreshed_session_info(monkeypatch):
+    fake_db = types.SimpleNamespace(
+        get_session_title=lambda _session_id: "",
+        set_session_title=MagicMock(),
+    )
+    agent = types.SimpleNamespace(model="x", session_id="session-key")
+    server._sessions["sid"] = _session(agent=agent)
+    try:
+        monkeypatch.setattr(server, "_get_db", lambda: fake_db)
+        monkeypatch.setattr(server, "_session_info", lambda _agent: {"model": "x", "title": "Fresh Title"})
+
+        with patch("tui_gateway.server._emit") as emit:
+            resp = server.handle_request(
+                {"id": "1", "method": "session.title", "params": {"session_id": "sid", "title": "Fresh Title"}}
+            )
+
+        assert resp["result"]["title"] == "Fresh Title"
+        fake_db.set_session_title.assert_called_once_with("session-key", "Fresh Title")
+        emit.assert_called_once_with("session.info", "sid", {"model": "x", "title": "Fresh Title"})
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_prompt_submit_skips_auto_title_for_interrupted_results(monkeypatch):
+    captured = []
+
+    class _Agent:
+        session_id = "session-key"
+
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            return {
+                "final_response": "partial reply",
+                "interrupted": True,
+                "messages": [{"role": "assistant", "content": "partial reply"}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    fake_title_module = types.SimpleNamespace(maybe_auto_title=lambda *args, **kwargs: captured.append((args, kwargs)))
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_get_usage", lambda _agent: {})
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setitem(sys.modules, "agent.title_generator", fake_title_module)
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    try:
+        resp = server.handle_request({"id": "1", "method": "prompt.submit", "params": {"session_id": "sid", "text": "ping"}})
+
+        assert resp["result"]["status"] == "streaming"
+        assert captured == []
+    finally:
+        server._sessions.pop("sid", None)
 
 
 # ---------------------------------------------------------------------------

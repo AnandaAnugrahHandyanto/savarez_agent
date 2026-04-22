@@ -105,6 +105,16 @@ class TestAutoTitleSession:
             auto_title_session(db, "sess-1", "hi", "hello")
             db.set_session_title.assert_called_once_with("sess-1", "New Title")
 
+    def test_calls_on_title_callback_after_setting_title(self):
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        on_title = MagicMock()
+
+        with patch("agent.title_generator.generate_title", return_value="New Title"):
+            auto_title_session(db, "sess-1", "hi", "hello", on_title=on_title)
+
+        on_title.assert_called_once_with("New Title")
+
     def test_skips_if_generation_fails(self):
         db = MagicMock()
         db.get_session_title.return_value = None
@@ -150,7 +160,22 @@ class TestMaybeAutoTitle:
             # Wait for the daemon thread to complete
             import time
             time.sleep(0.3)
-            mock_auto.assert_called_once_with(db, "sess-1", "hello", "hi there")
+            mock_auto.assert_called_once_with(db, "sess-1", "hello", "hi there", None)
+
+    def test_forwards_on_title_callback_to_worker(self):
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+        on_title = MagicMock()
+
+        with patch("agent.title_generator.auto_title_session") as mock_auto:
+            maybe_auto_title(db, "sess-1", "hello", "hi there", history, on_title=on_title)
+            import time
+            time.sleep(0.3)
+            mock_auto.assert_called_once_with(db, "sess-1", "hello", "hi there", on_title)
 
     def test_skips_if_no_response(self):
         db = MagicMock()
