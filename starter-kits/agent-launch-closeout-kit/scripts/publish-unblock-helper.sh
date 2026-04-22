@@ -20,6 +20,7 @@ X_ACCESS_STATE_FILE="${HERMES_X_ACCESS_STATE_FILE:-$HOME/.hermes/state/x-access.
 LAUNCH_LOG="$ROOT_DIR/starter-kits/agent-launch-closeout-kit/launch-execution-log.md"
 AUDIT_FILE="$ROOT_DIR/starter-kits/agent-launch-closeout-kit/live-browser-auth-audit.md"
 ARTIFACT_DIR="$ROOT_DIR/starter-kits/agent-launch-closeout-kit/auth-artifacts"
+LATEST_HANDOFF_PATH="$ARTIFACT_DIR/latest-publish-unblock-handoff.md"
 EXEC_MODE="dry-run"
 SCREENSHOT_PATH=""
 SURFACE_URL="https://x.com/compose/post"
@@ -199,8 +200,12 @@ content = content.replace('PREFLIGHT_HEAD', preflight_head)
 open(path, 'w').write(content)
 PY
 
+cp "$ARTIFACT_PATH" "$LATEST_HANDOFF_PATH"
+
 echo "=== Step 3: Handoff artifact created ==="
 echo "  $ARTIFACT_PATH"
+echo "=== Canonical latest handoff refreshed ==="
+echo "  $LATEST_HANDOFF_PATH"
 echo ""
 
 # ── Step 5: --execute mode ────────────────────────────────────────────────

@@ -91,4 +91,6 @@ Before writing new launch copy, fill the proof fields and closeout-state fields 
 
 ## Auth validation
 - Live browser auth audit: `starter-kits/agent-launch-closeout-kit/live-browser-auth-audit.md`
+- Latest recovery packet: `starter-kits/agent-launch-closeout-kit/auth-artifacts/latest-browser-auth-recovery.md`
+- Latest publish-unblock handoff: `starter-kits/agent-launch-closeout-kit/auth-artifacts/latest-publish-unblock-handoff.md`
 - Rule: `x-access.json` is a marker, not publish proof. Trust the actual publish session.

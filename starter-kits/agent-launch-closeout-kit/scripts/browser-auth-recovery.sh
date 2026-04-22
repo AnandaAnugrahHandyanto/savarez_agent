@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 X_ACCESS_STATE_FILE="${HERMES_X_ACCESS_STATE_FILE:-$HOME/.hermes/state/x-access.json}"
 ARTIFACT_DIR="$ROOT_DIR/starter-kits/agent-launch-closeout-kit/auth-artifacts"
+LATEST_RECOVERY_PATH="$ARTIFACT_DIR/latest-browser-auth-recovery.md"
 LAUNCH_LOG="$ROOT_DIR/starter-kits/agent-launch-closeout-kit/launch-execution-log.md"
 AUDIT_FILE="$ROOT_DIR/starter-kits/agent-launch-closeout-kit/live-browser-auth-audit.md"
 MODE="prepare"
@@ -102,7 +103,10 @@ Recover or prove a real signed-in X browser session in the same Hermes publish e
 Do not publish from a stale marker alone.
 EOF
 
+  cp "$ARTIFACT_PATH" "$LATEST_RECOVERY_PATH"
+
   printf 'Prepared browser auth recovery packet: %s\n' "$ARTIFACT_PATH"
+  printf 'Refreshed canonical latest recovery packet: %s\n' "$LATEST_RECOVERY_PATH"
   if (( AUTO_OPEN == 1 )); then
     if command -v open >/dev/null 2>&1; then
       open 'https://x.com/home' >/dev/null 2>&1 || true
@@ -143,6 +147,8 @@ cat > "$ARTIFACT_PATH" <<EOF
 
 This file records a live browser-auth proof event for the Hermes publish environment.
 EOF
+
+cp "$ARTIFACT_PATH" "$LATEST_RECOVERY_PATH"
 
 python3 - <<'PY' "$LAUNCH_LOG" "$SURFACE_URL" "$SCREENSHOT_PATH"
 from pathlib import Path
@@ -214,6 +220,7 @@ PY
 fi
 
 printf 'Recorded browser auth verification artifact: %s\n' "$ARTIFACT_PATH"
+printf 'Refreshed canonical latest recovery artifact: %s\n' "$LATEST_RECOVERY_PATH"
 printf 'Updated launch log with verified surface and screenshot path.\n'
 if (( STATE_UPDATED == 1 )); then
   printf 'Refreshed browser-session state: %s\n' "$X_ACCESS_STATE_FILE"

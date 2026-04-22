@@ -33,7 +33,7 @@ Do not widen the claim to a fully proven four-job operating pack.
    - last fallback: screenshot of `Preflight OK`
 5. Keep the CTA narrow: this is the fastest honest path to one recurring workflow, not a control plane.
 6. Use `starter-kits/agent-launch-closeout-kit/publish-trigger.md` as the one-screen operator card so the payload, attachment priority, and logging fields stay visible during the live post.
-7. If browser auth is the live blocker, run `bash starter-kits/agent-launch-closeout-kit/scripts/publish-unblock-helper.sh` to emit the exact `--verified` command and freeze a timestamped handoff artifact for the next sign-in event.
+7. If browser auth is the live blocker, run `bash starter-kits/agent-launch-closeout-kit/scripts/publish-unblock-helper.sh` to emit the exact `--verified` command, freeze a timestamped handoff artifact, and refresh `auth-artifacts/latest-publish-unblock-handoff.md` for the next sign-in event.
 8. Immediately record the post URL, timestamp, and attachment choice in `launch-execution-log.md`.
 9. Sync the weekly pipeline note, CEO note, factory note, and ship checklist from the same execution log.
 

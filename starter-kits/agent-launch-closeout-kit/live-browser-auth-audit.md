@@ -51,6 +51,11 @@ The closeout kit should keep the browser-first publish path, but it must require
 - Purpose of the packet: freeze the exact re-auth + screenshot evidence steps so the next publish block attacks the real blocker instead of restating it.
 
 
+## Latest operator surfaces
+- Canonical latest recovery packet: `starter-kits/agent-launch-closeout-kit/auth-artifacts/latest-browser-auth-recovery.md`
+- Canonical latest publish-unblock handoff: `starter-kits/agent-launch-closeout-kit/auth-artifacts/latest-publish-unblock-handoff.md`
+- Rule: use these stable paths first during a real sign-in event instead of hunting for the newest timestamped artifact.
+
 ## Browser login proof refresh — 2026-04-21 20:18 CDT
 - Fresh browser verification hit the same logged-out surface again:
   - attempted `https://x.com/compose/post`
@@ -59,3 +64,12 @@ The closeout kit should keep the browser-first publish path, but it must require
 - Durable proof artifact created: `starter-kits/agent-launch-closeout-kit/auth-artifacts/browser-auth-live-check-2026-04-21T20-18-51-0500.md`
 - Screenshot captured for the recovery packet: `/Users/hermesmasteragent/.hermes/cache/screenshots/browser_screenshot_50b1574757d6428eb925d97058c41ae5.png`
 - Decision: keep publish blocked and keep `~/.hermes/state/x-access.json` at `status: stale` until a signed-in home/composer screenshot is captured in the real publish session.
+
+## Momentum verification refresh — 2026-04-21 23:32 CDT
+- Live browser rerun still lands on X's logged-out/login surfaces:
+  - `browser_navigate("https://x.com/compose/post")` finished at `https://x.com/i/flow/login?redirect_after_login=%2Fcompose%2Fpost`
+  - visible page text still included `Happening now`, `Join today`, `Already have an account?`, and `Sign in`
+- New durable operator surfaces shipped in the same block:
+  - `starter-kits/agent-launch-closeout-kit/auth-artifacts/latest-browser-auth-recovery.md`
+  - `starter-kits/agent-launch-closeout-kit/auth-artifacts/latest-publish-unblock-handoff.md`
+- Decision: launch auth is still the blocker, but the next real sign-in event now has stable latest-file entry points instead of requiring a timestamp hunt across auth artifacts.
