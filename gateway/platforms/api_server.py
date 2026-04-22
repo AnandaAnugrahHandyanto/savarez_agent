@@ -1358,7 +1358,14 @@ class APIServerAdapter(BasePlatformAdapter):
     _MAX_CONCURRENT_RUNS = 10  # Prevent unbounded resource allocation
     _RUN_STREAM_TTL = 300  # seconds before orphaned runs are swept
 
-    def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
+    def _make_run_event_callback(
+        self,
+        run_id: str,
+        loop: "asyncio.AbstractEventLoop",
+        *,
+        session_id: str | None = None,
+        conversation: str | None = None,
+    ):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
         def _push(event: Dict[str, Any]) -> None:
             q = self._run_streams.get(run_id)
@@ -1375,6 +1382,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 _push({
                     "event": "tool.started",
                     "run_id": run_id,
+                    "session_id": session_id,
+                    "conversation": conversation,
                     "timestamp": ts,
                     "tool": tool_name,
                     "preview": preview,
@@ -1383,6 +1392,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 _push({
                     "event": "tool.completed",
                     "run_id": run_id,
+                    "session_id": session_id,
+                    "conversation": conversation,
                     "timestamp": ts,
                     "tool": tool_name,
                     "duration": round(kwargs.get("duration", 0), 3),
@@ -1392,6 +1403,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 _push({
                     "event": "reasoning.available",
                     "run_id": run_id,
+                    "session_id": session_id,
+                    "conversation": conversation,
                     "timestamp": ts,
                     "text": preview or "",
                 })
@@ -1418,40 +1431,46 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response(_openai_error("Invalid JSON"), status=400)
 
         raw_input = body.get("input")
-        if not raw_input:
+        if raw_input is None:
             return web.json_response(_openai_error("Missing 'input' field"), status=400)
-
-        user_message = raw_input if isinstance(raw_input, str) else (raw_input[-1].get("content", "") if isinstance(raw_input, list) else "")
-        if not user_message:
-            return web.json_response(_openai_error("No user message found in input"), status=400)
-
-        run_id = f"run_{uuid.uuid4().hex}"
-        loop = asyncio.get_running_loop()
-        q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
-        self._run_streams[run_id] = q
-        self._run_streams_created[run_id] = time.time()
-
-        event_cb = self._make_run_event_callback(run_id, loop)
-
-        # Also wire stream_delta_callback so message.delta events flow through
-        def _text_cb(delta: Optional[str]) -> None:
-            if delta is None:
-                return
-            try:
-                loop.call_soon_threadsafe(q.put_nowait, {
-                    "event": "message.delta",
-                    "run_id": run_id,
-                    "timestamp": time.time(),
-                    "delta": delta,
-                })
-            except Exception:
-                pass
 
         instructions = body.get("instructions")
         previous_response_id = body.get("previous_response_id")
+        conversation = body.get("conversation")
+        store = body.get("store", True)
 
-        # Accept explicit conversation_history from the request body.
-        # Precedence: explicit conversation_history > previous_response_id.
+        if conversation and previous_response_id:
+            return web.json_response(_openai_error("Cannot use both 'conversation' and 'previous_response_id'"), status=400)
+
+        if conversation:
+            previous_response_id = self._response_store.get_conversation(conversation)
+
+        # Normalize the OpenAI-style input payload to a history list plus the
+        # final user message, mirroring the Responses API path.
+        input_messages: List[Dict[str, str]] = []
+        if isinstance(raw_input, str):
+            input_messages = [{"role": "user", "content": raw_input}]
+        elif isinstance(raw_input, list):
+            for item in raw_input:
+                if isinstance(item, str):
+                    input_messages.append({"role": "user", "content": item})
+                elif isinstance(item, dict):
+                    role = item.get("role", "user")
+                    content = item.get("content", "")
+                    if isinstance(content, list):
+                        text_parts = []
+                        for part in content:
+                            if isinstance(part, dict) and part.get("type") == "input_text":
+                                text_parts.append(part.get("text", ""))
+                            elif isinstance(part, dict) and part.get("type") == "output_text":
+                                text_parts.append(part.get("text", ""))
+                            elif isinstance(part, str):
+                                text_parts.append(part)
+                        content = "\n".join(text_parts)
+                    input_messages.append({"role": role, "content": str(content)})
+        else:
+            return web.json_response(_openai_error("'input' must be a string or array"), status=400)
+
         conversation_history: List[Dict[str, str]] = []
         raw_history = body.get("conversation_history")
         if raw_history:
@@ -1472,27 +1491,50 @@ class APIServerAdapter(BasePlatformAdapter):
 
         if not conversation_history and previous_response_id:
             stored = self._response_store.get(previous_response_id)
-            if stored:
-                conversation_history = list(stored.get("conversation_history", []))
-                if instructions is None:
-                    instructions = stored.get("instructions")
+            if stored is None:
+                return web.json_response(
+                    _openai_error(f"Previous response not found: {previous_response_id}"),
+                    status=404,
+                )
+            conversation_history = list(stored.get("conversation_history", []))
+            if instructions is None:
+                instructions = stored.get("instructions")
 
-        # When input is a multi-message array, extract all but the last
-        # message as conversation history (the last becomes user_message).
-        # Only fires when no explicit history was provided.
-        if not conversation_history and isinstance(raw_input, list) and len(raw_input) > 1:
-            for msg in raw_input[:-1]:
-                if isinstance(msg, dict) and msg.get("role") and msg.get("content"):
-                    content = msg["content"]
-                    if isinstance(content, list):
-                        # Flatten multi-part content blocks to text
-                        content = " ".join(
-                            part.get("text", "") for part in content
-                            if isinstance(part, dict) and part.get("type") == "text"
-                        )
-                    conversation_history.append({"role": msg["role"], "content": str(content)})
+        for msg in input_messages[:-1]:
+            conversation_history.append(msg)
 
-        session_id = body.get("session_id") or run_id
+        user_message = input_messages[-1].get("content", "") if input_messages else ""
+        if not user_message:
+            return web.json_response(_openai_error("No user message found in input"), status=400)
+
+        run_id = f"run_{uuid.uuid4().hex}"
+        loop = asyncio.get_running_loop()
+        q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
+        self._run_streams[run_id] = q
+        self._run_streams_created[run_id] = time.time()
+
+        session_id = body.get("session_id") or conversation or run_id
+        event_cb = self._make_run_event_callback(
+            run_id,
+            loop,
+            session_id=session_id,
+            conversation=conversation,
+        )
+
+        # Also wire stream_delta_callback so message.delta events flow through
+        def _text_cb(delta: Optional[str]) -> None:
+            if delta is None:
+                return
+            try:
+                loop.call_soon_threadsafe(q.put_nowait, {
+                    "event": "message.delta",
+                    "run_id": run_id,
+                    "timestamp": time.time(),
+                    "delta": delta,
+                })
+            except Exception:
+                pass
+
         ephemeral_system_prompt = instructions
 
         async def _run_and_close():
@@ -1516,20 +1558,76 @@ class APIServerAdapter(BasePlatformAdapter):
                     return r, u
 
                 result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
-                final_response = result.get("final_response", "") if isinstance(result, dict) else ""
+                final_response = ""
+                if isinstance(result, dict):
+                    final_response = result.get("final_response", "") or ""
+                    if not final_response.strip():
+                        for msg in reversed(result.get("messages", [])):
+                            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                                continue
+                            content = msg.get("content", "")
+                            if isinstance(content, str) and content.strip():
+                                final_response = content.strip()
+                                break
+                            if isinstance(content, list):
+                                text_parts = []
+                                for part in content:
+                                    if isinstance(part, dict) and part.get("type") == "text":
+                                        text_parts.append(str(part.get("text", "")))
+                                joined = "\n".join(part for part in text_parts if part).strip()
+                                if joined:
+                                    final_response = joined
+                                    break
+                    if not final_response.strip():
+                        final_response = result.get("error", "") or "(No response generated)"
+
+                full_history = list(conversation_history)
+                full_history.append({"role": "user", "content": user_message})
+                agent_messages = result.get("messages", []) if isinstance(result, dict) else []
+                if agent_messages:
+                    full_history.extend(agent_messages)
+                else:
+                    full_history.append({"role": "assistant", "content": final_response})
+
+                output_items = self._extract_output_items(result) if isinstance(result, dict) else []
                 q.put_nowait({
                     "event": "run.completed",
                     "run_id": run_id,
+                    "session_id": session_id,
+                    "conversation": conversation,
                     "timestamp": time.time(),
                     "output": final_response,
+                    "output_items": output_items,
                     "usage": usage,
                 })
+                if store:
+                    self._response_store.put(run_id, {
+                        "response": {
+                            "id": run_id,
+                            "object": "run",
+                            "status": "completed",
+                            "created_at": int(time.time()),
+                            "model": body.get("model", self._model_name),
+                            "output": output_items,
+                            "usage": {
+                                "input_tokens": usage.get("input_tokens", 0),
+                                "output_tokens": usage.get("output_tokens", 0),
+                                "total_tokens": usage.get("total_tokens", 0),
+                            },
+                        },
+                        "conversation_history": full_history,
+                        "instructions": instructions,
+                    })
+                    if conversation:
+                        self._response_store.set_conversation(conversation, run_id)
             except Exception as exc:
                 logger.exception("[api_server] run %s failed", run_id)
                 try:
                     q.put_nowait({
                         "event": "run.failed",
                         "run_id": run_id,
+                        "session_id": session_id,
+                        "conversation": conversation,
                         "timestamp": time.time(),
                         "error": str(exc),
                     })
@@ -1550,7 +1648,10 @@ class APIServerAdapter(BasePlatformAdapter):
         if hasattr(task, "add_done_callback"):
             task.add_done_callback(self._background_tasks.discard)
 
-        return web.json_response({"run_id": run_id, "status": "started"}, status=202)
+        response_body = {"run_id": run_id, "status": "started", "session_id": session_id}
+        if conversation:
+            response_body["conversation"] = conversation
+        return web.json_response(response_body, status=202)
 
     async def _handle_run_events(self, request: "web.Request") -> "web.StreamResponse":
         """GET /v1/runs/{run_id}/events — SSE stream of structured agent lifecycle events."""

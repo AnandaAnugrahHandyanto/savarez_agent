@@ -223,6 +223,8 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/models", adapter._handle_models)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
     app.router.add_post("/v1/responses", adapter._handle_responses)
+    app.router.add_post("/v1/runs", adapter._handle_runs)
+    app.router.add_get("/v1/runs/{run_id}/events", adapter._handle_run_events)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
     app.router.add_delete("/v1/responses/{response_id}", adapter._handle_delete_response)
     return app
@@ -908,6 +910,78 @@ class TestResponsesEndpoint:
                 json={"model": "hermes-agent", "input": 42},
             )
             assert resp.status == 400
+
+
+# ---------------------------------------------------------------------------
+# /v1/runs endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestRunsEndpoint:
+    @pytest.mark.asyncio
+    async def test_run_completion_includes_thread_session_and_output(self, adapter):
+        """Runs should preserve thread/session context and emit a useful completion payload."""
+        import asyncio
+
+        app = _create_app(adapter)
+
+        adapter._response_store.put(
+            "resp_prev",
+            {
+                "response": {
+                    "id": "resp_prev",
+                    "object": "response",
+                    "status": "completed",
+                    "created_at": 0,
+                    "model": "hermes-agent",
+                    "output": [],
+                    "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                },
+                "conversation_history": [
+                    {"role": "user", "content": "Earlier question"},
+                    {"role": "assistant", "content": "Earlier answer"},
+                ],
+                "instructions": "Be concise.",
+            },
+        )
+        adapter._response_store.set_conversation("thread-123", "resp_prev")
+
+        async with TestClient(TestServer(app)) as cli:
+            fake_agent = MagicMock()
+            fake_agent.run_conversation.return_value = {
+                "final_response": "Current answer",
+                "messages": [{"role": "assistant", "content": "Current answer"}],
+                "api_calls": 1,
+            }
+
+            with patch.object(adapter, "_create_agent", return_value=fake_agent) as mock_create_agent:
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Current ask",
+                        "conversation": "thread-123",
+                    },
+                )
+
+                assert resp.status == 202
+                started = await resp.json()
+                assert started["status"] == "started"
+                assert started["session_id"] == "thread-123"
+                assert started["conversation"] == "thread-123"
+                assert mock_create_agent.called
+                create_kwargs = mock_create_agent.call_args.kwargs
+                assert create_kwargs["session_id"] == "thread-123"
+                assert create_kwargs["ephemeral_system_prompt"] == "Be concise."
+
+                await asyncio.sleep(0.05)
+                queue = adapter._run_streams[started["run_id"]]
+                event = await asyncio.wait_for(queue.get(), timeout=1)
+                assert event["event"] == "run.completed"
+                assert event["output"] == "Current answer"
+                assert event["session_id"] == "thread-123"
+                assert event["conversation"] == "thread-123"
+                assert event["output_items"][0]["content"][0]["text"] == "Current answer"
 
 
 # ---------------------------------------------------------------------------
