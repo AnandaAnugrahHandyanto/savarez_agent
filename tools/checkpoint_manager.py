@@ -37,26 +37,42 @@ logger = logging.getLogger(__name__)
 CHECKPOINT_BASE = get_hermes_home() / "checkpoints"
 
 DEFAULT_EXCLUDES = [
+    # Language/package manager artifacts
     "node_modules/",
     "dist/",
     "build/",
+    "target/",              # Rust / JVM (sbt, Gradle) build output
+    # Secrets — never checkpointed
     ".env",
     ".env.*",
     ".env.local",
     ".env.*.local",
+    # Python
     "__pycache__/",
     "*.pyc",
     "*.pyo",
+    ".venv/",
+    "venv/",
+    ".mypy_cache/",
+    ".ruff_cache/",
+    ".pytest_cache/",
+    ".tox/",
+    # OS / editor noise
     ".DS_Store",
     "*.log",
     ".cache/",
+    # JS meta-frameworks
     ".next/",
     ".nuxt/",
     "coverage/",
-    ".pytest_cache/",
-    ".venv/",
-    "venv/",
+    # VCS
     ".git/",
+    # Lean / Lake (mathlib compiles to 100k+ .olean files)
+    ".lake/",
+    "*.olean",
+    # Misc heavy compiled trees
+    ".gradle/",
+    ".idea/",
 ]
 
 # Git subprocess timeout (seconds).
