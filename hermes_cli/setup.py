@@ -1187,6 +1187,15 @@ def setup_terminal_backend(config: dict):
     backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4}
 
     next_idx = 5
+    is_macos = _platform.system() == "Darwin"
+    is_apple_silicon = is_macos and _platform.machine() == "arm64"
+
+    if is_apple_silicon:
+        terminal_choices.append("Apple Container - VM-isolated Linux container (macOS 26+)")
+        idx_to_backend[next_idx] = "apple_container"
+        backend_to_idx["apple_container"] = next_idx
+        next_idx += 1
+
     if is_linux:
         terminal_choices.append("Singularity/Apptainer - HPC-friendly container")
         idx_to_backend[next_idx] = "singularity"
@@ -1488,6 +1497,107 @@ def setup_terminal_backend(config: dict):
             else:
                 print_warning(f"  SSH connection failed: {result.stderr.strip()}")
                 print_info("  Check your SSH key and host settings.")
+
+    elif selected_backend == "apple_container":
+        import subprocess as _sp
+
+        print_success("Terminal backend: Apple Container")
+        print_info("VM-isolated Linux containers via Apple's Virtualization.framework.")
+        print_info("Each container runs its own Linux kernel (stronger than Docker isolation).")
+
+        # Check if container CLI is available
+        container_bin = shutil.which("container")
+        if not container_bin:
+            for _path in ["/opt/homebrew/bin/container", "/usr/local/bin/container"]:
+                if os.path.isfile(_path) and os.access(_path, os.X_OK):
+                    container_bin = _path
+                    break
+
+        if not container_bin:
+            print_warning("Apple Container CLI not found!")
+            print_info("Install with: brew install container")
+            print_info("Requires macOS 26 (Tahoe) or later on Apple Silicon.")
+        else:
+            print_info(f"Container CLI found: {container_bin}")
+
+            # Check system status
+            status = _sp.run(
+                [container_bin, "system", "status"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if status.returncode == 0 and "running" in status.stdout.lower():
+                print_success("Container system is running")
+            else:
+                print_info("Starting container system...")
+                _sp.run(
+                    [container_bin, "system", "start"],
+                    capture_output=True, text=True, timeout=30,
+                    input="Y\n",
+                )
+
+        # Query system resources and suggest allocation
+        total_cpus = os.cpu_count() or 4
+        try:
+            mem_result = _sp.run(
+                ["sysctl", "-n", "hw.memsize"],
+                capture_output=True, text=True, timeout=5,
+            )
+            total_memory_mb = int(mem_result.stdout.strip()) // (1024 * 1024)
+        except Exception:
+            total_memory_mb = 8192
+
+        suggested_cpus = max(2, total_cpus // 2)
+        suggested_memory_mb = max(4096, total_memory_mb // 4)
+
+        print()
+        print_info(f"System: {total_cpus} CPUs, {total_memory_mb // 1024} GB RAM")
+        print_info("Allocate resources for the container (remaining goes to host/inference):")
+
+        # Container image
+        current_image = config.get("terminal", {}).get(
+            "apple_container_image", "python:3.11-slim-bookworm"
+        )
+        image = prompt("  Container image", current_image)
+        config["terminal"]["apple_container_image"] = image
+        save_env_value("TERMINAL_APPLE_CONTAINER_IMAGE", image)
+
+        # CPU
+        cpu_str = prompt("  CPU cores for container", str(suggested_cpus))
+        try:
+            config["terminal"]["container_cpu"] = int(cpu_str)
+        except ValueError:
+            config["terminal"]["container_cpu"] = suggested_cpus
+
+        # Memory
+        mem_str = prompt(
+            f"  Memory in MB ({suggested_memory_mb} = {suggested_memory_mb // 1024} GB)",
+            str(suggested_memory_mb),
+        )
+        try:
+            config["terminal"]["container_memory"] = int(mem_str)
+        except ValueError:
+            config["terminal"]["container_memory"] = suggested_memory_mb
+
+        # Volume mounts
+        print()
+        print_info("Volume mounts (share directories between host and container):")
+        print_info("  Format: /host/path:/container/path")
+        print_info("  Leave blank to skip.")
+        current_volumes = config.get("terminal", {}).get("apple_container_volumes", [])
+        vol_default = ",".join(current_volumes) if current_volumes else ""
+        vol_str = prompt("  Volumes (comma-separated)", vol_default)
+        if vol_str.strip():
+            config["terminal"]["apple_container_volumes"] = [
+                v.strip() for v in vol_str.split(",") if v.strip()
+            ]
+        else:
+            config["terminal"]["apple_container_volumes"] = []
+
+        print()
+        remaining_cpus = total_cpus - config["terminal"].get("container_cpu", suggested_cpus)
+        remaining_mem = total_memory_mb - config["terminal"].get("container_memory", suggested_memory_mb)
+        print_info(f"Host retains: ~{remaining_cpus} CPUs, ~{remaining_mem // 1024} GB RAM")
+        print_info("(Available for LM Studio, Ollama, or other local inference)")
 
     # Sync terminal backend to .env so terminal_tool picks it up directly.
     # config.yaml is the source of truth, but terminal_tool reads TERMINAL_ENV.
