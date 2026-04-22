@@ -445,6 +445,85 @@ class TestDirFileCount:
         count = _dir_file_count(str(tmp_path / "nonexistent"))
         assert count == 0
 
+    def test_prunes_excluded_dirs(self, tmp_path):
+        """Huge build/VCS trees (.venv/, .git/, .lake/, etc.) must be skipped.
+
+        Regression guard: ``_dir_file_count`` used to do an unbounded
+        ``Path.rglob("*")`` that walked every file — on a mathlib workspace
+        this was ~140k files and ~1s of wall time on every checkpoint
+        attempt, even though the count would exceed ``_MAX_FILES`` and the
+        snapshot would be skipped anyway.  After the fix, pruned dirs are
+        never entered.
+        """
+        project = tmp_path / "project"
+        project.mkdir()
+        # Two real files at the top level
+        (project / "main.py").write_text("print('hi')\n")
+        (project / "README.md").write_text("# hi\n")
+
+        # Build trees we expect to be pruned — each gets many files so the
+        # assertion is meaningful if pruning regresses.
+        for subdir in (".venv", ".git", ".lake", "node_modules", "__pycache__",
+                       "target", ".mypy_cache"):
+            d = project / subdir
+            d.mkdir()
+            for i in range(20):
+                (d / f"junk_{i}.bin").write_text("x")
+
+        count = _dir_file_count(str(project))
+        # Should only see main.py + README.md (= 2).  With the pre-fix
+        # implementation this would return 142 (2 + 7*20).
+        assert count == 2, (
+            f"Expected only top-level files to be counted, got {count}. "
+            f"Did DEFAULT_EXCLUDES / _PRUNE_DIR_NAMES change?"
+        )
+
+    def test_prune_list_derived_from_default_excludes(self):
+        """``_PRUNE_DIR_NAMES`` must include every simple dir-style exclude."""
+        from tools.checkpoint_manager import _PRUNE_DIR_NAMES
+        # Spot-check the entries we rely on most
+        for expected in (".venv", "venv", "__pycache__", "node_modules",
+                         ".git", ".lake", "target", ".pytest_cache"):
+            assert expected in _PRUNE_DIR_NAMES, (
+                f"{expected!r} missing from _PRUNE_DIR_NAMES — did "
+                f"DEFAULT_EXCLUDES drop the directory form?"
+            )
+
+    def test_respects_max_files_ceiling(self, tmp_path, monkeypatch):
+        """Sanity: non-pruned content still trips the early-exit guard."""
+        # Lower the cap so the test is fast.
+        monkeypatch.setattr("tools.checkpoint_manager._MAX_FILES", 10)
+        project = tmp_path / "huge"
+        project.mkdir()
+        # 25 files directly in the project root — not pruned, so the walker
+        # must see them and bail early.
+        for i in range(25):
+            (project / f"f_{i}.txt").write_text("x")
+        count = _dir_file_count(str(project))
+        assert count > 10
+
+    def test_does_not_follow_symlink_cycles(self, tmp_path):
+        """Symlink cycles must not hang or inflate the count.
+
+        Regression guard for the os.walk(followlinks=False) contract.  A
+        symlink loop would cause an infinite walk if followlinks were true.
+        """
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / "top.txt").write_text("x")
+        inner = project / "inner"
+        inner.mkdir()
+        (inner / "leaf.txt").write_text("x")
+        # Point inner/loop -> project (cycle)
+        try:
+            (inner / "loop").symlink_to(project)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks not supported on this platform/FS")
+        count = _dir_file_count(str(project))
+        # Exactly 2 files; if we were following the symlink, we'd blow past
+        # any finite number.
+        assert count == 2
+
 
 # =========================================================================
 # Error resilience
