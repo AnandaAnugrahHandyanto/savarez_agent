@@ -84,9 +84,9 @@ You can install this skill directly from the Hermes Skills Hub or GitHub.
 **Option 2: Install directly from GitHub**
 If the skill is hosted on a GitHub repository, you can install it directly by pointing to the repository:
 ```bash
-/skills install github:roger52027/ecommerce-website-data-openclaw-skills
+/skills install github:roger52027/ecommerce-website-data
 ```
-*(or run `hermes skills install github:roger52027/ecommerce-website-data-openclaw-skills` in your CLI)*
+*(or run `hermes skills install github:roger52027/ecommerce-website-data` in your CLI)*
 
 When you first use the skill, Hermes will automatically prompt you to enter your `APEX_TOKEN`. 
 Get your free token at [eccompass.ai](https://eccompass.ai) → Dashboard → API Access → Create Token.
