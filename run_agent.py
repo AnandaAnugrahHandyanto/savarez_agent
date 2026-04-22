@@ -5840,7 +5840,14 @@ class AIAgent:
                             e, (_httpx.ReadTimeout, _httpx.ConnectTimeout, _httpx.PoolTimeout)
                         )
                         _is_conn_err = isinstance(
-                            e, (_httpx.ConnectError, _httpx.RemoteProtocolError, ConnectionError)
+                            e,
+                            (
+                                _httpx.ReadError,
+                                _httpx.WriteError,
+                                _httpx.ConnectError,
+                                _httpx.RemoteProtocolError,
+                                ConnectionError,
+                            ),
                         )
 
                         # SSE error events from proxies (e.g. OpenRouter sends
@@ -6368,7 +6375,7 @@ class AIAgent:
     # one more attempt with a rebuilt client / connection pool.
     _TRANSIENT_TRANSPORT_ERRORS = frozenset({
         "ReadTimeout", "ConnectTimeout", "PoolTimeout",
-        "ConnectError", "RemoteProtocolError",
+        "ReadError", "WriteError", "ConnectError", "RemoteProtocolError",
         "APIConnectionError", "APITimeoutError",
     })
 
