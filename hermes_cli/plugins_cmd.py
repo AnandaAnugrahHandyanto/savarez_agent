@@ -938,7 +938,7 @@ def cmd_toggle() -> None:
 def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
                       disabled, categories, console):
     """Custom curses screen with checkboxes + category action rows."""
-    from hermes_cli.curses_ui import flush_stdin
+    from hermes_cli.curses_ui import flush_stdin, preserve_terminal_state
 
     chosen = set(plugin_selected)
     n_plugins = len(plugin_names)
@@ -1142,7 +1142,8 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
                 result_holder["plugins_changed"] = True
                 return
 
-    curses.wrapper(_draw)
+    with preserve_terminal_state():
+        curses.wrapper(_draw)
     flush_stdin()
 
     # Persist general plugin changes. The new allow-list is the set of
