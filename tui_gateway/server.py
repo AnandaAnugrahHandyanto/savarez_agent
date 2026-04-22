@@ -1552,6 +1552,7 @@ def _(rid, params: dict) -> dict:
             session_tokens = _set_session_context(session["session_key"])
             cols = session.get("cols", 80)
             streamer = make_stream_renderer(cols)
+            title_prompt = text if isinstance(text, str) else str(text or "")
             prompt = text
 
             if isinstance(prompt, str) and "@" in prompt:
@@ -1638,7 +1639,7 @@ def _(rid, params: dict) -> dict:
                     maybe_auto_title(
                         _get_db(),
                         getattr(agent, "session_id", sid),
-                        prompt,
+                        title_prompt,
                         raw,
                         result.get("messages", []) if isinstance(result.get("messages"), list) else [],
                         on_title=lambda _title: _emit("session.info", sid, _session_info(agent)),

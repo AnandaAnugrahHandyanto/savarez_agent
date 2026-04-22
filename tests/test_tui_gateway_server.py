@@ -741,6 +741,58 @@ def test_prompt_submit_emits_session_info_after_successful_auto_title(monkeypatc
         server._sessions.pop("sid", None)
 
 
+def test_prompt_submit_auto_title_uses_original_user_text_when_context_is_expanded(monkeypatch):
+    captured = []
+
+    class _Agent:
+        session_id = "session-key"
+
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            assert prompt == "EXPANDED PROMPT"
+            return {
+                "final_response": "complete reply",
+                "messages": [{"role": "assistant", "content": "complete reply"}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    fake_ctx = types.SimpleNamespace(
+        preprocess_context_references=lambda *args, **kwargs: types.SimpleNamespace(
+            blocked=False,
+            message="EXPANDED PROMPT",
+            warnings=[],
+        )
+    )
+    fake_meta = types.SimpleNamespace(get_model_context_length=lambda *args, **kwargs: 8192)
+    fake_title_module = types.SimpleNamespace(maybe_auto_title=lambda *args, **kwargs: captured.append((args, kwargs)))
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_get_usage", lambda _agent: {})
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(server, "_get_db", lambda: object())
+    monkeypatch.setattr(server, "_session_info", lambda _agent: {"model": "x", "title": "Fresh Title"})
+    monkeypatch.setitem(sys.modules, "agent.context_references", fake_ctx)
+    monkeypatch.setitem(sys.modules, "agent.model_metadata", fake_meta)
+    monkeypatch.setitem(sys.modules, "agent.title_generator", fake_title_module)
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    try:
+        resp = server.handle_request({"id": "1", "method": "prompt.submit", "params": {"session_id": "sid", "text": "ping @notes"}})
+
+        assert resp["result"]["status"] == "streaming"
+        assert len(captured) == 1
+        args, _kwargs = captured[0]
+        assert args[2] == "ping @notes"
+    finally:
+        server._sessions.pop("sid", None)
+
+
 # ---------------------------------------------------------------------------
 # History-mutating commands must reject while session.running is True.
 # Without these guards, prompt.submit's post-run history write either

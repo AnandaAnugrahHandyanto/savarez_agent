@@ -31,9 +31,16 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENV=""
 GIT_COMMON_DIR="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
 SHARED_REPO_ROOT="${GIT_COMMON_DIR%/.git}"
+NEEDS_FULL_SUITE_ENV=1
+for arg in "$@"; do
+  if [[ "$arg" != -* ]]; then
+    NEEDS_FULL_SUITE_ENV=0
+    break
+  fi
+done
 for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$SHARED_REPO_ROOT/venv"; do
   if [ -f "$candidate/bin/activate" ]; then
-    if [ "$#" -eq 0 ]; then
+    if [ "$#" -eq 0 ] || [ "$NEEDS_FULL_SUITE_ENV" -eq 1 ]; then
       if ! "$candidate/bin/python" - <<'PY' >/dev/null 2>&1
 import importlib
 required = ("acp", "dingtalk_stream", "fastapi", "faster_whisper")

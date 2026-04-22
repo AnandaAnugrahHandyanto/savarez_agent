@@ -20,7 +20,9 @@ def test_run_tests_uses_git_common_dir_for_shared_venv_fallback():
 def test_run_tests_full_suite_requires_optional_extras_and_repairs_pip():
     source = _script_text()
 
-    assert 'if [ "$#" -eq 0 ]; then' in source
+    assert 'NEEDS_FULL_SUITE_ENV=1' in source
+    assert 'if [[ "$arg" != -* ]]; then' in source
+    assert 'if [ "$#" -eq 0 ] || [ "$NEEDS_FULL_SUITE_ENV" -eq 1 ]; then' in source
     for module_name in ("acp", "dingtalk_stream", "fastapi", "faster_whisper"):
         assert f'"{module_name}"' in source
     assert '"$PYTHON" -m ensurepip --upgrade' in source
