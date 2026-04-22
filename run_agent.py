@@ -2171,15 +2171,19 @@ class AIAgent:
         if not self.compression_enabled:
             return
         try:
-            from agent.auxiliary_client import get_text_auxiliary_client
+            from agent.auxiliary_client import (
+                _resolve_task_provider_model,
+                get_text_auxiliary_client,
+            )
             from agent.model_metadata import (
                 MINIMUM_CONTEXT_LENGTH,
                 get_model_context_length,
             )
 
+            main_runtime = self._current_main_runtime()
             client, aux_model = get_text_auxiliary_client(
                 "compression",
-                main_runtime=self._current_main_runtime(),
+                main_runtime=main_runtime,
             )
             if client is None or not aux_model:
                 msg = (
@@ -2197,12 +2201,16 @@ class AIAgent:
 
             aux_base_url = str(getattr(client, "base_url", ""))
             aux_api_key = str(getattr(client, "api_key", ""))
+            aux_provider, _, _, _, _ = _resolve_task_provider_model("compression")
+            if aux_provider == "auto":
+                aux_provider = str((main_runtime or {}).get("provider") or "").strip() or aux_provider
 
             aux_context = get_model_context_length(
                 aux_model,
                 base_url=aux_base_url,
                 api_key=aux_api_key,
                 config_context_length=getattr(self, "_aux_compression_context_length_config", None),
+                provider=aux_provider,
             )
 
             # Hard floor: the auxiliary compression model must have at least

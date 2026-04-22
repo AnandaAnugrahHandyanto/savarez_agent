@@ -3426,7 +3426,8 @@ def _model_flow_claude_cli(config, current_model=""):
 
     if not status.get("resolved_command"):
         print("  ⚠ Claude CLI was not found on PATH.")
-        print("  Set HERMES_CLAUDE_CLI_COMMAND or CLAUDE_CLI_PATH if it is installed elsewhere.")
+        print("  Install Claude Code: https://docs.claude.com/en/docs/claude-code/overview")
+        print("  Or set HERMES_CLAUDE_CLI_COMMAND / CLAUDE_CLI_PATH if installed elsewhere.")
         return
     if not status.get("logged_in"):
         print("  ⚠ Claude CLI is not logged in. Run `claude auth login` or `claude /login` first.")
