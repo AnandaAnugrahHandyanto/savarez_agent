@@ -26,11 +26,26 @@ import tempfile
 import time
 import uuid
 import textwrap
+import asyncio
 from urllib.parse import unquote, urlparse
 from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
+
+from autosteward.engine import (
+    build_followthrough_prompt,
+    create_episode_state,
+    decide_followthrough,
+)
+from autosteward.parser import parse_auto_steward_directive
+from autosteward.prompts import (
+    build_auto_steward_prompt,
+    build_bare_auto_steward_notice,
+    is_auto_steward_prompt,
+)
+from autosteward.reviewer import review_decision_sync
+from autosteward.state import AutoStewardConfig, ParsedDirective
 
 logger = logging.getLogger(__name__)
 
@@ -2060,12 +2075,317 @@ class HermesCLI:
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
 
+        # Gateway already exposes an event-hook system around agent:start/end.
+        # Load the same hook registry for CLI sessions so end-of-turn automation
+        # can steward terminal chats too.
+        self.hooks = None
+        try:
+            from gateway.hooks import HookRegistry
+            self.hooks = HookRegistry()
+            self.hooks.discover_and_load()
+        except Exception as e:
+            logger.debug("Failed to initialize CLI hooks: %s", e)
+            self.hooks = None
+
+        self._auto_steward_depth = 0
+        _auto_steward_cfg = (CLI_CONFIG.get("agent", {}) or {}).get("auto_steward", {}) or {}
+        _auto_steward_enabled = _auto_steward_cfg.get("enabled", os.getenv("HERMES_AUTO_STEWARD", ""))
+        self._auto_steward_enabled = str(_auto_steward_enabled).strip().lower() in (
+            "1", "true", "yes", "y", "on"
+        )
+        try:
+            _legacy_max_hops = max(0, int(_auto_steward_cfg.get("max_hops", os.getenv("HERMES_AUTO_STEWARD_MAX_HOPS", "1"))))
+        except Exception:
+            _legacy_max_hops = 1
+        _notice_raw = _auto_steward_cfg.get("notice", os.getenv("HERMES_AUTO_STEWARD_NOTICE", "1"))
+        self._auto_steward_notice = str(_notice_raw).strip().lower() not in (
+            "0", "false", "no", "off"
+        )
+        _opt_in_token_raw = _auto_steward_cfg.get(
+            "opt_in_token", os.getenv("HERMES_AUTO_STEWARD_OPT_IN_TOKEN", "/as")
+        )
+        self._auto_steward_opt_in_token = str(_opt_in_token_raw) if _opt_in_token_raw is not None else ""
+        self._auto_steward_opt_in_required = bool(_auto_steward_cfg.get("opt_in_required", True))
+        self._auto_steward_default_hops = max(
+            0,
+            int(_auto_steward_cfg.get("default_hops_when_armed", _legacy_max_hops)),
+        )
+        self._auto_steward_hard_cap_hops = max(
+            0,
+            int(_auto_steward_cfg.get("hard_cap_hops", _legacy_max_hops)),
+        )
+        self._auto_steward_max_hops = self._auto_steward_hard_cap_hops or _legacy_max_hops
+        self._auto_steward_decision_mode = str(_auto_steward_cfg.get("decision_mode", "heuristic") or "heuristic")
+        self._auto_steward_review_enabled = bool(_auto_steward_cfg.get("review_enabled", False))
+        self._auto_steward_log_episodes = bool(_auto_steward_cfg.get("log_episodes", True))
+        self._auto_steward_cfg = AutoStewardConfig(
+            enabled=self._auto_steward_enabled,
+            opt_in_required=self._auto_steward_opt_in_required,
+            opt_in_token=self._auto_steward_opt_in_token,
+            default_hops_when_armed=self._auto_steward_default_hops,
+            hard_cap_hops=self._auto_steward_hard_cap_hops or self._auto_steward_default_hops,
+            decision_mode=self._auto_steward_decision_mode,
+            low_progress_patience=int(_auto_steward_cfg.get("low_progress_patience", 2)),
+            done_threshold=float(_auto_steward_cfg.get("done_threshold", 0.80)),
+            continue_threshold=float(_auto_steward_cfg.get("continue_threshold", 0.45)),
+            stop_threshold=float(_auto_steward_cfg.get("stop_threshold", 0.30)),
+            redirect_margin=float(_auto_steward_cfg.get("redirect_margin", 0.20)),
+            review_enabled=self._auto_steward_review_enabled,
+            review_on_user_input_boundary=bool(_auto_steward_cfg.get("review_on_user_input_boundary", True)),
+            review_provider=str(_auto_steward_cfg.get("review_provider", "anthropic") or "anthropic"),
+            review_model=str(_auto_steward_cfg.get("review_model", "claude-opus-4.6") or "claude-opus-4.6"),
+            review_base_url=str(_auto_steward_cfg.get("review_base_url", "") or ""),
+            review_api_key=str(_auto_steward_cfg.get("review_api_key", "") or ""),
+            review_timeout=float(_auto_steward_cfg.get("review_timeout", 45)),
+            review_min_confidence=float(_auto_steward_cfg.get("review_min_confidence", 0.75)),
+            review_start_hop=int(_auto_steward_cfg.get("review_start_hop", 3)),
+            review_band=float(_auto_steward_cfg.get("review_band", 0.10)),
+            max_reviews_per_episode=int(_auto_steward_cfg.get("max_reviews_per_episode", 2)),
+            notice=self._auto_steward_notice,
+            log_episodes=self._auto_steward_log_episodes,
+        )
+        # Armed state for the current top-level chain. Fresh user input may arm or
+        # disarm it via a trailing /as or /asN directive; followthrough hops only
+        # consume the stored state.
+        self._auto_steward_armed = False
+        self._auto_steward_effective_hops = self._auto_steward_default_hops
+        self._auto_steward_last_directive = ParsedDirective(
+            armed=False,
+            raw_directive=None,
+            requested_hops=None,
+            effective_hops=None,
+            sanitized_message="",
+            warnings=[],
+        )
+        self._auto_steward_episode = None
+        self._auto_steward_last_decision = None
+        self._auto_steward_pending_directive = None
+
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
         now = time.monotonic()
         if hasattr(self, "_app") and self._app and (now - self._last_invalidate) >= min_interval:
             self._last_invalidate = now
             self._app.invalidate()
+
+    def _emit_hook_sync(self, event_type: str, context: Optional[Dict[str, Any]] = None) -> None:
+        """Best-effort synchronous hook emission for CLI turns."""
+        if not getattr(self, "hooks", None):
+            return
+        payload = dict(context or {})
+        try:
+            try:
+                asyncio.run(self.hooks.emit(event_type, payload))
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                try:
+                    loop.run_until_complete(self.hooks.emit(event_type, payload))
+                finally:
+                    loop.close()
+        except Exception as e:
+            logger.debug("CLI hook emit failed for %s: %s", event_type, e)
+
+    @staticmethod
+    def _response_requires_user_input(response: str) -> bool:
+        text = (response or "").strip().lower()
+        if not text:
+            return True
+        hard_blockers = (
+            "cannot proceed without",
+            "can't proceed without",
+            "need your approval",
+            "need your confirmation",
+            "requires your approval",
+            "requires your confirmation",
+            "please provide",
+            "i need your",
+            "need you to",
+            "waiting for your",
+            "what would you like",
+            "which option",
+            "which would you like",
+            "which do you want",
+            "do you want me to",
+            "want me to",
+            "would you like me to",
+            "let me know if you'd like",
+            "let me know if you want",
+            "please choose",
+            "need clarification",
+            "send the task when ready",
+            "await a concrete task",
+            "a real task/instruction from you",
+            "wait for your actual task",
+        )
+        if any(needle in text for needle in hard_blockers):
+            return True
+        question_mark = "?" in text
+        soft_questions = (
+            "should i",
+            "can you provide",
+            "do you want",
+            "would you like",
+            "what should i",
+            "which one",
+        )
+        return question_mark and any(needle in text for needle in soft_questions)
+
+    @staticmethod
+    def _response_looks_terminal(response: str) -> bool:
+        text = (response or "").strip().lower()
+        if not text:
+            return False
+        terminal_markers = (
+            "stopping because",
+            "stopping: ",
+            "stopping —",
+            "stopping -",
+            "remaining: none",
+            "remaining: no concrete task",
+            "remaining: none specified",
+            "blocked: waiting on a real objective",
+            "no further concrete task",
+            "nothing further i can safely",
+            "no specific executable task",
+            "no concrete executable task",
+            "no substantive project/task",
+            "no actual subtask",
+            "there is no safe next action",
+            "i should stop here because",
+            "work is complete",
+            "prior request already completed exactly as asked",
+        )
+        return any(marker in text for marker in terminal_markers)
+
+    def _build_auto_steward_prompt(self, decision=None) -> str:
+        return build_auto_steward_prompt(decision)
+
+    @staticmethod
+    def _normalize_auto_steward_text(message: Any) -> str:
+        if not isinstance(message, str):
+            return ""
+        return " ".join(message.split())
+
+    def _message_is_auto_steward_prompt(self, message: Any) -> bool:
+        return is_auto_steward_prompt(message)
+
+    def _parse_auto_steward_directive(self, message: Any) -> ParsedDirective:
+        cfg = getattr(self, "_auto_steward_cfg", None)
+        if cfg is None:
+            token = getattr(self, "_auto_steward_opt_in_token", "") or ""
+            max_hops = getattr(
+                self,
+                "_auto_steward_hard_cap_hops",
+                getattr(self, "_auto_steward_max_hops", 8) or 8,
+            ) or 8
+            default_hops = getattr(self, "_auto_steward_default_hops", max_hops) or max_hops
+            cfg = AutoStewardConfig(
+                enabled=getattr(self, "_auto_steward_enabled", False),
+                opt_in_required=getattr(self, "_auto_steward_opt_in_required", bool(token)),
+                opt_in_token=token,
+                default_hops_when_armed=default_hops,
+                hard_cap_hops=max_hops,
+                notice=getattr(self, "_auto_steward_notice", True),
+                review_enabled=getattr(self, "_auto_steward_review_enabled", False),
+            )
+        return parse_auto_steward_directive(message, cfg)
+
+    @staticmethod
+    def _coerce_auto_steward_message(parsed: ParsedDirective) -> str:
+        text = (parsed.sanitized_message or "").strip()
+        if text:
+            return text
+        if parsed.armed:
+            return "Continue from the existing context and execute the highest-leverage safe next steps now."
+        return parsed.sanitized_message
+
+    def _should_drop_unarmed_auto_steward_message(self, message: Any) -> bool:
+        token = getattr(self, "_auto_steward_opt_in_token", "") or ""
+        if not token:
+            return False
+        if not self._message_is_auto_steward_prompt(message):
+            return False
+        return not getattr(self, "_auto_steward_armed", False)
+
+    def _message_contains_opt_in_token(self, message: Any) -> bool:
+        token = getattr(self, "_auto_steward_opt_in_token", "") or ""
+        if not token:
+            return True
+        if isinstance(message, str) and token.strip().startswith("/"):
+            return self._parse_auto_steward_directive(message).armed
+        if isinstance(message, str):
+            return token in message
+        if isinstance(message, list):
+            for part in message:
+                if isinstance(part, str):
+                    if token in part:
+                        return True
+                elif isinstance(part, dict):
+                    text = part.get("text")
+                    if isinstance(text, str) and token in text:
+                        return True
+        return False
+
+    def _decide_auto_steward(self, response: str, result: Optional[Dict[str, Any]] = None):
+        if not self._auto_steward_enabled:
+            return None
+        if not response or not str(response).strip():
+            return None
+        if result and (result.get("failed") or result.get("partial") or result.get("interrupted")):
+            return None
+        token = getattr(self, "_auto_steward_opt_in_token", "") or ""
+        if token and not getattr(self, "_auto_steward_armed", False):
+            return None
+        effective_max = max(
+            0,
+            int(getattr(self, "_auto_steward_effective_hops", getattr(self, "_auto_steward_max_hops", 0)) or 0),
+        )
+        if getattr(self, "_auto_steward_depth", 0) >= effective_max:
+            return None
+        episode = getattr(self, "_auto_steward_episode", None)
+        armed = getattr(self, "_auto_steward_armed", False) or not token
+        if episode is None:
+            directive = getattr(self, "_auto_steward_last_directive", None) or ParsedDirective(
+                armed=armed,
+                raw_directive=None,
+                requested_hops=None,
+                effective_hops=effective_max,
+                sanitized_message="",
+                warnings=[],
+            )
+            episode = create_episode_state(
+                session_id=getattr(self, "session_id", "cli"),
+                directive=directive,
+                previous=None,
+            )
+            episode.armed = armed
+            episode.effective_max_hops = effective_max
+            self._auto_steward_episode = episode
+        episode.armed = armed
+        episode.effective_max_hops = effective_max
+        decision, _hop = decide_followthrough(
+            episode=episode,
+            response=response,
+            result=result,
+            cfg=getattr(self, "_auto_steward_cfg", AutoStewardConfig(enabled=False)),
+            response_requires_user_input=self._response_requires_user_input,
+            response_looks_terminal=self._response_looks_terminal,
+        )
+        if decision is not None:
+            review_outcome = review_decision_sync(
+                episode=episode,
+                response=response,
+                decision=decision,
+                cfg=getattr(self, "_auto_steward_cfg", AutoStewardConfig(enabled=False)),
+            )
+            if review_outcome.approved:
+                decision = review_outcome.replacement
+        self._auto_steward_last_decision = decision
+        return decision
+
+    def _should_auto_steward(self, response: str, result: Optional[Dict[str, Any]] = None) -> bool:
+        decision = self._decide_auto_steward(response, result)
+        return bool(decision and decision.kind.value in ("continue", "redirect", "review"))
 
     def _status_bar_context_style(self, percent_used: Optional[int]) -> str:
         if percent_used is None:
@@ -8260,6 +8580,36 @@ class HermesCLI:
         # register secure secret capture here as well.
         set_secret_capture_callback(self._secret_capture_callback)
 
+        # Consume the parsed directive exactly once for each top-level user turn.
+        # Followthrough hops do not re-arm; they inherit the episode state already
+        # established by the originating /as or /asN message.
+        if getattr(self, "_auto_steward_depth", 0) == 0:
+            pending_directive = getattr(self, "_auto_steward_pending_directive", None)
+            if pending_directive is not None:
+                parsed_directive = pending_directive
+                self._auto_steward_pending_directive = None
+            else:
+                parsed_directive = self._parse_auto_steward_directive(message)
+            self._auto_steward_last_directive = parsed_directive
+            self._auto_steward_armed = parsed_directive.armed
+            self._auto_steward_effective_hops = parsed_directive.effective_hops or self._auto_steward_default_hops
+            self._auto_steward_episode = create_episode_state(
+                session_id=getattr(self, "session_id", "cli"),
+                directive=parsed_directive,
+                previous=getattr(self, "_auto_steward_episode", None),
+            )
+            if parsed_directive.warnings:
+                for warning in parsed_directive.warnings:
+                    logger.info("CLI auto-steward directive warning: %s", warning)
+            if parsed_directive.armed and not (parsed_directive.sanitized_message or "").strip():
+                return build_bare_auto_steward_notice(parsed_directive)
+            if isinstance(message, str):
+                message = self._coerce_auto_steward_message(parsed_directive)
+
+        if self._should_drop_unarmed_auto_steward_message(message):
+            logger.warning("Dropping leaked unarmed auto-steward prompt in CLI chat()")
+            return None
+
         # Refresh provider credentials if needed (handles key rotation transparently)
         if not self._ensure_runtime_credentials():
             return None
@@ -8399,6 +8749,13 @@ class HermesCLI:
                     "[Voice input — respond concisely and conversationally, "
                     "2-3 sentences max. No code blocks or markdown.] "
                 )
+
+            hook_ctx = {
+                "platform": "cli",
+                "session_id": self.session_id,
+                "message": str(message)[:500],
+            }
+            self._emit_hook_sync("agent:start", hook_ctx)
 
             def run_agent():
                 nonlocal result
@@ -8705,6 +9062,28 @@ class HermesCLI:
                     daemon=True,
                 ).start()
 
+            self._emit_hook_sync("agent:end", {
+                **hook_ctx,
+                "response": str(response or "")[:500],
+            })
+
+            decision = None
+            if not pending_message:
+                decision = self._decide_auto_steward(response, result)
+            if decision and decision.kind.value in ("continue", "redirect", "review"):
+                if self._auto_steward_notice:
+                    reasons = ", ".join(decision.reason_codes) if decision.reason_codes else "unspecified"
+                    source = str((decision.metadata or {}).get("decision_source") or "HEURISTIC_ONLY")
+                    _cprint(
+                        f"\n{_DIM}⤷ auto-steward: {decision.kind.value} [{source}] ({reasons}) depth {self._auto_steward_depth + 1}/{self._auto_steward_effective_hops}{_RST}"
+                    )
+                self._auto_steward_depth += 1
+                try:
+                    followthrough_response = self.chat(build_followthrough_prompt(decision))
+                    if followthrough_response is not None:
+                        return followthrough_response
+                finally:
+                    self._auto_steward_depth = max(0, self._auto_steward_depth - 1)
 
             # Re-queue the interrupt message (and any that arrived while we were
             # processing the first) as the next prompt for process_loop.
@@ -10525,13 +10904,18 @@ class HermesCLI:
                             )
 
                     if not _file_drop and isinstance(user_input, str) and _looks_like_slash_command(user_input):
-                        _cprint(f"\n⚙️  {user_input}")
-                        if not self.process_command(user_input):
-                            self._should_exit = True
-                            # Schedule app exit
-                            if app.is_running:
-                                app.exit()
-                        continue
+                        parsed_directive = self._parse_auto_steward_directive(user_input)
+                        if parsed_directive.armed:
+                            self._auto_steward_pending_directive = parsed_directive
+                            user_input = self._coerce_auto_steward_message(parsed_directive)
+                        else:
+                            _cprint(f"\n⚙️  {user_input}")
+                            if not self.process_command(user_input):
+                                self._should_exit = True
+                                # Schedule app exit
+                                if app.is_running:
+                                    app.exit()
+                            continue
                     
                     # Expand paste references back to full content
                     _paste_ref_re = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
@@ -10977,6 +11361,23 @@ def main(
     # Handle single query mode
     if query or image:
         query, single_query_images = _collect_query_images(query, image)
+        parsed_directive = cli._parse_auto_steward_directive(query) if query else None
+        bare_directive = bool(
+            parsed_directive
+            and parsed_directive.armed
+            and not (parsed_directive.sanitized_message or "").strip()
+            and not single_query_images
+        )
+        if bare_directive:
+            if quiet:
+                cli.tool_progress_mode = "off"
+            response = cli.chat(query)
+            if response:
+                print(response)
+            if quiet:
+                print(f"\nsession_id: {cli.session_id}")
+                sys.exit(0 if response is not None else 1)
+            return
         if quiet:
             # Quiet mode: suppress banner, spinner, tool previews.
             # Only print the final response and parseable session info.
@@ -11033,7 +11434,9 @@ def main(
             _query_label = query or ("[image attached]" if single_query_images else "")
             if _query_label:
                 cli.console.print(f"[bold blue]Query:[/] {_query_label}")
-            cli.chat(query, images=single_query_images or None)
+            response = cli.chat(query, images=single_query_images or None)
+            if bare_directive and response:
+                cli.console.print(response)
             cli._print_exit_summary()
         return
     
