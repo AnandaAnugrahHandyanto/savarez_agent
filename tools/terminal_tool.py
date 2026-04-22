@@ -29,6 +29,8 @@ Usage:
     # Execute in background
     result = terminal_tool("python server.py", background=True)
 """
+from __future__ import annotations
+
 
 import importlib.util
 import json
