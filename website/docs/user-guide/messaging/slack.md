@@ -286,6 +286,28 @@ slack:
 Slack supports both patterns: `@mention` required to start a conversation by default, but you can opt specific channels out via `SLACK_FREE_RESPONSE_CHANNELS` (comma-separated channel IDs) or `slack.free_response_channels` in `config.yaml`. Once the bot has an active session in a thread, subsequent thread replies do not require a mention. In DMs the bot always responds without needing a mention.
 :::
 
+### Routing Context Prefix
+
+By default, every incoming Slack message is prepended with a single-line `[Slack context — …]` header so the agent can see **which channel, thread, and user** the message came from without an extra `conversations.history` API call.
+
+```
+[Slack context — channel=C0ATVRW9LCW thread_ts=1776825190.681639 user=alice user_id=U011CE59XEZ]
+please summarise yesterday's incident
+```
+
+This is useful when a skill needs to reply into the originating thread, record audit metadata, or route a follow-up to the right user — the transcript already contains everything needed. The `thread_ts` is omitted in DMs that are not threaded. Disable the prefix when the host already injects this metadata elsewhere:
+
+```yaml
+slack:
+  inject_context: false
+```
+
+or via environment:
+
+```bash
+SLACK_INJECT_CONTEXT=false
+```
+
 ### Unauthorized User Handling
 
 ```yaml

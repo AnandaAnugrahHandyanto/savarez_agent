@@ -542,7 +542,11 @@ class TestMessageRouting:
         }
         await adapter._handle_slack_message(event)
         msg_event = adapter.handle_message.call_args[0][0]
-        assert msg_event.text == "what's the weather?"
+        # The text now carries a `[Slack context — ...]` prefix before the
+        # user's message — check the user portion on the last line so the
+        # assertion still pins down the bot-mention stripping behaviour.
+        user_line = msg_event.text.splitlines()[-1]
+        assert user_line == "what's the weather?"
         assert "<@U_BOT>" not in msg_event.text
 
     @pytest.mark.asyncio
@@ -1131,7 +1135,7 @@ class TestThreadReplyHandling:
 
         # Verify the text is passed through unchanged (no mention stripping needed)
         msg_event = adapter_with_session_store.handle_message.call_args[0][0]
-        assert msg_event.text == "Follow-up question"
+        assert msg_event.text.splitlines()[-1] == "Follow-up question"
 
     @pytest.mark.asyncio
     async def test_thread_reply_with_mention_strips_bot_id(
@@ -1156,7 +1160,7 @@ class TestThreadReplyHandling:
 
         msg_event = adapter_with_session_store.handle_message.call_args[0][0]
         assert "<@U_BOT>" not in msg_event.text
-        assert msg_event.text == "thanks for the help"
+        assert msg_event.text.splitlines()[-1] == "thanks for the help"
 
     @pytest.mark.asyncio
     async def test_top_level_message_requires_mention_even_with_session(
@@ -1789,3 +1793,181 @@ class TestProgressMessageThread:
             "so each @mention starts its own thread"
         )
         assert msg_event.message_id == "2000000000.000001"
+
+
+# ---------------------------------------------------------------------------
+# TestSlackContextInjection — routing metadata surfaced to the agent
+# ---------------------------------------------------------------------------
+
+class TestSlackContextInjection:
+    """Verify the `[Slack context — ...]` prefix is prepended to user text.
+
+    Without this prefix, the LLM has no transcript-visible way to learn the
+    originating channel / thread / user and has to call conversations.history
+    via the bot token (extra scope + latency + failure modes) to reply in the
+    right thread or record audit metadata.  See the commit that introduced
+    SlackAdapter._slack_inject_context for the longer motivation.
+    """
+
+    @pytest.mark.asyncio
+    async def test_channel_mention_prepends_context_prefix(self, adapter):
+        """Top-level channel @mention should surface channel + thread + user."""
+        event = {
+            "channel": "C_CHAN",
+            "channel_type": "channel",
+            "user": "U_USER",
+            "text": "<@U_BOT> please help",
+            "ts": "2000000000.000001",
+        }
+
+        captured = []
+        adapter.handle_message = AsyncMock(side_effect=lambda e: captured.append(e))
+
+        with patch.object(adapter, "_resolve_user_name", new=AsyncMock(return_value="alice")):
+            await adapter._handle_slack_message(event)
+
+        assert len(captured) == 1
+        text = captured[0].text
+        # Prefix is a single line starting with the well-known marker.
+        first_line, _, rest = text.partition("\n")
+        assert first_line.startswith("[Slack context — "), first_line
+        assert "channel=C_CHAN" in first_line
+        # Top-level @mention has no explicit thread_ts, but the adapter falls
+        # back to ts for channel threading — expose the effective value.
+        assert "thread_ts=2000000000.000001" in first_line
+        assert "user=alice" in first_line
+        assert "user_id=U_USER" in first_line
+        # Original user text is preserved after the prefix (bot mention stripped).
+        assert "please help" in rest
+
+    @pytest.mark.asyncio
+    async def test_thread_reply_uses_real_thread_ts(self, adapter):
+        """A reply inside an existing thread must expose the parent ts, not the reply ts."""
+        event = {
+            "channel": "C_CHAN",
+            "channel_type": "channel",
+            "user": "U_USER",
+            "text": "<@U_BOT> follow-up",
+            "ts": "3000000000.222222",
+            "thread_ts": "3000000000.111111",
+        }
+
+        captured = []
+        adapter.handle_message = AsyncMock(side_effect=lambda e: captured.append(e))
+
+        with patch.object(adapter, "_resolve_user_name", new=AsyncMock(return_value="bob")):
+            await adapter._handle_slack_message(event)
+
+        first_line = captured[0].text.splitlines()[0]
+        assert "thread_ts=3000000000.111111" in first_line, first_line
+        # The reply's own ts must not leak as the thread anchor.
+        assert "3000000000.222222" not in first_line
+
+    @pytest.mark.asyncio
+    async def test_dm_without_thread_omits_thread_ts(self, adapter):
+        """DMs without an active thread should not emit a stale thread_ts=."""
+        # Disable the dm_top_level_threads_as_sessions fallback so thread_ts
+        # stays genuinely absent — otherwise the adapter synthesises one.
+        adapter.config.extra["dm_top_level_threads_as_sessions"] = False
+
+        event = {
+            "channel": "D_DM",
+            "channel_type": "im",
+            "user": "U_USER",
+            "text": "hi there",
+            "ts": "4000000000.000001",
+        }
+
+        captured = []
+        adapter.handle_message = AsyncMock(side_effect=lambda e: captured.append(e))
+
+        with patch.object(adapter, "_resolve_user_name", new=AsyncMock(return_value="carol")):
+            await adapter._handle_slack_message(event)
+
+        first_line = captured[0].text.splitlines()[0]
+        assert first_line.startswith("[Slack context — "), first_line
+        assert "channel=D_DM" in first_line
+        assert "thread_ts=" not in first_line, first_line
+        assert "user=carol" in first_line
+
+    @pytest.mark.asyncio
+    async def test_injection_disabled_via_config(self, adapter):
+        """`slack.inject_context: false` must drop the prefix entirely."""
+        adapter.config.extra["inject_context"] = False
+
+        event = {
+            "channel": "C_CHAN",
+            "channel_type": "channel",
+            "user": "U_USER",
+            "text": "<@U_BOT> help",
+            "ts": "5000000000.000001",
+        }
+
+        captured = []
+        adapter.handle_message = AsyncMock(side_effect=lambda e: captured.append(e))
+
+        with patch.object(adapter, "_resolve_user_name", new=AsyncMock(return_value="dave")):
+            await adapter._handle_slack_message(event)
+
+        text = captured[0].text
+        assert "[Slack context" not in text, text
+        assert "help" in text
+
+    @pytest.mark.asyncio
+    async def test_injection_disabled_via_env(self, adapter, monkeypatch):
+        """SLACK_INJECT_CONTEXT=false env var must disable the prefix."""
+        # Ensure extra does not override env.
+        adapter.config.extra.pop("inject_context", None)
+        monkeypatch.setenv("SLACK_INJECT_CONTEXT", "false")
+
+        event = {
+            "channel": "C_CHAN",
+            "channel_type": "channel",
+            "user": "U_USER",
+            "text": "<@U_BOT> help",
+            "ts": "6000000000.000001",
+        }
+
+        captured = []
+        adapter.handle_message = AsyncMock(side_effect=lambda e: captured.append(e))
+
+        with patch.object(adapter, "_resolve_user_name", new=AsyncMock(return_value="eve")):
+            await adapter._handle_slack_message(event)
+
+        assert "[Slack context" not in captured[0].text
+
+    @pytest.mark.asyncio
+    async def test_injection_combines_with_document_content(self, adapter):
+        """File injection and context prefix must coexist — context first, content second."""
+        content = b"line one\nline two"
+        event = {
+            "channel": "C_CHAN",
+            "channel_type": "channel",
+            "user": "U_USER",
+            "text": "<@U_BOT> summarise",
+            "ts": "7000000000.000001",
+            "files": [{
+                "mimetype": "text/plain",
+                "name": "notes.txt",
+                "url_private_download": "https://files.slack.com/notes.txt",
+                "size": len(content),
+            }],
+        }
+
+        captured = []
+        adapter.handle_message = AsyncMock(side_effect=lambda e: captured.append(e))
+
+        with patch.object(adapter, "_download_slack_file_bytes", new=AsyncMock(return_value=content)):
+            with patch.object(adapter, "_resolve_user_name", new=AsyncMock(return_value="frank")):
+                await adapter._handle_slack_message(event)
+
+        text = captured[0].text
+        ctx_idx = text.find("[Slack context — ")
+        content_idx = text.find("[Content of notes.txt]")
+        user_idx = text.find("summarise")
+        assert ctx_idx != -1, text
+        assert content_idx != -1, text
+        assert user_idx != -1, text
+        # Context header precedes both the document content and user text.
+        assert ctx_idx < content_idx
+        assert ctx_idx < user_idx

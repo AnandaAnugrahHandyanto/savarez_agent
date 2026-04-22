@@ -1182,6 +1182,28 @@ class SlackAdapter(BasePlatformAdapter):
         # Resolve user display name (cached after first lookup)
         user_name = await self._resolve_user_name(user_id, chat_id=channel_id)
 
+        # Expose Slack routing context to the agent as an inline prefix.
+        #
+        # Without this, the LLM receives user text only and has no reliable way
+        # to learn which channel / thread / user is talking without calling
+        # conversations.history via the bot token — a roundtrip that costs
+        # latency, extra scopes, and fails on restricted workspaces.  The
+        # prefix mirrors the existing `[Content of <file>]:` document-injection
+        # convention so downstream prompts parse it naturally.
+        #
+        # Disable by setting slack.inject_context: false (or env
+        # SLACK_INJECT_CONTEXT=false) when the host agent already injects this
+        # via some other channel or does not want it in the transcript.
+        if self._slack_inject_context():
+            ctx_parts = [f"channel={channel_id}"]
+            if thread_ts:
+                ctx_parts.append(f"thread_ts={thread_ts}")
+            ctx_parts.append(f"user={user_name}")
+            if user_id and user_id != user_name:
+                ctx_parts.append(f"user_id={user_id}")
+            ctx_line = f"[Slack context — {' '.join(ctx_parts)}]"
+            text = f"{ctx_line}\n{text}" if text else ctx_line
+
         # Build source
         source = self.build_source(
             chat_id=channel_id,
@@ -1681,6 +1703,22 @@ class SlackAdapter(BasePlatformAdapter):
                 return configured.lower() not in ("false", "0", "no", "off")
             return bool(configured)
         return os.getenv("SLACK_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no", "off")
+
+    def _slack_inject_context(self) -> bool:
+        """Return whether to prepend a `[Slack context — ...]` line to user text.
+
+        Enabled by default so the agent sees the originating channel / thread
+        / user without a separate Slack API roundtrip.  Disable via
+        ``slack.inject_context: false`` in config or ``SLACK_INJECT_CONTEXT=false``
+        when the host injects this metadata through some other channel (e.g.
+        system prompt) and wants a clean transcript.
+        """
+        configured = self.config.extra.get("inject_context")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() not in ("false", "0", "no", "off")
+            return bool(configured)
+        return os.getenv("SLACK_INJECT_CONTEXT", "true").lower() not in ("false", "0", "no", "off")
 
     def _slack_free_response_channels(self) -> set:
         """Return channel IDs where no @mention is required."""
