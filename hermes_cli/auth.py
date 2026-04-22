@@ -215,18 +215,21 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
     ),
     "kimi-coding": ProviderConfig(
         id="kimi-coding",
-        name="Kimi / Moonshot",
+        name="Moonshot / Kimi",
         auth_type="api_key",
-        # Legacy platform.moonshot.ai keys use this endpoint (OpenAI-compat).
-        # sk-kimi- (Kimi Code) keys are auto-redirected to api.kimi.com/coding
-        # by _resolve_kimi_base_url() below.
+        # Handles BOTH standard Moonshot API keys from platform.moonshot.ai
+        # (default base url) AND Kimi Code keys from kimi.com/code
+        # (prefixed "sk-kimi-", auto-redirected to api.kimi.com/coding/v1 by
+        # _resolve_kimi_base_url below). Despite the historical "kimi-coding"
+        # provider id, both key formats are supported transparently; see
+        # #13935 for the UX rationale behind the "Moonshot / Kimi" label.
         inference_base_url="https://api.moonshot.ai/v1",
-        api_key_env_vars=("KIMI_API_KEY", "KIMI_CODING_API_KEY"),
+        api_key_env_vars=("KIMI_API_KEY", "KIMI_CODING_API_KEY", "MOONSHOT_API_KEY"),
         base_url_env_var="KIMI_BASE_URL",
     ),
     "kimi-coding-cn": ProviderConfig(
         id="kimi-coding-cn",
-        name="Kimi / Moonshot (China)",
+        name="Moonshot / Kimi (China)",
         auth_type="api_key",
         inference_base_url="https://api.moonshot.cn/v1",
         api_key_env_vars=("KIMI_CN_API_KEY",),

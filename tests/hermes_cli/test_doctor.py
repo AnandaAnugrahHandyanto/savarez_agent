@@ -566,7 +566,7 @@ def test_run_doctor_kimi_cn_env_is_detected_and_probe_is_null_safe(monkeypatch, 
     out = buf.getvalue()
 
     assert "API key or custom endpoint configured" in out
-    assert "Kimi / Moonshot (China)" in out
+    assert "Moonshot / Kimi (China)" in out
     assert "str expected, not NoneType" not in out
     assert any(url == "https://api.moonshot.cn/v1/models" for url, _, _ in calls)
 
