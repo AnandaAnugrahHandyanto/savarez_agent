@@ -23,6 +23,21 @@ def _clear_openai_env(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _disable_whisper_cpp_by_default(monkeypatch):
+    """Ensure whisper.cpp detection is off in tests unless explicitly enabled.
+
+    The ``whisper_cpp`` provider auto-detects binaries like ``voxtype`` on
+    PATH; on dev machines this would leak into provider-selection tests that
+    assume no local backend is available. Tests that need whisper_cpp should
+    patch ``_find_whisper_cpp_binary`` to return a concrete path.
+    """
+    monkeypatch.setattr(
+        "tools.transcription_tools._find_whisper_cpp_binary",
+        lambda preferred=None: None,
+    )
+
+
 class TestGetProvider:
     """_get_provider() picks the right backend based on config + availability."""
 
