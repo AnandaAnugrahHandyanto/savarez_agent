@@ -326,11 +326,35 @@ class TestBedrockPreserveDotsFlag:
         from run_agent import AIAgent
         assert AIAgent._anthropic_preserve_dots(agent) is True
 
+    def test_bedrock_mantle_us_east_1_url_preserves_dots(self):
+        """Bedrock Mantle (``bedrock-mantle.{region}.api.aws``) is an
+        OpenAI-compatible proxy that also exposes an ``/anthropic``
+        path.  Model IDs such as ``anthropic.claude-opus-4-7`` must
+        keep their dots — the endpoint rejects the hyphenated form
+        with HTTP 404."""
+        from types import SimpleNamespace
+        agent = SimpleNamespace(
+            provider="custom",
+            base_url="https://bedrock-mantle.us-east-1.api.aws/anthropic",
+        )
+        from run_agent import AIAgent
+        assert AIAgent._anthropic_preserve_dots(agent) is True
+
+    def test_bedrock_mantle_eu_west_1_url_preserves_dots(self):
+        """Alternative region for Bedrock Mantle."""
+        from types import SimpleNamespace
+        agent = SimpleNamespace(
+            provider="custom",
+            base_url="https://bedrock-mantle.eu-west-1.api.aws/anthropic",
+        )
+        from run_agent import AIAgent
+        assert AIAgent._anthropic_preserve_dots(agent) is True
+
     def test_non_bedrock_aws_url_does_not_preserve_dots(self):
         """Unrelated AWS endpoints (e.g. ``s3.us-east-1.amazonaws.com``)
         must not accidentally activate the dot-preservation heuristic —
-        the heuristic is scoped to the ``bedrock-runtime.`` substring
-        specifically."""
+        the heuristic is scoped to the ``bedrock-runtime.`` and
+        ``bedrock-mantle.`` substrings specifically."""
         from types import SimpleNamespace
         agent = SimpleNamespace(
             provider="custom",
