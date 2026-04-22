@@ -1,13 +1,13 @@
 """Koyeb cloud execution environment.
 
 Uses the Koyeb Python SDK to run commands in cloud sandboxes.
-Supports persistent sandboxes: when enabled, sandboxes are stopped on cleanup
-and resumed on next creation, preserving the filesystem across sessions.
+Each task gets its own sandbox which is deleted on cleanup.
 """
 
 import logging
 import math
 import os
+import re
 import shlex
 import threading
 from pathlib import Path
@@ -56,7 +56,6 @@ class KoyebEnvironment(BaseEnvironment):
 
         from koyeb import Sandbox
 
-        self._persistent = persistent_filesystem
         self._task_id = task_id
         self._sandbox = None
         self._lock = threading.Lock()
@@ -71,43 +70,27 @@ class KoyebEnvironment(BaseEnvironment):
         # For now, we'll use the instance_type parameter directly
         # cpu and memory parameters are kept for compatibility but may be overridden by instance_type
 
-        sandbox_name = f"hermes-{task_id}"
-        labels = {"hermes_task_id": task_id}
-
-        # Try to reuse existing sandbox if persistent
-        if self._persistent:
-            try:
-                # List existing sandboxes with our label
-                existing = Sandbox.list(api_token=self._api_token, labels=labels)
-                if existing:
-                    self._sandbox = existing[0]
-                    logger.info("Koyeb: resumed sandbox %s for task %s",
-                                self._sandbox.id, task_id)
-            except Exception as e:
-                logger.debug("Koyeb: could not resume sandbox for task %s: %s",
-                             task_id, e)
-                self._sandbox = None
-
-        # Create new sandbox if needed
-        if self._sandbox is None:
-            try:
-                self._sandbox = Sandbox.create(
-                    image=image,
-                    name=sandbox_name,
-                    wait_ready=True,
-                    instance_type=self._instance_type,
-                    region=self._region,
-                    api_token=self._api_token,
-                    timeout=300,
-                    idle_timeout=0,  # Disable auto-sleep for persistent sandboxes
-                    delete_after_delay=0,
-                    delete_after_inactivity_delay=0,
-                )
-                logger.info("Koyeb: created sandbox %s for task %s",
-                            self._sandbox.id, task_id)
-            except Exception as e:
-                logger.error("Koyeb: failed to create sandbox: %s", e)
-                raise
+        # Koyeb app names must be lowercase alphanumeric + hyphens only.
+        # Sanitize task_id: replace underscores/invalid chars with hyphens,
+        # collapse runs, strip leading/trailing hyphens, and truncate.
+        safe_id = re.sub(r"[^a-z0-9-]", "-", task_id.lower())
+        safe_id = re.sub(r"-{2,}", "-", safe_id).strip("-")
+        sandbox_name = f"hermes-{safe_id}"[:63]  # Koyeb name max length
+        try:
+            self._sandbox = Sandbox.create(
+                image=image,
+                name=sandbox_name,
+                wait_ready=True,
+                instance_type=self._instance_type,
+                region=self._region,
+                api_token=self._api_token,
+                timeout=300,
+            )
+            logger.info("Koyeb: created sandbox %s for task %s",
+                        self._sandbox.id, task_id)
+        except Exception as e:
+            logger.error("Koyeb: failed to create sandbox: %s", e)
+            raise
 
         # Detect remote home dir
         self._remote_home = "/root"
@@ -135,20 +118,33 @@ class KoyebEnvironment(BaseEnvironment):
         """Upload a single file via Koyeb SDK."""
         parent = str(Path(remote_path).parent)
         self._sandbox.exec(f"mkdir -p {shlex.quote(parent)}")
-        self._sandbox.filesystem.upload_file(host_path, remote_path)
+        self._sandbox.filesystem.upload_file(host_path, remote_path, encoding="base64")
 
     def _koyeb_bulk_upload(self, files: list[tuple[str, str]]) -> None:
-        """Upload many files via Koyeb SDK."""
+        """Upload many files as a single tar archive to avoid per-file HTTP overhead."""
         if not files:
             return
 
-        parents = unique_parent_dirs(files)
-        if parents:
-            self._sandbox.exec(quoted_mkdir_command(parents))
+        import tarfile
+        import tempfile
 
-        # Upload files one by one (Koyeb SDK doesn't have bulk upload for files)
-        for host_path, remote_path in files:
-            self._sandbox.filesystem.upload_file(host_path, remote_path)
+        with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            with tarfile.open(tmp_path, "w") as tar:
+                for host_path, remote_path in files:
+                    # Store with absolute remote path inside the tar
+                    tar.add(host_path, arcname=remote_path)
+
+            remote_tar = f"/tmp/.hermes_upload.{os.getpid()}.tar"
+            self._sandbox.filesystem.upload_file(tmp_path, remote_tar, encoding="base64")
+            self._sandbox.exec(f"tar xf {shlex.quote(remote_tar)} -C / && rm -f {shlex.quote(remote_tar)}")
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
     def _koyeb_bulk_download(self, dest: Path) -> None:
         """Download remote .hermes/ as a tar archive."""
@@ -228,14 +224,8 @@ class KoyebEnvironment(BaseEnvironment):
                     logger.warning("Koyeb: sync_back failed: %s", e)
 
             try:
-                if self._persistent:
-                    # For persistent sandboxes, we don't delete them
-                    # They'll be reused on next creation
-                    logger.info("Koyeb: keeping sandbox %s (filesystem preserved)",
-                                self._sandbox.id)
-                else:
-                    self._sandbox.delete()
-                    logger.info("Koyeb: deleted sandbox %s", self._sandbox.id)
+                self._sandbox.delete()
+                logger.info("Koyeb: deleted sandbox %s", self._sandbox.id)
             except Exception as e:
                 logger.warning("Koyeb: cleanup failed: %s", e)
             self._sandbox = None

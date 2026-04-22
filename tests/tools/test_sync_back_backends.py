@@ -10,6 +10,7 @@ import pytest
 from tools.environments import ssh as ssh_env
 from tools.environments import modal as modal_env
 from tools.environments import daytona as daytona_env
+from tools.environments import koyeb as koyeb_env
 from tools.environments.ssh import SSHEnvironment
 
 
@@ -92,6 +93,20 @@ def _make_mock_daytona_env():
     env._persistent = True
     env._task_id = "test"
     env._daytona = MagicMock()
+    return env
+
+
+# ── Koyeb helpers ────────────────────────────────────────────────────
+
+
+def _make_mock_koyeb_env():
+    """Create a minimal KoyebEnvironment without calling __init__."""
+    env = object.__new__(koyeb_env.KoyebEnvironment)
+    env._sandbox = MagicMock()
+    env._remote_home = "/root"
+    env._sync_manager = None
+    env._lock = __import__("threading").Lock()
+    env._task_id = "test"
     return env
 
 
@@ -400,6 +415,69 @@ class TestDaytonaCleanup:
         assert "sync_back" in call_order
         assert "stop" in call_order
         assert call_order.index("sync_back") < call_order.index("stop")
+
+
+# =====================================================================
+# Koyeb bulk download + cleanup
+# =====================================================================
+
+
+class TestKoyebBulkDownload:
+    """Unit tests for _koyeb_bulk_download."""
+
+    def test_koyeb_bulk_download_creates_tar_and_downloads(self, tmp_path):
+        """exec and download_file should both be called."""
+        env = _make_mock_koyeb_env()
+        dest = tmp_path / "backup.tar"
+
+        env._koyeb_bulk_download(dest)
+
+        # exec called twice: tar creation + rm cleanup
+        assert env._sandbox.exec.call_count == 2
+        tar_cmd = env._sandbox.exec.call_args_list[0][0][0]
+        assert "tar cf" in tar_cmd
+        assert "/tmp/.hermes_sync." in tar_cmd
+        assert ".tar" in tar_cmd
+        assert ".hermes" in tar_cmd
+
+        cleanup_cmd = env._sandbox.exec.call_args_list[1][0][0]
+        assert "rm -f" in cleanup_cmd
+
+        env._sandbox.filesystem.download_file.assert_called_once()
+        download_args = env._sandbox.filesystem.download_file.call_args[0]
+        assert download_args[0].startswith("/tmp/.hermes_sync.")
+        assert download_args[1] == str(dest)
+
+    def test_koyeb_bulk_download_uses_remote_home(self, tmp_path):
+        """The tar command should use the env's _remote_home."""
+        env = _make_mock_koyeb_env()
+        env._remote_home = "/home/koyeb"
+        dest = tmp_path / "backup.tar"
+
+        env._koyeb_bulk_download(dest)
+
+        tar_cmd = env._sandbox.exec.call_args_list[0][0][0]
+        assert "home/koyeb/.hermes" in tar_cmd
+
+
+class TestKoyebCleanup:
+    """Verify Koyeb cleanup() calls sync_back() before delete."""
+
+    def test_koyeb_cleanup_calls_sync_back(self):
+        """cleanup() should call sync_back() before sandbox.delete()."""
+        env = _make_mock_koyeb_env()
+
+        call_order = []
+        sync_mgr = MagicMock()
+        sync_mgr.sync_back = lambda: call_order.append("sync_back")
+        env._sync_manager = sync_mgr
+        env._sandbox.delete = lambda: call_order.append("delete")
+
+        env.cleanup()
+
+        assert "sync_back" in call_order
+        assert "delete" in call_order
+        assert call_order.index("sync_back") < call_order.index("delete")
 
 
 # =====================================================================
