@@ -156,6 +156,19 @@ class TestYAMLNormalisation:
         config = {"display": {"platforms": {"telegram": {"show_reasoning": "true"}}}}
         assert resolve_display_setting(config, "telegram", "show_reasoning") is True
 
+    def test_interim_assistant_messages_string_false(self):
+        """String 'false' is normalised to bool False."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {
+                    "feishu": {"interim_assistant_messages": "false"},
+                },
+            },
+        }
+        assert resolve_display_setting(config, "feishu", "interim_assistant_messages") is False
+
     def test_tool_preview_length_string(self):
         """String numbers are normalised to int."""
         from gateway.display_config import resolve_display_setting
@@ -218,6 +231,13 @@ class TestPlatformDefaults:
         from gateway.display_config import resolve_display_setting
 
         assert resolve_display_setting({}, "telegram", "streaming") is None
+
+    def test_interim_assistant_messages_defaults_to_true(self):
+        """Interim assistant messages stay enabled unless explicitly overridden."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "telegram", "interim_assistant_messages") is True
+        assert resolve_display_setting({}, "feishu", "interim_assistant_messages") is True
 
 
 # ---------------------------------------------------------------------------

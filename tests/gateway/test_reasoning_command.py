@@ -62,6 +62,24 @@ class _CapturingAgent:
         }
 
 
+class _ClarifyCaptureAgent:
+    """Fake agent that verifies gateway injected a callable clarify callback."""
+
+    last_clarify_callback = None
+
+    def __init__(self, *args, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, user_message: str, conversation_history=None, task_id=None):
+        type(self).last_clarify_callback = getattr(self, "clarify_callback", None)
+        assert callable(self.clarify_callback)
+        return {
+            "final_response": "clarify-ready",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class TestReasoningCommand:
     @pytest.mark.asyncio
     async def test_reasoning_in_help_output(self):
@@ -166,6 +184,53 @@ class TestReasoningCommand:
         assert result["final_response"] == "ok"
         assert _CapturingAgent.last_init is not None
         assert _CapturingAgent.last_init["reasoning_config"] == {"enabled": True, "effort": "low"}
+
+    def test_run_agent_binds_clarify_callback_before_agent_execution(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("agent:\n  reasoning_effort: low\n", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+        monkeypatch.setattr(gateway_run, "_env_path", hermes_home / ".env")
+        monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            gateway_run,
+            "_resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "openrouter",
+                "api_mode": "chat_completions",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": "test-key",
+            },
+        )
+        fake_run_agent = types.ModuleType("run_agent")
+        fake_run_agent.AIAgent = _ClarifyCaptureAgent
+        monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+        _ClarifyCaptureAgent.last_clarify_callback = None
+        runner = _make_runner()
+
+        source = SessionSource(
+            platform=Platform.LOCAL,
+            chat_id="cli",
+            chat_name="CLI",
+            chat_type="dm",
+            user_id="user-1",
+        )
+
+        result = asyncio.run(
+            runner._run_agent(
+                message="ping",
+                context_prompt="",
+                history=[],
+                source=source,
+                session_id="session-clarify",
+                session_key="agent:main:local:dm",
+            )
+        )
+
+        assert result["final_response"] == "clarify-ready"
+        assert callable(_ClarifyCaptureAgent.last_clarify_callback)
 
     def test_run_agent_includes_enabled_mcp_servers_in_gateway_toolsets(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"

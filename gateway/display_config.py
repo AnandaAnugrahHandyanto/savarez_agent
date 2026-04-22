@@ -33,6 +33,7 @@ from typing import Any
 _GLOBAL_DEFAULTS: dict[str, Any] = {
     "tool_progress": "all",
     "show_reasoning": False,
+    "interim_assistant_messages": True,
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
 }
@@ -182,7 +183,7 @@ def _normalise(setting: str, value: Any) -> Any:
         if value is True:
             return "all"
         return str(value).lower()
-    if setting in ("show_reasoning", "streaming"):
+    if setting in ("show_reasoning", "streaming", "interim_assistant_messages"):
         if isinstance(value, str):
             return value.lower() in ("true", "1", "yes", "on")
         return bool(value)

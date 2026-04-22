@@ -339,6 +339,139 @@ def _expand_whatsapp_auth_aliases(identifier: str) -> set:
 
     return resolved
 
+
+_PM_BACKGROUND_ROOT = _hermes_home / "pm-background"
+
+
+def _pm_background_now_iso() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def _pm_background_clip(value: Any, limit: int = 900) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _pm_background_safe_id(raw: str) -> str:
+    value = re.sub(r"[^\w.\-]+", "_", str(raw or "").strip())
+    return value or "unknown"
+
+
+def _pm_background_write_json(path: Path, payload: Dict[str, Any]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(
+        f".{path.name}.{os.getpid()}.{int(time.time() * 1000)}.tmp"
+    )
+    tmp_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    tmp_path.replace(path)
+    return path
+
+
+def _pm_background_read_json(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _pm_background_pending_dir() -> Path:
+    path = _PM_BACKGROUND_ROOT / "pending"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _pm_background_run_dir(run_id: str) -> Path:
+    path = _PM_BACKGROUND_ROOT / "runs" / _pm_background_safe_id(run_id)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _pm_background_state_path(run_id: str) -> Path:
+    return _pm_background_run_dir(run_id) / "state.json"
+
+
+def _pm_background_events_path(run_id: str) -> Path:
+    return _pm_background_run_dir(run_id) / "events.jsonl"
+
+
+def _pm_background_update_state(run_id: str, **updates: Any) -> Dict[str, Any]:
+    path = _pm_background_state_path(run_id)
+    payload = _pm_background_read_json(path)
+    payload.update({key: value for key, value in updates.items() if value is not None})
+    payload.setdefault("run_id", run_id)
+    payload["updated_at"] = str(updates.get("updated_at") or _pm_background_now_iso())
+    _pm_background_write_json(path, payload)
+    return payload
+
+
+def _pm_background_append_event(run_id: str, event_type: str, message: Any) -> None:
+    path = _pm_background_events_path(run_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "timestamp": _pm_background_now_iso(),
+        "type": str(event_type or "info"),
+        "message": str(message or "").strip(),
+    }
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def _pm_background_executor_env(executor_name: str) -> Dict[str, str]:
+    """Use the real OS home for local coding CLIs that store auth in ~/.*
+
+    Hermes keeps per-profile subprocess HOME isolation by default, which is
+    great for general tool hygiene but breaks existing Codex/Claude/Gemini CLI
+    logins. PM background executor runs are expected to reuse the machine's
+    already-authenticated CLI state, so explicitly opt back into the real HOME
+    for those runs only.
+    """
+    executor = str(executor_name or "").strip().lower()
+    if executor in {"codex", "cc", "gemini"}:
+        return {"HOME": str(Path.home())}
+    return {}
+
+
+def _build_pm_background_executor_message(
+    executor_name: str,
+    prompt: str,
+    run_id: str,
+) -> str:
+    """Wrap PM run prompts in the corresponding reusable Hermes executor skill."""
+    executor = str(executor_name or "").strip().lower()
+    if executor not in {"codex", "cc", "gemini"}:
+        return prompt
+
+    from agent.skill_commands import build_skill_invocation_message
+
+    command_map = {
+        "codex": "/codex",
+        "cc": "/claude-code",
+        "gemini": "/gemini",
+    }
+    runtime_note = (
+        "This invocation was started by PM background execution. Use the repo workdir "
+        "already configured for the run. Keep context lean: do not preload the whole "
+        "repository, read only the files needed for the current task, and summarize "
+        "progress/results instead of dumping long raw logs."
+    )
+    message = build_skill_invocation_message(
+        command_map[executor],
+        prompt,
+        task_id=run_id,
+        runtime_note=runtime_note,
+    )
+    if not message:
+        raise RuntimeError(f"Required executor skill {command_map[executor]} is not available.")
+    return message
+
 logger = logging.getLogger(__name__)
 
 # Sentinel placed into _running_agents immediately when a session starts
@@ -2240,6 +2373,11 @@ class GatewayRunner:
             )
         asyncio.create_task(self._platform_reconnect_watcher())
 
+        # Start PM native background-request watcher.
+        _pm_bg_task = asyncio.create_task(self._pm_background_request_watcher())
+        self._background_tasks.add(_pm_bg_task)
+        _pm_bg_task.add_done_callback(self._background_tasks.discard)
+
         logger.info("Press Ctrl+C to stop")
         
         return True
@@ -3395,6 +3533,10 @@ class GatewayRunner:
                     f"⏳ Agent is running — `/{_cmd_def_inner.name}` can't run "
                     f"mid-turn. Wait for the current response or `/stop` first."
                 )
+
+            from tools.clarify_state import has_blocking_clarify
+            if event.message_type != MessageType.PHOTO and has_blocking_clarify(_quick_key):
+                return await self._handle_clarify_response(event)
 
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key[:20])
@@ -6533,6 +6675,484 @@ class GatewayRunner:
             except Exception:
                 pass
 
+    async def _pm_background_request_watcher(self, interval: float = 1.0) -> None:
+        """Poll for PM-native background requests dropped by shared PM skills."""
+        while True:
+            try:
+                for request_path in sorted(_pm_background_pending_dir().glob("*.json")):
+                    run_id = _pm_background_safe_id(request_path.stem)
+                    run_dir = _pm_background_run_dir(run_id)
+                    claimed_path = run_dir / "request.json"
+
+                    if claimed_path.exists():
+                        try:
+                            request_path.unlink()
+                        except OSError:
+                            pass
+                        continue
+
+                    try:
+                        request_path.replace(claimed_path)
+                    except FileNotFoundError:
+                        continue
+                    except OSError as exc:
+                        logger.debug(
+                            "PM background request claim failed for %s: %s",
+                            request_path,
+                            exc,
+                        )
+                        continue
+
+                    request = _pm_background_read_json(claimed_path)
+                    if not request:
+                        _pm_background_append_event(
+                            run_id,
+                            "error",
+                            "Invalid PM background request payload.",
+                        )
+                        _pm_background_update_state(
+                            run_id,
+                            status="failed",
+                            exit_code=1,
+                            latest_excerpt="Invalid PM background request payload.",
+                        )
+                        continue
+
+                    task = asyncio.create_task(
+                        self._run_pm_background_request(request)
+                    )
+                    self._background_tasks.add(task)
+                    task.add_done_callback(self._background_tasks.discard)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug("PM background watcher error", exc_info=True)
+
+            await asyncio.sleep(interval)
+
+    async def _run_pm_background_request(self, request: Dict[str, Any]) -> None:
+        """Execute a PM-managed background task with gateway-native routing."""
+        from run_agent import AIAgent
+        from tools.approval import (
+            register_gateway_notify,
+            reset_current_session_key,
+            set_current_session_key,
+            unregister_gateway_notify,
+        )
+        from tools.clarify_state import request_gateway_clarify
+        from tools.terminal_tool import (
+            clear_task_env_overrides,
+            register_task_env_overrides,
+        )
+
+        run_id = str(request.get("run_id") or "").strip()
+        prompt = str(request.get("prompt") or "").strip()
+        session_key = str(request.get("session_key") or "").strip()
+        executor_name = str(request.get("executor") or "").strip()
+        task_summary = str(request.get("task_summary") or "").strip()
+        workdir = str(request.get("workdir") or "").strip()
+        source_payload = request.get("source") if isinstance(request.get("source"), dict) else {}
+
+        if not run_id:
+            return
+
+        if not prompt:
+            _pm_background_append_event(run_id, "error", "Missing PM background prompt.")
+            _pm_background_update_state(
+                run_id,
+                status="failed",
+                exit_code=1,
+                latest_excerpt="Missing PM background prompt.",
+            )
+            return
+
+        try:
+            source = SessionSource.from_dict(source_payload)
+        except Exception as exc:
+            _pm_background_append_event(run_id, "error", f"Invalid source metadata: {exc}")
+            _pm_background_update_state(
+                run_id,
+                status="failed",
+                exit_code=1,
+                latest_excerpt="Invalid source metadata for PM background request.",
+            )
+            return
+
+        adapter = self.adapters.get(source.platform)
+        if not adapter:
+            _pm_background_append_event(
+                run_id,
+                "error",
+                f"No adapter for platform {source.platform.value}.",
+            )
+            _pm_background_update_state(
+                run_id,
+                status="failed",
+                exit_code=1,
+                latest_excerpt=f"No adapter for platform {source.platform.value}.",
+            )
+            return
+
+        _status_adapter = adapter
+        _status_chat_id = source.chat_id
+        _status_thread_metadata = {"thread_id": source.thread_id} if source.thread_id else None
+        _loop_for_step = asyncio.get_running_loop()
+
+        def _record_progress(event_type: str, message: Any) -> None:
+            excerpt = _pm_background_clip(message, limit=900)
+            if not excerpt:
+                return
+            _pm_background_append_event(run_id, event_type, excerpt)
+            _pm_background_update_state(
+                run_id,
+                status="running",
+                latest_excerpt=excerpt,
+            )
+
+        def _status_callback_sync(event_type: str, message: str) -> None:
+            _record_progress(event_type or "status", message)
+
+        def _tool_progress_callback(
+            event_type: str,
+            name: str,
+            preview: str,
+            args: Any,
+            **kwargs: Any,
+        ) -> None:
+            del args, kwargs
+            if event_type != "tool.started":
+                return
+            label = str(preview or name or "").strip()
+            if label and name and label != name:
+                message = f"{name}: {label}"
+            else:
+                message = name or label or "tool started"
+            _record_progress(event_type, message)
+
+        def _approval_notify_sync(approval_data: dict) -> None:
+            _status_adapter.pause_typing_for_chat(_status_chat_id)
+            cmd = str(approval_data.get("command") or "").strip()
+            desc = str(approval_data.get("description") or "dangerous command").strip()
+            _record_progress("approval", f"等待授权: {desc}")
+
+            if getattr(type(_status_adapter), "send_exec_approval", None) is not None:
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        _status_adapter.send_exec_approval(
+                            chat_id=_status_chat_id,
+                            command=cmd,
+                            session_key=session_key or run_id,
+                            description=desc,
+                            metadata=_status_thread_metadata,
+                        ),
+                        _loop_for_step,
+                    ).result(timeout=15)
+                    return
+                except Exception as exc:
+                    logger.warning(
+                        "PM background button approval failed, falling back to text: %s",
+                        exc,
+                    )
+
+            cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
+            msg = (
+                f"⚠️ Dangerous command requires approval for `{run_id}`:\n"
+                f"```\n{cmd_preview}\n```\n"
+                f"Reason: {desc}\n\n"
+                "If the approval card did not render, reply `/approve` or `/deny`."
+            )
+            asyncio.run_coroutine_threadsafe(
+                _status_adapter.send(
+                    _status_chat_id,
+                    msg,
+                    metadata=_status_thread_metadata,
+                ),
+                _loop_for_step,
+            ).result(timeout=15)
+
+        def _format_clarify_prompt(question: str, choices: Optional[List[str]]) -> str:
+            lines = [f"❓ `{run_id}` 需要确认", question]
+            if choices:
+                lines.append("")
+                for idx, choice in enumerate(choices, 1):
+                    lines.append(f"{idx}. {choice}")
+                lines.append("")
+                lines.append("请点击卡片或直接回复编号/答案。")
+            else:
+                lines.append("")
+                lines.append("请直接回复你的答案。")
+            return "\n".join(lines)
+
+        def _clarify_callback_sync(question: str, choices: Optional[List[str]]) -> str:
+            _status_adapter.pause_typing_for_chat(_status_chat_id)
+            pending_clarify_id: dict[str, Optional[int]] = {"value": None}
+            _record_progress("clarify", f"等待确认: {question}")
+
+            def _notify_clarify(clarify_data: dict) -> None:
+                pending_clarify_id["value"] = int(clarify_data.get("clarify_id") or 0)
+                if (
+                    clarify_data.get("choices")
+                    and getattr(type(_status_adapter), "send_clarify_card", None) is not None
+                ):
+                    try:
+                        asyncio.run_coroutine_threadsafe(
+                            _status_adapter.send_clarify_card(
+                                chat_id=_status_chat_id,
+                                question=clarify_data.get("question", question),
+                                choices=clarify_data.get("choices") or [],
+                                session_key=session_key or run_id,
+                                clarify_id=int(clarify_data.get("clarify_id") or 0),
+                                metadata=_status_thread_metadata,
+                            ),
+                            _loop_for_step,
+                        ).result(timeout=15)
+                        return
+                    except Exception as exc:
+                        logger.warning(
+                            "PM background clarify card failed, falling back to text: %s",
+                            exc,
+                        )
+
+                asyncio.run_coroutine_threadsafe(
+                    _status_adapter.send(
+                        _status_chat_id,
+                        _format_clarify_prompt(
+                            clarify_data.get("question", question),
+                            clarify_data.get("choices"),
+                        ),
+                        metadata=_status_thread_metadata,
+                    ),
+                    _loop_for_step,
+                ).result(timeout=15)
+
+            try:
+                timeout_seconds = int(os.getenv("HERMES_CLARIFY_TIMEOUT", "900"))
+            except ValueError:
+                timeout_seconds = 900
+
+            try:
+                return request_gateway_clarify(
+                    session_key=session_key or run_id,
+                    question=question,
+                    choices=choices,
+                    notify_callback=_notify_clarify,
+                    timeout_seconds=timeout_seconds,
+                )
+            except Exception:
+                clear_clarify_state = getattr(type(_status_adapter), "clear_clarify_card_state", None)
+                clarify_id = pending_clarify_id.get("value")
+                if clear_clarify_state is not None and clarify_id:
+                    clear_clarify_state(_status_adapter, clarify_id)
+                raise
+
+        _pm_background_update_state(
+            run_id,
+            status="running",
+            session_id=run_id,
+            session_key=session_key or run_id,
+            workdir=workdir,
+            latest_excerpt=f"Started {executor_name or 'background'} task.",
+            started_at=_pm_background_now_iso(),
+        )
+        _pm_background_append_event(
+            run_id,
+            "status",
+            f"Started {executor_name or 'background'} task.",
+        )
+
+        effective_prompt = _build_pm_background_executor_message(
+            executor_name,
+            prompt,
+            run_id,
+        )
+        task_env_overrides: Dict[str, Any] = {}
+        if workdir:
+            task_env_overrides["cwd"] = workdir
+        executor_env = _pm_background_executor_env(executor_name)
+        if executor_env:
+            task_env_overrides["env"] = executor_env
+        if task_env_overrides:
+            register_task_env_overrides(run_id, task_env_overrides)
+
+        try:
+            user_config = _load_gateway_config()
+            model, runtime_kwargs = self._resolve_session_agent_runtime(
+                source=source,
+                user_config=user_config,
+            )
+            if not runtime_kwargs.get("api_key"):
+                message = "No provider credentials configured for PM background task."
+                _pm_background_append_event(run_id, "error", message)
+                _pm_background_update_state(
+                    run_id,
+                    status="failed",
+                    exit_code=1,
+                    latest_excerpt=message,
+                )
+                await adapter.send(
+                    _status_chat_id,
+                    f"❌ `{run_id}` failed: {message}",
+                    metadata=_status_thread_metadata,
+                )
+                return
+
+            platform_key = _platform_config_key(source.platform)
+            from hermes_cli.tools_config import _get_platform_tools
+
+            enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+            pr = self._provider_routing
+            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            reasoning_config = self._load_reasoning_config()
+            self._reasoning_config = reasoning_config
+            self._service_tier = self._load_service_tier()
+            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+
+            def run_sync() -> dict:
+                agent = AIAgent(
+                    model=turn_route["model"],
+                    **turn_route["runtime"],
+                    max_iterations=max_iterations,
+                    quiet_mode=True,
+                    verbose_logging=False,
+                    enabled_toolsets=enabled_toolsets,
+                    reasoning_config=reasoning_config,
+                    service_tier=self._service_tier,
+                    request_overrides=turn_route.get("request_overrides"),
+                    providers_allowed=pr.get("only"),
+                    providers_ignored=pr.get("ignore"),
+                    providers_order=pr.get("order"),
+                    provider_sort=pr.get("sort"),
+                    provider_require_parameters=pr.get("require_parameters", False),
+                    provider_data_collection=pr.get("data_collection"),
+                    session_id=run_id,
+                    platform=platform_key,
+                    user_id=source.user_id,
+                    session_db=self._session_db,
+                    fallback_model=self._fallback_model,
+                )
+                agent.status_callback = _status_callback_sync
+                agent.tool_progress_callback = _tool_progress_callback
+                agent.clarify_callback = _clarify_callback_sync
+
+                approval_session_key = session_key or run_id
+                approval_token = set_current_session_key(approval_session_key)
+                register_gateway_notify(approval_session_key, _approval_notify_sync)
+                try:
+                    return agent.run_conversation(
+                        user_message=effective_prompt,
+                        task_id=run_id,
+                    )
+                finally:
+                    unregister_gateway_notify(approval_session_key)
+                    reset_current_session_key(approval_token)
+
+            result = await _loop_for_step.run_in_executor(None, run_sync)
+            response = str((result or {}).get("final_response") or "").strip()
+            if not response and result and result.get("error"):
+                response = f"Error: {result['error']}"
+
+            final_status = "failed" if (result or {}).get("failed") else "succeeded"
+            exit_code = 1 if final_status == "failed" else 0
+            excerpt = _pm_background_clip(
+                response or "(No response generated)",
+                limit=900,
+            )
+            _pm_background_append_event(run_id, "final", excerpt)
+            _pm_background_update_state(
+                run_id,
+                status=final_status,
+                exit_code=exit_code,
+                latest_excerpt=excerpt,
+                completed_at=_pm_background_now_iso(),
+            )
+            if self._session_db:
+                try:
+                    self._session_db.end_session(
+                        run_id,
+                        f"pm_background_{final_status}",
+                    )
+                except Exception:
+                    logger.debug("Failed to end PM background session %s", run_id, exc_info=True)
+
+            header_lines = [
+                "✅ PM后台任务完成" if final_status == "succeeded" else "❌ PM后台任务失败",
+                f"run_id: `{run_id}`",
+            ]
+            if executor_name:
+                header_lines.append(f"executor: `{executor_name}`")
+            if task_summary:
+                header_lines.append(f"task: {task_summary}")
+            header = "\n".join(header_lines) + "\n\n"
+
+            if response:
+                media_files, response = adapter.extract_media(response)
+                images, text_content = adapter.extract_images(response)
+
+                if text_content:
+                    await adapter.send(
+                        chat_id=_status_chat_id,
+                        content=header + text_content,
+                        metadata=_status_thread_metadata,
+                    )
+                elif not images and not media_files:
+                    await adapter.send(
+                        chat_id=_status_chat_id,
+                        content=header + "(No response generated)",
+                        metadata=_status_thread_metadata,
+                    )
+
+                for image_url, alt_text in (images or []):
+                    try:
+                        await adapter.send_image(
+                            chat_id=_status_chat_id,
+                            image_url=image_url,
+                            caption=alt_text,
+                        )
+                    except Exception:
+                        pass
+
+                for media_path in (media_files or []):
+                    try:
+                        await adapter.send_document(
+                            chat_id=_status_chat_id,
+                            file_path=media_path,
+                        )
+                    except Exception:
+                        pass
+            else:
+                await adapter.send(
+                    chat_id=_status_chat_id,
+                    content=header + "(No response generated)",
+                    metadata=_status_thread_metadata,
+                )
+
+        except Exception as exc:
+            logger.exception("PM background task %s failed", run_id)
+            message = _pm_background_clip(str(exc), limit=900) or "unknown error"
+            _pm_background_append_event(run_id, "error", message)
+            _pm_background_update_state(
+                run_id,
+                status="failed",
+                exit_code=1,
+                latest_excerpt=message,
+                completed_at=_pm_background_now_iso(),
+            )
+            if self._session_db:
+                try:
+                    self._session_db.end_session(run_id, "pm_background_failed")
+                except Exception:
+                    logger.debug("Failed to end PM background session %s", run_id, exc_info=True)
+            try:
+                await adapter.send(
+                    chat_id=_status_chat_id,
+                    content=f"❌ PM后台任务 `{run_id}` 失败：{message}",
+                    metadata=_status_thread_metadata,
+                )
+            except Exception:
+                pass
+        finally:
+            clear_task_env_overrides(run_id)
+
     async def _handle_btw_command(self, event: MessageEvent) -> str:
         """Handle /btw <question> — ephemeral side question in the same chat."""
         question = event.get_command_args().strip()
@@ -7599,6 +8219,38 @@ class GatewayRunner:
         count_msg = f" ({count} commands)" if count > 1 else ""
         logger.info("User denied %d dangerous command(s) via /deny", count)
         return f"❌ Command{'s' if count > 1 else ''} denied{count_msg}."
+
+    async def _handle_clarify_response(self, event: MessageEvent) -> str:
+        """Handle a user reply for a pending gateway clarify prompt."""
+        source = event.source
+        session_key = self._session_key_for_source(source)
+
+        from tools.clarify_state import (
+            has_blocking_clarify,
+            peek_pending_clarify,
+            resolve_gateway_clarify,
+        )
+
+        if not has_blocking_clarify(session_key):
+            return "当前没有待回答的问题。"
+
+        response_text = (event.text or "").strip()
+        if not response_text:
+            return "请回复选项编号、选项文字，或直接输入你的答案。"
+
+        pending = peek_pending_clarify(session_key)
+        count = resolve_gateway_clarify(session_key, response_text)
+        if not count:
+            return "当前没有待回答的问题。"
+
+        _adapter = self.adapters.get(source.platform)
+        if _adapter:
+            clear_clarify_state = getattr(type(_adapter), "clear_clarify_card_state", None)
+            if pending and clear_clarify_state is not None:
+                clear_clarify_state(_adapter, int(pending["clarify_id"]))
+            _adapter.resume_typing_for_chat(source.chat_id)
+
+        return "✅ 已收到你的选择，继续处理中..."
 
     # Platforms where /update is allowed.  ACP, API server, and webhooks are
     # programmatic interfaces that should not trigger system updates.
@@ -9213,12 +9865,15 @@ class GatewayRunner:
         # Natural assistant status messages are intentionally independent from
         # tool progress and token streaming. Users can keep tool_progress quiet
         # in chat platforms while opting into concise mid-turn updates.
+        _resolved_interim_messages = resolve_display_setting(
+            user_config,
+            platform_key,
+            "interim_assistant_messages",
+            True,
+        )
         interim_assistant_messages_enabled = (
             source.platform != Platform.WEBHOOK
-            and is_truthy_value(
-                display_config.get("interim_assistant_messages"),
-                default=True,
-            )
+            and is_truthy_value(_resolved_interim_messages, default=True)
         )
         
         # Queue for progress messages (thread-safe)
@@ -9920,6 +10575,88 @@ class GatewayRunner:
                     ).result(timeout=15)
                 except Exception as _e:
                     logger.error("Failed to send approval request: %s", _e)
+
+            def _format_clarify_prompt(question: str, choices: Optional[List[str]]) -> str:
+                lines = ["❓ **请先确认**", question]
+                if choices:
+                    lines.append("")
+                    for idx, choice in enumerate(choices, 1):
+                        lines.append(f"{idx}. {choice}")
+                    lines.append("")
+                    lines.append("请回复编号、选项文字，或直接输入你的答案。")
+                else:
+                    lines.append("")
+                    lines.append("请直接回复你的答案，我们再继续。")
+                return "\n".join(lines)
+
+            def _clarify_callback_sync(question: str, choices: Optional[List[str]]) -> str:
+                """Block the agent thread until the user answers a clarify prompt."""
+                if not _status_adapter:
+                    raise RuntimeError("Clarify is unavailable without a messaging adapter.")
+
+                _status_adapter.pause_typing_for_chat(_status_chat_id)
+
+                from tools.clarify_state import request_gateway_clarify
+                pending_clarify_id: dict[str, Optional[int]] = {"value": None}
+
+                def _notify_clarify(clarify_data: dict) -> None:
+                    pending_clarify_id["value"] = int(clarify_data.get("clarify_id") or 0)
+                    if (
+                        clarify_data.get("choices")
+                        and getattr(type(_status_adapter), "send_clarify_card", None) is not None
+                    ):
+                        try:
+                            asyncio.run_coroutine_threadsafe(
+                                _status_adapter.send_clarify_card(
+                                    chat_id=_status_chat_id,
+                                    question=clarify_data.get("question", question),
+                                    choices=clarify_data.get("choices") or [],
+                                    session_key=session_key or "",
+                                    clarify_id=int(clarify_data.get("clarify_id") or 0),
+                                    metadata=_status_thread_metadata,
+                                ),
+                                _loop_for_step,
+                            ).result(timeout=15)
+                            return
+                        except Exception as _e:
+                            logger.warning(
+                                "Button-based clarify failed, falling back to text: %s", _e
+                            )
+
+                    msg = _format_clarify_prompt(
+                        clarify_data.get("question", question),
+                        clarify_data.get("choices"),
+                    )
+                    asyncio.run_coroutine_threadsafe(
+                        _status_adapter.send(
+                            _status_chat_id,
+                            msg,
+                            metadata=_status_thread_metadata,
+                        ),
+                        _loop_for_step,
+                    ).result(timeout=15)
+
+                try:
+                    timeout_seconds = int(os.getenv("HERMES_CLARIFY_TIMEOUT", "900"))
+                except ValueError:
+                    timeout_seconds = 900
+
+                try:
+                    return request_gateway_clarify(
+                        session_key=session_key or "",
+                        question=question,
+                        choices=choices,
+                        notify_callback=_notify_clarify,
+                        timeout_seconds=timeout_seconds,
+                    )
+                except Exception:
+                    clear_clarify_state = getattr(type(_status_adapter), "clear_clarify_card_state", None)
+                    clarify_id = pending_clarify_id.get("value")
+                    if clear_clarify_state is not None and clarify_id:
+                        clear_clarify_state(_status_adapter, clarify_id)
+                    raise
+
+            agent.clarify_callback = _clarify_callback_sync
 
             # Prepend pending model switch note so the model knows about the switch
             _pending_notes = getattr(self, '_pending_model_notes', {})
@@ -10673,21 +11410,25 @@ class GatewayRunner:
         if isinstance(response, dict) and not response.get("failed"):
             _final = response.get("final_response") or ""
             _is_empty_sentinel = not _final or _final == "(empty)"
-            _streamed = bool(
-                _sc and getattr(_sc, "final_response_sent", False)
+            _already_streamed = bool(
+                _sc
+                and (
+                    getattr(_sc, "final_response_sent", False)
+                    or getattr(_sc, "already_sent", False)
+                )
             )
             # response_previewed means the interim_assistant_callback already
             # sent the final text via the adapter (non-streaming path).
             _previewed = bool(response.get("response_previewed"))
-            if not _is_empty_sentinel and (_streamed or _previewed):
+            if not _is_empty_sentinel and (_already_streamed or _previewed):
                 logger.info(
                     "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s).",
                     session_key[:20] if session_key else "?",
-                    _streamed,
+                    _already_streamed,
                     _previewed,
                 )
                 response["already_sent"] = True
-        
+
         return response
 
 

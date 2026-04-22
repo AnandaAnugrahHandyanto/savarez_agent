@@ -191,6 +191,7 @@ _APPROVAL_LABEL_MAP: Dict[str, str] = {
     "always": "Approved permanently",
     "deny": "Denied",
 }
+_CLARIFY_ACTION = "clarify_choice"
 _FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent message IDs
 _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
 
@@ -305,6 +306,7 @@ class FeishuAdapterSettings:
     connection_mode: str
     encrypt_key: str
     verification_token: str
+    require_mention: bool
     group_policy: str
     allowed_group_users: frozenset[str]
     bot_open_id: str
@@ -437,6 +439,20 @@ def _coerce_int(value: Any, default: Optional[int] = None, min_value: int = 0) -
 def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
     parsed = _coerce_int(value, default=default, min_value=min_value)
     return default if parsed is None else parsed
+
+
+def _coerce_bool(value: Any, default: bool) -> bool:
+    """Coerce common truthy/falsey values to bool."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
 
 
 # ---------------------------------------------------------------------------
@@ -1153,6 +1169,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._pending_media_batch_tasks = self._media_batch_state.tasks
         # Exec approval button state (approval_id → {session_key, message_id, chat_id})
         self._approval_state: Dict[int, Dict[str, str]] = {}
+        self._clarify_state: Dict[int, Dict[str, str]] = {}
         self._approval_counter = itertools.count(1)
         # Feishu reaction deletion requires the opaque reaction_id returned
         # by create, so we cache it per message_id.
@@ -1190,6 +1207,10 @@ class FeishuAdapter(BasePlatformAdapter):
             ).strip().lower(),
             encrypt_key=os.getenv("FEISHU_ENCRYPT_KEY", "").strip(),
             verification_token=os.getenv("FEISHU_VERIFICATION_TOKEN", "").strip(),
+            require_mention=_coerce_bool(
+                extra.get("require_mention", os.getenv("FEISHU_REQUIRE_MENTION")),
+                default=True,
+            ),
             group_policy=os.getenv("FEISHU_GROUP_POLICY", "allowlist").strip().lower(),
             allowed_group_users=frozenset(
                 item.strip()
@@ -1246,6 +1267,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._connection_mode = settings.connection_mode
         self._encrypt_key = settings.encrypt_key
         self._verification_token = settings.verification_token
+        self._require_mention = settings.require_mention
         self._group_policy = settings.group_policy
         self._allowed_group_users = set(settings.allowed_group_users)
         self._admins = set(settings.admins)
@@ -1583,6 +1605,75 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.warning("[Feishu] send_exec_approval failed: %s", exc)
             return SendResult(success=False, error=str(exc))
 
+    async def send_clarify_card(
+        self,
+        chat_id: str,
+        question: str,
+        choices: List[str],
+        session_key: str,
+        clarify_id: int,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an interactive card for a multiple-choice clarify prompt."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            trimmed_choices = [str(choice).strip() for choice in choices if str(choice).strip()]
+            if not trimmed_choices:
+                return SendResult(success=False, error="No clarify choices provided")
+
+            def _btn(choice: str) -> dict:
+                label = choice if len(choice) <= 40 else choice[:37] + "..."
+                return {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": label},
+                    "value": {
+                        "hermes_action": _CLARIFY_ACTION,
+                        "clarify_id": clarify_id,
+                        "choice": choice,
+                    },
+                }
+
+            question_preview = question[:3000] + "..." if len(question) > 3000 else question
+            card = {
+                "config": {"wide_screen_mode": True},
+                "header": {
+                    "title": {"content": "❓ 请先确认", "tag": "plain_text"},
+                    "template": "blue",
+                },
+                "elements": [
+                    {"tag": "markdown", "content": question_preview},
+                    {"tag": "action", "actions": [_btn(choice) for choice in trimmed_choices]},
+                    {
+                        "tag": "markdown",
+                        "content": "_如果你想自己输入答案，也可以直接在聊天里回复。_",
+                    },
+                ],
+            }
+
+            payload = json.dumps(card, ensure_ascii=False)
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=payload,
+                reply_to=None,
+                metadata=metadata,
+            )
+
+            result = self._finalize_send_result(response, "send_clarify_card failed")
+            if result.success:
+                self._clarify_state[clarify_id] = {
+                    "session_key": session_key,
+                    "message_id": result.message_id or "",
+                    "chat_id": chat_id,
+                    "question": question_preview,
+                }
+            return result
+        except Exception as exc:
+            logger.warning("[Feishu] send_clarify_card failed: %s", exc)
+            return SendResult(success=False, error=str(exc))
+
     @staticmethod
     def _build_resolved_approval_card(*, choice: str, user_name: str) -> Dict[str, Any]:
         """Build raw card JSON for a resolved approval action."""
@@ -1598,6 +1689,32 @@ class FeishuAdapter(BasePlatformAdapter):
                 {
                     "tag": "markdown",
                     "content": f"{icon} **{label}** by {user_name}",
+                },
+            ],
+        }
+
+    @staticmethod
+    def _build_resolved_clarify_card(
+        *,
+        question: str,
+        choice: str,
+        user_name: str,
+    ) -> Dict[str, Any]:
+        """Build raw card JSON for a resolved clarify action."""
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": "✅ 已完成选择", "tag": "plain_text"},
+                "template": "green",
+            },
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": (
+                        f"**问题：** {question or '未知问题'}\n\n"
+                        f"**选择：** {choice}\n\n"
+                        f"**选择人：** {user_name}"
+                    ),
                 },
             ],
         }
@@ -2102,8 +2219,10 @@ class FeishuAdapter(BasePlatformAdapter):
         action_value = getattr(action, "value", {}) or {}
         hermes_action = action_value.get("hermes_action") if isinstance(action_value, dict) else None
 
-        if hermes_action:
+        if hermes_action in _APPROVAL_CHOICE_MAP:
             return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
+        if hermes_action == _CLARIFY_ACTION:
+            return self._handle_clarify_card_action(event=event, action_value=action_value, loop=loop)
 
         self._submit_on_loop(loop, self._handle_card_action_event(data))
         if P2CardActionTriggerResponse is None:
@@ -2144,6 +2263,35 @@ class FeishuAdapter(BasePlatformAdapter):
             response.card = card
         return response
 
+    def _handle_clarify_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
+        """Schedule clarify resolution and build the synchronous callback response."""
+        clarify_id = action_value.get("clarify_id")
+        choice = str(action_value.get("choice", "") or "").strip()
+        if clarify_id is None or not choice:
+            logger.debug("[Feishu] Card action missing clarify_id or choice, ignoring")
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        operator = getattr(event, "operator", None)
+        open_id = str(getattr(operator, "open_id", "") or "")
+        user_name = self._get_cached_sender_name(open_id) or open_id
+        state = self._clarify_state.get(clarify_id, {})
+
+        self._submit_on_loop(loop, self._resolve_clarify(clarify_id, choice, user_name))
+
+        if P2CardActionTriggerResponse is None:
+            return None
+        response = P2CardActionTriggerResponse()
+        if CallBackCard is not None:
+            card = CallBackCard()
+            card.type = "raw"
+            card.data = self._build_resolved_clarify_card(
+                question=state.get("question", ""),
+                choice=choice,
+                user_name=user_name,
+            )
+            response.card = card
+        return response
+
     async def _resolve_approval(self, approval_id: Any, choice: str, user_name: str) -> None:
         """Pop approval state and unblock the waiting agent thread."""
         state = self._approval_state.pop(approval_id, None)
@@ -2159,6 +2307,32 @@ class FeishuAdapter(BasePlatformAdapter):
             )
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Feishu button: %s", exc)
+
+    async def _resolve_clarify(self, clarify_id: Any, choice: str, user_name: str) -> None:
+        """Pop clarify state and unblock the waiting agent thread."""
+        state = self._clarify_state.pop(clarify_id, None)
+        if not state:
+            logger.debug("[Feishu] Clarify %s already resolved or unknown", clarify_id)
+            return
+        try:
+            from tools.clarify_state import resolve_gateway_clarify
+
+            count = resolve_gateway_clarify(
+                state["session_key"],
+                choice,
+                clarify_id=int(clarify_id),
+            )
+            self.resume_typing_for_chat(state["chat_id"])
+            logger.info(
+                "Feishu button resolved %d clarify prompt(s) for session %s (choice=%s, user=%s)",
+                count, state["session_key"], choice, user_name,
+            )
+        except Exception as exc:
+            logger.error("Failed to resolve gateway clarify from Feishu button: %s", exc)
+
+    def clear_clarify_card_state(self, clarify_id: int) -> None:
+        """Forget stored clarify card state after text fallback or timeout cleanup."""
+        self._clarify_state.pop(int(clarify_id), None)
 
     async def _handle_reaction_event(self, event_type: str, data: Any) -> None:
         """Fetch the reacted-to message; if it was sent by this bot, emit a synthetic text event."""
@@ -3376,6 +3550,8 @@ class FeishuAdapter(BasePlatformAdapter):
         """Require an explicit @mention before group messages enter the agent."""
         if not self._allow_group_message(sender_id, chat_id):
             return False
+        if not self._require_mention:
+            return True
         # @_all is Feishu's @everyone placeholder — always route to the bot.
         raw_content = getattr(message, "content", "") or ""
         if "@_all" in raw_content:

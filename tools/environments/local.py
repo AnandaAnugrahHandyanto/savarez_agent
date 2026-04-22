@@ -107,6 +107,36 @@ def _build_provider_env_blocklist() -> frozenset:
 _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 
 
+def _inject_gateway_session_env(target: dict[str, str]) -> None:
+    """Forward gateway session metadata into terminal subprocesses.
+
+    Gateway session state moved from ``os.environ`` to contextvars, which keeps
+    concurrent chats isolated but means external helper scripts no longer see
+    ``HERMES_SESSION_*`` automatically. Rehydrate the active values here so
+    shared PM/helper scripts can discover the current platform/chat/session.
+    """
+    try:
+        from gateway.session_context import get_session_env
+    except Exception:
+        return
+
+    for key in (
+        "HERMES_SESSION_PLATFORM",
+        "HERMES_SESSION_CHAT_ID",
+        "HERMES_SESSION_CHAT_NAME",
+        "HERMES_SESSION_THREAD_ID",
+        "HERMES_SESSION_USER_ID",
+        "HERMES_SESSION_USER_NAME",
+        "HERMES_SESSION_KEY",
+    ):
+        try:
+            value = str(get_session_env(key, "") or "").strip()
+        except Exception:
+            value = ""
+        if value:
+            target[key] = value
+
+
 def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
     """Filter Hermes-managed secrets from a subprocess environment."""
     try:
@@ -115,6 +145,7 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
         _is_passthrough = lambda _: False  # noqa: E731
 
     sanitized: dict[str, str] = {}
+    explicit_home = "HOME" in (extra_env or {})
 
     for key, value in (base_env or {}).items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
@@ -132,9 +163,10 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     # Per-profile HOME isolation for background processes (same as _make_run_env).
     from hermes_constants import get_subprocess_home
     _profile_home = get_subprocess_home()
-    if _profile_home:
+    if _profile_home and not explicit_home:
         sanitized["HOME"] = _profile_home
 
+    _inject_gateway_session_env(sanitized)
     return sanitized
 
 
@@ -190,6 +222,8 @@ def _make_run_env(env: dict) -> dict:
     except Exception:
         _is_passthrough = lambda _: False  # noqa: E731
 
+    env = dict(env or {})
+    explicit_home = "HOME" in env
     merged = dict(os.environ | env)
     run_env = {}
     for k, v in merged.items():
@@ -207,9 +241,10 @@ def _make_run_env(env: dict) -> dict:
     # subprocess sees the override — the Python process keeps the real HOME.
     from hermes_constants import get_subprocess_home
     _profile_home = get_subprocess_home()
-    if _profile_home:
+    if _profile_home and not explicit_home:
         run_env["HOME"] = _profile_home
 
+    _inject_gateway_session_env(run_env)
     return run_env
 
 
@@ -293,8 +328,14 @@ class LocalEnvironment(BaseEnvironment):
     """
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
-        super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
+        initial_cwd = cwd or os.getcwd()
+        super().__init__(cwd=initial_cwd, timeout=timeout, env=env)
         self.init_session()
+        # init_session captures the login shell's current directory, which is
+        # often the gateway/profile cwd rather than the caller's requested
+        # workspace. Restore the requested cwd so subsequent execute() calls
+        # still honor per-task workdir overrides.
+        self.cwd = initial_cwd
 
     def get_temp_dir(self) -> str:
         """Return a shell-safe writable temp dir for local execution.

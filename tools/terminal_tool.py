@@ -750,6 +750,7 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
         - modal_image: str -- Path to Dockerfile or Docker Hub image name
         - docker_image: str -- Docker image name
         - cwd: str -- Working directory inside the sandbox
+        - env: dict[str, str] -- Explicit subprocess environment overrides
 
     Args:
         task_id: The rollout's unique task identifier
@@ -894,6 +895,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
         Environment instance with execute() method
     """
     cc = container_config or {}
+    lc = local_config or {}
     cpu = cc.get("container_cpu", 1)
     memory = cc.get("container_memory", 5120)
     disk = cc.get("container_disk", 51200)
@@ -901,9 +903,10 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     volumes = cc.get("docker_volumes", [])
     docker_forward_env = cc.get("docker_forward_env", [])
     docker_env = cc.get("docker_env", {})
+    local_env = lc.get("env", {})
 
     if env_type == "local":
-        return _LocalEnvironment(cwd=cwd, timeout=timeout)
+        return _LocalEnvironment(cwd=cwd, timeout=timeout, env=local_env)
     
     elif env_type == "docker":
         return _DockerEnvironment(
@@ -1415,6 +1418,7 @@ def terminal_tool(
         # Check per-task overrides (set by environments like TerminalBench2Env)
         # before falling back to global env var config
         overrides = _task_env_overrides.get(effective_task_id, {})
+        override_env = overrides.get("env") if isinstance(overrides.get("env"), dict) else {}
         
         # Select image based on env type, with per-task override support
         if env_type == "docker":
@@ -1516,6 +1520,7 @@ def terminal_tool(
                         if env_type == "local":
                             local_config = {
                                 "persistent": config.get("local_persistent", False),
+                                "env": override_env,
                             }
 
                         new_env = _create_environment(
@@ -1542,6 +1547,9 @@ def terminal_tool(
                         _last_activity[effective_task_id] = time.time()
                         env = new_env
                     logger.info("%s environment ready for task %s", env_type, effective_task_id[:8])
+
+        if override_env and hasattr(env, "env") and isinstance(getattr(env, "env", None), dict):
+            env.env.update(override_env)
 
         # Pre-exec security checks (tirith + dangerous command detection)
         # Skip check if force=True (user has confirmed they want to run it)

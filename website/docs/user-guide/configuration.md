@@ -992,6 +992,17 @@ Platforms without an override fall back to the global `tool_progress` value. Val
 
 `interim_assistant_messages` is gateway-only. When enabled, Hermes sends completed mid-turn assistant updates as separate chat messages. This is independent from `tool_progress` and does not require gateway streaming.
 
+You can also disable those natural mid-turn status messages for just one platform:
+
+```yaml
+display:
+  interim_assistant_messages: true
+  platforms:
+    feishu:
+      tool_progress: off
+      interim_assistant_messages: false
+```
+
 ## Privacy
 
 ```yaml
