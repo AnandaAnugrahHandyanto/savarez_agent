@@ -245,6 +245,14 @@ TOOL_CATEGORIES = {
                 ],
             },
             {
+                "name": "Metaso",
+                "tag": "Chinese-optimized web search and content extraction",
+                "web_backend": "metaso",
+                "env_vars": [
+                    {"key": "METASO_API_KEY", "prompt": "Metaso API key", "url": "https://metaso.cn"},
+                ],
+            },
+            {
                 "name": "Firecrawl Self-Hosted",
                 "badge": "free · self-hosted",
                 "tag": "Run your own Firecrawl instance (Docker)",
