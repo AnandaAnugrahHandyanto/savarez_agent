@@ -11211,13 +11211,6 @@ class GatewayRunner:
                 # new message).
 
                 updated_history = result.get("messages", history)
-                # Strip any dangling user message at the end of updated_history.
-                # When an interrupt fires mid-turn the interrupted user message
-                # may already be appended; passing it through would create two
-                # consecutive user messages and break strict role-alternation
-                # chat templates (e.g. gemma / local models → HTTP 500).
-                while updated_history and updated_history[-1].get("role") == "user":
-                    updated_history = updated_history[:-1]
                 next_source = source
                 next_message = pending
                 next_message_id = None
