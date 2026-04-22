@@ -781,5 +781,34 @@
       "thread_id": "1776762410.533729",
       "chat_topic": null
     }
+  },
+  "agent:main:slack:group:C0APZA7B1DH:1776819266.015079": {
+    "session_key": "agent:main:slack:group:C0APZA7B1DH:1776819266.015079",
+    "session_id": "20260422_005427_557b5676",
+    "created_at": "2026-04-22T00:54:27.265759",
+    "updated_at": "2026-04-22T00:56:38.183006",
+    "display_name": "C0APZA7B1DH",
+    "platform": "slack",
+    "chat_type": "group",
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cache_read_tokens": 0,
+    "cache_write_tokens": 0,
+    "total_tokens": 0,
+    "last_prompt_tokens": 19513,
+    "estimated_cost_usd": 0.0,
+    "cost_status": "unknown",
+    "memory_flushed": false,
+    "suspended": false,
+    "origin": {
+      "platform": "slack",
+      "chat_id": "C0APZA7B1DH",
+      "chat_name": "C0APZA7B1DH",
+      "chat_type": "group",
+      "user_id": "U083T2U07HV",
+      "user_name": "\ud5c8\uc608\ucc2c",
+      "thread_id": "1776819266.015079",
+      "chat_topic": null
+    }
   }
 }
