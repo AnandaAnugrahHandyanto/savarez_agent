@@ -1866,8 +1866,29 @@ class GatewayRunner:
 
         current_pid = os.getpid()
         cmd = " ".join(shlex.quote(part) for part in hermes_cmd)
+        
+        # 清理旧进程的脚本：在启动新网关前，先清理所有旧的 Hermes/Gateway 进程
+        # 第一步：尝试优雅关闭所有其他 Hermes 进程
+        # 第二步：等待一段时间让它们自行退出
+        # 第三步：强制杀掉仍未退出的进程
+        cleanup_script = r"""
+            echo "=== Hermes 进程清理 ==="
+            for pid in $(ps aux | grep -E 'hermes|gateway' | grep -v grep | grep -v """ + str(current_pid) + r""" | grep -v 'cleanup_hermes' | awk '{print $2}'); do
+                echo "发送 SIGTERM 到 PID $pid"
+                kill -TERM "$pid" 2>/dev/null || true
+            done
+            echo "等待进程自行退出..."
+            sleep 3
+            for pid in $(ps aux | grep -E 'hermes|gateway' | grep -v grep | grep -v """ + str(current_pid) + r""" | grep -v 'cleanup_hermes' | awk '{print $2}'); do
+                echo "强制杀掉 PID $pid"
+                kill -9 "$pid" 2>/dev/null || true
+            done
+            echo "=== 清理完成 ==="
+        """
+        
         shell_cmd = (
             f"while kill -0 {current_pid} 2>/dev/null; do sleep 0.2; done; "
+            f"{cleanup_script}; "
             f"{cmd} gateway restart"
         )
         setsid_bin = shutil.which("setsid")
