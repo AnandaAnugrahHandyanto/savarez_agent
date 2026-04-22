@@ -669,16 +669,27 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
     existing_toolsets = config.get("platform_toolsets", {}).get(platform, [])
     if not isinstance(existing_toolsets, list):
         existing_toolsets = []
+    existing_toolsets = [str(entry) for entry in existing_toolsets]
+    normalized_enabled = {str(entry) for entry in enabled_toolset_keys}
+
+    enabled_mcp_servers = {
+        str(name)
+        for name, server_cfg in (config.get("mcp_servers") or {}).items()
+        if isinstance(server_cfg, dict)
+        and _parse_enabled_flag(server_cfg.get("enabled", True), default=True)
+    }
+    selected_mcp_servers = normalized_enabled & enabled_mcp_servers
 
     # Preserve any entries that are NOT configurable toolsets and NOT platform
     # defaults (i.e. only MCP server names should be preserved)
     preserved_entries = {
         entry for entry in existing_toolsets
+        if not (entry == "no_mcp" and selected_mcp_servers)
         if entry not in configurable_keys and entry not in platform_default_keys
     }
 
     # Merge preserved entries with new enabled toolsets
-    config["platform_toolsets"][platform] = sorted(enabled_toolset_keys | preserved_entries)
+    config["platform_toolsets"][platform] = sorted(normalized_enabled | preserved_entries)
 
     # Track which plugin toolsets are "known" for this platform so we can
     # distinguish "new plugin, default enabled" from "user disabled it".

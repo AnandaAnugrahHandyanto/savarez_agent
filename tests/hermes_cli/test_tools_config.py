@@ -343,6 +343,38 @@ def test_save_platform_tools_still_preserves_mcp_with_platform_default_present()
     assert "terminal" not in saved
 
 
+def test_save_platform_tools_reenabling_mcp_clears_no_mcp_sentinel():
+    """Selecting an MCP server should drop any stale no_mcp sentinel."""
+    config = {
+        "platform_toolsets": {"cli": ["web", "no_mcp"]},
+        "mcp_servers": {"exa": {"url": "https://mcp.exa.ai/mcp"}},
+    }
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", {"web", "exa"})
+
+    saved = config["platform_toolsets"]["cli"]
+
+    assert "exa" in saved
+    assert "web" in saved
+    assert "no_mcp" not in saved
+    assert sorted(_get_platform_tools(config, "cli")) == ["exa", "web"]
+
+
+def test_save_platform_tools_normalizes_numeric_entries_before_sorting():
+    """Save path should stringify numeric YAML names before sorting/preserving."""
+    config = {
+        "platform_toolsets": {"cli": ["web", 12306]},
+    }
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", {"web"})
+
+    saved = config["platform_toolsets"]["cli"]
+    assert saved == ["12306", "web"]
+    assert all(isinstance(name, str) for name in saved)
+
+
 def test_visible_providers_include_nous_subscription_when_logged_in(monkeypatch):
     monkeypatch.setattr("hermes_cli.tools_config.managed_nous_tools_enabled", lambda: True)
     config = {"model": {"provider": "nous"}}
