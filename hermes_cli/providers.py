@@ -191,7 +191,7 @@ class ProviderDef:
 
 ALIASES: Dict[str, str] = {
     # openrouter
-    "openai": "openrouter",     # bare "openai" → route through aggregator
+    "openrouter": "openrouter",
 
     # zai
     "glm": "zai",
