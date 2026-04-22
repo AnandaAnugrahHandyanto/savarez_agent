@@ -155,6 +155,52 @@ class TestResolveProviderClientNamedCustom:
         assert client is None
 
 
+class TestResolveProviderClientNamedCustomApiMode:
+    """Named custom providers should honor configured api_mode transports."""
+
+    def test_named_custom_provider_wraps_codex_responses(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"default": "gpt-5.4"},
+            "custom_providers": [
+                {
+                    "name": "beans",
+                    "base_url": "http://beans.local/v1",
+                    "api_key": "***",
+                    "api_mode": "codex_responses",
+                },
+            ],
+        })
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client, CodexAuxiliaryClient
+
+            client, model = resolve_provider_client("beans", "gpt-5.4")
+
+        assert isinstance(client, CodexAuxiliaryClient)
+        assert model == "gpt-5.4"
+
+    def test_named_custom_provider_wraps_anthropic_messages(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"default": "claude-sonnet-4-6"},
+            "custom_providers": [
+                {
+                    "name": "beans",
+                    "base_url": "https://api.minimax.io/anthropic",
+                    "api_key": "***",
+                    "api_mode": "anthropic_messages",
+                },
+            ],
+        })
+        with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
+            mock_build.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client, AnthropicAuxiliaryClient
+
+            client, model = resolve_provider_client("beans", "claude-sonnet-4-6")
+
+        assert isinstance(client, AnthropicAuxiliaryClient)
+        assert model == "claude-sonnet-4-6"
+
+
 class TestResolveProviderClientModelNormalization:
     """Direct-provider auxiliary routing should normalize models like main runtime."""
 

@@ -1684,6 +1684,25 @@ def resolve_provider_client(
                 model or _read_main_model() or "gpt-4o-mini",
                 provider,
             )
+            if api_mode == "anthropic_messages":
+                try:
+                    from agent.anthropic_adapter import build_anthropic_client
+                    real_client = build_anthropic_client(custom_key, custom_base)
+                except ImportError:
+                    logger.warning(
+                        "Explicit custom endpoint declares api_mode=anthropic_messages but the "
+                        "anthropic SDK is not installed — falling back to OpenAI-wire."
+                    )
+                else:
+                    client = AnthropicAuxiliaryClient(
+                        real_client,
+                        final_model,
+                        custom_key,
+                        custom_base,
+                        is_oauth=False,
+                    )
+                    return (_to_async_client(client, final_model) if async_mode
+                            else (client, final_model))
             extra = {}
             if base_url_host_matches(custom_base, "api.kimi.com"):
                 extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
@@ -1724,13 +1743,27 @@ def resolve_provider_client(
                     model or custom_entry.get("model") or _read_main_model() or "gpt-4o-mini",
                     provider,
                 )
-                client = OpenAI(api_key=custom_key, base_url=custom_base)
-                client = _wrap_if_needed(client, final_model, custom_base)
+                resolved_api_mode = (
+                    str(api_mode or "").strip()
+                    or str(custom_entry.get("api_mode") or "").strip()
+                    or None
+                )
                 logger.debug(
-                    "resolve_provider_client: named custom provider %r (%s)",
-                    provider, final_model)
-                return (_to_async_client(client, final_model) if async_mode
-                        else (client, final_model))
+                    "resolve_provider_client: named custom provider %r (%s, api_mode=%s)",
+                    provider,
+                    final_model,
+                    resolved_api_mode or "chat_completions",
+                )
+                return resolve_provider_client(
+                    "custom",
+                    final_model,
+                    async_mode=async_mode,
+                    raw_codex=raw_codex,
+                    explicit_base_url=custom_base,
+                    explicit_api_key=custom_key,
+                    api_mode=resolved_api_mode,
+                    main_runtime=main_runtime,
+                )
             logger.warning(
                 "resolve_provider_client: named custom provider %r has no base_url",
                 provider)
