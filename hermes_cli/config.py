@@ -483,6 +483,7 @@ DEFAULT_CONFIG = {
         "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
         "max_iterations": 50,  # per-subagent iteration cap (each subagent gets its own budget,
                                # independent of the parent's max_iterations)
+        "auto_route_coding_to_codex_yolo": True,
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts

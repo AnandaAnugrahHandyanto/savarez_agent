@@ -38,6 +38,8 @@ MAX_CONCURRENT_CHILDREN = 3
 MAX_DEPTH = 2  # parent (0) -> child (1) -> grandchild rejected (2)
 DEFAULT_MAX_ITERATIONS = 50
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
+DEFAULT_CODEX_YOLO_COMMAND = "/home/ges/.local/bin/codex-yolo"
+DEFAULT_CODEX_YOLO_ARGS = ["--acp", "--stdio"]
 
 
 def check_delegate_requirements() -> bool:
@@ -111,6 +113,59 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
         "delegation", "clarify", "memory", "code_execution",
     }
     return [t for t in toolsets if t not in blocked_toolset_names]
+
+
+def _looks_like_coding_task(
+    goal: Optional[str],
+    context: Optional[str] = None,
+    toolsets: Optional[List[str]] = None,
+) -> bool:
+    """Best-effort detection for implementation-oriented coding tasks."""
+    if toolsets and not any(t in set(toolsets) for t in ("terminal", "file")):
+        return False
+
+    haystack = "\n".join([
+        str(goal or ""),
+        str(context or ""),
+        " ".join(toolsets or []),
+    ]).lower()
+
+    positive_markers = [
+        "implement", "implementation", "build", "create", "write code",
+        "coding", "fix bug", "bugfix", "debug", "refactor", "patch",
+        "edit files", "modify files", "run tests", "failing test",
+        "test failure", "repair",
+    ]
+    negative_markers = [
+        "research", "analyze", "analysis", "review", "code review",
+        "plan", "planning", "design doc", "spec", "investigate only",
+        "read-only", "summarize",
+    ]
+
+    if any(marker in haystack for marker in negative_markers):
+        return False
+    return any(marker in haystack for marker in positive_markers)
+
+
+def _resolve_default_acp_override(
+    goal: Optional[str],
+    context: Optional[str],
+    toolsets: Optional[List[str]],
+    acp_command: Optional[str],
+    acp_args: Optional[List[str]],
+    cfg: Optional[Dict[str, Any]] = None,
+) -> tuple[Optional[str], Optional[List[str]]]:
+    """Prefer codex-yolo for clear coding tasks when no ACP override is provided."""
+    if acp_command or acp_args:
+        return acp_command, acp_args
+    auto_route_enabled = True if cfg is None else bool(cfg.get("auto_route_coding_to_codex_yolo", True))
+    if not auto_route_enabled:
+        return acp_command, acp_args
+    if not _looks_like_coding_task(goal, context, toolsets):
+        return acp_command, acp_args
+    if not os.path.isfile(DEFAULT_CODEX_YOLO_COMMAND) or not os.access(DEFAULT_CODEX_YOLO_COMMAND, os.X_OK):
+        return acp_command, acp_args
+    return DEFAULT_CODEX_YOLO_COMMAND, list(DEFAULT_CODEX_YOLO_ARGS)
 
 
 def _build_child_progress_callback(task_index: int, parent_agent, task_count: int = 1) -> Optional[callable]:
@@ -589,15 +644,24 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
+            task_toolsets = t.get("toolsets") or toolsets
+            default_acp_command, default_acp_args = _resolve_default_acp_override(
+                goal=t["goal"],
+                context=t.get("context"),
+                toolsets=task_toolsets,
+                acp_command=t.get("acp_command") or acp_command,
+                acp_args=t.get("acp_args") or acp_args,
+                cfg=cfg,
+            )
             child = _build_child_agent(
                 task_index=i, goal=t["goal"], context=t.get("context"),
-                toolsets=t.get("toolsets") or toolsets, model=creds["model"],
+                toolsets=task_toolsets, model=creds["model"],
                 max_iterations=effective_max_iter, parent_agent=parent_agent,
                 override_provider=creds["provider"], override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
-                override_acp_command=t.get("acp_command") or acp_command,
-                override_acp_args=t.get("acp_args") or acp_args,
+                override_acp_command=default_acp_command,
+                override_acp_args=default_acp_args,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
