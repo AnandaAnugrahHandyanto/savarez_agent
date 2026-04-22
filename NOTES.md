@@ -91,6 +91,7 @@ Extend existing Hermes primitives with small opt-in modules and thin integration
 - Session-aware ratchet metadata may outpace current UI exposure.
 - Run-loop failure capture can become noisy if the trigger is too broad.
 - Campaign persistence needs to stay off by default to avoid surprise state growth.
+- TODO on the next deletion pass: simplify ratchet helper sprawl in `tools/checkpoint_manager.py`; the current +310 line slice is correct but heavier than the intended budget.
 
 ## Perf measurements
 - Ratchet tests: `59 passed`

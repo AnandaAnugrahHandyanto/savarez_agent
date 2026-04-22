@@ -297,6 +297,112 @@ def _trace_entry(
     return entry
 
 
+async def _prepare_candidate(
+    user_prompt: str,
+    builder_route: Dict[str, str],
+    candidate_response: str,
+) -> tuple[str, List[Dict[str, Any]]]:
+    current_response = str(candidate_response or "").strip()
+    if current_response:
+        return current_response, [
+            {
+                "phase": "candidate.input",
+                "model": _route_label(builder_route),
+                "at": _now_iso(),
+                "duration": 0.0,
+                "verdict": "completed",
+                "summary": "Used provided candidate_response.",
+            }
+        ]
+
+    started = time.monotonic()
+    current_response = await _run_build(user_prompt, builder_route)
+    return current_response, [
+        _trace_entry("build.1", builder_route, started, verdict="completed")
+    ]
+
+
+async def _run_review_round(
+    *,
+    user_prompt: str,
+    current_response: str,
+    review_round: int,
+    reviewer_route: Dict[str, str],
+    judge_route: Dict[str, str],
+    judge_enabled: bool,
+) -> tuple[SparReview, Optional[SparReview], bool, List[Dict[str, Any]]]:
+    started = time.monotonic()
+    if judge_enabled:
+        review, judge = await asyncio.gather(
+            _run_review(user_prompt, current_response, reviewer_route),
+            _run_optional_judge(user_prompt, current_response, judge_route),
+        )
+    else:
+        review = await _run_review(user_prompt, current_response, reviewer_route)
+        judge = None
+
+    trace = [
+        _trace_entry(
+            f"spar.review.{review_round}",
+            reviewer_route,
+            started,
+            verdict="approved" if review.approved else "rejected",
+            summary=review.summary,
+        )
+    ]
+    disagreement = False
+    if judge is not None:
+        trace.append(
+            _trace_entry(
+                f"judge.review.{review_round}",
+                judge_route,
+                started,
+                verdict="approved" if judge.approved else "rejected",
+                summary=judge.summary,
+            )
+        )
+        disagreement = review.approved != judge.approved
+    return review, judge, disagreement, trace
+
+
+def _record_spar_rejection(
+    *,
+    review: SparReview,
+    current_response: str,
+    builder_route: Dict[str, str],
+    reviewer_route: Dict[str, str],
+    judge_route: Dict[str, str],
+    judge_enabled: bool,
+    disagreement: bool,
+    user_prompt: str,
+) -> None:
+    if review.approved:
+        return
+    try:
+        record_failure(
+            trigger="spar_rejection",
+            symptom=current_response,
+            root_cause=" | ".join(
+                item for item in [review.summary, *review.issues] if item
+            ),
+            fix=review.fix or "",
+            prevention=(
+                "Tighten the builder contract or acceptance checks before shipping "
+                "the response without Spar."
+            ),
+            related_skills=["spar"],
+            metadata={
+                "builder_model": _route_label(builder_route),
+                "reviewer_model": _route_label(reviewer_route),
+                "judge_model": _route_label(judge_route) if judge_enabled else "",
+                "disagreement": disagreement,
+                "user_prompt": user_prompt,
+            },
+        )
+    except Exception:
+        logger.debug("Failed to persist Spar rejection scar", exc_info=True)
+
+
 async def spar_tool(
     user_prompt: str,
     *,
@@ -313,57 +419,26 @@ async def spar_tool(
     judge_route = _normalize_route(judge_model, fallback=DEFAULT_JUDGE_ROUTE)
     fix_budget = max(0, min(int(max_fix_rounds), 1))
 
-    trace: List[Dict[str, Any]] = []
-    current_response = str(candidate_response or "").strip()
-    if current_response:
-        trace.append(
-            {
-                "phase": "candidate.input",
-                "model": _route_label(builder_route),
-                "at": _now_iso(),
-                "duration": 0.0,
-                "verdict": "completed",
-                "summary": "Used provided candidate_response.",
-            }
-        )
-    else:
-        started = time.monotonic()
-        current_response = await _run_build(user_prompt, builder_route)
-        trace.append(_trace_entry("build.1", builder_route, started, verdict="completed"))
+    current_response, trace = await _prepare_candidate(
+        user_prompt,
+        builder_route,
+        candidate_response,
+    )
 
     last_review: Optional[SparReview] = None
     last_judge: Optional[SparReview] = None
     disagreement = False
     for review_round in range(1, 2 + fix_budget):
-        started = time.monotonic()
-        if judge_enabled:
-            last_review, last_judge = await asyncio.gather(
-                _run_review(user_prompt, current_response, reviewer_route),
-                _run_optional_judge(user_prompt, current_response, judge_route),
-            )
-        else:
-            last_review = await _run_review(user_prompt, current_response, reviewer_route)
-            last_judge = None
-        trace.append(
-            _trace_entry(
-                f"spar.review.{review_round}",
-                reviewer_route,
-                started,
-                verdict="approved" if last_review.approved else "rejected",
-                summary=last_review.summary,
-            )
+        last_review, last_judge, round_disagreement, round_trace = await _run_review_round(
+            user_prompt=user_prompt,
+            current_response=current_response,
+            review_round=review_round,
+            reviewer_route=reviewer_route,
+            judge_route=judge_route,
+            judge_enabled=judge_enabled,
         )
-        if last_judge is not None:
-            trace.append(
-                _trace_entry(
-                    f"judge.review.{review_round}",
-                    judge_route,
-                    started,
-                    verdict="approved" if last_judge.approved else "rejected",
-                    summary=last_judge.summary,
-                )
-            )
-            disagreement = disagreement or (last_review.approved != last_judge.approved)
+        trace.extend(round_trace)
+        disagreement = disagreement or round_disagreement
         if last_review.approved:
             break
         if review_round > fix_budget:
@@ -408,30 +483,16 @@ async def spar_tool(
         ),
         "disagreement": disagreement,
     }
-    if not last_review.approved:
-        try:
-            record_failure(
-                trigger="spar_rejection",
-                symptom=current_response,
-                root_cause=" | ".join(
-                    item for item in [last_review.summary, *last_review.issues] if item
-                ),
-                fix=last_review.fix or "",
-                prevention=(
-                    "Tighten the builder contract or acceptance checks before shipping "
-                    "the response without Spar."
-                ),
-                related_skills=["spar"],
-                metadata={
-                    "builder_model": _route_label(builder_route),
-                    "reviewer_model": _route_label(reviewer_route),
-                    "judge_model": _route_label(judge_route) if judge_enabled else "",
-                    "disagreement": disagreement,
-                    "user_prompt": user_prompt,
-                },
-            )
-        except Exception:
-            logger.debug("Failed to persist Spar rejection scar", exc_info=True)
+    _record_spar_rejection(
+        review=last_review,
+        current_response=current_response,
+        builder_route=builder_route,
+        reviewer_route=reviewer_route,
+        judge_route=judge_route,
+        judge_enabled=judge_enabled,
+        disagreement=disagreement,
+        user_prompt=user_prompt,
+    )
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
