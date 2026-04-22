@@ -185,6 +185,109 @@ def _build_process_env(*, strip_runtime: bool) -> dict[str, str]:
             env.pop(key, None)
     return env
 
+def _slice_between(text: str, start_marker: str, end_marker: str | None = None) -> str:
+    if not text:
+        return ""
+    start = text.find(start_marker)
+    if start < 0:
+        return ""
+    end = len(text)
+    if end_marker:
+        marker_end = text.find(end_marker, start)
+        if marker_end >= 0:
+            end = marker_end
+    return text[start:end].strip()
+
+
+def _lean_claude_cli_system_prompt(system_prompt: str) -> str:
+    text = str(system_prompt or "").strip()
+    if not text:
+        return ""
+
+    parts: list[str] = []
+
+    persistent_memory_marker = "You have persistent memory across sessions."
+    memory_section_marker = "MEMORY (your personal notes)"
+    skills_section_marker = "## Skills (mandatory)"
+
+    prefix_end = text.find(persistent_memory_marker)
+    if prefix_end > 0:
+        prefix = text[:prefix_end].strip()
+        if prefix:
+            parts.append(prefix)
+    else:
+        parts.append(text[:2000].strip())
+
+    memory_and_profile = _slice_between(
+        text,
+        memory_section_marker,
+        skills_section_marker,
+    )
+    if memory_and_profile:
+        parts.append(memory_and_profile)
+
+    parts.append(
+        "Use Hermes tools when relevant. Keep the existing voice and user context, "
+        "but do not self-update skills or persist new memories unless the user asks."
+    )
+
+    lean = "\n\n".join(part for part in parts if part).strip()
+    return lean or text
+
+
+def _summarize_tool_specs(
+    tools: list[dict[str, Any]] | None,
+    *,
+    compact: bool = False,
+) -> list[dict[str, Any]]:
+    tool_specs: list[dict[str, Any]] = []
+    if not isinstance(tools, list):
+        return tool_specs
+
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        fn = tool.get("function") or {}
+        if not isinstance(fn, dict):
+            continue
+        name = fn.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        description = str(fn.get("description") or "").strip()
+        parameters = fn.get("parameters", {})
+        if compact:
+            if description:
+                description = description.splitlines()[0].strip()[:160]
+            props: dict[str, Any] = {}
+            required: list[str] = []
+            if isinstance(parameters, dict):
+                raw_props = parameters.get("properties")
+                if isinstance(raw_props, dict):
+                    props = raw_props
+                raw_required = parameters.get("required")
+                if isinstance(raw_required, list):
+                    required = [str(item) for item in raw_required[:10]]
+            tool_specs.append(
+                {
+                    "name": name.strip(),
+                    "description": description,
+                    "args": list(props.keys())[:10],
+                    "required": required,
+                }
+            )
+            continue
+
+        tool_specs.append(
+            {
+                "name": name.strip(),
+                "description": description,
+                "parameters": parameters,
+            }
+        )
+
+    return tool_specs
+
+
 
 @contextmanager
 def _system_prompt_file_args(system_prompt: str):
@@ -280,6 +383,8 @@ def _format_messages_as_prompt(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None = None,
     tool_choice: Any = None,
+    *,
+    compact_tools: bool = False,
 ) -> str:
     sections: list[str] = [
         "If you need a Hermes tool, emit exactly <tool_call>{...}</tool_call>.",
@@ -287,33 +392,14 @@ def _format_messages_as_prompt(
         "Transcript tool requests and tool results are literal prior Hermes tool traffic.",
     ]
 
-    if isinstance(tools, list) and tools:
-        tool_specs: list[dict[str, Any]] = []
-        for tool in tools:
-            if not isinstance(tool, dict):
-                continue
-            fn = tool.get("function") or {}
-            if not isinstance(fn, dict):
-                continue
-            name = fn.get("name")
-            if not isinstance(name, str) or not name.strip():
-                continue
-            tool_specs.append(
-                {
-                    "name": name.strip(),
-                    "description": fn.get("description", ""),
-                    "parameters": fn.get("parameters", {}),
-                }
-            )
-        if tool_specs:
-            sections.append(
-                "Available Hermes tools (OpenAI function schema):\n"
-                + json.dumps(tool_specs, ensure_ascii=False, separators=(",", ":"))
-            )
+    tool_specs = _summarize_tool_specs(tools, compact=compact_tools)
+    if tool_specs:
+        label = "Available Hermes tools (compact schema):" if compact_tools else "Available Hermes tools (OpenAI function schema):"
+        sections.append(label + "\n" + json.dumps(tool_specs, ensure_ascii=False, separators=(",", ":")))
 
     if tool_choice not in (None, "auto"):
         sections.append(
-            f"Tool choice hint: {json.dumps(tool_choice, ensure_ascii=False, separators=(',', ':'))}"
+            "Tool choice hint: " + json.dumps(tool_choice, ensure_ascii=False, separators=(",", ":"))
         )
 
     transcript: list[str] = []
@@ -359,6 +445,7 @@ def _build_tool_guidance(
     *,
     tools: list[dict[str, Any]] | None,
     tool_choice: Any = None,
+    compact_tools: bool = False,
 ) -> str:
     sections: list[str] = [
         "If you need a Hermes tool, emit exactly <tool_call>{...}</tool_call>.",
@@ -366,33 +453,14 @@ def _build_tool_guidance(
         "Tool result messages arrive as plain user messages prefixed with 'Tool result (...)'.",
     ]
 
-    if isinstance(tools, list) and tools:
-        tool_specs: list[dict[str, Any]] = []
-        for tool in tools:
-            if not isinstance(tool, dict):
-                continue
-            fn = tool.get("function") or {}
-            if not isinstance(fn, dict):
-                continue
-            name = fn.get("name")
-            if not isinstance(name, str) or not name.strip():
-                continue
-            tool_specs.append(
-                {
-                    "name": name.strip(),
-                    "description": fn.get("description", ""),
-                    "parameters": fn.get("parameters", {}),
-                }
-            )
-        if tool_specs:
-            sections.append(
-                "Available Hermes tools (OpenAI function schema):\n"
-                + json.dumps(tool_specs, ensure_ascii=False, separators=(",", ":"))
-            )
+    tool_specs = _summarize_tool_specs(tools, compact=compact_tools)
+    if tool_specs:
+        label = "Available Hermes tools (compact schema):" if compact_tools else "Available Hermes tools (OpenAI function schema):"
+        sections.append(label + "\n" + json.dumps(tool_specs, ensure_ascii=False, separators=(",", ":")))
 
     if tool_choice not in (None, "auto"):
         sections.append(
-            f"Tool choice hint: {json.dumps(tool_choice, ensure_ascii=False, separators=(',', ':'))}"
+            "Tool choice hint: " + json.dumps(tool_choice, ensure_ascii=False, separators=(",", ":"))
         )
 
     return "\n\n".join(part.strip() for part in sections if part and part.strip())
@@ -705,11 +773,23 @@ class ClaudeCLIClient:
         **extra_kwargs: Any,
     ) -> Any:
         system_prompt, prompt_messages = _split_system_prompt(messages or [])
-        tool_guidance = _build_tool_guidance(tools=tools, tool_choice=tool_choice)
+        if self._strip_runtime:
+            original_system_prompt = system_prompt
+            system_prompt = _lean_claude_cli_system_prompt(system_prompt)
+            _debug_log(
+                "create:lean_system_prompt "
+                f"before={len(original_system_prompt)} after={len(system_prompt)}"
+            )
+        tool_guidance = _build_tool_guidance(
+            tools=tools,
+            tool_choice=tool_choice,
+            compact_tools=self._strip_runtime,
+        )
         prompt_text = _format_messages_as_prompt(
             prompt_messages,
             tools=tools,
             tool_choice=tool_choice,
+            compact_tools=self._strip_runtime,
         )
         effort = _extract_effort(extra_kwargs)
         structured_stream_input: str | None = None
