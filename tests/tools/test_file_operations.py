@@ -453,3 +453,96 @@ class TestPatchReplacePostWriteVerification:
         result = ops.patch_replace("/tmp/test/a.py", "hello", "hi")
         assert result.error is not None
         assert "could not re-read" in result.error.lower()
+
+
+class TestPatchReplaceEolNormalization:
+    """Verification must compare line-ending-normalized content.
+
+    On Windows the underlying terminal backend can persist a string written as
+    pure LF as CRLF (or even CRCRLF if a second pipe layer re-translates).
+    The bytes on disk are functionally identical to what the patch intended;
+    refusing to acknowledge that produces false ``patch did not persist``
+    errors and an infinite retry loop in agent flows.
+    """
+
+    def test_verification_passes_when_disk_is_crlf_input_was_lf(self, mock_env):
+        """Patch wrote ``\\n`` lines; backend persisted ``\\r\\n``. Must succeed."""
+        # Initial content uses LF; "after write" content uses CRLF on disk
+        # (simulating Windows shell pipe translation).
+        initial = "hello world\n"
+        on_disk_after_write = "hi world\r\n"  # Same data, CRLF instead of LF
+        state = {"content": initial}
+
+        def side_effect(command, stdin_data=None, **kwargs):
+            if command.startswith("cat >"):  # write
+                if stdin_data is not None:
+                    # Simulate Windows pipe translating LF -> CRLF on the way to disk
+                    state["content"] = stdin_data.replace("\n", "\r\n")
+                return {"output": "", "returncode": 0}
+            if command.startswith("cat "):  # read
+                return {"output": state["content"], "returncode": 0}
+            if command.startswith("mkdir "):
+                return {"output": "", "returncode": 0}
+            if command.startswith("wc -c"):
+                return {"output": str(len(state["content"].encode())), "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.patch_replace("/tmp/test/a.py", "hello", "hi")
+        assert result.error is None, (
+            f"CRLF persistence of LF input must not trigger verification "
+            f"failure, got: {result.error!r}"
+        )
+        assert result.success is True
+        assert state["content"] == on_disk_after_write
+
+    def test_verification_passes_when_disk_is_crcrlf(self, mock_env):
+        """Even pathological CRCRLF (\\r\\r\\n) must not be flagged as mismatch."""
+        state = {"content": "hello world\n"}
+
+        def side_effect(command, stdin_data=None, **kwargs):
+            if command.startswith("cat >"):
+                if stdin_data is not None:
+                    # Pathological double-translation
+                    state["content"] = stdin_data.replace("\n", "\r\r\n")
+                return {"output": "", "returncode": 0}
+            if command.startswith("cat "):
+                return {"output": state["content"], "returncode": 0}
+            if command.startswith("mkdir "):
+                return {"output": "", "returncode": 0}
+            if command.startswith("wc -c"):
+                return {"output": str(len(state["content"].encode())), "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.patch_replace("/tmp/test/a.py", "hello", "hi")
+        assert result.error is None, (
+            f"CRCRLF persistence must not trigger verification failure, "
+            f"got: {result.error!r}"
+        )
+        assert result.success is True
+
+    def test_verification_still_catches_real_content_mismatch(self, mock_env):
+        """EOL-tolerant comparison must not mask actual content corruption."""
+        state = {"content": "hello world\n"}
+
+        def side_effect(command, stdin_data=None, **kwargs):
+            if command.startswith("cat >"):
+                # Write goes to /dev/null — content never updates
+                return {"output": "", "returncode": 0}
+            if command.startswith("cat "):
+                return {"output": state["content"], "returncode": 0}
+            if command.startswith("mkdir "):
+                return {"output": "", "returncode": 0}
+            if command.startswith("wc -c"):
+                return {"output": str(len(state["content"].encode())), "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.patch_replace("/tmp/test/a.py", "hello", "hi")
+        # Genuine mismatch (file unchanged) must still be flagged
+        assert result.error is not None
+        assert "verification failed" in result.error.lower()

@@ -756,15 +756,32 @@ class ShellFileOperations(FileOperations):
         # failures (backend FS oddities, race with another task, truncated
         # pipe, etc.) that would otherwise return success-with-diff while the
         # file is unchanged on disk.
+        #
+        # We normalize line endings (CRLF/CR -> LF) on both sides before
+        # comparing, because the underlying terminal backend may inject CRLF
+        # on Windows or platforms where the shell pipe layer rewrites
+        # newlines. The on-disk bytes can legitimately differ from the
+        # intended string in EOL representation while still being functionally
+        # identical — refusing to acknowledge that produces false "patch did
+        # not persist" errors.
         verify_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
         verify_result = self._exec(verify_cmd)
         if verify_result.exit_code != 0:
             return PatchResult(error=f"Post-write verification failed: could not re-read {path}")
-        if verify_result.stdout != new_content:
+        def _normalize_eol(s: str) -> str:
+            # Collapse any run of CR(s) before LF into a single LF, then map
+            # any remaining lone CR to LF. Handles LF, CRLF, and pathological
+            # CRCRLF (and longer ``\r+\n`` runs) introduced by stacked pipe
+            # newline-translation layers on Windows.
+            return re.sub(r"\r+\n", "\n", s).replace("\r", "\n")
+        actual = _normalize_eol(verify_result.stdout)
+        expected = _normalize_eol(new_content)
+        if actual != expected:
             return PatchResult(error=(
                 f"Post-write verification failed for {path}: on-disk content "
                 f"differs from intended write "
-                f"(wrote {len(new_content)} chars, read back {len(verify_result.stdout)}). "
+                f"(wrote {len(expected)} chars after EOL normalization, "
+                f"read back {len(actual)}). "
                 "The patch did not persist. Re-read the file and try again."
             ))
 
