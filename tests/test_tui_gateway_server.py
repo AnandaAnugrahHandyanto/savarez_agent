@@ -690,6 +690,57 @@ def test_prompt_submit_skips_auto_title_for_interrupted_results(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_prompt_submit_emits_session_info_after_successful_auto_title(monkeypatch):
+    captured = []
+    emits = []
+
+    class _Agent:
+        session_id = "session-key"
+
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            return {
+                "final_response": "complete reply",
+                "messages": [{"role": "assistant", "content": "complete reply"}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    def _fake_auto_title(*args, **kwargs):
+        captured.append((args, kwargs))
+        kwargs["on_title"]("Fresh Title")
+
+    fake_title_module = types.SimpleNamespace(maybe_auto_title=_fake_auto_title)
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: emits.append(args))
+    monkeypatch.setattr(server, "_get_usage", lambda _agent: {})
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(server, "_get_db", lambda: object())
+    monkeypatch.setattr(server, "_session_info", lambda _agent: {"model": "x", "title": "Fresh Title"})
+    monkeypatch.setitem(sys.modules, "agent.title_generator", fake_title_module)
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    try:
+        resp = server.handle_request({"id": "1", "method": "prompt.submit", "params": {"session_id": "sid", "text": "ping"}})
+
+        assert resp["result"]["status"] == "streaming"
+        assert len(captured) == 1
+        args, kwargs = captured[0]
+        assert args[1] == "session-key"
+        assert args[2] == "ping"
+        assert args[3] == "complete reply"
+        assert args[4] == [{"role": "assistant", "content": "complete reply"}]
+        assert callable(kwargs["on_title"])
+        assert ("session.info", "sid", {"model": "x", "title": "Fresh Title"}) in emits
+    finally:
+        server._sessions.pop("sid", None)
+
+
 # ---------------------------------------------------------------------------
 # History-mutating commands must reject while session.running is True.
 # Without these guards, prompt.submit's post-run history write either
