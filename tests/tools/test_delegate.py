@@ -1286,5 +1286,216 @@ class TestDelegationReasoningEffort(unittest.TestCase):
         self.assertEqual(call_kwargs["reasoning_config"], {"enabled": True, "effort": "medium"})
 
 
+class TestClaudeCliHandoff(unittest.TestCase):
+    """delegate_task(acp_command='claude') must use the real Claude CLI print-mode
+    path, not the ACP subprocess child agent path."""
+
+    def _fake_claude_payload(
+        self,
+        *,
+        session_id="sess-abc",
+        model="claude-opus-4.7",
+        num_turns=4,
+        result_text="Refactored foo.py and ran pytest -k foo. All tests green.",
+    ):
+        return {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": result_text,
+            "session_id": session_id,
+            "num_turns": num_turns,
+            "duration_ms": 1234,
+            "duration_api_ms": 1000,
+            "total_cost_usd": 0.0,
+            "modelUsage": {model: {"inputTokens": 500, "outputTokens": 200}},
+        }
+
+    def test_schema_no_longer_claims_claude_uses_acp(self):
+        """Schema must not claim Claude uses --acp --stdio."""
+        schema_text = json.dumps(DELEGATE_TASK_SCHEMA)
+        self.assertNotIn("claude --acp --stdio", schema_text)
+
+    def test_schema_mentions_claude_cli_handoff(self):
+        """Schema should accurately describe the Claude CLI handoff path."""
+        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+        acp_command_desc = props["acp_command"]["description"]
+        self.assertIn("claude", acp_command_desc.lower())
+        self.assertIn("cli", acp_command_desc.lower())
+
+    def test_schema_default_acp_args_not_claude_specific(self):
+        """The acp_args description should not force --acp --stdio as the Claude default."""
+        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+        acp_args_desc = props["acp_args"]["description"]
+        # The stale guidance said Claude's default was ['--acp', '--stdio'].
+        self.assertNotIn("default: ['--acp', '--stdio']", acp_args_desc)
+
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._run_claude_cli_delegate_task")
+    def test_claude_command_routes_to_claude_cli_helper(
+        self, mock_claude_helper, mock_run_single
+    ):
+        """delegate_task(acp_command='claude') must use the Claude helper,
+        NOT _run_single_child (the Hermes subagent path)."""
+        mock_claude_helper.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "Done via claude CLI",
+            "num_turns": 3,
+            "duration_seconds": 1.0,
+            "model": "claude-opus-4.7",
+            "exit_reason": "completed",
+            "tokens": {"input": 500, "output": 200},
+            "handoff": {
+                "backend": "claude-cli",
+                "command": "claude -p ...",
+                "cwd": "/tmp",
+                "session_id": "sess-abc",
+                "exit_code": 0,
+                "duration_seconds": 1.0,
+            },
+        }
+        parent = _make_mock_parent()
+        result = json.loads(
+            delegate_task(
+                goal="Fix foo.py",
+                acp_command="claude",
+                parent_agent=parent,
+            )
+        )
+
+        self.assertIn("results", result)
+        self.assertEqual(len(result["results"]), 1)
+        self.assertEqual(result["results"][0]["handoff"]["backend"], "claude-cli")
+        mock_claude_helper.assert_called_once()
+        mock_run_single.assert_not_called()
+
+    @patch("tools.delegate_tool.subprocess.run")
+    def test_claude_helper_uses_print_mode_subprocess(self, mock_subprocess):
+        """_run_claude_cli_delegate_task must call `claude -p <prompt> --output-format json`."""
+        from tools.delegate_tool import _run_claude_cli_delegate_task
+
+        payload = self._fake_claude_payload()
+        mock_subprocess.return_value = MagicMock(
+            returncode=0,
+            stdout=json.dumps(payload),
+            stderr="",
+        )
+        parent = _make_mock_parent()
+        entry = _run_claude_cli_delegate_task(
+            task_index=0,
+            goal="Fix foo.py",
+            context="It crashes on None.",
+            max_iterations=10,
+            parent_agent=parent,
+        )
+
+        self.assertEqual(entry["task_index"], 0)
+        self.assertEqual(entry["status"], "completed")
+        self.assertIn("Refactored foo.py", entry["summary"])
+        self.assertEqual(entry["handoff"]["backend"], "claude-cli")
+        self.assertEqual(entry["handoff"]["session_id"], "sess-abc")
+        self.assertEqual(entry["handoff"]["exit_code"], 0)
+        self.assertIn("command", entry["handoff"])
+
+        # subprocess.run should have been called with `claude -p ... --output-format json`
+        self.assertEqual(mock_subprocess.call_count, 1)
+        args, kwargs = mock_subprocess.call_args
+        argv = args[0] if args else kwargs.get("args")
+        self.assertIsInstance(argv, list)
+        self.assertEqual(argv[0], "claude")
+        self.assertIn("-p", argv)
+        self.assertIn("--output-format", argv)
+        idx = argv.index("--output-format")
+        self.assertEqual(argv[idx + 1], "json")
+
+    @patch("tools.delegate_tool.subprocess.run")
+    def test_claude_helper_returns_error_on_nonzero_exit(self, mock_subprocess):
+        from tools.delegate_tool import _run_claude_cli_delegate_task
+
+        mock_subprocess.return_value = MagicMock(
+            returncode=2,
+            stdout="",
+            stderr="claude: auth failure",
+        )
+        parent = _make_mock_parent()
+        entry = _run_claude_cli_delegate_task(
+            task_index=7,
+            goal="Break claude",
+            context=None,
+            max_iterations=5,
+            parent_agent=parent,
+        )
+
+        self.assertEqual(entry["task_index"], 7)
+        self.assertIn(entry["status"], ("error", "failed"))
+        self.assertEqual(entry["handoff"]["backend"], "claude-cli")
+        self.assertEqual(entry["handoff"]["exit_code"], 2)
+
+    @patch("tools.delegate_tool.subprocess.run")
+    def test_claude_helper_batch_preserves_order(self, mock_subprocess):
+        """In batch mode with mixed tasks, claude tasks must still land at the right task_index."""
+        # Two claude subprocess calls, one per task. Always return same payload;
+        # we'll distinguish by task_index on the result.
+        mock_subprocess.return_value = MagicMock(
+            returncode=0,
+            stdout=json.dumps(self._fake_claude_payload(result_text="ok")),
+            stderr="",
+        )
+        parent = _make_mock_parent()
+
+        with patch("tools.delegate_tool._run_single_child") as mock_run_single:
+            result = json.loads(
+                delegate_task(
+                    tasks=[
+                        {"goal": "Claude A", "acp_command": "claude"},
+                        {"goal": "Claude B", "acp_command": "claude"},
+                    ],
+                    parent_agent=parent,
+                )
+            )
+            mock_run_single.assert_not_called()
+
+        self.assertEqual(len(result["results"]), 2)
+        indices = sorted(r["task_index"] for r in result["results"])
+        self.assertEqual(indices, [0, 1])
+        for entry in result["results"]:
+            self.assertEqual(entry["handoff"]["backend"], "claude-cli")
+
+
+class TestHermesSubagentHandoffEvidence(unittest.TestCase):
+    """Every handoff result (Claude CLI OR hermes subagent) must carry a
+    `handoff` audit block so the parent can reason about where work went."""
+
+    def test_hermes_subagent_result_includes_handoff_backend(self):
+        """_run_single_child result must include handoff.backend == 'hermes-subagent'."""
+        from tools.delegate_tool import _run_single_child
+
+        parent = _make_mock_parent()
+        child = MagicMock()
+        child.run_conversation.return_value = {
+            "final_response": "done",
+            "completed": True,
+            "api_calls": 3,
+            "messages": [],
+        }
+        child.session_id = "hermes-sess-42"
+        child.model = "anthropic/claude-sonnet-4"
+        child.session_prompt_tokens = 100
+        child.session_completion_tokens = 50
+
+        entry = _run_single_child(
+            task_index=0,
+            goal="Do something simple",
+            child=child,
+            parent_agent=parent,
+        )
+
+        self.assertIn("handoff", entry)
+        self.assertEqual(entry["handoff"]["backend"], "hermes-subagent")
+        self.assertEqual(entry["handoff"]["session_id"], "hermes-sess-42")
+        self.assertEqual(entry["handoff"]["model"], "anthropic/claude-sonnet-4")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -20,6 +20,7 @@ import json
 import logging
 logger = logging.getLogger(__name__)
 import os
+import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -145,6 +146,215 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
         if os.path.isabs(text) and os.path.isdir(text):
             return text
     return None
+
+
+def _should_use_claude_cli(acp_command: Optional[str]) -> bool:
+    """Route `acp_command="claude"` to the real Claude CLI print-mode path.
+
+    Other acp_command values still go through the ACP subprocess transport.
+    Claude has a first-class print-mode (`claude -p`) with JSON output, so
+    there is no reason to wrap it in ACP.
+    """
+    if not acp_command:
+        return False
+    return str(acp_command).strip().lower() == "claude"
+
+
+def _build_claude_cli_prompt(
+    goal: str,
+    context: Optional[str],
+    workspace_hint: Optional[str],
+) -> str:
+    """Build the prompt text passed to `claude -p <prompt>`."""
+    parts = [f"TASK:\n{goal}"]
+    if context and str(context).strip():
+        parts.append(f"\nCONTEXT:\n{context}")
+    if workspace_hint and str(workspace_hint).strip():
+        parts.append(
+            "\nWORKSPACE PATH:\n"
+            f"{workspace_hint}\n"
+            "Operate inside this path for repository/workdir actions unless the task says otherwise."
+        )
+    parts.append(
+        "\nWhen finished, summarize:\n"
+        "- Files changed (full paths)\n"
+        "- Tests or commands you ran, and their outcome\n"
+        "- Any issues encountered or follow-up work\n"
+        "Be concise — the summary is returned to the delegating agent verbatim."
+    )
+    return "\n".join(parts)
+
+
+def _parse_claude_cli_output(raw_stdout: str) -> Dict[str, Any]:
+    """Parse the JSON payload emitted by `claude -p --output-format json`.
+
+    Returns an empty dict on parse failure so callers can fall back to a
+    best-effort summary built from stderr/returncode.
+    """
+    if not raw_stdout:
+        return {}
+    text = raw_stdout.strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        # Newer Claude CLIs may emit a stream of JSON objects; take the last.
+        last_obj = None
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                last_obj = json.loads(line)
+            except ValueError:
+                continue
+        parsed = last_obj or {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _run_claude_cli_delegate_task(
+    task_index: int,
+    goal: str,
+    context: Optional[str],
+    max_iterations: int,
+    parent_agent,
+) -> Dict[str, Any]:
+    """Hand off a single task to the real Claude CLI (`claude -p ... --output-format json`).
+
+    Returns a delegate-style result entry with the same top-level shape as
+    `_run_single_child`, plus a `handoff` audit block.
+    """
+    workspace_hint = _resolve_workspace_hint(parent_agent)
+    cwd = workspace_hint if workspace_hint and os.path.isdir(workspace_hint) else os.getcwd()
+    prompt_text = _build_claude_cli_prompt(goal, context, workspace_hint)
+
+    argv = [
+        "claude",
+        "-p",
+        prompt_text,
+        "--output-format",
+        "json",
+        "--max-turns",
+        str(max(1, int(max_iterations or 1))),
+    ]
+
+    start = time.monotonic()
+    try:
+        completed = subprocess.run(
+            argv,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        duration = round(time.monotonic() - start, 2)
+        logger.exception("Claude CLI not found for delegate_task")
+        return {
+            "task_index": task_index,
+            "status": "error",
+            "summary": None,
+            "error": f"claude CLI not available: {exc}",
+            "api_calls": 0,
+            "duration_seconds": duration,
+            "exit_reason": "claude_cli_missing",
+            "handoff": {
+                "backend": "claude-cli",
+                "command": " ".join(argv[:2] + ["<prompt>"] + argv[3:]),
+                "cwd": cwd,
+                "session_id": None,
+                "exit_code": None,
+                "duration_seconds": duration,
+            },
+        }
+    except Exception as exc:
+        duration = round(time.monotonic() - start, 2)
+        logger.exception("Claude CLI subprocess failed for delegate_task")
+        return {
+            "task_index": task_index,
+            "status": "error",
+            "summary": None,
+            "error": str(exc),
+            "api_calls": 0,
+            "duration_seconds": duration,
+            "exit_reason": "claude_cli_error",
+            "handoff": {
+                "backend": "claude-cli",
+                "command": " ".join(argv[:2] + ["<prompt>"] + argv[3:]),
+                "cwd": cwd,
+                "session_id": None,
+                "exit_code": None,
+                "duration_seconds": duration,
+            },
+        }
+
+    duration = round(time.monotonic() - start, 2)
+    exit_code = getattr(completed, "returncode", None)
+    stdout = getattr(completed, "stdout", "") or ""
+    stderr = getattr(completed, "stderr", "") or ""
+    parsed = _parse_claude_cli_output(stdout)
+
+    session_id = parsed.get("session_id")
+    summary = parsed.get("result") or (stderr.strip() if exit_code else "")
+    num_turns = parsed.get("num_turns") or 0
+    is_error_flag = bool(parsed.get("is_error"))
+
+    # Extract token usage / model if available in modelUsage.
+    model = None
+    tokens = {"input": 0, "output": 0}
+    model_usage = parsed.get("modelUsage")
+    if isinstance(model_usage, dict) and model_usage:
+        # modelUsage is keyed by model id.
+        try:
+            model = next(iter(model_usage.keys()))
+            usage_entry = model_usage.get(model) or {}
+            tokens = {
+                "input": int(usage_entry.get("inputTokens") or 0),
+                "output": int(usage_entry.get("outputTokens") or 0),
+            }
+        except Exception:
+            pass
+
+    # Build a sanitized command string that keeps the prompt out of logs.
+    safe_command = " ".join(
+        argv[:2] + ["<prompt>"] + argv[3:]
+    )
+
+    handoff = {
+        "backend": "claude-cli",
+        "command": safe_command,
+        "cwd": cwd,
+        "session_id": session_id,
+        "exit_code": exit_code,
+        "duration_seconds": duration,
+    }
+
+    if exit_code == 0 and not is_error_flag and summary:
+        status = "completed"
+        exit_reason = "completed"
+    else:
+        status = "failed" if exit_code == 0 else "error"
+        exit_reason = "claude_cli_error"
+
+    entry: Dict[str, Any] = {
+        "task_index": task_index,
+        "status": status,
+        "summary": summary or None,
+        "api_calls": int(num_turns) if isinstance(num_turns, (int, float)) else 0,
+        "num_turns": int(num_turns) if isinstance(num_turns, (int, float)) else 0,
+        "duration_seconds": duration,
+        "model": model,
+        "exit_reason": exit_reason,
+        "tokens": tokens,
+        "handoff": handoff,
+    }
+    if status != "completed":
+        entry["error"] = (
+            stderr.strip()
+            or parsed.get("error")
+            or "Claude CLI produced no usable output."
+        )
+    return entry
 
 
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
@@ -580,6 +790,7 @@ def _run_single_child(
         _output_tokens = getattr(child, "session_completion_tokens", 0)
         _model = getattr(child, "model", None)
 
+        _child_session_id = getattr(child, "session_id", None)
         entry: Dict[str, Any] = {
             "task_index": task_index,
             "status": status,
@@ -593,6 +804,11 @@ def _run_single_child(
                 "output": _output_tokens if isinstance(_output_tokens, (int, float)) else 0,
             },
             "tool_trace": tool_trace,
+            "handoff": {
+                "backend": "hermes-subagent",
+                "session_id": _child_session_id if isinstance(_child_session_id, str) else None,
+                "model": _model if isinstance(_model, str) else None,
+            },
         }
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
@@ -762,12 +978,25 @@ def delegate_task(
     import model_tools as _model_tools
     _parent_tool_names = list(_model_tools._last_resolved_tool_names)
 
-    # Build all child agents on the main thread (thread-safe construction)
+    # Partition tasks by route:
+    #   "claude-cli": real `claude -p` subprocess (no child AIAgent)
+    #   "hermes":     normal subagent path via _build_child_agent
+    task_routes: list[str] = []
+    for t in task_list:
+        effective_acp_command = t.get("acp_command") or acp_command
+        task_routes.append(
+            "claude-cli" if _should_use_claude_cli(effective_acp_command) else "hermes"
+        )
+
+    # Build child agents only for Hermes-routed tasks. Claude-CLI tasks skip
+    # child construction entirely.
     # Wrapped in try/finally so the global is always restored even if a
     # child build raises (otherwise _last_resolved_tool_names stays corrupted).
-    children = []
+    children: Dict[int, Any] = {}
     try:
         for i, t in enumerate(task_list):
+            if task_routes[i] != "hermes":
+                continue
             child = _build_child_agent(
                 task_index=i, goal=t["goal"], context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets, model=creds["model"],
@@ -780,16 +1009,31 @@ def delegate_task(
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
-            children.append((i, t, child))
+            children[i] = child
     finally:
         # Authoritative restore: reset global to parent's tool names after all children built
         _model_tools._last_resolved_tool_names = _parent_tool_names
 
+    def _dispatch_task(task_index: int) -> Dict[str, Any]:
+        t = task_list[task_index]
+        if task_routes[task_index] == "claude-cli":
+            return _run_claude_cli_delegate_task(
+                task_index=task_index,
+                goal=t["goal"],
+                context=t.get("context"),
+                max_iterations=effective_max_iter,
+                parent_agent=parent_agent,
+            )
+        return _run_single_child(
+            task_index=task_index,
+            goal=t["goal"],
+            child=children[task_index],
+            parent_agent=parent_agent,
+        )
+
     if n_tasks == 1:
         # Single task -- run directly (no thread pool overhead)
-        _i, _t, child = children[0]
-        result = _run_single_child(0, _t["goal"], child, parent_agent)
-        results.append(result)
+        results.append(_dispatch_task(0))
     else:
         # Batch -- run in parallel with per-task progress lines
         completed_count = 0
@@ -797,14 +1041,8 @@ def delegate_task(
 
         with ThreadPoolExecutor(max_workers=max_children) as executor:
             futures = {}
-            for i, t, child in children:
-                future = executor.submit(
-                    _run_single_child,
-                    task_index=i,
-                    goal=t["goal"],
-                    child=child,
-                    parent_agent=parent_agent,
-                )
+            for i in range(n_tasks):
+                future = executor.submit(_dispatch_task, i)
                 futures[future] = i
 
             # Poll futures with interrupt checking.  as_completed() blocks
@@ -893,11 +1131,18 @@ def delegate_task(
     if parent_agent and hasattr(parent_agent, '_memory_manager') and parent_agent._memory_manager:
         for entry in results:
             try:
-                _task_goal = task_list[entry["task_index"]]["goal"] if entry["task_index"] < len(task_list) else ""
+                idx = entry["task_index"]
+                _task_goal = task_list[idx]["goal"] if idx < len(task_list) else ""
+                _child_for_session = children.get(idx) if isinstance(children, dict) else None
+                _session_id = (
+                    getattr(_child_for_session, "session_id", "")
+                    if _child_for_session is not None
+                    else (entry.get("handoff") or {}).get("session_id") or ""
+                )
                 parent_agent._memory_manager.on_delegation(
                     task=_task_goal,
                     result=entry.get("summary", "") or "",
-                    child_session_id=getattr(children[entry["task_index"]][2], "session_id", "") if entry["task_index"] < len(children) else "",
+                    child_session_id=_session_id,
                 )
             except Exception:
                 pass
@@ -1130,12 +1375,12 @@ DELEGATE_TASK_SCHEMA = {
                         },
                         "acp_command": {
                             "type": "string",
-                            "description": "Per-task ACP command override (e.g. 'claude'). Overrides the top-level acp_command for this task only.",
+                            "description": "Per-task handoff override (e.g. 'claude' for Claude CLI print-mode handoff). Overrides the top-level acp_command for this task only.",
                         },
                         "acp_args": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Per-task ACP args override.",
+                            "description": "Per-task acp_args override (ignored for 'claude').",
                         },
                     },
                     "required": ["goal"],
@@ -1159,18 +1404,21 @@ DELEGATE_TASK_SCHEMA = {
             "acp_command": {
                 "type": "string",
                 "description": (
-                    "Override ACP command for child agents (e.g. 'claude', 'copilot'). "
-                    "When set, children use ACP subprocess transport instead of inheriting "
-                    "the parent's transport. Enables spawning Claude Code (claude --acp --stdio) "
-                    "or other ACP-capable agents from any parent, including Discord/Telegram/CLI."
+                    "Hand off the task to an external coding CLI instead of a Hermes subagent. "
+                    "acp_command='claude' routes to the real Claude CLI print-mode handoff "
+                    "(`claude -p <prompt> --output-format json`) — no ACP — and returns a "
+                    "summary with a `handoff` block (backend, command, cwd, session_id, "
+                    "exit_code). Other values (e.g. 'copilot') still route through the "
+                    "ACP subprocess transport for ACP-capable agents."
                 ),
             },
             "acp_args": {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "Arguments for the ACP command (default: ['--acp', '--stdio']). "
-                    "Only used when acp_command is set. Example: ['--acp', '--stdio', '--model', 'claude-opus-4-6']"
+                    "Additional arguments for ACP-capable tools spawned via acp_command. "
+                    "Ignored for acp_command='claude' since the Claude CLI handoff path "
+                    "builds its own argv."
                 ),
             },
         },

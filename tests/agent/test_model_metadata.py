@@ -132,6 +132,11 @@ class TestDefaultContextLengths:
             if "gpt-4.1" in key:
                 assert value == 1047576, f"{key} should be 1047576"
 
+    def test_gpt54_models_match_openai_docs(self):
+        assert DEFAULT_CONTEXT_LENGTHS["gpt-5.4"] == 1000000
+        assert DEFAULT_CONTEXT_LENGTHS["gpt-5.4-mini"] == 400000
+        assert DEFAULT_CONTEXT_LENGTHS["gpt-5.4-nano"] == 400000
+
     def test_gemini_models_1m(self):
         for key, value in DEFAULT_CONTEXT_LENGTHS.items():
             if "gemini" in key:

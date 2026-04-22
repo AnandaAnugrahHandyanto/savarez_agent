@@ -692,6 +692,11 @@ class MessageEvent:
     # Discord channel_skill_bindings).  A single name or ordered list.
     auto_skill: Optional[str | list[str]] = None
 
+    # Auto-applied model for topic/channel bindings.  Dict with keys
+    # ``model`` (required) and ``provider`` (optional).  Applied as a session
+    # override on NEW sessions only — existing sessions keep their current model.
+    auto_model: Optional[dict] = None
+
     # Per-channel ephemeral system prompt (e.g. Discord channel_prompts).
     # Applied at API call time and never persisted to transcript history.
     channel_prompt: Optional[str] = None

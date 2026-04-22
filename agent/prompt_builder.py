@@ -170,6 +170,59 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
+CLAUDE_FIRST_WORKFLOW_GUIDANCE = (
+    "# Claude-first workflow\n"
+    "The user profile marks this operator as claude-first for software work. "
+    "For software tasks — coding, architecture, planning, debugging, code review, "
+    "and repo changes — you MUST hand off to Claude Code rather than editing files "
+    "yourself. Do NOT directly edit code or write the plan yourself unless the user "
+    "explicitly asks for manual/direct handling.\n"
+    "Prefer `delegate_task(acp_command=\"claude\", goal=..., context=...)` when it is "
+    "available, because it now routes to the real Claude CLI print-mode handoff path. "
+    "If `delegate_task` is not loaded, run `claude -p` yourself via `terminal`.\n"
+    "When using the handoff, include command/session evidence from the tool result "
+    "(the `handoff` block — backend, command, cwd, session_id, exit_code) in your "
+    "final report so the user can audit what Claude did."
+)
+
+# Substrings that signal the user's Claude-first preference in their USER
+# profile block. Matched case-insensitively with simple substring search so the
+# operator can phrase the preference a few natural ways.
+_CLAUDE_FIRST_SIGNALS = (
+    "claude-first workflow",
+    "claude first workflow",
+    "should go to `claude` via `terminal`",
+    "should go to claude via terminal",
+    "coding/architecture/planning tasks should go to claude",
+)
+
+
+def build_claude_first_workflow_guidance(
+    user_block: str,
+    available_tool_names,
+) -> str:
+    """Return CLAUDE_FIRST_WORKFLOW_GUIDANCE when the operator wants Claude-first
+    handling AND the agent can actually hand off.
+
+    Signal comes from the user profile block (case-insensitive substring match).
+    We only emit the guidance when the agent has `terminal` available — without
+    it the operator has no way to run `claude -p`. `delegate_task` is preferred
+    but not required (the guidance tells the model to fall back to terminal).
+    """
+    if not user_block:
+        return ""
+    try:
+        tool_set = set(available_tool_names or ())
+    except TypeError:
+        tool_set = set()
+    if "terminal" not in tool_set:
+        return ""
+    lowered = user_block.lower()
+    if not any(signal in lowered for signal in _CLAUDE_FIRST_SIGNALS):
+        return ""
+    return CLAUDE_FIRST_WORKFLOW_GUIDANCE
+
+
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do "

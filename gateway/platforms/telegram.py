@@ -244,6 +244,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self._dm_topics: Dict[str, int] = {}
         # DM Topics config from extra.dm_topics
         self._dm_topics_config: List[Dict[str, Any]] = self.config.extra.get("dm_topics", [])
+        # Group forum topics: "<chat_id>:<topic_name>" -> message_thread_id
+        self._group_topics: Dict[str, int] = {}
         # Interactive model picker state per chat
         self._model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
@@ -613,6 +615,155 @@ class TelegramAdapter(BasePlatformAdapter):
                     # Persist thread_id to config so we don't recreate on next restart
                     self._persist_dm_topic_thread_id(int(chat_id), topic_name, thread_id)
 
+    async def _create_group_topic(
+        self,
+        chat_id: int,
+        name: str,
+        icon_color: Optional[int] = None,
+        icon_custom_emoji_id: Optional[str] = None,
+    ) -> Optional[int]:
+        """Create a forum topic in a group/supergroup chat.
+
+        Requires the bot to be an admin with the "Manage Topics" right and the
+        chat to have topics enabled (is_forum=True).  Returns the
+        message_thread_id on success, None on any failure (non-fatal).
+        """
+        if not self._bot:
+            return None
+        try:
+            kwargs: Dict[str, Any] = {"chat_id": chat_id, "name": name}
+            if icon_color is not None:
+                kwargs["icon_color"] = icon_color
+            if icon_custom_emoji_id:
+                kwargs["icon_custom_emoji_id"] = icon_custom_emoji_id
+
+            topic = await self._bot.create_forum_topic(**kwargs)
+            thread_id = topic.message_thread_id
+            logger.info(
+                "[%s] Created group topic '%s' in chat %s -> thread_id=%s",
+                self.name, name, chat_id, thread_id,
+            )
+            return thread_id
+        except Exception as e:
+            error_text = str(e).lower()
+            if "topic_name_duplicate" in error_text or "already" in error_text:
+                logger.info(
+                    "[%s] Group topic '%s' already exists in chat %s (will be mapped from incoming messages)",
+                    self.name, name, chat_id,
+                )
+            else:
+                logger.warning(
+                    "[%s] Failed to create group topic '%s' in chat %s: %s",
+                    self.name, name, chat_id, e,
+                )
+            return None
+
+    def _persist_group_topic_thread_id(self, chat_id: int, topic_name: str, thread_id: int) -> None:
+        """Save a newly created group topic thread_id back into config.yaml."""
+        try:
+            from hermes_constants import get_hermes_home
+            config_path = get_hermes_home() / "config.yaml"
+            if not config_path.exists():
+                logger.warning(
+                    "[%s] Config file not found at %s, cannot persist group thread_id",
+                    self.name, config_path,
+                )
+                return
+
+            import yaml as _yaml
+            with open(config_path, "r") as f:
+                config = _yaml.safe_load(f) or {}
+
+            group_topics = (
+                config.get("platforms", {})
+                .get("telegram", {})
+                .get("extra", {})
+                .get("group_topics", [])
+            )
+            if not group_topics:
+                return
+
+            changed = False
+            for chat_entry in group_topics:
+                if str(chat_entry.get("chat_id", "")) != str(chat_id):
+                    continue
+                for t in chat_entry.get("topics", []):
+                    if t.get("name") == topic_name and not t.get("thread_id"):
+                        t["thread_id"] = thread_id
+                        changed = True
+                        break
+
+            if changed:
+                with open(config_path, "w") as f:
+                    _yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+                logger.info(
+                    "[%s] Persisted group thread_id=%s for topic '%s' in config.yaml",
+                    self.name, thread_id, topic_name,
+                )
+        except Exception as e:
+            logger.warning(
+                "[%s] Failed to persist group thread_id to config: %s",
+                self.name, e, exc_info=True,
+            )
+
+    async def _setup_group_topics(self) -> None:
+        """Load or create configured forum topics for group chats.
+
+        Reads config.extra['group_topics'] with the same shape as dm_topics.
+        Topics that already carry a thread_id are loaded into the in-memory
+        cache without touching the Bot API; topics without one are created
+        via createForumTopic and the resulting thread_id is persisted back
+        into config.yaml.  All failures are non-fatal.
+        """
+        group_topics_config = self.config.extra.get("group_topics", []) or []
+        if not group_topics_config:
+            return
+
+        for chat_entry in group_topics_config:
+            chat_id = chat_entry.get("chat_id")
+            topics = chat_entry.get("topics", [])
+            if chat_id is None or not topics:
+                continue
+
+            logger.info(
+                "[%s] Setting up %d group topic(s) for chat %s",
+                self.name, len(topics), chat_id,
+            )
+
+            for topic_conf in topics:
+                topic_name = topic_conf.get("name")
+                if not topic_name:
+                    continue
+
+                cache_key = f"{chat_id}:{topic_name}"
+
+                existing_thread_id = topic_conf.get("thread_id")
+                if existing_thread_id:
+                    self._group_topics[cache_key] = int(existing_thread_id)
+                    logger.info(
+                        "[%s] Group topic loaded from config: %s -> thread_id=%s",
+                        self.name, cache_key, existing_thread_id,
+                    )
+                    continue
+
+                icon_color = topic_conf.get("icon_color")
+                icon_emoji = topic_conf.get("icon_custom_emoji_id")
+
+                thread_id = await self._create_group_topic(
+                    chat_id=int(chat_id),
+                    name=topic_name,
+                    icon_color=icon_color,
+                    icon_custom_emoji_id=icon_emoji,
+                )
+
+                if thread_id:
+                    self._group_topics[cache_key] = thread_id
+                    logger.info(
+                        "[%s] Group topic cached: %s -> thread_id=%s",
+                        self.name, cache_key, thread_id,
+                    )
+                    self._persist_group_topic_thread_id(int(chat_id), topic_name, thread_id)
+
     async def connect(self) -> bool:
         """Connect to Telegram via polling or webhook.
 
@@ -856,6 +1007,15 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception as topics_err:
                 logger.warning(
                     "[%s] DM topics setup failed (non-fatal): %s",
+                    self.name, topics_err, exc_info=True,
+                )
+
+            # Set up configured group forum topics (same shape as dm_topics).
+            try:
+                await self._setup_group_topics()
+            except Exception as topics_err:
+                logger.warning(
+                    "[%s] Group topics setup failed (non-fatal): %s",
                     self.name, topics_err, exc_info=True,
                 )
 
@@ -2893,6 +3053,8 @@ class TelegramAdapter(BasePlatformAdapter):
             thread_id_str = self._GENERAL_TOPIC_THREAD_ID
         chat_topic = None
         topic_skill = None
+        topic_model = None
+        topic_provider = None
 
         if chat_type == "dm" and thread_id_str:
             topic_info = self._get_dm_topic_info(str(chat.id), thread_id_str)
@@ -2918,6 +3080,8 @@ class TelegramAdapter(BasePlatformAdapter):
                         if tid is not None and str(tid) == thread_id_str:
                             chat_topic = topic.get("name")
                             topic_skill = topic.get("skill")
+                            topic_model = topic.get("model")
+                            topic_provider = topic.get("provider")
                             break
                     break
 
@@ -2958,6 +3122,11 @@ class TelegramAdapter(BasePlatformAdapter):
             reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text,
             auto_skill=topic_skill,
+            auto_model=(
+                {"model": topic_model, "provider": topic_provider}
+                if topic_model
+                else None
+            ),
             channel_prompt=_channel_prompt,
             timestamp=message.date,
         )

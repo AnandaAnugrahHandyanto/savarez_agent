@@ -3786,6 +3786,74 @@ class GatewayRunner:
             except Exception as e:
                 logger.warning("[Gateway] Failed to auto-load skill(s) %s: %s", _skill_names, e)
 
+        # Auto-apply model for topic/channel bindings (Telegram group_topics
+        # ``model`` field).  Only on NEW sessions — ongoing sessions keep the
+        # model they've been using.  Skipped if a session override already
+        # exists (user-issued /model takes precedence).
+        _auto_model = getattr(event, "auto_model", None)
+        if (
+            _is_new_session
+            and _auto_model
+            and _auto_model.get("model")
+            and session_key not in self._session_model_overrides
+        ):
+            try:
+                import yaml as _yaml
+                from hermes_cli.model_switch import switch_model as _switch_model_fn
+
+                _cfg_path = _hermes_home / "config.yaml"
+                _cur_model = ""
+                _cur_provider = "openrouter"
+                _cur_base_url = ""
+                _user_provs = None
+                _custom_provs = None
+                if _cfg_path.exists():
+                    with open(_cfg_path, encoding="utf-8") as _f:
+                        _cfg = _yaml.safe_load(_f) or {}
+                    _mc = _cfg.get("model", {}) or {}
+                    if isinstance(_mc, dict):
+                        _cur_model = _mc.get("default", "")
+                        _cur_provider = _mc.get("provider", _cur_provider)
+                        _cur_base_url = _mc.get("base_url", "")
+                    _user_provs = _cfg.get("providers")
+                    try:
+                        from hermes_cli.config import get_compatible_custom_providers
+                        _custom_provs = get_compatible_custom_providers(_cfg)
+                    except Exception:
+                        _custom_provs = _cfg.get("custom_providers")
+
+                _result = _switch_model_fn(
+                    raw_input=_auto_model["model"],
+                    current_provider=_cur_provider,
+                    current_model=_cur_model,
+                    current_base_url=_cur_base_url,
+                    current_api_key="",
+                    is_global=False,
+                    explicit_provider=_auto_model.get("provider") or "",
+                    user_providers=_user_provs,
+                    custom_providers=_custom_provs,
+                )
+                if _result.success:
+                    self._session_model_overrides[session_key] = {
+                        "model": _result.new_model,
+                        "provider": _result.target_provider,
+                        "api_key": _result.api_key,
+                        "base_url": _result.base_url,
+                        "api_mode": _result.api_mode,
+                    }
+                    self._evict_cached_agent(session_key)
+                    logger.info(
+                        "[Gateway] Auto-applied topic model %s (provider=%s) to session %s",
+                        _result.new_model, _result.target_provider, session_key,
+                    )
+                else:
+                    logger.warning(
+                        "[Gateway] Auto-model switch failed for %s: %s",
+                        _auto_model, getattr(_result, "error_message", "unknown"),
+                    )
+            except Exception as e:
+                logger.warning("[Gateway] Failed to auto-apply topic model %s: %s", _auto_model, e)
+
         # Load conversation history from transcript
         history = self.session_store.load_transcript(session_entry.session_id)
         

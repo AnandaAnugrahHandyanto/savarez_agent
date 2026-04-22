@@ -645,3 +645,219 @@ def test_group_topic_chat_id_int_string_coercion():
 
     assert event.auto_skill == "hermes-agent-dev"
     assert event.source.chat_topic == "Dev"
+
+
+# ── _setup_group_topics: load persisted thread_ids / create when missing ──
+
+
+@pytest.mark.asyncio
+async def test_setup_group_topics_loads_persisted_thread_ids():
+    """Group topics with thread_id in config should be loaded into cache, not created."""
+    adapter = _make_adapter(group_topics_config=[
+        {
+            "chat_id": -1001234567890,
+            "topics": [
+                {"name": "Engineering", "thread_id": 5},
+                {"name": "Sales", "thread_id": 12},
+            ],
+        }
+    ])
+    adapter._bot = AsyncMock()
+
+    await adapter._setup_group_topics()
+
+    assert adapter._group_topics["-1001234567890:Engineering"] == 5
+    assert adapter._group_topics["-1001234567890:Sales"] == 12
+    adapter._bot.create_forum_topic.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_setup_group_topics_creates_when_no_thread_id():
+    """Group topics without thread_id should be created via API."""
+    adapter = _make_adapter(group_topics_config=[
+        {
+            "chat_id": -1003986108253,
+            "topics": [
+                {"name": "news", "icon_color": 7322096},
+            ],
+        }
+    ])
+    adapter._bot = AsyncMock()
+    adapter._bot.create_forum_topic.return_value = SimpleNamespace(message_thread_id=777)
+    adapter._persist_group_topic_thread_id = MagicMock()
+
+    await adapter._setup_group_topics()
+
+    adapter._bot.create_forum_topic.assert_called_once_with(
+        chat_id=-1003986108253, name="news", icon_color=7322096,
+    )
+    assert adapter._group_topics["-1003986108253:news"] == 777
+    adapter._persist_group_topic_thread_id.assert_called_once_with(
+        -1003986108253, "news", 777
+    )
+
+
+@pytest.mark.asyncio
+async def test_setup_group_topics_mixed_persisted_and_new():
+    """Mix of persisted and new group topics should work correctly."""
+    adapter = _make_adapter(group_topics_config=[
+        {
+            "chat_id": -1003986108253,
+            "topics": [
+                {"name": "General", "thread_id": 1},
+                {"name": "news"},
+            ],
+        }
+    ])
+    adapter._bot = AsyncMock()
+    adapter._bot.create_forum_topic.return_value = SimpleNamespace(message_thread_id=42)
+    adapter._persist_group_topic_thread_id = MagicMock()
+
+    await adapter._setup_group_topics()
+
+    assert adapter._group_topics["-1003986108253:General"] == 1
+    assert adapter._group_topics["-1003986108253:news"] == 42
+    adapter._bot.create_forum_topic.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_setup_group_topics_no_config():
+    """No group_topics config at all should be a no-op."""
+    adapter = _make_adapter()
+    adapter._bot = AsyncMock()
+
+    await adapter._setup_group_topics()
+
+    adapter._bot.create_forum_topic.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_setup_group_topics_empty_list():
+    """Empty group_topics list should be a no-op."""
+    adapter = _make_adapter(group_topics_config=[])
+    adapter._bot = AsyncMock()
+
+    await adapter._setup_group_topics()
+
+    adapter._bot.create_forum_topic.assert_not_called()
+
+
+# ── _create_group_topic: error handling ──
+
+
+@pytest.mark.asyncio
+async def test_create_group_topic_handles_duplicate_error():
+    """Duplicate topic error should return None gracefully."""
+    adapter = _make_adapter()
+    adapter._bot = AsyncMock()
+    adapter._bot.create_forum_topic.side_effect = Exception("topic_name_duplicate")
+
+    result = await adapter._create_group_topic(chat_id=-1001, name="news")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_create_group_topic_handles_generic_error():
+    """Generic error (e.g. missing permissions) should return None; non-fatal."""
+    adapter = _make_adapter()
+    adapter._bot = AsyncMock()
+    adapter._bot.create_forum_topic.side_effect = Exception("not enough rights")
+
+    result = await adapter._create_group_topic(chat_id=-1001, name="news")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_create_group_topic_returns_none_without_bot():
+    """No bot instance should return None."""
+    adapter = _make_adapter()
+    adapter._bot = None
+
+    result = await adapter._create_group_topic(chat_id=-1001, name="news")
+
+    assert result is None
+
+
+# ── _persist_group_topic_thread_id ──
+
+
+def test_persist_group_topic_thread_id_writes_config(tmp_path):
+    """Should write thread_id into the matching group topic in config.yaml."""
+    import yaml
+
+    config_data = {
+        "platforms": {
+            "telegram": {
+                "extra": {
+                    "group_topics": [
+                        {
+                            "chat_id": -1003986108253,
+                            "topics": [
+                                {"name": "General", "thread_id": 1},
+                                {"name": "news"},
+                            ],
+                        }
+                    ]
+                }
+            }
+        }
+    }
+
+    config_file = tmp_path / ".hermes" / "config.yaml"
+    config_file.parent.mkdir(parents=True)
+    with open(config_file, "w") as f:
+        yaml.dump(config_data, f)
+
+    adapter = _make_adapter()
+
+    with patch.object(Path, "home", return_value=tmp_path), \
+         patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}):
+        adapter._persist_group_topic_thread_id(-1003986108253, "news", 999)
+
+    with open(config_file) as f:
+        result = yaml.safe_load(f)
+
+    topics = result["platforms"]["telegram"]["extra"]["group_topics"][0]["topics"]
+    assert topics[0]["thread_id"] == 1  # General untouched
+    assert topics[1]["thread_id"] == 999  # news persisted
+
+
+def test_persist_group_topic_thread_id_skips_if_already_set(tmp_path):
+    """Should not overwrite an existing group topic thread_id."""
+    import yaml
+
+    config_data = {
+        "platforms": {
+            "telegram": {
+                "extra": {
+                    "group_topics": [
+                        {
+                            "chat_id": -1003986108253,
+                            "topics": [
+                                {"name": "General", "thread_id": 1},
+                            ],
+                        }
+                    ]
+                }
+            }
+        }
+    }
+
+    config_file = tmp_path / ".hermes" / "config.yaml"
+    config_file.parent.mkdir(parents=True)
+    with open(config_file, "w") as f:
+        yaml.dump(config_data, f)
+
+    adapter = _make_adapter()
+
+    with patch.object(Path, "home", return_value=tmp_path), \
+         patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}):
+        adapter._persist_group_topic_thread_id(-1003986108253, "General", 999)
+
+    with open(config_file) as f:
+        result = yaml.safe_load(f)
+
+    topics = result["platforms"]["telegram"]["extra"]["group_topics"][0]["topics"]
+    assert topics[0]["thread_id"] == 1  # unchanged

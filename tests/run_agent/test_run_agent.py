@@ -714,6 +714,120 @@ class TestBuildSystemPrompt:
         assert mock_skills.call_args.kwargs["available_toolsets"] == {"web", "skills"}
 
 
+class TestClaudeFirstWorkflowGuidance:
+    """Tests for Claude-first workflow guidance injection when the USER
+    profile block signals a claude-first preference AND the agent has
+    terminal + delegate_task tools."""
+
+    def _make_agent_with_tools(self, *tool_names, model="openai/gpt-4.1"):
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs(*tool_names),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            a = AIAgent(
+                model=model,
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            a.client = MagicMock()
+            return a
+
+    def _set_user_profile(self, agent, user_text):
+        store = MagicMock()
+        store.format_for_system_prompt.side_effect = lambda kind: (
+            user_text if kind == "user" else ""
+        )
+        agent._memory_store = store
+        agent._user_profile_enabled = True
+        agent._memory_enabled = False
+        agent._cached_system_prompt = None
+
+    def test_guidance_injected_for_claude_first_user(self):
+        from agent.prompt_builder import CLAUDE_FIRST_WORKFLOW_GUIDANCE
+
+        agent = self._make_agent_with_tools("terminal", "delegate_task", "web_search")
+        user_block = (
+            "USER PROFILE\n"
+            "The user follows a Claude-first workflow. Coding, architecture, "
+            "and planning tasks should go to `claude` via `terminal`."
+        )
+        self._set_user_profile(agent, user_block)
+
+        prompt = agent._build_system_prompt()
+
+        assert CLAUDE_FIRST_WORKFLOW_GUIDANCE in prompt or (
+            "Claude handoff" in prompt and "delegate_task(acp_command=\"claude\")" in prompt
+        )
+
+    def test_guidance_not_injected_without_user_signal(self):
+        from agent.prompt_builder import CLAUDE_FIRST_WORKFLOW_GUIDANCE
+
+        agent = self._make_agent_with_tools("terminal", "delegate_task", "web_search")
+        self._set_user_profile(
+            agent,
+            "USER PROFILE\nThe user prefers concise replies and loves Python.",
+        )
+
+        prompt = agent._build_system_prompt()
+
+        assert CLAUDE_FIRST_WORKFLOW_GUIDANCE not in prompt
+
+    def test_guidance_not_injected_without_terminal(self):
+        from agent.prompt_builder import CLAUDE_FIRST_WORKFLOW_GUIDANCE
+
+        # No terminal tool → guidance is pointless.
+        agent = self._make_agent_with_tools("delegate_task", "web_search")
+        self._set_user_profile(
+            agent,
+            "User follows a claude-first workflow. Coding tasks should go to "
+            "`claude` via `terminal`.",
+        )
+
+        prompt = agent._build_system_prompt()
+        assert CLAUDE_FIRST_WORKFLOW_GUIDANCE not in prompt
+
+    def test_helper_returns_empty_without_signal(self):
+        from agent.prompt_builder import build_claude_first_workflow_guidance
+
+        result = build_claude_first_workflow_guidance(
+            user_block="The user likes coffee.",
+            available_tool_names={"terminal", "delegate_task"},
+        )
+        assert result == ""
+
+    def test_helper_returns_empty_without_terminal_tool(self):
+        from agent.prompt_builder import build_claude_first_workflow_guidance
+
+        result = build_claude_first_workflow_guidance(
+            user_block="Claude-first workflow: go to `claude` via `terminal`.",
+            available_tool_names={"web_search"},
+        )
+        assert result == ""
+
+    def test_helper_returns_guidance_when_signal_and_tools_present(self):
+        from agent.prompt_builder import (
+            build_claude_first_workflow_guidance,
+            CLAUDE_FIRST_WORKFLOW_GUIDANCE,
+        )
+
+        result = build_claude_first_workflow_guidance(
+            user_block=(
+                "Claude-first workflow: coding/architecture/planning "
+                "tasks should go to `claude` via `terminal`."
+            ),
+            available_tool_names={"terminal", "delegate_task"},
+        )
+        assert result
+        assert result == CLAUDE_FIRST_WORKFLOW_GUIDANCE
+
+
 class TestToolUseEnforcementConfig:
     """Tests for the agent.tool_use_enforcement config option."""
 
