@@ -1,5 +1,7 @@
 from unittest import mock
 
+import pytest
+
 from gateway.config import (
     GatewayConfig,
     Platform,
@@ -10,6 +12,9 @@ from gateway.config import (
     load_nim_instances,
     parse_nim_token,
 )
+from gateway.platforms.base import MessageEvent
+from gateway.run import GatewayRunner
+from gateway.session import SessionSource, build_session_context
 
 
 class TestParseNimToken:
@@ -61,18 +66,20 @@ class TestLoadNimConfig:
         assert resolved.text_chunk_limit == 2048
         assert resolved.debug is True
 
-    def test_loads_from_env_triplet(self):
+    def test_loads_from_explicit_fields(self):
         resolved = load_nim_config(
-            PlatformConfig(enabled=True),
-            {
-                "NIM_APP_KEY": "app",
-                "NIM_ACCOUNT": "bot",
-                "NIM_TOKEN": "secret",
-                "NIM_ALLOWED_USERS": "alice,bob",
-                "NIM_GROUP_ALLOWLIST": "team-a,team-b",
-                "NIM_GROUP_POLICY": "open",
-                "NIM_ALLOW_ALL_USERS": "true",
-            },
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "app_key": "app",
+                    "account": "bot",
+                    "token": "secret",
+                    "allowed_users": ["alice", "bob"],
+                    "group_allowlist": ["team-a", "team-b"],
+                    "group_policy": "open",
+                    "allow_all_users": True,
+                },
+            )
         )
 
         assert resolved.configured() is True
@@ -83,10 +90,7 @@ class TestLoadNimConfig:
 
     def test_compact_credentials_default_to_open_access(self):
         resolved = load_nim_config(
-            PlatformConfig(enabled=True),
-            {
-                "NIM_CREDENTIALS": "app|bot|secret",
-            },
+            PlatformConfig(enabled=True, extra={"nim_token": "app|bot|secret"})
         )
 
         assert resolved.configured() is True
@@ -135,36 +139,7 @@ class TestLoadNimConfig:
         assert instances[1].route_prefix == "work-bot/"
         assert instances[1].home_channel == "work-bot/user:42"
 
-    def test_env_instances_override_platform_instances(self):
-        instances = load_nim_instances(
-            PlatformConfig(
-                enabled=True,
-                extra={
-                    "instances": [
-                        {"instance_name": "stale", "nimToken": "app|stale|secret"},
-                    ],
-                },
-            ),
-            {
-                "NIM_INSTANCES": '[{"instance_name":"env","nimToken":"app|env|secret-env"}]',
-            },
-        )
-
-        assert [item.instance_name for item in instances] == ["env"]
-
-    def test_env_instances_override_legacy_env_credentials(self):
-        instances = load_nim_instances(
-            PlatformConfig(enabled=True),
-            {
-                "NIM_CREDENTIALS": "app|legacy|secret-legacy",
-                "NIM_INSTANCES": '[{"instance_name":"main","nimToken":"app|env|secret-env"}]',
-            },
-        )
-
-        assert [item.instance_name for item in instances] == ["main"]
-        assert [item.credentials.account for item in instances if item.credentials is not None] == ["env"]
-
-    def test_config_instances_override_legacy_env_credentials(self):
+    def test_config_instances_ignore_env_credentials(self):
         instances = load_nim_instances(
             PlatformConfig(
                 enabled=True,
@@ -217,3 +192,114 @@ class TestConnectedPlatforms:
         home = config.get_home_channel(Platform.NIM)
         assert home is not None
         assert home.chat_id == "user:100"
+
+    def test_nim_home_channel_resolves_per_instance_route(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.NIM: PlatformConfig(
+                    enabled=True,
+                    extra={
+                        "instances": [
+                            {
+                                "instance_name": "default",
+                                "nim_token": "app|default|secret",
+                                "home_channel": "user:100",
+                            },
+                            {
+                                "instance_name": "work",
+                                "nim_token": "app|work|secret",
+                                "home_channel": "user:200",
+                            },
+                        ],
+                    },
+                ),
+            }
+        )
+
+        home = config.get_home_channel(Platform.NIM, source_chat_id="work/user:42")
+        assert home is not None
+        assert home.chat_id == "work/user:200"
+
+
+class TestNimSessionContext:
+    def test_build_session_context_uses_current_nim_instance_home_channel(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.NIM: PlatformConfig(
+                    enabled=True,
+                    extra={
+                        "instances": [
+                            {
+                                "instance_name": "default",
+                                "nim_token": "app|default|secret",
+                                "home_channel": "user:100",
+                            },
+                            {
+                                "instance_name": "work",
+                                "nim_token": "app|work|secret",
+                                "home_channel": "user:200",
+                            },
+                        ],
+                    },
+                ),
+            }
+        )
+
+        source = SessionSource(
+            platform=Platform.NIM,
+            chat_id="work/user:42",
+            chat_type="dm",
+        )
+        context = build_session_context(source, config)
+
+        assert Platform.NIM in context.home_channels
+        assert context.home_channels[Platform.NIM].chat_id == "work/user:200"
+
+
+class TestNimSetHome:
+    @pytest.mark.asyncio
+    async def test_sethome_updates_matching_nim_instance(self, monkeypatch, tmp_path):
+        import gateway.run as gateway_run
+
+        monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+        (tmp_path / "config.yaml").write_text(
+            "nim:\n"
+            "  instances:\n"
+            "    - instance_name: default\n"
+            "      nimToken: app|default|secret\n"
+            "    - instance_name: work\n"
+            "      nimToken: app|work|secret\n",
+            encoding="utf-8",
+        )
+
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(
+            platforms={
+                Platform.NIM: PlatformConfig(
+                    enabled=True,
+                    extra={
+                        "instances": [
+                            {"instance_name": "default", "nimToken": "app|default|secret"},
+                            {"instance_name": "work", "nimToken": "app|work|secret"},
+                        ],
+                    },
+                )
+            }
+        )
+
+        event = MessageEvent(
+            text="/sethome",
+            source=SessionSource(
+                platform=Platform.NIM,
+                chat_id="work/user:42",
+                chat_name="Work DM",
+                chat_type="dm",
+            ),
+        )
+
+        result = await runner._handle_set_home_command(event)
+
+        assert "Home channel set" in result
+        updated = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+        assert "instance_name: work" in updated
+        assert "home_channel: user:42" in updated

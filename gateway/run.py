@@ -508,6 +508,8 @@ from gateway.config import (
     HomeChannel,
     PlatformConfig,
     load_gateway_config,
+    load_nim_instances,
+    decode_nim_chat_id,
 )
 from gateway.session import (
     SessionStore,
@@ -4378,7 +4380,7 @@ class GatewayRunner:
         
         Checks in order:
         1. Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
-        2. Environment variable allowlists (TELEGRAM_ALLOWED_USERS, etc.)
+        2. Platform allowlists (env vars for most platforms, config.yaml for NIM)
         3. DM pairing approved list
         4. Global allow-all (GATEWAY_ALLOW_ALL_USERS=true)
         5. Default: deny
@@ -4395,6 +4397,12 @@ class GatewayRunner:
         if not user_id:
             return False
 
+        nim_resolved = None
+        if source.platform == Platform.NIM:
+            nim_resolved = self._resolve_nim_source_config(source)
+            if nim_resolved and nim_resolved.allow_all_users:
+                return True
+
         platform_env_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
             Platform.DISCORD: "DISCORD_ALLOWED_USERS",
@@ -4410,7 +4418,6 @@ class GatewayRunner:
             Platform.WECOM: "WECOM_ALLOWED_USERS",
             Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOWED_USERS",
             Platform.WEIXIN: "WEIXIN_ALLOWED_USERS",
-            Platform.NIM: "NIM_ALLOWED_USERS",
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
             Platform.QQBOT: "QQ_ALLOWED_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOWED_USERS",
@@ -4437,7 +4444,6 @@ class GatewayRunner:
             Platform.WECOM: "WECOM_ALLOW_ALL_USERS",
             Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOW_ALL_USERS",
             Platform.WEIXIN: "WEIXIN_ALLOW_ALL_USERS",
-            Platform.NIM: "NIM_ALLOW_ALL_USERS",
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
             Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
@@ -4489,7 +4495,12 @@ class GatewayRunner:
             return True
 
         # Check platform-specific and global allowlists
-        platform_allowlist = os.getenv(platform_env_map.get(source.platform, ""), "").strip()
+        platform_allowlist = ""
+        if source.platform == Platform.NIM:
+            if nim_resolved:
+                platform_allowlist = ",".join(nim_resolved.allowed_users)
+        else:
+            platform_allowlist = os.getenv(platform_env_map.get(source.platform, ""), "").strip()
         group_user_allowlist = ""
         group_chat_allowlist = ""
         if source.chat_type in {"group", "forum"}:
@@ -4585,6 +4596,7 @@ class GatewayRunner:
         2. Explicit global ``unauthorized_dm_behavior`` in config — wins when no per-platform.
         3. When an allowlist (``PLATFORM_ALLOWED_USERS``,
            ``PLATFORM_GROUP_ALLOWED_USERS`` / ``PLATFORM_GROUP_ALLOWED_CHATS``,
+           NIM config,
            or ``GATEWAY_ALLOWED_USERS``) is configured, default to ``"ignore"`` —
            the allowlist signals that the owner has deliberately restricted
            access; spamming unknown contacts with pairing codes is both noisy
@@ -4624,7 +4636,6 @@ class GatewayRunner:
                 Platform.WECOM:    "WECOM_ALLOWED_USERS",
                 Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOWED_USERS",
                 Platform.WEIXIN:   "WEIXIN_ALLOWED_USERS",
-                Platform.NIM:      "NIM_ALLOWED_USERS",
                 Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
                 Platform.QQBOT:    "QQ_ALLOWED_USERS",
             }
@@ -4640,6 +4651,9 @@ class GatewayRunner:
             for env_key in platform_group_env_map.get(platform, ()):
                 if os.getenv(env_key, "").strip():
                     return "ignore"
+
+            if platform == Platform.NIM and self._nim_has_restricted_dm_access():
+                return "ignore"
 
         if os.getenv("GATEWAY_ALLOWED_USERS", "").strip():
             return "ignore"
@@ -4676,6 +4690,41 @@ class GatewayRunner:
                 )
 
         await adapter.send(source.chat_id, content, metadata=metadata)
+
+    def _resolve_nim_source_config(self, source: SessionSource):
+        if source.platform != Platform.NIM:
+            return None
+        config = getattr(self, "config", None)
+        if not config or not hasattr(config, "platforms"):
+            return None
+        platform_cfg = config.platforms.get(Platform.NIM)
+        if not platform_cfg:
+            return None
+
+        instances = load_nim_instances(platform_cfg)
+        if not instances:
+            return None
+        if len(instances) == 1:
+            return instances[0]
+
+        instance_name, _chat_id = decode_nim_chat_id(source.chat_id)
+        if instance_name:
+            for item in instances:
+                if item.instance_name == instance_name:
+                    return item
+        return instances[0]
+
+    def _nim_has_restricted_dm_access(self) -> bool:
+        config = getattr(self, "config", None)
+        if not config or not hasattr(config, "platforms"):
+            return False
+        platform_cfg = config.platforms.get(Platform.NIM)
+        if not platform_cfg:
+            return False
+        instances = load_nim_instances(platform_cfg)
+        if not instances:
+            return False
+        return any(not item.allow_all_users for item in instances)
 
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
@@ -8336,10 +8385,53 @@ class GatewayRunner:
         # Save to .env so it persists across restarts
         try:
             from hermes_cli.config import save_env_value
-            save_env_value(env_key, str(chat_id))
-            # Keep thread/topic routing explicit and clear stale values when
-            # /sethome is run from the parent chat instead of a thread.
-            save_env_value(thread_env_key, str(thread_id or ""))
+            config_path = _hermes_home / 'config.yaml'
+            user_config = {}
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    user_config = yaml.safe_load(f) or {}
+            if source.platform == Platform.NIM:
+                nim_cfg = user_config.get("nim")
+                if not isinstance(nim_cfg, dict):
+                    return "Failed to save home channel: nim.instances is not configured."
+                raw_instances = nim_cfg.get("instances")
+                if not isinstance(raw_instances, list) or not raw_instances:
+                    return "Failed to save home channel: nim.instances is not configured."
+
+                instances = [
+                    item for item in raw_instances
+                    if isinstance(item, dict)
+                ]
+                if not instances:
+                    return "Failed to save home channel: nim.instances is not configured."
+
+                instance_name, routed_chat_id = decode_nim_chat_id(chat_id)
+                target_index = None
+                if instance_name:
+                    for idx, item in enumerate(instances):
+                        raw_name = item.get("instance_name") or item.get("instanceName") or item.get("name")
+                        if str(raw_name or "").strip().lower() == instance_name.lower():
+                            target_index = idx
+                            break
+                    if target_index is None:
+                        return f"Failed to save home channel: unknown NIM instance '{instance_name}'."
+                elif len(instances) == 1:
+                    target_index = 0
+                else:
+                    return "Failed to save home channel: could not determine which NIM instance this chat belongs to."
+
+                instances[target_index]["home_channel"] = routed_chat_id
+                nim_cfg["instances"] = instances
+                user_config["nim"] = nim_cfg
+                atomic_yaml_write(config_path, user_config)
+                self.config = load_gateway_config()
+            else:
+                save_env_value(env_key, str(chat_id))
+                # Keep thread/topic routing explicit and clear stale values when
+                # /sethome is run from the parent chat instead of a thread.
+                save_env_value(thread_env_key, str(thread_id or ""))
+                os.environ[env_key] = str(chat_id)
+                os.environ[thread_env_key] = str(thread_id or "")
         except Exception as e:
             return f"Failed to save home channel: {e}"
 

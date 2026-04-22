@@ -144,11 +144,21 @@ def test_star_wildcard_works_for_any_platform(monkeypatch):
 
 def test_nim_allow_all_users_authorizes_dm(monkeypatch):
     _clear_auth_env(monkeypatch)
-    monkeypatch.setenv("NIM_ALLOW_ALL_USERS", "true")
 
     runner, _adapter = _make_runner(
         Platform.NIM,
-        GatewayConfig(platforms={Platform.NIM: PlatformConfig(enabled=True)}),
+        GatewayConfig(
+            platforms={
+                Platform.NIM: PlatformConfig(
+                    enabled=True,
+                    extra={
+                        "instances": [
+                            {"instance_name": "default", "nimToken": "app|bot|secret"},
+                        ],
+                    },
+                )
+            }
+        ),
     )
 
     source = SessionSource(
@@ -164,11 +174,25 @@ def test_nim_allow_all_users_authorizes_dm(monkeypatch):
 
 def test_nim_allowed_users_authorizes_matching_user(monkeypatch):
     _clear_auth_env(monkeypatch)
-    monkeypatch.setenv("NIM_ALLOWED_USERS", "112649,alice")
 
     runner, _adapter = _make_runner(
         Platform.NIM,
-        GatewayConfig(platforms={Platform.NIM: PlatformConfig(enabled=True)}),
+        GatewayConfig(
+            platforms={
+                Platform.NIM: PlatformConfig(
+                    enabled=True,
+                    extra={
+                        "instances": [
+                            {
+                                "instance_name": "default",
+                                "nimToken": "app|bot|secret",
+                                "p2p": {"policy": "allowlist", "allowFrom": ["112649", "alice"]},
+                            },
+                        ],
+                    },
+                )
+            }
+        ),
     )
 
     source = SessionSource(
@@ -180,6 +204,32 @@ def test_nim_allowed_users_authorizes_matching_user(monkeypatch):
     )
 
     assert runner._is_user_authorized(source) is True
+
+
+def test_nim_allowlist_defaults_unauthorized_dm_behavior_to_ignore(monkeypatch):
+    _clear_auth_env(monkeypatch)
+
+    runner, _adapter = _make_runner(
+        Platform.NIM,
+        GatewayConfig(
+            platforms={
+                Platform.NIM: PlatformConfig(
+                    enabled=True,
+                    extra={
+                        "instances": [
+                            {
+                                "instance_name": "default",
+                                "nimToken": "app|bot|secret",
+                                "p2p": {"policy": "allowlist", "allowFrom": ["112649"]},
+                            },
+                        ],
+                    },
+                )
+            }
+        ),
+    )
+
+    assert runner._get_unauthorized_dm_behavior(Platform.NIM) == "ignore"
 
 
 def test_qq_group_allowlist_authorizes_group_chat_without_user_allowlist(monkeypatch):

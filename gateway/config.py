@@ -343,19 +343,18 @@ def load_nim_config(
     platform: "PlatformConfig",
     environ: Dict[str, str] | None = None,
 ) -> NimResolvedConfig:
-    env = dict(os.environ) if environ is None else environ
     extra = dict(platform.extra or {})
     p2p_cfg = _coerce_mapping(extra.get("p2p"))
     team_cfg = _coerce_mapping(extra.get("team"))
     qchat_cfg = _coerce_mapping(extra.get("qchat"))
     advanced_cfg = _coerce_mapping(extra.get("advanced"))
 
-    nim_token = _first_non_empty(extra.get("nimToken"), extra.get("nim_token"), env.get("NIM_CREDENTIALS"))
+    nim_token = _first_non_empty(extra.get("nimToken"), extra.get("nim_token"))
     credentials = parse_nim_token(nim_token)
     if credentials is None:
-        app_key = _first_non_empty(extra.get("appKey"), extra.get("app_key"), env.get("NIM_APP_KEY"))
-        account = _first_non_empty(extra.get("account"), env.get("NIM_ACCOUNT"))
-        token = _first_non_empty(extra.get("token"), env.get("NIM_TOKEN"))
+        app_key = _first_non_empty(extra.get("appKey"), extra.get("app_key"))
+        account = _first_non_empty(extra.get("account"))
+        token = _first_non_empty(extra.get("token"))
         if app_key and account and token:
             credentials = NimCredentials(
                 app_key=str(app_key).strip(),
@@ -363,8 +362,8 @@ def load_nim_config(
                 token=str(token).strip(),
             )
 
-    legacy_p2p_allow = _parse_csv_list(_first_non_empty(extra.get("allowed_users"), env.get("NIM_ALLOWED_USERS")))
-    legacy_allow_all = _coerce_bool(extra.get("allow_all_users", env.get("NIM_ALLOW_ALL_USERS")), default=True)
+    legacy_p2p_allow = _parse_csv_list(_first_non_empty(extra.get("allowed_users")))
+    legacy_allow_all = _coerce_bool(extra.get("allow_all_users"), default=True)
     p2p_allow_from = _parse_csv_list(
         _first_non_empty(
             p2p_cfg.get("allowFrom"),
@@ -381,7 +380,7 @@ def load_nim_config(
         else:
             p2p_policy = "open"
 
-    legacy_team_allow = _parse_csv_list(_first_non_empty(extra.get("group_allowlist"), env.get("NIM_GROUP_ALLOWLIST")))
+    legacy_team_allow = _parse_csv_list(_first_non_empty(extra.get("group_allowlist")))
     team_allow_from = _parse_csv_list(
         _first_non_empty(
             team_cfg.get("allowFrom"),
@@ -390,7 +389,7 @@ def load_nim_config(
         )
     )
     team_policy = _normalize_nim_policy(
-        _first_non_empty(team_cfg.get("policy"), extra.get("group_policy"), env.get("NIM_GROUP_POLICY")),
+        _first_non_empty(team_cfg.get("policy"), extra.get("group_policy")),
         "open",
     )
     qchat_policy = _normalize_nim_policy(qchat_cfg.get("policy"), "open")
@@ -403,7 +402,6 @@ def load_nim_config(
             advanced_cfg.get("mediaMaxMb"),
             advanced_cfg.get("media_max_mb"),
             extra.get("media_max_mb"),
-            env.get("NIM_MEDIA_MAX_MB"),
         ),
         30,
     )
@@ -418,7 +416,7 @@ def load_nim_config(
         ),
     )
     debug = _coerce_bool(
-        _first_non_empty(advanced_cfg.get("debug"), extra.get("debug"), env.get("NIM_DEBUG")),
+        _first_non_empty(advanced_cfg.get("debug"), extra.get("debug")),
         default=False,
     )
     advanced: Dict[str, Any] = {
@@ -461,7 +459,7 @@ def load_nim_config(
         allow_all_users=p2p_policy == "open",
         group_policy=team_policy,
         group_allowlist=list(team_allow_from),
-        home_channel=str(_first_non_empty(extra.get("home_channel"), extra.get("homeChannel"), env.get("NIM_HOME_CHANNEL")) or "").strip() or None,
+        home_channel=str(_first_non_empty(extra.get("home_channel"), extra.get("homeChannel")) or "").strip() or None,
         bridge_command=_default_nim_bridge_command(),
         media_max_mb=media_max_mb,
         text_chunk_limit=text_chunk_limit,
@@ -500,20 +498,8 @@ def load_nim_instances(
     platform: "PlatformConfig",
     environ: Dict[str, str] | None = None,
 ) -> List[NimResolvedConfig]:
-    env = dict(os.environ) if environ is None else environ
     base_extra = dict(platform.extra or {})
     raw_instances = _coerce_nim_instances(base_extra.pop("instances", None))
-    env_instances = env.get("NIM_INSTANCES")
-    legacy_env = dict(env)
-    has_explicit_instances = bool(raw_instances)
-    if has_explicit_instances:
-        for key in ("NIM_CREDENTIALS", "NIM_APP_KEY", "NIM_ACCOUNT", "NIM_TOKEN", "NIM_HOME_CHANNEL"):
-            legacy_env.pop(key, None)
-    if env_instances is not None and env_instances.strip():
-        raw_instances = _coerce_nim_instances(env_instances)
-        has_explicit_instances = bool(raw_instances)
-        for key in ("NIM_CREDENTIALS", "NIM_APP_KEY", "NIM_ACCOUNT", "NIM_TOKEN", "NIM_HOME_CHANNEL"):
-            legacy_env.pop(key, None)
 
     instances: List[NimResolvedConfig] = []
     seen_names: set[str] = set()
@@ -535,16 +521,13 @@ def load_nim_instances(
         reply_to_mode=platform.reply_to_mode,
         extra=base_extra,
     )
-    legacy = load_nim_config(legacy_platform, legacy_env)
+    legacy = load_nim_config(legacy_platform, environ)
     if legacy.configured():
         _append_instance(legacy)
 
     for index, item in enumerate(raw_instances, start=1):
         instance_extra = {**base_extra, **item}
         enabled = _coerce_bool(instance_extra.get("enabled"), default=platform.enabled)
-        instance_env = dict(env)
-        for key in ("NIM_CREDENTIALS", "NIM_APP_KEY", "NIM_ACCOUNT", "NIM_TOKEN", "NIM_HOME_CHANNEL"):
-            instance_env.pop(key, None)
         instance_platform = PlatformConfig(
             enabled=enabled,
             token=platform.token,
@@ -553,7 +536,7 @@ def load_nim_instances(
             reply_to_mode=platform.reply_to_mode,
             extra=instance_extra,
         )
-        resolved = load_nim_config(instance_platform, instance_env)
+        resolved = load_nim_config(instance_platform, environ)
         if not resolved.configured():
             logger.warning("Ignoring unconfigured NIM instance entry: %s", instance_extra.get("instance_name") or instance_extra.get("name") or f"nim{index}")
             continue
@@ -867,13 +850,28 @@ class GatewayConfig:
 
         return False
     
-    def get_home_channel(self, platform: Platform) -> Optional[HomeChannel]:
+    def get_home_channel(
+        self,
+        platform: Platform,
+        source_chat_id: Optional[str] = None,
+    ) -> Optional[HomeChannel]:
         """Get the home channel for a platform."""
         config = self.platforms.get(platform)
         if config and config.home_channel:
             return config.home_channel
         if platform == Platform.NIM and config:
-            for instance in load_nim_instances(config):
+            instances = load_nim_instances(config)
+            if source_chat_id:
+                instance_name, _routed = decode_nim_chat_id(source_chat_id)
+                if instance_name:
+                    for instance in instances:
+                        if instance.instance_name == instance_name and instance.home_channel:
+                            return HomeChannel(
+                                platform=Platform.NIM,
+                                chat_id=instance.home_channel,
+                                name=f"NIM {instance.instance_name}",
+                            )
+            for instance in instances:
                 if instance.home_channel:
                     return HomeChannel(
                         platform=Platform.NIM,
@@ -1905,58 +1903,6 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 thread_id=os.getenv("WEIXIN_HOME_CHANNEL_THREAD_ID") or None,
             )
 
-    # NIM
-    nim_token = os.getenv("NIM_CREDENTIALS")
-    nim_instances = os.getenv("NIM_INSTANCES", "").strip()
-    nim_app_key = os.getenv("NIM_APP_KEY")
-    nim_account = os.getenv("NIM_ACCOUNT")
-    nim_secret = os.getenv("NIM_TOKEN")
-    if nim_token or nim_instances or (nim_app_key and nim_account and nim_secret):
-        if Platform.NIM not in config.platforms:
-            config.platforms[Platform.NIM] = PlatformConfig()
-        config.platforms[Platform.NIM].enabled = True
-        extra = config.platforms[Platform.NIM].extra
-        existing_yaml_instances = _coerce_nim_instances(extra.get("instances"))
-        if nim_instances:
-            parsed_instances = _coerce_nim_instances(nim_instances)
-            if parsed_instances:
-                extra["instances"] = parsed_instances
-        if nim_token and not nim_instances and not existing_yaml_instances:
-            extra["nim_token"] = nim_token
-        if nim_app_key and not nim_instances and not existing_yaml_instances:
-            extra["app_key"] = nim_app_key
-        if nim_account and not nim_instances and not existing_yaml_instances:
-            extra["account"] = nim_account
-        if nim_secret and not nim_instances and not existing_yaml_instances:
-            extra["token"] = nim_secret
-        nim_group_policy = os.getenv("NIM_GROUP_POLICY", "").strip().lower()
-        if nim_group_policy:
-            extra["group_policy"] = nim_group_policy
-        nim_group_allowlist = os.getenv("NIM_GROUP_ALLOWLIST", "").strip()
-        if nim_group_allowlist:
-            extra["group_allowlist"] = _parse_csv_list(nim_group_allowlist)
-        nim_allowed_users = os.getenv("NIM_ALLOWED_USERS", "").strip()
-        if nim_allowed_users:
-            extra["allowed_users"] = _parse_csv_list(nim_allowed_users)
-        nim_allow_all_users = os.getenv("NIM_ALLOW_ALL_USERS", "").strip()
-        if nim_allow_all_users:
-            extra["allow_all_users"] = _coerce_bool(nim_allow_all_users, default=True)
-        nim_media_max_mb = os.getenv("NIM_MEDIA_MAX_MB", "").strip()
-        if nim_media_max_mb:
-            try:
-                extra["media_max_mb"] = int(nim_media_max_mb)
-            except ValueError:
-                pass
-        nim_debug = os.getenv("NIM_DEBUG", "").strip()
-        if nim_debug:
-            extra["debug"] = _coerce_bool(nim_debug, default=False)
-    nim_home = os.getenv("NIM_HOME_CHANNEL", "").strip()
-    if nim_home and Platform.NIM in config.platforms:
-        config.platforms[Platform.NIM].home_channel = HomeChannel(
-            platform=Platform.NIM,
-            chat_id=nim_home,
-            name=os.getenv("NIM_HOME_CHANNEL_NAME", "Home"),
-        )
     # BlueBubbles (iMessage)
     bluebubbles_server_url = os.getenv("BLUEBUBBLES_SERVER_URL")
     bluebubbles_password = os.getenv("BLUEBUBBLES_PASSWORD")

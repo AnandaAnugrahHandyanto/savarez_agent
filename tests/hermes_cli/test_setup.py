@@ -242,10 +242,8 @@ def test_gateway_platforms_include_nim():
     assert "NIM (NetEase IM)" in names
 
 
-def test_setup_gateway_marks_nim_configured_with_explicit_fields(monkeypatch):
+def test_setup_gateway_ignores_nim_env_credentials_without_config_yaml(monkeypatch):
     env = {
-        "NIM_CREDENTIALS": "",
-        "NIM_INSTANCES": "",
         "NIM_APP_KEY": "app-key",
         "NIM_ACCOUNT": "bot-account",
         "NIM_TOKEN": "bot-token",
@@ -264,13 +262,14 @@ def test_setup_gateway_marks_nim_configured_with_explicit_fields(monkeypatch):
     monkeypatch.setattr(setup_mod, "prompt_checklist", _capture)
     setup_mod.setup_gateway({})
 
-    nim_index = captured["items"].index("NIM (NetEase IM)  (configured)")
-    assert nim_index in captured["pre_selected"]
+    nim_index = next(
+        i for i, item in enumerate(captured["items"])
+        if item.startswith("NIM (NetEase IM)")
+    )
+    assert nim_index not in captured["pre_selected"]
 
-
-def test_setup_gateway_marks_nim_configured_with_instances(monkeypatch):
+def test_setup_gateway_ignores_nim_env_instances_without_config_yaml(monkeypatch):
     env = {
-        "NIM_CREDENTIALS": "",
         "NIM_INSTANCES": '[{"instance_name":"work","nim_token":"app|bot|secret"}]',
     }
 
@@ -286,8 +285,11 @@ def test_setup_gateway_marks_nim_configured_with_instances(monkeypatch):
     monkeypatch.setattr(setup_mod, "prompt_checklist", _capture)
     setup_mod.setup_gateway({})
 
-    nim_index = captured["items"].index("NIM (NetEase IM)  (configured)")
-    assert nim_index in captured["pre_selected"]
+    nim_index = next(
+        i for i, item in enumerate(captured["items"])
+        if item.startswith("NIM (NetEase IM)")
+    )
+    assert nim_index not in captured["pre_selected"]
 
 
 def test_setup_gateway_marks_nim_configured_from_config_yaml(monkeypatch, tmp_path):
@@ -400,15 +402,6 @@ def test_setup_nim_compact_credentials_sets_open_defaults(monkeypatch, tmp_path)
             },
         }
     ]
-    assert setup_mod.get_env_value("NIM_CREDENTIALS") == ""
-    assert setup_mod.get_env_value("NIM_INSTANCES") == ""
-    assert setup_mod.get_env_value("NIM_APP_KEY") == ""
-    assert setup_mod.get_env_value("NIM_ACCOUNT") == ""
-    assert setup_mod.get_env_value("NIM_TOKEN") == ""
-    assert setup_mod.get_env_value("NIM_ALLOWED_USERS") == ""
-    assert setup_mod.get_env_value("NIM_ALLOW_ALL_USERS") == "true"
-    assert setup_mod.get_env_value("NIM_GROUP_POLICY") == "open"
-    assert setup_mod.get_env_value("NIM_GROUP_ALLOWLIST") == ""
 
 
 def test_gateway_summary_includes_nim_from_config_yaml(monkeypatch, tmp_path):

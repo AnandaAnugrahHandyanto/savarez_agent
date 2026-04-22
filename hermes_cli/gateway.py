@@ -3127,11 +3127,6 @@ def _platform_status(platform: dict) -> str:
         nim_instances = nim_cfg.get("instances", []) if isinstance(nim_cfg, dict) else []
         if isinstance(nim_instances, list) and any(isinstance(item, dict) for item in nim_instances):
             return "configured"
-        explicit = all(get_env_value(name) for name in ("NIM_APP_KEY", "NIM_ACCOUNT", "NIM_TOKEN"))
-        if val or get_env_value("NIM_INSTANCES") or explicit:
-            return "configured"
-        if any(get_env_value(name) for name in ("NIM_APP_KEY", "NIM_ACCOUNT", "NIM_TOKEN")):
-            return "partially configured"
         return "not configured"
     if val:
         return "configured"
@@ -3306,16 +3301,10 @@ def _setup_nim():
     nim_cfg = current_config.get("nim")
     nim_instances = nim_cfg.get("instances", []) if isinstance(nim_cfg, dict) else []
     existing_yaml_instances = isinstance(nim_instances, list) and any(isinstance(item, dict) for item in nim_instances)
-    existing_credentials = get_env_value("NIM_CREDENTIALS")
-    existing_instances = get_env_value("NIM_INSTANCES")
-    if existing_yaml_instances or existing_credentials or existing_instances:
+    if existing_yaml_instances:
         print()
         print_success(f"{label} is already configured.")
-        if existing_yaml_instances:
-            print_info("  Existing config.yaml nim.instances configuration detected.")
-        elif existing_instances:
-            print_info("  Existing multi-instance config detected in NIM_INSTANCES.")
-            print_info("  This flow will replace it with config.yaml nim.instances.")
+        print_info("  Existing config.yaml nim.instances configuration detected.")
         if not prompt_yes_no(f"  Reconfigure {label}?", False):
             return
 
@@ -3344,21 +3333,6 @@ def _setup_nim():
         ]
     }
     save_config(current_config)
-
-    save_env_value("NIM_CREDENTIALS", "")
-    save_env_value("NIM_INSTANCES", "")
-    save_env_value("NIM_APP_KEY", "")
-    save_env_value("NIM_ACCOUNT", "")
-    save_env_value("NIM_TOKEN", "")
-    save_env_value("NIM_ALLOWED_USERS", "")
-    save_env_value("NIM_ALLOW_ALL_USERS", "true")
-    save_env_value("NIM_GROUP_POLICY", "open")
-    save_env_value("NIM_GROUP_ALLOWLIST", "")
-    save_env_value("NIM_HOME_CHANNEL", "")
-    save_env_value("NIM_HOME_CHANNEL_NAME", "")
-    save_env_value("NIM_BRIDGE_COMMAND", "")
-    save_env_value("NIM_MEDIA_MAX_MB", "")
-    save_env_value("NIM_DEBUG", "")
 
     print()
     print_success(f"{emoji} {label} configured in config.yaml with open defaults!")

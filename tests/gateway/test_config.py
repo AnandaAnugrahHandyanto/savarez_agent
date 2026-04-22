@@ -429,6 +429,18 @@ class TestLoadGatewayConfig:
         assert nim_platform.extra["instances"][0]["nimToken"] == "app|yaml-bot|secret-yaml"
         assert "nim_token" not in nim_platform.extra
 
+    def test_nim_env_credentials_do_not_create_config(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("NIM_CREDENTIALS", "app|legacy-bot|secret-legacy")
+
+        config = load_gateway_config()
+
+        assert Platform.NIM not in config.platforms
+
     def test_bridges_slack_channel_prompts_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

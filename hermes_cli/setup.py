@@ -2399,15 +2399,15 @@ def setup_gateway(config: dict):
     else:
         config.pop("nim", None)
 
-     nim_cfg = config.get("nim")
-     nim_instances = nim_cfg.get("instances", []) if isinstance(nim_cfg, dict) else []
-     nim_from_config = isinstance(nim_instances, list) and any(isinstance(item, dict) for item in nim_instances)
- 
-     # ── Gateway Service Setup ──
-     # Count any platform (built-in or plugin) the user configured during this
-     # setup pass — reuses ``_platform_status`` so plugin platforms like IRC
-     # are picked up without another hard-coded env-var list.
-     def _is_progress(status: str) -> bool:
+    nim_cfg = config.get("nim")
+    nim_instances = nim_cfg.get("instances", []) if isinstance(nim_cfg, dict) else []
+    nim_from_config = isinstance(nim_instances, list) and any(isinstance(item, dict) for item in nim_instances)
+
+    # ── Gateway Service Setup ──
+    # Count any platform (built-in or plugin) the user configured during this
+    # setup pass — reuses ``_platform_status`` so plugin platforms like IRC
+    # are picked up without another hard-coded env-var list.
+    def _is_progress(status: str) -> bool:
         s = status.lower()
         return not (
             s == "not configured"
@@ -2415,10 +2415,10 @@ def setup_gateway(config: dict):
             or s.startswith("plugin disabled")
         )
 
-     any_messaging = any(
-         _is_progress(_platform_status(p)) for p in _all_platforms()
-     )
-     if any_messaging:
+    any_messaging = any(
+        _is_progress(_platform_status(p)) for p in _all_platforms()
+    ) or nim_from_config
+    if any_messaging:
         print()
         print_info("━" * 50)
         print_success("Messaging platforms configured!")
