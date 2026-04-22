@@ -701,13 +701,22 @@ def brave_answers(
     query = (query or "").strip()
     model = (model or _BRAVE_DEFAULT_MODEL).strip() or _BRAVE_DEFAULT_MODEL
 
-    request_messages = messages if messages is not None else None
-    if request_messages is None:
+    request_messages = None
+    if messages is not None:
+        if len(messages) != 1:
+            return tool_error("Brave answers accepts exactly one user message")
+        first_message = messages[0]
+        if not isinstance(first_message, dict):
+            return tool_error("Brave answers message must be an object with role and content")
+        if first_message.get("role") != "user":
+            return tool_error("Brave answers only accepts a single user message")
+        if not isinstance(first_message.get("content"), str) or not first_message["content"].strip():
+            return tool_error("Brave answers user message content is required")
+        request_messages = [first_message]
+    else:
         if not query:
             return tool_error("Query is required")
         request_messages = [{"role": "user", "content": query}]
-    elif not request_messages:
-        return tool_error("Messages are required")
 
     payload: Dict[str, Any] = {
         "model": model,
@@ -993,7 +1002,7 @@ BRAVE_SUGGEST_SCHEMA = {
 
 BRAVE_ANSWERS_SCHEMA = {
     "name": "brave_answers",
-    "description": "Get an AI-generated answer from Brave Search using the OpenAI-compatible chat completions endpoint. Provide either query or messages. Works best with BRAVE_ANSWERS_API_KEY.",
+    "description": "Get an AI-generated answer from Brave Search using the OpenAI-compatible chat completions endpoint. Provide either query or a single user message. Works best with BRAVE_ANSWERS_API_KEY.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1003,10 +1012,17 @@ BRAVE_ANSWERS_SCHEMA = {
             },
             "messages": {
                 "type": "array",
+                "minItems": 1,
+                "maxItems": 1,
                 "items": {
                     "type": "object",
+                    "properties": {
+                        "role": {"type": "string", "const": "user"},
+                        "content": {"type": "string"},
+                    },
+                    "required": ["role", "content"],
                 },
-                "description": "OpenAI-style chat messages; if provided, they are sent directly to Brave.",
+                "description": "OpenAI-style chat messages; Brave only accepts a single user message.",
             },
             "model": {
                 "type": "string",
@@ -1034,10 +1050,7 @@ BRAVE_ANSWERS_SCHEMA = {
                 "description": "Enable citations",
             },
         },
-        "anyOf": [
-            {"required": ["query"]},
-            {"required": ["messages"]},
-        ],
+        "anyOf": [{"required": ["query"]}, {"required": ["messages"]}],
     },
 }
 

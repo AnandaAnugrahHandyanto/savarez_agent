@@ -343,10 +343,6 @@ class TestBraveSearch:
                     "brave_answers",
                     {
                         "query": "What is Brave Search?",
-                        "messages": [
-                            {"role": "system", "content": "Answer directly."},
-                            {"role": "user", "content": "What is Brave Search?"},
-                        ],
                         "model": "brave-pro",
                         "stream": False,
                         "country": "US",
@@ -368,7 +364,6 @@ class TestBraveSearch:
         assert call.kwargs["json"] == {
             "model": "brave-pro",
             "messages": [
-                {"role": "system", "content": "Answer directly."},
                 {"role": "user", "content": "What is Brave Search?"},
             ],
             "stream": False,
@@ -381,12 +376,12 @@ class TestBraveSearch:
         assert call.kwargs["headers"]["Content-Type"] == "application/json"
         assert call.kwargs["headers"]["Accept-Encoding"] == "gzip"
 
-    def test_answers_accepts_messages_only_chat_completions_surface(self):
+    def test_answers_accepts_single_user_message_chat_completions_surface(self):
         response = MagicMock()
         response.raise_for_status = MagicMock()
         response.json.return_value = {
             "choices": [
-                {"message": {"content": "Messages-only answer."}}
+                {"message": {"content": "Single-message answer."}}
             ],
             "usage": {"prompt_tokens": 8, "completion_tokens": 12, "total_tokens": 20},
         }
@@ -398,7 +393,6 @@ class TestBraveSearch:
             result = json.loads(
                 brave_answers(
                     messages=[
-                        {"role": "system", "content": "Answer directly."},
                         {"role": "user", "content": "What is Brave Search?"},
                     ]
                 )
@@ -406,7 +400,7 @@ class TestBraveSearch:
 
         assert result["success"] is True
         assert result["data"]["query"] == ""
-        assert result["data"]["answer"] == "Messages-only answer."
+        assert result["data"]["answer"] == "Single-message answer."
         assert result["data"]["usage"]["total_tokens"] == 20
 
         call = mock_post.call_args
@@ -414,7 +408,6 @@ class TestBraveSearch:
         assert call.kwargs["json"] == {
             "model": "brave-pro",
             "messages": [
-                {"role": "system", "content": "Answer directly."},
                 {"role": "user", "content": "What is Brave Search?"},
             ],
             "stream": False,
@@ -422,6 +415,23 @@ class TestBraveSearch:
         assert call.kwargs["headers"]["X-Subscription-Token"] == "answers-test"
         assert call.kwargs["headers"]["Content-Type"] == "application/json"
         assert call.kwargs["headers"]["Accept-Encoding"] == "gzip"
+
+    def test_answers_rejects_multi_message_payloads_before_request(self):
+        with patch.dict(os.environ, {"BRAVE_ANSWERS_API_KEY": "answers-test"}, clear=True), \
+             patch("tools.brave_search_tool.httpx.post") as mock_post:
+            from tools.brave_search_tool import brave_answers
+
+            result = json.loads(
+                brave_answers(
+                    messages=[
+                        {"role": "system", "content": "Answer directly."},
+                        {"role": "user", "content": "What is Brave Search?"},
+                    ]
+                )
+            )
+
+        assert "exactly one user message" in result["error"]
+        mock_post.assert_not_called()
 
     def test_answers_schema_allows_query_or_messages(self):
         from tools.brave_search_tool import BRAVE_ANSWERS_SCHEMA
@@ -431,6 +441,10 @@ class TestBraveSearch:
         assert {"required": ["query"]} in parameters["anyOf"]
         assert {"required": ["messages"]} in parameters["anyOf"]
         assert "required" not in parameters or "query" not in parameters.get("required", [])
+        messages_schema = parameters["properties"]["messages"]
+        assert messages_schema["minItems"] == 1
+        assert messages_schema["maxItems"] == 1
+        assert messages_schema["items"]["properties"]["role"]["const"] == "user"
 
     def test_answers_surfaces_structured_brave_http_errors(self):
         error_response = _make_brave_http_error_response(
