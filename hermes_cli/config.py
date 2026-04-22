@@ -703,6 +703,16 @@ DEFAULT_CONFIG = {
         "provider": "",
     },
 
+    # Obsidian vault auto-injection — Layer 3 persistent memory.
+    # When enabled, working-context.md and user-profile.md are read from
+    # the vault path at session start and injected into the system prompt
+    # alongside Layer 1 memory. This is a structural fix for vault neglect:
+    # the agent no longer needs to remember to read these files manually.
+    "vault": {
+        "enabled": False,      # set true to activate
+        "path": "",             # absolute path to the Obsidian vault root
+    },
+
     # Subagent delegation — override the provider:model used by delegate_task
     # so child agents can run on a different (cheaper/faster) provider and model.
     # Uses the same runtime provider resolution as CLI/gateway startup, so all

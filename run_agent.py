@@ -1414,7 +1414,8 @@ class AIAgent:
         try:
             from hermes_cli.config import load_config as _load_agent_config
             _agent_cfg = _load_agent_config()
-        except Exception:
+        except Exception as e:
+            logger.warning("Agent init: load_config() failed: %s: %s — using empty config", type(e).__name__, e)
             _agent_cfg = {}
         # Cache only the derived auxiliary compression context override that is
         # needed later by the startup feasibility check.  Avoid exposing a
@@ -1445,8 +1446,20 @@ class AIAgent:
                     self._memory_store.load_from_disk()
             except Exception:
                 pass  # Memory is optional -- don't break agent init
-        
 
+        # Obsidian vault auto-injection (Layer 3) — structural fix for
+        # vault neglect. Reads working-context.md and user-profile.md
+        # from the configured vault path and injects them into the system
+        # prompt at session start, just like Layer 1 memory.
+        self._vault_enabled = False
+        self._vault_path = ""
+        try:
+            vault_config = _agent_cfg.get("vault", {})
+            self._vault_enabled = vault_config.get("enabled", False)
+            self._vault_path = vault_config.get("path", "")
+            logging.getLogger("agent.vault").info("Vault config: enabled=%s path=%s", self._vault_enabled, self._vault_path)
+        except Exception as e:
+            logging.getLogger("agent.vault").warning("Vault config read failed: %s: %s", type(e).__name__, e)
 
         # Memory provider plugin (external — one at a time, alongside built-in)
         # Reads memory.provider from config to select which plugin to activate.
@@ -4135,6 +4148,24 @@ class AIAgent:
                 user_block = self._memory_store.format_for_system_prompt("user")
                 if user_block:
                     prompt_parts.append(user_block)
+
+        # Vault auto-injection (Layer 3) — reads working-context.md and
+        # user-profile.md from the Obsidian vault and injects them into
+        # the system prompt. Structural fix for vault neglect.
+        _vault_log = logging.getLogger("agent.vault")
+        if self._vault_enabled and self._vault_path:
+            try:
+                from agent.vault_injection import build_vault_system_prompt
+                _vault_block = build_vault_system_prompt(self._vault_path)
+                if _vault_block:
+                    prompt_parts.append(_vault_block)
+                    _vault_log.info("Injection succeeded: %d chars from %s", len(_vault_block), self._vault_path)
+                else:
+                    _vault_log.warning("Injection returned empty for path %s", self._vault_path)
+            except Exception as e:
+                _vault_log.warning("Injection failed: %s: %s", type(e).__name__, e)
+        else:
+            _vault_log.info("Injection skipped: enabled=%s path=%s", self._vault_enabled, self._vault_path)
 
         # External memory provider system prompt block (additive to built-in)
         if self._memory_manager:
