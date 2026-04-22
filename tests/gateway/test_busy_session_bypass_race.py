@@ -69,6 +69,58 @@ async def test_busy_bypass_queue_uses_busy_semantics_without_running_agent():
 
 
 @pytest.mark.asyncio
+async def test_busy_bypass_queue_preserves_photo_media_without_running_agent():
+    runner, adapter = _make_runner_and_adapter()
+    event = MessageEvent(
+        text="/queue look at this image",
+        message_type=MessageType.PHOTO,
+        source=_make_source(),
+        message_id="m-photo",
+        media_urls=["/tmp/photo-a.jpg"],
+        media_types=["image/jpeg"],
+    )
+    session_key = build_session_key(event.source)
+    adapter._active_sessions[session_key] = asyncio.Event()
+    setattr(event, "_busy_session_bypass", True)
+
+    result = await runner._handle_message(event)
+
+    assert result == "Queued for the next turn."
+    queued = adapter._pending_messages[session_key]
+    assert queued.text == "look at this image"
+    assert queued.message_type == MessageType.PHOTO
+    assert queued.media_urls == ["/tmp/photo-a.jpg"]
+    assert queued.media_types == ["image/jpeg"]
+    runner._handle_message_with_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_busy_bypass_queue_allows_media_without_prompt_text():
+    runner, adapter = _make_runner_and_adapter()
+    event = MessageEvent(
+        text="/queue",
+        message_type=MessageType.DOCUMENT,
+        source=_make_source(),
+        message_id="m-doc",
+        media_urls=["/tmp/file.pdf"],
+        media_types=["application/pdf"],
+    )
+    session_key = build_session_key(event.source)
+    adapter._active_sessions[session_key] = asyncio.Event()
+    setattr(event, "_busy_session_bypass", True)
+
+    result = await runner._handle_message(event)
+
+    assert result == "Queued for the next turn."
+    queued = adapter._pending_messages[session_key]
+    assert queued.text == ""
+    assert queued.message_type == MessageType.DOCUMENT
+    assert queued.media_urls == ["/tmp/file.pdf"]
+    assert queued.media_types == ["application/pdf"]
+    runner._handle_message_with_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_busy_bypass_model_rejects_without_running_agent():
     runner, adapter = _make_runner_and_adapter()
     event = _make_event("/model gpt-5")
