@@ -1337,6 +1337,217 @@ class TestResponsesStreaming:
                 assert '"output": [{"type": "input_text", "text": "{\\"content\\":\\"hello\\"}"}]' in body
 
     @pytest.mark.asyncio
+    async def test_stream_large_tool_output_stays_below_aiohttp_line_limit(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            large_output = "x" * 150000
+
+            async def _mock_run_agent(**kwargs):
+                start_cb = kwargs.get("tool_start_callback")
+                complete_cb = kwargs.get("tool_complete_callback")
+                text_cb = kwargs.get("stream_delta_callback")
+                if start_cb:
+                    start_cb("call_123", "read_file", {"path": "/tmp/test.txt"})
+                if complete_cb:
+                    complete_cb("call_123", "read_file", {"path": "/tmp/test.txt"}, large_output)
+                if text_cb:
+                    text_cb("Done.")
+                return (
+                    {
+                        "final_response": "Done.",
+                        "messages": [
+                            {
+                                "role": "assistant",
+                                "tool_calls": [
+                                    {
+                                        "id": "call_123",
+                                        "function": {
+                                            "name": "read_file",
+                                            "arguments": '{"path":"/tmp/test.txt"}',
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "role": "tool",
+                                "tool_call_id": "call_123",
+                                "content": large_output,
+                            },
+                        ],
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "read the file", "stream": True},
+                )
+                assert resp.status == 200
+                chunks = []
+                line_lengths = []
+                while True:
+                    line = await resp.content.readline()
+                    if not line:
+                        break
+                    line_lengths.append(len(line))
+                    chunks.append(line.decode("utf-8", errors="replace"))
+
+                body = "".join(chunks)
+                assert max(line_lengths) < 131072
+                assert "event: response.output_item.added" in body
+                assert "event: response.output_item.done" in body
+                assert "event: response.completed" in body
+                assert "Done." in body
+                assert "[truncated for SSE stream]" in body
+
+    @pytest.mark.asyncio
+    async def test_stream_large_tool_arguments_stay_below_aiohttp_line_limit(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            large_path = "/tmp/" + ("nested/" * 6000) + "file.txt"
+
+            async def _mock_run_agent(**kwargs):
+                start_cb = kwargs.get("tool_start_callback")
+                complete_cb = kwargs.get("tool_complete_callback")
+                if start_cb:
+                    start_cb("call_123", "read_file", {"path": large_path})
+                if complete_cb:
+                    complete_cb("call_123", "read_file", {"path": large_path}, "ok")
+                return (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "read the file", "stream": True},
+                )
+                assert resp.status == 200
+                chunks = []
+                line_lengths = []
+                while True:
+                    line = await resp.content.readline()
+                    if not line:
+                        break
+                    line_lengths.append(len(line))
+                    chunks.append(line.decode("utf-8", errors="replace"))
+
+                body = "".join(chunks)
+                assert max(line_lengths) < 131072
+                assert "event: response.output_item.added" in body
+                assert "[truncated for SSE stream]" in body
+
+    @pytest.mark.asyncio
+    async def test_stream_large_unicode_delta_stays_below_aiohttp_line_limit(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            large_text = "☃" * 150000
+
+            async def _mock_run_agent(**kwargs):
+                text_cb = kwargs.get("stream_delta_callback")
+                if text_cb:
+                    text_cb(large_text)
+                return (
+                    {"final_response": large_text, "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "say hi", "stream": True},
+                )
+                assert resp.status == 200
+                chunks = []
+                line_lengths = []
+                while True:
+                    line = await resp.content.readline()
+                    if not line:
+                        break
+                    line_lengths.append(len(line))
+                    chunks.append(line.decode("utf-8", errors="replace"))
+
+                body = "".join(chunks)
+                assert max(line_lengths) < 131072
+                assert body.count("event: response.output_text.delta") >= 2
+                assert "event: response.completed" in body
+
+    @pytest.mark.asyncio
+    async def test_stream_large_payloads_keep_full_stored_response(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            large_output = "x" * 150000
+            large_text = "y" * 150000
+
+            async def _mock_run_agent(**kwargs):
+                start_cb = kwargs.get("tool_start_callback")
+                complete_cb = kwargs.get("tool_complete_callback")
+                text_cb = kwargs.get("stream_delta_callback")
+                if start_cb:
+                    start_cb("call_123", "read_file", {"path": "/tmp/test.txt"})
+                if complete_cb:
+                    complete_cb("call_123", "read_file", {"path": "/tmp/test.txt"}, large_output)
+                if text_cb:
+                    text_cb(large_text)
+                return (
+                    {
+                        "final_response": large_text,
+                        "messages": [
+                            {
+                                "role": "assistant",
+                                "tool_calls": [
+                                    {
+                                        "id": "call_123",
+                                        "function": {
+                                            "name": "read_file",
+                                            "arguments": '{"path":"/tmp/test.txt"}',
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "role": "tool",
+                                "tool_call_id": "call_123",
+                                "content": large_output,
+                            },
+                        ],
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "read the file", "stream": True},
+                )
+                assert resp.status == 200
+                body = await resp.text()
+                response_id = None
+                for line in body.splitlines():
+                    if not line.startswith("data: "):
+                        continue
+                    payload = json.loads(line[len("data: "):])
+                    if payload.get("type") == "response.completed":
+                        response_id = payload["response"]["id"]
+                        break
+
+                assert response_id
+                get_resp = await cli.get(f"/v1/responses/{response_id}")
+                assert get_resp.status == 200
+                data = await get_resp.json()
+                tool_outputs = [
+                    item["output"][0]["text"]
+                    for item in data["output"]
+                    if item.get("type") == "function_call_output"
+                ]
+                assert tool_outputs == [large_output]
+                assert data["output"][-1]["content"][0]["text"] == large_text
+
+    @pytest.mark.asyncio
     async def test_streamed_response_is_stored_for_get(self, adapter):
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
