@@ -3222,7 +3222,10 @@ class GatewayRunner:
                 self._release_running_agent_state(_quick_key)
 
         _busy_session_bypass = bool(getattr(event, "_busy_session_bypass", False))
-        from hermes_cli.commands import resolve_command as _resolve_cmd_inner
+        from hermes_cli.commands import (
+            ACTIVE_SESSION_BYPASS_COMMANDS as _DEDICATED_HANDLERS,
+            resolve_command as _resolve_cmd_inner,
+        )
         _evt_cmd = event.get_command()
         _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
         _requires_busy_semantics = (
