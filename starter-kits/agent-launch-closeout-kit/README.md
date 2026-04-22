@@ -40,6 +40,7 @@ The closeout kit is only credible if it can close that real gap cleanly.
 - [ ] Run `bash starter-kits/agent-launch-closeout-kit/scripts/publish-preflight.sh` and surface any publish-auth gap before attempting browser or `x-cli` publish.
 - [ ] Verify the live publish session is actually signed into X (the `x-access.json` marker is not enough by itself).
 - [ ] If the marker is stale or the browser still lands on login, run `scripts/browser-auth-recovery.sh --prepare` and use the generated recovery packet before retrying publish.
+- [ ] After a real signed-in browser proof event, run `scripts/browser-auth-recovery.sh --verified --surface-url ... --screenshot-path ...` so the launch log, audit, and `x-access.json` marker all refresh from the same evidence.
 - [ ] Run one real closeout cycle against the proof surface and record URL, timestamp, attachment, and asset path.
 - [ ] Tighten the kit to the proved path only and remove any broadened launch-system scope.
 - [ ] Freeze the kit with docs, checklist alignment, and retrospective-ready packaging.

@@ -10,6 +10,8 @@ MODE="prepare"
 SURFACE_URL=""
 SCREENSHOT_PATH=""
 AUTO_OPEN=0
+STATE_UPDATED=0
+AUDIT_UPDATED=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -120,6 +122,11 @@ if [[ -z "$SURFACE_URL" || -z "$SCREENSHOT_PATH" ]]; then
   exit 1
 fi
 
+if [[ ! -f "$SCREENSHOT_PATH" ]]; then
+  echo "Screenshot file does not exist: $SCREENSHOT_PATH" >&2
+  exit 1
+fi
+
 if [[ ! -f "$LAUNCH_LOG" ]]; then
   echo "Launch execution log missing: $LAUNCH_LOG" >&2
   exit 1
@@ -156,8 +163,61 @@ else:
 path.write_text(text)
 PY
 
+if [[ -f "$X_ACCESS_STATE_FILE" ]]; then
+  python3 - <<'PY' "$X_ACCESS_STATE_FILE" "$SURFACE_URL" "$SCREENSHOT_PATH" "$STAMP_HUMAN"
+import json, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+surface = sys.argv[2]
+screenshot = sys.argv[3]
+stamp = sys.argv[4]
+with path.open() as f:
+    data = json.load(f)
+data['status'] = 'ready'
+data['mode'] = 'browser-session'
+data['notes'] = (
+    f"Browser session re-verified at {stamp}; signed-in surface reached at {surface}. "
+    f"Screenshot: {screenshot}"
+)
+data['updated_at'] = stamp
+data['last_live_check'] = {
+    'checked_at': stamp,
+    'result': 'signed_in',
+    'evidence': [
+        f'Signed-in surface reached: {surface}',
+        f'Screenshot captured at {screenshot}',
+    ],
+}
+with path.open('w') as f:
+    json.dump(data, f, indent=2)
+    f.write('\n')
+PY
+  STATE_UPDATED=1
+fi
+
+if [[ -f "$AUDIT_FILE" ]]; then
+  python3 - <<'PY' "$AUDIT_FILE" "$STAMP_HUMAN" "$SURFACE_URL" "$SCREENSHOT_PATH" "$ARTIFACT_PATH"
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+stamp = sys.argv[2]
+surface = sys.argv[3]
+screenshot = sys.argv[4]
+artifact = sys.argv[5]
+text = path.read_text()
+section = f"\n\n## Browser auth verified — {stamp}\n- Signed-in surface reached: `{surface}`\n- Screenshot proof: `{screenshot}`\n- Verification artifact: `{artifact}`\n- Result: browser-session marker may be treated as ready again for this exact publish environment until a fresh contradiction appears.\n"
+if section.strip() not in text:
+    text = text.rstrip() + section
+    path.write_text(text + ('\n' if not text.endswith('\n') else ''))
+PY
+  AUDIT_UPDATED=1
+fi
+
 printf 'Recorded browser auth verification artifact: %s\n' "$ARTIFACT_PATH"
 printf 'Updated launch log with verified surface and screenshot path.\n'
-if [[ -f "$AUDIT_FILE" ]]; then
-  printf 'Remember to append the verification outcome to %s\n' "$AUDIT_FILE"
+if (( STATE_UPDATED == 1 )); then
+  printf 'Refreshed browser-session state: %s\n' "$X_ACCESS_STATE_FILE"
+fi
+if (( AUDIT_UPDATED == 1 )); then
+  printf 'Appended verification outcome to %s\n' "$AUDIT_FILE"
 fi

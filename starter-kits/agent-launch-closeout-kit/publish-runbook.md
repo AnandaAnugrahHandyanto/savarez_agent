@@ -43,6 +43,7 @@ Do not widen the claim to a fully proven four-job operating pack.
 - Never treat `~/.hermes/state/x-access.json` as enough publish proof by itself; the live publish session still has to be signed in.
 - Use `live-browser-auth-audit.md` whenever the marker and the real browser session disagree.
 - Use `scripts/browser-auth-recovery.sh` as the canonical stale-marker recovery path and require a screenshot-backed proof artifact before publish resumes.
+- When sign-in is restored, finish with `scripts/browser-auth-recovery.sh --verified --surface-url ... --screenshot-path ...` so the launch log, audit, and `x-access.json` marker are refreshed together before publish resumes.
 
 ## Block-end verification
 Closeout work does not count as "done" because the thread text or runbook exists. End the block with recorded proof in `starter-kits/agent-launch-closeout-kit/launch-execution-log.md`.
