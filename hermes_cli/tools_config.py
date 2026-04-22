@@ -247,10 +247,12 @@ TOOL_CATEGORIES = {
             {
                 "name": "Brave Search",
                 "badge": "free tier",
-                "tag": "Fast native search, suggestions, and AI answers",
+                "tag": "Native web/news/images/videos/local with optional separate Answers and Autosuggest keys",
                 "web_backend": "brave",
                 "env_vars": [
                     {"key": "BRAVE_SEARCH_API_KEY", "prompt": "Brave Search API key", "url": "https://api-dashboard.search.brave.com/"},
+                    {"key": "BRAVE_ANSWERS_API_KEY", "prompt": "Brave Answers API key (optional)", "url": "https://api-dashboard.search.brave.com/"},
+                    {"key": "BRAVE_AUTOSUGGEST_API_KEY", "prompt": "Brave Autosuggest API key (optional)", "url": "https://api-dashboard.search.brave.com/"},
                 ],
             },
             {

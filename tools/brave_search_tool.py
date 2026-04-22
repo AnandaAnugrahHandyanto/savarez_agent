@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """Brave Search native tools.
 
-This module exposes Brave's web search, query suggestions, and AI answers
+This module exposes Brave's web, news, image, video, local, suggestion, and answer APIs
 as first-class Hermes tools. It is intentionally self-contained so it can be
 imported by the normal tool registry auto-discovery path.
 
 Brave API docs used by this implementation:
 - Web search: GET /res/v1/web/search
+- News search: GET /res/v1/news/search
+- Image search: GET /res/v1/images/search
+- Video search: GET /res/v1/videos/search
+- Local POIs: GET /res/v1/local/pois
+- Local descriptions: GET /res/v1/local/descriptions
 - Suggestions: GET /res/v1/suggest/search
 - AI answers: POST /res/v1/chat/completions
 """
@@ -16,7 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import httpx
 
@@ -28,31 +33,77 @@ _BRAVE_BASE_URL = "https://api.search.brave.com/res/v1"
 _BRAVE_DEFAULT_MODEL = "brave-pro"
 
 
-def _brave_api_key() -> str:
-    """Return the configured Brave API key, honoring both supported env names."""
+def _brave_search_api_key() -> str:
+    """Return the configured Brave Search key for search-style endpoints."""
     return (
         os.getenv("BRAVE_SEARCH_API_KEY", "").strip()
         or os.getenv("BRAVE_API_KEY", "").strip()
     )
 
 
-def check_brave_api_key() -> bool:
+def _brave_answers_api_key() -> str:
+    """Return the configured Brave Answers key, with legacy fallback."""
+    return os.getenv("BRAVE_ANSWERS_API_KEY", "").strip() or _brave_search_api_key()
+
+
+def _brave_autosuggest_api_key() -> str:
+    """Return the configured Brave Autosuggest key, with legacy fallback."""
+    return os.getenv("BRAVE_AUTOSUGGEST_API_KEY", "").strip() or _brave_search_api_key()
+
+
+def check_brave_search_api_key() -> bool:
     """Return True when Brave Search credentials are available."""
-    return bool(_brave_api_key())
+    return bool(_brave_search_api_key())
 
 
-def _brave_headers() -> Dict[str, str]:
-    api_key = _brave_api_key()
+def check_brave_answers_api_key() -> bool:
+    """Return True when Brave Answers credentials are available."""
+    return bool(_brave_answers_api_key())
+
+
+def check_brave_autosuggest_api_key() -> bool:
+    """Return True when Brave Autosuggest credentials are available."""
+    return bool(_brave_autosuggest_api_key())
+
+
+def _brave_headers(api_key: str, *, missing_message: str) -> Dict[str, str]:
     if not api_key:
-        raise ValueError(
-            "BRAVE_SEARCH_API_KEY environment variable not set. "
-            "Get your Brave Search API key at https://api-dashboard.search.brave.com"
-        )
+        raise ValueError(missing_message)
     return {
         "X-Subscription-Token": api_key,
         "Accept": "application/json",
         "Accept-Encoding": "gzip",
     }
+
+
+def _brave_search_headers() -> Dict[str, str]:
+    return _brave_headers(
+        _brave_search_api_key(),
+        missing_message=(
+            "BRAVE_SEARCH_API_KEY environment variable not set. "
+            "Get your Brave Search API key at https://api-dashboard.search.brave.com"
+        ),
+    )
+
+
+def _brave_answers_headers() -> Dict[str, str]:
+    return _brave_headers(
+        _brave_answers_api_key(),
+        missing_message=(
+            "BRAVE_ANSWERS_API_KEY environment variable not set. "
+            "Get your Brave Answers API key at https://api-dashboard.search.brave.com"
+        ),
+    )
+
+
+def _brave_autosuggest_headers() -> Dict[str, str]:
+    return _brave_headers(
+        _brave_autosuggest_api_key(),
+        missing_message=(
+            "BRAVE_AUTOSUGGEST_API_KEY environment variable not set. "
+            "Get your Brave Autosuggest API key at https://api-dashboard.search.brave.com"
+        ),
+    )
 
 
 def _json_dumps(payload: Dict[str, Any]) -> str:
@@ -70,6 +121,130 @@ def _safe_int(value: Any, default: int, minimum: int = 1, maximum: int = 20) -> 
 def _add_param(params: Dict[str, Any], key: str, value: Any) -> None:
     if value is not None and value != "":
         params[key] = value
+
+
+def _normalize_string_list(value: Any, maximum: int = 20) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raw_values = value.split(",")
+    elif isinstance(value, (list, tuple, set)):
+        raw_values = list(value)
+    else:
+        raw_values = [value]
+
+    normalized: List[str] = []
+    for item in raw_values:
+        text = str(item).strip()
+        if text:
+            normalized.append(text)
+        if len(normalized) >= maximum:
+            break
+    return normalized
+
+
+def _brave_http_error(exc: httpx.HTTPStatusError, *, label: str) -> str:
+    response = exc.response
+    payload: Dict[str, Any] = {}
+    try:
+        parsed = response.json()
+        if isinstance(parsed, dict):
+            payload = parsed
+    except Exception:
+        payload = {}
+
+    error_info = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+    brave_error: Dict[str, Any] = {}
+    for key in ("code", "detail", "id"):
+        value = error_info.get(key)
+        if value not in (None, ""):
+            brave_error[key] = value
+
+    meta = error_info.get("meta") if isinstance(error_info.get("meta"), dict) else {}
+    component = meta.get("component")
+    if component:
+        brave_error["component"] = component
+
+    status = error_info.get("status") or getattr(response, "status_code", None)
+    if status not in (None, ""):
+        brave_error["status"] = status
+
+    detail = brave_error.get("detail")
+    code = brave_error.get("code")
+    if code and detail:
+        message = f"{label} failed: {code} - {detail}"
+    elif code:
+        message = f"{label} failed: {code}"
+    elif detail:
+        message = f"{label} failed: {detail}"
+    elif status is not None:
+        message = f"{label} failed: HTTP {status}"
+    else:
+        message = f"{label} failed: {exc}"
+
+    if brave_error:
+        return tool_error(message, brave_error=brave_error)
+    return tool_error(message)
+
+
+def _brave_get_json(
+    path: str,
+    *,
+    params: Dict[str, Any],
+    label: str,
+    headers_factory: Callable[[], Dict[str, str]],
+) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+    try:
+        response = httpx.get(
+            f"{_BRAVE_BASE_URL}{path}",
+            params=params,
+            headers=headers_factory(),
+            timeout=60,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if isinstance(payload, dict):
+            return payload, None
+        return None, tool_error(f"{label} failed: unexpected response payload")
+    except httpx.HTTPStatusError as exc:
+        logger.warning("%s returned HTTP %s", label, exc.response.status_code if exc.response else "?")
+        return None, _brave_http_error(exc, label=label)
+    except Exception as exc:
+        logger.exception("%s failed: %s", label, exc)
+        return None, tool_error(f"{label} failed: {type(exc).__name__}: {exc}")
+
+
+def _normalize_ranked_results(results: Any, *, count: Optional[int] = None, offset: int = 0) -> List[Any]:
+    if not isinstance(results, list):
+        return []
+
+    limited = results[:count] if count is not None else results
+    normalized: List[Any] = []
+    start_position = max(0, offset) + 1
+    for idx, item in enumerate(limited, start=start_position):
+        if isinstance(item, dict):
+            enriched = dict(item)
+            enriched.setdefault("position", idx)
+            normalized.append(enriched)
+        else:
+            normalized.append({"value": item, "position": idx})
+    return normalized
+
+
+def _normalize_collection_response(
+    payload: Dict[str, Any],
+    *,
+    key: str,
+    count: Optional[int] = None,
+    offset: int = 0,
+) -> Dict[str, Any]:
+    data: Dict[str, Any] = {
+        key: _normalize_ranked_results(payload.get("results"), count=count, offset=offset)
+    }
+    for extra_key in ("query", "extra", "type"):
+        if payload.get(extra_key) is not None:
+            data[extra_key] = payload[extra_key]
+    return {"success": True, "data": data}
 
 
 def _normalize_result_item(item: Dict[str, Any], position: int) -> Dict[str, Any]:
@@ -169,20 +344,17 @@ def brave_search(
     if summary:
         params["summary"] = True
 
-    try:
-        response = httpx.get(
-            f"{_BRAVE_BASE_URL}/web/search",
-            params=params,
-            headers=_brave_headers(),
-            timeout=60,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        normalized_offset = params.get("offset", 0)
-        return _json_dumps(_normalize_search_response(payload, count, offset=normalized_offset))
-    except Exception as exc:
-        logger.exception("Brave search failed: %s", exc)
-        return tool_error(f"Brave search failed: {type(exc).__name__}: {exc}")
+    payload, error = _brave_get_json(
+        "/web/search",
+        params=params,
+        label="Brave search",
+        headers_factory=_brave_search_headers,
+    )
+    if error:
+        return error
+
+    normalized_offset = params.get("offset", 0)
+    return _json_dumps(_normalize_search_response(payload or {}, count, offset=normalized_offset))
 
 
 def _normalize_suggestions(payload: Dict[str, Any], count: int) -> List[Any]:
@@ -234,21 +406,184 @@ def brave_suggest(
     if rich:
         params["rich"] = True
 
-    try:
-        response = httpx.get(
-            f"{_BRAVE_BASE_URL}/suggest/search",
-            params=params,
-            headers={**_brave_headers(), "Accept-Encoding": "gzip"},
-            timeout=60,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        suggestions = _normalize_suggestions(payload, count)
-        query_value = payload.get("query", query)
-        return _json_dumps({"success": True, "data": {"query": query_value, "suggestions": suggestions}})
-    except Exception as exc:
-        logger.exception("Brave suggest failed: %s", exc)
-        return tool_error(f"Brave suggest failed: {type(exc).__name__}: {exc}")
+    payload, error = _brave_get_json(
+        "/suggest/search",
+        params=params,
+        label="Brave suggest",
+        headers_factory=_brave_autosuggest_headers,
+    )
+    if error:
+        return error
+
+    payload = payload or {}
+    suggestions = _normalize_suggestions(payload, count)
+    query_value = payload.get("query", query)
+    return _json_dumps({"success": True, "data": {"query": query_value, "suggestions": suggestions}})
+
+
+def brave_news(
+    query: str,
+    count: int = 20,
+    country: str = "US",
+    search_lang: Optional[str] = None,
+    ui_lang: Optional[str] = None,
+    safesearch: Optional[str] = None,
+    offset: Optional[int] = None,
+    spellcheck: Optional[bool] = None,
+    freshness: Optional[str] = None,
+    extra_snippets: Optional[bool] = None,
+    goggles: Optional[str] = None,
+    include_fetch_metadata: Optional[bool] = None,
+    operators: Optional[bool] = None,
+) -> str:
+    """Search news content using Brave Search."""
+    query = (query or "").strip()
+    if not query:
+        return tool_error("Query is required")
+
+    count = _safe_int(count, default=20, minimum=1, maximum=50)
+    params: Dict[str, Any] = {"q": query, "count": count, "country": (country or "US").strip() or "US"}
+    _add_param(params, "search_lang", search_lang)
+    _add_param(params, "ui_lang", ui_lang)
+    _add_param(params, "safesearch", safesearch)
+    if offset is not None:
+        params["offset"] = _safe_int(offset, default=0, minimum=0, maximum=9)
+    _add_param(params, "spellcheck", spellcheck)
+    _add_param(params, "freshness", freshness)
+    _add_param(params, "extra_snippets", extra_snippets)
+    _add_param(params, "goggles", goggles)
+    _add_param(params, "include_fetch_metadata", include_fetch_metadata)
+    _add_param(params, "operators", operators)
+
+    payload, error = _brave_get_json(
+        "/news/search",
+        params=params,
+        label="Brave news",
+        headers_factory=_brave_search_headers,
+    )
+    if error:
+        return error
+
+    return _json_dumps(_normalize_collection_response(payload or {}, key="news", count=count, offset=params.get("offset", 0)))
+
+
+def brave_images(
+    query: str,
+    count: int = 50,
+    country: str = "US",
+    search_lang: Optional[str] = None,
+    safesearch: Optional[str] = None,
+    spellcheck: Optional[bool] = None,
+) -> str:
+    """Search image content using Brave Search."""
+    query = (query or "").strip()
+    if not query:
+        return tool_error("Query is required")
+
+    count = _safe_int(count, default=50, minimum=1, maximum=200)
+    params: Dict[str, Any] = {"q": query, "count": count, "country": (country or "US").strip() or "US"}
+    _add_param(params, "search_lang", search_lang)
+    _add_param(params, "safesearch", safesearch)
+    _add_param(params, "spellcheck", spellcheck)
+
+    payload, error = _brave_get_json(
+        "/images/search",
+        params=params,
+        label="Brave images",
+        headers_factory=_brave_search_headers,
+    )
+    if error:
+        return error
+
+    return _json_dumps(_normalize_collection_response(payload or {}, key="images", count=count))
+
+
+def brave_videos(
+    query: str,
+    count: int = 20,
+    country: str = "US",
+    search_lang: Optional[str] = None,
+    ui_lang: Optional[str] = None,
+    safesearch: Optional[str] = None,
+    offset: Optional[int] = None,
+    spellcheck: Optional[bool] = None,
+    freshness: Optional[str] = None,
+    include_fetch_metadata: Optional[bool] = None,
+    operators: Optional[bool] = None,
+) -> str:
+    """Search video content using Brave Search."""
+    query = (query or "").strip()
+    if not query:
+        return tool_error("Query is required")
+
+    count = _safe_int(count, default=20, minimum=1, maximum=50)
+    params: Dict[str, Any] = {"q": query, "count": count, "country": (country or "US").strip() or "US"}
+    _add_param(params, "search_lang", search_lang)
+    _add_param(params, "ui_lang", ui_lang)
+    _add_param(params, "safesearch", safesearch)
+    if offset is not None:
+        params["offset"] = _safe_int(offset, default=0, minimum=0, maximum=9)
+    _add_param(params, "spellcheck", spellcheck)
+    _add_param(params, "freshness", freshness)
+    _add_param(params, "include_fetch_metadata", include_fetch_metadata)
+    _add_param(params, "operators", operators)
+
+    payload, error = _brave_get_json(
+        "/videos/search",
+        params=params,
+        label="Brave videos",
+        headers_factory=_brave_search_headers,
+    )
+    if error:
+        return error
+
+    return _json_dumps(_normalize_collection_response(payload or {}, key="videos", count=count, offset=params.get("offset", 0)))
+
+
+def brave_local_pois(
+    ids: Any,
+    search_lang: Optional[str] = None,
+    ui_lang: Optional[str] = None,
+    units: Optional[str] = None,
+) -> str:
+    """Fetch Brave local POI details for location ids from web search."""
+    location_ids = _normalize_string_list(ids)
+    if not location_ids:
+        return tool_error("At least one location id is required")
+
+    params: Dict[str, Any] = {"ids": location_ids}
+    _add_param(params, "search_lang", search_lang)
+    _add_param(params, "ui_lang", ui_lang)
+    _add_param(params, "units", units)
+
+    payload, error = _brave_get_json(
+        "/local/pois",
+        params=params,
+        label="Brave local POIs",
+        headers_factory=_brave_search_headers,
+    )
+    if error:
+        return error
+
+    return _json_dumps(_normalize_collection_response(payload or {}, key="pois"))
+
+
+def brave_local_descriptions(ids: Any) -> str:
+    """Fetch Brave local descriptions for location ids from web search."""
+    location_ids = _normalize_string_list(ids)
+    if not location_ids:
+        return tool_error("At least one location id is required")
+
+    payload, error = _brave_get_json(
+        "/local/descriptions",
+        params={"ids": location_ids},
+        label="Brave local descriptions",
+        headers_factory=_brave_search_headers,
+    )
+    if error:
+        return error
+
+    return _json_dumps(_normalize_collection_response(payload or {}, key="descriptions"))
 
 
 def _extract_answer_text(payload: Dict[str, Any]) -> str:
@@ -305,6 +640,44 @@ def _extract_sources(payload: Dict[str, Any]) -> List[Any]:
     return []
 
 
+def _extract_streaming_answer(payload_text: str) -> Dict[str, Any]:
+    parts: List[str] = []
+    usage: Optional[Dict[str, Any]] = None
+
+    for raw_line in payload_text.splitlines():
+        line = raw_line.strip()
+        if not line.startswith("data:"):
+            continue
+        chunk_text = line[5:].strip()
+        if not chunk_text or chunk_text == "[DONE]":
+            continue
+        try:
+            chunk = json.loads(chunk_text)
+        except json.JSONDecodeError:
+            continue
+
+        chunk_usage = chunk.get("usage")
+        if isinstance(chunk_usage, dict):
+            usage = chunk_usage
+
+        for choice in chunk.get("choices") or []:
+            if not isinstance(choice, dict):
+                continue
+            delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
+            content = delta.get("content")
+            if isinstance(content, str):
+                parts.append(content)
+            elif isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get("text"):
+                        parts.append(str(item["text"]))
+
+    return {
+        "answer": "".join(parts).strip(),
+        "usage": usage,
+    }
+
+
 def brave_answers(
     query: Optional[str] = None,
     model: str = _BRAVE_DEFAULT_MODEL,
@@ -334,8 +707,7 @@ def brave_answers(
         "model": model,
         "messages": request_messages,
     }
-    if stream is not None:
-        payload["stream"] = stream
+    payload["stream"] = False if stream is None else stream
     if country is not None:
         payload["country"] = country
     if language is not None:
@@ -349,13 +721,21 @@ def brave_answers(
         response = httpx.post(
             f"{_BRAVE_BASE_URL}/chat/completions",
             json=payload,
-            headers={**_brave_headers(), "Content-Type": "application/json", "Accept-Encoding": "gzip"},
+            headers={**_brave_answers_headers(), "Content-Type": "application/json"},
             timeout=60,
         )
         response.raise_for_status()
-        data = response.json()
-        answer = _extract_answer_text(data)
-        sources = _extract_sources(data)
+        content_type = (response.headers.get("content-type") or "").lower()
+        if "text/event-stream" in content_type:
+            streamed = _extract_streaming_answer(response.text)
+            answer = streamed["answer"]
+            sources = []
+            usage = streamed.get("usage")
+        else:
+            data = response.json()
+            answer = _extract_answer_text(data)
+            sources = _extract_sources(data)
+            usage = data.get("usage")
         result: Dict[str, Any] = {
             "success": True,
             "data": {
@@ -366,13 +746,118 @@ def brave_answers(
         }
         if sources:
             result["data"]["sources"] = sources
-        usage = data.get("usage")
         if usage:
             result["data"]["usage"] = usage
         return _json_dumps(result)
+    except httpx.HTTPStatusError as exc:
+        logger.warning("Brave answers returned HTTP %s", exc.response.status_code if exc.response else "?")
+        return _brave_http_error(exc, label="Brave answers")
     except Exception as exc:
         logger.exception("Brave answers failed: %s", exc)
         return tool_error(f"Brave answers failed: {type(exc).__name__}: {exc}")
+
+
+BRAVE_NEWS_SCHEMA = {
+    "name": "brave_news",
+    "description": "Search recent news articles with Brave Search.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "News query to send to Brave Search"},
+            "count": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20, "description": "Maximum number of news results to return (1-50)"},
+            "country": {"type": "string", "default": "US", "description": "Two-letter country code used for result localization"},
+            "search_lang": {"type": "string", "description": "News result language"},
+            "ui_lang": {"type": "string", "description": "UI language"},
+            "safesearch": {"type": "string", "description": "Safe search mode"},
+            "offset": {"type": "integer", "minimum": 0, "maximum": 9, "default": 0, "description": "Result offset (0-9)"},
+            "spellcheck": {"type": "boolean", "description": "Enable or disable spellcheck"},
+            "freshness": {"type": "string", "description": "Freshness filter or custom date range"},
+            "extra_snippets": {"type": "boolean", "description": "Request extra snippets in the Brave response"},
+            "goggles": {"type": "string", "description": "Named goggles filter"},
+            "include_fetch_metadata": {"type": "boolean", "description": "Include fetch metadata"},
+            "operators": {"type": "boolean", "description": "Apply Brave search operators"},
+        },
+        "required": ["query"],
+    },
+}
+
+BRAVE_IMAGES_SCHEMA = {
+    "name": "brave_images",
+    "description": "Search image results with Brave Search.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Image query to send to Brave Search"},
+            "count": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50, "description": "Maximum number of image results to return (1-200)"},
+            "country": {"type": "string", "default": "US", "description": "Two-letter country code used for result localization"},
+            "search_lang": {"type": "string", "description": "Image result language"},
+            "safesearch": {"type": "string", "description": "Safe search mode"},
+            "spellcheck": {"type": "boolean", "description": "Enable or disable spellcheck"},
+        },
+        "required": ["query"],
+    },
+}
+
+BRAVE_VIDEOS_SCHEMA = {
+    "name": "brave_videos",
+    "description": "Search video results with Brave Search.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Video query to send to Brave Search"},
+            "count": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20, "description": "Maximum number of video results to return (1-50)"},
+            "country": {"type": "string", "default": "US", "description": "Two-letter country code used for result localization"},
+            "search_lang": {"type": "string", "description": "Video result language"},
+            "ui_lang": {"type": "string", "description": "UI language"},
+            "safesearch": {"type": "string", "description": "Safe search mode"},
+            "offset": {"type": "integer", "minimum": 0, "maximum": 9, "default": 0, "description": "Result offset (0-9)"},
+            "spellcheck": {"type": "boolean", "description": "Enable or disable spellcheck"},
+            "freshness": {"type": "string", "description": "Freshness filter or custom date range"},
+            "include_fetch_metadata": {"type": "boolean", "description": "Include fetch metadata"},
+            "operators": {"type": "boolean", "description": "Apply Brave search operators"},
+        },
+        "required": ["query"],
+    },
+}
+
+BRAVE_LOCAL_POIS_SCHEMA = {
+    "name": "brave_local_pois",
+    "description": "Fetch Brave local POI details for location ids returned by Brave web search.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 1,
+                "maxItems": 20,
+                "description": "Location ids returned by Brave web search location results",
+            },
+            "search_lang": {"type": "string", "description": "Search language preference"},
+            "ui_lang": {"type": "string", "description": "UI language"},
+            "units": {"type": "string", "description": "Measurement units: metric or imperial"},
+        },
+        "required": ["ids"],
+    },
+}
+
+BRAVE_LOCAL_DESCRIPTIONS_SCHEMA = {
+    "name": "brave_local_descriptions",
+    "description": "Fetch Brave local descriptions for location ids returned by Brave web search.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 1,
+                "maxItems": 20,
+                "description": "Location ids returned by Brave web search location results",
+            },
+        },
+        "required": ["ids"],
+    },
+}
 
 
 BRAVE_SEARCH_SCHEMA = {
@@ -463,7 +948,7 @@ BRAVE_SEARCH_SCHEMA = {
 
 BRAVE_SUGGEST_SCHEMA = {
     "name": "brave_suggest",
-    "description": "Get Brave Search autocomplete suggestions for a query.",
+    "description": "Get Brave Search autocomplete suggestions for a query. Works best with BRAVE_AUTOSUGGEST_API_KEY.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -499,7 +984,7 @@ BRAVE_SUGGEST_SCHEMA = {
 
 BRAVE_ANSWERS_SCHEMA = {
     "name": "brave_answers",
-    "description": "Get an AI-generated answer from Brave Search using the OpenAI-compatible chat completions endpoint.",
+    "description": "Get an AI-generated answer from Brave Search using the OpenAI-compatible chat completions endpoint. Works best with BRAVE_ANSWERS_API_KEY.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -566,9 +1051,102 @@ registry.register(
         goggles_id=args.get("goggles_id"),
         units=args.get("units"),
     ),
-    check_fn=check_brave_api_key,
+    check_fn=check_brave_search_api_key,
     requires_env=["BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"],
     emoji="🔎",
+    max_result_size_chars=100_000,
+)
+
+registry.register(
+    name="brave_news",
+    toolset="web",
+    schema=BRAVE_NEWS_SCHEMA,
+    handler=lambda args, **kw: brave_news(
+        args.get("query", ""),
+        count=args.get("count", 20),
+        country=args.get("country", "US"),
+        search_lang=args.get("search_lang"),
+        ui_lang=args.get("ui_lang"),
+        safesearch=args.get("safesearch"),
+        offset=args.get("offset"),
+        spellcheck=args.get("spellcheck"),
+        freshness=args.get("freshness"),
+        extra_snippets=args.get("extra_snippets"),
+        goggles=args.get("goggles"),
+        include_fetch_metadata=args.get("include_fetch_metadata"),
+        operators=args.get("operators"),
+    ),
+    check_fn=check_brave_search_api_key,
+    requires_env=["BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"],
+    emoji="📰",
+    max_result_size_chars=100_000,
+)
+
+registry.register(
+    name="brave_images",
+    toolset="web",
+    schema=BRAVE_IMAGES_SCHEMA,
+    handler=lambda args, **kw: brave_images(
+        args.get("query", ""),
+        count=args.get("count", 50),
+        country=args.get("country", "US"),
+        search_lang=args.get("search_lang"),
+        safesearch=args.get("safesearch"),
+        spellcheck=args.get("spellcheck"),
+    ),
+    check_fn=check_brave_search_api_key,
+    requires_env=["BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"],
+    emoji="🖼️",
+    max_result_size_chars=100_000,
+)
+
+registry.register(
+    name="brave_videos",
+    toolset="web",
+    schema=BRAVE_VIDEOS_SCHEMA,
+    handler=lambda args, **kw: brave_videos(
+        args.get("query", ""),
+        count=args.get("count", 20),
+        country=args.get("country", "US"),
+        search_lang=args.get("search_lang"),
+        ui_lang=args.get("ui_lang"),
+        safesearch=args.get("safesearch"),
+        offset=args.get("offset"),
+        spellcheck=args.get("spellcheck"),
+        freshness=args.get("freshness"),
+        include_fetch_metadata=args.get("include_fetch_metadata"),
+        operators=args.get("operators"),
+    ),
+    check_fn=check_brave_search_api_key,
+    requires_env=["BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"],
+    emoji="🎬",
+    max_result_size_chars=100_000,
+)
+
+registry.register(
+    name="brave_local_pois",
+    toolset="web",
+    schema=BRAVE_LOCAL_POIS_SCHEMA,
+    handler=lambda args, **kw: brave_local_pois(
+        args.get("ids"),
+        search_lang=args.get("search_lang"),
+        ui_lang=args.get("ui_lang"),
+        units=args.get("units"),
+    ),
+    check_fn=check_brave_search_api_key,
+    requires_env=["BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"],
+    emoji="📍",
+    max_result_size_chars=100_000,
+)
+
+registry.register(
+    name="brave_local_descriptions",
+    toolset="web",
+    schema=BRAVE_LOCAL_DESCRIPTIONS_SCHEMA,
+    handler=lambda args, **kw: brave_local_descriptions(args.get("ids")),
+    check_fn=check_brave_search_api_key,
+    requires_env=["BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"],
+    emoji="🗺️",
     max_result_size_chars=100_000,
 )
 
@@ -583,8 +1161,8 @@ registry.register(
         lang=args.get("lang"),
         rich=bool(args.get("rich", False)),
     ),
-    check_fn=check_brave_api_key,
-    requires_env=["BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"],
+    check_fn=check_brave_autosuggest_api_key,
+    requires_env=["BRAVE_AUTOSUGGEST_API_KEY", "BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"],
     emoji="💡",
     max_result_size_chars=50_000,
 )
@@ -603,8 +1181,8 @@ registry.register(
         enable_entities=args.get("enable_entities"),
         enable_citations=args.get("enable_citations"),
     ),
-    check_fn=check_brave_api_key,
-    requires_env=["BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"],
+    check_fn=check_brave_answers_api_key,
+    requires_env=["BRAVE_ANSWERS_API_KEY", "BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"],
     emoji="🧠",
     max_result_size_chars=100_000,
 )

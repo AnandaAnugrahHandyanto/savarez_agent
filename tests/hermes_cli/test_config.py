@@ -393,6 +393,33 @@ class TestOptionalEnvVarsRegistry:
             all_vars.extend(vars_list)
         assert "TAVILY_API_KEY" in all_vars
 
+    def test_brave_search_api_key_lists_native_brave_tools(self):
+        """BRAVE_SEARCH_API_KEY advertises the Brave search-style tool surface."""
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+
+        tools = set(OPTIONAL_ENV_VARS["BRAVE_SEARCH_API_KEY"]["tools"])
+        assert {
+            "web_search",
+            "brave_search",
+            "brave_news",
+            "brave_images",
+            "brave_videos",
+            "brave_local_pois",
+            "brave_local_descriptions",
+        }.issubset(tools)
+
+    def test_brave_answers_api_key_lists_answers_tool(self):
+        """BRAVE_ANSWERS_API_KEY advertises the native Brave answers tool."""
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+
+        assert OPTIONAL_ENV_VARS["BRAVE_ANSWERS_API_KEY"]["tools"] == ["brave_answers"]
+
+    def test_brave_autosuggest_api_key_lists_suggest_tool(self):
+        """BRAVE_AUTOSUGGEST_API_KEY advertises the native Brave suggest tool."""
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+
+        assert OPTIONAL_ENV_VARS["BRAVE_AUTOSUGGEST_API_KEY"]["tools"] == ["brave_suggest"]
+
 
 class TestAnthropicTokenMigration:
     """Test that config version 8→9 clears ANTHROPIC_TOKEN."""

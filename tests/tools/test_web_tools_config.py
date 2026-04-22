@@ -260,6 +260,8 @@ class TestBackendSelection:
         "TOOL_GATEWAY_USER_TOKEN",
         "TAVILY_API_KEY",
         "BRAVE_SEARCH_API_KEY",
+        "BRAVE_ANSWERS_API_KEY",
+        "BRAVE_AUTOSUGGEST_API_KEY",
         "BRAVE_API_KEY",
     )
 
@@ -376,6 +378,20 @@ class TestBackendSelection:
         with patch("tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {"BRAVE_SEARCH_API_KEY": "brave-test"}):
             assert _get_backend() == "brave"
+
+    def test_fallback_answers_key_only_does_not_enable_brave_search_backend(self):
+        """Answers-only Brave credentials should not satisfy the web search backend."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"BRAVE_ANSWERS_API_KEY": "answers-test"}):
+            assert _get_backend() == "firecrawl"
+
+    def test_fallback_autosuggest_key_only_does_not_enable_brave_search_backend(self):
+        """Autosuggest-only Brave credentials should not satisfy the web search backend."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"BRAVE_AUTOSUGGEST_API_KEY": "autosuggest-test"}):
+            assert _get_backend() == "firecrawl"
 
     def test_fallback_tavily_with_firecrawl_prefers_firecrawl(self):
         """Tavily + Firecrawl keys, no config → 'firecrawl' (backward compat)."""
@@ -513,6 +529,8 @@ class TestCheckWebApiKey:
         "TOOL_GATEWAY_USER_TOKEN",
         "TAVILY_API_KEY",
         "BRAVE_SEARCH_API_KEY",
+        "BRAVE_ANSWERS_API_KEY",
+        "BRAVE_AUTOSUGGEST_API_KEY",
         "BRAVE_API_KEY",
     )
 
@@ -561,6 +579,16 @@ class TestCheckWebApiKey:
         with patch.dict(os.environ, {"BRAVE_SEARCH_API_KEY": "brave-test"}):
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
+
+    def test_answers_key_only_is_not_enough_for_web_backend(self):
+        with patch.dict(os.environ, {"BRAVE_ANSWERS_API_KEY": "answers-test"}):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is False
+
+    def test_autosuggest_key_only_is_not_enough_for_web_backend(self):
+        with patch.dict(os.environ, {"BRAVE_AUTOSUGGEST_API_KEY": "autosuggest-test"}):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is False
 
     def test_no_keys_returns_false(self):
         from tools.web_tools import check_web_api_key

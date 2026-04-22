@@ -159,6 +159,41 @@ TTS settings are read from **two** OpenClaw config locations with this priority:
 
 > Brave Search accepts both key names at runtime. The setup wizard and status view prefer `BRAVE_SEARCH_API_KEY`, while migration currently writes `BRAVE_API_KEY` as the compatibility fallback.
 
+## Brave plan support
+
+Hermes' Brave integration is split by endpoint family so mixed Brave subscriptions degrade cleanly instead of failing with raw HTTP errors.
+
+### Supported now
+
+| Hermes tool | Preferred env var | Brave plan families Hermes can use | Notes |
+|-------------|-------------------|------------------------------------|-------|
+| `web_search` (Brave backend) | `BRAVE_SEARCH_API_KEY` | `Free`, `Search` | Hermes routes generic web search through Brave when the web backend is set to `brave`. |
+| `brave_search` | `BRAVE_SEARCH_API_KEY` | `Free`, `Search` | Web results plus Brave-specific sections already exposed by `/web/search`. |
+| `brave_news` | `BRAVE_SEARCH_API_KEY` | `Free`, `Search` | Native `/news/search` wrapper. |
+| `brave_images` | `BRAVE_SEARCH_API_KEY` | `Free`, `Search` | Native `/images/search` wrapper. |
+| `brave_videos` | `BRAVE_SEARCH_API_KEY` | `Free`, `Search` | Native `/videos/search` wrapper. |
+| `brave_local_pois` | `BRAVE_SEARCH_API_KEY` | `Search` | Uses location ids returned by Brave web search. |
+| `brave_local_descriptions` | `BRAVE_SEARCH_API_KEY` | `Search` | Uses location ids returned by Brave web search. |
+| `brave_answers` | `BRAVE_ANSWERS_API_KEY` | `Free AI`, `Answers` | Native `/chat/completions` wrapper. Falls back to `BRAVE_SEARCH_API_KEY` only for legacy single-key setups. |
+| `brave_suggest` | `BRAVE_AUTOSUGGEST_API_KEY` | `Free Autosuggest`, `Autosuggest` | Native `/suggest/search` wrapper. Falls back to `BRAVE_SEARCH_API_KEY` only for legacy setups. |
+
+### Explicitly not supported yet
+
+| Brave capability | Status in Hermes |
+|------------------|------------------|
+| `/spellcheck/search` | Not implemented as a Hermes tool yet |
+| `/summarizer/search` | Not implemented as a Hermes tool yet |
+| Dedicated `/web/rich` callback helper | Not implemented as a Hermes tool yet |
+| Place search endpoint separate from web-search location ids | Not implemented as a Hermes tool yet |
+
+### Graceful plan handling
+
+- If a configured Brave key does not cover a requested endpoint, Hermes now returns a structured tool error instead of a raw `httpx.HTTPStatusError` traceback.
+- Search-style tools (`web_search`, `brave_search`, `brave_news`, `brave_images`, `brave_videos`, `brave_local_pois`, `brave_local_descriptions`) use the Search key path only.
+- `brave_answers` uses the Answers key path.
+- `brave_suggest` uses the Autosuggest key path.
+- Legacy `BRAVE_API_KEY` remains accepted as a compatibility fallback for search-style tools.
+
 ### Archived (no direct Hermes equivalent)
 
 These are saved to `~/.hermes/migration/openclaw/<timestamp>/archive/` for manual review:

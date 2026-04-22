@@ -30,7 +30,9 @@ from typing import List, Dict, Any, Set, Optional
 # Edit this once to update all platforms simultaneously.
 _HERMES_CORE_TOOLS = [
     # Web
-    "web_search", "web_extract", "brave_search", "brave_suggest", "brave_answers",
+    "web_search", "web_extract", "brave_search", "brave_news", "brave_images",
+    "brave_videos", "brave_local_pois", "brave_local_descriptions",
+    "brave_suggest", "brave_answers",
     # Terminal + process management
     "terminal", "process",
     # File manipulation
@@ -69,13 +71,20 @@ TOOLSETS = {
     # Basic toolsets - individual tool categories
     "web": {
         "description": "Web research, Brave search, and content extraction tools",
-        "tools": ["web_search", "web_extract", "brave_search", "brave_suggest", "brave_answers"],
+        "tools": [
+            "web_search", "web_extract", "brave_search", "brave_news", "brave_images",
+            "brave_videos", "brave_local_pois", "brave_local_descriptions",
+            "brave_suggest", "brave_answers",
+        ],
         "includes": []  # No other toolsets included
     },
     
     "search": {
         "description": "Web search only (no content extraction/scraping)",
-        "tools": ["web_search", "brave_search", "brave_suggest", "brave_answers"],
+        "tools": [
+            "web_search", "brave_search", "brave_news", "brave_images", "brave_videos",
+            "brave_local_pois", "brave_local_descriptions", "brave_suggest", "brave_answers",
+        ],
         "includes": []
     },
     
