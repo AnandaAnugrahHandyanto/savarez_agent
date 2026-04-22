@@ -447,7 +447,7 @@ class TestDelegateObservability(unittest.TestCase):
             self.assertEqual(entry["tool_trace"][0]["status"], "ok")
 
     def test_tool_trace_detects_error(self):
-        """Tool results containing 'error' should be marked as error status."""
+        """Tool results containing real errors should be marked as error status."""
         parent = _make_mock_parent(depth=0)
 
         with patch("run_agent.AIAgent") as MockAgent:
@@ -470,6 +470,60 @@ class TestDelegateObservability(unittest.TestCase):
             MockAgent.return_value = mock_child
 
             result = json.loads(delegate_task(goal="Test error trace", parent_agent=parent))
+            trace = result["results"][0]["tool_trace"]
+            self.assertEqual(trace[0]["status"], "error")
+
+    def test_tool_trace_terminal_success_with_error_null_is_ok(self):
+        """Terminal JSON success payloads should not be misclassified just because they contain an error field set to null."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": "ok",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [
+                    {"role": "assistant", "tool_calls": [
+                        {"id": "tc_1", "function": {"name": "terminal", "arguments": '{"command": "hostname"}'}}
+                    ]},
+                    {"role": "tool", "tool_call_id": "tc_1", "content": '{"output": "localhost", "exit_code": 0, "error": null}'},
+                ],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Test terminal success trace", parent_agent=parent))
+            trace = result["results"][0]["tool_trace"]
+            self.assertEqual(trace[0]["status"], "ok")
+
+    def test_tool_trace_terminal_nonzero_exit_is_error(self):
+        """Terminal JSON payloads with non-zero exit code should be marked as error."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": "failed",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [
+                    {"role": "assistant", "tool_calls": [
+                        {"id": "tc_1", "function": {"name": "terminal", "arguments": '{"command": "false"}'}}
+                    ]},
+                    {"role": "tool", "tool_call_id": "tc_1", "content": '{"output": "", "exit_code": 1, "error": null}'},
+                ],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Test terminal exit trace", parent_agent=parent))
             trace = result["results"][0]["tool_trace"]
             self.assertEqual(trace[0]["status"], "error")
 
