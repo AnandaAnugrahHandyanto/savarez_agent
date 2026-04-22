@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ChevronDown, Users } from "lucide-react";
+import { Check, ChevronDown, Users } from "lucide-react";
 import { api, setActiveProfile, getActiveProfile } from "@/lib/api";
 import type { ProfileInfo } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -61,24 +61,22 @@ export function ProfileSwitcher() {
         type="button"
         onClick={() => setOpen((v) => !v)}
         className={cn(
-          "flex items-center gap-2",
-          "px-2 py-1",
-          "border border-current/20",
-          "hover:bg-midground/5",
-          "text-[0.65rem] sm:text-[0.7rem] tracking-[0.15em]",
+          "flex h-9 items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-1.5",
+          "text-xs font-medium text-foreground shadow-sm transition-colors hover:bg-secondary",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
         )}
         aria-label="Switch Hermes profile"
       >
-        <Users className="h-3.5 w-3.5 opacity-60" />
+        <Users className="h-3.5 w-3.5 text-muted-foreground" />
         <span className="hidden sm:inline">{activeLabel}</span>
-        <ChevronDown className="h-3.5 w-3.5 opacity-60" />
+        <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
       </button>
 
       {open && (
-        <div className="absolute right-0 mt-2 w-56 border border-current/20 bg-background-base/95 backdrop-blur-sm z-50">
+        <div className="absolute right-0 z-50 mt-2 w-64 overflow-hidden rounded-xl border border-border bg-background shadow-xl backdrop-blur-xl">
           <div className="max-h-72 overflow-auto">
             {profiles.length === 0 ? (
-              <div className="px-3 py-2 text-xs opacity-60">No profiles</div>
+              <div className="px-3 py-2 text-xs text-muted-foreground">No profiles</div>
             ) : (
               profiles.map((p) => {
                 const isActive = p.name === active;
@@ -87,9 +85,9 @@ export function ProfileSwitcher() {
                     key={p.name}
                     type="button"
                     className={cn(
-                      "w-full text-left px-3 py-2 text-xs",
-                      "hover:bg-midground/5",
-                      isActive ? "bg-midground/10" : "",
+                      "w-full px-3 py-2.5 text-left text-sm transition-colors",
+                      "hover:bg-secondary",
+                      isActive ? "bg-secondary text-foreground" : "text-foreground",
                     )}
                     onClick={() => {
                       setActive(p.name);
@@ -98,12 +96,15 @@ export function ProfileSwitcher() {
                     }}
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <span className="font-mono-ui">{p.is_default ? "default" : p.name}</span>
-                      {p.gateway_running && (
-                        <span className="text-[10px] opacity-60">gateway</span>
-                      )}
+                      <span className="truncate font-medium">{p.is_default ? "default" : p.name}</span>
+                      <div className="flex items-center gap-2">
+                        {p.gateway_running && (
+                          <span className="rounded-full bg-emerald-500/12 px-2 py-0.5 text-[10px] font-medium text-emerald-400">gateway</span>
+                        )}
+                        {isActive && <Check className="h-3.5 w-3.5 text-primary" />}
+                      </div>
                     </div>
-                    <div className="text-[10px] opacity-50 truncate">{p.path}</div>
+                    <div className="truncate text-xs text-muted-foreground">{p.path}</div>
                   </button>
                 );
               })
