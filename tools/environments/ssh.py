@@ -76,6 +76,24 @@ class SSHEnvironment(BaseEnvironment):
 
         self.init_session()
 
+    def _build_init_sendenv_args(self) -> list[str]:
+        """Build SendEnv args for skill-registered passthrough variables.
+
+        SSH only needs these during init_session(): the login-shell snapshot
+        captures the forwarded variables, and later commands source that
+        snapshot instead of re-sending env vars on every call.
+        """
+        try:
+            from tools.env_passthrough import get_all_passthrough
+        except Exception:
+            return []
+
+        args: list[str] = []
+        for key in sorted(get_all_passthrough()):
+            if os.getenv(key) is not None:
+                args.extend(["-o", f"SendEnv={key}"])
+        return args
+
     def _build_ssh_command(self, extra_args: list | None = None) -> list:
         cmd = ["ssh"]
         cmd.extend(["-o", f"ControlPath={self.control_socket}"])
@@ -261,7 +279,8 @@ class SSHEnvironment(BaseEnvironment):
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
         """Spawn an SSH process that runs bash on the remote host."""
-        cmd = self._build_ssh_command()
+        extra_args = self._build_init_sendenv_args() if login else None
+        cmd = self._build_ssh_command(extra_args=extra_args)
         if login:
             cmd.extend(["bash", "-l", "-c", shlex.quote(cmd_string)])
         else:
