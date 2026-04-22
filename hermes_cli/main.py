@@ -1542,6 +1542,8 @@ def select_provider_and_model(args=None):
         _model_flow_qwen_oauth(config, current_model)
     elif selected_provider == "google-gemini-cli":
         _model_flow_google_gemini_cli(config, current_model)
+    elif selected_provider == "claude-cli":
+        _model_flow_claude_cli(config, current_model)
     elif selected_provider == "copilot-acp":
         _model_flow_copilot_acp(config, current_model)
     elif selected_provider == "copilot":
@@ -3349,6 +3351,65 @@ def _model_flow_copilot_acp(config, current_model=""):
     model["api_mode"] = "chat_completions"
     save_config(cfg)
     deactivate_provider()
+
+
+def _model_flow_claude_cli(config, current_model=""):
+    """Claude Code CLI flow using the local claude command."""
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY,
+        _prompt_model_selection,
+        get_external_process_provider_status,
+    )
+    from hermes_cli.config import load_config, save_config
+    from hermes_cli.models import _PROVIDER_MODELS
+
+    del config
+
+    provider_id = "claude-cli"
+    pconfig = PROVIDER_REGISTRY[provider_id]
+    status = get_external_process_provider_status(provider_id)
+    resolved_command = status.get("resolved_command") or status.get("command") or "claude"
+    effective_base = status.get("base_url") or pconfig.inference_base_url
+
+    print("  Claude Code CLI delegates Hermes turns to `claude -p`.")
+    print("  Hermes disables Claude built-in tools and reuses Hermes tool calls.")
+    print(f"  Command: {resolved_command}")
+    if status.get("subscription_type"):
+        print(f"  Subscription: {status.get('subscription_type')}")
+    if status.get("email_address"):
+        print(f"  Account: {status.get('email_address')}")
+    print(f"  Backend marker: {effective_base}")
+    print()
+
+    if not status.get("resolved_command"):
+        print("  ⚠ Claude CLI was not found on PATH.")
+        print("  Set HERMES_CLAUDE_CLI_COMMAND or CLAUDE_CLI_PATH if it is installed elsewhere.")
+        return
+    if not status.get("logged_in"):
+        print("  ⚠ Claude CLI is not logged in. Run `claude auth login` or `claude /login` first.")
+        return
+
+    model_list = list(_PROVIDER_MODELS.get(provider_id) or [])
+    selected = _prompt_model_selection(
+        model_list,
+        current_model=current_model or (model_list[0] if model_list else "claude-opus-4-7"),
+    )
+    if not selected:
+        print("No change.")
+        return
+
+    cfg = load_config()
+    model_cfg = cfg.get("model")
+    if not isinstance(model_cfg, dict):
+        model_cfg = {"default": model_cfg} if model_cfg else {}
+        cfg["model"] = model_cfg
+    model_cfg["provider"] = provider_id
+    model_cfg["base_url"] = effective_base
+    model_cfg["api_mode"] = "chat_completions"
+    model_cfg["api_key"] = "claude-cli"
+    model_cfg["default"] = selected
+    save_config(cfg)
+    print(f"  Config updated: provider={provider_id}, model={selected}")
 
     print(f"Default model set to: {selected} (via {pconfig.name})")
 
@@ -6656,6 +6717,7 @@ For more help on a command:
             "openrouter",
             "nous",
             "openai-codex",
+            "claude-cli",
             "copilot-acp",
             "copilot",
             "anthropic",
