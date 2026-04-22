@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import select
 import shlex
 import shutil
 import subprocess
@@ -30,6 +31,8 @@ _TOOL_CALL_JSON_RE = re.compile(
     r"\{\s*\"id\"\s*:\s*\"[^\"]+\"\s*,\s*\"type\"\s*:\s*\"function\"\s*,\s*\"function\"\s*:\s*\{.*?\}\s*\}",
     re.DOTALL,
 )
+_STREAM_TOOL_START = "<tool_call>"
+_STREAM_TOOL_END = "</tool_call>"
 
 
 def _debug_log(message: str) -> None:
@@ -300,6 +303,45 @@ def _extract_tool_calls_from_text(text: str) -> tuple[list[SimpleNamespace], str
     return extracted, cleaned
 
 
+def _split_partial_marker_tail(text: str, marker: str) -> tuple[str, str]:
+    if not text or not marker:
+        return text, ""
+    max_keep = min(len(text), len(marker) - 1)
+    for size in range(max_keep, 0, -1):
+        if marker.startswith(text[-size:]):
+            return text[:-size], text[-size:]
+    return text, ""
+
+
+def _extract_text_from_content_blocks(content: Any) -> str:
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("type") or "").strip().lower() != "text":
+            continue
+        text = item.get("text")
+        if isinstance(text, str) and text:
+            parts.append(text)
+    return "".join(parts)
+
+
+def _coerce_reasoning_delta(block_type: str | None, delta: dict[str, Any]) -> str:
+    kind = str(delta.get("type") or "").strip().lower()
+    if block_type in {"thinking", "redacted_thinking"} or "thinking" in kind:
+        for key in ("thinking", "text"):
+            value = delta.get(key)
+            if isinstance(value, str) and value:
+                return value
+    for key in ("reasoning", "reasoning_content"):
+        value = delta.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
 class _ClaudeCLIChatCompletions:
     def __init__(self, client: "ClaudeCLIClient"):
         self._client = client
@@ -460,12 +502,10 @@ class ClaudeCLIClient:
         finish_reason = "tool_calls" if tool_calls else "stop"
 
         if stream:
-            return self._stream_completion(
+            return self._stream_completion_live(
                 model=model or "claude-cli",
-                content=cleaned_text,
-                tool_calls=tool_calls,
-                finish_reason=finish_reason,
-                usage=usage,
+                prompt_text=prompt_text,
+                timeout_seconds=effective_timeout,
             )
 
         assistant_message = SimpleNamespace(
@@ -508,6 +548,325 @@ class ClaudeCLIClient:
                         "arguments": getattr(getattr(tool_call, "function", None), "arguments", ""),
                     },
                 )
+
+            yield _make_stream_chunk(
+                model=model,
+                finish_reason=finish_reason,
+                usage=usage,
+            )
+
+        return _generator()
+
+    def _stream_completion_live(
+        self,
+        *,
+        model: str,
+        prompt_text: str,
+        timeout_seconds: float,
+    ):
+        def _generator():
+            normalized_model = _normalize_model(model)
+            command = [
+                self._command,
+                *self._args,
+                "-p",
+                "--verbose",
+                "--output-format",
+                "stream-json",
+                "--include-partial-messages",
+                "--tools",
+                "",
+            ]
+            if normalized_model:
+                command.extend(["--model", normalized_model])
+            if self._last_session_id and _resume_enabled():
+                command.extend(["--resume", self._last_session_id])
+
+            resolved = shutil.which(command[0]) if command and command[0] else None
+            if not resolved:
+                raise RuntimeError(
+                    f"Could not find Claude CLI command '{command[0]}'. Install Claude Code or set "
+                    "HERMES_CLAUDE_CLI_COMMAND/CLAUDE_CLI_PATH."
+                )
+            command[0] = resolved
+            _debug_log(
+                "stream_prompt:start "
+                f"model={normalized_model or ''} "
+                f"timeout={timeout_seconds:.1f} "
+                f"cwd={self._cwd} "
+                f"argv_len={sum(len(part) for part in command)} "
+                f"prompt_len={len(prompt_text)}"
+            )
+
+            try:
+                proc = subprocess.Popen(
+                    command,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    cwd=self._cwd,
+                    bufsize=1,
+                )
+            except Exception as exc:
+                raise RuntimeError(f"Failed to start Claude CLI: {exc}") from exc
+
+            assert proc.stdin is not None
+            assert proc.stdout is not None
+            assert proc.stderr is not None
+
+            try:
+                proc.stdin.write(prompt_text)
+                proc.stdin.close()
+            except Exception:
+                proc.kill()
+                proc.wait()
+                raise
+
+            block_types: dict[int, str] = {}
+            stderr_lines: list[str] = []
+            raw_text_parts: list[str] = []
+            fallback_assistant_text = ""
+            pending_text = ""
+            tool_buffer = ""
+            inside_tool_block = False
+            emitted_text = ""
+            reasoning_text = ""
+            result_payload: dict[str, Any] | None = None
+            usage = None
+            finish_reason = "stop"
+            start = time.monotonic()
+
+            def _emit_visible(fragment: str, *, final: bool = False):
+                nonlocal pending_text, tool_buffer, inside_tool_block, emitted_text
+                if fragment:
+                    pending_text += fragment
+                emitted_now: list[str] = []
+                while True:
+                    if inside_tool_block:
+                        end_idx = pending_text.find(_STREAM_TOOL_END)
+                        if end_idx == -1:
+                            tool_buffer += pending_text
+                            pending_text = ""
+                            break
+                        tool_buffer += pending_text[:end_idx]
+                        pending_text = pending_text[end_idx + len(_STREAM_TOOL_END):]
+                        inside_tool_block = False
+                        tool_buffer = ""
+                        continue
+
+                    start_idx = pending_text.find(_STREAM_TOOL_START)
+                    if start_idx != -1:
+                        visible = pending_text[:start_idx]
+                        if visible:
+                            emitted_now.append(visible)
+                            emitted_text += visible
+                        pending_text = pending_text[start_idx + len(_STREAM_TOOL_START):]
+                        inside_tool_block = True
+                        tool_buffer = ""
+                        continue
+
+                    if not pending_text:
+                        break
+                    if final:
+                        visible = pending_text
+                        pending_text = ""
+                    else:
+                        visible, pending_text = _split_partial_marker_tail(
+                            pending_text,
+                            _STREAM_TOOL_START,
+                        )
+                    if visible:
+                        emitted_now.append(visible)
+                        emitted_text += visible
+                    break
+                return emitted_now
+
+            while True:
+                elapsed = time.monotonic() - start
+                remaining = timeout_seconds - elapsed
+                if remaining <= 0:
+                    proc.kill()
+                    raise TimeoutError(f"Claude CLI timed out after {timeout_seconds:.0f}s")
+
+                ready, _, _ = select.select([proc.stdout, proc.stderr], [], [], remaining)
+                if not ready:
+                    proc.kill()
+                    raise TimeoutError(f"Claude CLI timed out after {timeout_seconds:.0f}s")
+
+                if proc.stderr in ready:
+                    err_line = proc.stderr.readline()
+                    if err_line:
+                        stderr_lines.append(err_line.rstrip("\n"))
+
+                if proc.stdout in ready:
+                    line = proc.stdout.readline()
+                    if line:
+                        stripped = line.strip()
+                        if stripped:
+                            try:
+                                payload = json.loads(stripped)
+                            except Exception:
+                                _debug_log(f"stream_prompt:json_error preview={stripped[:200]!r}")
+                                continue
+
+                            payload_type = str(payload.get("type") or "").strip().lower()
+                            if payload_type == "system":
+                                session_id = str(payload.get("session_id") or "").strip()
+                                if session_id:
+                                    self._last_session_id = session_id
+                            elif payload_type == "stream_event":
+                                event = payload.get("event") or {}
+                                if not isinstance(event, dict):
+                                    event = {}
+                                event_type = str(event.get("type") or "").strip().lower()
+                                if event_type == "content_block_start":
+                                    idx = int(event.get("index") or 0)
+                                    block = event.get("content_block") or {}
+                                    if not isinstance(block, dict):
+                                        block = {}
+                                    block_types[idx] = str(block.get("type") or "").strip().lower()
+                                elif event_type == "content_block_delta":
+                                    idx = int(event.get("index") or 0)
+                                    block_type = block_types.get(idx)
+                                    delta = event.get("delta") or {}
+                                    if not isinstance(delta, dict):
+                                        delta = {}
+                                    text_delta = str(delta.get("text") or "")
+                                    if text_delta and (
+                                        block_type == "text"
+                                        or str(delta.get("type") or "").strip().lower() == "text_delta"
+                                    ):
+                                        raw_text_parts.append(text_delta)
+                                        for visible in _emit_visible(text_delta):
+                                            yield _make_stream_chunk(model=model, content=visible)
+                                    reasoning_delta = _coerce_reasoning_delta(block_type, delta)
+                                    if reasoning_delta:
+                                        reasoning_text += reasoning_delta
+                                        yield _make_stream_chunk(
+                                            model=model,
+                                            reasoning=reasoning_delta,
+                                        )
+                                elif event_type == "content_block_stop":
+                                    idx = int(event.get("index") or 0)
+                                    block_types.pop(idx, None)
+                                elif event_type == "message_delta":
+                                    delta = event.get("delta") or {}
+                                    if not isinstance(delta, dict):
+                                        delta = {}
+                                    stop = delta.get("stop_reason")
+                                    if isinstance(stop, str) and stop.strip():
+                                        finish_reason = "tool_calls" if stop == "tool_use" else "stop"
+                                    usage_payload = event.get("usage") or {}
+                                    if isinstance(usage_payload, dict):
+                                        prompt_tokens = int(
+                                            usage_payload.get("input_tokens")
+                                            or usage_payload.get("cache_creation_input_tokens")
+                                            or 0
+                                        )
+                                        completion_tokens = int(usage_payload.get("output_tokens") or 0)
+                                        cached_tokens = int(
+                                            usage_payload.get("cache_read_input_tokens") or 0
+                                        )
+                                        usage = SimpleNamespace(
+                                            prompt_tokens=prompt_tokens,
+                                            completion_tokens=completion_tokens,
+                                            total_tokens=prompt_tokens + completion_tokens,
+                                            prompt_tokens_details=SimpleNamespace(
+                                                cached_tokens=cached_tokens
+                                            ),
+                                        )
+                            elif payload_type == "assistant" and not raw_text_parts:
+                                message = payload.get("message") or {}
+                                if not isinstance(message, dict):
+                                    message = {}
+                                fallback_assistant_text = _extract_text_from_content_blocks(
+                                    message.get("content")
+                                )
+                            elif payload_type == "result":
+                                result_payload = payload
+                                session_id = str(payload.get("session_id") or "").strip()
+                                if session_id:
+                                    self._last_session_id = session_id
+                                total_cost = payload.get("total_cost_usd")
+                                self._last_total_cost_usd = (
+                                    float(total_cost)
+                                    if isinstance(total_cost, (int, float))
+                                    else None
+                                )
+                                stop_reason = payload.get("stop_reason")
+                                self._last_stop_reason = (
+                                    str(stop_reason).strip()
+                                    if isinstance(stop_reason, str)
+                                    else None
+                                )
+                    elif proc.poll() is not None:
+                        break
+
+                if proc.poll() is not None:
+                    break
+
+            try:
+                rc = proc.wait(timeout=1)
+            except Exception:
+                proc.kill()
+                rc = proc.wait()
+
+            stderr = "\n".join(part for part in stderr_lines if part).strip()
+            if rc != 0:
+                raise RuntimeError(
+                    f"Claude CLI returned exit code {rc}: {stderr or 'unknown error'}"
+                )
+
+            if fallback_assistant_text and not raw_text_parts:
+                raw_text_parts.append(fallback_assistant_text)
+
+            raw_text = "".join(raw_text_parts).strip()
+            tool_calls, cleaned_text = _extract_tool_calls_from_text(raw_text)
+            for visible in _emit_visible("", final=True):
+                yield _make_stream_chunk(model=model, content=visible)
+
+            if cleaned_text and len(cleaned_text) > len(emitted_text) and cleaned_text.startswith(
+                emitted_text
+            ):
+                tail = cleaned_text[len(emitted_text):]
+                if tail:
+                    emitted_text += tail
+                    yield _make_stream_chunk(model=model, content=tail)
+
+            if not usage and isinstance(result_payload, dict):
+                usage_payload = result_payload.get("usage") or {}
+                if isinstance(usage_payload, dict):
+                    prompt_tokens = int(
+                        usage_payload.get("input_tokens")
+                        or usage_payload.get("cache_creation_input_tokens")
+                        or 0
+                    )
+                    completion_tokens = int(usage_payload.get("output_tokens") or 0)
+                    cached_tokens = int(usage_payload.get("cache_read_input_tokens") or 0)
+                    usage = SimpleNamespace(
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=prompt_tokens + completion_tokens,
+                        prompt_tokens_details=SimpleNamespace(cached_tokens=cached_tokens),
+                    )
+
+            if tool_calls:
+                finish_reason = "tool_calls"
+                for index, tool_call in enumerate(tool_calls):
+                    yield _make_stream_chunk(
+                        model=model,
+                        tool_call_delta={
+                            "index": index,
+                            "id": getattr(tool_call, "id", None),
+                            "name": getattr(getattr(tool_call, "function", None), "name", ""),
+                            "arguments": getattr(
+                                getattr(tool_call, "function", None),
+                                "arguments",
+                                "",
+                            ),
+                        },
+                    )
 
             yield _make_stream_chunk(
                 model=model,
