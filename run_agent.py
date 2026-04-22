@@ -86,7 +86,7 @@ from agent.model_metadata import (
     fetch_model_metadata,
     estimate_tokens_rough, estimate_messages_tokens_rough, estimate_request_tokens_rough,
     get_next_probe_tier, parse_context_limit_from_error,
-    save_context_length, is_local_endpoint,
+    save_context_length, is_local_endpoint, is_ollama_endpoint,
     query_ollama_num_ctx,
 )
 from agent.context_compressor import ContextCompressor
@@ -1176,7 +1176,7 @@ class AIAgent:
                 self._ollama_num_ctx = int(_ollama_num_ctx_override)
             except (TypeError, ValueError):
                 logger.debug("Invalid ollama_num_ctx config value: %r", _ollama_num_ctx_override)
-        if self._ollama_num_ctx is None and self.base_url and is_local_endpoint(self.base_url):
+        if self._ollama_num_ctx is None and self.base_url and is_ollama_endpoint(self.base_url):
             try:
                 _detected = query_ollama_num_ctx(self.model, self.base_url)
                 if _detected and _detected > 0:
