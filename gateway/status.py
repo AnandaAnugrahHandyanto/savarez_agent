@@ -216,10 +216,11 @@ def _cleanup_invalid_pid_path(pid_path: Path, *, cleanup_stale: bool) -> None:
     if not cleanup_stale:
         return
     try:
-        if pid_path == _get_pid_path():
-            remove_pid_file()
-        else:
-            pid_path.unlink(missing_ok=True)
+        # By the time we get here, the PID record has already been proven
+        # invalid, stale, or non-gateway.  Force-unlink the file directly
+        # instead of delegating to remove_pid_file(), whose same-PID guard is
+        # only correct for the live atexit handoff path.
+        pid_path.unlink(missing_ok=True)
     except Exception:
         pass
 

@@ -6,6 +6,7 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 
 import asyncio
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -1194,6 +1195,27 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     common_bin_paths = ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"]
     restart_timeout = max(60, int(_get_restart_drain_timeout() or 0))
 
+    def _stale_pid_exec_start_pre(target_home: str) -> str:
+        pid_file = Path(target_home) / "gateway.pid"
+        script = (
+            "import json, os, pathlib; "
+            f"p=pathlib.Path(r'{str(pid_file)}'); "
+            "d=None; "
+            "exists=p.exists(); "
+            "exists and (d:=json.loads(p.read_text())); "
+            "pid=(int(d.get('pid')) if isinstance(d, dict) else int(d)) if exists else None; "
+            "(os.kill(pid, 0) if pid is not None else None)"
+        )
+        # If the helper itself fails to parse/read the PID file, treat it as stale
+        # and remove it before startup.  Live processes survive because os.kill(pid, 0)
+        # succeeds and exits 0.
+        return (
+            "/bin/sh -lc "
+            + shlex.quote(
+                f"{python_path} -c {shlex.quote(script)} >/dev/null 2>&1 || rm -f {shlex.quote(str(pid_file))}"
+            )
+        )
+
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
         hermes_home = _hermes_home_for_target_user(home_dir)
@@ -1221,6 +1243,7 @@ StartLimitBurst=5
 Type=simple
 User={username}
 Group={group_name}
+ExecStartPre={_stale_pid_exec_start_pre(hermes_home)}
 ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run --replace
 WorkingDirectory={working_dir}
 Environment="HOME={home_dir}"
@@ -1256,6 +1279,7 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
+ExecStartPre={_stale_pid_exec_start_pre(hermes_home)}
 ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run --replace
 WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
