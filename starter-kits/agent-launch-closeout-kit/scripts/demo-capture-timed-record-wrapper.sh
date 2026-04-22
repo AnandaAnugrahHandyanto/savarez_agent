@@ -8,6 +8,9 @@ DURATION_SECONDS=79
 DISPLAY_ID=1
 PREPARE=1
 VERIFY=1
+PRIME_WORKSPACE=0
+PRIME_DELAY_SECONDS=3
+EDITOR_APP="TextEdit"
 SESSION_PATH=""
 LOG_PATH="$KIT_DIR/launch-execution-log.md"
 RECORDING_PATH=""
@@ -21,10 +24,14 @@ usage() {
 Usage:
   bash starter-kits/agent-launch-closeout-kit/scripts/demo-capture-timed-record-wrapper.sh
   bash starter-kits/agent-launch-closeout-kit/scripts/demo-capture-timed-record-wrapper.sh --duration-seconds 90
+  bash starter-kits/agent-launch-closeout-kit/scripts/demo-capture-timed-record-wrapper.sh --prime-workspace
   bash starter-kits/agent-launch-closeout-kit/scripts/demo-capture-timed-record-wrapper.sh \
     --recording-path /absolute/path/to/raw.mov \
     --edited-asset-path /absolute/path/to/final.mp4 \
     --duration-seconds 79 \
+    [--prime-workspace] \
+    [--prime-delay-seconds 3] \
+    [--editor-app "TextEdit"] \
     [--session-path /absolute/path/to/demo-capture-session.md] \
     [--log-path /absolute/path/to/launch-execution-log.md] \
     [--posted-url https://x.com/... ] \
@@ -34,6 +41,7 @@ Usage:
 Behavior:
   - macOS only
   - optionally refreshes the latest demo-capture session packet via `demo-capture.sh --prepare`
+  - optionally primes the walkthrough workspace via `demo-capture-launcher.sh --no-prepare` before recording
   - records the main display with native `screencapture -v -V...`
   - copies the raw recording to the edited-asset path when they differ so the closeout log has a real attachment file immediately
   - finalizes the launch log through `demo-capture-headless-finalize.sh`
@@ -49,6 +57,18 @@ while [[ $# -gt 0 ]]; do
       ;;
     --display)
       DISPLAY_ID="${2:-}"
+      shift 2
+      ;;
+    --prime-workspace)
+      PRIME_WORKSPACE=1
+      shift
+      ;;
+    --prime-delay-seconds)
+      PRIME_DELAY_SECONDS="${2:-}"
+      shift 2
+      ;;
+    --editor-app)
+      EDITOR_APP="${2:-}"
       shift 2
       ;;
     --session-path)
@@ -103,6 +123,8 @@ done
 command -v screencapture >/dev/null 2>&1 || { printf 'screencapture is required on macOS.\n' >&2; exit 2; }
 [[ "$DURATION_SECONDS" =~ ^[0-9]+$ ]] || { printf '--duration-seconds must be an integer.\n' >&2; exit 2; }
 (( DURATION_SECONDS > 0 )) || { printf '--duration-seconds must be > 0.\n' >&2; exit 2; }
+[[ "$PRIME_DELAY_SECONDS" =~ ^[0-9]+$ ]] || { printf '--prime-delay-seconds must be an integer.\n' >&2; exit 2; }
+(( PRIME_DELAY_SECONDS >= 0 )) || { printf '--prime-delay-seconds must be >= 0.\n' >&2; exit 2; }
 [[ -f "$LOG_PATH" ]] || { printf 'Launch log not found: %s\n' "$LOG_PATH" >&2; exit 2; }
 mkdir -p "$ARTIFACT_DIR"
 
@@ -159,6 +181,11 @@ print_plan() {
   printf 'Recording path: %s\n' "$RECORDING_PATH"
   printf 'Edited asset path: %s\n' "$EDITED_ASSET_PATH"
   printf 'Verify after finalize: %s\n' "$VERIFY"
+  printf 'Prime workspace first: %s\n' "$PRIME_WORKSPACE"
+  if [[ $PRIME_WORKSPACE -eq 1 ]]; then
+    printf 'Prime delay seconds: %s\n' "$PRIME_DELAY_SECONDS"
+    printf 'Editor app: %s\n' "$EDITOR_APP"
+  fi
 }
 
 if [[ $DRY_RUN -eq 1 ]]; then
@@ -167,6 +194,13 @@ if [[ $DRY_RUN -eq 1 ]]; then
 fi
 
 print_plan
+if [[ $PRIME_WORKSPACE -eq 1 ]]; then
+  printf 'TIMED_DEMO_CAPTURE_PRIMING\n'
+  bash "$KIT_DIR/scripts/demo-capture-launcher.sh" --no-prepare --editor-app "$EDITOR_APP"
+  if (( PRIME_DELAY_SECONDS > 0 )); then
+    sleep "$PRIME_DELAY_SECONDS"
+  fi
+fi
 printf 'TIMED_DEMO_CAPTURE_RECORDING\n'
 screencapture -v -V"$DURATION_SECONDS" -D"$DISPLAY_ID" "$RECORDING_PATH"
 [[ -s "$RECORDING_PATH" ]] || { printf 'Recording file is empty: %s\n' "$RECORDING_PATH" >&2; exit 2; }

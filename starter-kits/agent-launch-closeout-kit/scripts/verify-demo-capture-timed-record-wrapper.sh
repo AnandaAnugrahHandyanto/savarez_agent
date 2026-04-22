@@ -38,6 +38,9 @@ PY
 
 bash "$KIT_DIR/scripts/demo-capture-timed-record-wrapper.sh" \
   --no-prepare \
+  --prime-workspace \
+  --prime-delay-seconds 0 \
+  --editor-app "TextEdit" \
   --session-path "$SESSION_PATH" \
   --log-path "$LOG_PATH" \
   --recording-path "$RAW_PATH" \
@@ -67,6 +70,8 @@ if missing:
     raise SystemExit(f"Missing expected log lines: {missing}")
 if "TIMED_DEMO_CAPTURE_OK" not in output:
     raise SystemExit("Wrapper output missing TIMED_DEMO_CAPTURE_OK")
+if "DEMO_CAPTURE_LAUNCHER_OK" not in output:
+    raise SystemExit("Wrapper output missing DEMO_CAPTURE_LAUNCHER_OK from workspace priming path")
 if raw_path.stat().st_size <= 0:
     raise SystemExit(f"Raw recording file is empty: {raw_path}")
 if edited_path.stat().st_size <= 0:

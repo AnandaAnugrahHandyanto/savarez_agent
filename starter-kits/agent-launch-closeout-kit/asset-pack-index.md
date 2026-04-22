@@ -58,7 +58,7 @@ Required fields:
 - Demo capture runbook: `starter-kits/agent-launch-closeout-kit/demo-capture-runbook.md`
 - Demo capture helper: `starter-kits/agent-launch-closeout-kit/scripts/demo-capture.sh`
 - Demo headless finalize helper: `starter-kits/agent-launch-closeout-kit/scripts/demo-capture-headless-finalize.sh`
-- Demo timed record wrapper (macOS): `starter-kits/agent-launch-closeout-kit/scripts/demo-capture-timed-record-wrapper.sh`
+- Demo timed record wrapper with optional workspace priming (macOS): `starter-kits/agent-launch-closeout-kit/scripts/demo-capture-timed-record-wrapper.sh`
 - Demo post-finalize verifier: `starter-kits/agent-launch-closeout-kit/scripts/demo-capture-post-finalize-verify.sh`
 - Demo post-finalize smoke test: `starter-kits/agent-launch-closeout-kit/scripts/verify-demo-capture-post-finalize.sh`
 - Demo workspace launcher (macOS): `starter-kits/agent-launch-closeout-kit/scripts/demo-capture-launcher.sh`
