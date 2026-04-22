@@ -50,5 +50,10 @@ RUN uv venv && \
 # ---------- Runtime ----------
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
 ENV HERMES_HOME=/opt/data
+# Put the profile-wrapper directory on PATH so `hermes profile create
+# <name>` wrappers land somewhere shells can find them without the user
+# having to touch ~/.bashrc (which the hermes user doesn't own a copy
+# of — only /etc/skel/.bashrc exists in the base image). (#13739)
+ENV PATH="/opt/data/.local/bin:${PATH}"
 VOLUME [ "/opt/data" ]
 ENTRYPOINT [ "/opt/hermes/docker/entrypoint.sh" ]
