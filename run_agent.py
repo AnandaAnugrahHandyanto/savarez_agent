@@ -4312,6 +4312,59 @@ class AIAgent:
         """Convert chat-completions tool schemas to Responses function-tool schemas."""
         return _codex_responses_tools(tools if tools is not None else self.tools)
 
+    def _try_extract_content_tool_calls(self, content: str):
+        """Extract tool calls from content when the model embeds them as JSON.
+
+        Some providers (e.g. Ollama with qwen2.5-coder) return tool calls as
+        a JSON object or array in the ``content`` field instead of populating
+        the ``tool_calls`` array.  This method detects the pattern and returns
+        a list of ``ChatCompletionMessageToolCall`` objects, or ``None``.
+        """
+        import json as _json
+        import uuid as _uuid
+        from openai.types.chat.chat_completion_message_tool_call import (
+            ChatCompletionMessageToolCall,
+            Function,
+        )
+
+        text = content.strip()
+        if not text or text[0] not in ('{', '['):
+            return None
+
+        try:
+            parsed = _json.loads(text)
+        except (ValueError, TypeError):
+            return None
+
+        # Normalise to a list of dicts
+        if isinstance(parsed, dict):
+            candidates = [parsed]
+        elif isinstance(parsed, list):
+            candidates = [c for c in parsed if isinstance(c, dict)]
+        else:
+            return None
+
+        # Validate: each dict must have "name" matching a registered tool
+        tool_names = {t["function"]["name"] for t in (self.tools or [])
+                      if isinstance(t, dict) and "function" in t}
+        calls = []
+        for obj in candidates:
+            name = obj.get("name") or ""
+            if name not in tool_names:
+                return None  # not a recognisable tool call — bail entirely
+            args = obj.get("arguments", {})
+            if isinstance(args, dict):
+                args = _json.dumps(args, ensure_ascii=False)
+            elif not isinstance(args, str):
+                args = "{}"
+            calls.append(ChatCompletionMessageToolCall(
+                id=f"call_{_uuid.uuid4().hex[:24]}",
+                type="function",
+                function=Function(name=name, arguments=args),
+            ))
+
+        return calls if calls else None
+
     @staticmethod
     def _deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:
         """Generate a deterministic call_id from tool call content.
@@ -7242,6 +7295,22 @@ class AIAgent:
         codex_items = getattr(assistant_message, "codex_reasoning_items", None)
         if codex_items:
             msg["codex_reasoning_items"] = codex_items
+
+        # Fallback: some providers (e.g. Ollama with qwen2.5-coder) return
+        # tool calls as a JSON object/array inside the content field instead
+        # of the structured tool_calls array.  Detect this and promote to
+        # real tool_calls so the normal execution path handles them.
+        if (
+            not assistant_message.tool_calls
+            and assistant_message.content
+            and self.tools
+        ):
+            extracted = self._try_extract_content_tool_calls(
+                assistant_message.content
+            )
+            if extracted:
+                assistant_message.tool_calls = extracted
+                assistant_message.content = None
 
         if assistant_message.tool_calls:
             tool_calls = []
