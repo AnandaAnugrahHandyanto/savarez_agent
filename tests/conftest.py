@@ -77,32 +77,24 @@ def _ensure_current_event_loop(request):
     """Provide a default event loop for sync tests that call get_event_loop().
 
     Python 3.11+ no longer guarantees a current loop for plain synchronous tests.
-    A number of gateway tests still use asyncio.get_event_loop().run_until_complete(...).
-    Ensure they always have a usable loop without interfering with pytest-asyncio's
-    own loop management for @pytest.mark.asyncio tests.
+    A number of sync tests still use asyncio.get_event_loop().run_until_complete(...).
+    Create a fresh loop for those tests without touching pytest-asyncio's own
+    loop management for @pytest.mark.asyncio tests.
     """
     if request.node.get_closest_marker("asyncio") is not None:
         yield
         return
 
-    try:
-        loop = asyncio.get_event_loop_policy().get_event_loop()
-    except RuntimeError:
-        loop = None
-
-    created = loop is None or loop.is_closed()
-    if created:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
     try:
         yield
     finally:
-        if created and loop is not None:
-            try:
-                loop.close()
-            finally:
-                asyncio.set_event_loop(None)
+        try:
+            loop.close()
+        finally:
+            asyncio.set_event_loop(None)
 
 
 @pytest.fixture(autouse=True)
