@@ -8,6 +8,7 @@ import yaml
 
 from hermes_cli.config import (
     DEFAULT_CONFIG,
+    OPTIONAL_ENV_VARS,
     get_hermes_home,
     ensure_hermes_home,
     load_config,
@@ -115,15 +116,21 @@ class TestSaveAndLoadRoundtrip:
 
 
 class TestSaveEnvValueSecure:
+    def test_happyhorse_env_var_metadata_registered(self):
+        info = OPTIONAL_ENV_VARS["HAPPYHORSE_API_KEY"]
+        assert info["category"] == "tool"
+        assert info["password"] is True
+        assert "video_generate" in info["tools"]
+
     def test_save_env_value_writes_without_stdout(self, tmp_path, capsys):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
-            save_env_value("TENOR_API_KEY", "sk-test-secret")
+            save_env_value("TENOR_API_KEY", "***")
             captured = capsys.readouterr()
             assert captured.out == ""
             assert captured.err == ""
 
             env_values = load_env()
-            assert env_values["TENOR_API_KEY"] == "sk-test-secret"
+            assert env_values["TENOR_API_KEY"] == "***"
 
     def test_secure_save_returns_metadata_only(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
@@ -441,6 +448,6 @@ class TestInterimAssistantMessageConfig:
             migrate_config(interactive=False, quiet=True)
             raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
-        assert raw["_config_version"] == 16
+        assert raw["_config_version"] == 17
         assert raw["display"]["tool_progress"] == "off"
         assert raw["display"]["interim_assistant_messages"] is True

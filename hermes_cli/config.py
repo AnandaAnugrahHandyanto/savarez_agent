@@ -1071,6 +1071,14 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "HAPPYHORSE_API_KEY": {
+        "description": "HappyHorse API key for AI video generation",
+        "prompt": "HappyHorse API key",
+        "url": "https://happyhorse.app/zh/docs",
+        "tools": ["video_generate"],
+        "password": True,
+        "category": "tool",
+    },
     "TINKER_API_KEY": {
         "description": "Tinker API key for RL training",
         "prompt": "Tinker API key",
