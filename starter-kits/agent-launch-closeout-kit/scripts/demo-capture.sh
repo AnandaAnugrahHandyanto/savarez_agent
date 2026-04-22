@@ -6,6 +6,7 @@ KIT_DIR="$ROOT_DIR/starter-kits/agent-launch-closeout-kit"
 ARTIFACT_DIR="$KIT_DIR/demo-artifacts"
 LOG_PATH="$KIT_DIR/launch-execution-log.md"
 RUNBOOK_PATH="$KIT_DIR/demo-capture-runbook.md"
+TRIGGER_PATH="$KIT_DIR/demo-trigger.md"
 README_PATH="$KIT_DIR/README.md"
 READINESS_PATH="$ARTIFACT_DIR/latest-demo-capture-readiness.md"
 TIMESTAMP="$(date +%Y-%m-%dT%H-%M-%S%z)"
@@ -93,6 +94,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 require_file "$RUNBOOK_PATH"
+require_file "$TRIGGER_PATH"
 require_file "$LOG_PATH"
 require_file "$README_PATH"
 mkdir -p "$ARTIFACT_DIR"
@@ -110,7 +112,7 @@ if [[ "$MODE" == "prepare" ]]; then
 
     printf '## Record this exact path\n'
     printf '1. Keep the claim narrow: closeout process only, not broader product proof.\n'
-    printf '2. Follow the six-shot list in `%s`.\n' "${RUNBOOK_PATH#$ROOT_DIR/}"
+    printf '2. Follow the one-screen trigger card in `%s` (full detail remains in `%s`).\n' "${TRIGGER_PATH#$ROOT_DIR/}" "${RUNBOOK_PATH#$ROOT_DIR/}"
     printf '3. Capture the raw recording to `%s` or replace with your actual asset path.\n' "${DEFAULT_RECORDING_PATH#$ROOT_DIR/}"
     printf '4. After recording/editing, run:\n\n'
     printf '```bash\n'
@@ -122,6 +124,7 @@ if [[ "$MODE" == "prepare" ]]; then
 
     printf '## Surfaces to show during capture\n'
     printf -- '- `%s`\n' "${READINESS_PATH#$ROOT_DIR/}"
+    printf -- '- `%s`\n' "${TRIGGER_PATH#$ROOT_DIR/}"
     printf -- '- `starter-kits/agentic-cron-orchestration-kit/qa/clean-room-proof-run-2026-04-17.md`\n'
     printf -- '- `%s`\n' "${LOG_PATH#$ROOT_DIR/}"
     printf -- '- `starter-kits/agentic-cron-orchestration-kit/launch/demo-outline.md`\n\n'

@@ -31,6 +31,9 @@ bash starter-kits/agent-launch-closeout-kit/scripts/demo-capture.sh --prepare
 
 This reruns `scripts/demo-capture-preflight.sh`, refreshes `demo-artifacts/latest-demo-capture-readiness.md`, and freezes a timestamped `demo-artifacts/demo-capture-session-*.md` packet with the suggested raw/edit asset paths and the exact finalize command.
 
+For the one-screen operator version of this path, use:
+- `starter-kits/agent-launch-closeout-kit/demo-trigger.md`
+
 After the recording/edit is complete, close the loop with:
 
 ```bash
