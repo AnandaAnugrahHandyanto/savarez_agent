@@ -45,6 +45,7 @@ from hermes_cli.config import (
     remove_env_value,
     check_config_version,
     redact_key,
+    _deep_merge,
 )
 from gateway.status import get_running_pid, read_runtime_status
 
@@ -941,7 +942,10 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
 @app.put("/api/config")
 async def update_config(body: ConfigUpdate):
     try:
-        save_config(_denormalize_config_from_web(body.config))
+        existing = load_config()
+        incoming = _denormalize_config_from_web(body.config)
+        merged = _deep_merge(existing, incoming)
+        save_config(merged)
         return {"ok": True}
     except Exception as e:
         _log.exception("PUT /api/config failed")
