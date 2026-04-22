@@ -1,0 +1,23 @@
+default_threshold: 0.6
+
+skills:
+  ratchet:
+    threshold: 1.0
+    tasks:
+      - id: ratchet-suite
+        description: Ratchet checkpoint/restore regression suite.
+        command: scripts/run_tests.sh tests/tools/test_checkpoint_manager.py tests/tools/test_ratchet.py
+
+  spar:
+    threshold: 1.0
+    tasks:
+      - id: spar-suite
+        description: Spar builder-reviewer-judge regression suite.
+        command: scripts/run_tests.sh tests/tools/test_spar_tool.py
+
+  campaigns:
+    threshold: 1.0
+    tasks:
+      - id: campaign-suite
+        description: Campaign persistence round-trip suite.
+        command: scripts/run_tests.sh tests/test_campaigns.py

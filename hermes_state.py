@@ -21,6 +21,7 @@ import re
 import sqlite3
 import threading
 import time
+import uuid
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Any, Callable, Dict, List, Optional, TypeVar
@@ -31,7 +32,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -84,10 +85,22 @@ CREATE TABLE IF NOT EXISTS messages (
     codex_reasoning_items TEXT
 );
 
+CREATE TABLE IF NOT EXISTS campaigns (
+    id TEXT PRIMARY KEY,
+    goal TEXT NOT NULL,
+    status TEXT NOT NULL,
+    verdict TEXT,
+    milestones_json TEXT NOT NULL DEFAULT '[]',
+    last_touched REAL NOT NULL,
+    next_step TEXT,
+    metadata_json TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_campaigns_status_touched ON campaigns(status, last_touched DESC);
 """
 
 FTS_SQL = """
@@ -329,6 +342,27 @@ class SessionDB:
                     except sqlite3.OperationalError:
                         pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 6")
+            if current_version < 7:
+                try:
+                    cursor.execute(
+                        """CREATE TABLE IF NOT EXISTS campaigns (
+                            id TEXT PRIMARY KEY,
+                            goal TEXT NOT NULL,
+                            status TEXT NOT NULL,
+                            verdict TEXT,
+                            milestones_json TEXT NOT NULL DEFAULT '[]',
+                            last_touched REAL NOT NULL,
+                            next_step TEXT,
+                            metadata_json TEXT
+                        )"""
+                    )
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_campaigns_status_touched "
+                        "ON campaigns(status, last_touched DESC)"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+                cursor.execute("UPDATE schema_version SET version = 7")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -347,6 +381,43 @@ class SessionDB:
             cursor.executescript(FTS_SQL)
 
         self._conn.commit()
+
+    @staticmethod
+    def _load_campaign_json(value: Optional[str], default: Any) -> Any:
+        if not value:
+            return default
+        try:
+            return json.loads(value)
+        except Exception:
+            return default
+
+    @staticmethod
+    def _normalize_campaign_milestone(milestone: Any) -> Dict[str, Any]:
+        now = time.time()
+        if isinstance(milestone, dict):
+            name = str(milestone.get("name") or milestone.get("milestone") or "").strip()
+            details = str(milestone.get("details") or milestone.get("note") or "").strip()
+            timestamp = milestone.get("timestamp", now)
+        else:
+            name = str(milestone or "").strip()
+            details = ""
+            timestamp = now
+        if not name:
+            raise ValueError("campaign milestone requires a name")
+        return {
+            "name": name,
+            "details": details,
+            "timestamp": float(timestamp) if isinstance(timestamp, (int, float)) else now,
+        }
+
+    @classmethod
+    def _decode_campaign_row(cls, row: sqlite3.Row | None) -> Optional[Dict[str, Any]]:
+        if row is None:
+            return None
+        data = dict(row)
+        data["milestones"] = cls._load_campaign_json(data.pop("milestones_json", None), [])
+        data["metadata"] = cls._load_campaign_json(data.pop("metadata_json", None), {})
+        return data
 
     # =========================================================================
     # Session lifecycle
@@ -537,6 +608,143 @@ class SessionDB:
             )
             row = cursor.fetchone()
         return dict(row) if row else None
+
+    # =========================================================================
+    # Campaign persistence
+    # =========================================================================
+
+    def campaign_start(
+        self,
+        goal: str,
+        *,
+        next_step: str = "",
+        status: str = "open",
+        verdict: Optional[str] = None,
+        milestones: Optional[List[Dict[str, Any]]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        campaign_id = f"cmp_{uuid.uuid4().hex[:12]}"
+        touched = time.time()
+        normalized = milestones or [{"name": "created", "details": goal, "timestamp": touched}]
+
+        def _do(conn):
+            conn.execute(
+                """INSERT INTO campaigns
+                   (id, goal, status, verdict, milestones_json, last_touched, next_step, metadata_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    campaign_id,
+                    goal,
+                    status,
+                    verdict,
+                    json.dumps([self._normalize_campaign_milestone(item) for item in normalized]),
+                    touched,
+                    next_step or None,
+                    json.dumps(metadata or {}),
+                ),
+            )
+
+        self._execute_write(_do)
+        return campaign_id
+
+    def get_campaign(self, campaign_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM campaigns WHERE id = ?",
+                (campaign_id,),
+            )
+            row = cursor.fetchone()
+        return self._decode_campaign_row(row)
+
+    def campaign_log(
+        self,
+        campaign_id: str,
+        milestone: Any,
+        *,
+        status: Optional[str] = None,
+        next_step: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        touched = time.time()
+        normalized = self._normalize_campaign_milestone(milestone)
+
+        def _do(conn):
+            row = conn.execute(
+                "SELECT milestones_json, metadata_json, status, next_step FROM campaigns WHERE id = ?",
+                (campaign_id,),
+            ).fetchone()
+            if row is None:
+                return 0
+            milestones = self._load_campaign_json(row["milestones_json"], [])
+            if not isinstance(milestones, list):
+                milestones = []
+            milestones.append(normalized)
+            current_metadata = self._load_campaign_json(row["metadata_json"], {})
+            if isinstance(current_metadata, dict) and metadata:
+                current_metadata.update(metadata)
+            elif metadata:
+                current_metadata = dict(metadata)
+            cursor = conn.execute(
+                """UPDATE campaigns
+                   SET milestones_json = ?, metadata_json = ?, last_touched = ?,
+                       status = ?, next_step = ?
+                   WHERE id = ?""",
+                (
+                    json.dumps(milestones),
+                    json.dumps(current_metadata),
+                    touched,
+                    status or row["status"],
+                    next_step if next_step is not None else row["next_step"],
+                    campaign_id,
+                ),
+            )
+            return cursor.rowcount
+
+        return bool(self._execute_write(_do))
+
+    def campaign_resume(self, limit: int = 20) -> List[Dict[str, Any]]:
+        with self._lock:
+            cursor = self._conn.execute(
+                """SELECT * FROM campaigns
+                   WHERE status != 'completed'
+                   ORDER BY last_touched DESC
+                   LIMIT ?""",
+                (max(1, int(limit)),),
+            )
+            rows = cursor.fetchall()
+        return [self._decode_campaign_row(row) for row in rows]
+
+    def campaign_close(
+        self,
+        campaign_id: str,
+        verdict: str,
+        *,
+        next_step: str = "",
+    ) -> bool:
+        touched = time.time()
+
+        def _do(conn):
+            cursor = conn.execute(
+                """UPDATE campaigns
+                   SET status = 'completed', verdict = ?, next_step = ?, last_touched = ?
+                   WHERE id = ?""",
+                (verdict, next_step or None, touched, campaign_id),
+            )
+            return cursor.rowcount
+
+        return bool(self._execute_write(_do))
+
+    def prune_closed_campaigns(self, older_than_days: int = 30) -> int:
+        cutoff = time.time() - (max(0, int(older_than_days)) * 86400)
+
+        def _do(conn):
+            cursor = conn.execute(
+                "DELETE FROM campaigns WHERE status = 'completed' AND last_touched < ?",
+                (cutoff,),
+            )
+            return cursor.rowcount
+
+        return int(self._execute_write(_do))
 
     def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
         """Resolve an exact or uniquely prefixed session ID to the full ID.

@@ -19,14 +19,16 @@ into the user's project directory.
 """
 
 import hashlib
+import json
 import logging
 import os
 import re
 import shutil
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +69,8 @@ _MAX_FILES = 50_000
 
 # Valid git commit hash pattern: 4–40 hex chars (short or full SHA-1/SHA-256).
 _COMMIT_HASH_RE = re.compile(r'^[0-9a-fA-F]{4,64}$')
+_RATCHET_TAG_RE = re.compile(r'^[A-Za-z0-9._-]{1,120}$')
+_RATCHET_REF_PREFIX = "refs/hermes/ratchet"
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +113,27 @@ def _validate_file_path(file_path: str, working_dir: str) -> Optional[str]:
     return None
 
 
+def _validate_ratchet_tag(ref_tag: str) -> Optional[str]:
+    """Validate a ratchet ref tag to prevent git ref injection."""
+    if not ref_tag or not ref_tag.strip():
+        return "Empty ratchet ref tag"
+    if ref_tag.startswith("-"):
+        return f"Invalid ratchet ref tag (must not start with '-'): {ref_tag!r}"
+    if not _RATCHET_TAG_RE.match(ref_tag):
+        return (
+            "Invalid ratchet ref tag (expected letters, numbers, '.', '_', '-'): "
+            f"{ref_tag!r}"
+        )
+    return None
+
+
+def _sanitize_ratchet_component(value: str) -> str:
+    """Return a git-ref-safe identifier fragment."""
+    sanitized = re.sub(r"[^A-Za-z0-9._-]+", "-", str(value or "").strip())
+    sanitized = sanitized.strip(".-_" )
+    return sanitized or "ref"
+
+
 # ---------------------------------------------------------------------------
 # Shadow repo helpers
 # ---------------------------------------------------------------------------
@@ -123,6 +148,47 @@ def _shadow_repo_path(working_dir: str) -> Path:
     abs_path = str(_normalize_path(working_dir))
     dir_hash = hashlib.sha256(abs_path.encode()).hexdigest()[:16]
     return CHECKPOINT_BASE / dir_hash
+
+
+def _ratchet_repo_path(session_id: str) -> Path:
+    """Session-scoped ratchet repo under ~/.hermes/sessions/<sid>/.ratchet.git."""
+    safe_session = _sanitize_ratchet_component(session_id)
+    return get_hermes_home() / "sessions" / safe_session / ".ratchet.git"
+
+
+def _ratchet_metadata_path(ratchet_repo: Path, ref_tag: str) -> Path:
+    return ratchet_repo / "ratchet_state" / f"{ref_tag}.json"
+
+
+def _read_ratchet_workdir(ratchet_repo: Path) -> Optional[str]:
+    workdir_file = ratchet_repo / "HERMES_WORKDIR"
+    if not workdir_file.exists():
+        return None
+    try:
+        raw = workdir_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return raw or None
+
+
+def _write_ratchet_metadata(ratchet_repo: Path, ref_tag: str, payload: Dict[str, Any]) -> None:
+    target = _ratchet_metadata_path(ratchet_repo, ref_tag)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _load_ratchet_metadata(ratchet_repo: Path, ref_tag: str) -> Dict[str, Any]:
+    target = _ratchet_metadata_path(ratchet_repo, ref_tag)
+    if not target.exists():
+        return {}
+    try:
+        return json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _ratchet_sort_key(entry: Dict[str, Any]) -> str:
+    return str(entry.get("sort_timestamp") or entry.get("timestamp") or "")
 
 
 def _git_env(shadow_repo: Path, working_dir: str) -> dict:
@@ -516,6 +582,210 @@ class CheckpointManager:
             result["file"] = file_path
         return result
 
+    def ratchet_pin(
+        self,
+        session_id: str,
+        working_dir: str,
+        *,
+        message_id: str = "",
+        reason: str = "ratchet",
+        session_snapshot: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Create a session-scoped ratchet ref for the current working tree."""
+        if not session_id or not str(session_id).strip():
+            return {"success": False, "error": "session_id is required"}
+
+        if self._git_available is None:
+            self._git_available = shutil.which("git") is not None
+        if not self._git_available:
+            return {"success": False, "error": "git not found"}
+
+        abs_dir = str(_normalize_path(working_dir))
+        ratchet_repo = _ratchet_repo_path(session_id)
+        init_err = _init_shadow_repo(ratchet_repo, abs_dir)
+        if init_err:
+            return {"success": False, "error": init_err}
+
+        pinned_workdir = _read_ratchet_workdir(ratchet_repo)
+        if pinned_workdir and pinned_workdir != abs_dir:
+            return {
+                "success": False,
+                "error": (
+                    "ratchet session is already pinned to a different working directory: "
+                    f"{pinned_workdir}"
+                ),
+            }
+
+        if _dir_file_count(abs_dir) > _MAX_FILES:
+            return {"success": False, "error": f"working directory exceeds {_MAX_FILES} files"}
+
+        ref_tag = _sanitize_ratchet_component(
+            message_id or f"msg-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+        )
+        tag_err = _validate_ratchet_tag(ref_tag)
+        if tag_err:
+            return {"success": False, "error": tag_err}
+
+        ok, _, err = _run_git(["add", "-A"], ratchet_repo, abs_dir, timeout=_GIT_TIMEOUT * 2)
+        if not ok:
+            return {"success": False, "error": f"ratchet git-add failed: {err}"}
+
+        ok_diff, _, _ = _run_git(
+            ["diff", "--cached", "--quiet"],
+            ratchet_repo,
+            abs_dir,
+            allowed_returncodes={1},
+        )
+        created_commit = False
+        if not ok_diff:
+            ok_commit, _, err = _run_git(
+                ["commit", "-m", reason, "--allow-empty-message", "--no-gpg-sign"],
+                ratchet_repo,
+                abs_dir,
+                timeout=_GIT_TIMEOUT * 2,
+            )
+            if not ok_commit:
+                return {"success": False, "error": f"ratchet commit failed: {err}"}
+            created_commit = True
+
+        ok_head, head, err = _run_git(["rev-parse", "HEAD"], ratchet_repo, abs_dir)
+        if not ok_head or not head:
+            return {"success": False, "error": f"ratchet HEAD lookup failed: {err}"}
+
+        full_ref = f"{_RATCHET_REF_PREFIX}/{ref_tag}"
+        ok_ref, _, err = _run_git(["update-ref", full_ref, head], ratchet_repo, abs_dir)
+        if not ok_ref:
+            return {"success": False, "error": f"ratchet ref update failed: {err}"}
+
+        metadata = {
+            "session_id": str(session_id),
+            "message_id": str(message_id or ""),
+            "reason": str(reason or ""),
+            "working_dir": abs_dir,
+            "commit": head,
+            "ref_tag": ref_tag,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "created_commit": created_commit,
+        }
+        if session_snapshot is not None:
+            metadata["session_snapshot"] = session_snapshot
+        _write_ratchet_metadata(ratchet_repo, ref_tag, metadata)
+        self._prune_ratchet_refs(ratchet_repo, abs_dir)
+
+        return {
+            "success": True,
+            "ref_tag": ref_tag,
+            "commit": head,
+            "working_dir": abs_dir,
+            "created_commit": created_commit,
+        }
+
+    def ratchet_list(self, session_id: str, working_dir: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List session-scoped ratchet refs, newest first."""
+        if not session_id or not str(session_id).strip():
+            return []
+
+        ratchet_repo = _ratchet_repo_path(session_id)
+        if not (ratchet_repo / "HEAD").exists():
+            return []
+
+        resolved_dir = working_dir or _read_ratchet_workdir(ratchet_repo)
+        if not resolved_dir:
+            return []
+
+        ok, stdout, _ = _run_git(
+            [
+                "for-each-ref",
+                "--sort=-creatordate",
+                "--format=%(refname)|%(objectname)|%(creatordate:iso8601)|%(subject)",
+                _RATCHET_REF_PREFIX,
+            ],
+            ratchet_repo,
+            resolved_dir,
+        )
+        if not ok or not stdout:
+            return []
+
+        refs: List[Dict[str, Any]] = []
+        prefix = f"{_RATCHET_REF_PREFIX}/"
+        for line in stdout.splitlines():
+            parts = line.split("|", 3)
+            if len(parts) != 4 or not parts[0].startswith(prefix):
+                continue
+            ref_tag = parts[0][len(prefix):]
+            meta = _load_ratchet_metadata(ratchet_repo, ref_tag)
+            refs.append(
+                {
+                    "ref_tag": ref_tag,
+                    "hash": parts[1],
+                    "timestamp": parts[2],
+                    "sort_timestamp": meta.get("timestamp") or parts[2],
+                    "reason": meta.get("reason") or parts[3],
+                    "message_id": meta.get("message_id", ""),
+                    "working_dir": meta.get("working_dir") or resolved_dir,
+                    "has_session_snapshot": "session_snapshot" in meta,
+                }
+            )
+        refs.sort(key=_ratchet_sort_key, reverse=True)
+        for entry in refs:
+            entry.pop("sort_timestamp", None)
+        return refs
+
+    def ratchet_restore(
+        self,
+        session_id: str,
+        ref_tag: str,
+        *,
+        working_dir: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Restore the working tree to a session-scoped ratchet ref."""
+        if not session_id or not str(session_id).strip():
+            return {"success": False, "error": "session_id is required"}
+
+        tag_err = _validate_ratchet_tag(ref_tag)
+        if tag_err:
+            return {"success": False, "error": tag_err}
+
+        ratchet_repo = _ratchet_repo_path(session_id)
+        if not (ratchet_repo / "HEAD").exists():
+            return {"success": False, "error": "No ratchet repository exists for this session"}
+
+        resolved_dir = working_dir or _read_ratchet_workdir(ratchet_repo)
+        if not resolved_dir:
+            return {"success": False, "error": "Ratchet working directory could not be resolved"}
+        resolved_dir = str(_normalize_path(resolved_dir))
+
+        full_ref = f"{_RATCHET_REF_PREFIX}/{ref_tag}"
+        ok, commit_hash, err = _run_git(["rev-parse", full_ref], ratchet_repo, resolved_dir)
+        if not ok or not commit_hash:
+            return {"success": False, "error": f"Ratchet ref '{ref_tag}' not found: {err}"}
+
+        self.ratchet_pin(
+            session_id,
+            resolved_dir,
+            message_id=f"pre-restore-{ref_tag}",
+            reason=f"pre-ratchet restore ({ref_tag})",
+        )
+
+        ok_restore, _, err = _run_git(
+            ["checkout", commit_hash, "--", "."],
+            ratchet_repo,
+            resolved_dir,
+            timeout=_GIT_TIMEOUT * 2,
+        )
+        if not ok_restore:
+            return {"success": False, "error": f"Ratchet restore failed: {err}"}
+
+        metadata = _load_ratchet_metadata(ratchet_repo, ref_tag)
+        return {
+            "success": True,
+            "restored_to": ref_tag,
+            "commit": commit_hash,
+            "reason": metadata.get("reason", ""),
+            "working_dir": resolved_dir,
+            "session_snapshot": metadata.get("session_snapshot"),
+        }
+
     def get_working_dir_for_path(self, file_path: str) -> str:
         """Resolve a file path to its working directory for checkpointing.
 
@@ -620,6 +890,44 @@ class CheckpointManager:
         # Full pruning would require rebase --onto or filter-branch which
         # is fragile for a background feature.  We just limit the log view.
         logger.debug("Checkpoint repo has %d commits (limit %d)", count, self.max_snapshots)
+
+    def _prune_ratchet_refs(self, ratchet_repo: Path, working_dir: str) -> None:
+        """Keep only the newest session-scoped ratchet refs."""
+        ok, stdout, _ = _run_git(
+            [
+                "for-each-ref",
+                "--sort=-creatordate",
+                "--format=%(refname)",
+                _RATCHET_REF_PREFIX,
+            ],
+            ratchet_repo,
+            working_dir,
+        )
+        if not ok or not stdout:
+            return
+
+        refs: List[Dict[str, str]] = []
+        prefix = f"{_RATCHET_REF_PREFIX}/"
+        for ref in stdout.splitlines():
+            if not ref.startswith(prefix):
+                continue
+            ref_tag = ref[len(prefix):]
+            meta = _load_ratchet_metadata(ratchet_repo, ref_tag)
+            refs.append(
+                {
+                    "ref": ref,
+                    "ref_tag": ref_tag,
+                    "sort_timestamp": str(meta.get("timestamp") or ""),
+                }
+            )
+
+        refs.sort(key=lambda item: item["sort_timestamp"], reverse=True)
+        for entry in refs[self.max_snapshots:]:
+            _run_git(["update-ref", "-d", entry["ref"]], ratchet_repo, working_dir)
+            try:
+                _ratchet_metadata_path(ratchet_repo, entry["ref_tag"]).unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def format_checkpoint_list(checkpoints: List[Dict], directory: str) -> str:

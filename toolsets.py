@@ -102,6 +102,12 @@ TOOLSETS = {
         "tools": ["mixture_of_agents"],
         "includes": []
     },
+
+    "spar": {
+        "description": "Bounded builder-reviewer quality gate for material ship/no-ship checks",
+        "tools": ["spar"],
+        "includes": []
+    },
     
     "skills": {
         "description": "Access, create, edit, and manage skill documents with specialized instructions and knowledge",

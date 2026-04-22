@@ -56,6 +56,7 @@ CONFIGURABLE_TOOLSETS = [
     ("vision",          "👁️  Vision / Image Analysis",  "vision_analyze"),
     ("image_gen",       "🎨 Image Generation",          "image_generate"),
     ("moa",             "🧠 Mixture of Agents",         "mixture_of_agents"),
+    ("spar",            "🛡️ Spar Review Gate",          "spar"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
     ("skills",          "📚 Skills",                    "list, view, manage"),
     ("todo",            "📋 Task Planning",             "todo"),
@@ -72,7 +73,7 @@ CONFIGURABLE_TOOLSETS = [
 # Toolsets that are OFF by default for new installs.
 # They're still in _HERMES_CORE_TOOLS (available at runtime if enabled),
 # but the setup checklist won't pre-select them for first-time users.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl"}
+_DEFAULT_OFF_TOOLSETS = {"moa", "spar", "homeassistant", "rl"}
 
 
 def _get_effective_configurable_toolsets():

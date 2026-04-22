@@ -143,6 +143,7 @@ TIPS = [
     "session_search performs full-text search across ALL past conversations.",
     "The agent automatically saves preferences, corrections, and environment facts to memory.",
     "mixture_of_agents routes hard problems through Xiaomi MiMo v2 Pro plus direct MiniMax and DeepSeek collaborators.",
+    "spar uses MiMo v2 Pro as builder, MiniMax M2.7-highspeed as the reviewer, and DeepSeek V3.2 reasoning as the independent judge.",
     "Terminal commands support background mode with notify_on_complete for long-running tasks.",
     "Terminal background processes support watch_patterns to alert on specific output lines.",
     "The terminal tool supports 6 backends: local, Docker, SSH, Modal, Daytona, and Singularity.",
@@ -343,4 +344,3 @@ def get_random_tip(exclude_recent: int = 0) -> str:
             deduplication across sessions.
     """
     return random.choice(TIPS)
-
