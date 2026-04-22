@@ -43,6 +43,7 @@ Required fields:
 - README / product page: `starter-kits/agent-launch-closeout-kit/README.md`
 - Ship note: `starter-kits/agentic-cron-orchestration-kit/launch/ship-note.md`
 - Launch thread: `starter-kits/agentic-cron-orchestration-kit/launch/launch-thread.md`
+- Publish trigger card: `starter-kits/agent-launch-closeout-kit/publish-trigger.md`
 
 ### Proof
 - QA / proof artifact: `starter-kits/agentic-cron-orchestration-kit/qa/clean-room-proof-run-2026-04-17.md`

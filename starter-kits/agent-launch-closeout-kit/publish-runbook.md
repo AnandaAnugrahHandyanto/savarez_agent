@@ -32,8 +32,9 @@ Do not widen the claim to a fully proven four-job operating pack.
    - fallback: screenshot or still from the proof artifact showing **1.74 minutes**
    - last fallback: screenshot of `Preflight OK`
 5. Keep the CTA narrow: this is the fastest honest path to one recurring workflow, not a control plane.
-6. Immediately record the post URL, timestamp, and attachment choice in `launch-execution-log.md`.
-7. Sync the weekly pipeline note, CEO note, factory note, and ship checklist from the same execution log.
+6. Use `starter-kits/agent-launch-closeout-kit/publish-trigger.md` as the one-screen operator card so the payload, attachment priority, and logging fields stay visible during the live post.
+7. Immediately record the post URL, timestamp, and attachment choice in `launch-execution-log.md`.
+8. Sync the weekly pipeline note, CEO note, factory note, and ship checklist from the same execution log.
 
 ## Launch guardrails
 - Never imply that unpublished demo capture blocks the product ship decision.
