@@ -74,6 +74,10 @@ _PROVIDER_ALIASES = {
     "minimax_cn": "minimax-cn",
     "claude": "anthropic",
     "claude-code": "anthropic",
+    "volcengine-coding-plan": "volcengine",
+    "volcengine_coding_plan": "volcengine",
+    "byteplus-coding-plan": "byteplus",
+    "byteplus_coding_plan": "byteplus",
 }
 
 
