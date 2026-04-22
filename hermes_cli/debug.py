@@ -38,6 +38,7 @@ _AUTO_DELETE_SECONDS = 21600
 # Pending-deletion tracking (replaces the old fork-and-sleep subprocess).
 # ---------------------------------------------------------------------------
 
+
 def _pending_file() -> Path:
     """Path to ``~/.hermes/pastes/pending.json``.
 
@@ -59,7 +60,8 @@ def _load_pending() -> list[dict]:
         if isinstance(data, list):
             # Filter to well-formed entries only
             return [
-                e for e in data
+                e
+                for e in data
                 if isinstance(e, dict) and "url" in e and "expire_at" in e
             ]
     except (OSError, ValueError, json.JSONDecodeError):
@@ -180,7 +182,7 @@ def _extract_paste_id(url: str) -> Optional[str]:
     url = url.strip().rstrip("/")
     for prefix in ("https://paste.rs/", "http://paste.rs/"):
         if url.startswith(prefix):
-            return url[len(prefix):]
+            return url[len(prefix) :]
     return None
 
 
@@ -198,7 +200,8 @@ def delete_paste(url: str) -> bool:
 
     target = f"{_PASTE_RS_URL}{paste_id}"
     req = urllib.request.Request(
-        target, method="DELETE",
+        target,
+        method="DELETE",
         headers={"User-Agent": "hermes-agent/debug-share"},
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
@@ -237,7 +240,9 @@ def _upload_paste_rs(content: str) -> str:
     """
     data = content.encode("utf-8")
     req = urllib.request.Request(
-        _PASTE_RS_URL, data=data, method="POST",
+        _PASTE_RS_URL,
+        data=data,
+        method="POST",
         headers={
             "Content-Type": "text/plain; charset=utf-8",
             "User-Agent": "hermes-agent/debug-share",
@@ -273,7 +278,9 @@ def _upload_dpaste_com(content: str, expiry_days: int = 7) -> str:
     ).encode("utf-8")
 
     req = urllib.request.Request(
-        _DPASTE_COM_URL, data=body, method="POST",
+        _DPASTE_COM_URL,
+        data=body,
+        method="POST",
         headers={
             "Content-Type": f"multipart/form-data; boundary={boundary}",
             "User-Agent": "hermes-agent/debug-share",
@@ -313,6 +320,7 @@ def upload_to_pastebin(content: str, expiry_days: int = 7) -> str:
 # ---------------------------------------------------------------------------
 # Log file reading
 # ---------------------------------------------------------------------------
+
 
 def _resolve_log_path(log_name: str) -> Optional[Path]:
     """Find the log file for *log_name*, falling back to the .1 rotation.
@@ -373,9 +381,15 @@ def _read_full_log(log_name: str, max_bytes: int = _MAX_LOG_BYTES) -> Optional[s
 
         # File is larger than max_bytes — read the tail.
         with open(log_path, "rb") as f:
-            f.seek(size - max_bytes)
-            # Skip partial line at the seek point.
-            f.readline()
+            offset = size - max_bytes
+            starts_on_line_boundary = offset == 0
+            if offset > 0:
+                f.seek(offset - 1)
+                starts_on_line_boundary = f.read(1) == b"\n"
+            f.seek(offset)
+            if not starts_on_line_boundary:
+                # Skip a leading partial line when the retained tail starts mid-line.
+                f.readline()
             content = f.read().decode("utf-8", errors="replace")
         return f"[... truncated — showing last ~{max_bytes // 1024}KB ...]\n{content}"
     except Exception:
@@ -385,6 +399,7 @@ def _read_full_log(log_name: str, max_bytes: int = _MAX_LOG_BYTES) -> Optional[s
 # ---------------------------------------------------------------------------
 # Debug report collection
 # ---------------------------------------------------------------------------
+
 
 def _capture_dump() -> str:
     """Run ``hermes dump`` and return its stdout as a string."""
@@ -445,6 +460,7 @@ def collect_debug_report(*, log_lines: int = 200, dump_text: str = "") -> str:
 # ---------------------------------------------------------------------------
 # CLI entry points
 # ---------------------------------------------------------------------------
+
 
 def run_debug_share(args):
     """Collect debug report + full logs, upload each, print URLs."""
