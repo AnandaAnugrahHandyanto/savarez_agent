@@ -33,14 +33,26 @@ logger = logging.getLogger(__name__)
 _MEMORY_PLUGINS_DIR = Path(__file__).parent
 
 
-# ---------------------------------------------------------------------------
-# Directory helpers
-# ---------------------------------------------------------------------------
+def __getattr__(name: str):
+    """Lazily expose memory plugin packages as attributes.
+
+    This keeps normal discovery lightweight while still allowing dotted imports
+    like ``plugins.memory.honcho.client`` to resolve reliably in diagnostics
+    code and tests.
+    """
+    candidate = _MEMORY_PLUGINS_DIR / name
+    if candidate.is_dir() and (candidate / "__init__.py").exists():
+        module = importlib.import_module(f"{__name__}.{name}")
+        globals()[name] = module
+        return module
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 def _get_user_plugins_dir() -> Optional[Path]:
     """Return ``$HERMES_HOME/plugins/`` or None if unavailable."""
     try:
         from hermes_constants import get_hermes_home
+
         d = get_hermes_home() / "plugins"
         return d if d.is_dir() else None
     except Exception:
@@ -48,11 +60,7 @@ def _get_user_plugins_dir() -> Optional[Path]:
 
 
 def _is_memory_provider_dir(path: Path) -> bool:
-    """Heuristic: does *path* look like a memory provider plugin?
-
-    Checks for ``register_memory_provider`` or ``MemoryProvider`` in the
-    ``__init__.py`` source.  Cheap text scan — no import needed.
-    """
+    """Heuristic: does *path* look like a memory provider plugin?"""
     init_file = path / "__init__.py"
     if not init_file.exists():
         return False
@@ -64,15 +72,10 @@ def _is_memory_provider_dir(path: Path) -> bool:
 
 
 def _iter_provider_dirs() -> List[Tuple[str, Path]]:
-    """Yield ``(name, path)`` for all discovered provider directories.
-
-    Scans bundled first, then user-installed.  Bundled takes precedence
-    on name collisions (first-seen wins via ``seen`` set).
-    """
+    """Yield ``(name, path)`` for all discovered provider directories."""
     seen: set = set()
     dirs: List[Tuple[str, Path]] = []
 
-    # 1. Bundled providers (plugins/memory/<name>/)
     if _MEMORY_PLUGINS_DIR.is_dir():
         for child in sorted(_MEMORY_PLUGINS_DIR.iterdir()):
             if not child.is_dir() or child.name.startswith(("_", ".")):
@@ -82,42 +85,34 @@ def _iter_provider_dirs() -> List[Tuple[str, Path]]:
             seen.add(child.name)
             dirs.append((child.name, child))
 
-    # 2. User-installed providers ($HERMES_HOME/plugins/<name>/)
     user_dir = _get_user_plugins_dir()
     if user_dir:
         for child in sorted(user_dir.iterdir()):
             if not child.is_dir() or child.name.startswith(("_", ".")):
                 continue
             if child.name in seen:
-                continue  # bundled takes precedence
+                continue
             if not _is_memory_provider_dir(child):
-                continue  # skip non-memory plugins
+                continue
             dirs.append((child.name, child))
 
     return dirs
 
 
 def find_provider_dir(name: str) -> Optional[Path]:
-    """Resolve a provider name to its directory.
-
-    Checks bundled first, then user-installed.
-    """
-    # Bundled
+    """Resolve a provider name to its directory."""
     bundled = _MEMORY_PLUGINS_DIR / name
     if bundled.is_dir() and (bundled / "__init__.py").exists():
         return bundled
-    # User-installed
+
     user_dir = _get_user_plugins_dir()
     if user_dir:
         user = user_dir / name
         if user.is_dir() and _is_memory_provider_dir(user):
             return user
+
     return None
 
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
 
 def discover_memory_providers() -> List[Tuple[str, str, bool]]:
     """Scan bundled and user-installed directories for available providers.

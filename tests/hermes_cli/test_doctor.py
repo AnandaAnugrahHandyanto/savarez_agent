@@ -12,6 +12,8 @@ import hermes_cli.doctor as doctor
 import hermes_cli.gateway as gateway_cli
 from hermes_cli import doctor as doctor_mod
 from hermes_cli.doctor import _has_provider_env_config
+from plugins.memory.holographic.ingestion import queue_turn_ingest
+from plugins.memory.holographic.store import MemoryStore
 
 
 class TestDoctorPlatformHints:
@@ -169,9 +171,11 @@ class TestDoctorMemoryProviderSection:
         """Create a minimal HERMES_HOME with config.yaml."""
         home = tmp_path / ".hermes"
         home.mkdir(parents=True, exist_ok=True)
-        import yaml
-        config = {"memory": {"provider": provider}} if provider else {"memory": {}}
-        (home / "config.yaml").write_text(yaml.dump(config))
+        config_path = home / "config.yaml"
+        if not config_path.exists():
+            import yaml
+            config = {"memory": {"provider": provider}} if provider else {"memory": {}}
+            config_path.write_text(yaml.dump(config))
         return home
 
     def _run_doctor_and_capture(self, monkeypatch, tmp_path, provider=""):
@@ -228,6 +232,59 @@ class TestDoctorMemoryProviderSection:
         assert "Memory Provider" in out
         assert "Built-in memory active" not in out
 
+    def test_holographic_provider_reports_clean_global_status(self, monkeypatch, tmp_path):
+        home = self._make_hermes_home(tmp_path, provider="holographic")
+        db_path = home / "memory_store.db"
+
+        config = {"memory": {"provider": "holographic"}, "plugins": {"hermes-memory-store": {"db_path": str(db_path)}}}
+        import yaml
+        (home / "config.yaml").write_text(yaml.dump(config))
+
+        store = MemoryStore(db_path=db_path)
+        try:
+            store.add_fact(
+                "Alice Johnson prefers the Hermes deploy checklist in Shanghai.",
+                category="user_pref",
+                source_channel="builtin:user",
+            )
+        finally:
+            store.close()
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="holographic")
+        assert "holographic provider active" in out
+        assert "facts=1" in out
+        assert "reindex=idle" in out
+
+    def test_holographic_provider_warns_on_failed_ingest(self, monkeypatch, tmp_path):
+        home = self._make_hermes_home(tmp_path, provider="holographic")
+        db_path = home / "memory_store.db"
+
+        config = {"memory": {"provider": "holographic"}, "plugins": {"hermes-memory-store": {"db_path": str(db_path)}}}
+        import yaml
+        (home / "config.yaml").write_text(yaml.dump(config))
+
+        store = MemoryStore(db_path=db_path)
+        try:
+            queue_turn_ingest(
+                store,
+                {"deferred_ingest": True, "turn_understanding": True},
+                session_id="sess-doctor",
+                user_content="We decided the Hermes project needs a rollout checklist.",
+                assistant_content="",
+            )
+            claimed = store.claim_ingest_batch(limit=1)
+            assert claimed
+            store.fail_ingest(int(claimed[0]["ingest_id"]), "synthetic doctor failure", retry_delay_seconds=1)
+        finally:
+            store.close()
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="holographic")
+        assert "holographic provider active" in out
+        assert "failed=1" in out
+        assert "last ingest error: synthetic doctor failure" in out
+
 
 def test_run_doctor_termux_treats_docker_and_browser_warnings_as_expected(monkeypatch, tmp_path):
     helper = TestDoctorMemoryProviderSection()
@@ -267,10 +324,17 @@ def test_run_doctor_termux_does_not_mark_browser_available_without_agent_browser
     monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
     monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
     monkeypatch.setattr(doctor_mod, "_DHH", str(home))
-    monkeypatch.setattr(doctor_mod.shutil, "which", lambda cmd: "/data/data/com.termux/files/usr/bin/node" if cmd in {"node", "npm"} else None)
+    monkeypatch.setattr(
+        doctor_mod.shutil,
+        "which",
+        lambda cmd: "/data/data/com.termux/files/usr/bin/node" if cmd in {"node", "npm"} else None,
+    )
 
     fake_model_tools = types.SimpleNamespace(
-        check_tool_availability=lambda *a, **kw: (["terminal"], [{"name": "browser", "env_vars": [], "tools": ["browser_navigate"]}]),
+        check_tool_availability=lambda *a, **kw: (
+            ["terminal"],
+            [{"name": "browser", "env_vars": [], "tools": ["browser_navigate"]}],
+        ),
         TOOLSET_REQUIREMENTS={
             "terminal": {"name": "terminal"},
             "browser": {"name": "browser"},
@@ -280,12 +344,14 @@ def test_run_doctor_termux_does_not_mark_browser_available_without_agent_browser
 
     try:
         from hermes_cli import auth as _auth_mod
+
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
     except Exception:
         pass
 
     import io, contextlib
+
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         doctor_mod.run_doctor(Namespace(fix=False))
@@ -319,6 +385,7 @@ def test_run_doctor_kimi_cn_env_is_detected_and_probe_is_null_safe(monkeypatch, 
 
     try:
         from hermes_cli import auth as _auth_mod
+
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
     except Exception:
@@ -331,9 +398,11 @@ def test_run_doctor_kimi_cn_env_is_detected_and_probe_is_null_safe(monkeypatch, 
         return types.SimpleNamespace(status_code=200)
 
     import httpx
+
     monkeypatch.setattr(httpx, "get", fake_get)
 
     import io, contextlib
+
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         doctor_mod.run_doctor(Namespace(fix=False))
@@ -371,6 +440,7 @@ def test_run_doctor_opencode_go_skips_invalid_models_probe(monkeypatch, tmp_path
 
     try:
         from hermes_cli import auth as _auth_mod
+
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
     except ImportError:
@@ -383,9 +453,11 @@ def test_run_doctor_opencode_go_skips_invalid_models_probe(monkeypatch, tmp_path
         return types.SimpleNamespace(status_code=200)
 
     import httpx
+
     monkeypatch.setattr(httpx, "get", fake_get)
 
     import io, contextlib
+
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         doctor_mod.run_doctor(Namespace(fix=False))

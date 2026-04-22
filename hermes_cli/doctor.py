@@ -9,6 +9,8 @@ import sys
 import subprocess
 import shutil
 from pathlib import Path
+import sqlite3
+from datetime import datetime, timezone
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
 from hermes_constants import display_hermes_home
@@ -98,6 +100,140 @@ def _honcho_is_configured_for_doctor() -> bool:
         return bool(cfg.enabled and (cfg.api_key or cfg.base_url))
     except Exception:
         return False
+
+
+def _parse_holographic_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        text = str(value).strip().replace("Z", "+00:00")
+        if "T" not in text and "+" not in text:
+            text = text.replace(" ", "T")
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
+    except Exception:
+        return None
+
+
+def _load_doctor_raw_config() -> dict:
+    config_path = HERMES_HOME / "config.yaml"
+    if not config_path.exists():
+        return {}
+    try:
+        import yaml
+        with open(config_path, encoding="utf-8") as handle:
+            return yaml.safe_load(handle) or {}
+    except Exception:
+        return {}
+
+
+def _resolve_holographic_db_path(raw_config: dict) -> str:
+    plugin_cfg = (raw_config.get("plugins") or {}).get("hermes-memory-store", {}) or {}
+    db_path = plugin_cfg.get("db_path", str(HERMES_HOME / "memory_store.db"))
+    if isinstance(db_path, str):
+        hermes_home = str(HERMES_HOME)
+        db_path = db_path.replace("$HERMES_HOME", hermes_home)
+        db_path = db_path.replace("${HERMES_HOME}", hermes_home)
+    return str(db_path)
+
+
+def _read_holographic_doctor_status(raw_config: dict) -> dict:
+    db_path = _resolve_holographic_db_path(raw_config)
+    status = {
+        "db_path": db_path,
+        "db_exists": False,
+        "db_initialized": False,
+        "facts": 0,
+        "pending_ingest_items": 0,
+        "failed_ingest_items": 0,
+        "processing_ingest_items": 0,
+        "oldest_pending_ingest": None,
+        "oldest_pending_age_minutes": None,
+        "last_ingest_success": None,
+        "last_ingest_error": None,
+        "reindex_status": "idle",
+        "reindex_started_at": None,
+        "reindex_completed_at": None,
+        "reindex_error": None,
+        "error": None,
+    }
+
+    if not os.path.exists(db_path):
+        return status
+
+    status["db_exists"] = True
+    uri = f"file:{db_path}?mode=ro"
+    try:
+        conn = sqlite3.connect(uri, uri=True, timeout=2.0)
+        conn.row_factory = sqlite3.Row
+    except Exception as exc:
+        status["error"] = str(exc)
+        return status
+
+    try:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        if "facts" not in tables:
+            return status
+
+        status["db_initialized"] = True
+        status["facts"] = int(conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0])
+
+        if "understanding_ingest_queue" in tables:
+            status["pending_ingest_items"] = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM understanding_ingest_queue WHERE status = 'pending'"
+                ).fetchone()[0]
+            )
+            status["failed_ingest_items"] = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM understanding_ingest_queue WHERE status = 'failed'"
+                ).fetchone()[0]
+            )
+            status["processing_ingest_items"] = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM understanding_ingest_queue WHERE status = 'processing'"
+                ).fetchone()[0]
+            )
+            oldest_pending = conn.execute(
+                """
+                SELECT MIN(created_at)
+                FROM understanding_ingest_queue
+                WHERE status IN ('pending', 'failed', 'processing')
+                """
+            ).fetchone()[0]
+            status["oldest_pending_ingest"] = oldest_pending
+            parsed_oldest = _parse_holographic_timestamp(oldest_pending)
+            if parsed_oldest is not None:
+                age_minutes = max(
+                    0,
+                    int((datetime.now(timezone.utc) - parsed_oldest).total_seconds() // 60),
+                )
+                status["oldest_pending_age_minutes"] = age_minutes
+
+        if "understanding_state" in tables:
+            rows = conn.execute(
+                "SELECT state_key, state_value FROM understanding_state"
+            ).fetchall()
+            state_map = {str(row["state_key"]): row["state_value"] for row in rows}
+            status["last_ingest_success"] = state_map.get("last_ingest_success_at") or None
+            status["last_ingest_error"] = state_map.get("last_ingest_error_summary") or None
+            status["reindex_status"] = state_map.get("reindex_status") or "idle"
+            status["reindex_started_at"] = state_map.get("reindex_started_at") or None
+            status["reindex_completed_at"] = state_map.get("reindex_completed_at") or None
+            status["reindex_error"] = state_map.get("reindex_error") or None
+    except Exception as exc:
+        status["error"] = str(exc)
+    finally:
+        conn.close()
+
+    return status
 
 
 def _apply_doctor_tool_availability_overrides(available: list[str], unavailable: list[dict]) -> tuple[list[str], list[dict]]:
@@ -1094,13 +1230,10 @@ def run_doctor(args):
     print(color("◆ Memory Provider", Colors.CYAN, Colors.BOLD))
 
     _active_memory_provider = ""
+    _raw_cfg = {}
     try:
-        import yaml as _yaml
-        _mem_cfg_path = HERMES_HOME / "config.yaml"
-        if _mem_cfg_path.exists():
-            with open(_mem_cfg_path) as _f:
-                _raw_cfg = _yaml.safe_load(_f) or {}
-            _active_memory_provider = (_raw_cfg.get("memory") or {}).get("provider", "")
+        _raw_cfg = _load_doctor_raw_config()
+        _active_memory_provider = (_raw_cfg.get("memory") or {}).get("provider", "")
     except Exception:
         pass
 
@@ -1152,6 +1285,70 @@ def run_doctor(args):
             issues.append("Mem0 is set as memory provider but mem0ai is not installed")
         except Exception as _e:
             check_warn("Mem0 check failed", str(_e))
+    elif _active_memory_provider == "holographic":
+        try:
+            hstatus = _read_holographic_doctor_status(_raw_cfg)
+            if hstatus.get("error"):
+                check_warn("holographic status check failed", f"({hstatus['error']})")
+                issues.append("Inspect holographic provider state: hermes holographic status")
+            elif not hstatus["db_exists"]:
+                check_ok("holographic provider active", "(index not initialized yet)")
+            elif not hstatus["db_initialized"]:
+                check_warn("holographic index unreadable", f"(db={hstatus['db_path']})")
+                issues.append("Rebuild or inspect holographic memory DB: hermes holographic reindex")
+            else:
+                pending = hstatus["pending_ingest_items"]
+                failed = hstatus["failed_ingest_items"]
+                processing = hstatus["processing_ingest_items"]
+                oldest_age = hstatus["oldest_pending_age_minutes"]
+                reindex_status = hstatus["reindex_status"] or "idle"
+                degraded = False
+                reasons = [f"facts={hstatus['facts']}"]
+
+                if failed > 0:
+                    degraded = True
+                    reasons.append(f"failed={failed}")
+                if reindex_status == "failed":
+                    degraded = True
+                    reasons.append("reindex=failed")
+                elif reindex_status == "running":
+                    degraded = True
+                    reasons.append("reindex=running")
+                else:
+                    reasons.append(f"reindex={reindex_status}")
+
+                if pending > 0:
+                    reasons.append(f"pending={pending}")
+                    if oldest_age is not None and oldest_age >= 15:
+                        degraded = True
+                        reasons.append(f"oldest={oldest_age}m")
+                if processing > 0:
+                    reasons.append(f"processing={processing}")
+                    if oldest_age is None or oldest_age >= 15:
+                        degraded = True
+
+                detail = "(" + " ".join(reasons) + ")"
+                if degraded:
+                    check_warn("holographic provider active", detail)
+                    if hstatus.get("last_ingest_error"):
+                        check_info(f"last ingest error: {hstatus['last_ingest_error']}")
+                    elif hstatus.get("last_ingest_success"):
+                        check_info(f"last ingest success: {hstatus['last_ingest_success']}")
+                    issues.append("Inspect holographic memory backlog: hermes holographic status")
+                    if failed > 0 or reindex_status == "failed":
+                        issues.append("Recover holographic understanding state: hermes holographic reindex")
+                else:
+                    check_ok("holographic provider active", detail)
+                    if pending > 0 or processing > 0:
+                        age_text = f", oldest {oldest_age}m" if oldest_age is not None else ""
+                        check_info(
+                            f"background ingest pending={pending} processing={processing}{age_text}"
+                        )
+                    elif hstatus.get("last_ingest_success"):
+                        check_info(f"last ingest success: {hstatus['last_ingest_success']}")
+        except Exception as _e:
+            check_warn("holographic check failed", str(_e))
+            issues.append("Inspect holographic provider state: hermes holographic status")
     else:
         # Generic check for other memory providers (openviking, hindsight, etc.)
         try:

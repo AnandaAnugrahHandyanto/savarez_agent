@@ -15,6 +15,7 @@ Config: Uses the existing Honcho config chain:
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import re
@@ -26,6 +27,14 @@ from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
+
+
+def __getattr__(name: str):
+    if name in {"client", "session", "cli"}:
+        module = importlib.import_module(f"{__name__}.{name}")
+        globals()[name] = module
+        return module
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 # ---------------------------------------------------------------------------

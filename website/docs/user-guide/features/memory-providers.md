@@ -372,16 +372,20 @@ See [plugin README](https://github.com/NousResearch/hermes-agent/blob/main/plugi
 
 ### Holographic
 
-Local SQLite fact store with FTS5 full-text search, trust scoring, and HRR (Holographic Reduced Representations) for compositional algebraic queries.
+Local SQLite understanding-oriented memory with hybrid retrieval, structured
+enrichment, deferred turn/session understanding ingestion, related-memory
+linking, and explainable recall debugging.
 
 | | |
 |---|---|
-| **Best for** | Local-only memory with advanced retrieval, no external dependencies |
-| **Requires** | Nothing (SQLite is always available). NumPy optional for HRR algebra. |
+| **Best for** | Local-first memory with semantic fallback, metadata-rich recall, and operator inspection |
+| **Requires** | Nothing for the base path. NumPy optional for HRR; OpenAI-compatible embeddings optional. |
 | **Data storage** | Local SQLite |
 | **Cost** | Free |
 
 **Tools:** `fact_store` (9 actions: add, search, probe, related, reason, contradict, update, remove, list), `fact_feedback` (helpful/unhelpful rating that trains trust scores)
+
+`fact_store(action="search", debug=true)` returns explain/debug scoring details.
 
 **Setup:**
 ```bash
@@ -396,13 +400,61 @@ hermes config set memory.provider holographic
 |-----|---------|-------------|
 | `db_path` | `$HERMES_HOME/memory_store.db` | SQLite database path |
 | `auto_extract` | `false` | Auto-extract facts at session end |
+| `deferred_ingest` | `true` | Enable durable deferred understanding ingestion |
+| `turn_understanding` | `true` | Extract understanding from user turns |
+| `ingest_batch_size` | `2` | Number of deferred items drained per bounded pass |
+| `ingest_max_pending` | `200` | Max deferred-ingest queue depth before new items are rejected |
+| `ingest_retry_delay_seconds` | `60` | Base retry delay for failed deferred-ingest items |
+| `session_ingest_message_limit` | `80` | Max session messages captured for deferred session ingestion |
 | `default_trust` | `0.5` | Default trust score (0.0–1.0) |
+| `hrr_dim` | `1024` | HRR vector dimensions |
+| `link_threshold` | `0.36` | Minimum score for related-memory links |
+| `temporal_decay_half_life` | `45` | Recency half-life in days |
+| `semantic_provider` | `none` | `none` or `openai` |
+| `semantic_model` | `text-embedding-3-small` | Embedding model when using OpenAI-compatible embeddings |
+| `rank_semantic_weight` | `0.35` | Retrieval weight: semantic relevance |
+| `rank_keyword_weight` | `0.25` | Retrieval weight: keyword relevance |
+| `rank_recency_weight` | `0.15` | Retrieval weight: recency |
+| `rank_salience_weight` | `0.15` | Retrieval weight: salience |
+| `rank_confidence_weight` | `0.10` | Retrieval weight: source confidence / trust |
 
 **Unique capabilities:**
+- Structured enrichment on write: entities, people, projects, topics, dates/times, locations, intent, source channel
+- Canonical keys / lightweight clustering for repeated people, projects, and topics
+- Hybrid ranking across semantic, keyword, recency, salience, and confidence
+- Bounded deferred understanding ingestion with retryable queue state
 - `probe` — entity-specific algebraic recall (all facts about a person/thing)
 - `reason` — compositional AND queries across multiple entities
 - `contradict` — automated detection of conflicting facts
+- `query-debug` / `debug=true` search path with score breakdowns and match explanations
 - Trust scoring with asymmetric feedback (+0.05 helpful / -0.10 unhelpful)
+
+**Operator commands** (when `holographic` is the active memory provider):
+
+```bash
+hermes holographic status
+hermes holographic reindex
+hermes holographic inspect <fact_id>
+hermes holographic query-debug "Alice Johnson deploy preferences"
+```
+
+`status` exposes pending / failed deferred-ingest counts, last ingest success,
+last ingest error, queue rejects, and reindex state. `inspect` shows canonical
+keys / cluster keys, and `reindex` drains pending deferred-ingest work by
+default before rebuilding derived understanding state.
+
+When `holographic` is the active provider, `hermes doctor` also shows a
+concise global summary. Hermes reports degraded holographic state as `WARN`
+rather than `FAIL` for backlog, ingest failures, or reindex issues; use the
+holographic-specific commands for detail and recovery.
+
+**Failure behavior:**
+
+- If embeddings are not configured or fail, recall falls back to keyword + HRR + metadata scoring.
+- If NumPy is unavailable, HRR features are skipped and keyword + metadata scoring still works.
+- If deferred ingest fails, the item stays queued and retries later with backoff while normal agent operation continues.
+- If the deferred queue fills, new understanding items are skipped rather than blocking the agent; operators can see this in `hermes holographic status`.
+- Reindexing rebuilds derived metadata, vectors, and links without deleting stored facts.
 
 ---
 
