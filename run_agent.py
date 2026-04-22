@@ -174,7 +174,10 @@ from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
 )
-from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_var_enabled, normalize_proxy_url
+from utils import (
+    atomic_json_write, base_url_host_matches, base_url_hostname, env_var_enabled,
+    model_forces_max_completion_tokens, normalize_proxy_url,
+)
 from hermes_cli.config import cfg_get
 
 
@@ -3082,13 +3085,17 @@ class AIAgent:
     def _max_tokens_param(self, value: int) -> dict:
         """Return the correct max tokens kwarg for the current provider.
 
-        OpenAI's newer models (gpt-4o, o-series, gpt-5+) require
-        'max_completion_tokens'. Azure OpenAI also requires
-        'max_completion_tokens' for gpt-5.x models served via the
-        OpenAI-compatible endpoint. OpenRouter, local models, and older
-        OpenAI models use 'max_tokens'.
+        OpenAI's newer models (gpt-4o, gpt-4.1, o-series, gpt-5+) require
+        'max_completion_tokens'. Azure OpenAI and GitHub Copilot also require
+        it for newer OpenAI-compatible models. Because the constraint is
+        model-enforced, custom/proxy endpoints are checked by model name too.
         """
-        if self._is_direct_openai_url() or self._is_azure_openai_url() or self._is_github_copilot_url():
+        if (
+            self._is_direct_openai_url()
+            or self._is_azure_openai_url()
+            or self._is_github_copilot_url()
+            or model_forces_max_completion_tokens(self.model)
+        ):
             return {"max_completion_tokens": value}
         return {"max_tokens": value}
 
@@ -5663,6 +5670,35 @@ class AIAgent:
         self._cached_system_prompt = None
         if self._memory_store:
             self._memory_store.load_from_disk()
+
+
+    @staticmethod
+    def _is_valid_tool_call(tool_call) -> bool:
+        """Validate a tool call before persisting to session history.
+
+        Malformed tool calls (empty function name, non-JSON arguments) can poison
+        a session and cause repeated 400 errors when replayed to strict providers.
+
+        Returns True if the tool call is valid and should be persisted.
+        """
+        fn = getattr(tool_call, "function", None)
+        if fn is None:
+            return False
+        fn_name = getattr(fn, "name", None)
+        if not isinstance(fn_name, str) or not fn_name.strip():
+            return False
+        fn_args = getattr(fn, "arguments", None)
+        if fn_args is None:
+            return True
+        if not isinstance(fn_args, str):
+            return False
+        if not fn_args.strip():
+            return False
+        try:
+            parsed = json.loads(fn_args)
+            return isinstance(parsed, dict)
+        except (json.JSONDecodeError, ValueError):
+            return False
 
     @staticmethod
     def _deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:
@@ -9103,6 +9139,18 @@ class AIAgent:
         if assistant_tool_calls:
             tool_calls = []
             for tool_call in assistant_tool_calls:
+                # Validate tool call before persisting to prevent session poisoning.
+                # Malformed tool calls (empty name, invalid arguments) can cause
+                # repeated 400 errors when replayed to strict providers.
+                if not self._is_valid_tool_call(tool_call):
+                    fn = getattr(tool_call, "function", None)
+                    fn_name = getattr(fn, "name", "<empty>") if fn else "<missing>"
+                    fn_args = getattr(fn, "arguments", "<empty>") if fn else "<missing>"
+                    logging.warning(
+                        f"Skipping malformed tool call: name={fn_name!r}, "
+                        f"arguments={str(fn_args)[:100]!r}"
+                    )
+                    continue
                 raw_id = getattr(tool_call, "id", None)
                 call_id = getattr(tool_call, "call_id", None)
                 if not isinstance(call_id, str) or not call_id.strip():
