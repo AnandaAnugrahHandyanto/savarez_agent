@@ -107,6 +107,12 @@ def _get_backend(capability: str = "search") -> str:
     configured = (_load_web_config().get("backend") or "").lower().strip()
 
     if capability == "search":
+        # Brave is an optional enhancement backend. If the user selected it but
+        # only configured Answers / Autosuggest keys (or removed the Search key),
+        # fall back to Hermes' normal search backend selection instead of hard
+        # failing every web_search call.
+        if configured == "brave" and not _is_backend_available("brave"):
+            configured = ""
         if configured in _SEARCH_BACKENDS:
             return configured
         candidates = _SEARCH_BACKENDS

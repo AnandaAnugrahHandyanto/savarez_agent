@@ -96,6 +96,7 @@ BRAVE_AUTOSUGGEST_API_KEY=BSA...
 
 - Supported now: Brave web search, news, images, videos, local POIs, local descriptions, answers, and autosuggest.
 - Graceful degradation: if a key is present but the Brave plan does not cover an endpoint, Hermes returns a structured tool error instead of a raw traceback.
+- `web_search` is not a hard blocker: if Brave is configured but Brave Search itself is unavailable, Hermes falls back to the normal backend-selection path instead of failing the whole search tool.
 - Not supported yet: Brave spellcheck, summarizer search, dedicated rich-callback helper, and separate place-search tooling.
 
 ## Expected Web Search Improvements

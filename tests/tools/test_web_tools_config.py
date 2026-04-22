@@ -342,6 +342,20 @@ class TestBackendSelection:
              patch.dict(os.environ, {"BRAVE_API_KEY": "brave-test"}):
             assert _get_backend() == "brave"
 
+    def test_config_brave_without_search_key_falls_back_to_default_backend(self):
+        """Configured brave should fall back when Brave Search itself is unavailable."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "brave"}), \
+             patch.dict(os.environ, {}, clear=False):
+            assert _get_backend() == "firecrawl"
+
+    def test_config_brave_with_parallel_key_falls_back_to_parallel(self):
+        """Configured brave should still use another available backend when search key is absent."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "brave"}), \
+             patch.dict(os.environ, {"PARALLEL_API_KEY": "par-test"}, clear=False):
+            assert _get_backend() == "parallel"
+
     # ── Fallback (no web.backend in config) ───────────────────────────
 
     def test_fallback_parallel_only_key(self):
