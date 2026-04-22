@@ -11,6 +11,7 @@ Covers:
 import json
 import os
 import queue
+import threading
 import time
 import pytest
 from pathlib import Path
@@ -48,6 +49,15 @@ def _make_session(
         notify_on_complete=notify_on_complete,
     )
     return s
+
+
+def _wait_until(predicate, timeout=5, interval=0.1):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return False
 
 
 # =========================================================================
@@ -161,6 +171,67 @@ class TestCompletionQueue:
 # =========================================================================
 # Checkpoint persistence
 # =========================================================================
+
+class TestEndToEndNotifyFlow:
+    def test_long_running_poll_log_then_wait_still_notifies(self, registry, tmp_path):
+        session = ProcessSession(
+            id="proc_long_running",
+            command="fake long task",
+            task_id="t1",
+            started_at=time.time(),
+            cwd=str(tmp_path),
+            notify_on_complete=True,
+        )
+        registry._running[session.id] = session
+
+        def finish_in_background():
+            with session._lock:
+                session.output_buffer += "start\n"
+            time.sleep(0.4)
+            with session._lock:
+                session.output_buffer += "middle\n"
+            time.sleep(0.8)
+            with session._lock:
+                session.output_buffer += "done\n"
+                session.exited = True
+                session.exit_code = 0
+            registry._move_to_finished(session)
+
+        worker = threading.Thread(target=finish_in_background, daemon=True)
+        worker.start()
+
+        assert registry.completion_queue.empty()
+        assert _wait_until(
+            lambda: registry.poll(session.id)["status"] == "running"
+            and "start" in registry.poll(session.id)["output_preview"],
+            timeout=2,
+        )
+
+        poll_result = registry.poll(session.id)
+        assert poll_result["status"] == "running"
+        assert "start" in poll_result["output_preview"]
+        assert registry.completion_queue.empty()
+
+        log_result = registry.read_log(session.id)
+        assert log_result["status"] == "running"
+        assert "start" in log_result["output"]
+        assert log_result["total_lines"] >= 1
+        assert registry.completion_queue.empty()
+
+        wait_result = registry.wait(session.id, timeout=5)
+        worker.join(timeout=1)
+        assert wait_result["status"] == "exited"
+        assert wait_result["exit_code"] == 0
+        assert "done" in wait_result["output"]
+
+        assert _wait_until(lambda: not registry.completion_queue.empty(), timeout=2)
+        completion = registry.completion_queue.get_nowait()
+        assert completion["session_id"] == session.id
+        assert completion["exit_code"] == 0
+        assert "start" in completion["output"]
+        assert "middle" in completion["output"]
+        assert "done" in completion["output"]
+
 
 class TestCheckpointNotify:
     def test_checkpoint_includes_notify(self, registry, tmp_path):
