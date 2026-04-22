@@ -988,11 +988,10 @@ class AIAgent:
         self._force_ascii_payload = False
         
         # Anthropic prompt caching: auto-enabled for Claude models on native
-        # Anthropic, OpenRouter, and third-party gateways that speak the
-        # Anthropic protocol (``api_mode == 'anthropic_messages'``). Reduces
-        # input costs by ~75% on multi-turn conversations. Uses system_and_3
-        # strategy (4 breakpoints). See ``_anthropic_prompt_cache_policy``
-        # for the layout-vs-transport decision.
+        # Anthropic, OpenRouter, Bedrock Converse, and third-party gateways
+        # that speak the Anthropic protocol. Reduces input costs by ~75% on
+        # multi-turn conversations. Uses system_and_3 strategy (4 breakpoints).
+        # See ``_anthropic_prompt_cache_policy`` for the layout-vs-transport decision.
         self._use_prompt_caching, self._use_native_cache_layout = (
             self._anthropic_prompt_cache_policy()
         )
@@ -2395,10 +2394,16 @@ class AIAgent:
             and (eff_provider == "anthropic" or base_url_hostname(eff_base_url) == "api.anthropic.com")
         )
 
+        is_bedrock = eff_api_mode == "bedrock_converse"
+
         if is_native_anthropic:
             return True, True
         if is_openrouter and is_claude:
             return True, False
+        if is_bedrock and is_claude:
+            # Bedrock Converse API supports prompt caching for Claude models.
+            # Uses native layout (cache_control on content blocks).
+            return True, True
         if is_anthropic_wire and is_claude:
             # Third-party Anthropic-compatible gateway.
             return True, True
@@ -6714,8 +6719,14 @@ class AIAgent:
         # The adapter handles message/tool conversion and boto3 calls directly.
         if self.api_mode == "bedrock_converse":
             from agent.bedrock_adapter import build_converse_kwargs
+            from agent.anthropic_adapter import _get_anthropic_max_output
             region = getattr(self, "_bedrock_region", None) or "us-east-1"
             guardrail = getattr(self, "_bedrock_guardrail_config", None)
+            # Use model-aware output cap (e.g. 128k for claude-opus-4-7) rather
+            # than a hardcoded 4096 — Bedrock's Converse API silently truncates
+            # long responses to max_tokens, so this must match the model's real
+            # ceiling.  Mirrors the Anthropic native adapter's behaviour.
+            effective_max = self.max_tokens or _get_anthropic_max_output(self.model)
             return {
                 "__bedrock_converse__": True,
                 "__bedrock_region__": region,
@@ -6723,9 +6734,10 @@ class AIAgent:
                     model=self.model,
                     messages=api_messages,
                     tools=self.tools,
-                    max_tokens=self.max_tokens or 4096,
+                    max_tokens=effective_max,
                     temperature=None,  # Let the model use its default
                     guardrail_config=guardrail,
+                    enable_caching=self._use_prompt_caching,
                 ),
             }
 

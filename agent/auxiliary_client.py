@@ -74,6 +74,10 @@ _PROVIDER_ALIASES = {
     "minimax_cn": "minimax-cn",
     "claude": "anthropic",
     "claude-code": "anthropic",
+    "aws": "bedrock",
+    "aws-bedrock": "bedrock",
+    "amazon-bedrock": "bedrock",
+    "amazon": "bedrock",
 }
 
 
@@ -676,6 +680,109 @@ class AsyncAnthropicAuxiliaryClient:
         sync_adapter = sync_wrapper.chat.completions
         async_adapter = _AsyncAnthropicCompletionsAdapter(sync_adapter)
         self.chat = _AsyncAnthropicChatShim(async_adapter)
+        self.api_key = sync_wrapper.api_key
+        self.base_url = sync_wrapper.base_url
+
+
+# ---------------------------------------------------------------------------
+# AWS Bedrock auxiliary client (Converse API)
+# ---------------------------------------------------------------------------
+#
+# Uses the native bedrock-runtime Converse API (via agent.bedrock_adapter) for
+# auxiliary tasks (context compression, session search summarization, web
+# extract, vision, etc.).  This lets a Bedrock-hosted main model (e.g.
+# Claude Opus 4.7) offload cheap side-work to a cheaper Bedrock-hosted model
+# (e.g. Claude Haiku 4.5) without needing a separate API key.  Same AWS
+# credential chain, independent quota.
+#
+# Call shape returned from `.chat.completions.create(...)` mirrors the OpenAI
+# ChatCompletion object, which is what call_llm() and the compressor expect.
+
+class _BedrockCompletionsAdapter:
+    """OpenAI-client-compatible adapter for Bedrock Converse API."""
+
+    def __init__(self, model: str, region: str = "us-east-1"):
+        self._model = model
+        self._region = region
+
+    def create(self, **kwargs) -> Any:
+        from agent.bedrock_adapter import call_converse
+
+        messages = kwargs.get("messages", [])
+        model = kwargs.get("model", self._model)
+        tools = kwargs.get("tools")
+        max_tokens = (
+            kwargs.get("max_tokens")
+            or kwargs.get("max_completion_tokens")
+            or 2000
+        )
+        temperature = kwargs.get("temperature")
+        top_p = kwargs.get("top_p")
+        stop = kwargs.get("stop") or kwargs.get("stop_sequences")
+        if isinstance(stop, str):
+            stop = [stop]
+
+        # Bedrock Converse already returns a SimpleNamespace shaped like an
+        # OpenAI ChatCompletion (see normalize_converse_response).
+        return call_converse(
+            region=self._region,
+            model=model,
+            messages=messages,
+            tools=tools,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            stop_sequences=stop,
+        )
+
+
+class _BedrockChatShim:
+    def __init__(self, adapter: _BedrockCompletionsAdapter):
+        self.completions = adapter
+
+
+class BedrockAuxiliaryClient:
+    """OpenAI-client-compatible wrapper over Bedrock Converse API.
+
+    Unlike the Anthropic/OpenAI auxiliary clients, this has no `real_client`
+    object to close — boto3 clients are cached at module level in
+    `agent.bedrock_adapter` and live for the process lifetime.
+    """
+
+    def __init__(self, model: str, region: str = "us-east-1"):
+        adapter = _BedrockCompletionsAdapter(model, region=region)
+        self.chat = _BedrockChatShim(adapter)
+        self._region = region
+        self._model = model
+        # Stub attributes so _to_async_client and downstream code that
+        # introspects OpenAI-shaped clients don't choke.
+        self.api_key = "aws-sdk"
+        self.base_url = f"https://bedrock-runtime.{region}.amazonaws.com"
+
+    def close(self):
+        # boto3 clients are pooled in bedrock_adapter — nothing to close here.
+        return None
+
+
+class _AsyncBedrockCompletionsAdapter:
+    def __init__(self, sync_adapter: _BedrockCompletionsAdapter):
+        self._sync = sync_adapter
+
+    async def create(self, **kwargs) -> Any:
+        import asyncio
+        return await asyncio.to_thread(self._sync.create, **kwargs)
+
+
+class _AsyncBedrockChatShim:
+    def __init__(self, adapter: _AsyncBedrockCompletionsAdapter):
+        self.completions = adapter
+
+
+class AsyncBedrockAuxiliaryClient:
+    def __init__(self, sync_wrapper: "BedrockAuxiliaryClient"):
+        sync_adapter = sync_wrapper.chat.completions
+        async_adapter = _AsyncBedrockCompletionsAdapter(sync_adapter)
+        self.chat = _AsyncBedrockChatShim(async_adapter)
         self.api_key = sync_wrapper.api_key
         self.base_url = sync_wrapper.base_url
 
@@ -1461,6 +1568,8 @@ def _to_async_client(sync_client, model: str):
         return AsyncCodexAuxiliaryClient(sync_client), model
     if isinstance(sync_client, AnthropicAuxiliaryClient):
         return AsyncAnthropicAuxiliaryClient(sync_client), model
+    if isinstance(sync_client, BedrockAuxiliaryClient):
+        return AsyncBedrockAuxiliaryClient(sync_client), model
     try:
         from agent.gemini_native_adapter import GeminiNativeClient, AsyncGeminiNativeClient
 
@@ -1741,6 +1850,24 @@ def resolve_provider_client(
     if pconfig is None:
         logger.warning("resolve_provider_client: unknown provider %r", provider)
         return None, None
+
+    if pconfig.auth_type == "aws_sdk":
+        # AWS Bedrock — uses boto3 credential chain, no API key.
+        # Default aux model: Claude Haiku 4.5 (cheapest Claude on Bedrock).
+        default_model = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+        final_model = model or default_model
+        region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-1"
+        try:
+            client = BedrockAuxiliaryClient(final_model, region=region)
+        except Exception as exc:
+            logger.warning(
+                "resolve_provider_client: bedrock requested but client "
+                "construction failed: %s", exc,
+            )
+            return None, None
+        logger.debug("resolve_provider_client: bedrock (%s, region=%s)", final_model, region)
+        return (_to_async_client(client, final_model) if async_mode
+                else (client, final_model))
 
     if pconfig.auth_type == "api_key":
         if provider == "anthropic":

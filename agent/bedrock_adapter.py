@@ -62,11 +62,20 @@ def _get_bedrock_runtime_client(region: str):
     """Get or create a cached ``bedrock-runtime`` client for the given region.
 
     Uses the default AWS credential chain (env vars → profile → instance role).
+    Timeout is raised from the boto3 default of 60s to 300s because large models
+    (e.g. Claude Opus 4.6 cross-region) with 500K+ context windows can have
+    TTFT > 60s on complex requests with many tool schemas.
     """
     if region not in _bedrock_runtime_client_cache:
         boto3 = _require_boto3()
+        from botocore.config import Config
         _bedrock_runtime_client_cache[region] = boto3.client(
             "bedrock-runtime", region_name=region,
+            config=Config(
+                read_timeout=300,
+                connect_timeout=60,
+                retries={"max_attempts": 3, "mode": "adaptive"},
+            ),
         )
     return _bedrock_runtime_client_cache[region]
 
@@ -317,10 +326,23 @@ def _convert_content_to_converse(content) -> List[Dict]:
                         mime_part = header[5:].split(";")[0]
                         if mime_part:
                             media_type = mime_part
+                    # Bedrock Converse expects raw bytes in source.bytes;
+                    # boto3 handles base64 encoding on the wire. Passing the
+                    # base64 string directly results in double-encoding and
+                    # "Could not process image".
+                    import base64 as _b64
+                    try:
+                        raw_bytes = _b64.b64decode(data)
+                    except Exception:
+                        raw_bytes = data.encode("utf-8", errors="ignore")
+                    fmt = media_type.split("/")[-1] if "/" in media_type else "jpeg"
+                    # Bedrock accepts: png, jpeg, gif, webp
+                    if fmt == "jpg":
+                        fmt = "jpeg"
                     blocks.append({
                         "image": {
-                            "format": media_type.split("/")[-1] if "/" in media_type else "jpeg",
-                            "source": {"bytes": data},
+                            "format": fmt,
+                            "source": {"bytes": raw_bytes},
                         }
                     })
                 else:
@@ -451,6 +473,100 @@ def convert_messages_to_converse(
 
 
 # ---------------------------------------------------------------------------
+# Prompt caching: inject cachePoint blocks for Bedrock Converse API
+# ---------------------------------------------------------------------------
+
+# Models known NOT to support Bedrock Converse prompt caching.
+# Claude 3/3.5/3.7/4/4.5/4.6/4.7 Sonnet + Opus + Haiku (>= 3.5) all support it
+# on Bedrock. Nova / Llama / Mistral / DeepSeek / Titan do not.
+# Conservative allowlist: only enable for Anthropic Claude family.
+def _model_supports_prompt_caching(model: str) -> bool:
+    """Return True if the Bedrock model supports Converse API prompt caching.
+
+    Currently limited to Anthropic Claude models (Sonnet/Opus/Haiku ≥ 3.5).
+    Other providers (Nova, Llama, Mistral, DeepSeek, Titan) either don't
+    support caching on Bedrock or use a different cache mechanism.
+    """
+    if not model:
+        return False
+    m = model.lower()
+    if "anthropic" in m or "claude" in m:
+        # Claude 3 Haiku and earlier don't support caching; 3.5+ do.
+        # We conservatively allow all Claude IDs — AWS will reject with a
+        # clear ValidationException if a particular model variant can't cache.
+        return True
+    return False
+
+
+def inject_cache_points(
+    system_blocks: Optional[List[Dict]],
+    converse_messages: List[Dict],
+    max_breakpoints: int = 4,
+) -> Tuple[Optional[List[Dict]], List[Dict]]:
+    """Inject ``cachePoint`` blocks for Bedrock Converse prompt caching.
+
+    Mirrors the "system_and_3" strategy from prompt_caching.py but emits the
+    Bedrock-native cachePoint format instead of Anthropic's cache_control:
+
+        Anthropic messages API:  {"type": "text", "text": "...",
+                                  "cache_control": {"type": "ephemeral"}}
+        Bedrock Converse API:    [{"text": "..."}, {"cachePoint": {"type": "default"}}]
+
+    A cachePoint is its own content block that acts as a marker — everything
+    BEFORE it in that content list is a cacheable prefix. Up to 4 cachePoints
+    allowed per request across system + messages + tools.
+
+    Placement (up to 4 breakpoints, same as Anthropic strategy):
+      1. End of system prompt (stable across all turns)
+      2-4. End of last 3 user/tool-result message content arrays (rolling window)
+
+    Returns the mutated system_blocks and converse_messages with cachePoints
+    appended. Caller is responsible for passing copies if mutation matters.
+
+    Ref: https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html
+    """
+    CACHE_POINT = {"cachePoint": {"type": "default"}}
+    breakpoints_used = 0
+
+    # 1) System prompt breakpoint (highest cache-hit value: stable across turns)
+    if system_blocks and breakpoints_used < max_breakpoints:
+        # Only cache if system has meaningful content
+        has_text = any(
+            isinstance(b, dict) and b.get("text", "").strip()
+            for b in system_blocks
+        )
+        if has_text:
+            system_blocks.append(dict(CACHE_POINT))
+            breakpoints_used += 1
+
+    # 2-4) Rolling window over the last 3 messages (after system, before the
+    # current tail user message). We mark the END of each recent message's
+    # content list so the conversation prefix gets cached incrementally.
+    remaining = max_breakpoints - breakpoints_used
+    if remaining > 0 and converse_messages:
+        # Target the last `remaining` messages (any role) — caching benefits
+        # from marking the tail of user messages (before the new assistant
+        # response) AND assistant messages (before the next user turn).
+        targets = converse_messages[-remaining:]
+        for msg in targets:
+            content = msg.get("content")
+            if not isinstance(content, list) or not content:
+                continue
+            # Skip if the message is effectively empty (single " " placeholder)
+            if len(content) == 1 and content[0].get("text", "").strip() == "":
+                continue
+            # Skip if a cachePoint is already present (idempotent)
+            if any(isinstance(b, dict) and "cachePoint" in b for b in content):
+                continue
+            content.append(dict(CACHE_POINT))
+            breakpoints_used += 1
+            if breakpoints_used >= max_breakpoints:
+                break
+
+    return system_blocks, converse_messages
+
+
+# ---------------------------------------------------------------------------
 # Response format conversion: Bedrock Converse → OpenAI
 # ---------------------------------------------------------------------------
 
@@ -516,6 +632,10 @@ def normalize_converse_response(response: Dict) -> SimpleNamespace:
         total_tokens=(
             usage_data.get("inputTokens", 0) + usage_data.get("outputTokens", 0)
         ),
+        # Bedrock Converse prompt-caching metrics (present when cachePoints were used).
+        # Mirrors the Anthropic messages API shape for downstream cost/metric code.
+        cache_read_input_tokens=usage_data.get("cacheReadInputTokens", 0),
+        cache_creation_input_tokens=usage_data.get("cacheWriteInputTokens", 0),
     )
 
     finish_reason = _converse_stop_reason_to_openai(stop_reason)
@@ -679,6 +799,9 @@ def stream_converse_with_callbacks(
         total_tokens=(
             usage_data.get("inputTokens", 0) + usage_data.get("outputTokens", 0)
         ),
+        # Prompt-caching metrics (streaming response path)
+        cache_read_input_tokens=usage_data.get("cacheReadInputTokens", 0),
+        cache_creation_input_tokens=usage_data.get("cacheWriteInputTokens", 0),
     )
 
     finish_reason = _converse_stop_reason_to_openai(stop_reason)
@@ -706,17 +829,30 @@ def build_converse_kwargs(
     model: str,
     messages: List[Dict],
     tools: Optional[List[Dict]] = None,
-    max_tokens: int = 4096,
+    max_tokens: int = 32768,
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
     stop_sequences: Optional[List[str]] = None,
     guardrail_config: Optional[Dict] = None,
+    enable_caching: bool = False,
 ) -> Dict[str, Any]:
     """Build kwargs for ``bedrock-runtime.converse()`` or ``converse_stream()``.
 
     Converts OpenAI-format inputs to Converse API parameters.
+
+    When ``enable_caching=True`` and the model supports it, injects cachePoint
+    blocks into system + last 3 messages (system_and_3 strategy, matches the
+    Anthropic adapter's behavior).
     """
     system_prompt, converse_messages = convert_messages_to_converse(messages)
+
+    # Inject cachePoint markers for Bedrock prompt caching. Gated on
+    # (caller opt-in) × (model allowlist) to avoid ValidationException on
+    # unsupported models (Nova / Llama / Mistral / Titan / DeepSeek).
+    if enable_caching and _model_supports_prompt_caching(model):
+        system_prompt, converse_messages = inject_cache_points(
+            system_prompt, converse_messages
+        )
 
     kwargs: Dict[str, Any] = {
         "modelId": model,
@@ -765,11 +901,12 @@ def call_converse(
     model: str,
     messages: List[Dict],
     tools: Optional[List[Dict]] = None,
-    max_tokens: int = 4096,
+    max_tokens: int = 32768,
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
     stop_sequences: Optional[List[str]] = None,
     guardrail_config: Optional[Dict] = None,
+    enable_caching: bool = False,
 ) -> SimpleNamespace:
     """Call Bedrock Converse API (non-streaming) and return an OpenAI-compatible response.
 
@@ -785,6 +922,7 @@ def call_converse(
         top_p=top_p,
         stop_sequences=stop_sequences,
         guardrail_config=guardrail_config,
+        enable_caching=enable_caching,
     )
 
     response = client.converse(**kwargs)
@@ -796,11 +934,12 @@ def call_converse_stream(
     model: str,
     messages: List[Dict],
     tools: Optional[List[Dict]] = None,
-    max_tokens: int = 4096,
+    max_tokens: int = 32768,
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
     stop_sequences: Optional[List[str]] = None,
     guardrail_config: Optional[Dict] = None,
+    enable_caching: bool = False,
 ) -> SimpleNamespace:
     """Call Bedrock ConverseStream API and return an OpenAI-compatible response.
 
@@ -817,6 +956,7 @@ def call_converse_stream(
         top_p=top_p,
         stop_sequences=stop_sequences,
         guardrail_config=guardrail_config,
+        enable_caching=enable_caching,
     )
 
     response = client.converse_stream(**kwargs)

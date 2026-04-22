@@ -933,12 +933,20 @@ def resolve_runtime_provider(
                 guardrail_config["streamProcessingMode"] = _gr["stream_processing_mode"]
             if _gr.get("trace"):
                 guardrail_config["trace"] = _gr["trace"]
-        # Dual-path routing: Claude models use AnthropicBedrock SDK for full
-        # feature parity (prompt caching, thinking budgets, adaptive thinking).
-        # Non-Claude models use the Converse API for multi-model support.
+        # Dual-path routing:
+        # - Claude models WITHOUT cross-region prefix use AnthropicBedrock SDK
+        #   for full feature parity (thinking budgets, adaptive thinking).
+        # - Claude models WITH cross-region prefix (global./us./eu./ap.) use
+        #   the Converse API because AnthropicBedrock SDK doesn't support
+        #   cross-region inference profiles.
+        # - Non-Claude models always use the Converse API.
         _current_model = str(model_cfg.get("default") or "").strip()
-        if is_anthropic_bedrock_model(_current_model):
-            # Claude on Bedrock → AnthropicBedrock SDK → anthropic_messages path
+        _is_cross_region = any(
+            _current_model.lower().startswith(p)
+            for p in ("global.", "us.", "eu.", "ap.", "jp.")
+        )
+        if is_anthropic_bedrock_model(_current_model) and not _is_cross_region:
+            # Claude on Bedrock (no cross-region) → AnthropicBedrock SDK → anthropic_messages path
             runtime = {
                 "provider": "bedrock",
                 "api_mode": "anthropic_messages",
@@ -950,7 +958,7 @@ def resolve_runtime_provider(
                 "requested_provider": requested_provider,
             }
         else:
-            # Non-Claude (Nova, DeepSeek, Llama, etc.) → Converse API
+            # Cross-region Claude or non-Claude → Converse API
             runtime = {
                 "provider": "bedrock",
                 "api_mode": "bedrock_converse",
