@@ -9,6 +9,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from plugins.memory.honcho.client import (
+    HONCHO_SESSION_ID_MAX_LENGTH,
     HonchoClientConfig,
     get_honcho_client,
     reset_honcho_client,
@@ -654,6 +655,23 @@ class TestResolveSessionNameGatewayKey:
         )
         assert result == "agent-main-telegram-dm-8439114563"
         assert ":" not in result
+
+    def test_gateway_key_truncates_to_honcho_limit_deterministically(self):
+        """Long gateway keys should stay stable while respecting Honcho's 100-char cap."""
+        config = HonchoClientConfig()
+        gateway_key = (
+            "agent:main:matrix:group:!"
+            + ("r" * 18)
+            + ":very-long-homeserver-name.example.ts.net:"
+            + ("e" * 43)
+        )
+
+        first = config.resolve_session_name(gateway_session_key=gateway_key)
+        second = config.resolve_session_name(gateway_session_key=gateway_key)
+
+        assert first == second
+        assert len(first) <= HONCHO_SESSION_ID_MAX_LENGTH
+        assert first.startswith("agent-main-matrix-group")
 
 
 class TestResetHonchoClient:

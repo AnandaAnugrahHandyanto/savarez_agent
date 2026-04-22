@@ -16,6 +16,8 @@ from __future__ import annotations
 import json
 import os
 import logging
+import hashlib
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -29,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 GLOBAL_CONFIG_PATH = Path.home() / ".honcho" / "config.json"
 HOST = "hermes"
+HONCHO_SESSION_ID_MAX_LENGTH = 100
 
 
 def resolve_active_host() -> str:
@@ -73,6 +76,23 @@ def resolve_config_path() -> Path:
         return default_path
 
     return GLOBAL_CONFIG_PATH
+
+
+def _sanitize_honcho_session_id(value: str, *, max_length: int = HONCHO_SESSION_ID_MAX_LENGTH) -> str:
+    """Return a Honcho-safe session id, truncating long values deterministically."""
+    sanitized = re.sub(r'[^a-zA-Z0-9_-]+', '-', value).strip('-')
+    if len(sanitized) <= max_length:
+        return sanitized
+
+    digest = hashlib.sha256(sanitized.encode("utf-8")).hexdigest()[:12]
+    prefix_len = max_length - len(digest) - 1
+    if prefix_len <= 0:
+        return digest[:max_length]
+
+    prefix = sanitized[:prefix_len].rstrip("-")
+    if not prefix:
+        return digest[:max_length]
+    return f"{prefix}-{digest}"
 
 
 _RECALL_MODE_ALIASES = {"auto": "hybrid"}
@@ -540,8 +560,6 @@ class HonchoClientConfig:
           6. per-directory strategy — directory basename
           7. global strategy — workspace name
         """
-        import re
-
         if not cwd:
             cwd = os.getcwd()
 
@@ -564,7 +582,7 @@ class HonchoClientConfig:
         # based resolution because gateway platforms need per-chat isolation that
         # cwd-based strategies cannot provide.
         if gateway_session_key:
-            sanitized = re.sub(r'[^a-zA-Z0-9_-]+', '-', gateway_session_key).strip('-')
+            sanitized = _sanitize_honcho_session_id(gateway_session_key)
             if sanitized:
                 return sanitized
 
