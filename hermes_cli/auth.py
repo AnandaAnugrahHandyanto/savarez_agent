@@ -2845,6 +2845,12 @@ def _prompt_model_selection(
 
     # Try arrow-key menu first, fall back to number input
     try:
+        # Force numbered fallback for catalogs that are likely to exceed the
+        # visible viewport in simple-term-menu. The current NVIDIA curated list
+        # has 50 entries, and the picker adds extra rows for custom/skip.
+        if len(ordered) >= 50:
+            raise NotImplementedError("catalog too long for TerminalMenu viewport")
+
         from simple_term_menu import TerminalMenu
 
         choices = [f"  {_label(mid)}" for mid in ordered]

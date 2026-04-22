@@ -44,6 +44,53 @@ def test_prompt_reasoning_effort_falls_back_on_terminalmenu_runtime_error(monkey
     assert selected == "high"
 
 
+def test_prompt_model_selection_falls_back_for_long_catalog_without_terminalmenu(monkeypatch):
+    from hermes_cli.auth import _prompt_model_selection
+
+    class _ShouldNotInstantiate:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("TerminalMenu should not be used for long catalogs")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "simple_term_menu",
+        types.SimpleNamespace(TerminalMenu=_ShouldNotInstantiate),
+    )
+    models = [f"model-{i:02d}" for i in range(1, 51)]
+    responses = iter(["50"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(responses))
+
+    selected = _prompt_model_selection(models)
+
+    assert selected == "model-50"
+
+
+def test_prompt_model_selection_uses_terminalmenu_below_long_catalog_threshold(monkeypatch):
+    from hermes_cli.auth import _prompt_model_selection
+
+    captured = {}
+
+    class _TerminalMenu:
+        def __init__(self, choices, **kwargs):
+            captured["choices"] = list(choices)
+
+        def show(self):
+            return 48
+
+    monkeypatch.setitem(
+        sys.modules,
+        "simple_term_menu",
+        types.SimpleNamespace(TerminalMenu=_TerminalMenu),
+    )
+    monkeypatch.setattr("hermes_cli.curses_ui.flush_stdin", lambda: None)
+    models = [f"model-{i:02d}" for i in range(1, 50)]
+
+    selected = _prompt_model_selection(models)
+
+    assert captured["choices"][0].strip() == "model-01"
+    assert selected == "model-49"
+
+
 def test_remove_custom_provider_falls_back_on_terminalmenu_runtime_error(tmp_path, monkeypatch):
     from hermes_cli.main import _remove_custom_provider
 

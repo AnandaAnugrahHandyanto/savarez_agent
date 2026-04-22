@@ -3728,13 +3728,16 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         curated = _PROVIDER_MODELS.get(provider_id, [])
 
         # Try models.dev first — returns tool-capable models, filtered for noise
+        # NVIDIA NIM bypass: models.dev marks many NIM models as non-agentic but
+        # they're usable under the free tier; prefer our curated 50-model list.
         mdev_models: list = []
-        try:
-            from agent.models_dev import list_agentic_models
+        if provider_id != "nvidia":
+            try:
+                from agent.models_dev import list_agentic_models
 
-            mdev_models = list_agentic_models(provider_id)
-        except Exception:
-            pass
+                mdev_models = list_agentic_models(provider_id)
+            except Exception:
+                pass
 
         if mdev_models:
             model_list = mdev_models

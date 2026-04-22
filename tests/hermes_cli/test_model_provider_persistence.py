@@ -258,6 +258,40 @@ class TestProviderPersistsAfterModelSave:
         assert model.get("default") == "minimax-m2.5"
         assert model.get("api_mode") == "anthropic_messages"
 
+    def test_nvidia_provider_uses_curated_catalog_without_models_dev(self, config_home, monkeypatch):
+        from hermes_cli.main import _model_flow_api_key_provider
+        from hermes_cli.config import load_config
+        from hermes_cli.models import _PROVIDER_MODELS
+
+        monkeypatch.setenv("NVIDIA_API_KEY", "test-key")
+        captured = {}
+
+        def _capture_prompt(model_ids, current_model=""):
+            captured["model_ids"] = list(model_ids)
+            captured["current_model"] = current_model
+            return model_ids[0]
+
+        with patch("agent.models_dev.list_agentic_models", side_effect=AssertionError("models.dev should not be called for nvidia")), \
+             patch("hermes_cli.auth._prompt_model_selection", side_effect=_capture_prompt), \
+             patch("hermes_cli.auth.deactivate_provider"), \
+             patch("builtins.input", return_value=""):
+            _model_flow_api_key_provider(load_config(), "nvidia", "old-model")
+
+        import yaml
+        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        model = config.get("model")
+        assert isinstance(model, dict)
+        assert model.get("provider") == "nvidia"
+        assert captured["model_ids"] == _PROVIDER_MODELS["nvidia"]
+        assert model.get("default") == _PROVIDER_MODELS["nvidia"][0]
+
+    def test_nvidia_curated_catalog_has_expected_size_and_unique_ids(self):
+        from hermes_cli.models import _PROVIDER_MODELS
+
+        models = _PROVIDER_MODELS["nvidia"]
+        assert len(models) == 50
+        assert len(set(models)) == len(models)
+
 
 class TestBaseUrlValidation:
     """Reject non-URL values in the base URL prompt (e.g. shell commands)."""
