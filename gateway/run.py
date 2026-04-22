@@ -432,6 +432,21 @@ def _is_control_interrupt_message(message: Optional[str]) -> bool:
     return normalized in _CONTROL_INTERRUPT_MESSAGES
 
 
+_INTERIM_FAILURE_PREFIX = (
+    "Note: the earlier message was an intermediate update, "
+    "not a completed final answer.\n\n"
+)
+
+
+def _prefix_failure_with_interim_context(
+    response: str, *, failed: bool, interim_visible: bool
+) -> str:
+    if failed and interim_visible and response:
+        if not response.startswith(_INTERIM_FAILURE_PREFIX):
+            return _INTERIM_FAILURE_PREFIX + response
+    return response
+
+
 def _check_unavailable_skill(command_name: str) -> str | None:
     """Check if a command matches a known-but-inactive skill.
 
@@ -4529,6 +4544,15 @@ class GatewayRunner:
                         f"The request failed: {str(error_detail)[:300]}\n"
                         "Try again or use /reset to start a fresh session."
                     )
+
+            # If an interim/streamed reply already reached the user and the
+            # run later failed, prefix the failure so it doesn't read like a
+            # contradiction with the earlier visible message.
+            response = _prefix_failure_with_interim_context(
+                response,
+                failed=bool(agent_result.get("failed")),
+                interim_visible=bool(agent_result.get("already_sent")),
+            )
 
             # If the agent's session_id changed during compression, update
             # session_entry so transcript writes below go to the right session.

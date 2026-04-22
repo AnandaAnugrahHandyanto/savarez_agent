@@ -970,3 +970,61 @@ async def test_verbose_mode_respects_explicit_tool_preview_length(monkeypatch, t
     assert VerboseAgent.LONG_CODE not in all_content
     # But should still contain the truncated portion with "..."
     assert "..." in all_content
+
+
+# ---------------------------------------------------------------------------
+# Interim-visible failure prefixing
+# ---------------------------------------------------------------------------
+
+
+_INTERIM_PREFIX = (
+    "Note: the earlier message was an intermediate update, "
+    "not a completed final answer.\n\n"
+)
+
+
+def test_failure_after_visible_interim_is_prefixed():
+    gateway_run = importlib.import_module("gateway.run")
+    out = gateway_run._prefix_failure_with_interim_context(
+        "The request failed: invalid response.",
+        failed=True,
+        interim_visible=True,
+    )
+    assert out.startswith(_INTERIM_PREFIX)
+    assert "The request failed: invalid response." in out
+
+
+def test_failure_without_interim_is_plain():
+    gateway_run = importlib.import_module("gateway.run")
+    out = gateway_run._prefix_failure_with_interim_context(
+        "The request failed: invalid response.",
+        failed=True,
+        interim_visible=False,
+    )
+    assert out == "The request failed: invalid response."
+
+
+def test_streamed_interim_failure_prefix_is_idempotent():
+    gateway_run = importlib.import_module("gateway.run")
+    once = gateway_run._prefix_failure_with_interim_context(
+        "stream failure",
+        failed=True,
+        interim_visible=True,
+    )
+    twice = gateway_run._prefix_failure_with_interim_context(
+        once,
+        failed=True,
+        interim_visible=True,
+    )
+    assert once.startswith(_INTERIM_PREFIX)
+    assert twice == once
+
+
+def test_non_failure_response_is_unchanged_even_after_interim():
+    gateway_run = importlib.import_module("gateway.run")
+    out = gateway_run._prefix_failure_with_interim_context(
+        "all good",
+        failed=False,
+        interim_visible=True,
+    )
+    assert out == "all good"
