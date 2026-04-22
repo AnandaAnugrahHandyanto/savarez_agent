@@ -1175,3 +1175,114 @@ class TestAnthropicCompatImageConversion:
         }]
         result = _convert_openai_images_to_anthropic(messages)
         assert result[0]["content"][0]["source"]["media_type"] == "image/jpeg"
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "google/gemini-3-flash-preview")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("openrouter", "google/gemini-3-flash-preview", None, None)), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                    return_value=(None, None, "")):
+            with pytest.raises(Exception, match="insufficient credits"):
+                call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "hello"}],
+                )
+
+
+class TestAnthropicAdapterTemperatureStripping:
+    """Verify _AnthropicCompletionsAdapter.create strips temperature for OAuth
+    requests targeting Anthropic 4.6 models that implicitly enable adaptive
+    thinking (which mandates temperature=1 or unset).
+    """
+
+    def _make_adapter(self, is_oauth: bool):
+        from agent.auxiliary_client import _AnthropicCompletionsAdapter
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(type="text", text="ok")]
+        mock_response.stop_reason = "end_turn"
+        mock_response.usage = MagicMock(
+            input_tokens=10, output_tokens=2, total_tokens=12
+        )
+        real_client = MagicMock()
+        real_client.messages.create.return_value = mock_response
+        adapter = _AnthropicCompletionsAdapter(
+            real_client=real_client,
+            model="claude-opus-4-6",
+            is_oauth=is_oauth,
+        )
+        return adapter, real_client
+
+    def _call(self, adapter, *, model, temperature):
+        adapter.create(
+            model=model,
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=100,
+            temperature=temperature,
+        )
+
+    def test_oauth_opus_46_strips_non_one_temperature(self):
+        """OAuth + Opus 4.6 + temperature=0.1 → temperature must be stripped."""
+        adapter, real_client = self._make_adapter(is_oauth=True)
+        self._call(adapter, model="claude-opus-4-6", temperature=0.1)
+        sent = real_client.messages.create.call_args.kwargs
+        assert "temperature" not in sent, (
+            f"temperature should be stripped but got {sent.get('temperature')}"
+        )
+
+    def test_oauth_sonnet_46_strips_non_one_temperature(self):
+        """OAuth + Sonnet 4.6 + temperature=0.5 → temperature must be stripped.
+
+        Both 4.6 models match _supports_adaptive_thinking; Sonnet 4.6 may not
+        currently exhibit the implicit adaptive-thinking behavior server-side
+        but is covered defensively against future Anthropic changes.
+        """
+        adapter, real_client = self._make_adapter(is_oauth=True)
+        self._call(adapter, model="claude-sonnet-4-6", temperature=0.5)
+        sent = real_client.messages.create.call_args.kwargs
+        assert "temperature" not in sent
+
+    def test_oauth_temperature_one_is_preserved(self):
+        """OAuth + Opus 4.6 + temperature=1 → temperature must be preserved
+        (1 is the only value compatible with adaptive thinking)."""
+        adapter, real_client = self._make_adapter(is_oauth=True)
+        self._call(adapter, model="claude-opus-4-6", temperature=1)
+        sent = real_client.messages.create.call_args.kwargs
+        assert sent.get("temperature") == 1
+
+    def test_oauth_haiku_45_keeps_temperature(self):
+        """OAuth + Haiku 4.5 + temperature=0.1 → preserved (Haiku does not
+        support adaptive thinking and accepts arbitrary temperatures)."""
+        adapter, real_client = self._make_adapter(is_oauth=True)
+        self._call(adapter, model="claude-haiku-4-5", temperature=0.1)
+        sent = real_client.messages.create.call_args.kwargs
+        assert sent.get("temperature") == 0.1
+
+    def test_non_oauth_opus_46_keeps_temperature(self):
+        """Non-OAuth (API key) + Opus 4.6 + temperature=0.1 → preserved.
+        The implicit adaptive thinking only kicks in on OAuth requests."""
+        adapter, real_client = self._make_adapter(is_oauth=False)
+        self._call(adapter, model="claude-opus-4-6", temperature=0.1)
+        sent = real_client.messages.create.call_args.kwargs
+        assert sent.get("temperature") == 0.1
+
+    def test_oauth_opus_46_no_temperature_unchanged(self):
+        """OAuth + Opus 4.6 + no temperature → kwargs untouched (no key added,
+        no spurious deletion)."""
+        from agent.auxiliary_client import _AnthropicCompletionsAdapter
+        real_client = MagicMock()
+        real_client.messages.create.return_value = MagicMock(
+            content=[MagicMock(type="text", text="ok")],
+            stop_reason="end_turn",
+            usage=MagicMock(input_tokens=1, output_tokens=1, total_tokens=2),
+        )
+        adapter = _AnthropicCompletionsAdapter(
+            real_client=real_client,
+            model="claude-opus-4-6",
+            is_oauth=True,
+        )
+        adapter.create(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=100,
+        )
+        sent = real_client.messages.create.call_args.kwargs
+        assert "temperature" not in sent

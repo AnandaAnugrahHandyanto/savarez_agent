@@ -573,7 +573,11 @@ class _AnthropicCompletionsAdapter:
         self._is_oauth = is_oauth
 
     def create(self, **kwargs) -> Any:
-        from agent.anthropic_adapter import build_anthropic_kwargs, normalize_anthropic_response
+        from agent.anthropic_adapter import (
+            _supports_adaptive_thinking,
+            build_anthropic_kwargs,
+            normalize_anthropic_response,
+        )
 
         messages = kwargs.get("messages", [])
         model = kwargs.get("model", self._model)
@@ -608,6 +612,19 @@ class _AnthropicCompletionsAdapter:
             from agent.anthropic_adapter import _forbids_sampling_params
             if not _forbids_sampling_params(model):
                 anthropic_kwargs["temperature"] = temperature
+
+        # Anthropic's 4.6 family models implicitly enable adaptive thinking on
+        # OAuth requests, which mandates `temperature=1` (or unset). Caller-
+        # supplied non-1 temperatures (e.g. vision_tools.py uses 0.1 for
+        # determinism) trigger HTTP 400 "Invalid request data" on these models.
+        # Strip the value so the API uses its default rather than rejecting it.
+        if (
+            self._is_oauth
+            and "temperature" in anthropic_kwargs
+            and anthropic_kwargs["temperature"] != 1
+            and _supports_adaptive_thinking(anthropic_kwargs.get("model", model))
+        ):
+            del anthropic_kwargs["temperature"]
 
         response = self._client.messages.create(**anthropic_kwargs)
         assistant_message, finish_reason = normalize_anthropic_response(response)
