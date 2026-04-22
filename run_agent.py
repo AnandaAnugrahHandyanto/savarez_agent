@@ -2225,7 +2225,7 @@ class AIAgent:
         
         Strategy (in order):
         1. Try compression model (if configured) — gives fresh perspective
-        2. Fall back to built-in heuristic database — works zero-config
+        2. Fall back to a simple generic prompt — works zero-config
         
         Returns a short suggestion string, or None if no suggestion available.
         """
@@ -2234,8 +2234,8 @@ class AIAgent:
         if suggestion:
             return suggestion
         
-        # 2. Fall back to built-in heuristics
-        return self._heuristic_suggestion(tool_name, last_result)
+        # 2. Simple generic fallback — no pattern matching needed
+        return "Repeatedly failing. Try a completely different approach instead of tweaking parameters."
     
     def _try_compression_model_suggestion(self, tool_name: str, last_result: str) -> str | None:
         """Try to get a suggestion from the compression model."""
@@ -2270,64 +2270,20 @@ class AIAgent:
             logger.debug("Compression model suggestion failed: %s", e)
             return None
     
-    def _heuristic_suggestion(self, tool_name: str, last_result: str) -> str | None:
-        """Built-in heuristic suggestion system — works without any LLM config.
-        
-        Checks common failure patterns and returns a targeted suggestion.
-        """
-        import re
-        
-        result_preview = (last_result or "").lower()
-        
-        # Pattern 1: Empty stdout/stderr from gh CLI
-        if tool_name == "terminal" and "gh " in result_preview:
-            if "exit code: 0" in result_preview or "stdout length: 0" in result_preview:
-                return "Command returned empty output — try 'gh api' directly or check if the resource exists"
-        
-        # Pattern 2: File not found
-        if "no such file" in result_preview or "file not found" in result_preview:
-            return "File path is wrong — verify the file exists and check the working directory"
-        
-        # Pattern 3: Permission denied
-        if "permission denied" in result_preview or "permissionerror" in result_preview:
-            return "Permission issue — try 'sudo' or check file/directory permissions"
-        
-        # Pattern 4: Module not found
-        if "module not found" in result_preview or "importerror" in result_preview:
-            return "Missing dependency — run 'pip install <package_name>' or check requirements.txt"
-        
-        # Pattern 5: Connection refused / network error
-        if "connection refused" in result_preview or "connection timed out" in result_preview or "network" in result_preview:
-            return "Network issue — check if the service is running and the port/URL is correct"
-        
-        # Pattern 6: Syntax error
-        if "syntaxerror" in result_preview or "syntax error" in result_preview:
-            return "Syntax error in the command/script — check quotes, escaping, and command structure"
-        
-        # Pattern 7: Generic empty result from any tool
-        if "(empty)" in result_preview or "empty" in result_preview:
-            return "Tool returned no data — the resource may not exist or the query may be too broad"
-        
-        # Pattern 8: JSON parse error
-        if "jsondecodeerror" in result_preview or "json decode" in result_preview:
-            return "Response is not valid JSON — the tool may have returned an error message instead"
-        
-        return None
-    
     def _get_consecutive_suggestion(self, tool_name: str) -> str | None:
         """Get a suggestion when consecutive identical calls trigger the circuit breaker.
         
         Strategy (in order):
         1. Try compression model (if configured)
-        2. Fall back to built-in heuristics
+        2. Fall back to a simple generic prompt
         """
         # 1. Try compression model first
         suggestion = self._try_compression_model_consecutive(tool_name)
         if suggestion:
             return suggestion
         
-        # 2. Fall back to built-in heuristics
-        return self._heuristic_consecutive_suggestion(tool_name)
+        # 2. Simple generic fallback
+        return "Called the exact same thing N times in a row. It's not working — stop and try something else."
     
     def _try_compression_model_consecutive(self, tool_name: str) -> str | None:
         """Try to get a suggestion from the compression model for consecutive-call loop."""
@@ -2360,44 +2316,6 @@ class AIAgent:
         except Exception as e:
             logger.debug("Compression model suggestion failed: %s", e)
             return None
-    
-    def _heuristic_consecutive_suggestion(self, tool_name: str) -> str | None:
-        """Built-in heuristic for consecutive-call circuit breaker."""
-        suggestions = {
-            "gh": "Try 'gh api' instead of 'gh run view' for log retrieval, or use curl to download logs directly",
-            "browser_navigate": "The URL may be unreachable — try a different URL or check network connectivity",
-            "browser_click": "The element may not be loaded yet — try browser_snapshot first to verify the page state",
-            "browser_snapshot": "The page may have changed — try browser_navigate to reload, or check for JavaScript errors",
-            "browser_type": "The input field may not be visible — scroll first or check the element ref ID",
-            "browser_press": "The key may not be applicable — check if the element has focus first",
-            "browser_console": "The console may be empty — try navigating to the page first",
-            "browser_vision": "Vision may not be available — try browser_snapshot for text-based inspection",
-            "browser_get_images": "No images found — the page may not have loaded images yet",
-            "execute_code": "The code may have syntax errors or missing imports — check the script carefully",
-            "session_search": "The search query may be too specific — try broader keywords or use OR logic",
-            "web_search": "The web search may be failing — try a different search engine or simplify the query",
-            "skill_view": "The skill may not exist — check the skill name spelling and available skills",
-            "memory": "The memory operation may have failed — check the memory format and content",
-            "todo": "The todo operation may have invalid format — check the todos array structure",
-            "delegate_task": "The delegation may have failed — check the goal and context fields",
-            "cronjob": "The cron job operation may have invalid parameters — check the schedule and prompt",
-            "patch": "The patch may not match — check the file content and old_string uniqueness",
-            "write_file": "The file write may have failed — check directory permissions and path",
-            "read_file": "The file may not exist — check the path and file name spelling",
-            "search_files": "The search pattern may be too specific — try a broader pattern",
-            "text_to_speech": "TTS may not be configured — check the TTS provider settings",
-        }
-        
-        # Try exact match first
-        if tool_name in suggestions:
-            return suggestions[tool_name]
-        
-        # Try prefix match (e.g., "browser_" matches "browser_click")
-        for key, value in suggestions.items():
-            if tool_name.startswith(key):
-                return value
-        
-        return None
 
     def _check_compression_model_feasibility(self) -> None:
         """Warn at session start if the auxiliary compression model's context
