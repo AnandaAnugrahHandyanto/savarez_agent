@@ -386,7 +386,21 @@ Key tables in `state.db`:
 
 - Gateway sessions auto-reset based on the configured reset policy
 - Before reset, the agent saves memories and skills from the expiring session
-- Ended sessions remain in the database until pruned
+- Ended sessions older than `sessions.retention_days` (default 90) are auto-pruned at CLI/gateway startup
+- After a prune that actually removed rows, `state.db` is `VACUUM`ed to reclaim disk space (SQLite does not shrink the file on plain DELETE)
+- Pruning runs at most once per `sessions.min_interval_hours` (default 24); the last-run timestamp is tracked inside `state.db` itself so it's shared across every Hermes process in the same `HERMES_HOME`
+
+Configure in `~/.hermes/config.yaml`:
+
+```yaml
+sessions:
+  auto_prune: true          # set to false to disable auto-pruning
+  retention_days: 90        # keep ended sessions this many days
+  vacuum_after_prune: true  # reclaim disk space after a pruning sweep
+  min_interval_hours: 24    # don't re-run the sweep more often than this
+```
+
+Active sessions are never auto-pruned, regardless of age.
 
 ### Manual Cleanup
 
@@ -403,5 +417,5 @@ hermes sessions prune --older-than 30 --yes
 ```
 
 :::tip
-The database grows slowly (typical: 10-15 MB for hundreds of sessions). Pruning is mainly useful for removing old conversations you no longer need for search recall.
+Most users will never need to run `hermes sessions prune` manually — the auto-prune at startup keeps `state.db` bounded. Manual pruning is useful when you want a tighter retention window (e.g. 7 days) than the default, or want to filter by source.
 :::
