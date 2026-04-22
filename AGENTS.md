@@ -8,6 +8,11 @@ Instructions for AI coding assistants and developers working on the hermes-agent
 source venv/bin/activate  # ALWAYS activate before running Python
 ```
 
+## Builder Discipline
+
+- Capability work must happen in `~/workspace`, not `~/.hermes`.
+- The only exceptions are explicitly approved runtime or memory surfaces.
+
 ## Project Structure
 
 ```
