@@ -160,3 +160,24 @@ class TestSnapshotEndToEnd:
         output = result.get("output", "")
         assert "PROBE=probe-ok" in output
         assert "/opt/shell-init-probe/bin" in output
+
+    def test_snapshot_preserves_configured_cwd(self, tmp_path):
+        configured_dir = tmp_path / "configured"
+        configured_dir.mkdir()
+        launch_dir = tmp_path / "launch"
+        launch_dir.mkdir()
+
+        old_cwd = os.getcwd()
+        os.chdir(launch_dir)
+        try:
+            env = LocalEnvironment(cwd=str(configured_dir), timeout=15)
+            try:
+                result = env.execute("pwd")
+            finally:
+                env.cleanup()
+        finally:
+            os.chdir(old_cwd)
+
+        expected = str(configured_dir.resolve())
+        assert env.cwd == expected
+        assert expected in result.get("output", "")

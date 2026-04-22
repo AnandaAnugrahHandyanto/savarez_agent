@@ -836,6 +836,8 @@ class SlashCommandCompleter(Completer):
     def _path_completions(word: str, limit: int = 30):
         """Yield Completion objects for file paths matching *word*."""
         expanded = os.path.expanduser(word)
+        terminal_cwd = os.getenv("TERMINAL_CWD") or os.getcwd()
+        base_dir = os.path.abspath(os.path.expanduser(terminal_cwd))
         # Split into directory part and prefix to match inside it
         if expanded.endswith("/"):
             search_dir = expanded
@@ -844,8 +846,13 @@ class SlashCommandCompleter(Completer):
             search_dir = os.path.dirname(expanded) or "."
             prefix = os.path.basename(expanded)
 
+        if os.path.isabs(expanded):
+            resolved_search_dir = search_dir
+        else:
+            resolved_search_dir = os.path.join(base_dir, search_dir)
+
         try:
-            entries = os.listdir(search_dir)
+            entries = os.listdir(resolved_search_dir)
         except OSError:
             return
 
@@ -857,7 +864,7 @@ class SlashCommandCompleter(Completer):
             if count >= limit:
                 break
 
-            full_path = os.path.join(search_dir, entry)
+            full_path = os.path.join(resolved_search_dir, entry)
             is_dir = os.path.isdir(full_path)
 
             # Build the completion text (what replaces the typed word)
@@ -866,8 +873,9 @@ class SlashCommandCompleter(Completer):
             elif os.path.isabs(word):
                 display_path = full_path
             else:
-                # Keep relative
-                display_path = os.path.relpath(full_path)
+                # Keep relative to the terminal session cwd rather than the
+                # process cwd so completions match terminal.cwd.
+                display_path = os.path.relpath(full_path, base_dir)
 
             if is_dir:
                 display_path += "/"

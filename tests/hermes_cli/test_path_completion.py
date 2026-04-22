@@ -125,6 +125,23 @@ class TestPathCompletions:
         names = _display_names(completions)
         assert "README.md" in names
 
+    def test_relative_paths_use_terminal_cwd(self, tmp_path, monkeypatch):
+        launch_dir = tmp_path / "launch"
+        launch_dir.mkdir()
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        (project_dir / "target.py").touch()
+
+        monkeypatch.setenv("TERMINAL_CWD", str(project_dir))
+        old_cwd = os.getcwd()
+        os.chdir(launch_dir)
+        try:
+            completions = list(SlashCommandCompleter._path_completions("./ta"))
+            names = _display_names(completions)
+            assert "target.py" in names
+        finally:
+            os.chdir(old_cwd)
+
 
 class TestIntegration:
     """Test the completer produces path completions via the prompt_toolkit API."""
