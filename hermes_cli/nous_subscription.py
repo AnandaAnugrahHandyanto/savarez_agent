@@ -284,7 +284,11 @@ def get_nous_subscription_features(
     direct_firecrawl = bool(get_env_value("FIRECRAWL_API_KEY") or get_env_value("FIRECRAWL_API_URL"))
     direct_parallel = bool(get_env_value("PARALLEL_API_KEY"))
     direct_tavily = bool(get_env_value("TAVILY_API_KEY"))
-    direct_brave = bool(get_env_value("BRAVE_SEARCH_API_KEY") or get_env_value("BRAVE_API_KEY"))
+    direct_brave = bool(
+        get_env_value("BRAVE_SEARCH_API_KEY")
+        or get_env_value("BRAVE_FREE_API_KEY")
+        or get_env_value("BRAVE_API_KEY")
+    )
     direct_fal = fal_key_is_configured()
     direct_openai_tts = bool(resolve_openai_audio_api_key())
     direct_elevenlabs = bool(get_env_value("ELEVENLABS_API_KEY"))

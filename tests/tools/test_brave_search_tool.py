@@ -200,6 +200,14 @@ class TestBraveSearch:
         assert result["success"] is True
         assert mock_get.call_args.kwargs["headers"]["X-Subscription-Token"] == "brave-free-test"
 
+    def test_suggest_does_not_treat_free_key_alias_as_autosuggest_fallback(self):
+        with patch.dict(os.environ, {"BRAVE_FREE_API_KEY": "brave-free-test"}, clear=True):
+            from tools.brave_search_tool import brave_suggest
+
+            result = json.loads(brave_suggest("python te"))
+
+        assert "BRAVE_AUTOSUGGEST_API_KEY" in result["error"]
+
     def test_search_surfaces_structured_brave_http_errors(self):
         error_response = _make_brave_http_error_response(
             {
@@ -411,6 +419,14 @@ class TestBraveSearch:
 
         assert result["success"] is True
         assert mock_post.call_args.kwargs["headers"]["X-Subscription-Token"] == "search-test"
+
+    def test_answers_does_not_treat_free_key_alias_as_answers_fallback(self):
+        with patch.dict(os.environ, {"BRAVE_FREE_API_KEY": "brave-free-test"}, clear=True):
+            from tools.brave_search_tool import brave_answers
+
+            result = json.loads(brave_answers("Fallback?"))
+
+        assert "BRAVE_ANSWERS_API_KEY" in result["error"]
 
     def test_answers_defaults_to_non_streaming_requests(self):
         response = MagicMock()

@@ -42,14 +42,19 @@ def _brave_search_api_key() -> str:
     )
 
 
+def _brave_shared_fallback_key() -> str:
+    """Return the legacy shared Brave key path for non-search fallbacks."""
+    return os.getenv("BRAVE_SEARCH_API_KEY", "").strip() or os.getenv("BRAVE_API_KEY", "").strip()
+
+
 def _brave_answers_api_key() -> str:
     """Return the configured Brave Answers key, with legacy fallback."""
-    return os.getenv("BRAVE_ANSWERS_API_KEY", "").strip() or _brave_search_api_key()
+    return os.getenv("BRAVE_ANSWERS_API_KEY", "").strip() or _brave_shared_fallback_key()
 
 
 def _brave_autosuggest_api_key() -> str:
     """Return the configured Brave Autosuggest key, with legacy fallback."""
-    return os.getenv("BRAVE_AUTOSUGGEST_API_KEY", "").strip() or _brave_search_api_key()
+    return os.getenv("BRAVE_AUTOSUGGEST_API_KEY", "").strip() or _brave_shared_fallback_key()
 
 
 def check_brave_search_api_key() -> bool:
@@ -778,7 +783,10 @@ BRAVE_NEWS_SCHEMA = {
             "include_fetch_metadata": {"type": "boolean", "description": "Include fetch metadata"},
             "operators": {"type": "boolean", "description": "Apply Brave search operators"},
         },
-        "required": ["query"],
+        "oneOf": [
+            {"required": ["query"]},
+            {"required": ["messages"]},
+        ],
     },
 }
 
@@ -1163,7 +1171,7 @@ registry.register(
         rich=bool(args.get("rich", False)),
     ),
     check_fn=check_brave_autosuggest_api_key,
-    requires_env=["BRAVE_AUTOSUGGEST_API_KEY", "BRAVE_SEARCH_API_KEY", "BRAVE_FREE_API_KEY", "BRAVE_API_KEY"],
+    requires_env=["BRAVE_AUTOSUGGEST_API_KEY", "BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"],
     emoji="💡",
     max_result_size_chars=50_000,
 )
@@ -1183,7 +1191,7 @@ registry.register(
         enable_citations=args.get("enable_citations"),
     ),
     check_fn=check_brave_answers_api_key,
-    requires_env=["BRAVE_ANSWERS_API_KEY", "BRAVE_SEARCH_API_KEY", "BRAVE_FREE_API_KEY", "BRAVE_API_KEY"],
+    requires_env=["BRAVE_ANSWERS_API_KEY", "BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"],
     emoji="🧠",
     max_result_size_chars=100_000,
 )

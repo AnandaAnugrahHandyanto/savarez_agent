@@ -43,6 +43,26 @@ def test_get_nous_subscription_features_recognizes_direct_brave_backend(monkeypa
     assert features.web.current_provider == "Brave Search"
 
 
+def test_get_nous_subscription_features_recognizes_direct_brave_free_backend(monkeypatch):
+    env = {"BRAVE_FREE_API_KEY": "brave-free-test"}
+
+    monkeypatch.setattr(ns, "get_env_value", lambda name: env.get(name, ""))
+    monkeypatch.setattr(ns, "get_nous_auth_status", lambda: {})
+    monkeypatch.setattr(ns, "managed_nous_tools_enabled", lambda: False)
+    monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "web")
+    monkeypatch.setattr(ns, "_has_agent_browser", lambda: False)
+    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
+    monkeypatch.setattr(ns, "has_direct_modal_credentials", lambda: False)
+
+    features = ns.get_nous_subscription_features({"web": {"backend": "brave"}})
+
+    assert features.web.available is True
+    assert features.web.active is True
+    assert features.web.managed_by_nous is False
+    assert features.web.direct_override is True
+    assert features.web.current_provider == "Brave Search"
+
+
 def test_get_nous_subscription_features_prefers_managed_modal_in_auto_mode(monkeypatch):
     monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
     monkeypatch.setattr(ns, "get_env_value", lambda name: "")
