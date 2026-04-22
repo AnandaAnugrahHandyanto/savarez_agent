@@ -9,6 +9,7 @@ turns within the same Hermes session.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -660,6 +661,32 @@ def _coerce_reasoning_delta(block_type: str | None, delta: dict[str, Any]) -> st
     return ""
 
 
+def _chunk_hydration_text(text: str, max_chars: int = 8000) -> list[str]:
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return []
+    if len(cleaned) <= max_chars:
+        return [cleaned]
+
+    chunks: list[str] = []
+    remaining = cleaned
+    while remaining:
+        if len(remaining) <= max_chars:
+            chunks.append(remaining.strip())
+            break
+        window = remaining[:max_chars]
+        split_at = window.rfind("\n\n")
+        if split_at < max_chars // 2:
+            split_at = window.rfind("\n")
+        if split_at < max_chars // 2:
+            split_at = max_chars
+        chunk = remaining[:split_at].strip()
+        if chunk:
+            chunks.append(chunk)
+        remaining = remaining[split_at:].lstrip()
+    return [chunk for chunk in chunks if chunk]
+
+
 class _ClaudeCLIChatCompletions:
     def __init__(self, client: "ClaudeCLIClient"):
         self._client = client
@@ -755,11 +782,83 @@ class ClaudeCLIClient:
         self._last_session_id: str | None = None
         self._last_total_cost_usd: float | None = None
         self._last_stop_reason: str | None = None
+        self._hydrated_session_id: str | None = None
+        self._hydrated_prompt_hash: str | None = None
         self.chat = _ClaudeCLIChatNamespace(self)
         self.is_closed = False
 
     def close(self) -> None:
         self.is_closed = True
+
+    def _ensure_bootstrap_hydrated(
+        self,
+        *,
+        model: str | None,
+        full_system_prompt: str,
+        timeout_seconds: float,
+    ) -> None:
+        if not self._strip_runtime:
+            return
+        hydration_source = str(full_system_prompt or "").strip()
+        if not hydration_source:
+            return
+
+        prompt_hash = hashlib.sha1(hydration_source.encode("utf-8")).hexdigest()
+        if not self._last_session_id:
+            _debug_log("hydrate:bootstrap_start")
+            bootstrap = self._run_prompt(
+                "Reply with exactly OK.",
+                system_prompt="",
+                model=model,
+                effort=None,
+                timeout_seconds=min(timeout_seconds, 60.0),
+            )
+            _debug_log(
+                "hydrate:bootstrap_done "
+                f"session_id={self._last_session_id or ''} "
+                f"result={str(bootstrap.get('result') or '')[:24]!r}"
+            )
+
+        if not self._last_session_id:
+            return
+
+        if (
+            self._hydrated_session_id == self._last_session_id
+            and self._hydrated_prompt_hash == prompt_hash
+        ):
+            return
+
+        chunks = _chunk_hydration_text(hydration_source, max_chars=8000)
+        _debug_log(
+            "hydrate:start "
+            f"session_id={self._last_session_id} chunks={len(chunks)} chars={len(hydration_source)}"
+        )
+        for idx, chunk in enumerate(chunks, start=1):
+            hidden_prompt = (
+                f"Internal Hermes context block {idx}/{len(chunks)} for this session. "
+                "Store and follow it for later turns in this session. "
+                "Do not summarize it. Do not call any tools. Reply with exactly OK.\n\n"
+                f"{chunk}"
+            )
+            result = self._run_prompt(
+                hidden_prompt,
+                system_prompt="",
+                model=model,
+                effort=None,
+                timeout_seconds=min(timeout_seconds, 120.0),
+            )
+            _debug_log(
+                "hydrate:chunk_done "
+                f"idx={idx}/{len(chunks)} session_id={self._last_session_id or ''} "
+                f"result={str(result.get('result') or '')[:24]!r}"
+            )
+
+        self._hydrated_session_id = self._last_session_id
+        self._hydrated_prompt_hash = prompt_hash
+        _debug_log(
+            "hydrate:complete "
+            f"session_id={self._last_session_id or ''} hash={prompt_hash[:10]}"
+        )
 
     def _create_chat_completion(
         self,
@@ -773,6 +872,7 @@ class ClaudeCLIClient:
         **extra_kwargs: Any,
     ) -> Any:
         system_prompt, prompt_messages = _split_system_prompt(messages or [])
+        full_system_prompt = system_prompt
         if self._strip_runtime:
             original_system_prompt = system_prompt
             system_prompt = _lean_claude_cli_system_prompt(system_prompt)
@@ -831,6 +931,13 @@ class ClaudeCLIClient:
             ]
             numeric = [float(v) for v in candidates if isinstance(v, (int, float))]
             effective_timeout = max(numeric) if numeric else self._timeout
+
+        if self._strip_runtime and full_system_prompt:
+            self._ensure_bootstrap_hydrated(
+                model=model,
+                full_system_prompt=full_system_prompt,
+                timeout_seconds=effective_timeout,
+            )
 
         if stream:
             return self._stream_completion_live(
