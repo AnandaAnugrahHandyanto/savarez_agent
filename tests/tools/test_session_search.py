@@ -320,8 +320,8 @@ class TestSessionSearch:
         assert result["sessions_searched"] == 1
         assert current_sid not in [r.get("session_id") for r in result.get("results", [])]
 
-    def test_current_child_session_excludes_parent_lineage(self):
-        """Compression/delegation parents should be excluded for the active child session."""
+    def test_current_child_session_excludes_delegation_parent(self):
+        """Delegation parents (non-compression) should be excluded for the active child session."""
         from unittest.mock import MagicMock
         from tools.session_search_tool import session_search
 
@@ -335,6 +335,7 @@ class TestSessionSearch:
             if session_id == "child_sid":
                 return {"parent_session_id": "parent_sid"}
             if session_id == "parent_sid":
+                # No end_reason — this is a delegation parent, not compression
                 return {"parent_session_id": None}
             return None
 
@@ -348,6 +349,71 @@ class TestSessionSearch:
         assert result["count"] == 0
         assert result["results"] == []
         assert result["sessions_searched"] == 0
+
+    def test_compression_parent_searchable(self):
+        """Compression-ended parents should NOT be excluded — their content is
+        gone from the agent's context window after compaction."""
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        mock_db.search_messages.return_value = [
+            {"session_id": "parent_sid", "content": "match", "source": "cli",
+             "session_started": 1709500000, "model": "test"},
+        ]
+
+        def _get_session(session_id):
+            if session_id == "child_sid":
+                return {"parent_session_id": "parent_sid"}
+            if session_id == "parent_sid":
+                return {"parent_session_id": None, "end_reason": "compression"}
+            return None
+
+        mock_db.get_session.side_effect = _get_session
+        mock_db.get_messages_as_conversation.return_value = [
+            {"role": "user", "content": "test message"},
+        ]
+
+        result = json.loads(session_search(
+            query="test", db=mock_db, current_session_id="child_sid",
+        ))
+
+        assert result["success"] is True
+        # Compression parent should appear in results, not be excluded
+        assert result["sessions_searched"] >= 1
+
+    def test_multi_level_compression_parent_searchable(self):
+        """Multi-level compaction: A→B→C, both A and B are compression parents.
+        When searching from C, both A and B should be searchable."""
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        mock_db.search_messages.return_value = [
+            {"session_id": "session_a", "content": "match", "source": "cli",
+             "session_started": 1709500000, "model": "test"},
+        ]
+
+        def _get_session(session_id):
+            if session_id == "session_c":
+                return {"parent_session_id": "session_b"}
+            if session_id == "session_b":
+                return {"parent_session_id": "session_a", "end_reason": "compression"}
+            if session_id == "session_a":
+                return {"parent_session_id": None, "end_reason": "compression"}
+            return None
+
+        mock_db.get_session.side_effect = _get_session
+        mock_db.get_messages_as_conversation.return_value = [
+            {"role": "user", "content": "test message"},
+        ]
+
+        result = json.loads(session_search(
+            query="test", db=mock_db, current_session_id="session_c",
+        ))
+
+        assert result["success"] is True
+        assert result["sessions_searched"] >= 1
 
     def test_limit_none_coerced_to_default(self):
         """Model sends limit=null → should fall back to 3, not TypeError."""

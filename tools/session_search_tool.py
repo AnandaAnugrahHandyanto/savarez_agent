@@ -374,16 +374,26 @@ def session_search(
 
         # Resolve child sessions to their parent — delegation stores detailed
         # content in child sessions, but the user's conversation is the parent.
-        def _resolve_to_parent(session_id: str) -> str:
-            """Walk delegation chain to find the root parent session ID."""
+        def _resolve_to_parent(session_id: str) -> tuple:
+            """Walk delegation chain to find the root parent session ID.
+
+            Returns (root_session_id, has_compression_hop) — the second flag
+            is True when at least one session in the chain was ended by context
+            compression.  Compression parents' content is no longer in the
+            agent's context window, so they should be searchable even if they
+            belong to the current lineage.
+            """
             visited = set()
             sid = session_id
+            has_compression = False
             while sid and sid not in visited:
                 visited.add(sid)
                 try:
                     session = db.get_session(sid)
                     if not session:
                         break
+                    if session.get("end_reason") == "compression":
+                        has_compression = True
                     parent = session.get("parent_session_id")
                     if parent:
                         sid = parent
@@ -397,22 +407,24 @@ def session_search(
                         exc_info=True,
                     )
                     break
-            return sid
+            return sid, has_compression
 
-        current_lineage_root = (
-            _resolve_to_parent(current_session_id) if current_session_id else None
+        _current_root, _ = (
+            _resolve_to_parent(current_session_id) if current_session_id else (None, False)
         )
 
         # Group by resolved (parent) session_id, dedup, skip the current
-        # session lineage. Compression and delegation create child sessions
-        # that still belong to the same active conversation.
+        # session lineage — but NOT compression parents whose content is no
+        # longer in the agent's context window.
         seen_sessions = {}
         for result in raw_results:
             raw_sid = result["session_id"]
-            resolved_sid = _resolve_to_parent(raw_sid)
-            # Skip the current session lineage — the agent already has that
-            # context, even if older turns live in parent fragments.
-            if current_lineage_root and resolved_sid == current_lineage_root:
+            resolved_sid, has_compression = _resolve_to_parent(raw_sid)
+            # Skip the current session lineage only when the content is still
+            # in the agent's context.  Compression-ended sessions have been
+            # replaced by a compact summary — their original content is only
+            # reachable via search.
+            if _current_root and resolved_sid == _current_root and not has_compression:
                 continue
             if current_session_id and raw_sid == current_session_id:
                 continue
