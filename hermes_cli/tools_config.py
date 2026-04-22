@@ -654,6 +654,7 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
     that were already in the config for this platform.
     """
     config.setdefault("platform_toolsets", {})
+    enabled_toolset_keys = {str(entry) for entry in enabled_toolset_keys}
 
     # Get the set of all configurable toolset keys (built-in + plugin)
     configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
@@ -669,12 +670,17 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
     existing_toolsets = config.get("platform_toolsets", {}).get(platform, [])
     if not isinstance(existing_toolsets, list):
         existing_toolsets = []
+    existing_toolsets = [str(entry) for entry in existing_toolsets]
+
+    mcp_server_names = {str(name) for name in (config.get("mcp_servers") or {})}
+    explicit_mcp_selection = enabled_toolset_keys & mcp_server_names
 
     # Preserve any entries that are NOT configurable toolsets and NOT platform
     # defaults (i.e. only MCP server names should be preserved)
     preserved_entries = {
         entry for entry in existing_toolsets
         if entry not in configurable_keys and entry not in platform_default_keys
+        and (entry != "no_mcp" or not explicit_mcp_selection)
     }
 
     # Merge preserved entries with new enabled toolsets

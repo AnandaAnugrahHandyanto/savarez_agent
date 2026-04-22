@@ -212,6 +212,26 @@ def test_save_platform_tools_preserves_mcp_server_names():
     assert "terminal" not in saved_toolsets
 
 
+def test_save_platform_tools_explicit_mcp_selection_clears_stale_no_mcp():
+    """Selecting a concrete MCP server should clear a stale no_mcp sentinel."""
+    config = {
+        "platform_toolsets": {
+            "cli": ["web", "no_mcp"]
+        },
+        "mcp_servers": {
+            "exa": {"url": "https://mcp.exa.ai/mcp"}
+        },
+    }
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", {"web", "exa"})
+
+    saved_toolsets = config["platform_toolsets"]["cli"]
+    assert "exa" in saved_toolsets
+    assert "no_mcp" not in saved_toolsets
+    assert sorted(_get_platform_tools(config, "cli")) == ["exa", "web"]
+
+
 def test_save_platform_tools_handles_empty_existing_config():
     """Saving platform tools works when no existing config exists."""
     config = {}
@@ -514,6 +534,23 @@ def test_numeric_mcp_server_name_does_not_crash_sorted():
 
     # sorted() must not raise TypeError
     sorted(enabled)
+
+
+def test_save_platform_tools_normalizes_numeric_entries_before_sort():
+    """Saving must stringify numeric passthrough entries before sorting."""
+    config = {
+        "platform_toolsets": {"cli": ["web", 12306]},
+        "mcp_servers": {
+            12306: {"url": "https://example.com/mcp"},
+        },
+    }
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", {"web"})
+
+    saved_toolsets = config["platform_toolsets"]["cli"]
+    assert saved_toolsets == ["12306", "web"]
+    assert all(isinstance(name, str) for name in saved_toolsets)
 
 
 # ─── Imagegen Backend Picker Wiring ────────────────────────────────────────
