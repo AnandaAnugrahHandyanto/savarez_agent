@@ -2680,12 +2680,12 @@ class TestHydrateBotIdentity(unittest.TestCase):
             {
                 "code": 0,
                 "bot": {
-                    "bot_name": "Hermes Bot",
+                    "app_name": "Hermes Bot",
                     "open_id": "ou_hermes_hydrated",
                 },
             }
         ).encode("utf-8")
-        response = SimpleNamespace(content=payload)
+        response = SimpleNamespace(raw=SimpleNamespace(content=payload))
         adapter._client.request = Mock(return_value=response)
 
         asyncio.run(adapter._hydrate_bot_identity())
@@ -2727,12 +2727,12 @@ class TestHydrateBotIdentity(unittest.TestCase):
             {
                 "code": 0,
                 "bot": {
-                    "bot_name": "Hermes Bot",
+                    "app_name": "Hermes Bot",
                     "open_id": "ou_probe_DIFFERENT",
                 },
             }
         ).encode("utf-8")
-        adapter._client.request = Mock(return_value=SimpleNamespace(content=payload))
+        adapter._client.request = Mock(return_value=SimpleNamespace(raw=SimpleNamespace(content=payload)))
 
         asyncio.run(adapter._hydrate_bot_identity())
 
@@ -2764,9 +2764,9 @@ class TestHydrateBotIdentity(unittest.TestCase):
         adapter = self._make_adapter()
         adapter._client = Mock()
         payload = json.dumps(
-            {"code": 0, "bot": {"bot_name": "Hermes", "open_id": "ou_hermes"}}
+            {"code": 0, "bot": {"app_name": "Hermes", "open_id": "ou_hermes"}}
         ).encode("utf-8")
-        adapter._client.request = Mock(return_value=SimpleNamespace(content=payload))
+        adapter._client.request = Mock(return_value=SimpleNamespace(raw=SimpleNamespace(content=payload)))
 
         asyncio.run(adapter._hydrate_bot_identity())
 
