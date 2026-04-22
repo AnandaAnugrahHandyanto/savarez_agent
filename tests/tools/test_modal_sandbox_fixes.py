@@ -33,6 +33,12 @@ except ImportError:
 class TestToolResolution:
     """Verify get_tool_definitions returns all expected tools for eval."""
 
+    def setUp(self) -> None:
+        os.environ["TERMINAL_ENV"] = "local"
+
+    def tearDown(self) -> None:
+        os.environ.pop("TERMINAL_ENV", None)
+
     def test_terminal_and_file_toolsets_resolve_all_tools(self):
         """enabled_toolsets=['terminal', 'file'] should produce 6 tools."""
         from model_tools import get_tool_definitions
