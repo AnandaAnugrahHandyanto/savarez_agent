@@ -92,6 +92,8 @@ Extend existing Hermes primitives with small opt-in modules and thin integration
 - Run-loop failure capture can become noisy if the trigger is too broad.
 - Campaign persistence needs to stay off by default to avoid surprise state growth.
 - TODO on the next deletion pass: simplify ratchet helper sprawl in `tools/checkpoint_manager.py`; the current +310 line slice is correct but heavier than the intended budget.
+- TODO on the next deletion pass: `acp_adapter/server.py` is now 1113 lines and the prompt handler is 187 lines; extract routing-mode dispatch helpers using the same helper-split pattern used for Spar.
+- TODO for ACP auto-routing: the current heuristic is English-only and keyword-based; upgrade to a semantic classifier only after at least 20 real misroutes are observed.
 
 ## Perf measurements
 - Ratchet tests: `59 passed`
