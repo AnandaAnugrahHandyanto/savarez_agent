@@ -20,6 +20,8 @@ import json
 import logging
 logger = logging.getLogger(__name__)
 import os
+
+from utils import safe_json_loads
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -517,9 +519,27 @@ def _run_single_child(
                             trace_by_id[tc_id] = entry_t
                 elif msg.get("role") == "tool":
                     content = msg.get("content", "")
-                    is_error = bool(
-                        content and "error" in content[:80].lower()
-                    )
+                    parsed = safe_json_loads(content) if isinstance(content, str) else None
+
+                    is_error = False
+                    if isinstance(parsed, dict):
+                        status_value = str(parsed.get("status", "")).lower()
+                        if status_value in {"error", "failed", "blocked", "disabled"}:
+                            is_error = True
+                        elif parsed.get("error") not in (None, "", False):
+                            is_error = True
+                        elif parsed.get("success") is False:
+                            is_error = True
+                        elif "exit_code" in parsed:
+                            try:
+                                is_error = int(parsed.get("exit_code", 0)) != 0
+                            except (TypeError, ValueError):
+                                is_error = False
+                    else:
+                        text = content[:120] if isinstance(content, str) else str(content)[:120]
+                        lowered = text.lower()
+                        is_error = lowered.startswith("error:") or lowered.startswith("error ")
+
                     result_meta = {
                         "result_bytes": len(content),
                         "status": "error" if is_error else "ok",
