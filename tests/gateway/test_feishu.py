@@ -1431,6 +1431,42 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertIn("[Content of", text)
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_extract_csv_file_injects_content(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as tmp:
+            tmp.write("name,age\nAlice,30")
+            path = tmp.name
+
+        try:
+            text = asyncio.run(adapter._maybe_extract_text_document(path, "text/csv"))
+        finally:
+            os.unlink(path)
+
+        self.assertIn("Alice,30", text)
+        self.assertIn("[Content of", text)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_extract_json_file_injects_content(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tmp:
+            tmp.write('{"name": "Alice"}')
+            path = tmp.name
+
+        try:
+            text = asyncio.run(adapter._maybe_extract_text_document(path, "application/json"))
+        finally:
+            os.unlink(path)
+
+        self.assertIn('"Alice"', text)
+        self.assertIn("[Content of", text)
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_message_event_submits_to_adapter_loop(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter

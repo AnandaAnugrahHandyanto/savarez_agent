@@ -76,6 +76,7 @@ from gateway.platforms.base import (
     resolve_proxy_url,
     SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES,
+    TEXT_INJECTABLE_EXTENSIONS,
     utf16_len,
     _prefix_within_utf16_limit,
 )
@@ -2739,9 +2740,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 event.media_types = [mime_type]
                 logger.info("[Telegram] Cached user document at %s", cached_path)
 
-                # For text files, inject content into event.text (capped at 100 KB)
+                # For supported text-like documents, inject content into event.text (capped at 100 KB)
                 MAX_TEXT_INJECT_BYTES = 100 * 1024
-                if ext in (".md", ".txt") and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                if ext in TEXT_INJECTABLE_EXTENSIONS and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                     try:
                         text_content = raw_bytes.decode("utf-8")
                         display_name = original_filename or f"document{ext}"

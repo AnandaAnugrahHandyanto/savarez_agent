@@ -591,11 +591,26 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".md": "text/markdown",
     ".txt": "text/plain",
     ".log": "text/plain",
+    ".csv": "text/csv",
+    ".json": "application/json",
     ".zip": "application/zip",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 }
+
+# Extensions and MIME types eligible for inline text injection into event.text.
+# Files with these types are decoded as UTF-8 and prepended to the user's
+# message so the agent can read the content without an extra tool call.
+TEXT_INJECTABLE_EXTENSIONS = frozenset({".md", ".txt", ".log", ".csv", ".json"})
+TEXT_INJECTABLE_MIME_TYPES = frozenset(
+    {
+        "text/markdown",
+        "text/plain",
+        "text/csv",
+        "application/json",
+    }
+)
 
 
 def get_document_cache_dir() -> Path:
