@@ -2329,6 +2329,33 @@ class TelegramAdapter(BasePlatformAdapter):
                         return True
         return False
 
+    def _bot_mentioned_in_entities(self, message: Message, bot_username: str, bot_id) -> bool:
+        """Extended mention check that also handles text_link entities from markdown @mentions."""
+        def _iter_sources():
+            yield getattr(message, "text", None) or "", getattr(message, "entities", None) or []
+            yield getattr(message, "caption", None) or "", getattr(message, "caption_entities", None) or []
+
+        expected = f"@{bot_username}" if bot_username else None
+
+        for source_text, entities in _iter_sources():
+            for entity in entities:
+                entity_type = str(getattr(entity, "type", "")).split(".")[-1].lower()
+                if entity_type == "mention" and expected:
+                    offset = int(getattr(entity, "offset", -1))
+                    length = int(getattr(entity, "length", 0))
+                    if offset >= 0 and length > 0 and source_text[offset:offset + length].strip().lower() == expected:
+                        return True
+                elif entity_type == "text_mention":
+                    user = getattr(entity, "user", None)
+                    if user and getattr(user, "id", None) == bot_id:
+                        return True
+                elif entity_type == "text_link":
+                    # Markdown @mention renders as text_link entity — check URL contains @username
+                    url = getattr(entity, "url", None) or ""
+                    if expected and expected.lstrip("@").lower() in url.lower():
+                        return True
+        return False
+
     def _message_matches_mention_patterns(self, message: Message) -> bool:
         if not self._mention_patterns:
             return False
@@ -2347,6 +2374,13 @@ class TelegramAdapter(BasePlatformAdapter):
         cleaned = re.sub(rf"(?i)@{username}\b[,:\-]*\s*", "", text).strip()
         return cleaned or text
 
+    def _is_message_from_self(self, message: Message) -> bool:
+        """Check if the message was sent by the bot itself (self-message echo)."""
+        if not self._bot:
+            return False
+        sender = getattr(message, "from_user", None)
+        return bool(sender and getattr(sender, "id", None) == getattr(self._bot, "id", None))
+
     def _should_process_message(self, message: Message, *, is_command: bool = False) -> bool:
         """Apply Telegram group trigger rules.
 
@@ -2364,6 +2398,9 @@ class TelegramAdapter(BasePlatformAdapter):
         mentioning the bot (``@botname /command``), both of which are
         recognised as mentions by :meth:`_message_mentions_bot`.
         """
+        # Filter out self-messages (bot's own echo) to prevent loop
+        if self._is_message_from_self(message):
+            return False
         if not self._is_group_chat(message):
             return True
         thread_id = getattr(message, "message_thread_id", None)
@@ -2377,9 +2414,22 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         if not self._telegram_require_mention():
             return True
+        # Resolve bot identity once — used by the bot-filter block and the
+        # group mention check below
+        bot_username = getattr(self._bot, "username", None) or ""
+        bot_id = getattr(self._bot, "id", None)
+        # Filter out messages from other bots to prevent bot-to-bot response loops,
+        # BUT allow if the message explicitly @mentions this bot
+        sender = getattr(message, "from_user", None)
+        if sender and getattr(sender, "is_bot", False) and getattr(sender, "id", None) != bot_id:
+            # Another bot sent this message — only allow if it @mentions this bot.
+            # Check both standard mention entities AND text_link entities
+            # (markdown @mention renders as text_link, not mention entity)
+            if not self._bot_mentioned_in_entities(message, bot_username, bot_id):
+                return False
         if self._is_reply_to_bot(message):
             return True
-        if self._message_mentions_bot(message):
+        if self._bot_mentioned_in_entities(message, bot_username, bot_id):
             return True
         return self._message_matches_mention_patterns(message)
 
