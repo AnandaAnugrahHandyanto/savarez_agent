@@ -1098,6 +1098,13 @@ class SlackAdapter(BasePlatformAdapter):
         if not is_dm and bot_uid:
             if channel_id in self._slack_free_response_channels():
                 pass  # Free-response channel — always process
+            elif self._slack_strict_mention():
+                # Strict mode: only an explicit @mention in *this* message triggers
+                # a response. Thread continuity, bot-started threads, and active
+                # sessions are all ignored. Use this for bots that should never
+                # auto-engage on follow-up messages (prevents agent-to-agent loops).
+                if not is_mentioned:
+                    return
             elif not self._slack_require_mention():
                 pass  # Mention requirement disabled globally for Slack
             elif not is_mentioned:
@@ -1122,8 +1129,9 @@ class SlackAdapter(BasePlatformAdapter):
         if is_mentioned:
             # Strip the bot mention from the text
             text = text.replace(f"<@{bot_uid}>", "").strip()
-            # Register this thread so all future messages auto-trigger the bot
-            if event_thread_ts:
+            # Register this thread so all future messages auto-trigger the bot.
+            # Skip in strict mode — strict bots must be re-mentioned every time.
+            if event_thread_ts and not self._slack_strict_mention():
                 self._mentioned_threads.add(event_thread_ts)
                 if len(self._mentioned_threads) > self._MENTIONED_THREADS_MAX:
                     to_remove = list(self._mentioned_threads)[:self._MENTIONED_THREADS_MAX // 2]
@@ -1731,6 +1739,24 @@ class SlackAdapter(BasePlatformAdapter):
                 return configured.lower() not in ("false", "0", "no", "off")
             return bool(configured)
         return os.getenv("SLACK_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no", "off")
+
+    def _slack_strict_mention(self) -> bool:
+        """Return whether the bot should ONLY reply to direct @mentions.
+
+        Strict mode disables all forms of thread auto-engagement:
+        bot-started threads, previously-mentioned threads, and active
+        sessions are all ignored. The bot only responds when explicitly
+        @-tagged in the current message. Useful for agent-to-agent
+        scenarios where one agent's reply could land in a thread the
+        other agent was once tagged in, causing infinite acknowledgement
+        loops. Default: False (preserves legacy behavior).
+        """
+        configured = self.config.extra.get("strict_mention")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in ("true", "1", "yes", "on")
+            return bool(configured)
+        return os.getenv("SLACK_STRICT_MENTION", "false").lower() in ("true", "1", "yes", "on")
 
     def _slack_free_response_channels(self) -> set:
         """Return channel IDs where no @mention is required."""
