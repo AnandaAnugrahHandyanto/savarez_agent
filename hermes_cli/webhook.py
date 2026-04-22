@@ -37,11 +37,23 @@ def _load_subscriptions() -> Dict[str, dict]:
     path = _subscriptions_path()
     if not path.exists():
         return {}
+
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"Failed to read webhook subscriptions file {path}: {exc}") from exc
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid webhook subscriptions file {path}: {exc.msg}") from exc
+
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"Invalid webhook subscriptions file {path}: expected a JSON object at the top level"
+        )
+
+    return data
 
 
 def _save_subscriptions(subs: Dict[str, dict]) -> None:
@@ -124,13 +136,20 @@ def webhook_command(args):
         return
 
     if sub in ("subscribe", "add"):
-        _cmd_subscribe(args)
+        handler = _cmd_subscribe
     elif sub in ("list", "ls"):
-        _cmd_list(args)
+        handler = _cmd_list
     elif sub in ("remove", "rm"):
-        _cmd_remove(args)
+        handler = _cmd_remove
     elif sub == "test":
-        _cmd_test(args)
+        handler = _cmd_test
+    else:
+        return
+
+    try:
+        handler(args)
+    except ValueError as exc:
+        print(f"Error: {exc}")
 
 
 def _cmd_subscribe(args):

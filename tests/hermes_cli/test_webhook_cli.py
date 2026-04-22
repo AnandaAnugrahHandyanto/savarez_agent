@@ -91,6 +91,19 @@ class TestSubscribe:
         assert "Error" in out or "Invalid" in out
         assert _load_subscriptions() == {}
 
+    def test_subscribe_refuses_to_overwrite_corrupt_file(self, capsys):
+        path = _subscriptions_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        original = "broken{{{"
+        path.write_text(original)
+
+        webhook_command(_make_args(webhook_action="subscribe", name="demo", events="ping"))
+
+        out = capsys.readouterr().out
+        assert "Error" in out
+        assert "webhook subscriptions file" in out
+        assert path.read_text() == original
+
 
 class TestList:
     def test_empty(self, capsys):
@@ -143,7 +156,9 @@ class TestPersistence:
         path = _subscriptions_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("broken{{{")
-        assert _load_subscriptions() == {}
+
+        with pytest.raises(ValueError, match="webhook subscriptions file"):
+            _load_subscriptions()
 
 
 class TestWebhookEnabledGate:
