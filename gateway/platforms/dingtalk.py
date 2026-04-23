@@ -1009,6 +1009,7 @@ class DingTalkAdapter(BasePlatformAdapter):
         message_id: str,
         content: str,
         *,
+        metadata=None,
         finalize: bool = False,
     ) -> SendResult:
         """Edit an AI Card by streaming updated content.

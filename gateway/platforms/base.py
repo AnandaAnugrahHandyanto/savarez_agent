@@ -1104,6 +1104,7 @@ class BasePlatformAdapter(ABC):
         message_id: str,
         content: str,
         *,
+        metadata=None,
         finalize: bool = False,
     ) -> SendResult:
         """

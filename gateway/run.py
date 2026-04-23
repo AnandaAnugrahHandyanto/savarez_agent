@@ -9538,6 +9538,7 @@ class GatewayRunner:
                             chat_id=source.chat_id,
                             message_id=progress_msg_id,
                             content=full_text,
+                            metadata=_progress_metadata,
                         )
                         if not result.success:
                             _err = (getattr(result, "error", "") or "").lower()
@@ -9592,6 +9593,7 @@ class GatewayRunner:
                                 chat_id=source.chat_id,
                                 message_id=progress_msg_id,
                                 content=full_text,
+                                metadata=_progress_metadata,
                             )
                         except Exception:
                             pass
