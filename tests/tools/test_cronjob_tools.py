@@ -5,6 +5,7 @@ import pytest
 from pathlib import Path
 
 from tools.cronjob_tools import (
+    _freeze_thread_sensitive_origin_delivery,
     _scan_cron_prompt,
     check_cronjob_requirements,
     cronjob,
@@ -98,6 +99,22 @@ class TestCronjobRequirements:
         assert check_cronjob_requirements() is False
 
 
+class TestFreezeThreadSensitiveOriginDelivery:
+    def test_freezes_discord_thread_origin_to_explicit_target(self):
+        result = _freeze_thread_sensitive_origin_delivery(
+            "origin",
+            {"platform": "discord", "chat_id": "1493169190197268510", "thread_id": "1496085239917973644"},
+        )
+        assert result == "discord:1493169190197268510:1496085239917973644"
+
+    def test_leaves_non_thread_origin_unchanged(self):
+        result = _freeze_thread_sensitive_origin_delivery(
+            "origin",
+            {"platform": "discord", "chat_id": "1493169190197268510", "thread_id": None},
+        )
+        assert result == "origin"
+
+
 class TestUnifiedCronjobTool:
     @pytest.fixture(autouse=True)
     def _setup_cron_dir(self, tmp_path, monkeypatch):
@@ -121,6 +138,43 @@ class TestUnifiedCronjobTool:
         assert listing["count"] == 1
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
+
+    def test_create_freezes_threaded_origin_delivery(self, monkeypatch):
+        monkeypatch.setattr(
+            "tools.cronjob_tools._origin_from_env",
+            lambda: {
+                "platform": "discord",
+                "chat_id": "1493169190197268510",
+                "thread_id": "1496085239917973644",
+            },
+        )
+
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Check server status",
+                schedule="every 1h",
+                deliver="origin",
+            )
+        )
+        assert created["success"] is True
+        assert created["deliver"] == "discord:1493169190197268510:1496085239917973644"
+
+    def test_update_origin_delivery_freezes_threaded_target(self, monkeypatch):
+        created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h", deliver="local"))
+        job_id = created["job_id"]
+        monkeypatch.setattr(
+            "tools.cronjob_tools._origin_from_env",
+            lambda: {
+                "platform": "discord",
+                "chat_id": "1493169190197268510",
+                "thread_id": "1496085239917973644",
+            },
+        )
+
+        updated = json.loads(cronjob(action="update", job_id=job_id, deliver="origin"))
+        assert updated["success"] is True
+        assert updated["job"]["deliver"] == "discord:1493169190197268510:1496085239917973644"
 
     def test_pause_and_resume(self):
         created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))
