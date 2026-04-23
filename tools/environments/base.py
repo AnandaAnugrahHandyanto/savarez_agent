@@ -38,6 +38,38 @@ if _DEBUG_INTERRUPT:
     # agent.log regardless of quiet-mode.  Scoped to the opt-in case only.
     logger.setLevel(logging.INFO)
 
+_IS_WINDOWS = os.name == "nt"
+
+
+def _posix_drive_to_win(path: str) -> str:
+    """Convert Git Bash /c/Users/... to C:/Users/... so Python can stat it.
+
+    Returns the path unchanged when it doesn't match the /<letter>/... shape.
+    """
+    if len(path) >= 3 and path[0] == "/" and path[2] == "/" and path[1].isalpha():
+        return f"{path[1].upper()}:/{path[3:]}"
+    return path
+
+
+def _is_cwd_stale(cwd: str) -> bool:
+    """Best-effort check: is *cwd* a path whose directory no longer exists?
+
+    Conservative on Windows: only reports stale when we can resolve the path
+    to a Windows form Python can stat. POSIX-only paths like /tmp/... on
+    Windows (whose Git Bash mapping we don't resolve here) return False —
+    the shell-side fallback in _wrap_command catches those.
+    """
+    if not cwd:
+        return True
+    if _IS_WINDOWS:
+        if len(cwd) >= 2 and cwd[1] == ":":
+            return not os.path.isdir(cwd)
+        if len(cwd) >= 3 and cwd[0] == "/" and cwd[2] == "/" and cwd[1].isalpha():
+            return not os.path.isdir(_posix_drive_to_win(cwd))
+        return False
+    return not os.path.isdir(cwd)
+
+
 # Thread-local activity callback.  The agent sets this before a tool call so
 # long-running _wait_for_process loops can report liveness to the gateway.
 _activity_callback_local = threading.local()
@@ -289,6 +321,9 @@ class BaseEnvironment(ABC):
 
     def __init__(self, cwd: str, timeout: int, env: dict = None):
         self.cwd = cwd
+        # Captured at construction — used as fallback when self.cwd gets wedged
+        # on a deleted/unreachable dir (see _wrap_command + execute stale-check).
+        self._startup_cwd = cwd
         self.timeout = timeout
         self.env = env or {}
 
@@ -383,7 +418,20 @@ class BaseEnvironment(ABC):
         quoted_cwd = (
             shlex.quote(cwd) if cwd != "~" and not cwd.startswith("~/") else cwd
         )
-        parts.append(f"cd {quoted_cwd} || exit 126")
+        # Shell-side fallback: if the requested cwd is unreachable (stale path
+        # Python couldn't detect, e.g. /tmp/... on Windows, or a race where the
+        # dir disappeared between the Python check and the bash spawn), try the
+        # startup cwd and emit a stderr breadcrumb. Only exit 126 if both fail.
+        fallback = self._startup_cwd or "~"
+        quoted_fallback = (
+            shlex.quote(fallback) if fallback != "~" and not fallback.startswith("~/") else fallback
+        )
+        parts.append(
+            f"cd {quoted_cwd} 2>/dev/null || "
+            f"{{ cd {quoted_fallback} 2>/dev/null && "
+            f"echo '[hermes] cwd '{quoted_cwd}' unreachable; using '{quoted_fallback} >&2; }} "
+            f"|| exit 126"
+        )
 
         # Run the actual command
         parts.append(f"eval '{escaped}'")
@@ -714,6 +762,18 @@ class BaseEnvironment(ABC):
         exec_command = _rewrite_compound_background(exec_command)
         effective_timeout = timeout or self.timeout
         effective_cwd = cwd or self.cwd
+
+        # Self-heal stale cwd: if a prior command cd'd into a dir that's since
+        # been deleted (temp dir, checkpoint, cleaned build artifact), every
+        # subsequent command would exit 126 from the shell-side cd guard.
+        # Reset to startup_cwd when we can confirm the path is gone.
+        if _is_cwd_stale(effective_cwd):
+            logger.warning(
+                "Stale cwd %r detected; resetting to startup cwd %r",
+                effective_cwd, self._startup_cwd,
+            )
+            effective_cwd = self._startup_cwd
+            self.cwd = effective_cwd
 
         # Merge sudo stdin with caller stdin
         if sudo_stdin is not None and stdin_data is not None:
