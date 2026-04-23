@@ -125,6 +125,10 @@ SEND_MESSAGE_SCHEMA = {
             "message": {
                 "type": "string",
                 "description": "The message text to send"
+            },
+            "components": {
+                "type": "object",
+                "description": "Optional interactive components. Telegram supports inline quick-reply buttons using either {'buttons': [{'label': 'Yes'}]} or Discord Components v2-style blocks. Button taps are delivered back as normal user messages."
             }
         },
         "required": []
@@ -155,6 +159,7 @@ def _handle_send(args):
     """Send a message to a platform target."""
     target = args.get("target", "")
     message = args.get("message", "")
+    components = args.get("components")
     if not target or not message:
         return tool_error("Both 'target' and 'message' are required when action='send'")
 
@@ -281,6 +286,7 @@ def _handle_send(args):
                 cleaned_message,
                 thread_id=thread_id,
                 media_files=media_files,
+                components=components,
             )
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
@@ -401,7 +407,7 @@ def _maybe_skip_cron_duplicate_send(platform_name: str, chat_id: str, thread_id:
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, components=None):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -468,6 +474,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 media_files=media_files if is_last else [],
                 thread_id=thread_id,
                 disable_link_previews=disable_link_previews,
+                components=components if is_last else None,
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
@@ -585,7 +592,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     return last_result
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False):
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, components=None):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
     Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
@@ -623,6 +630,14 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             thread_kwargs["message_thread_id"] = int(thread_id)
         if disable_link_previews:
             thread_kwargs["disable_web_page_preview"] = True
+        if components:
+            try:
+                from gateway.platforms.telegram import _telegram_inline_keyboard_from_components
+                reply_markup = _telegram_inline_keyboard_from_components(components)
+                if reply_markup is not None:
+                    thread_kwargs["reply_markup"] = reply_markup
+            except Exception:
+                logger.debug("Failed to build Telegram inline keyboard from components", exc_info=True)
 
         last_msg = None
         warnings = []

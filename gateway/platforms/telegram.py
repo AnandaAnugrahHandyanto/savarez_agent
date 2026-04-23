@@ -199,6 +199,110 @@ def _wrap_markdown_tables(text: str) -> str:
     return '\n'.join(out)
 
 
+def _telegram_button_callback_data(label: str, explicit: Optional[str] = None) -> str:
+    """Return compact callback_data for generic Telegram quick-reply buttons."""
+    raw = explicit or label
+    # Telegram Bot API caps callback_data at 64 bytes.  The qb: prefix tells
+    # the callback handler to turn the tap into a normal user message.
+    payload = str(raw).strip() or str(label).strip() or "Button"
+    data = f"qb:{payload}"
+    encoded = data.encode("utf-8")
+    if len(encoded) <= 64:
+        return data
+    return encoded[:64].decode("utf-8", errors="ignore")
+
+
+def _extract_button_specs_from_components(components: Any) -> list[list[dict]]:
+    """Normalize generic/Discord-style component payloads into button rows.
+
+    Supports the Discord Components v2 shape used by the ``quick-buttons``
+    skill (``blocks`` with ``actions.buttons`` or ``section.accessory.button``)
+    plus a small platform-neutral shorthand: ``{"buttons": [...]}`` or a list
+    of button dicts / rows.
+    """
+    if not components:
+        return []
+
+    rows: list[list[dict]] = []
+
+    def _button_from(value: Any) -> Optional[dict]:
+        if not isinstance(value, dict):
+            return None
+        button = value.get("button") if isinstance(value.get("button"), dict) else value
+        label = button.get("label") or button.get("text") or button.get("title")
+        if not label:
+            return None
+        return {
+            "label": str(label),
+            "url": button.get("url"),
+            "callback_data": (
+                button.get("callback_data")
+                or button.get("callbackData")
+                or button.get("value")
+                or button.get("custom_id")
+                or button.get("customId")
+            ),
+        }
+
+    def _append_button_row(buttons: Any) -> None:
+        row = []
+        for item in buttons or []:
+            spec = _button_from(item)
+            if spec:
+                row.append(spec)
+        if row:
+            # Telegram allows up to 8 inline buttons per row; keep rows readable.
+            for i in range(0, len(row), 4):
+                rows.append(row[i:i + 4])
+
+    if isinstance(components, dict):
+        if isinstance(components.get("buttons"), list):
+            _append_button_row(components["buttons"])
+        for block in components.get("blocks", []) or []:
+            if not isinstance(block, dict):
+                continue
+            if isinstance(block.get("buttons"), list):
+                _append_button_row(block["buttons"])
+            accessory = block.get("accessory")
+            if isinstance(accessory, dict):
+                spec = _button_from(accessory)
+                if spec:
+                    rows.append([spec])
+    elif isinstance(components, list):
+        if components and all(isinstance(row, list) for row in components):
+            for row in components:
+                _append_button_row(row)
+        else:
+            _append_button_row(components)
+
+    return rows
+
+
+def _telegram_inline_keyboard_from_components(components: Any) -> Any:
+    """Build Telegram InlineKeyboardMarkup from generic button components."""
+    rows = _extract_button_specs_from_components(components)
+    if not rows:
+        return None
+    keyboard_rows = []
+    for row in rows:
+        keyboard_row = []
+        for button in row:
+            label = button["label"][:64]
+            if button.get("url"):
+                keyboard_row.append(InlineKeyboardButton(label, url=button["url"]))
+            else:
+                keyboard_row.append(InlineKeyboardButton(
+                    label,
+                    callback_data=_telegram_button_callback_data(
+                        label,
+                        button.get("callback_data"),
+                    ),
+                ))
+        if keyboard_row:
+            keyboard_rows.append(keyboard_row)
+    return InlineKeyboardMarkup(keyboard_rows) if keyboard_rows else None
+
+
 class TelegramAdapter(BasePlatformAdapter):
     """
     Telegram bot adapter.
@@ -998,6 +1102,9 @@ class TelegramAdapter(BasePlatformAdapter):
             
             message_ids = []
             thread_id = self._metadata_thread_id(metadata)
+            reply_markup = _telegram_inline_keyboard_from_components(
+                metadata.get("components") if metadata else None
+            )
             
             try:
                 from telegram.error import NetworkError as _NetErr
@@ -1030,6 +1137,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 parse_mode=ParseMode.MARKDOWN_V2,
                                 reply_to_message_id=reply_to_id,
                                 message_thread_id=effective_thread_id,
+                                reply_markup=reply_markup if i == len(chunks) - 1 else None,
                                 **self._link_preview_kwargs(),
                             )
                         except Exception as md_error:
@@ -1043,6 +1151,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     parse_mode=None,
                                     reply_to_message_id=reply_to_id,
                                     message_thread_id=effective_thread_id,
+                                    reply_markup=reply_markup if i == len(chunks) - 1 else None,
                                     **self._link_preview_kwargs(),
                                 )
                             else:
@@ -1614,6 +1723,60 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_id = str(query.message.chat_id) if query.message else None
             if chat_id:
                 await self._handle_model_picker_callback(query, data, chat_id)
+            return
+
+        # --- Generic quick-reply callbacks (qb:<text>) ---
+        # These are produced by send(..., metadata={"components": ...}) and
+        # by send_message(..., components=...). Treat a tap like a normal user
+        # message so agent conversations can continue without requiring typing.
+        if data.startswith("qb:"):
+            selected = data[3:].strip()
+            if not selected:
+                await query.answer(text="No button payload.")
+                return
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(caller_id):
+                await query.answer(text="⛔ You are not authorized to use this button.")
+                return
+            await query.answer(text=selected[:120])
+            try:
+                chat = query.message.chat if query.message else None
+                if not chat:
+                    return
+                chat_type = "dm"
+                if getattr(chat, "type", None) in (ChatType.GROUP, ChatType.SUPERGROUP):
+                    chat_type = "group"
+                elif getattr(chat, "type", None) == ChatType.CHANNEL:
+                    chat_type = "channel"
+                thread_id_raw = getattr(query.message, "message_thread_id", None)
+                thread_id_str = str(thread_id_raw) if thread_id_raw is not None else None
+                if chat_type == "group" and thread_id_str is None and getattr(chat, "is_forum", False):
+                    thread_id_str = self._GENERAL_TOPIC_THREAD_ID
+                user = query.from_user
+                source = self.build_source(
+                    chat_id=str(chat.id),
+                    chat_name=getattr(chat, "title", None) or getattr(chat, "full_name", None),
+                    chat_type=chat_type,
+                    user_id=str(getattr(user, "id", "")) if user else None,
+                    user_name=getattr(user, "full_name", None) or getattr(user, "first_name", None),
+                    thread_id=thread_id_str,
+                )
+                event = MessageEvent(
+                    text=selected,
+                    message_type=MessageType.TEXT,
+                    source=source,
+                    raw_message=query.message,
+                    message_id=str(getattr(query.message, "message_id", "")),
+                    platform_update_id=getattr(update, "update_id", None),
+                    timestamp=getattr(query.message, "date", None),
+                )
+                try:
+                    await query.edit_message_reply_markup(reply_markup=None)
+                except Exception:
+                    pass
+                await self.handle_message(event)
+            except Exception as exc:
+                logger.error("Failed to dispatch Telegram quick-reply callback: %s", exc, exc_info=True)
             return
 
         # --- Exec approval callbacks (ea:choice:id) ---

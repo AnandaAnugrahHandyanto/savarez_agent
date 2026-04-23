@@ -326,6 +326,24 @@ class TestSendToPlatformChunking:
         for call in send.await_args_list:
             assert len(call.args[2]) <= 2020  # each chunk fits the limit
 
+    def test_telegram_components_forwarded_to_last_chunk(self):
+        """Generic interactive components are attached to the final Telegram chunk."""
+        send = AsyncMock(return_value={"success": True, "message_id": "1"})
+        components = {"buttons": [{"label": "Yes"}, {"label": "No"}]}
+        with patch("tools.send_message_tool._send_telegram", send):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.TELEGRAM,
+                    SimpleNamespace(enabled=True, token="***", extra={}),
+                    "123",
+                    "Question?",
+                    components=components,
+                )
+            )
+        assert result["success"] is True
+        send.assert_awaited_once()
+        assert send.await_args.kwargs["components"] == components
+
     def test_slack_messages_are_formatted_before_send(self, monkeypatch):
         _ensure_slack_mock(monkeypatch)
 
