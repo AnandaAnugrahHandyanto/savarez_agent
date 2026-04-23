@@ -332,6 +332,169 @@ class TestChatCompletionsNormalize:
         assert nr.provider_data == {"reasoning_content": "detailed scratchpad"}
 
 
+class TestMalformedToolCallSanitization:
+    """Tests for the malformed tool_call pre-pass in convert_messages."""
+
+    # ── Case 1: mixed valid + malformed ──────────────────────────────────────
+
+    def test_malformed_dropped_valid_preserved(self, transport):
+        """Assistant message with one malformed and one valid tool_call.
+        Malformed is dropped; valid is kept; message retains both content and
+        surviving tool_call.
+        """
+        msgs = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_bad",
+                        "type": "function",
+                        "function": {
+                            "name": "patch",
+                            "arguments": '{"path": "~/.hermes/file.py", "old_string": "    # Anthropic think',
+                        },
+                    },
+                    {
+                        "id": "call_good",
+                        "type": "function",
+                        "function": {
+                            "name": "terminal",
+                            "arguments": '{"command": "ls"}',
+                        },
+                    },
+                ],
+            }
+        ]
+        result = transport.convert_messages(msgs)
+        assert len(result) == 1
+        msg = result[0]
+        tool_calls = msg["tool_calls"]
+        assert len(tool_calls) == 1
+        assert tool_calls[0]["id"] == "call_good"
+        # Original not mutated (deepcopy-on-demand)
+        assert len(msgs[0]["tool_calls"]) == 2
+
+    # ── Case 2: all malformed + orphan tool result ────────────────────────────
+
+    def test_all_malformed_and_orphan_tool_stripped(self, transport):
+        """Assistant message with only a malformed tool_call plus a following
+        tool result message.  Both should be cleaned up: tool_calls removed,
+        orphan tool message stripped, placeholder content injected.
+        """
+        msgs = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_bad",
+                        "type": "function",
+                        "function": {
+                            "name": "patch",
+                            "arguments": '{"path": "~/.hermes/file.py", "old_string": "    # Anthropic think',
+                        },
+                    },
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_bad",
+                "content": "ok",
+            },
+        ]
+        result = transport.convert_messages(msgs)
+        # Only the assistant message should remain
+        assert len(result) == 1
+        msg = result[0]
+        assert "tool_calls" not in msg
+        assert msg["content"] == "(tool call dropped — malformed arguments)"
+
+    # ── Case 3: well-formed tool_calls — identity, no deepcopy ───────────────
+
+    def test_well_formed_unchanged_and_not_copied(self, transport):
+        """Assistant message with valid tool_calls returns same list object
+        (no deepcopy — no mutation needed).
+        """
+        msgs = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_ok",
+                        "type": "function",
+                        "function": {
+                            "name": "terminal",
+                            "arguments": '{"command": "pwd"}',
+                        },
+                    }
+                ],
+            }
+        ]
+        result = transport.convert_messages(msgs)
+        assert result is msgs  # identity — no copy
+        assert result[0]["tool_calls"][0]["id"] == "call_ok"
+
+    # ── Case 4: empty arguments string — not malformed ───────────────────────
+
+    def test_empty_arguments_string_not_malformed(self, transport):
+        """tool_call with arguments='' is treated as not malformed per spec.
+        The message passes through unchanged (identity — no deepcopy).
+        """
+        msgs = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_empty",
+                        "type": "function",
+                        "function": {
+                            "name": "terminal",
+                            "arguments": "",
+                        },
+                    }
+                ],
+            }
+        ]
+        result = transport.convert_messages(msgs)
+        assert result is msgs
+        assert result[0]["tool_calls"][0]["function"]["arguments"] == ""
+
+    # ── Extra: surviving tool result preserved ───────────────────────────────
+
+    def test_surviving_tool_result_kept(self, transport):
+        """When one tool_call is malformed and one is valid, only the orphan
+        tool message for the dropped call is removed; the tool message for the
+        surviving call stays.
+        """
+        msgs = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_bad",
+                        "type": "function",
+                        "function": {"name": "patch", "arguments": '{"truncated":'},
+                    },
+                    {
+                        "id": "call_good",
+                        "type": "function",
+                        "function": {"name": "terminal", "arguments": '{"command": "ls"}'},
+                    },
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_bad", "content": "err"},
+            {"role": "tool", "tool_call_id": "call_good", "content": "file.py"},
+        ]
+        result = transport.convert_messages(msgs)
+        # 1 assistant + 1 surviving tool msg
+        assert len(result) == 2
+        assert result[1]["tool_call_id"] == "call_good"
+
+
 class TestChatCompletionsCacheStats:
 
     def test_no_usage(self, transport):

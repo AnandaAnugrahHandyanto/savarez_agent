@@ -4,10 +4,14 @@ Delegates to the existing adapter functions in agent/anthropic_adapter.py.
 This transport owns format conversion and normalization — NOT client lifecycle.
 """
 
+import json
+import logging
 from typing import Any, Dict, List, Optional
 
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse
+
+logger = logging.getLogger(__name__)
 
 
 class AnthropicTransport(ProviderTransport):
@@ -22,15 +26,119 @@ class AnthropicTransport(ProviderTransport):
         return "anthropic_messages"
 
     def convert_messages(self, messages: List[Dict[str, Any]], **kwargs) -> Any:
-        """Convert OpenAI messages to Anthropic (system, messages) tuple.
+        """Sanitize malformed tool_calls then convert to Anthropic format.
+
+        Pre-pass (before handing off to the adapter):
+            Drop any assistant tool_call whose arguments string fails json.loads.
+            Remove tool_calls key entirely if all are dropped (strict providers
+            reject tool_calls:[]).  Inject placeholder content if the message
+            would otherwise be empty.  Strip orphan tool messages whose
+            tool_call_id no longer matches a surviving tool_call.
+
+        Then delegates to convert_messages_to_anthropic which performs
+        Anthropic-specific format conversion (system extraction, tool_use
+        blocks, thinking signatures, orphan tool_use/tool_result cleanup).
 
         kwargs:
             base_url: Optional[str] — affects thinking signature handling.
         """
-        from agent.anthropic_adapter import convert_messages_to_anthropic
+        import copy
+
+        # ── Pre-pass: drop malformed tool_calls ──────────────────────────────
+        has_malformed = False
+        for msg in messages:
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            tool_calls = msg.get("tool_calls")
+            if not isinstance(tool_calls, list):
+                continue
+            for tc in tool_calls:
+                if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function")
+                if not isinstance(fn, dict):
+                    continue
+                args = fn.get("arguments")
+                if not isinstance(args, str) or not args:
+                    continue
+                try:
+                    json.loads(args)
+                except json.JSONDecodeError:
+                    has_malformed = True
+                    break
+            if has_malformed:
+                break
+
+        if has_malformed:
+            messages = copy.deepcopy(messages)
+            dropped_tc = 0
+            surviving_ids: set = set()
+
+            for msg in messages:
+                if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                    continue
+                tool_calls = msg.get("tool_calls")
+                if not isinstance(tool_calls, list):
+                    continue
+
+                good: list = []
+                for tc in tool_calls:
+                    if not isinstance(tc, dict):
+                        good.append(tc)
+                        continue
+                    fn = tc.get("function")
+                    if not isinstance(fn, dict):
+                        good.append(tc)
+                        continue
+                    args = fn.get("arguments")
+                    if not isinstance(args, str) or not args:
+                        good.append(tc)
+                        surviving_ids.add(tc.get("id"))
+                        continue
+                    try:
+                        json.loads(args)
+                        good.append(tc)
+                        surviving_ids.add(tc.get("id"))
+                    except json.JSONDecodeError:
+                        dropped_tc += 1
+
+                if good:
+                    msg["tool_calls"] = good
+                else:
+                    msg.pop("tool_calls", None)
+                    if not msg.get("content"):
+                        msg["content"] = "(tool call dropped — malformed arguments)"
+
+            # Strip orphan tool messages whose tool_call_id lost its assistant counterpart.
+            filtered: list = []
+            dropped_tool_msgs = 0
+            for m in messages:
+                if (
+                    isinstance(m, dict)
+                    and m.get("role") == "tool"
+                    and m.get("tool_call_id") not in surviving_ids
+                ):
+                    dropped_tool_msgs += 1
+                else:
+                    filtered.append(m)
+            messages = filtered
+
+            if dropped_tc or dropped_tool_msgs:
+                logger.warning(
+                    "Dropped %d malformed tool_call(s) and %d orphan tool message(s) "
+                    "from conversation history before sending to provider.",
+                    dropped_tc,
+                    dropped_tool_msgs,
+                )
+
+        # ── Delegate to adapter for Anthropic format conversion ───────────────
+        # Import is deferred to method level to match original behaviour and
+        # avoid circular-import risk at module load time.  Tests that need to
+        # mock this call should patch 'agent.anthropic_adapter.convert_messages_to_anthropic'.
+        from agent.anthropic_adapter import convert_messages_to_anthropic as _convert
 
         base_url = kwargs.get("base_url")
-        return convert_messages_to_anthropic(messages, base_url=base_url)
+        return _convert(messages, base_url=base_url)
 
     def convert_tools(self, tools: List[Dict[str, Any]]) -> Any:
         """Convert OpenAI tool schemas to Anthropic input_schema format."""

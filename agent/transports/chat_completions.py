@@ -10,7 +10,11 @@ reasoning configuration, temperature handling, and extra_body assembly.
 """
 
 import copy
+import json
+import logging
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
@@ -28,12 +32,111 @@ class ChatCompletionsTransport(ProviderTransport):
         return "chat_completions"
 
     def convert_messages(self, messages: List[Dict[str, Any]], **kwargs) -> List[Dict[str, Any]]:
-        """Messages are already in OpenAI format — sanitize Codex leaks only.
+        """Messages are already in OpenAI format — sanitize Codex leaks and malformed tool_calls.
 
-        Strips Codex Responses API fields (``codex_reasoning_items`` on the
-        message, ``call_id``/``response_item_id`` on tool_calls) that strict
-        chat-completions providers reject with 400/422.
+        Pass 1 (malformed tool_call sanitization):
+            For each assistant message whose tool_calls list contains entries
+            with unparseable JSON arguments, drop those entries.  If all
+            tool_calls are dropped, remove the key entirely (strict providers
+            reject tool_calls:[]).  If the message ends up with no content and
+            no tool_calls, inject a placeholder so the message is not empty.
+            Then strip orphan tool messages (role=="tool") whose tool_call_id
+            no longer matches any surviving assistant tool_call id.
+
+        Pass 2 (Codex-leak sanitization):
+            Strips Codex Responses API fields (``codex_reasoning_items`` on the
+            message, ``call_id``/``response_item_id`` on tool_calls) that strict
+            chat-completions providers reject with 400/422.
         """
+        # ── Pass 1: drop malformed tool_calls ────────────────────────────────
+        # First scan: detect any malformed entries so we only mutate when needed.
+        has_malformed = False
+        for msg in messages:
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            tool_calls = msg.get("tool_calls")
+            if not isinstance(tool_calls, list):
+                continue
+            for tc in tool_calls:
+                if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function")
+                if not isinstance(fn, dict):
+                    continue
+                args = fn.get("arguments")
+                if not isinstance(args, str) or not args:
+                    continue  # empty string or non-string — not malformed per spec
+                try:
+                    json.loads(args)
+                except json.JSONDecodeError:
+                    has_malformed = True
+                    break
+            if has_malformed:
+                break
+
+        if has_malformed:
+            messages = copy.deepcopy(messages)
+            dropped_tc = 0
+            surviving_ids: set = set()
+
+            for msg in messages:
+                if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                    continue
+                tool_calls = msg.get("tool_calls")
+                if not isinstance(tool_calls, list):
+                    continue
+
+                good: list = []
+                for tc in tool_calls:
+                    if not isinstance(tc, dict):
+                        good.append(tc)
+                        continue
+                    fn = tc.get("function")
+                    if not isinstance(fn, dict):
+                        good.append(tc)
+                        continue
+                    args = fn.get("arguments")
+                    if not isinstance(args, str) or not args:
+                        good.append(tc)
+                        surviving_ids.add(tc.get("id"))
+                        continue
+                    try:
+                        json.loads(args)
+                        good.append(tc)
+                        surviving_ids.add(tc.get("id"))
+                    except json.JSONDecodeError:
+                        dropped_tc += 1
+
+                if good:
+                    msg["tool_calls"] = good
+                else:
+                    msg.pop("tool_calls", None)
+                    if not msg.get("content"):
+                        msg["content"] = "(tool call dropped — malformed arguments)"
+
+            # Strip orphan tool messages whose tool_call_id lost its assistant counterpart.
+            filtered: list = []
+            dropped_tool_msgs = 0
+            for m in messages:
+                if (
+                    isinstance(m, dict)
+                    and m.get("role") == "tool"
+                    and m.get("tool_call_id") not in surviving_ids
+                ):
+                    dropped_tool_msgs += 1
+                else:
+                    filtered.append(m)
+            messages = filtered
+
+            if dropped_tc or dropped_tool_msgs:
+                logger.warning(
+                    "Dropped %d malformed tool_call(s) and %d orphan tool message(s) "
+                    "from conversation history before sending to provider.",
+                    dropped_tc,
+                    dropped_tool_msgs,
+                )
+
+        # ── Pass 2: Codex-leak sanitization ──────────────────────────────────
         needs_sanitize = False
         for msg in messages:
             if not isinstance(msg, dict):
