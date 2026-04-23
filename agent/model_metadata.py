@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
     "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "stepfun", "minimax", "minimax-cn", "anthropic", "deepseek",
-    "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba",
+    "opencode-zen", "opencode-go", "ai-gateway", "llmgateway", "kilocode", "alibaba",
     "qwen-oauth",
     "xiaomi",
     "arcee",
@@ -262,6 +262,8 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "dashscope-intl.aliyuncs.com": "alibaba",
     "portal.qwen.ai": "qwen-oauth",
     "openrouter.ai": "openrouter",
+    "api.llmgateway.io": "llmgateway",
+    "llmgateway.io": "llmgateway",
     "generativelanguage.googleapis.com": "gemini",
     "inference-api.nousresearch.com": "nous",
     "api.deepseek.com": "deepseek",
