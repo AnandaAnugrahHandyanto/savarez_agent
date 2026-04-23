@@ -4,6 +4,12 @@
  * Embeds the theia-panel (three.js constellation visualizer) in an iframe
  * inside the Hermes dashboard. Graph data is served by the plugin's backend
  * API at /api/plugins/theia-constellation/graph.
+ *
+ * Environment awareness:
+ *   - Production (default): panel is served from the bundled static build
+ *     at /dashboard-plugins/theia-constellation/panel/index.html
+ *   - Dev mode: When THEIA_DEV_PORT is set via the API, proxies to a local
+ *     Vite dev server for hot-reload (e.g., http://localhost:5173)
  */
 (function () {
   "use strict";
@@ -26,8 +32,9 @@
   // -------------------------------------------------------------------
   // Constants
   // -------------------------------------------------------------------
-  var PANEL_URL = "/dashboard-plugins/theia-constellation/panel/index.html";
+  var PANEL_URL_PROD = "/dashboard-plugins/theia-constellation/panel/index.html";
   var GRAPH_API = "/api/plugins/theia-constellation/graph";
+  var CONFIG_API = "/api/plugins/theia-constellation/config";
 
   // -------------------------------------------------------------------
   // Styles (inline — matches dashboard theme)
@@ -36,6 +43,31 @@
     "inline-flex items-center gap-1.5 border border-border bg-background/40 px-3 py-1.5",
     "text-xs font-courier transition-colors hover:bg-foreground/10 cursor-pointer"
   );
+
+  // -------------------------------------------------------------------
+  // Helper: resolve panel URL based on env
+  // -------------------------------------------------------------------
+  function usePanelUrl() {
+    var state = useState({ url: PANEL_URL_PROD, env: "production" });
+    var panelInfo = state[0];
+    var setPanelInfo = state[1];
+
+    useEffect(function () {
+      SDK.fetchJSON(CONFIG_API)
+        .then(function (config) {
+          if (config.dev_panel_url) {
+            setPanelInfo({ url: config.dev_panel_url, env: "development" });
+          } else {
+            setPanelInfo({ url: PANEL_URL_PROD, env: config.env || "production" });
+          }
+        })
+        .catch(function () {
+          // Config endpoint not available — use prod defaults
+        });
+    }, []);
+
+    return panelInfo;
+  }
 
   // -------------------------------------------------------------------
   // Main Page Component
@@ -55,6 +87,8 @@
     var isFullscreenState = useState(false);
     var isFullscreen = isFullscreenState[0];
     var setIsFullscreen = isFullscreenState[1];
+
+    var panelInfo = usePanelUrl();
 
     // Fetch graph stats on mount
     useEffect(function () {
@@ -97,13 +131,19 @@
 
     var handlePopout = useCallback(function () {
       window.open(
-        PANEL_URL + "?graph=" + encodeURIComponent(GRAPH_API),
+        panelInfo.url + "?graph=" + encodeURIComponent(GRAPH_API),
         "theia-constellation",
         "width=1200,height=800"
       );
-    }, []);
+    }, [panelInfo.url]);
 
-    var iframeSrc = PANEL_URL + "?graph=" + encodeURIComponent(GRAPH_API);
+    var iframeSrc = panelInfo.url + "?graph=" + encodeURIComponent(GRAPH_API);
+
+    // Environment badge
+    var envBadge = panelInfo.env !== "production"
+      ? h(Badge, { variant: "outline", className: "text-xs text-yellow-400 border-yellow-400/40" },
+          panelInfo.env.toUpperCase())
+      : null;
 
     // Full-screen mode
     if (isFullscreen) {
@@ -114,6 +154,7 @@
         h("div", { className: "theia-fullscreen-toolbar" },
           h("span", { className: "text-xs font-courier tracking-widest opacity-70" }, "THEIA CONSTELLATION"),
           h("div", { className: "flex items-center gap-2" },
+            envBadge,
             selectedNode && h(Badge, { variant: "outline", className: "text-xs" }, selectedNode),
             h(Button, { onClick: handleReload, className: btnClass }, "Reload"),
             h(Button, { onClick: handleFullscreen, className: btnClass }, "Exit Fullscreen")
@@ -139,6 +180,7 @@
             h("div", { className: "flex items-center gap-3" },
               h(CardTitle, { className: "text-lg" }, "Session Constellation"),
               h(Badge, { variant: "outline" }, "v0.1.0"),
+              envBadge,
               graphStats && h(Badge, { variant: "outline" },
                 graphStats.nodes + " sessions / " + graphStats.edges + " edges"
               )
