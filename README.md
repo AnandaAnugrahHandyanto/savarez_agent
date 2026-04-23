@@ -1,3 +1,21 @@
+# Thaumium ✦
+
+<p align="center">
+  <img src="https://img.shields.io/badge/License-MIT-6df0a8?style=for-the-badge" alt="License: MIT">
+  <img src="https://img.shields.io/badge/Private%20Fork-Hermes%20Agent-c9a7ff?style=for-the-badge" alt="Private fork of Hermes Agent">
+  <img src="https://img.shields.io/badge/Upstream-NousResearch%2Fhermes--agent-7adcff?style=for-the-badge" alt="Upstream">
+</p>
+
+> **Thaumium** is a private fork of [**Hermes Agent**](https://github.com/NousResearch/hermes-agent) (MIT) by Nous Research. It's functionally identical to upstream with one additive extension: a contextvar-based plugin API that lets plugin-registered tool handlers access the calling agent, enabling per-spawn model/provider overrides for orchestrator-style parent agents.
+>
+> See [`CHANGES.md`](CHANGES.md) for the full delta. The extension is proposed upstream at [NousResearch/hermes-agent#14677](https://github.com/NousResearch/hermes-agent/pull/14677); if it merges, this fork collapses back to a straight mirror.
+
+---
+
+## Upstream Hermes Agent documentation below
+
+Everything below is Hermes Agent documentation from the upstream README, unchanged. Thaumium adds no user-visible features at the runtime level — the extension is invisible unless a plugin opts into it via `from tools.agent_context import get_current_agent`.
+
 <p align="center">
   <img src="assets/banner.png" alt="Hermes Agent" width="100%">
 </p>
