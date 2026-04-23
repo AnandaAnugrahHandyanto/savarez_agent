@@ -1007,7 +1007,9 @@ class AIAgent:
         self._use_prompt_caching, self._use_native_cache_layout = (
             self._anthropic_prompt_cache_policy()
         )
-        self._cache_ttl = "5m"  # Default 5-minute TTL (1.25x write cost)
+        # Prompt-cache TTL: "5m" (default) or "1h" via HERMES_CACHE_TTL env.
+        _ttl_env = os.getenv("HERMES_CACHE_TTL", "5m").strip().lower()
+        self._cache_ttl = _ttl_env if _ttl_env in ("5m", "1h") else "5m"
         
         # Iteration budget: the LLM is only notified when it actually exhausts
         # the iteration budget (api_call_count >= max_iterations).  At that

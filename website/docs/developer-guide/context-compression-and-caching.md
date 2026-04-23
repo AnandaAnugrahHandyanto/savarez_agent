@@ -331,11 +331,28 @@ Prompt caching is automatically enabled when:
 - The model is an Anthropic Claude model (detected by model name)
 - The provider supports `cache_control` (native Anthropic API or OpenRouter)
 
-```yaml
-# config.yaml — TTL is configurable
-model:
-  cache_ttl: "5m"   # "5m" or "1h"
+The default cache TTL is `5m` (1.25x base input cost to write, 10% to read,
+5-minute reuse window). To opt into the 1-hour tier (2x write cost, 10%
+read, 60-minute reuse window), set the `HERMES_CACHE_TTL` environment
+variable — typically in `~/.hermes/.env`:
+
+```bash
+# ~/.hermes/.env
+HERMES_CACHE_TTL=1h
 ```
+
+Only `5m` and `1h` are valid; anything else (including typos and empty
+strings) silently falls back to `5m` so a mistake in `.env` never crashes
+a conversation mid-turn. The chosen TTL applies to every Claude API call
+for the lifetime of the Hermes process — change the env var and restart
+to switch tiers.
+
+**When is `1h` worth the 2x write cost?** When the same system-prompt +
+tool-schema prefix is reused with gaps longer than 5 minutes — coding
+sessions with meeting breaks, sparse cron-driven agents, long-form
+research where you walk away and come back. For continuous short bursts
+(every turn within 5 minutes of the last), `5m` already covers you and
+`1h` just costs more per write for zero extra benefit.
 
 The CLI shows caching status at startup:
 ```

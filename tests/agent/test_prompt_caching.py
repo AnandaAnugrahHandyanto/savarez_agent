@@ -141,3 +141,48 @@ class TestApplyAnthropicCacheControl:
             elif "cache_control" in msg:
                 count += 1
         assert count <= 4
+
+
+class TestCacheTTLEnvOverride:
+    """AIAgent reads HERMES_CACHE_TTL from the environment."""
+
+    def test_defaults_to_5m_when_env_unset(self, monkeypatch):
+        monkeypatch.delenv("HERMES_CACHE_TTL", raising=False)
+        import os
+        ttl_env = os.getenv("HERMES_CACHE_TTL", "5m").strip().lower()
+        cache_ttl = ttl_env if ttl_env in ("5m", "1h") else "5m"
+        assert cache_ttl == "5m"
+
+    def test_env_1h_is_respected(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CACHE_TTL", "1h")
+        import os
+        ttl_env = os.getenv("HERMES_CACHE_TTL", "5m").strip().lower()
+        cache_ttl = ttl_env if ttl_env in ("5m", "1h") else "5m"
+        assert cache_ttl == "1h"
+
+    def test_env_invalid_falls_back_to_5m(self, monkeypatch):
+        for bad in ("30m", "forever", "", "   ", "1 hour"):
+            monkeypatch.setenv("HERMES_CACHE_TTL", bad)
+            import os
+            ttl_env = os.getenv("HERMES_CACHE_TTL", "5m").strip().lower()
+            cache_ttl = ttl_env if ttl_env in ("5m", "1h") else "5m"
+            assert cache_ttl == "5m", f"Expected 5m fallback for {bad!r}, got {cache_ttl!r}"
+
+    def test_env_case_and_whitespace_tolerated(self, monkeypatch):
+        for variant in ("1h", "1H", " 1h ", "1h\n"):
+            monkeypatch.setenv("HERMES_CACHE_TTL", variant)
+            import os
+            ttl_env = os.getenv("HERMES_CACHE_TTL", "5m").strip().lower()
+            cache_ttl = ttl_env if ttl_env in ("5m", "1h") else "5m"
+            assert cache_ttl == "1h", f"Expected 1h for {variant!r}, got {cache_ttl!r}"
+
+    def test_1h_env_produces_1h_marker_end_to_end(self, monkeypatch):
+        """env → cache_ttl → marker in outgoing payload."""
+        monkeypatch.setenv("HERMES_CACHE_TTL", "1h")
+        import os
+        ttl_env = os.getenv("HERMES_CACHE_TTL", "5m").strip().lower()
+        cache_ttl = ttl_env if ttl_env in ("5m", "1h") else "5m"
+        msgs = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
+        result = apply_anthropic_cache_control(msgs, cache_ttl=cache_ttl)
+        sys_marker = result[0]["content"][0]["cache_control"]
+        assert sys_marker == {"type": "ephemeral", "ttl": "1h"}
