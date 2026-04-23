@@ -3142,6 +3142,16 @@ def save_config(config: Dict[str, Any]):
     if is_managed():
         managed_error("save configuration")
         return
+    # Guard: if config.yaml had a parse error, the gateway sets
+    # HERMES_CONFIG_PARSE_FAILED.  Writing back now would overwrite the
+    # user's real settings with defaults — refuse until config is fixed.
+    if os.environ.get("HERMES_CONFIG_PARSE_FAILED"):
+        logger.warning(
+            "Refusing to save config — HERMES_CONFIG_PARSE_FAILED is set "
+            "(config.yaml had a parse error on load). Fix config.yaml "
+            "syntax first, then retry."
+        )
+        return
     from utils import atomic_yaml_write
 
     ensure_hermes_home()
@@ -3173,6 +3183,28 @@ def save_config(config: Dict[str, Any]):
     )
     _secure_file(config_path)
     _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
+
+
+def write_raw_config(content: str) -> bool:
+    """Write raw text directly to config.yaml, bypassing the parse-failure guard.
+
+    This is the escape hatch for the recovery flow: the agent has repaired
+    a broken config.yaml and needs to write the fixed version back.  Calling
+    save_config() here would be blocked by HERMES_CONFIG_PARSE_FAILED, and
+    that guard should stay active until the gateway restarts and confirms the
+    config loads cleanly.
+
+    Returns True on success.
+    """
+    ensure_hermes_home()
+    config_path = get_config_path()
+    try:
+        atomic_yaml_write(config_path, content, raw_text=True)
+        _secure_file(config_path)
+        _LAST_EXPANDED_CONFIG_BY_PATH.pop(str(config_path), None)
+        return True
+    except Exception:
+        return False
 
 
 def load_env() -> Dict[str, str]:
@@ -3832,6 +3864,135 @@ def set_config_value(key: str, value: str):
 # Command handler
 # =============================================================================
 
+
+def _config_recover(args):
+    """Start a one-shot LLM call to repair a broken config.yaml.
+
+    Reads config.yaml.broken and config.yaml.error (written by the gateway
+    when config.yaml fails to parse), passes them to an LLM as context,
+    and writes the repaired YAML directly to config.yaml via
+    write_raw_config() (which bypasses the parse-failure guard).
+    """
+    home = get_hermes_home()
+    broken_path = home / "config.yaml.broken"
+    error_path = home / "config.yaml.error"
+
+    if not broken_path.exists():
+        print("No broken config found.  config.yaml parses fine.")
+        print("If the gateway is running, restart it to clear any stale error state.")
+        return
+
+    raw_yaml = broken_path.read_text(encoding="utf-8")
+    error_msg = ""
+    if error_path.exists():
+        error_msg = error_path.read_text(encoding="utf-8")
+
+    print()
+    print("config.yaml has a parse error:")
+    print(f"  {error_msg}")
+    print()
+    print(f"Broken YAML saved at: {broken_path}")
+    print(f"Config will be written to: {home / 'config.yaml'}")
+    print()
+
+    # Resolve model and credentials
+    requested_model = getattr(args, "model", None)
+    if not requested_model:
+        # Try the current config's model as default
+        requested_model = input("Model to use for repair (e.g. openai/gpt-4o): ").strip()
+        if not requested_model:
+            print("Cancelled.")
+            return
+
+    # Resolve provider credentials
+    try:
+        from hermes_cli.auth import resolve_api_key_provider_credentials
+        from hermes_cli.model_switch import normalize_model_spec
+
+        provider_id, model_id = normalize_model_spec(requested_model)
+        creds = resolve_api_key_provider_credentials(provider_id)
+        api_key = creds.get("api_key", "")
+        base_url = creds.get("base_url", "")
+    except Exception:
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+        base_url = os.environ.get("OPENAI_BASE_URL", "")
+        model_id = requested_model
+        provider_id = ""
+
+    if not api_key:
+        print(f"No API key found for {provider_id}.  Set one first.")
+        sys.exit(1)
+
+    # Build the repair prompt
+    repair_prompt = (
+        "The user's Hermes Agent config.yaml has a YAML parse error and "
+        "cannot be loaded.  Here is the broken config:\n\n"
+        f"```yaml\n{raw_yaml}\n```\n\n"
+        f"Parse error: {error_msg}\n\n"
+        "Fix the YAML syntax error while preserving ALL existing settings, "
+        "comments, env-var templates (${VAR}), and structure.  Output ONLY "
+        "the corrected YAML — no explanation, no markdown fences, no extra text."
+    )
+
+    print(f"Calling {model_id}...")
+    print()
+
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=api_key, base_url=base_url or None)
+        response = client.chat.completions.create(
+            model=model_id,
+            messages=[{"role": "user", "content": repair_prompt}],
+            temperature=0.0,
+            max_tokens=16384,
+        )
+        fixed_yaml = response.choices[0].message.content.strip()
+    except ImportError:
+        print("openai package not installed.  Install it or fix config.yaml manually.")
+        return
+    except Exception as e:
+        print(f"LLM call failed: {e}")
+        print("Fix config.yaml manually or try a different model.")
+        return
+
+    # Strip markdown fences if present
+    if fixed_yaml.startswith("```"):
+        lines = fixed_yaml.split("\n")
+        lines = [l for l in lines if not l.strip().startswith("```")]
+        fixed_yaml = "\n".join(lines)
+
+    if not fixed_yaml.strip():
+        print("LLM returned empty output.  Config not modified.")
+        return
+
+    # Validate the fix parses as YAML
+    import yaml
+    try:
+        parsed = yaml.safe_load(fixed_yaml)
+        if not isinstance(parsed, dict):
+            print(f"LLM returned a {type(parsed).__name__}, not a YAML mapping.")
+            print("Config not modified.  Try a more capable model.")
+            return
+    except yaml.YAMLError as e:
+        print(f"LLM's output still has YAML errors: {e}")
+        print("Config not modified.  Try a different model.")
+        return
+
+    # Write directly, bypassing the guard
+    ok = write_raw_config(fixed_yaml)
+    if ok:
+        print(f"Config repaired and written to {home / 'config.yaml'}")
+        print("Restart the gateway to confirm the fix loads cleanly.")
+        try:
+            broken_path.unlink(missing_ok=True)
+            error_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+    else:
+        print("Failed to write the repaired config.")
+
+
 def config_command(args):
     """Handle config subcommands."""
     subcmd = getattr(args, 'config_command', None)
@@ -3955,6 +4116,9 @@ def config_command(args):
         
         print()
     
+    elif subcmd == "recover":
+        _config_recover(args)
+
     else:
         print(f"Unknown config command: {subcmd}")
         print()

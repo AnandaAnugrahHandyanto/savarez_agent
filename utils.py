@@ -118,6 +118,7 @@ def atomic_yaml_write(
     default_flow_style: bool = False,
     sort_keys: bool = False,
     extra_content: str | None = None,
+    raw_text: bool = False,
 ) -> None:
     """Write YAML data to a file atomically.
 
@@ -127,11 +128,13 @@ def atomic_yaml_write(
 
     Args:
         path: Target file path (will be created or overwritten).
-        data: YAML-serializable data to write.
+        data: YAML-serializable data to write, or raw text when raw_text=True.
         default_flow_style: YAML flow style (default False).
         sort_keys: Whether to sort dict keys (default False).
         extra_content: Optional string to append after the YAML dump
             (e.g. commented-out sections for user reference).
+        raw_text: If True, write *data* as-is (must be a str) instead of
+            running yaml.dump().  Used by the config recovery flow.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -145,7 +148,10 @@ def atomic_yaml_write(
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, default_flow_style=default_flow_style, sort_keys=sort_keys)
+            if raw_text:
+                f.write(str(data))
+            else:
+                yaml.dump(data, f, default_flow_style=default_flow_style, sort_keys=sort_keys)
             if extra_content:
                 f.write(extra_content)
             f.flush()

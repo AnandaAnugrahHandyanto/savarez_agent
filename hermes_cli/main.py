@@ -7514,6 +7514,23 @@ Examples:
     # config migrate
     config_subparsers.add_parser("migrate", help="Update config with new options")
 
+    # config recover
+    config_recover = config_subparsers.add_parser(
+        "recover",
+        help="Repair a broken config.yaml (requires an agent session)",
+        description=(
+            "Start a one-shot agent session to repair config.yaml when it "
+            "has a parse error.  The agent receives the broken YAML and error "
+            "message, then writes the fixed version directly.  Afterward, "
+            "restart the gateway to confirm the fix loads cleanly."
+        ),
+    )
+    config_recover.add_argument(
+        "--model",
+        default=None,
+        help="Model/provider to use for the repair session (default: prompt)",
+    )
+
     config_parser.set_defaults(func=cmd_config)
 
     # =========================================================================

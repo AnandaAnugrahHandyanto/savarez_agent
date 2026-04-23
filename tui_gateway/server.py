@@ -3790,6 +3790,56 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5034, str(e))
 
 
+@method("config.recover_status")
+def _(rid, params: dict) -> dict:
+    """Return recovery info if config.yaml has a parse error.
+
+    The terminal TUI calls this after startup to check whether it should
+    offer a config-repair session.  Returns the broken YAML content and
+    the parse error message so the agent has full context.
+    """
+    try:
+        if not os.environ.get("HERMES_CONFIG_PARSE_FAILED"):
+            return _ok(rid, {"needs_recovery": False})
+
+        broken_path = _hermes_home / "config.yaml.broken"
+        error_path = _hermes_home / "config.yaml.error"
+        raw = ""
+        error = ""
+        if broken_path.exists():
+            raw = broken_path.read_text(encoding="utf-8")
+        if error_path.exists():
+            error = error_path.read_text(encoding="utf-8")
+        return _ok(rid, {
+            "needs_recovery": True,
+            "raw_config": raw,
+            "error": error,
+        })
+    except Exception as e:
+        return _err(rid, 5035, str(e))
+
+
+@method("config.recover_write")
+def _(rid, params: dict) -> dict:
+    """Write a repaired config.yaml directly, bypassing the parse-failure guard.
+
+    Called by the terminal TUI after the agent produces a fixed config.
+    The guard stays active until the gateway restarts and confirms the
+    fix loads cleanly.
+    """
+    try:
+        content = params.get("content", "")
+        if not content or not isinstance(content, str):
+            return _err(rid, 5036, "content must be a non-empty string")
+        from hermes_cli.config import write_raw_config
+        ok = write_raw_config(content)
+        if ok:
+            return _ok(rid, {"written": True})
+        return _err(rid, 5037, "failed to write config.yaml")
+    except Exception as e:
+        return _err(rid, 5038, str(e))
+
+
 @method("tools.configure")
 def _(rid, params: dict) -> dict:
     action = str(params.get("action", "") or "").strip().lower()
