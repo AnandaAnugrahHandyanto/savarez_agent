@@ -4265,6 +4265,64 @@ class GatewayRunner:
             lines.append(f"_(Requested page {requested_page} was out of range, showing page {page}.)_")
         return "\n".join(lines)
     
+    @staticmethod
+    def _normalize_runtime_identity_field(value: Any) -> str:
+        if not isinstance(value, str):
+            return ""
+        return value.strip().rstrip("/").lower()
+
+    def _runtime_identity_changed(
+        self,
+        *,
+        current_provider: Any,
+        current_base_url: Any,
+        current_api_mode: Any,
+        new_provider: Any,
+        new_base_url: Any,
+        new_api_mode: Any,
+    ) -> bool:
+        return (
+            self._normalize_runtime_identity_field(current_provider),
+            self._normalize_runtime_identity_field(current_base_url),
+            self._normalize_runtime_identity_field(current_api_mode),
+        ) != (
+            self._normalize_runtime_identity_field(new_provider),
+            self._normalize_runtime_identity_field(new_base_url),
+            self._normalize_runtime_identity_field(new_api_mode),
+        )
+
+    def _clear_codex_reasoning_replay_for_session(self, session_id: str) -> None:
+        if not session_id or not getattr(self, "session_store", None):
+            return
+        try:
+            history = self.session_store.load_transcript(session_id)
+        except Exception as exc:
+            logger.debug("Failed to load transcript while clearing Codex reasoning replay: %s", exc)
+            return
+        if not isinstance(history, list) or not history:
+            return
+
+        rewritten = []
+        changed = False
+        for msg in history:
+            if not isinstance(msg, dict):
+                rewritten.append(msg)
+                continue
+            if msg.get("role") != "assistant" or "codex_reasoning_items" not in msg:
+                rewritten.append(msg)
+                continue
+            updated = dict(msg)
+            if updated.pop("codex_reasoning_items", None) is not None:
+                changed = True
+            rewritten.append(updated)
+
+        if not changed:
+            return
+        try:
+            self.session_store.rewrite_transcript(session_id, rewritten)
+        except Exception as exc:
+            logger.debug("Failed to rewrite transcript while clearing Codex reasoning replay: %s", exc)
+
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /model command — switch model for this session.
 
@@ -4280,7 +4338,7 @@ class GatewayRunner:
             switch_model as _switch_model, parse_model_flags,
             list_authenticated_providers,
         )
-        from hermes_cli.providers import get_label
+        from hermes_cli.providers import get_label, determine_api_mode
 
         raw_args = event.get_command_args().strip()
 
@@ -4323,6 +4381,15 @@ class GatewayRunner:
             current_base_url = override.get("base_url", current_base_url)
             current_api_key = override.get("api_key", current_api_key)
 
+        current_api_mode = determine_api_mode(current_provider, current_base_url)
+        session_entry = None
+        try:
+            if getattr(self, "session_store", None) is not None:
+                session_entry = self.session_store.get_or_create_session(source)
+        except Exception:
+            session_entry = None
+        session_id = getattr(session_entry, "session_id", "")
+
         # No args: show interactive picker (Telegram/Discord) or text list
         if not model_input and not explicit_provider:
             # Try interactive picker if the platform supports it
@@ -4352,6 +4419,8 @@ class GatewayRunner:
                     _cur_provider = current_provider
                     _cur_base_url = current_base_url
                     _cur_api_key = current_api_key
+                    _cur_api_mode = current_api_mode
+                    _session_id = session_id
 
                     async def _on_model_selected(
                         _chat_id: str, model_id: str, provider_slug: str
@@ -4370,6 +4439,16 @@ class GatewayRunner:
                         )
                         if not result.success:
                             return f"Error: {result.error_message}"
+
+                        if _self._runtime_identity_changed(
+                            current_provider=_cur_provider,
+                            current_base_url=_cur_base_url,
+                            current_api_mode=_cur_api_mode,
+                            new_provider=result.target_provider,
+                            new_base_url=result.base_url,
+                            new_api_mode=result.api_mode,
+                        ):
+                            _self._clear_codex_reasoning_replay_for_session(_session_id)
 
                         # Update cached agent in-place
                         cached_entry = None
@@ -4484,6 +4563,16 @@ class GatewayRunner:
 
         if not result.success:
             return f"Error: {result.error_message}"
+
+        if self._runtime_identity_changed(
+            current_provider=current_provider,
+            current_base_url=current_base_url,
+            current_api_mode=current_api_mode,
+            new_provider=result.target_provider,
+            new_base_url=result.base_url,
+            new_api_mode=result.api_mode,
+        ):
+            self._clear_codex_reasoning_replay_for_session(session_id)
 
         # If there's a cached agent, update it in-place
         cached_entry = None

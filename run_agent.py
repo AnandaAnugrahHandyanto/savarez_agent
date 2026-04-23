@@ -1561,6 +1561,8 @@ class AIAgent:
 
         old_model = self.model
         old_provider = self.provider
+        old_base_url = self.base_url
+        old_api_mode = getattr(self, "api_mode", "")
 
         # ── Swap core runtime fields ──
         self.model = new_model
@@ -1660,6 +1662,19 @@ class AIAgent:
         # ── Reset fallback state ──
         self._fallback_activated = False
         self._fallback_index = 0
+
+        # Legacy Codex reasoning items saved before origin metadata was added are
+        # only safe to replay within the same backend lineage. After an in-place
+        # provider/backend switch, suppress legacy replay and rely on newly tagged
+        # reasoning items from the active backend going forward.
+        self._allow_legacy_codex_reasoning_replay = not self._codex_runtime_identity_changed(
+            provider_a=old_provider,
+            base_url_a=old_base_url,
+            api_mode_a=old_api_mode,
+            provider_b=self.provider,
+            base_url_b=self.base_url,
+            api_mode_b=self.api_mode,
+        )
 
         logging.info(
             "Model switched in-place: %s (%s) -> %s (%s)",
@@ -1769,6 +1784,40 @@ class AIAgent:
             "base_url": getattr(self, "base_url", "") or "",
             "api_key": getattr(self, "api_key", "") or "",
             "api_mode": getattr(self, "api_mode", "") or "",
+        }
+
+    @staticmethod
+    def _normalize_runtime_identity_field(value: Any) -> str:
+        if not isinstance(value, str):
+            return ""
+        return value.strip().rstrip("/").lower()
+
+    @classmethod
+    def _codex_runtime_identity_changed(
+        cls,
+        *,
+        provider_a: Any,
+        base_url_a: Any,
+        api_mode_a: Any,
+        provider_b: Any,
+        base_url_b: Any,
+        api_mode_b: Any,
+    ) -> bool:
+        return (
+            cls._normalize_runtime_identity_field(provider_a),
+            cls._normalize_runtime_identity_field(base_url_a),
+            cls._normalize_runtime_identity_field(api_mode_a),
+        ) != (
+            cls._normalize_runtime_identity_field(provider_b),
+            cls._normalize_runtime_identity_field(base_url_b),
+            cls._normalize_runtime_identity_field(api_mode_b),
+        )
+
+    def _current_codex_reasoning_origin(self) -> Dict[str, str]:
+        return {
+            "_origin_provider": self._normalize_runtime_identity_field(getattr(self, "provider", "")),
+            "_origin_base_url": self._normalize_runtime_identity_field(getattr(self, "base_url", "")),
+            "_origin_api_mode": self._normalize_runtime_identity_field(getattr(self, "api_mode", "")),
         }
 
     def _check_compression_model_feasibility(self) -> None:
@@ -3558,9 +3607,25 @@ class AIAgent:
                     codex_reasoning = msg.get("codex_reasoning_items")
                     has_codex_reasoning = False
                     if isinstance(codex_reasoning, list):
+                        current_provider = self._normalize_runtime_identity_field(getattr(self, "provider", ""))
+                        current_base_url = self._normalize_runtime_identity_field(getattr(self, "base_url", ""))
+                        current_api_mode = self._normalize_runtime_identity_field(getattr(self, "api_mode", ""))
+                        allow_legacy = getattr(self, "_allow_legacy_codex_reasoning_replay", True)
                         for ri in codex_reasoning:
                             if isinstance(ri, dict) and ri.get("encrypted_content"):
                                 item_id = ri.get("id")
+                                origin_provider = self._normalize_runtime_identity_field(ri.get("_origin_provider"))
+                                origin_base_url = self._normalize_runtime_identity_field(ri.get("_origin_base_url"))
+                                origin_api_mode = self._normalize_runtime_identity_field(ri.get("_origin_api_mode"))
+                                has_origin = bool(origin_provider or origin_base_url or origin_api_mode)
+                                if has_origin and (
+                                    origin_provider != current_provider
+                                    or origin_base_url != current_base_url
+                                    or origin_api_mode != current_api_mode
+                                ):
+                                    continue
+                                if not has_origin and not allow_legacy:
+                                    continue
                                 if item_id and item_id in seen_item_ids:
                                     continue
                                 items.append(ri)
@@ -6496,7 +6561,22 @@ class AIAgent:
         # multi-turn continuity. These get replayed as input on the next turn.
         codex_items = getattr(assistant_message, "codex_reasoning_items", None)
         if codex_items:
-            msg["codex_reasoning_items"] = codex_items
+            origin = self._current_codex_reasoning_origin()
+            tagged_items = []
+            for item in codex_items:
+                if isinstance(item, dict):
+                    tagged = dict(item)
+                elif hasattr(item, "model_dump"):
+                    tagged = item.model_dump()
+                elif hasattr(item, "__dict__"):
+                    tagged = dict(item.__dict__)
+                else:
+                    continue
+                for key, value in origin.items():
+                    tagged.setdefault(key, value)
+                tagged_items.append(tagged)
+            if tagged_items:
+                msg["codex_reasoning_items"] = tagged_items
 
         if assistant_message.tool_calls:
             tool_calls = []
