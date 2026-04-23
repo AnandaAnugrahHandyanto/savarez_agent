@@ -137,9 +137,21 @@ _run_with_timeout() {
 }
 
 check_h4() {
-    # Verify LanceDB / memory store is reachable. Probes whichever recall path
-    # is wired up on this host. Kept advisory — unknown CLI subcommand is NOT
-    # a red flag, only genuine timeout/DB error is.
+    # v3 (2026-04-22): skip H4 entirely by default.
+    #
+    # Context: the `openclaw memory recall` CLI subcommand is not wired on this
+    # host — v2 tried to run it with a portable timeout wrapper, but when
+    # gtimeout/timeout are absent the fallback can't kill the openclaw gateway
+    # subprocess tree quickly enough (seen taking 20+ seconds to return
+    # "unknown command"). H4 was aspirational and not part of the must-have
+    # probe set; H1-H3 already cover the real silent-fail surface.
+    #
+    # To re-enable in future: set PROBE_H4=on and ensure gtimeout is installed
+    # (brew install coreutils).
+    if [ "${PROBE_H4:-off}" != "on" ]; then
+        add_result "H4" true "H4 disabled by default (set PROBE_H4=on to re-enable)"
+        return
+    fi
     if ! command -v openclaw >/dev/null 2>&1; then
         add_result "H4" true "openclaw CLI absent; skipping (advisory)"
         return
@@ -147,9 +159,6 @@ check_h4() {
     local out rc
     out=$(_run_with_timeout "$MEMORY_RECALL_TIMEOUT_SEC" openclaw memory recall --query "health" --limit 1 2>&1)
     rc=$?
-    # 137 = SIGKILL from our timeout wrapper (the CLI hung printing help for unknown cmd)
-    # 2 = unknown command (argparse)
-    # Either way, memory subcommand isn't available → treat as advisory skip, not red.
     if [ $rc -eq 124 ] || [ $rc -eq 0 ]; then
         add_result "H4" true "memory_recall ok (rc=$rc)"
         return

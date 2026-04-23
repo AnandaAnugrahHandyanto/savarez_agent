@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Hermes Dashboard auto-start LaunchAgent.
+
+  This is a TEMPLATE — not auto-loaded.
+
+To install:
+    cp ~/dev/hermes-agent/scripts/com.brian.hermes-dashboard.plist.template \
+       ~/Library/LaunchAgents/com.brian.hermes-dashboard.plist
+    launchctl load ~/Library/LaunchAgents/com.brian.hermes-dashboard.plist
+
+To uninstall:
+    launchctl unload ~/Library/LaunchAgents/com.brian.hermes-dashboard.plist
+    rm ~/Library/LaunchAgents/com.brian.hermes-dashboard.plist
+
+After starting, dashboard is at http://127.0.0.1:9119.
+
+If port 9119 is already in use, edit the --port flag here, or kill the
+existing process: `pkill -f "hermes_cli.main dashboard"`.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.brian.hermes-dashboard</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/python3</string>
+    <string>-m</string>
+    <string>hermes_cli.main</string>
+    <string>dashboard</string>
+    <string>--no-open</string>
+    <string>--host</string>
+    <string>127.0.0.1</string>
+    <string>--port</string>
+    <string>9119</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/brian/dev/hermes-agent</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>HOME</key>
+    <string>/Users/brian</string>
+    <key>HERMES_FINALIZER_GATE</key>
+    <string>core</string>
+    <key>HERMES_DISPATCH_MIN_INTERVAL_SEC</key>
+    <string>30</string>
+    <key>HERMES_DISPATCH_BURST_COUNT</key>
+    <string>3</string>
+    <key>HERMES_DISPATCH_BURST_WINDOW_SEC</key>
+    <string>60</string>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/brian/.hermes/logs/dashboard.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/brian/.hermes/logs/dashboard.stderr.log</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+</dict>
+</plist>

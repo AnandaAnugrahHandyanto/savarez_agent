@@ -1825,6 +1825,425 @@ def mount_spa(application: FastAPI):
         )
 
 
+# ----------------------------------------------------------------------------
+# Dual-agent control endpoint (Hermes × OpenClaw)
+#
+# Reuses `scripts/learning_progress_dashboard.py` so the API answer is the
+# same shape as the markdown snapshot. See:
+#   ~/wiki/operations/learning-progress-dashboard-spec.md
+# ----------------------------------------------------------------------------
+@app.get("/api/dual-agent/status")
+async def get_dual_agent_status():
+    """Aggregate signals for the dual-agent control panel.
+
+    Returns the same JSON as `learning_progress_dashboard.py --json`, plus a
+    `scorecard` derived locally.
+    """
+    import importlib.util
+    import sys as _sys
+
+    dashboard_path = PROJECT_ROOT / "scripts" / "learning_progress_dashboard.py"
+    if not dashboard_path.exists():
+        return {"error": f"dashboard script missing at {dashboard_path}"}
+
+    mod_name = "_dual_agent_dashboard"
+    if mod_name not in _sys.modules:
+        spec = importlib.util.spec_from_file_location(mod_name, dashboard_path)
+        if spec is None or spec.loader is None:
+            return {"error": "could not load dashboard script"}
+        mod = importlib.util.module_from_spec(spec)
+        _sys.modules[mod_name] = mod
+        spec.loader.exec_module(mod)
+    mod = _sys.modules[mod_name]
+
+    try:
+        data = mod.collect_all()
+        # Compute scorecard (reuse internal helper)
+        sc = mod._compute_scorecard(data)
+        return {"data": data, "scorecard": sc}
+    except Exception as exc:
+        return {"error": f"collect failed: {exc}"}
+
+
+@app.get("/api/dual-agent/snapshots")
+async def list_dual_agent_snapshots():
+    """List historical snapshot files so the UI can show trend chart."""
+    snap_dir = Path.home() / "wiki" / "operations" / "learning-progress-snapshots"
+    if not snap_dir.exists():
+        return {"snapshots": []}
+    files = sorted(snap_dir.glob("*.md"), reverse=True)[:20]
+    out = []
+    import re as _re
+    for f in files:
+        text = f.read_text(encoding="utf-8", errors="ignore")
+        m = _re.search(r"\*\*Score\*\*:\s*(\d+)/10", text)
+        score = int(m.group(1)) if m else None
+        m_ts = _re.search(r"\*\*Generated\*\*:\s*(.+)", text)
+        ts = m_ts.group(1).strip() if m_ts else f.stem
+        out.append({"file": f.name, "ts": ts, "score": score})
+    return {"snapshots": out}
+
+
+@app.get("/api/dual-agent/coaching")
+async def get_coaching_session():
+    """Return the latest coaching session as raw markdown (for render)."""
+    coach = Path.home() / "wiki" / "operations" / "coaching-2026-04-22-phase1-kickoff.md"
+    if not coach.exists():
+        return {"error": "no coaching session file"}
+    import re as _re
+    text = coach.read_text(encoding="utf-8")
+    # Parse Q/A blanks count
+    blanks = text.count("_（待回填，T-COACH01）_") + text.count("_（待回填）_")
+    # Extract the main Q prompts (Q1.x, Q2.x, Q3.x)
+    prompts = _re.findall(r"^### (Q\d+\.\d+.*?)$", text, _re.MULTILINE)
+    return {
+        "path": str(coach.relative_to(Path.home())),
+        "mtime": coach.stat().st_mtime,
+        "markdown": text,
+        "blanks": blanks,
+        "prompts": prompts,
+    }
+
+
+class CoachingCommentRequest(BaseModel):
+    actor: str  # "hermes" | "openclaw" | "brian"
+    section: str  # arbitrary section label, e.g. "Q2.1"
+    comment: str
+
+
+@app.post("/api/dual-agent/coaching/comment")
+async def post_coaching_comment(req: CoachingCommentRequest):
+    """Append a comment to the coaching session under `## Web comments`.
+
+    Lightweight alternative to full inline edit — good for quick notes Brian
+    wants to drop without leaving the dashboard.
+    """
+    coach = Path.home() / "wiki" / "operations" / "coaching-2026-04-22-phase1-kickoff.md"
+    if not coach.exists():
+        return {"ok": False, "error": "session file missing"}
+    if not req.comment.strip():
+        return {"ok": False, "error": "empty comment"}
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    ts = _dt.now(_tz(_td(hours=8))).strftime("%Y-%m-%d %H:%M %z")
+    text = coach.read_text(encoding="utf-8")
+    # Ensure the section exists; if not, append it
+    if "## Web comments" not in text:
+        text = text.rstrip() + "\n\n---\n\n## Web comments\n\n_(comments added via dashboard)_\n"
+    addition = (
+        f"\n### [{ts}] {req.actor} · re: {req.section}\n"
+        f"> {req.comment.strip()}\n"
+    )
+    text = text.rstrip() + addition + "\n"
+    coach.write_text(text, encoding="utf-8")
+    return {"ok": True, "ts": ts}
+
+
+@app.get("/api/dual-agent/handoffs")
+async def list_dual_agent_handoffs():
+    """List HF cards with status + age."""
+    import re as _re
+    hf_dir = Path.home() / "wiki" / "operations" / "automode" / "handoffs"
+    if not hf_dir.exists():
+        return {"cards": []}
+    cards = []
+    for f in sorted(hf_dir.glob("*.md"), reverse=True):
+        text = f.read_text(encoding="utf-8", errors="ignore")[:600]
+        m_status = _re.search(r"^status:\s*(\S+)", text, _re.MULTILINE)
+        m_from = _re.search(r"^from_agent:\s*(\S+)", text, _re.MULTILINE)
+        m_to = _re.search(r"^to_agent:\s*(\S+)", text, _re.MULTILINE)
+        m_ts = _re.search(r"^freshness_ts:\s*(\S+)", text, _re.MULTILINE)
+        m_title = _re.search(r"^title:\s*(.+)$", text, _re.MULTILINE)
+        cards.append({
+            "file": f.name,
+            "title": (m_title.group(1).strip() if m_title else f.stem),
+            "status": (m_status.group(1) if m_status else "unknown"),
+            "from_agent": (m_from.group(1) if m_from else "?"),
+            "to_agent": (m_to.group(1) if m_to else "?"),
+            "freshness_ts": (m_ts.group(1) if m_ts else ""),
+            "mtime": f.stat().st_mtime,
+        })
+    return {"cards": cards}
+
+
+# -------- Actions (write path) --------
+class DispatchRequest(BaseModel):
+    to_agent: str = "openclaw"
+    from_agent: str = "hermes"
+    goal: str
+    context: Optional[str] = None
+    success_criteria: Optional[str] = None
+    priority: str = "P2"
+    deadline_minutes: Optional[int] = None
+
+
+class CloseBusRequest(BaseModel):
+    outcome: str  # "done" | "fail" | "keep-alive"
+    summary: str
+    learning: Optional[str] = None
+    force_ack_if_pending: bool = True
+
+
+class HFDecisionRequest(BaseModel):
+    decision: str  # "accept" | "reject" | "request-clarification"
+    note: Optional[str] = None
+
+
+@app.post("/api/dual-agent/bus/dispatch")
+async def dispatch_bus_task(req: DispatchRequest, force: bool = False):
+    """Dispatch a new bus task. Enforces §9 throttle unless force=True."""
+    try:
+        from agent_bus import core, throttle
+
+        allowed, reason, stats = throttle.check(req.from_agent, req.to_agent)
+        if not allowed and not force:
+            throttle.log_rate_limit_event(req.from_agent, req.to_agent, reason or "", stats)
+            return {
+                "ok": False,
+                "throttled": True,
+                "error": reason,
+                "stats": stats,
+                "hint": "Pass ?force=true to override (logged as manual bypass).",
+            }
+
+        task = core.assign_task(
+            from_agent=req.from_agent,
+            to_agent=req.to_agent,
+            goal=req.goal,
+            success_criteria=req.success_criteria,
+            context=req.context,
+            priority=req.priority,
+            deadline_minutes=req.deadline_minutes,
+        )
+        throttle.record(req.from_agent, req.to_agent)
+        # If forced despite block, log it so Brian sees the bypass
+        if force and not allowed:
+            throttle.log_rate_limit_event(
+                req.from_agent, req.to_agent,
+                f"FORCE-BYPASS: {reason or 'no reason'}", stats,
+            )
+        return {
+            "ok": True,
+            "task_id": task["task_id"],
+            "task": task,
+            "throttle_stats": stats,
+            "forced": force and not allowed,
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.get("/api/dual-agent/activity")
+async def get_dual_agent_activity(hours: int = 24):
+    """Recent wiki/bus activity as a unified feed — 'what just happened'.
+
+    Includes new wiki memory files, new HF cards, bus events, and rate-limit events
+    within the last `hours`. Sorted newest-first.
+    """
+    import sqlite3 as _sqlite
+    import time as _time
+    cutoff = _time.time() - hours * 3600
+    events: List[Dict[str, Any]] = []
+
+    # --- wiki/memory/ additions ---
+    memdir = Path.home() / "wiki" / "memory"
+    if memdir.exists():
+        for f in memdir.glob("2026-*.md"):
+            if f.stat().st_mtime < cutoff:
+                continue
+            text = f.read_text(encoding="utf-8", errors="ignore")[:300]
+            title = f.stem
+            for line in text.splitlines()[:5]:
+                if line.startswith("# "):
+                    title = line[2:].strip()
+                    break
+            kind = "memory"
+            if "evolution" in f.name:
+                kind = "evolution"
+            elif "agent-bus" in f.name:
+                kind = "bus-learning"
+            elif "ratelimit" in f.name:
+                kind = "ratelimit"
+            events.append({
+                "kind": kind,
+                "title": title,
+                "path": f.name,
+                "ts": f.stat().st_mtime,
+                "source": "wiki/memory/",
+            })
+
+    # --- HF cards (recent mtime) ---
+    hf_dir = Path.home() / "wiki" / "operations" / "automode" / "handoffs"
+    if hf_dir.exists():
+        for f in hf_dir.glob("*.md"):
+            if f.stat().st_mtime < cutoff:
+                continue
+            text = f.read_text(encoding="utf-8", errors="ignore")[:400]
+            import re as _re
+            m_title = _re.search(r"^title:\s*(.+)$", text, _re.MULTILINE)
+            m_status = _re.search(r"^status:\s*(\S+)", text, _re.MULTILINE)
+            events.append({
+                "kind": "hf-card",
+                "title": (m_title.group(1).strip() if m_title else f.stem),
+                "path": f.name,
+                "status": (m_status.group(1) if m_status else "?"),
+                "ts": f.stat().st_mtime,
+                "source": "hf",
+            })
+
+    # --- bus events ---
+    bus_db = Path.home() / ".openclaw" / "workspace" / ".agent-bus" / "agent_bus.db"
+    if bus_db.exists():
+        conn = _sqlite.connect(str(bus_db))
+        conn.row_factory = _sqlite.Row
+        try:
+            rows = conn.execute(
+                """SELECT e.task_id, e.ts, e.agent, e.event_type, t.goal
+                   FROM task_events e LEFT JOIN tasks t ON t.task_id = e.task_id
+                   WHERE e.ts > ? ORDER BY e.ts DESC LIMIT 100""",
+                (cutoff,),
+            ).fetchall()
+            for r in rows:
+                events.append({
+                    "kind": "bus-event",
+                    "title": f"{r['event_type']} · {r['task_id']}",
+                    "subtitle": (r["goal"] or "")[:120],
+                    "agent": r["agent"],
+                    "ts": r["ts"],
+                    "source": "bus",
+                })
+        finally:
+            conn.close()
+
+    events.sort(key=lambda e: e["ts"], reverse=True)
+    return {"events": events[:60], "hours_window": hours}
+
+
+@app.get("/api/dual-agent/throttle")
+async def get_throttle_status():
+    """Return current §9 throttle state — time since last dispatch + stats."""
+    from agent_bus import throttle
+    state = {}
+    for pair in [("hermes", "openclaw"), ("openclaw", "hermes")]:
+        allowed, reason, stats = throttle.check(*pair)
+        state[f"{pair[0]}_to_{pair[1]}"] = {
+            "allowed": allowed,
+            "reason": reason,
+            "stats": stats,
+        }
+    return {
+        "enforcement_enabled": throttle.enforcement_enabled(),
+        "pairs": state,
+    }
+
+
+@app.post("/api/dual-agent/bus/{task_id}/close")
+async def close_bus_task(task_id: str, req: CloseBusRequest):
+    try:
+        from agent_bus import core
+        t = core.get_task(task_id)
+        if not t:
+            return {"ok": False, "error": f"task {task_id} not found"}
+        recipient = t["to_agent"]
+
+        # If task still pending and caller allows, ack first (finalizer gate
+        # requires ack→done transition; this is the "Brian force-close" path).
+        if t["status"] == "pending" and req.force_ack_if_pending:
+            core.ack_task(task_id=task_id, agent=recipient, note="web-ack-before-close")
+
+        if req.outcome == "done":
+            out = core.complete_task(
+                task_id=task_id, agent=recipient,
+                result=req.summary, learning=req.learning,
+            )
+        elif req.outcome == "fail":
+            out = core.fail_task(
+                task_id=task_id, agent=recipient,
+                reason=req.summary, learning=req.learning,
+            )
+        elif req.outcome == "keep-alive":
+            out = core.keep_alive_task(
+                task_id=task_id, agent=recipient, note=req.summary,
+            )
+        else:
+            return {"ok": False, "error": f"unknown outcome: {req.outcome}"}
+        return {"ok": True, "task": out}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.post("/api/dual-agent/hf/{card_file}/decision")
+async def hf_card_decision(card_file: str, req: HFDecisionRequest):
+    import re as _re
+    hf_path = Path.home() / "wiki" / "operations" / "automode" / "handoffs" / card_file
+    if not hf_path.exists():
+        return {"ok": False, "error": f"card not found: {card_file}"}
+
+    text = hf_path.read_text(encoding="utf-8")
+    new_status = {
+        "accept": "accepted",
+        "reject": "rejected",
+        "request-clarification": "clarification-requested",
+    }.get(req.decision)
+    if not new_status:
+        return {"ok": False, "error": f"unknown decision: {req.decision}"}
+
+    # Update frontmatter `status:` line
+    new_text = _re.sub(
+        r"^status:\s*\S+",
+        f"status: {new_status}",
+        text,
+        count=1,
+        flags=_re.MULTILINE,
+    )
+    # Append a closeout note with timestamp
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    ts = _dt.now(_tz(_td(hours=8))).strftime("%Y-%m-%d %H:%M %z")
+    closeout = (
+        f"\n\n---\n\n## Web decision ({ts})\n"
+        f"- **Decision**: {req.decision}\n"
+    )
+    if req.note:
+        closeout += f"- **Note**: {req.note}\n"
+    new_text = new_text.rstrip() + closeout + "\n"
+    hf_path.write_text(new_text, encoding="utf-8")
+    return {"ok": True, "new_status": new_status, "path": str(hf_path)}
+
+
+@app.get("/api/dual-agent/bus")
+async def list_dual_agent_bus_tasks():
+    """List recent bus tasks (all statuses), newest first."""
+    import sqlite3 as _sqlite
+    bus_db = Path.home() / ".openclaw" / "workspace" / ".agent-bus" / "agent_bus.db"
+    if not bus_db.exists():
+        return {"tasks": []}
+    conn = _sqlite.connect(str(bus_db))
+    conn.row_factory = _sqlite.Row
+    try:
+        rows = conn.execute(
+            """SELECT task_id, status, from_agent, to_agent, goal, result,
+                      created_at, acked_at, completed_at
+               FROM tasks ORDER BY created_at DESC LIMIT 30"""
+        ).fetchall()
+        return {
+            "tasks": [
+                {
+                    "task_id": r["task_id"],
+                    "status": r["status"],
+                    "from_agent": r["from_agent"],
+                    "to_agent": r["to_agent"],
+                    "goal": r["goal"][:200] if r["goal"] else "",
+                    "result": (r["result"] or "")[:200],
+                    "created_at": r["created_at"],
+                    "acked_at": r["acked_at"],
+                    "completed_at": r["completed_at"],
+                }
+                for r in rows
+            ]
+        }
+    finally:
+        conn.close()
+
+
 mount_spa(app)
 
 
