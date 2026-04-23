@@ -94,7 +94,7 @@ def _run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
     except subprocess.TimeoutExpired:
         return f"[inline-shell timeout after {timeout}s: {command}]"
     except FileNotFoundError:
-        return f"[inline-shell error: bash not found]"
+        return "[inline-shell error: bash not found]"
     except Exception as exc:
         return f"[inline-shell error: {exc}]"
 
