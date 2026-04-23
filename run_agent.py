@@ -11865,6 +11865,7 @@ class AIAgent:
             "estimated_cost_usd": self.session_estimated_cost_usd,
             "cost_status": self.session_cost_status,
             "cost_source": self.session_cost_source,
+            "context_length": getattr(self.context_compressor, "context_length", 0) or 0,
         }
         # If a /steer landed after the final assistant turn (no more tool
         # batches to drain into), hand it back to the caller so it can be

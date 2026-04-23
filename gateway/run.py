@@ -4751,6 +4751,9 @@ class GatewayRunner:
             self.session_store.update_session(
                 session_entry.session_key,
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
+                model=agent_result.get("model"),
+                model_provider=agent_result.get("provider"),
+                context_tokens=agent_result.get("context_length"),
             )
 
             # Auto voice reply: send TTS audio before the text response
@@ -10114,6 +10117,12 @@ class GatewayRunner:
                 _input_toks = getattr(_agent, "session_prompt_tokens", 0)
                 _output_toks = getattr(_agent, "session_completion_tokens", 0)
             _resolved_model = getattr(_agent, "model", None) if _agent else None
+            _resolved_provider = getattr(_agent, "provider", None) if _agent else None
+            _context_length = (
+                getattr(getattr(_agent, "context_compressor", None), "context_length", 0)
+                if _agent
+                else 0
+            )
 
             if not final_response:
                 error_msg = f"⚠️ {result['error']}" if result.get("error") else ""
@@ -10128,7 +10137,9 @@ class GatewayRunner:
                     "last_prompt_tokens": _last_prompt_toks,
                     "input_tokens": _input_toks,
                     "output_tokens": _output_toks,
-                    "model": _resolved_model,
+                    "model": _resolved_model or result.get("model"),
+                    "provider": _resolved_provider or result.get("provider"),
+                    "context_length": _context_length or result.get("context_length", 0),
                 }
             
             # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -10217,7 +10228,9 @@ class GatewayRunner:
                 "last_prompt_tokens": _last_prompt_toks,
                 "input_tokens": _input_toks,
                 "output_tokens": _output_toks,
-                "model": _resolved_model,
+                "model": _resolved_model or result.get("model"),
+                "provider": _resolved_provider or result.get("provider"),
+                "context_length": _context_length or result.get("context_length", 0),
                 "session_id": effective_session_id,
                 "response_previewed": result.get("response_previewed", False),
             }

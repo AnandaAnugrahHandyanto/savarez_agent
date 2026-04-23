@@ -944,7 +944,7 @@ class TestLastPromptTokens:
         assert entry.last_prompt_tokens == 0
 
     def test_session_entry_roundtrip(self):
-        """last_prompt_tokens should survive serialization/deserialization."""
+        """Runtime session metadata should survive serialization/deserialization."""
         from gateway.session import SessionEntry
         from datetime import datetime
         entry = SessionEntry(
@@ -953,14 +953,23 @@ class TestLastPromptTokens:
             created_at=datetime.now(),
             updated_at=datetime.now(),
             last_prompt_tokens=42000,
+            model="gpt-5.4",
+            model_provider="openai",
+            context_tokens=200000,
         )
         d = entry.to_dict()
         assert d["last_prompt_tokens"] == 42000
+        assert d["model"] == "gpt-5.4"
+        assert d["model_provider"] == "openai"
+        assert d["context_tokens"] == 200000
         restored = SessionEntry.from_dict(d)
         assert restored.last_prompt_tokens == 42000
+        assert restored.model == "gpt-5.4"
+        assert restored.model_provider == "openai"
+        assert restored.context_tokens == 200000
 
     def test_session_entry_from_old_data(self):
-        """Old session data without last_prompt_tokens should default to 0."""
+        """Old session data without runtime metadata should keep safe defaults."""
         from gateway.session import SessionEntry
         data = {
             "session_key": "test",
@@ -974,9 +983,12 @@ class TestLastPromptTokens:
         }
         entry = SessionEntry.from_dict(data)
         assert entry.last_prompt_tokens == 0
+        assert entry.model is None
+        assert entry.model_provider is None
+        assert entry.context_tokens == 0
 
     def test_update_session_sets_last_prompt_tokens(self, tmp_path):
-        """update_session should store the actual prompt token count."""
+        """update_session should store the actual prompt token count and runtime metadata."""
         config = GatewayConfig()
         with patch("gateway.session.SessionStore._ensure_loaded"):
             store = SessionStore(sessions_dir=tmp_path, config=config)
@@ -994,11 +1006,20 @@ class TestLastPromptTokens:
         )
         store._entries = {"k1": entry}
 
-        store.update_session("k1", last_prompt_tokens=85000)
+        store.update_session(
+            "k1",
+            last_prompt_tokens=85000,
+            model="claude-sonnet-4-6",
+            model_provider="anthropic",
+            context_tokens=400000,
+        )
         assert entry.last_prompt_tokens == 85000
+        assert entry.model == "claude-sonnet-4-6"
+        assert entry.model_provider == "anthropic"
+        assert entry.context_tokens == 400000
 
     def test_update_session_none_does_not_change(self, tmp_path):
-        """update_session with default (None) should not change last_prompt_tokens."""
+        """update_session with default (None) should not change stored metadata."""
         config = GatewayConfig()
         with patch("gateway.session.SessionStore._ensure_loaded"):
             store = SessionStore(sessions_dir=tmp_path, config=config)
@@ -1014,14 +1035,20 @@ class TestLastPromptTokens:
             created_at=datetime.now(),
             updated_at=datetime.now(),
             last_prompt_tokens=50000,
+            model="gpt-4o",
+            model_provider="openrouter",
+            context_tokens=128000,
         )
         store._entries = {"k1": entry}
 
         store.update_session("k1")  # No last_prompt_tokens arg
         assert entry.last_prompt_tokens == 50000  # unchanged
+        assert entry.model == "gpt-4o"
+        assert entry.model_provider == "openrouter"
+        assert entry.context_tokens == 128000
 
     def test_update_session_zero_resets(self, tmp_path):
-        """update_session with last_prompt_tokens=0 should reset the field."""
+        """update_session accepts zero values for numeric runtime fields."""
         config = GatewayConfig()
         with patch("gateway.session.SessionStore._ensure_loaded"):
             store = SessionStore(sessions_dir=tmp_path, config=config)
@@ -1037,11 +1064,13 @@ class TestLastPromptTokens:
             created_at=datetime.now(),
             updated_at=datetime.now(),
             last_prompt_tokens=85000,
+            context_tokens=200000,
         )
         store._entries = {"k1": entry}
 
-        store.update_session("k1", last_prompt_tokens=0)
+        store.update_session("k1", last_prompt_tokens=0, context_tokens=0)
         assert entry.last_prompt_tokens == 0
+        assert entry.context_tokens == 0
 
 class TestRewriteTranscriptPreservesReasoning:
     """rewrite_transcript must not drop reasoning fields from SQLite."""

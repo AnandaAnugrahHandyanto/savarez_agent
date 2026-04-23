@@ -360,6 +360,9 @@ class SessionEntry:
     
     # Last API-reported prompt tokens (for accurate compression pre-check)
     last_prompt_tokens: int = 0
+    model: Optional[str] = None
+    model_provider: Optional[str] = None
+    context_tokens: int = 0
     
     # Set when a session was created because the previous one expired;
     # consumed once by the message handler to inject a notice into context
@@ -405,6 +408,9 @@ class SessionEntry:
             "cache_write_tokens": self.cache_write_tokens,
             "total_tokens": self.total_tokens,
             "last_prompt_tokens": self.last_prompt_tokens,
+            "model": self.model,
+            "model_provider": self.model_provider,
+            "context_tokens": self.context_tokens,
             "estimated_cost_usd": self.estimated_cost_usd,
             "cost_status": self.cost_status,
             "memory_flushed": self.memory_flushed,
@@ -457,6 +463,9 @@ class SessionEntry:
             cache_write_tokens=data.get("cache_write_tokens", 0),
             total_tokens=data.get("total_tokens", 0),
             last_prompt_tokens=data.get("last_prompt_tokens", 0),
+            model=data.get("model"),
+            model_provider=data.get("model_provider"),
+            context_tokens=data.get("context_tokens", 0),
             estimated_cost_usd=data.get("estimated_cost_usd", 0.0),
             cost_status=data.get("cost_status", "unknown"),
             memory_flushed=data.get("memory_flushed", False),
@@ -840,6 +849,9 @@ class SessionStore:
         self,
         session_key: str,
         last_prompt_tokens: int = None,
+        model: Optional[str] = None,
+        model_provider: Optional[str] = None,
+        context_tokens: int = None,
     ) -> None:
         """Update lightweight session metadata after an interaction."""
         with self._lock:
@@ -850,6 +862,12 @@ class SessionStore:
                 entry.updated_at = _now()
                 if last_prompt_tokens is not None:
                     entry.last_prompt_tokens = last_prompt_tokens
+                if model is not None:
+                    entry.model = model
+                if model_provider is not None:
+                    entry.model_provider = model_provider
+                if context_tokens is not None:
+                    entry.context_tokens = context_tokens
                 self._save()
 
     def suspend_session(self, session_key: str) -> bool:
