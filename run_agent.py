@@ -2201,11 +2201,24 @@ class AIAgent:
             aux_base_url = str(getattr(client, "base_url", ""))
             aux_api_key = str(getattr(client, "api_key", ""))
 
+            # Resolve config_context_length for the compression model.
+            # When provider=auto and model='' (inherits main model), fall back
+            # to the main model's context_length if no explicit override exists.
+            _aux_context_config = getattr(self, "_aux_compression_context_length_config", None)
+            if _aux_context_config is None:
+                _main_cfg = (self.config or {}).get("model", {})
+                _main_context_config = _main_cfg.get("context_length")
+                if _main_context_config is not None:
+                    try:
+                        _aux_context_config = int(_main_context_config)
+                    except (TypeError, ValueError):
+                        pass
+
             aux_context = get_model_context_length(
                 aux_model,
                 base_url=aux_base_url,
                 api_key=aux_api_key,
-                config_context_length=getattr(self, "_aux_compression_context_length_config", None),
+                config_context_length=_aux_context_config,
             )
 
             # Hard floor: the auxiliary compression model must have at least
