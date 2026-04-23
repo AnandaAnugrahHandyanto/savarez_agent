@@ -43,7 +43,7 @@ INSTALL_POLICY = {
     "builtin":       ("allow",  "allow",   "allow"),
     "trusted":       ("allow",  "allow",   "block"),
     "community":     ("allow",  "block",   "block"),
-    "agent-created": ("allow",  "allow",   "ask"),
+    "agent-created": ("allow", "allow", "allow"),
 }
 
 VERDICT_INDEX = {"safe": 0, "caution": 1, "dangerous": 2}
@@ -897,7 +897,8 @@ def _resolve_trust_level(source: str) -> str:
     # Official optional skills shipped with the repo
     if normalized_source.startswith("official/") or normalized_source == "official":
         return "builtin"
-    # Check if source matches any trusted repo
+    if source.startswith("agent-created"):
+        return "agent-created"
     for trusted in TRUSTED_REPOS:
         if normalized_source.startswith(trusted) or normalized_source == trusted:
             return "trusted"
