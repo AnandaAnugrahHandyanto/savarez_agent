@@ -67,6 +67,7 @@ DEFAULT_LOCAL_STT_LANGUAGE = "en"
 DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
 DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest")
+DEFAULT_GEMINI_STT_MODEL = os.getenv("STT_GEMINI_MODEL", "gemini-3-flash-preview")
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
@@ -242,6 +243,13 @@ def _get_provider(stt_config: dict) -> str:
             )
             return "none"
 
+        if provider == "gemini":
+            # Gemini STT uses the auxiliary client, which requires GOOGLE_API_KEY
+            if os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"):
+                return "gemini"
+            logger.warning("STT provider 'gemini' configured but GOOGLE_API_KEY not set")
+            return "none"
+
         return provider  # Unknown — let it fail downstream
 
     # --- Auto-detect (no explicit provider): local > groq > openai > mistral -
@@ -259,6 +267,9 @@ def _get_provider(stt_config: dict) -> str:
     if _HAS_MISTRAL and os.getenv("MISTRAL_API_KEY"):
         logger.info("No local STT available, using Mistral Voxtral Transcribe API")
         return "mistral"
+    if os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"):
+        logger.info("No local STT available, using Gemini native STT")
+        return "gemini"
     return "none"
 
 # ---------------------------------------------------------------------------
@@ -574,6 +585,73 @@ def _transcribe_mistral(file_path: str, model_name: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Provider: gemini (Native Multimodal)
+# ---------------------------------------------------------------------------
+
+
+def _transcribe_gemini(file_path: str, model_name: Optional[str] = None) -> Dict[str, Any]:
+    """Transcribe using Gemini's native multimodal audio understanding."""
+    try:
+        from agent.auxiliary_client import call_llm, extract_content_or_reasoning
+        import base64
+
+        audio_path = Path(file_path)
+        with open(audio_path, "rb") as f:
+            audio_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+        # Determine media type based on extension
+        ext = audio_path.suffix.lower()
+        media_type = "audio/ogg"  # Default
+        if ext == ".wav":
+            media_type = "audio/wav"
+        elif ext in (".mp3", ".mpeg"):
+            media_type = "audio/mpeg"
+        elif ext == ".m4a":
+            media_type = "audio/mp4"
+
+        prompt = (
+            "Provide a high-accuracy transcription of this audio. "
+            "After the transcript, add a section 'Environmental Context' "
+            "describing any background noises or the user's surroundings."
+        )
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{media_type};base64,{audio_b64}"},
+                    },
+                ],
+            }
+        ]
+
+        # Call Gemini via the auxiliary client
+        response = call_llm(
+            provider="gemini", model=model_name, messages=messages
+        )
+        transcript = extract_content_or_reasoning(response)
+
+        logger.info(
+            "Transcribed %s via Gemini (%s, %d chars)",
+            Path(file_path).name,
+            model_name or "default",
+            len(transcript),
+        )
+        return {"success": True, "transcript": transcript, "provider": "gemini"}
+
+    except Exception as e:
+        logger.error("Gemini transcription failed: %s", e, exc_info=True)
+        return {
+            "success": False,
+            "transcript": "",
+            "error": f"Gemini transcription failed: {e}",
+        }
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -640,6 +718,12 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         mistral_cfg = stt_config.get("mistral", {})
         model_name = model or mistral_cfg.get("model", DEFAULT_MISTRAL_STT_MODEL)
         return _transcribe_mistral(file_path, model_name)
+
+    if provider == "gemini":
+        gemini_cfg = stt_config.get("gemini", {})
+        # Use model from transcribe_audio(model=...) or stt.gemini.model in config.yaml
+        model_name = model or gemini_cfg.get("model")
+        return _transcribe_gemini(file_path, model_name)
 
     # No provider available
     return {

@@ -663,6 +663,9 @@ DEFAULT_CONFIG = {
         "mistral": {
             "model": "voxtral-mini-latest",  # voxtral-mini-latest, voxtral-mini-2602
         },
+        "gemini": {
+            "model": "gemini-3-flash-preview",  # gemini-3-flash-preview, gemini-1.5-pro-latest
+        },
     },
 
     "voice": {
