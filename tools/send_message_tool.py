@@ -536,7 +536,12 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         elif platform == Platform.DINGTALK:
             result = await _send_dingtalk(pconfig.extra, chat_id, chunk)
         elif platform == Platform.FEISHU:
-            result = await _send_feishu(pconfig, chat_id, chunk, thread_id=thread_id)
+            is_last = (chunk is chunks[-1])
+            result = await _send_feishu(
+                pconfig, chat_id, chunk,
+                media_files=media_files if is_last else [],
+                thread_id=thread_id,
+            )
         elif platform == Platform.WECOM:
             result = await _send_wecom(pconfig.extra, chat_id, chunk)
         elif platform == Platform.BLUEBUBBLES:
