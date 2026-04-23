@@ -835,9 +835,26 @@ def _build_child_agent(
     else:
         parent_toolsets = set(DEFAULT_TOOLSETS)
 
+    # Optional: decouple the parent's LLM-visible tool surface from the set
+    # of toolsets children may receive.  When ``delegation.spawnable_toolsets``
+    # is configured (a list of toolset names), children can request any
+    # toolset in that list regardless of whether the parent has it in its
+    # ``enabled_toolsets``.  This enables orchestrator-style parents that
+    # keep a narrow tool surface (e.g. just ``delegate_to_*`` plus ``memory``)
+    # while children still inherit the wider set of toolsets needed for
+    # real work — cutting parent-turn prompt size dramatically without
+    # starving children of tools.  When unset, falls back to parent-
+    # intersection (original behavior, zero impact on existing configs).
+    _spawnable_cfg = delegation_cfg.get("spawnable_toolsets")
+    if isinstance(_spawnable_cfg, list) and _spawnable_cfg:
+        effective_allowed_toolsets = {str(t) for t in _spawnable_cfg}
+    else:
+        effective_allowed_toolsets = parent_toolsets
+
     if toolsets:
-        # Intersect with parent — subagent must not gain tools the parent lacks
-        child_toolsets = [t for t in toolsets if t in parent_toolsets]
+        # Intersect against the allowed set (parent's toolsets OR the
+        # configured ``spawnable_toolsets`` override).
+        child_toolsets = [t for t in toolsets if t in effective_allowed_toolsets]
         if _get_inherit_mcp_toolsets():
             child_toolsets = _preserve_parent_mcp_toolsets(
                 child_toolsets, parent_toolsets
