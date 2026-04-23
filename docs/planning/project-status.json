@@ -1,0 +1,255 @@
+{
+  "meta": {
+    "owner": "Mike Nash",
+    "last_updated": "2026-04-10T00:00:00Z",
+    "coordinator_version": "1.0",
+    "notes": "Updated via interview with Mike. Previous version was outdated."
+  },
+  "projects": [
+    {
+      "id": "nash-ai",
+      "name": "Nash-AI",
+      "type": "infrastructure",
+      "revenue_potential": "force-multiplier",
+      "tagline": "Personal AI assistant coordinating all projects",
+      "vision": "A personal AI assistant running in Docker (locally first, then Hetzner VPS) that coordinates all projects, automates tasks, and provides daily briefings via Telegram and WebChat. Built on OpenClaw. The thing that unblocks everything else.",
+      "definition_of_done": "Agent running in Docker, Telegram connected, WebChat dashboard live, project-status.json loaded, /briefing command working, able to answer questions about all projects.",
+      "current_phase": "phase-1-setup",
+      "phase_plan": [
+        { "phase": 1, "name": "Local Docker Setup", "status": "in-progress", "description": "Get OpenClaw running in Docker on Windows laptop. Telegram, WebChat, workspace, coordinator skill." },
+        { "phase": 2, "name": "Skills & Automation", "status": "not-started", "description": "Connect project repos, Prism/ACR sandbox, automated skills." },
+        { "phase": 3, "name": "VPS Migration", "status": "not-started", "description": "Move to Hetzner VPS with local LLM, 24/7 operation." }
+      ],
+      "blockers": [],
+      "delegatable_tasks": [
+        "Docker setup can be walked through step-by-step",
+        "Coordinator skill port",
+        "Configuration and testing"
+      ],
+      "assets": [
+        "nash-ai-phase1-local-docker-setup.md",
+        "nash-ai-phase2-skills-and-automation.md",
+        "nash-ai-phase3-vps-migration.md",
+        "NASH-AI-Virtual-Assistant-Setup.md",
+        "coordinator-setup.md",
+        "NASH-AI-PHASE1-PROMPT.md"
+      ],
+      "repos": [],
+      "priority_score": 12,
+      "notes": "Top priority. Force multiplier that enables better coordination across all other projects. Doing it now."
+    },
+    {
+      "id": "consultancy",
+      "name": "Nash Software Services",
+      "type": "service",
+      "revenue_potential": "immediate",
+      "tagline": "Fractional CTO & rapid builds",
+      "vision": "Consultancy vehicle for fractional CTO engagements, rapid MVP builds, technical audits, and automation projects. Website live and working well.",
+      "definition_of_done": "Pipeline of inbound leads, consistent LinkedIn content, organic traffic growing, at least one active engagement generating monthly revenue.",
+      "current_phase": "operational-needs-outreach",
+      "phase_plan": [
+        { "phase": 1, "name": "Website + Positioning", "status": "complete", "description": "Next.js site with case studies, services, pricing, discovery model." },
+        { "phase": 2, "name": "SEO & Content", "status": "not-started", "description": "SEO improvements, blog posts, drive organic traffic." },
+        { "phase": 3, "name": "LinkedIn Strategy", "status": "not-started", "description": "Consistent posting, thought leadership, outreach." },
+        { "phase": 4, "name": "Scale", "status": "not-started", "description": "Repeatable engagement models, potentially subcontract work." }
+      ],
+      "blockers": [
+        "Zero outreach happening — head scrambled across too many projects",
+        "No LinkedIn content strategy in place",
+        "SEO not optimised for organic traffic"
+      ],
+      "delegatable_tasks": [
+        "AI agent can draft LinkedIn posts",
+        "AI agent can run SEO audit and implement fixes",
+        "AI agent can write blog content",
+        "AI agent can prepare pitch materials"
+      ],
+      "assets": ["nash-software.dev website"],
+      "repos": [],
+      "priority_score": 10,
+      "notes": "This pays the bills. Website is solid but no outreach is happening. Needs content, SEO, LinkedIn strategy, and traffic. Every hour not spent here has opportunity cost."
+    },
+    {
+      "id": "conductor",
+      "name": "Conductor",
+      "type": "product",
+      "revenue_potential": "medium-term",
+      "tagline": "Terminal Development Environment",
+      "vision": "A TDE sitting between a pure CLI and a full IDE. Publicly launched on LinkedIn and GitHub under nash-software org.",
+      "definition_of_done": "All known bugs fixed, UI polished, notes/todos plugins updated, stable for daily use, documentation complete.",
+      "current_phase": "late-beta",
+      "phase_plan": [
+        { "phase": 1, "name": "Public Beta", "status": "complete", "description": "LinkedIn launch, GitHub public repo, initial users." },
+        { "phase": 2, "name": "Bug Pass & Polish", "status": "in-progress", "description": "Full bug report, systematic fixes, UI polish, notes/todos plugin update." },
+        { "phase": 3, "name": "Feature Expansion", "status": "not-started", "description": "Plugin system, additional skills, community contributions." }
+      ],
+      "blockers": [
+        "Needs a full bug audit — no comprehensive bug report exists yet",
+        "Notes and todos plugins need updating"
+      ],
+      "delegatable_tasks": [
+        "Claude Code can fix bugs once bug report is documented",
+        "Claude Code can do UI polish",
+        "Claude Code can update notes/todos plugins",
+        "Claude Code can write documentation"
+      ],
+      "assets": [],
+      "repos": ["nash-software/conductor"],
+      "priority_score": 9,
+      "notes": "90% there. Functional but needs a polish pass. High priority because it's close to being properly shippable and builds credibility for consultancy."
+    },
+    {
+      "id": "mcp-agent-tools",
+      "name": "MCP Agent Tools",
+      "type": "infrastructure",
+      "revenue_potential": "open-source-credibility",
+      "tagline": "Task manager MCP server",
+      "vision": "MCP server for agent task management. Should be used by all projects. First open source release for Nash Software — builds credibility and community presence.",
+      "definition_of_done": "Verified working in local environment, all projects using it, packaged for open source (README, license, npm package).",
+      "current_phase": "built-needs-verification",
+      "phase_plan": [
+        { "phase": 1, "name": "Build", "status": "complete", "description": "Core MCP server built with task management tools." },
+        { "phase": 2, "name": "Verification", "status": "in-progress", "description": "Verify local environment is using it properly, test all tools." },
+        { "phase": 3, "name": "Open Source Release", "status": "not-started", "description": "README, license, npm publish, GitHub public repo, announce." }
+      ],
+      "blockers": [
+        "Not fully verified in local environment yet"
+      ],
+      "delegatable_tasks": [
+        "Claude Code can verify integration and fix issues",
+        "Claude Code can write README and open source packaging",
+        "Claude Code can set up npm publish pipeline"
+      ],
+      "assets": [],
+      "repos": [],
+      "priority_score": 8,
+      "notes": "Looks done but needs verification. First open source project — good for consultancy credibility. Everything should be using this."
+    },
+    {
+      "id": "acr",
+      "name": "ACR Reimagined",
+      "type": "product",
+      "revenue_potential": "long-term",
+      "tagline": "Autonomous agent orchestration platform",
+      "vision": "Autonomous agent orchestration platform. Now under 'ACR Reimagined'. Needs Prism for cost-effective autonomous operation. Plan: test inside Nash-AI sandbox before deploying to VPS.",
+      "definition_of_done": "Core pipeline operational with Prism routing, tested in Nash-AI sandbox, running autonomously on VPS.",
+      "current_phase": "working-needs-prism",
+      "phase_plan": [
+        { "phase": 1, "name": "Architecture", "status": "complete", "description": "17-state pipeline, CQRS, Saga, Focus Groups concept." },
+        { "phase": 2, "name": "Core Implementation", "status": "complete", "description": "Pipeline engine built and working." },
+        { "phase": 3, "name": "Prism Integration", "status": "blocked", "description": "Integrate Prism for token-efficient model routing." },
+        { "phase": 4, "name": "Sandbox Testing", "status": "not-started", "description": "Test inside Nash-AI sandbox environment." },
+        { "phase": 5, "name": "VPS Deployment", "status": "not-started", "description": "Deploy to Hetzner VPS for autonomous 24/7 operation." }
+      ],
+      "blockers": [
+        "Depends on Prism for cost-effective autonomous operation — will burn tokens without it",
+        "Needs Nash-AI sandbox for safe testing before VPS"
+      ],
+      "delegatable_tasks": [
+        "Testing and integration work once Prism is ready",
+        "Sandbox environment configuration"
+      ],
+      "assets": ["ACR architecture documents", "Skills/hooks/agents analysis"],
+      "repos": [],
+      "priority_score": 7,
+      "notes": "Actually working now (major change from old status). Blocked on Prism integration for cost control. The irony remains: this coordinates everything else but needs infrastructure first."
+    },
+    {
+      "id": "optimal-you",
+      "name": "Optimal You",
+      "type": "product",
+      "revenue_potential": "medium-term",
+      "tagline": "Fitness and recovery intelligence",
+      "vision": "A fitness/recovery app with body map, traffic light joint system, correlation engine. PWA deployed but core flow broken on mobile.",
+      "definition_of_done": "Core exercise flow working on mobile, CI/CD verified, sign-up flow complete, pre-populated plans/workouts, Jamie testing and providing feedback.",
+      "current_phase": "deployed-but-broken",
+      "phase_plan": [
+        { "phase": 1, "name": "Core Build", "status": "complete", "description": "UX redesign, body map, wireframes, schema, RLS." },
+        { "phase": 2, "name": "Deployment & Fix", "status": "in-progress", "description": "Deployed to phone but core exercise flow broken. Verify CI/CD, investigate data architecture." },
+        { "phase": 3, "name": "Polish", "status": "not-started", "description": "Sign-up flow (images ready), pre-populate plans/workouts, bug fixes." },
+        { "phase": 4, "name": "Jamie Testing", "status": "not-started", "description": "Jamie onboarded, feedback widget live, iterate." },
+        { "phase": 5, "name": "Public Beta", "status": "not-started", "description": "Wider rollout, marketing, brand refresh." }
+      ],
+      "blockers": [
+        "Cannot start an exercise — core flow broken on mobile",
+        "CI/CD may not be deploying changes (unverified)",
+        "Data architecture around DB may be the root cause — needs investigation",
+        "Keeps saying it's fixed but it isn't"
+      ],
+      "delegatable_tasks": [
+        "CI/CD verification (deploy a tiny text change, check if it lands)",
+        "Data architecture investigation",
+        "Bug fixes once root cause identified",
+        "Sign-up flow implementation",
+        "Pre-populating plans and workouts"
+      ],
+      "assets": ["BodyMap.jsx", "Sign-up flow images"],
+      "repos": [],
+      "priority_score": 7,
+      "notes": "Frustrating state — deployed but can't complete core loop. First step: verify CI/CD with trivial change, then investigate data flow. Want Jamie testing ASAP."
+    },
+    {
+      "id": "prism",
+      "name": "Prism",
+      "type": "infrastructure",
+      "revenue_potential": "medium-term",
+      "tagline": "AI model router",
+      "vision": "Routes AI requests to the optimal model based on task complexity, cost, and capability. Partially working but file operations broken. ACR depends on this.",
+      "definition_of_done": "File writing/editing working, stable enough for ACR integration, tested in Nash-AI sandbox.",
+      "current_phase": "partially-working",
+      "phase_plan": [
+        { "phase": 1, "name": "Design", "status": "complete", "description": "Routing logic, free-tier provider analysis." },
+        { "phase": 2, "name": "Core Implementation", "status": "complete", "description": "Router built and partially working." },
+        { "phase": 3, "name": "Fix File Operations", "status": "in-progress", "description": "File writing/editing bug — doc exists for this fix." },
+        { "phase": 4, "name": "Integration", "status": "not-started", "description": "Integrate with ACR for token-efficient agent routing." }
+      ],
+      "blockers": [
+        "File writing/editing doesn't work — makes it practically useless",
+        "Testing locally disrupts other work — sandbox would be better"
+      ],
+      "delegatable_tasks": [
+        "Bug fix for file operations (doc already written)",
+        "Integration testing in sandbox"
+      ],
+      "assets": ["File operations bug document"],
+      "repos": [],
+      "priority_score": 6,
+      "notes": "Much further along than old status suggested. Key blocker for ACR. File ops bug has a doc written — just needs implementing. Testing in Nash-AI sandbox preferred over local machine."
+    },
+    {
+      "id": "herald",
+      "name": "Herald",
+      "type": "product",
+      "revenue_potential": "near-term",
+      "tagline": "Clap twice. Command everything.",
+      "vision": "Novelty desktop app — clap-activated HUD, app launcher, AI briefing. Fun idea but currently a background project.",
+      "definition_of_done": "Clap detection reliable (no false triggers), YouTube audio actually playing, core demo flow working end-to-end.",
+      "current_phase": "mvp-built-broken",
+      "phase_plan": [
+        { "phase": 1, "name": "MVP Build", "status": "complete", "description": "Built but has critical bugs." },
+        { "phase": 2, "name": "Bug Fix", "status": "in-progress", "description": "Fix clap sensitivity (triggers on typing/clicks) and YouTube audio playback." },
+        { "phase": 3, "name": "Launch + Marketing", "status": "not-started", "description": "Landing page, demo videos, Gumroad, TikTok." }
+      ],
+      "blockers": [
+        "Clap detection too sensitive — triggers on mouse clicks and typing",
+        "YouTube audio doesn't actually play despite reporting success"
+      ],
+      "delegatable_tasks": [
+        "Claude Code can investigate and fix clap sensitivity",
+        "Claude Code can fix YouTube audio bug",
+        "Claude Code can build landing page"
+      ],
+      "assets": [
+        "Herald-GTM-Plan-v2.docx",
+        "Herald-Build-Spec.docx",
+        "Herald-Build-Spec-Addendum-Integrations.docx",
+        "Herald-Project-Index.docx",
+        "jarvis-hud-demo.jsx",
+        "HERALD-BUILD-PROMPT.md"
+      ],
+      "repos": [],
+      "priority_score": 4,
+      "notes": "Fun idea, deprioritised for now. Background project — fix when there's spare time. Bugs are well-defined and delegatable."
+    }
+  ]
+}

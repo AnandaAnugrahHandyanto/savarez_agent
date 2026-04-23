@@ -1,0 +1,76 @@
+# Nash AI — Hermes config
+# Deploy to: ~/.hermes/config.yaml on VPS
+# Secrets go in: ~/.hermes/.env (see .env.example)
+
+# =============================================================================
+# LLM — route through Prism (OpenAI-compatible proxy on localhost)
+# =============================================================================
+model:
+  provider: "custom"
+  base_url: "http://localhost:3000/v1"
+  default: "claude-opus-4-7"
+  # Prism routes claude-opus-4-7 → Anthropic API
+  # Falls back to direct Anthropic if Prism unreachable (set ANTHROPIC_API_KEY in .env)
+
+# =============================================================================
+# Telegram gateway
+# =============================================================================
+# Env vars: TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_USERS, TELEGRAM_HOME_CHANNEL
+
+# Stream tokens as Telegram message edits
+streaming:
+  enabled: true
+  edit_interval: 0.3
+  buffer_threshold: 40
+  cursor: " ▊"
+
+# =============================================================================
+# Voice transcription — Groq Whisper (free tier, fast)
+# =============================================================================
+# Env var: GROQ_API_KEY
+stt:
+  provider: groq
+  # Falls back to local faster-whisper if GROQ_API_KEY not set
+
+# =============================================================================
+# Skills
+# =============================================================================
+skills:
+  create_from_experience: true
+  directory: ~/.hermes/skills
+
+# =============================================================================
+# Platform toolsets
+# =============================================================================
+platform_toolsets:
+  cli: [hermes-cli]
+  telegram: [hermes-telegram]
+
+# =============================================================================
+# Approval mode — will be upgraded to "tiered" after Phase 2 fork work
+# =============================================================================
+approval: smart
+
+# =============================================================================
+# Cron — morning briefing and nightly retro (Phase 5)
+# =============================================================================
+# Uncomment after Phase 1 is stable
+# crons:
+#   - name: morning-briefing
+#     schedule: "30 7 * * *"
+#     prompt: |
+#       Generate a morning briefing for Mike. Check mcp-agent-tasks for all
+#       in-progress and blocked tasks. Format as three tiers:
+#       🔴 RED: needs attention today (blocked tasks, failing CI)
+#       🟡 YELLOW: new since yesterday (recent commits, new tasks)
+#       🟢 GREEN: healthy background (recent completions)
+#       Keep total under 20 lines. Send to Telegram home channel.
+#     channel: home
+#
+#   - name: nightly-retro
+#     schedule: "0 21 * * *"
+#     prompt: |
+#       Review today's activity. Identify stale tasks (in-progress >48h),
+#       unresolved blockers, repeated mistakes. Write findings to
+#       ~/.hermes/retro/YYYY-MM-DD.md. Send 5-line summary to Telegram.
+#     channel: home

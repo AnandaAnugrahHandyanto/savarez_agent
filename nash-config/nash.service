@@ -1,0 +1,19 @@
+[Unit]
+Description=Nash AI Daemon (Hermes)
+After=network.target prism.service
+Wants=prism.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/projects/nash-ai
+ExecStart=/opt/projects/nash-ai/.venv/bin/python -m hermes.main --platform telegram
+Restart=always
+RestartSec=10
+EnvironmentFile=/root/.hermes/.env
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nash-ai
+
+[Install]
+WantedBy=multi-user.target
