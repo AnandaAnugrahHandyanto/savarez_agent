@@ -70,7 +70,7 @@ def test_group_messages_can_require_direct_trigger_via_config():
 
     assert adapter._should_process_message(_group_message("hello everyone")) is False
     assert adapter._should_process_message(_group_message("hi @hermes_bot", entities=[_mention_entity("hi @hermes_bot")])) is True
-    assert adapter._should_process_message(_group_message("replying", reply_to_bot=True)) is True
+    assert adapter._should_process_message(_group_message("replying", reply_to_bot=True)) is False
     # Commands must also respect require_mention when it is enabled
     assert adapter._should_process_message(_group_message("/status"), is_command=True) is False
     # But commands with @mention still pass (Telegram emits a MENTION entity

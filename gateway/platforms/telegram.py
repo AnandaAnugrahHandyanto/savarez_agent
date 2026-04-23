@@ -2289,12 +2289,6 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_type = str(getattr(chat, "type", "")).split(".")[-1].lower()
         return chat_type in ("group", "supergroup")
 
-    def _is_reply_to_bot(self, message: Message) -> bool:
-        if not self._bot or not getattr(message, "reply_to_message", None):
-            return False
-        reply_user = getattr(message.reply_to_message, "from_user", None)
-        return bool(reply_user and getattr(reply_user, "id", None) == getattr(self._bot, "id", None))
-
     def _message_mentions_bot(self, message: Message) -> bool:
         if not self._bot:
             return False
@@ -2350,10 +2344,18 @@ class TelegramAdapter(BasePlatformAdapter):
                     if user and getattr(user, "id", None) == bot_id:
                         return True
                 elif entity_type == "text_link":
-                    # Markdown @mention renders as text_link entity — check URL contains @username
+                    # Markdown @mention renders as text_link entity — check URL points to @username
                     url = getattr(entity, "url", None) or ""
-                    if expected and expected.lstrip("@").lower() in url.lower():
-                        return True
+                    if expected:
+                        import urllib.parse
+                        parsed = urllib.parse.urlparse(url.lower())
+                        target = expected.lstrip("@").lower()
+                        if parsed.netloc in ("t.me", "telegram.me") and parsed.path.strip("/") == target:
+                            return True
+                        elif parsed.scheme == "tg" and parsed.netloc == "resolve":
+                            qs = urllib.parse.parse_qs(parsed.query)
+                            if "domain" in qs and qs["domain"] and qs["domain"][0] == target:
+                                return True
         return False
 
     def _message_matches_mention_patterns(self, message: Message) -> bool:
@@ -2387,12 +2389,11 @@ class TelegramAdapter(BasePlatformAdapter):
         DMs remain unrestricted. Group/supergroup messages are accepted when:
         - the chat is explicitly allowlisted in ``free_response_chats``
         - ``require_mention`` is disabled
-        - the message replies to the bot
         - the bot is @mentioned
         - the text/caption matches a configured regex wake-word pattern
 
         When ``require_mention`` is enabled, slash commands are not given
-        special treatment — they must pass the same mention/reply checks
+        special treatment — they must pass the same mention checks
         as any other group message.  Users can still trigger commands via
         the Telegram bot menu (``/command@botname``) or by explicitly
         mentioning the bot (``@botname /command``), both of which are
@@ -2427,8 +2428,6 @@ class TelegramAdapter(BasePlatformAdapter):
             # (markdown @mention renders as text_link, not mention entity)
             if not self._bot_mentioned_in_entities(message, bot_username, bot_id):
                 return False
-        if self._is_reply_to_bot(message):
-            return True
         if self._bot_mentioned_in_entities(message, bot_username, bot_id):
             return True
         return self._message_matches_mention_patterns(message)
