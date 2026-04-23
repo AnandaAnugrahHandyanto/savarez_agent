@@ -68,13 +68,18 @@ Good defaults:
 
 | Situation | Recommended path |
 |---|---|
-| Least friction | Nous Portal or OpenRouter |
+| Least-friction managed stack | Nous Portal + Tool Gateway |
+| Easy inference default | OpenRouter |
 | You already have Claude or Codex auth | Anthropic or OpenAI Codex |
 | You want local/private inference | Ollama or any custom OpenAI-compatible endpoint |
 | You want multi-provider routing | OpenRouter |
 | You have a custom GPU server | vLLM, SGLang, LiteLLM, or any OpenAI-compatible endpoint |
 
 For most first-time users: choose a provider, accept the defaults unless you know why you're changing them. The full provider catalog with env vars and setup steps lives on the [Providers](../integrations/providers.md) page.
+
+:::tip Picking the lowest-friction stack
+If you want the simplest fully managed Hermes setup, use **paid Nous Portal + Tool Gateway**: one login for inference plus managed web, image, TTS, and browser tools. If you mainly want quick model access and plan to manage tool providers separately, **OpenRouter** remains the easiest inference default.
+:::
 
 :::caution Minimum context: 64K tokens
 Hermes Agent requires a model with at least **64,000 tokens** of context. Models with smaller windows cannot maintain enough working memory for multi-step tool-calling workflows and will be rejected at startup. Most hosted models (Claude, GPT, Gemini, Qwen, DeepSeek) meet this easily. If you're running a local model, set its context size to at least 64K (e.g. `--ctx-size 65536` for llama.cpp or `-c 65536` for Ollama).

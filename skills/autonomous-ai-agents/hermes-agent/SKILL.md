@@ -322,6 +322,25 @@ $HERMES_HOME/skills/        Installed skills
 
 Profiles use `~/.hermes/profiles/<name>/` with the same layout.
 
+### Repo-centric shared setup
+
+Hermes can keep its writable state in `~/.hermes/` while loading git-tracked repo skills from `.claude/skills/` or another shared directory via `skills.external_dirs`.
+
+```yaml
+# ~/.hermes/config.yaml
+skills:
+  external_dirs:
+    - ~/src/acme/.claude/skills
+    - /mnt/c/Users/alice/src/acme/.claude/skills   # WSL path to a Windows checkout
+```
+
+- `~/.hermes/skills` stays the local read-write layer.
+- External dirs are discovery-only; Hermes writes new or edited skills locally.
+- `CLAUDE.md` / `AGENTS.md` are shared repo instructions, while `.claude/memory/` is repo documentation — not Hermes built-in `MEMORY.md` / `USER.md`.
+- In WSL, use `/mnt/c/...` paths in config, not raw `C:\...` Windows paths.
+
+Full guide: https://hermes-agent.nousresearch.com/docs/user-guide/repo-centric-setup
+
 ### Config Sections
 
 Edit with `hermes config edit` or `hermes config set section.key value`.

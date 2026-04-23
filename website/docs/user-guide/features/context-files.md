@@ -14,7 +14,7 @@ Hermes Agent automatically discovers and loads context files that shape how it b
 |------|---------|-----------| 
 | **.hermes.md** / **HERMES.md** | Project instructions (highest priority) | Walks to git root |
 | **AGENTS.md** | Project instructions, conventions, architecture | CWD at startup + subdirectories progressively |
-| **CLAUDE.md** | Claude Code context files (also detected) | CWD at startup + subdirectories progressively |
+| **CLAUDE.md** | Claude Code context files, often used as a shared repo contract | CWD at startup + subdirectories progressively |
 | **SOUL.md** | Global personality and tone customization for this Hermes instance | `HERMES_HOME/SOUL.md` only |
 | **.cursorrules** | Cursor IDE coding conventions | CWD only |
 | **.cursor/rules/*.mdc** | Cursor IDE rule modules | CWD only |
@@ -76,6 +76,26 @@ This is a Next.js 14 web application with a Python FastAPI backend.
 - The `.env.local` file has real API keys, don't commit it
 - Frontend port is 3000, backend is 8000, DB is 5432
 ```
+
+## CLAUDE.md
+
+`CLAUDE.md` is useful when you want a **repo-centric coordination file** that works across Hermes, Claude Code, and other agent tools.
+
+Common pattern:
+
+- keep stable repo instructions in `CLAUDE.md`
+- keep shared skills in `.claude/skills/`
+- keep shared notes, architecture docs, or handoff material in `.claude/memory/`
+- keep Hermes's own built-in memory in `~/.hermes/memories/MEMORY.md` and `USER.md`
+
+Two important distinctions:
+
+1. Hermes still follows its normal priority order: `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`.
+2. `.claude/memory/` is **repo content**, not Hermes's built-in memory store.
+
+That means `.claude/memory/` is great for git-tracked, team-shared context like ADRs, runbooks, and decision logs, but it is **not** automatically merged into Hermes `MEMORY.md` or `USER.md`. If a rule must appear every session, keep it in `CLAUDE.md` or `AGENTS.md`, or have Hermes read the specific file when needed.
+
+For the full repo-centric pattern — shared skills, precedence, WSL paths, multi-agent coordination, and git workflow — see [Repo-Centric Shared Setup](/docs/user-guide/repo-centric-setup).
 
 ## SOUL.md
 

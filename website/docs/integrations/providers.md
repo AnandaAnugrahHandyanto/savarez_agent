@@ -38,6 +38,11 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Google Gemini (OAuth)** | `hermes model` → "Google Gemini (OAuth)" (provider: `google-gemini-cli`, free tier supported, browser PKCE login) |
 | **Custom Endpoint** | `hermes model` → choose "Custom endpoint" (saved in `config.yaml`) |
 
+:::tip Choosing between Nous Portal and OpenRouter
+- **Least-friction managed stack:** paid **Nous Portal + Tool Gateway**. One setup flow gives you managed inference plus web, image generation, TTS, and browser tools through your subscription.
+- **Easy inference default:** **OpenRouter**. It is still the quickest general-purpose inference setup when you want broad model access and are comfortable managing tool providers separately.
+:::
+
 :::tip Model key alias
 In the `model:` config section, you can use either `default:` or `model:` as the key name for your model ID. Both `model: { default: my-model }` and `model: { model: my-model }` work identically.
 :::
@@ -137,7 +142,7 @@ Even when using Nous Portal, Codex, or a custom endpoint, some tools (vision, we
 :::
 
 :::tip Nous Tool Gateway
-Paid Nous Portal subscribers also get access to the **[Tool Gateway](/docs/user-guide/features/tool-gateway)** — web search, image generation, TTS, and browser automation routed through your subscription. No extra API keys needed. It's offered automatically during `hermes model` setup, or enable it later with `hermes tools`.
+Paid Nous Portal subscribers also get access to the **[Tool Gateway](/docs/user-guide/features/tool-gateway)** — web search, image generation, TTS, and browser automation routed through your subscription. No extra API keys needed. Combined with Nous Portal inference, it is the lowest-friction managed Hermes stack. It's offered automatically during `hermes model` setup, or enable it later with `hermes tools`.
 :::
 
 ### Two Commands for Model Management
@@ -1076,7 +1081,7 @@ You can also select named custom providers from the interactive `hermes model` m
 
 | Use Case | Recommended |
 |----------|-------------|
-| **Just want it to work** | OpenRouter (default) or Nous Portal |
+| **Just want it to work** | OpenRouter (easy inference default) or paid Nous Portal + Tool Gateway (lowest-friction managed stack) |
 | **Local models, easy setup** | Ollama |
 | **Production GPU serving** | vLLM or SGLang |
 | **Mac / no GPU** | Ollama or llama.cpp |
