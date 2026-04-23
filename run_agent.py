@@ -54,6 +54,8 @@ from hermes_cli.timeouts import (
 )
 
 _hermes_home = get_hermes_home()
+if str(_hermes_home) not in sys.path:
+    sys.path.insert(0, str(_hermes_home))
 _project_env = Path(__file__).parent / '.env'
 _loaded_env_paths = load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
 if _loaded_env_paths:
@@ -115,6 +117,7 @@ from agent.trajectory import (
     save_trajectory as _save_trajectory_to_file,
 )
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_var_enabled, normalize_proxy_url
+from core.output.sanitizer import sanitize_assistant_message, sanitize_assistant_text
 
 
 
@@ -2996,6 +2999,14 @@ class AIAgent:
         self._save_session_log(messages)
         self._flush_messages_to_session_db(messages, conversation_history)
 
+    @staticmethod
+    def _sanitize_message_for_persistence(message: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(message, dict):
+            return message
+        if message.get("role") != "assistant":
+            return dict(message)
+        return sanitize_assistant_message(message)
+
     def _flush_messages_to_session_db(self, messages: List[Dict], conversation_history: List[Dict] = None):
         """Persist any un-flushed messages to the SQLite session store.
 
@@ -3017,7 +3028,8 @@ class AIAgent:
             )
             start_idx = len(conversation_history) if conversation_history else 0
             flush_from = max(start_idx, self._last_flushed_db_idx)
-            for msg in messages[flush_from:]:
+            for raw_msg in messages[flush_from:]:
+                msg = self._sanitize_message_for_persistence(raw_msg)
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
                 tool_calls_data = None
@@ -3528,12 +3540,11 @@ class AIAgent:
 
     def _save_session_log(self, messages: List[Dict[str, Any]] = None):
         """
-        Save the full raw session to a JSON file.
+        Save the session to a JSON file using sanitized assistant records.
 
-        Stores every message exactly as the agent sees it: user messages,
-        assistant messages (with reasoning, finish_reason, tool_calls),
-        tool responses (with tool_call_id, tool_name), and injected system
-        messages (compression summaries, todo snapshots, etc.).
+        Assistant messages are cleaned before persistence so user-facing logs
+        do not retain reasoning fields, tool call payloads, or leaked tool
+        execution artifacts. Tool/system messages are preserved as-is.
 
         REASONING_SCRATCHPAD tags are converted to <think> blocks for consistency.
         Overwritten after each turn so it always reflects the latest state.
@@ -3545,9 +3556,9 @@ class AIAgent:
         try:
             # Clean assistant content for session logs
             cleaned = []
-            for msg in messages:
+            for raw_msg in messages:
+                msg = self._sanitize_message_for_persistence(raw_msg)
                 if msg.get("role") == "assistant" and msg.get("content"):
-                    msg = dict(msg)
                     msg["content"] = self._clean_session_content(msg["content"])
                 cleaned.append(msg)
 
@@ -5388,6 +5399,21 @@ class AIAgent:
             return ""
         return re.sub(r"\s+", " ", text).strip()
 
+    @staticmethod
+    def _sanitize_stream_visible_text(text: str) -> str:
+        if not isinstance(text, str):
+            return sanitize_assistant_text(text)
+        cleaned = sanitize_assistant_text(text)
+        if not isinstance(cleaned, str) or not cleaned:
+            return cleaned
+        leading = re.match(r"^\s+", text)
+        trailing = re.search(r"\s+$", text)
+        if leading and not cleaned.startswith(leading.group(0)):
+            cleaned = leading.group(0) + cleaned
+        if trailing and not cleaned.endswith(trailing.group(0)):
+            cleaned = cleaned + trailing.group(0)
+        return cleaned
+
     def _interim_content_was_streamed(self, content: str) -> bool:
         visible_content = self._normalize_interim_visible_text(
             self._strip_think_blocks(content or "")
@@ -5405,7 +5431,7 @@ class AIAgent:
         if cb is None or not isinstance(assistant_msg, dict):
             return
         content = assistant_msg.get("content")
-        visible = self._strip_think_blocks(content or "").strip()
+        visible = sanitize_assistant_text(self._strip_think_blocks(content or "")).strip()
         if not visible or visible == "(empty)":
             return
         already_streamed = self._interim_content_was_streamed(visible)
@@ -5416,6 +5442,9 @@ class AIAgent:
 
     def _fire_stream_delta(self, text: str) -> None:
         """Fire all registered stream delta callbacks (display + TTS)."""
+        text = self._sanitize_stream_visible_text(text)
+        if not text:
+            return
         # If a tool iteration set the break flag, prepend a single paragraph
         # break before the first real text delta.  This prevents the original
         # problem (text concatenation across tool boundaries) without stacking
@@ -11756,7 +11785,9 @@ class AIAgent:
                     "— requesting summary..."
                 )
             final_response = self._handle_max_iterations(messages, api_call_count)
-        
+
+        final_response = sanitize_assistant_text(final_response)
+
         # Determine if conversation completed successfully
         completed = final_response is not None and api_call_count < self.max_iterations
 
