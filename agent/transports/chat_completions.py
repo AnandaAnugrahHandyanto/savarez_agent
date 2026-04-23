@@ -13,7 +13,7 @@ import copy
 from typing import Any, Dict, List, Optional
 
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
-from agent.transports.base import ProviderTransport
+from agent.transports.base import ProviderTransport, sanitize_tool_calls_in_messages
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
 
@@ -28,32 +28,41 @@ class ChatCompletionsTransport(ProviderTransport):
         return "chat_completions"
 
     def convert_messages(self, messages: List[Dict[str, Any]], **kwargs) -> List[Dict[str, Any]]:
-        """Messages are already in OpenAI format — sanitize Codex leaks only.
+        """Messages are already in OpenAI format — sanitize Codex leaks and malformed tool_calls.
 
         Strips Codex Responses API fields (``codex_reasoning_items`` on the
         message, ``call_id``/``response_item_id`` on tool_calls) that strict
         chat-completions providers reject with 400/422.
+
+        Also drops assistant messages with malformed (non-JSON)
+        ``tool_calls[*].function.arguments`` and orphan ``tool`` result
+        messages, preventing deterministic 400 retries when a truncated
+        stream leaves bad JSON in history.  See hermes-agent#14443.
         """
-        needs_sanitize = False
-        for msg in messages:
+        # First: sanitize malformed tool_calls and orphan tool results
+        sanitized = sanitize_tool_calls_in_messages(messages)
+
+        # Second: strip Codex-specific fields
+        needs_codex_sanitize = False
+        for msg in sanitized:
             if not isinstance(msg, dict):
                 continue
             if "codex_reasoning_items" in msg:
-                needs_sanitize = True
+                needs_codex_sanitize = True
                 break
             tool_calls = msg.get("tool_calls")
             if isinstance(tool_calls, list):
                 for tc in tool_calls:
                     if isinstance(tc, dict) and ("call_id" in tc or "response_item_id" in tc):
-                        needs_sanitize = True
+                        needs_codex_sanitize = True
                         break
-                if needs_sanitize:
+                if needs_codex_sanitize:
                     break
 
-        if not needs_sanitize:
-            return messages
+        if not needs_codex_sanitize:
+            return sanitized
 
-        sanitized = copy.deepcopy(messages)
+        sanitized = copy.deepcopy(sanitized)
         for msg in sanitized:
             if not isinstance(msg, dict):
                 continue

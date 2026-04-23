@@ -1093,6 +1093,10 @@ def convert_messages_to_anthropic(
     Anthropic-proprietary — third-party endpoints cannot validate them and will
     reject them with HTTP 400 "Invalid signature in thinking block".
     """
+    from agent.transports.base import sanitize_tool_calls_in_messages
+
+    messages = sanitize_tool_calls_in_messages(messages)
+
     system = None
     result = []
 

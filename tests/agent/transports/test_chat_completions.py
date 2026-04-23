@@ -332,6 +332,97 @@ class TestChatCompletionsNormalize:
         assert nr.provider_data == {"reasoning_content": "detailed scratchpad"}
 
 
+class TestChatCompletionsSanitizeMalformedToolCalls:
+    """Regression tests for hermes-agent#14443.
+
+    Truncated tool_call.arguments (non-JSON) in history must be dropped
+    before the message leaves the process, or Anthropic-compatible proxies
+    (LiteLLM) reject every retry with HTTP 400.
+    """
+
+    def test_drops_assistant_with_truncated_tool_call(self, transport):
+        msgs = [
+            {"role": "user", "content": "patch file.py"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "call_1", "type": "function", "function": {
+                    "name": "patch",
+                    # Truncated JSON — unterminated string
+                    "arguments": '{"path": "file.py", "old_string": "',
+                }},
+            ]},
+        ]
+        result = transport.convert_messages(msgs)
+        # Assistant message with malformed tool_calls is dropped entirely
+        assert len(result) == 1
+        assert result[0]["role"] == "user"
+
+    def test_drops_orphan_tool_result(self, transport):
+        msgs = [
+            {"role": "user", "content": "patch file.py"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "call_1", "type": "function", "function": {
+                    "name": "patch",
+                    # Truncated JSON
+                    "arguments": '{"path": "file.py", "old_string": "',
+                }},
+            ]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+        ]
+        result = transport.convert_messages(msgs)
+        # Both assistant and orphan tool result are dropped
+        assert len(result) == 1
+        assert result[0]["role"] == "user"
+
+    def test_keeps_valid_tool_calls_and_results(self, transport):
+        msgs = [
+            {"role": "user", "content": "patch file.py"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "call_1", "type": "function", "function": {
+                    "name": "patch",
+                    "arguments": '{"path": "file.py", "old_string": "x", "new_string": "y"}',
+                }},
+            ]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "done"},
+        ]
+        result = transport.convert_messages(msgs)
+        assert len(result) == 3
+        assert result[1]["role"] == "assistant"
+        assert result[2]["role"] == "tool"
+
+    def test_mixed_valid_and_invalid_tool_calls(self, transport):
+        msgs = [
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "call_good", "type": "function", "function": {
+                    "name": "read",
+                    "arguments": '{"path": "/etc/hosts"}',
+                }},
+                {"id": "call_bad", "type": "function", "function": {
+                    "name": "patch",
+                    # Truncated
+                    "arguments": '{"path": "file.py", "old_string": "',
+                }},
+            ]},
+            {"role": "tool", "tool_call_id": "call_good", "content": "127.0.0.1 localhost"},
+            {"role": "tool", "tool_call_id": "call_bad", "content": "ok"},
+        ]
+        result = transport.convert_messages(msgs)
+        # Only valid tool_call and its result remain
+        assert len(result) == 2
+        assert result[0]["role"] == "assistant"
+        assert len(result[0]["tool_calls"]) == 1
+        assert result[0]["tool_calls"][0]["id"] == "call_good"
+        assert result[1]["role"] == "tool"
+        assert result[1]["tool_call_id"] == "call_good"
+
+    def test_no_sanitize_when_all_valid(self, transport):
+        msgs = [
+            {"role": "user", "content": "hi"},
+        ]
+        result = transport.convert_messages(msgs)
+        # Identity — same list returned when no sanitization needed
+        assert result is msgs
+
+
 class TestChatCompletionsCacheStats:
 
     def test_no_usage(self, transport):
