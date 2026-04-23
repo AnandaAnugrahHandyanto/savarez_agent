@@ -1007,7 +1007,8 @@ def _read_main_provider() -> str:
     """Read the user's configured main provider from config.yaml.
 
     Returns the lowercase provider id (e.g. "alibaba", "openrouter") or ""
-    if not configured.
+    if not configured. When provider is "custom" and a matching entry exists
+    in providers: dict, returns that key so named providers resolve correctly.
     """
     try:
         from hermes_cli.config import load_config
@@ -1016,7 +1017,21 @@ def _read_main_provider() -> str:
         if isinstance(model_cfg, dict):
             provider = model_cfg.get("provider", "")
             if isinstance(provider, str) and provider.strip():
-                return provider.strip().lower()
+                provider = provider.strip().lower()
+                # When bare "custom" but a providers: entry matches the base_url,
+                # return the key name so _get_named_custom_provider() can resolve it.
+                if provider == "custom":
+                    base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
+                    if base_url:
+                        providers = cfg.get("providers") or {}
+                        for pk, pe in providers.items():
+                            if isinstance(pe, dict):
+                                entry_url = str(
+                                    pe.get("api") or pe.get("url") or pe.get("base_url") or ""
+                                ).strip().rstrip("/")
+                                if entry_url == base_url:
+                                    return pk  # use the real providers: key
+                return provider
     except Exception:
         pass
     return ""

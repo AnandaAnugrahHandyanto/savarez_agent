@@ -252,3 +252,93 @@ class TestVisionPathApiMode:
         mock_gcc.assert_called_once()
         _, kwargs = mock_gcc.call_args
         assert kwargs.get("api_mode") == "chat_completions"
+
+
+class TestReadMainProviderCustomMapping:
+    """_read_main_provider should map bare 'custom' to providers: key when base_url matches.
+
+    Regression for #14676: when model.provider is 'custom' but a providers: entry
+    has the same base_url, auxiliary resolution needs the actual provider key name
+    so _get_named_custom_provider() can resolve it instead of returning None.
+    """
+
+    def test_bare_custom_resolves_to_providers_key(self, tmp_path):
+        """Bare 'custom' with matching providers: entry returns the key."""
+        _write_config(tmp_path, {
+            "model": {"default": "chonker", "provider": "custom",
+                      "base_url": "http://localhost:8080/v1"},
+            "providers": {
+                "local-localhost:8080": {
+                    "api": "http://localhost:8080/v1",
+                    "default_model": "chonker",
+                },
+            },
+        })
+        from agent.auxiliary_client import _read_main_provider
+        result = _read_main_provider()
+        assert result == "local-localhost:8080"
+
+    def test_bare_custom_no_match_returns_custom(self, tmp_path):
+        """Bare 'custom' with no matching providers: entry still returns 'custom'."""
+        _write_config(tmp_path, {
+            "model": {"default": "chonker", "provider": "custom",
+                      "base_url": "http://localhost:9999/v1"},
+            "providers": {
+                "local-localhost:8080": {
+                    "api": "http://localhost:8080/v1",
+                },
+            },
+        })
+        from agent.auxiliary_client import _read_main_provider
+        result = _read_main_provider()
+        assert result == "custom"
+
+    def test_providers_dict_with_base_url_key(self, tmp_path):
+        """providers: entries using 'base_url' key (not 'api') also match."""
+        _write_config(tmp_path, {
+            "model": {"default": "test", "provider": "custom",
+                      "base_url": "http://127.0.0.1:3928/v1"},
+            "providers": {
+                "llama-swap-ui": {
+                    "base_url": "http://127.0.0.1:3928/v1",
+                    "default_model": "model.gguf",
+                },
+            },
+        })
+        from agent.auxiliary_client import _read_main_provider
+        result = _read_main_provider()
+        assert result == "llama-swap-ui"
+
+    def test_non_custom_provider_unchanged(self, tmp_path):
+        """Non-custom providers pass through without lookup."""
+        _write_config(tmp_path, {
+            "model": {"default": "test", "provider": "openrouter"},
+        })
+        from agent.auxiliary_client import _read_main_provider
+        result = _read_main_provider()
+        assert result == "openrouter"
+
+    def test_no_providers_dict_uses_bare_custom(self, tmp_path):
+        """When providers: dict is absent, bare 'custom' falls through."""
+        _write_config(tmp_path, {
+            "model": {"default": "test", "provider": "custom",
+                      "base_url": "http://localhost:8080/v1"},
+        })
+        from agent.auxiliary_client import _read_main_provider
+        result = _read_main_provider()
+        assert result == "custom"
+
+    def test_trailing_slash_normalized(self, tmp_path):
+        """Trailing slashes are stripped for comparison."""
+        _write_config(tmp_path, {
+            "model": {"default": "test", "provider": "custom",
+                      "base_url": "http://localhost:8080/v1/"},
+            "providers": {
+                "my-local": {
+                    "api": "http://localhost:8080/v1",  # no trailing slash
+                },
+            },
+        })
+        from agent.auxiliary_client import _read_main_provider
+        result = _read_main_provider()
+        assert result == "my-local"
