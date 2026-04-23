@@ -73,9 +73,14 @@ from gateway.platforms.discord import DiscordAdapter  # noqa: E402
 class FakeTree:
     def __init__(self):
         self.sync = AsyncMock(return_value=[])
+        self.fetch_commands = AsyncMock(return_value=[])
+        self._commands = []
 
     def command(self, *args, **kwargs):
         return lambda fn: fn
+
+    def get_commands(self, *args, **kwargs):
+        return list(self._commands)
 
 
 class FakeBot:
@@ -85,6 +90,11 @@ class FakeBot:
         self.user = SimpleNamespace(id=999, name="Hermes")
         self._events = {}
         self.tree = FakeTree()
+        self.http = SimpleNamespace(
+            upsert_global_command=AsyncMock(),
+            edit_global_command=AsyncMock(),
+            delete_global_command=AsyncMock(),
+        )
 
     def event(self, fn):
         self._events[fn.__name__] = fn
@@ -199,6 +209,7 @@ async def test_connect_releases_token_lock_on_timeout(monkeypatch):
 async def test_connect_does_not_wait_for_slash_sync(monkeypatch):
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
 
+    monkeypatch.setenv("DISCORD_COMMAND_SYNC_POLICY", "bulk")
     monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
     monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
 
@@ -226,3 +237,126 @@ async def test_connect_does_not_wait_for_slash_sync(monkeypatch):
     created["bot"].tree.allow_finish.set()
     await asyncio.sleep(0)
     await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_safe_sync_slash_commands_only_mutates_diffs():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    class _DesiredCommand:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def to_dict(self, tree):
+            assert tree is not None
+            return dict(self._payload)
+
+    class _ExistingCommand:
+        def __init__(self, command_id, payload):
+            self.id = command_id
+            self.name = payload["name"]
+            self.type = SimpleNamespace(value=payload["type"])
+            self._payload = payload
+
+        def to_dict(self):
+            return {
+                "id": self.id,
+                "application_id": 999,
+                **self._payload,
+                "name_localizations": {},
+                "description_localizations": {},
+            }
+
+    desired_same = {
+        "name": "status",
+        "description": "Show Hermes session status",
+        "type": 1,
+        "options": [],
+        "nsfw": False,
+        "dm_permission": True,
+        "default_member_permissions": None,
+    }
+    desired_updated = {
+        "name": "help",
+        "description": "Show available commands",
+        "type": 1,
+        "options": [],
+        "nsfw": False,
+        "dm_permission": True,
+        "default_member_permissions": None,
+    }
+    desired_created = {
+        "name": "metricas",
+        "description": "Show Colmeio metrics dashboard",
+        "type": 1,
+        "options": [],
+        "nsfw": False,
+        "dm_permission": True,
+        "default_member_permissions": None,
+    }
+    existing_same = _ExistingCommand(11, desired_same)
+    existing_updated = _ExistingCommand(
+        12,
+        {
+            **desired_updated,
+            "description": "Old help text",
+        },
+    )
+    existing_deleted = _ExistingCommand(
+        13,
+        {
+            "name": "old-command",
+            "description": "To be deleted",
+            "type": 1,
+            "options": [],
+            "nsfw": False,
+            "dm_permission": True,
+            "default_member_permissions": None,
+        },
+    )
+
+    fake_tree = SimpleNamespace(
+        get_commands=lambda: [
+            _DesiredCommand(desired_same),
+            _DesiredCommand(desired_updated),
+            _DesiredCommand(desired_created),
+        ],
+        fetch_commands=AsyncMock(return_value=[existing_same, existing_updated, existing_deleted]),
+    )
+    fake_http = SimpleNamespace(
+        upsert_global_command=AsyncMock(),
+        edit_global_command=AsyncMock(),
+        delete_global_command=AsyncMock(),
+    )
+    adapter._client = SimpleNamespace(
+        tree=fake_tree,
+        http=fake_http,
+        application_id=999,
+        user=SimpleNamespace(id=999),
+    )
+
+    summary = await adapter._safe_sync_slash_commands()
+
+    assert summary == {
+        "total": 3,
+        "unchanged": 1,
+        "updated": 1,
+        "created": 1,
+        "deleted": 1,
+    }
+    fake_http.edit_global_command.assert_awaited_once_with(999, 12, desired_updated)
+    fake_http.upsert_global_command.assert_awaited_once_with(999, desired_created)
+    fake_http.delete_global_command.assert_awaited_once_with(999, 13)
+
+
+@pytest.mark.asyncio
+async def test_post_connect_initialization_skips_sync_when_policy_off(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    monkeypatch.setenv("DISCORD_COMMAND_SYNC_POLICY", "off")
+
+    fake_tree = SimpleNamespace(sync=AsyncMock())
+    adapter._client = SimpleNamespace(tree=fake_tree)
+
+    await adapter._run_post_connect_initialization()
+
+    fake_tree.sync.assert_not_called()
