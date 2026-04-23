@@ -111,6 +111,8 @@ AUTHOR_MAP = {
     "roopaknijhara@gmail.com": "rnijhara",
     # contributors (manual mapping from git names)
     "ahmedsherif95@gmail.com": "asheriif",
+    "dyxushuai@gmail.com": "dyxushuai",
+    "33860762+etcircle@users.noreply.github.com": "etcircle",
     "liujinkun@bytedance.com": "liujinkun2025",
     "dmayhem93@gmail.com": "dmahan93",
     "fr@tecompanytea.com": "ifrederico",
