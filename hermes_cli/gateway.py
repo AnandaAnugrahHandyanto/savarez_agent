@@ -5,6 +5,7 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 """
 
 import asyncio
+import logging
 import os
 import shutil
 import signal
@@ -14,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+
+logger = logging.getLogger(__name__)
 
 from gateway.status import terminate_pid
 from gateway.restart import (
@@ -1315,15 +1318,37 @@ def systemd_unit_is_current(system: bool = False) -> bool:
 def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
     """Rewrite the installed systemd unit when the generated definition has changed."""
     unit_path = get_systemd_unit_path(system=system)
-    if not unit_path.exists() or systemd_unit_is_current(system=system):
+    is_current = systemd_unit_is_current(system=system) if unit_path.exists() else False
+    if not unit_path.exists() or is_current:
         return False
 
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
-    unit_path.write_text(generate_systemd_unit(system=system, run_as_user=expected_user), encoding="utf-8")
-    _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
+    rendered_unit = generate_systemd_unit(system=system, run_as_user=expected_user)
+    remedy = f"{'sudo ' if system else ''}hermes gateway install --force{' --system' if system else ''}"
+    try:
+        unit_path.write_text(rendered_unit, encoding="utf-8")
+        _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
+    except (PermissionError, OSError, subprocess.CalledProcessError) as exc:
+        msg = (
+            f"Cannot refresh {_service_scope_label(system)} gateway unit at {unit_path} ({exc}). "
+            f"Run: {remedy} to update it."
+        )
+        logger.warning(msg)
+        print(f"⚠ {msg}", file=sys.stderr, flush=True)
+        return False
     print(f"↻ Updated gateway {_service_scope_label(system)} service definition to match the current Hermes install")
     return True
 
+
+def _detect_installed_unit_scope() -> bool | None:
+    """Return the installed systemd scope when exactly one gateway unit exists."""
+    system_exists = get_systemd_unit_path(system=True).exists()
+    user_exists = get_systemd_unit_path(system=False).exists()
+    if system_exists and not user_exists:
+        return True
+    if user_exists and not system_exists:
+        return False
+    return None
 
 
 def _print_linger_enable_warning(username: str, detail: str | None = None) -> None:
@@ -1388,7 +1413,7 @@ def _ensure_linger_enabled() -> None:
 def _select_systemd_scope(system: bool = False) -> bool:
     if system:
         return True
-    return get_systemd_unit_path(system=True).exists() and not get_systemd_unit_path(system=False).exists()
+    return _detect_installed_unit_scope() is True
 
 
 def _get_restart_drain_timeout() -> float:

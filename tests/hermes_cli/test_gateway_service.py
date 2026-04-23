@@ -1,7 +1,11 @@
 """Tests for gateway service management helpers."""
 
+import builtins
+import logging
 import os
 import pwd
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -81,6 +85,107 @@ class TestSystemdServiceRefresh:
             ["systemctl", "--user", "daemon-reload"],
             ["systemctl", "--user", "reload-or-restart", gateway_cli.get_service_name()],
         ]
+
+    def test_systemd_restart_system_scope_refreshes_outdated_unit(self, tmp_path, monkeypatch):
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text("old unit\n", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: True)
+        monkeypatch.setattr(gateway_cli, "_require_root_for_system_service", lambda action: None)
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: "updated unit\n")
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+
+        calls = []
+
+        def fake_run(cmd, check=True, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.systemd_restart(system=True)
+
+        assert unit_path.read_text(encoding="utf-8") == "updated unit\n"
+        assert calls[:2] == [
+            ["systemctl", "daemon-reload"],
+            ["systemctl", "reload-or-restart", gateway_cli.get_service_name()],
+        ]
+
+    def test_refresh_logs_warning_on_permission_error(self, tmp_path, monkeypatch, caplog, capsys):
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text("old unit\n", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: "updated unit\n")
+
+        def fake_write_text(self, data, encoding=None):
+            raise PermissionError("permission denied")
+
+        monkeypatch.setattr(type(unit_path), "write_text", fake_write_text, raising=False)
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.gateway"):
+            result = gateway_cli.refresh_systemd_unit_if_needed(system=True)
+
+        assert result is False
+        assert any(
+            "Cannot refresh system gateway unit" in record.message
+            and "sudo hermes gateway install --force --system" in record.message
+            for record in caplog.records
+        )
+        err = capsys.readouterr().err
+        assert "Cannot refresh system gateway unit" in err
+        assert "sudo hermes gateway install --force --system" in err
+
+    def test_refresh_permission_error_prints_to_stderr_and_flushes(self, tmp_path, monkeypatch):
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text("old unit\n", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: "updated unit\n")
+
+        def fake_write_text(self, data, encoding=None):
+            raise PermissionError("permission denied")
+
+        monkeypatch.setattr(type(unit_path), "write_text", fake_write_text, raising=False)
+
+        print_calls = []
+
+        def fake_print(*args, **kwargs):
+            print_calls.append((args, kwargs))
+
+        monkeypatch.setattr(builtins, "print", fake_print)
+
+        result = gateway_cli.refresh_systemd_unit_if_needed(system=True)
+
+        assert result is False
+        assert print_calls
+        args, kwargs = print_calls[-1]
+        assert args == ("⚠ Cannot refresh system gateway unit at " f"{unit_path} (permission denied). Run: sudo hermes gateway install --force --system to update it.",)
+        assert kwargs.get("file") is sys.stderr
+        assert kwargs.get("flush") is True
+
+    def test_refresh_logs_warning_on_daemon_reload_failure(self, tmp_path, monkeypatch, caplog):
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text("old unit\n", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: "updated unit\n")
+
+        def fake_run_systemctl(args, system=False, check=True, timeout=30):
+            raise subprocess.CalledProcessError(returncode=1, cmd=["systemctl", *args])
+
+        monkeypatch.setattr(gateway_cli, "_run_systemctl", fake_run_systemctl)
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.gateway"):
+            result = gateway_cli.refresh_systemd_unit_if_needed(system=True)
+
+        assert result is False
+        assert any(
+            "Cannot refresh system gateway unit" in record.message
+            and "sudo hermes gateway install --force --system" in record.message
+            for record in caplog.records
+        )
 
 
 class TestGeneratedSystemdUnits:
