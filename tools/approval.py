@@ -434,6 +434,13 @@ def prompt_dangerous_approval(command: str, description: str,
             logger.error("Approval callback failed: %s", e, exc_info=True)
             return "deny"
 
+    if os.getenv("HERMES_INTERACTIVE"):
+        logger.warning(
+            "Interactive approval missing callback; falling back to stdin input. "
+            "This usually means the current worker thread did not bind the CLI "
+            "approval callback before executing a terminal command."
+        )
+
     os.environ["HERMES_SPINNER_PAUSE"] = "1"
     try:
         while True:

@@ -33,6 +33,11 @@ from typing import Any, Dict, List, Optional
 
 from toolsets import TOOLSETS
 from tools import file_state
+from tools.terminal_tool import (
+    _get_approval_callback,
+    _get_sudo_password_callback,
+    bind_interactive_callbacks,
+)
 from utils import base_url_hostname, is_truthy_value
 
 
@@ -1153,6 +1158,8 @@ def _run_single_child(
 
         child_task_id = _subagent_id or f"subagent-{task_index}-{_uuid.uuid4().hex[:8]}"
         parent_task_id = getattr(parent_agent, "_current_task_id", None)
+        parent_approval_callback = _get_approval_callback()
+        parent_sudo_callback = _get_sudo_password_callback()
         wall_start = time.time()
         parent_reads_snapshot = (
             list(file_state.known_reads(parent_task_id)) if parent_task_id else []
@@ -1162,11 +1169,17 @@ def _run_single_child(
         # when the child's API call or tool-level HTTP request hangs.
         child_timeout = _get_child_timeout()
         _timeout_executor = ThreadPoolExecutor(max_workers=1)
-        _child_future = _timeout_executor.submit(
-            child.run_conversation,
-            user_message=goal,
-            task_id=child_task_id,
-        )
+        def _run_child():
+            with bind_interactive_callbacks(
+                approval_callback=parent_approval_callback,
+                sudo_password_callback=parent_sudo_callback,
+            ):
+                return child.run_conversation(
+                    user_message=goal,
+                    task_id=child_task_id,
+                )
+
+        _child_future = _timeout_executor.submit(_run_child)
         try:
             result = _child_future.result(timeout=child_timeout)
         except Exception as _timeout_exc:

@@ -7889,6 +7889,19 @@ class AIAgent:
         # Each slot holds (function_name, function_args, function_result, duration, error_flag)
         results = [None] * num_tools
 
+        try:
+            from tools.terminal_tool import (
+                _get_approval_callback as _get_terminal_approval_callback,
+                _get_sudo_password_callback as _get_terminal_sudo_callback,
+                bind_interactive_callbacks as _bind_terminal_callbacks,
+            )
+            _worker_approval_callback = _get_terminal_approval_callback()
+            _worker_sudo_callback = _get_terminal_sudo_callback()
+        except Exception:
+            _bind_terminal_callbacks = None
+            _worker_approval_callback = None
+            _worker_sudo_callback = None
+
         # Touch activity before launching workers so the gateway knows
         # we're executing tools (not stuck).
         self._current_tool = tool_names_str
@@ -7922,7 +7935,26 @@ class AIAgent:
                 pass
             start = time.time()
             try:
-                result = self._invoke_tool(function_name, function_args, effective_task_id, tool_call.id, messages=messages)
+                if _bind_terminal_callbacks is not None:
+                    with _bind_terminal_callbacks(
+                        approval_callback=_worker_approval_callback,
+                        sudo_password_callback=_worker_sudo_callback,
+                    ):
+                        result = self._invoke_tool(
+                            function_name,
+                            function_args,
+                            effective_task_id,
+                            tool_call.id,
+                            messages=messages,
+                        )
+                else:
+                    result = self._invoke_tool(
+                        function_name,
+                        function_args,
+                        effective_task_id,
+                        tool_call.id,
+                        messages=messages,
+                    )
             except Exception as tool_error:
                 result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)

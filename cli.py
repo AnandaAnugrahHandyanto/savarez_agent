@@ -696,7 +696,11 @@ from cron import get_job
 
 # Resource cleanup imports for safe shutdown (terminal VMs, browser sessions)
 from tools.terminal_tool import cleanup_all_environments as _cleanup_all_terminals
-from tools.terminal_tool import set_sudo_password_callback, set_approval_callback
+from tools.terminal_tool import (
+    bind_interactive_callbacks,
+    set_sudo_password_callback,
+    set_approval_callback,
+)
 from tools.skills_tool import set_secret_capture_callback
 from hermes_cli.callbacks import prompt_for_secret
 from tools.browser_tool import _emergency_cleanup_all_sessions as _cleanup_all_browsers
@@ -6310,6 +6314,13 @@ class HermesCLI:
 
         def run_background():
             try:
+                from tools.terminal_tool import (
+                    _get_approval_callback,
+                    _get_sudo_password_callback,
+                )
+
+                approval_callback = _get_approval_callback()
+                sudo_password_callback = _get_sudo_password_callback()
                 bg_agent = AIAgent(
                     model=turn_route["model"],
                     api_key=turn_route["runtime"].get("api_key"),
@@ -6348,10 +6359,14 @@ class HermesCLI:
 
                 bg_agent.thinking_callback = _bg_thinking
 
-                result = bg_agent.run_conversation(
-                    user_message=prompt,
-                    task_id=task_id,
-                )
+                with bind_interactive_callbacks(
+                    approval_callback=approval_callback,
+                    sudo_password_callback=sudo_password_callback,
+                ):
+                    result = bg_agent.run_conversation(
+                        user_message=prompt,
+                        task_id=task_id,
+                    )
 
                 response = result.get("final_response", "") if result else ""
                 if not response and result and result.get("error"):
@@ -8437,26 +8452,28 @@ class HermesCLI:
                 # registration (run() line ~9046) is invisible here because
                 # _callback_tls is threading.local().  Matches the pattern used
                 # by acp_adapter/server.py for ACP sessions.
-                set_sudo_password_callback(self._sudo_password_callback)
-                set_approval_callback(self._approval_callback)
                 try:
-                    set_secret_capture_callback(self._secret_capture_callback)
-                except Exception:
-                    pass
-                agent_message = _voice_prefix + message if _voice_prefix else message
-                # Prepend pending model switch note so the model knows about the switch
-                _msn = getattr(self, '_pending_model_switch_note', None)
-                if _msn:
-                    agent_message = _msn + "\n\n" + agent_message
-                    self._pending_model_switch_note = None
-                try:
-                    result = self.agent.run_conversation(
-                        user_message=agent_message,
-                        conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
-                        stream_callback=stream_callback,
-                        task_id=self.session_id,
-                        persist_user_message=message if _voice_prefix else None,
-                    )
+                    with bind_interactive_callbacks(
+                        approval_callback=self._approval_callback,
+                        sudo_password_callback=self._sudo_password_callback,
+                    ):
+                        try:
+                            set_secret_capture_callback(self._secret_capture_callback)
+                        except Exception:
+                            pass
+                        agent_message = _voice_prefix + message if _voice_prefix else message
+                        # Prepend pending model switch note so the model knows about the switch
+                        _msn = getattr(self, '_pending_model_switch_note', None)
+                        if _msn:
+                            agent_message = _msn + "\n\n" + agent_message
+                            self._pending_model_switch_note = None
+                        result = self.agent.run_conversation(
+                            user_message=agent_message,
+                            conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
+                            stream_callback=stream_callback,
+                            task_id=self.session_id,
+                            persist_user_message=message if _voice_prefix else None,
+                        )
                 except Exception as exc:
                     logging.error("run_conversation raised: %s", exc, exc_info=True)
                     _summary = getattr(self.agent, '_summarize_api_error', lambda e: str(e)[:300])(exc)
@@ -8472,8 +8489,6 @@ class HermesCLI:
                     # Clear thread-local callbacks so a reused thread doesn't
                     # hold stale references to a disposed CLI instance.
                     try:
-                        set_sudo_password_callback(None)
-                        set_approval_callback(None)
                         set_secret_capture_callback(None)
                     except Exception:
                         pass

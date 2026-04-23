@@ -1,6 +1,7 @@
 """Tests for the dangerous command approval module."""
 
 import ast
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch as mock_patch
@@ -519,6 +520,18 @@ class TestFullCommandAlwaysShown:
             result = prompt_dangerous_approval(short_cmd, "recursive delete")
         assert result == "deny"
 
+    def test_interactive_missing_callback_logs_warning_before_stdin_fallback(self, caplog):
+        with mock_patch.dict("os.environ", {"HERMES_INTERACTIVE": "1"}, clear=False):
+            with mock_patch("builtins.input", return_value="d"):
+                with caplog.at_level(logging.WARNING, logger="tools.approval"):
+                    result = prompt_dangerous_approval("rm -rf /tmp", "recursive delete")
+
+        assert result == "deny"
+        assert any(
+            "Interactive approval missing callback" in record.message
+            for record in caplog.records
+        )
+
 
 class TestForkBombDetection:
     """The fork bomb regex must match the classic :(){ :|:& };: pattern."""
@@ -836,4 +849,3 @@ class TestChmodExecuteCombo:
         cmd = "chmod +x script.sh"
         dangerous, _, _ = detect_dangerous_command(cmd)
         assert dangerous is False
-

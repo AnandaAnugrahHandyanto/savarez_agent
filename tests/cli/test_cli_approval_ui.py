@@ -1,6 +1,7 @@
 import queue
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -339,3 +340,121 @@ class TestApprovalCallbackThreadLocalWiring:
         # would hold a stale reference to a disposed CLI instance.
         assert seen["approval_after"] is None
         assert seen["sudo_after"] is None
+
+
+class TestApprovalCallbackThreadPropagation:
+    def test_bind_interactive_callbacks_propagates_to_executor_worker(self):
+        from tools.terminal_tool import (
+            _get_approval_callback,
+            _get_sudo_password_callback,
+            bind_interactive_callbacks,
+            set_approval_callback,
+            set_sudo_password_callback,
+        )
+
+        def approval_cb(_cmd, _desc):
+            return "once"
+
+        def sudo_cb():
+            return "hunter2"
+
+        set_approval_callback(approval_cb)
+        set_sudo_password_callback(sudo_cb)
+        try:
+            seen = {}
+
+            def worker():
+                seen["before"] = _get_approval_callback()
+                seen["before_sudo"] = _get_sudo_password_callback()
+                with bind_interactive_callbacks(
+                    approval_callback=approval_cb,
+                    sudo_password_callback=sudo_cb,
+                ):
+                    seen["inside"] = _get_approval_callback()
+                    seen["inside_sudo"] = _get_sudo_password_callback()
+                seen["after"] = _get_approval_callback()
+                seen["after_sudo"] = _get_sudo_password_callback()
+
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                pool.submit(worker).result(timeout=2)
+
+            assert seen["before"] is None
+            assert seen["before_sudo"] is None
+            assert seen["inside"] is approval_cb
+            assert seen["inside_sudo"] is sudo_cb
+            assert seen["after"] is None
+            assert seen["after_sudo"] is None
+        finally:
+            set_approval_callback(None)
+            set_sudo_password_callback(None)
+
+    def test_background_thread_pattern_can_rebind_cli_callbacks(self):
+        from tools.terminal_tool import (
+            _get_approval_callback,
+            _get_sudo_password_callback,
+            bind_interactive_callbacks,
+            set_approval_callback,
+            set_sudo_password_callback,
+        )
+
+        cli = _make_cli_stub()
+        set_approval_callback(cli._approval_callback)
+        set_sudo_password_callback(cli._sudo_password_callback)
+        try:
+            captured_approval = _get_approval_callback()
+            captured_sudo = _get_sudo_password_callback()
+            seen = {}
+
+            def background_worker():
+                seen["before"] = _get_approval_callback()
+                with bind_interactive_callbacks(
+                    approval_callback=captured_approval,
+                    sudo_password_callback=captured_sudo,
+                ):
+                    seen["inside"] = _get_approval_callback()
+                    seen["inside_sudo"] = _get_sudo_password_callback()
+                seen["after"] = _get_approval_callback()
+
+            thread = threading.Thread(target=background_worker, daemon=True)
+            thread.start()
+            thread.join(timeout=2)
+
+            assert seen["before"] is None
+            assert seen["inside"] == cli._approval_callback
+            assert seen["inside_sudo"] == cli._sudo_password_callback
+            assert seen["after"] is None
+        finally:
+            set_approval_callback(None)
+            set_sudo_password_callback(None)
+
+    def test_delegate_executor_pattern_rebinds_callbacks_and_cleans_up(self):
+        from tools.terminal_tool import (
+            _get_approval_callback,
+            bind_interactive_callbacks,
+            set_approval_callback,
+        )
+
+        def approval_cb(_cmd, _desc):
+            return "once"
+
+        set_approval_callback(approval_cb)
+        try:
+            parent_callback = _get_approval_callback()
+            seen = {}
+
+            def child_run():
+                seen["before"] = _get_approval_callback()
+                with bind_interactive_callbacks(approval_callback=parent_callback):
+                    seen["inside"] = _get_approval_callback()
+                seen["after"] = _get_approval_callback()
+                return {"final_response": "ok"}
+
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                result = pool.submit(child_run).result(timeout=2)
+
+            assert result["final_response"] == "ok"
+            assert seen["before"] is None
+            assert seen["inside"] is approval_cb
+            assert seen["after"] is None
+        finally:
+            set_approval_callback(None)
