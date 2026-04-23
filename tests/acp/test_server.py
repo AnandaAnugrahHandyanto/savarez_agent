@@ -493,13 +493,17 @@ class TestPrompt:
         state = agent.session_manager.get_session(new_resp.session_id)
         state.mode = "force-spar"
         state.agent.run_conversation = MagicMock()
+        state.history = [
+            {"role": "user", "content": "We are comparing two deployment options."},
+            {"role": "assistant", "content": "Option A is cheaper; option B is faster."},
+        ]
 
         with patch(
             "tools.spar_tool.spar_tool",
             AsyncMock(
                 return_value='{"approved": true, "summary": "ok", "issues": [], "final_response": "spar answer", "disagreement": false}'
             ),
-        ):
+        ) as mock_spar:
             resp = await agent.prompt(
                 prompt=[TextContentBlock(type="text", text="ship this fix")],
                 session_id=new_resp.session_id,
@@ -508,6 +512,10 @@ class TestPrompt:
         assert resp.stop_reason == "end_turn"
         state.agent.run_conversation.assert_not_called()
         assert state.history[-1]["content"] == "spar answer"
+        routed_prompt = mock_spar.await_args.kwargs["user_prompt"]
+        assert "We are comparing two deployment options." in routed_prompt
+        assert "Option A is cheaper; option B is faster." in routed_prompt
+        assert routed_prompt.endswith("User: ship this fix")
 
     @pytest.mark.asyncio
     async def test_prompt_auto_routes_review_tasks_to_spar(self, agent):
@@ -537,13 +545,17 @@ class TestPrompt:
         state = agent.session_manager.get_session(new_resp.session_id)
         state.mode = "force-moa"
         state.agent.run_conversation = MagicMock()
+        state.history = [
+            {"role": "user", "content": "We are choosing between three laptops."},
+            {"role": "assistant", "content": "You care most about performance and battery."},
+        ]
 
         with patch(
             "tools.mixture_of_agents_tool.mixture_of_agents_tool",
             AsyncMock(
                 return_value='{"success": true, "response": "moa answer", "models_used": {"reference_models": [], "aggregator_model": "xiaomi/mimo-v2-pro"}}'
             ),
-        ):
+        ) as mock_moa:
             resp = await agent.prompt(
                 prompt=[TextContentBlock(type="text", text="analyze this hard problem")],
                 session_id=new_resp.session_id,
@@ -552,6 +564,10 @@ class TestPrompt:
         assert resp.stop_reason == "end_turn"
         state.agent.run_conversation.assert_not_called()
         assert state.history[-1]["content"] == "moa answer"
+        routed_prompt = mock_moa.await_args.kwargs["user_prompt"]
+        assert "We are choosing between three laptops." in routed_prompt
+        assert "You care most about performance and battery." in routed_prompt
+        assert routed_prompt.endswith("User: analyze this hard problem")
 
     @pytest.mark.asyncio
     async def test_prompt_updates_history(self, agent):

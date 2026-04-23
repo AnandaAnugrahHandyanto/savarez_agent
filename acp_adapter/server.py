@@ -138,6 +138,9 @@ _MOA_AUTO_HINTS = (
     "difficult",
 )
 
+_ROUTED_HISTORY_MAX_MESSAGES = 8
+_ROUTED_HISTORY_MAX_CHARS = 6000
+
 
 def _extract_text(
     prompt: list[
@@ -184,6 +187,52 @@ def _parse_tool_json(raw_text: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("tool output must be a JSON object")
     return payload
+
+
+def _build_routed_prompt(
+    user_text: str,
+    history: list[dict[str, Any]],
+    max_messages: int = _ROUTED_HISTORY_MAX_MESSAGES,
+    max_chars: int = _ROUTED_HISTORY_MAX_CHARS,
+) -> str:
+    recent_messages: list[tuple[str, str]] = []
+    consumed = 0
+
+    for message in reversed(history):
+        role = str(message.get("role") or "").strip().lower()
+        if role not in {"user", "assistant"}:
+            continue
+        content = str(message.get("content") or "").strip()
+        if not content:
+            continue
+
+        label = "User" if role == "user" else "Assistant"
+        entry = f"{label}: {content}"
+        projected = consumed + len(entry) + 2
+        if recent_messages and projected > max_chars:
+            break
+        if projected > max_chars:
+            remaining = max_chars - len(label) - 4
+            if remaining <= 0:
+                break
+            content = f"{content[:remaining].rstrip()}..."
+            entry = f"{label}: {content}"
+        recent_messages.append((label, content))
+        consumed += len(entry) + 2
+        if len(recent_messages) >= max_messages:
+            break
+
+    if not recent_messages:
+        return user_text
+
+    recent_messages.reverse()
+    transcript = "\n\n".join(f"{label}: {content}" for label, content in recent_messages)
+    return (
+        "Use the recent conversation context below when answering the current request. "
+        "Do not ask for context that is already present unless it is still genuinely missing.\n\n"
+        f"Recent conversation:\n{transcript}\n\n"
+        f"Current user request:\nUser: {user_text}"
+    )
 
 
 def _format_moa_output(raw_text: str) -> str:
@@ -701,16 +750,17 @@ class HermesACPAgent(acp.Agent):
                 selected_mode,
                 user_text[:100],
             )
+            routed_prompt = _build_routed_prompt(user_text, state.history)
             try:
                 if prompt_route == "force-spar":
                     from tools.spar_tool import spar_tool
 
-                    raw_output = await spar_tool(user_prompt=user_text)
+                    raw_output = await spar_tool(user_prompt=routed_prompt)
                     final_text = _format_spar_output(raw_output)
                 else:
                     from tools.mixture_of_agents_tool import mixture_of_agents_tool
 
-                    raw_output = await mixture_of_agents_tool(user_prompt=user_text)
+                    raw_output = await mixture_of_agents_tool(user_prompt=routed_prompt)
                     final_text = _format_moa_output(raw_output)
                 result = {
                     "final_response": final_text,
