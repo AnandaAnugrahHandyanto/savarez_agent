@@ -106,17 +106,17 @@ Responses from models:"""
 MOA_FORENSIC_SYSTEM_PROMPT = """You are analyzing a mixture-of-agents run. Return JSON only with this exact top-level structure:
 {
   "decision_trace": {
-    "model_proposals": {"model_label": ["proposal", "..."]},
-    "overlap": ["shared idea", "..."],
-    "conflicts": ["meaningful disagreement", "..."],
-    "final_candidates": ["final pick", "..."],
-    "synthesis_summary": "short summary"
+    "model_proposals": {"actual_model_name": ["concrete proposal"]},
+    "overlap": ["concrete shared idea"],
+    "conflicts": ["concrete disagreement"],
+    "final_candidates": ["concrete final pick"],
+    "synthesis_summary": "concrete summary"
   },
   "aggregator_influence_log": {
-    "kept_from_models": {"model_label": ["kept point", "..."]},
-    "discarded_or_deprioritized": ["discarded point", "..."],
-    "resolution_notes": ["how conflicts were resolved", "..."],
-    "influence_summary": "short summary"
+    "kept_from_models": {"actual_model_name": ["concrete kept point"]},
+    "discarded_or_deprioritized": ["concrete discarded point"],
+    "resolution_notes": ["concrete resolution note"],
+    "influence_summary": "concrete summary"
   }
 }
 
@@ -124,6 +124,7 @@ Rules:
 - JSON only, no markdown fences.
 - Use concise strings.
 - Use empty arrays/objects instead of inventing unsupported facts.
+- Never echo template placeholders like model_label, concrete proposal, concrete summary, or "...".
 - Base the analysis only on the supplied reference outputs and final answer."""
 
 _debug = DebugSession("moa_tools", env_var="MOA_TOOLS_DEBUG")
@@ -363,6 +364,102 @@ def _normalize_forensic_analysis(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _forensic_analysis_has_placeholders(payload: Dict[str, Any]) -> bool:
+    blocked = {
+        "...",
+        "model_label",
+        "actual_model_name",
+        "proposal",
+        "concrete proposal",
+        "shared idea",
+        "concrete shared idea",
+        "meaningful disagreement",
+        "concrete disagreement",
+        "final pick",
+        "concrete final pick",
+        "short summary",
+        "concrete summary",
+        "kept point",
+        "concrete kept point",
+        "discarded point",
+        "concrete discarded point",
+        "how conflicts were resolved",
+        "concrete resolution note",
+    }
+
+    def _contains(value: Any) -> bool:
+        if isinstance(value, dict):
+            return any(_contains(key) or _contains(item) for key, item in value.items())
+        if isinstance(value, list):
+            return any(_contains(item) for item in value)
+        text = str(value or "").strip().lower()
+        return bool(text) and text in blocked
+
+    return _contains(payload)
+
+
+def _extract_forensic_proposals(text: str, max_items: int = 3) -> List[str]:
+    proposals: List[str] = []
+    normalized = str(text or "").replace("\r", "\n")
+    for raw_line in normalized.split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        compact = line.lstrip("#>*- ").strip()
+        lower = compact.lower()
+        if lower.startswith("winner:"):
+            compact = compact.split(":", 1)[1].strip()
+        elif lower.startswith("bottom line:"):
+            compact = compact.split(":", 1)[1].strip()
+        elif compact[:2].isdigit() and len(compact) > 3 and compact[2] in (".", ")"):
+            compact = compact[3:].strip()
+        if compact and compact not in proposals:
+            proposals.append(compact)
+        if len(proposals) >= max_items:
+            break
+    return proposals
+
+
+def _fallback_forensic_analysis(reference_outputs: Dict[str, str], final_response: str) -> Dict[str, Any]:
+    model_proposals = {
+        model: _extract_forensic_proposals(content)
+        for model, content in reference_outputs.items()
+        if _extract_forensic_proposals(content)
+    }
+    final_candidates = _extract_forensic_proposals(final_response)
+    overlap = sorted({
+        proposal
+        for proposals in model_proposals.values()
+        for proposal in proposals
+        if sum(proposal in other for other in model_proposals.values()) > 1
+    })
+    kept_from_models = {
+        model: [proposal for proposal in proposals if proposal in final_candidates] or proposals[:1]
+        for model, proposals in model_proposals.items()
+    }
+    discarded = sorted({
+        proposal
+        for proposals in model_proposals.values()
+        for proposal in proposals
+        if proposal not in final_candidates
+    })
+    return {
+        "decision_trace": {
+            "model_proposals": model_proposals,
+            "overlap": overlap,
+            "conflicts": [] if overlap else ["Reference models emphasized different lead arguments."],
+            "final_candidates": final_candidates,
+            "synthesis_summary": "Deterministic fallback built from raw reference outputs and the final answer.",
+        },
+        "aggregator_influence_log": {
+            "kept_from_models": kept_from_models,
+            "discarded_or_deprioritized": discarded,
+            "resolution_notes": [] if not final_candidates else ["MiMo kept the strongest repeated or final-answer-aligned points."],
+            "influence_summary": "Fallback influence trace derived from direct model outputs.",
+        },
+    }
+
+
 async def _run_reference_model_detailed(
     model: Any,
     user_prompt: str,
@@ -597,13 +694,15 @@ async def _run_moa_forensic_analysis(
         metrics["latency_seconds"] = round(time.monotonic() - started, 3)
         metrics["output_chars"] = len(content or "")
         parsed = _normalize_forensic_analysis(_extract_json_object(content or ""))
+        if _forensic_analysis_has_placeholders(parsed):
+            raise ValueError("Forensic analysis returned placeholder content")
         metrics["success"] = True
         return parsed, metrics
     except Exception as exc:
         metrics["latency_seconds"] = round(time.monotonic() - started, 3)
         metrics["error"] = str(exc)
         logger.warning("MoA forensic analysis failed: %s", exc)
-        return _empty_forensic_analysis(), metrics
+        return _fallback_forensic_analysis(reference_outputs, final_response), metrics
 
 
 async def mixture_of_agents_tool(

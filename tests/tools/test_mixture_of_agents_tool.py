@@ -133,6 +133,38 @@ def test_get_moa_configuration_reads_configured_route_overrides(monkeypatch):
     assert config["aggregator_model"] == "xiaomi/mimo-v2-flash"
 
 
+def test_forensic_analysis_placeholder_detector_flags_template_echo():
+    assert moa._forensic_analysis_has_placeholders({
+        "decision_trace": {
+            "model_proposals": {"model_label": ["proposal", "..."]},
+            "overlap": ["shared idea"],
+            "conflicts": [],
+            "final_candidates": ["final pick"],
+            "synthesis_summary": "short summary",
+        },
+        "aggregator_influence_log": {
+            "kept_from_models": {"actual_model_name": ["kept point"]},
+            "discarded_or_deprioritized": [],
+            "resolution_notes": [],
+            "influence_summary": "concrete summary",
+        },
+    }) is True
+
+
+def test_fallback_forensic_analysis_uses_raw_outputs():
+    result = moa._fallback_forensic_analysis(
+        {
+            "minimax/MiniMax-M2.7-highspeed": "Winner: AKG\nReason one\nReason two",
+            "deepseek/deepseek-reasoner": "Winner: Lithium\nExtra detail",
+        },
+        "Winner: AKG\nFinal answer body",
+    )
+
+    assert result["decision_trace"]["model_proposals"]["minimax/MiniMax-M2.7-highspeed"][0] == "AKG"
+    assert result["decision_trace"]["final_candidates"][0] == "AKG"
+    assert result["aggregator_influence_log"]["kept_from_models"]["minimax/MiniMax-M2.7-highspeed"][0] == "AKG"
+
+
 @pytest.mark.asyncio
 async def test_moa_returns_full_reference_forensics(monkeypatch):
     monkeypatch.setattr(
