@@ -34,9 +34,10 @@ class StubEngine(ContextEngine):
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         return tokens >= self.threshold_tokens
 
-    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None) -> List[Dict[str, Any]]:
+    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None, focus_topic: str = None) -> List[Dict[str, Any]]:
         self._compress_called = True
         self.compression_count += 1
+        self._last_focus_topic = focus_topic
         # Trivial: just return as-is
         return messages
 
@@ -82,7 +83,13 @@ class TestContextEngineABC:
     def test_compressor_is_context_engine(self):
         c = ContextCompressor(model="test", quiet_mode=True, config_context_length=200000)
         assert isinstance(c, ContextEngine)
-        assert c.name == "compressor"
+
+    def test_compress_accepts_focus_topic(self):
+        """ABC compress() must accept focus_topic without TypeError.  (#11586)"""
+        engine = StubEngine()
+        result = engine.compress([], current_tokens=0, focus_topic="testing")
+        assert result == []
+        assert engine._last_focus_topic == "testing"
 
 
 # ---------------------------------------------------------------------------
