@@ -141,6 +141,14 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             (echo "FAIL: HERMES_TUI_DIR not in wrapper"; exit 1)
           echo "PASS: HERMES_TUI_DIR set in wrapper"
 
+          grep -q "HERMES_BIN" ${hermes-agent}/bin/hermes || \
+            (echo "FAIL: HERMES_BIN not in wrapper"; exit 1)
+          echo "PASS: HERMES_BIN set in wrapper"
+
+          HERMES_BIN=$(sed -n "s/^export HERMES_BIN='\(.*\)'/\1/p" ${hermes-agent}/bin/hermes)
+          test -x "$HERMES_BIN" || (echo "FAIL: HERMES_BIN=$HERMES_BIN not executable"; exit 1)
+          echo "PASS: HERMES_BIN executable at $HERMES_BIN"
+
           echo "=== All bundled TUI checks passed ==="
           mkdir -p $out
           echo "ok" > $out/result

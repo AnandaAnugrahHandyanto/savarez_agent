@@ -98,6 +98,7 @@ stdenv.mkDerivation {
           --set HERMES_TUI_DIR $out/ui-tui \
           --set HERMES_PYTHON ${hermesVenv}/bin/python3 \
           --set HERMES_NODE ${nodejs_22}/bin/node \
+          --set HERMES_BIN $out/bin/hermes \
           ${lib.optionalString (extraPythonPackages != [ ]) ''--suffix PYTHONPATH : "${pythonPath}"''}
       '')
       [
