@@ -905,3 +905,29 @@ class TestTruncateToolCallArgsJson:
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
         assert parsed["content"].endswith("...[truncated]")
+
+
+class TestSummaryPrefixNoTaskLeakage:
+    """Regression tests for #14603 — SUMMARY_PREFIX must not instruct the model
+    to resume the previous session's ## Active Task as an active instruction."""
+
+    def test_summary_prefix_does_not_instruct_resume(self):
+        """SUMMARY_PREFIX should NOT contain 'resume' language for Active Task."""
+        prefix_lower = SUMMARY_PREFIX.lower()
+        assert "resume exactly from there" not in prefix_lower, (
+            "SUMMARY_PREFIX must not tell the model to resume the previous task"
+        )
+
+    def test_summary_prefix_marks_active_task_as_historical(self):
+        """SUMMARY_PREFIX must explicitly label ## Active Task as historical context."""
+        prefix_lower = SUMMARY_PREFIX.lower()
+        assert "historical context" in prefix_lower or "background reference" in prefix_lower, (
+            "SUMMARY_PREFIX must describe Active Task as historical/background"
+        )
+
+    def test_summary_prefix_no_cross_session_task_injection(self):
+        """SUMMARY_PREFIX must not treat ## Active Task as an active instruction."""
+        prefix_lower = SUMMARY_PREFIX.lower()
+        assert "not as an active" in prefix_lower or "not as active" in prefix_lower, (
+            "SUMMARY_PREFIX must explicitly state Active Task is NOT an active instruction"
+        )
