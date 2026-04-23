@@ -1208,6 +1208,8 @@ def _run_browser_command(
                 stderr=stderr_fd,
                 stdin=subprocess.DEVNULL,
                 env=browser_env,
+                encoding='utf-8',
+                errors='replace',
             )
         finally:
             os.close(stdout_fd)
