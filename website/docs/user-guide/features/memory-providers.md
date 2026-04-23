@@ -1,12 +1,12 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
+description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory, Vector store"
 ---
 
 # Memory Providers
 
-Hermes Agent ships with 8 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+Hermes Agent ships with bundled external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
 
 ## Quick Start
 
@@ -16,11 +16,13 @@ hermes memory status     # check what's active
 hermes memory off        # disable external provider
 ```
 
+You can also select the active memory provider via `hermes plugins` → Provider Plugins → Memory Provider.
+
 Or set manually in `~/.hermes/config.yaml`:
 
 ```yaml
 memory:
-  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory
+  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory, vector_store
 ```
 
 ## How It Works
@@ -38,9 +40,23 @@ The built-in memory (MEMORY.md / USER.md) continues to work exactly as before. T
 
 ## Available Providers
 
+### Vector store (local)
+
+Semantic recall backed by an in-process **python** cosine index by default (no extra packages). Optional backends: **faiss**, **chroma**, **qdrant**, **pinecone**, controlled under `memory.vector_store`. Optional `sentence-transformers` via `embedding_model`; otherwise a deterministic hash embedding is used (fine for CI, weak for production quality).
+
+| | |
+|---|---|
+| **Best for** | Long sessions, delegation traces, cheap local semantic prefetch |
+| **Requires** | Nothing for `type: python`; extras for `hermes-agent[vector-faiss]` / `[vector-chroma]` / `[vector-qdrant]` / `[vector-pinecone]` / `[vector-embed]` |
+| **Data storage** | In-process, or paths you configure under `HERMES_HOME` for Chroma / Qdrant local |
+
+**Tool (1):** `vector_memory_search`
+
+**Config:** See `plugins/memory/vector_store/README.md` and `memory.vector_store` defaults in `hermes_cli/config.py`.
+
 ### Honcho
 
-AI-native cross-session user modeling with dialectic Q&A, semantic search, and persistent conclusions.
+AI-native cross-session user modeling with dialectic reasoning, session-scoped context injection, semantic search, and persistent conclusions. Base context now includes the session summary alongside user representation and peer cards, giving the agent awareness of what has already been discussed.
 
 | | |
 |---|---|
@@ -49,7 +65,15 @@ AI-native cross-session user modeling with dialectic Q&A, semantic search, and p
 | **Data storage** | Honcho Cloud or self-hosted |
 | **Cost** | Honcho pricing (cloud) / free (self-hosted) |
 
-**Tools:** `honcho_profile` (peer card), `honcho_search` (semantic search), `honcho_context` (LLM-synthesized), `honcho_conclude` (store facts)
+**Tools (5):** `honcho_profile` (read/update peer card), `honcho_search` (semantic search), `honcho_context` (session context — summary, representation, card, messages), `honcho_reasoning` (LLM-synthesized), `honcho_conclude` (create/delete conclusions)
+
+**Architecture:** Two-layer context injection — a base layer (session summary + representation + peer card, refreshed on `contextCadence`) plus a dialectic supplement (LLM reasoning, refreshed on `dialecticCadence`). The dialectic automatically selects cold-start prompts (general user facts) vs. warm prompts (session-scoped context) based on whether base context exists.
+
+**Three orthogonal config knobs** control cost and depth independently:
+
+- `contextCadence` — how often the base layer refreshes (API call frequency)
+- `dialecticCadence` — how often the dialectic LLM fires (LLM call frequency)
+- `dialecticDepth` — how many `.chat()` passes per dialectic invocation (1–3, depth of reasoning)
 
 **Setup Wizard:**
 ```bash
@@ -61,7 +85,7 @@ hermes memory setup        # select "honcho"
 **Config:** `$HERMES_HOME/honcho.json` (profile-local) or `~/.honcho/config.json` (global). Resolution order: `$HERMES_HOME/honcho.json` > `~/.hermes/honcho.json` > `~/.honcho/config.json`. See the [config reference](https://github.com/hermes-ai/hermes-agent/blob/main/plugins/memory/honcho/README.md) and the [Honcho integration guide](https://docs.honcho.dev/v3/guides/integrations/hermes).
 
 <details>
-<summary>Key config options</summary>
+<summary>Full config reference</summary>
 
 | Key | Default | Description |
 |-----|---------|-------------|
@@ -70,13 +94,21 @@ hermes memory setup        # select "honcho"
 | `peerName` | -- | User peer identity |
 | `aiPeer` | host key | AI peer identity (one per profile) |
 | `workspace` | host key | Shared workspace ID |
-| `recallMode` | `hybrid` | `hybrid` (auto-inject + tools), `context` (inject only), `tools` (tools only) |
-| `observation` | all on | Per-peer `observeMe`/`observeOthers` booleans |
-| `writeFrequency` | `async` | `async`, `turn`, `session`, or integer N |
-| `sessionStrategy` | `per-directory` | `per-directory`, `per-repo`, `per-session`, `global` |
-| `dialecticReasoningLevel` | `low` | `minimal`, `low`, `medium`, `high`, `max` |
-| `dialecticDynamic` | `true` | Auto-bump reasoning by query length |
+| `contextTokens` | `null` (uncapped) | Token budget for auto-injected context per turn. Truncates at word boundaries |
+| `contextCadence` | `1` | Minimum turns between `context()` API calls (base layer refresh) |
+| `dialecticCadence` | `3` | Minimum turns between `peer.chat()` LLM calls. Only applies to `hybrid`/`context` modes |
+| `dialecticDepth` | `1` | Number of `.chat()` passes per dialectic invocation. Clamped 1–3. Pass 0: cold/warm prompt, pass 1: self-audit, pass 2: reconciliation |
+| `dialecticDepthLevels` | `null` | Optional array of reasoning levels per pass, e.g. `["minimal", "low", "medium"]`. Overrides proportional defaults |
+| `dialecticReasoningLevel` | `'low'` | Base reasoning level: `minimal`, `low`, `medium`, `high`, `max` |
+| `dialecticDynamic` | `true` | When `true`, model can override reasoning level per-call via tool param |
+| `dialecticMaxChars` | `600` | Max chars of dialectic result injected into system prompt |
+| `recallMode` | `'hybrid'` | `hybrid` (auto-inject + tools), `context` (inject only), `tools` (tools only) |
+| `writeFrequency` | `'async'` | When to flush messages: `async` (background thread), `turn` (sync), `session` (batch on end), or integer N |
+| `saveMessages` | `true` | Whether to persist messages to Honcho API |
+| `observationMode` | `'directional'` | `directional` (all on) or `unified` (shared pool). Override with `observation` object |
 | `messageMaxChars` | `25000` | Max chars per message (chunked if exceeded) |
+| `dialecticMaxInputChars` | `10000` | Max chars for dialectic query input to `peer.chat()` |
+| `sessionStrategy` | `'per-directory'` | `per-directory`, `per-repo`, `per-session`, `global` |
 
 </details>
 
@@ -163,7 +195,10 @@ This inherits settings from the default `hermes` host block and creates new AI p
       },
       "dialecticReasoningLevel": "low",
       "dialecticDynamic": true,
+      "dialecticCadence": 3,
+      "dialecticDepth": 1,
       "dialecticMaxChars": 600,
+      "contextCadence": 1,
       "messageMaxChars": 25000,
       "saveMessages": true
     },
@@ -460,7 +495,7 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 
 | Provider | Storage | Cost | Tools | Dependencies | Unique Feature |
 |----------|---------|------|-------|-------------|----------------|
-| **Honcho** | Cloud | Paid | 4 | `honcho-ai` | Dialectic user modeling |
+| **Honcho** | Cloud | Paid | 5 | `honcho-ai` | Dialectic user modeling + session-scoped context |
 | **OpenViking** | Self-hosted | Free | 5 | `openviking` + server | Filesystem hierarchy + tiered loading |
 | **Mem0** | Cloud | Paid | 3 | `mem0ai` | Server-side LLM extraction |
 | **Hindsight** | Cloud/Local | Free/Paid | 3 | `hindsight-client` | Knowledge graph + reflect synthesis |
