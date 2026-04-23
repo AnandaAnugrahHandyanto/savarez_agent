@@ -56,8 +56,51 @@ def _make_mock_parent(depth=0):
 
 
 class TestDelegateRequirements(unittest.TestCase):
-    def test_always_available(self):
-        self.assertTrue(check_delegate_requirements())
+    def test_available_when_no_override_is_configured(self):
+        with patch("tools.delegate_tool._load_config", return_value={}):
+            self.assertTrue(check_delegate_requirements())
+
+    def test_available_when_override_resolves(self):
+        with patch(
+            "tools.delegate_tool._load_config",
+            return_value={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+        ), patch(
+            "tools.delegate_tool._resolve_delegation_credentials",
+            return_value={
+                "model": "anthropic/claude-sonnet-4",
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": "sk-test",
+                "api_mode": "chat_completions",
+            },
+        ):
+            self.assertTrue(check_delegate_requirements())
+
+    def test_unavailable_when_override_resolution_fails(self):
+        with patch(
+            "tools.delegate_tool._load_config",
+            return_value={"provider": "minimax"},
+        ), patch(
+            "tools.delegate_tool._resolve_delegation_credentials",
+            side_effect=ValueError("Delegation provider 'minimax' resolved but has no API key."),
+        ):
+            self.assertFalse(check_delegate_requirements())
+
+    def test_readiness_status_exposes_fix_path(self):
+        from tools.delegate_tool import get_delegate_readiness_status
+
+        with patch(
+            "tools.delegate_tool._load_config",
+            return_value={"provider": "minimax"},
+        ), patch(
+            "tools.delegate_tool._resolve_delegation_credentials",
+            side_effect=ValueError("Delegation provider 'minimax' resolved but has no API key."),
+        ):
+            status = get_delegate_readiness_status()
+
+        self.assertFalse(status["available"])
+        self.assertIn("no API key", status["reason"])
+        self.assertIn("inherit the parent runtime", status["fix"])
 
     def test_schema_valid(self):
         self.assertEqual(DELEGATE_TASK_SCHEMA["name"], "delegate_task")
@@ -621,13 +664,13 @@ class TestDelegationCredentialResolution(unittest.TestCase):
             "model": "qwen2.5-coder",
             "provider": "openrouter",
             "base_url": "http://localhost:1234/v1",
-            "api_key": "local-key",
+            "api_key": "***",
         }
         creds = _resolve_delegation_credentials(cfg, parent)
         self.assertEqual(creds["model"], "qwen2.5-coder")
-        self.assertEqual(creds["provider"], "custom")
+        self.assertEqual(creds["provider"], "openrouter")
         self.assertEqual(creds["base_url"], "http://localhost:1234/v1")
-        self.assertEqual(creds["api_key"], "local-key")
+        self.assertEqual(creds["api_key"], "***")
         self.assertEqual(creds["api_mode"], "chat_completions")
 
     def test_direct_endpoint_falls_back_to_openai_api_key_env(self):

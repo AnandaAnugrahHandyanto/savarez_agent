@@ -82,9 +82,55 @@ _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during de
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
 
 
+def get_delegate_readiness_status() -> dict:
+    """Return a config-aware delegation readiness diagnosis for doctor/tool gating."""
+    try:
+        cfg = _load_config()
+    except Exception as exc:
+        return {
+            "available": False,
+            "reason": f"could not load delegation config: {exc}",
+            "fix": "Repair ~/.hermes/config.yaml or clear the delegation override.",
+        }
+
+    try:
+        creds = _resolve_delegation_credentials(cfg, None)
+    except ValueError as exc:
+        return {
+            "available": False,
+            "reason": str(exc),
+            "fix": "Set a working delegation.provider or delegation.base_url/api_key, or clear the override to inherit the parent runtime.",
+        }
+    except Exception as exc:
+        return {
+            "available": False,
+            "reason": f"unexpected delegation readiness error: {exc}",
+            "fix": "Check delegation configuration and runtime provider setup.",
+        }
+
+    configured_provider = str(cfg.get("provider") or "").strip()
+    configured_base_url = str(cfg.get("base_url") or "").strip()
+    if configured_provider or configured_base_url:
+        target = configured_provider or configured_base_url
+        return {
+            "available": True,
+            "reason": f"override resolves successfully via {target}",
+            "fix": "",
+            "details": creds,
+        }
+
+    return {
+        "available": True,
+        "reason": "no delegation override configured; subagents inherit the parent runtime when invoked from an active Hermes session",
+        "fix": "",
+        "details": creds,
+    }
+
+
+
 def check_delegate_requirements() -> bool:
-    """Delegation has no external requirements -- always available."""
-    return True
+    """Return whether delegation is honestly ready from the current config/runtime."""
+    return bool(get_delegate_readiness_status().get("available"))
 
 
 def _build_child_system_prompt(
@@ -967,21 +1013,38 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             configured_api_key
             or os.getenv("OPENAI_API_KEY", "").strip()
         )
+
+        runtime = None
+        if not api_key and configured_provider:
+            try:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+                runtime = resolve_runtime_provider(requested=configured_provider)
+                api_key = str(runtime.get("api_key") or "").strip() or None
+            except Exception as exc:
+                logger.debug(
+                    "Could not resolve provider-backed API key for delegation base_url '%s' via provider '%s': %s",
+                    configured_base_url,
+                    configured_provider,
+                    exc,
+                )
+
         if not api_key:
             raise ValueError(
                 "Delegation base_url is configured but no API key was found. "
-                "Set delegation.api_key or OPENAI_API_KEY."
+                "Set delegation.api_key, OPENAI_API_KEY, or configure delegation.provider with working credentials."
             )
 
         base_lower = configured_base_url.lower()
-        provider = "custom"
+        provider = configured_provider or "custom"
         api_mode = "chat_completions"
         if "chatgpt.com/backend-api/codex" in base_lower:
             provider = "openai-codex"
             api_mode = "codex_responses"
-        elif "api.anthropic.com" in base_lower:
+        elif "api.anthropic.com" in base_lower or base_lower.rstrip("/").endswith("/anthropic"):
             provider = "anthropic"
             api_mode = "anthropic_messages"
+        elif runtime and runtime.get("api_mode"):
+            api_mode = runtime.get("api_mode")
 
         return {
             "model": configured_model,
