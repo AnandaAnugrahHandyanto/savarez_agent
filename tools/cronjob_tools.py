@@ -105,16 +105,18 @@ def _freeze_thread_sensitive_origin_delivery(
     normalized = (deliver or "").strip().lower() if isinstance(deliver, str) else deliver
     if normalized not in (None, "", "origin"):
         return deliver
+
+    canonical_deliver = "origin" if normalized in ("", "origin") else deliver
     if not origin:
-        return deliver
+        return canonical_deliver
 
     platform = str(origin.get("platform") or "").strip().lower()
     chat_id = str(origin.get("chat_id") or "").strip()
     thread_id = str(origin.get("thread_id") or "").strip()
     if not (platform and chat_id and thread_id):
-        return deliver
+        return canonical_deliver
     if platform not in {"discord", "telegram"}:
-        return deliver
+        return canonical_deliver
     return f"{platform}:{chat_id}:{thread_id}"
 
 

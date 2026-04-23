@@ -114,6 +114,13 @@ class TestFreezeThreadSensitiveOriginDelivery:
         )
         assert result == "origin"
 
+    def test_normalizes_plain_origin_variants_when_not_freezing(self):
+        result = _freeze_thread_sensitive_origin_delivery(
+            " Origin ",
+            {"platform": "discord", "chat_id": "1493169190197268510", "thread_id": None},
+        )
+        assert result == "origin"
+
 
 class TestUnifiedCronjobTool:
     @pytest.fixture(autouse=True)
