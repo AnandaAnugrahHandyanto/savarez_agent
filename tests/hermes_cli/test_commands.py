@@ -231,6 +231,25 @@ class TestTelegramBotCommands:
                 assert tg_name not in names
 
 
+class TestTelegramMenuCommands:
+    def test_includes_external_slash_commands(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.commands.collect_external_telegram_commands",
+            lambda max_slots, reserved_names: (
+                [
+                    ("omx_deep_interview", "OMX deep interview", "omx-deep-interview"),
+                    ("open_spec_specify", "Open Spec specify", "open-spec-specify"),
+                ],
+                0,
+            ),
+        )
+
+        names = {name for name, _ in telegram_menu_commands(max_commands=100)}
+
+        assert "omx_deep_interview" in names
+        assert "open_spec_specify" in names
+
+
 class TestSlackSubcommandMap:
     def test_returns_dict(self):
         mapping = slack_subcommand_map()

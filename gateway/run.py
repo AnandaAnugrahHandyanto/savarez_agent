@@ -31,6 +31,11 @@ from datetime import datetime
 from typing import Dict, Optional, Any, List
 
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
+from hermes_cli.external_slash_commands import (
+    build_external_exec_argv,
+    build_external_prompt_message,
+    resolve_external_slash_command,
+)
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -3683,6 +3688,42 @@ class GatewayRunner:
                 else:
                     return f"Quick command '/{command}' has unsupported type (supported: 'exec', 'alias')."
 
+        # External OMX/Open Spec slash commands
+        if command:
+            external_command = resolve_external_slash_command(command)
+            if external_command:
+                user_args = event.get_command_args().strip()
+                if external_command.kind == "prompt":
+                    msg = build_external_prompt_message(
+                        external_command,
+                        user_args,
+                        task_id=_quick_key,
+                    )
+                    if not msg:
+                        return f"Failed to load `/{external_command.name}`."
+                    event.text = msg
+                    command = None
+                    canonical = None
+                elif external_command.kind == "exec":
+                    argv = build_external_exec_argv(external_command, user_args)
+                    if not argv:
+                        return f"Failed to build `/{external_command.name}` command invocation."
+                    try:
+                        proc = await asyncio.create_subprocess_exec(
+                            *argv,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                        )
+                        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+                        output = (stdout or stderr).decode().strip()
+                        return output if output else "Command returned no output."
+                    except asyncio.TimeoutError:
+                        return "External command timed out (60s)."
+                    except Exception as e:
+                        return f"External command error: {e}"
+                else:
+                    return f"Unsupported external command type: {external_command.kind}"
+
         # Plugin-registered slash commands
         if command:
             try:
@@ -5317,7 +5358,7 @@ class GatewayRunner:
         else:
             requested_page = 1
 
-        # Build combined entry list: built-in commands + skill commands
+        # Build combined entry list: built-in commands + skill commands + external commands
         entries = list(gateway_help_lines())
         try:
             from agent.skill_commands import get_skill_commands
@@ -5328,6 +5369,16 @@ class GatewayRunner:
                 for cmd in sorted(skill_cmds):
                     desc = skill_cmds[cmd].get("description", "").strip() or "Skill command"
                     entries.append(f"`{cmd}` — {desc}")
+        except Exception:
+            pass
+        try:
+            from hermes_cli.external_slash_commands import list_external_slash_commands
+            external_cmds = list_external_slash_commands()
+            if external_cmds:
+                entries.append("")
+                entries.append("🧩 **External OMX / Open Spec Commands**:")
+                for cmd in external_cmds:
+                    entries.append(f"`/{cmd.name}` — {cmd.description or 'External command'}")
         except Exception:
             pass
 

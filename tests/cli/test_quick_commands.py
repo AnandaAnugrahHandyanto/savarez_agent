@@ -200,3 +200,40 @@ class TestGatewayQuickCommands:
         event = self._make_event("limits")
         result = await runner._handle_message(event)
         assert result == "ok"
+
+    @pytest.mark.asyncio
+    async def test_external_prompt_command_rewrites_to_agent_message(self, monkeypatch):
+        from gateway.run import GatewayRunner
+        from hermes_cli.external_slash_commands import ExternalSlashCommand
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {}}
+        runner._running_agents = {}
+        runner._running_agents_ts = {}
+        runner._pending_messages = {}
+        runner._busy_ack_ts = {}
+        runner._draining = False
+        runner._is_user_authorized = MagicMock(return_value=True)
+        runner._handle_message_with_agent = AsyncMock(return_value="agent ok")
+
+        monkeypatch.setattr(
+            "gateway.run.resolve_external_slash_command",
+            lambda command: ExternalSlashCommand(
+                name="omx-deep-interview",
+                description="OMX deep interview",
+                kind="prompt",
+                source="omx-skill",
+                prompt_path="/tmp/deep-interview.md",
+            ) if command in {"omx_deep_interview", "omx-deep-interview"} else None,
+        )
+        monkeypatch.setattr(
+            "gateway.run.build_external_prompt_message",
+            lambda command, user_instruction, task_id=None: f"PROMPT::{command.name}::{user_instruction}::{task_id}",
+        )
+
+        event = self._make_event("omx_deep_interview", "improve auth flow")
+        result = await runner._handle_message(event)
+
+        assert result == "agent ok"
+        assert event.text.startswith("PROMPT::omx-deep-interview::improve auth flow::agent:main:telegram:dm:123")
+        runner._handle_message_with_agent.assert_awaited_once()

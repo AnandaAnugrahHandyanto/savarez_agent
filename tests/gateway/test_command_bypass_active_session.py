@@ -343,6 +343,24 @@ class TestAllResolvableCommandsBypassGuard:
         # A file path split on whitespace: '/path/to/file.py' -> 'path/to/file.py'
         assert should_bypass_active_session("path/to/file.py") is False
 
+    def test_should_bypass_returns_true_for_external_commands(self, monkeypatch):
+        from hermes_cli.commands import should_bypass_active_session
+        from hermes_cli.external_slash_commands import ExternalSlashCommand
+
+        monkeypatch.setattr(
+            "hermes_cli.commands.resolve_external_slash_command",
+            lambda command: ExternalSlashCommand(
+                name="omx-deep-interview",
+                description="OMX deep interview",
+                kind="prompt",
+                source="omx-skill",
+                prompt_path="/tmp/deep-interview.md",
+            ) if command in {"omx-deep-interview", "omx_deep_interview"} else None,
+        )
+
+        assert should_bypass_active_session("omx-deep-interview") is True
+        assert should_bypass_active_session("omx_deep_interview") is True
+
 
 # ---------------------------------------------------------------------------
 # Tests: non-bypass messages still get queued

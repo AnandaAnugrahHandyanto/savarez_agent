@@ -192,6 +192,15 @@ def _build_command_lookup() -> dict[str, CommandDef]:
 _COMMAND_LOOKUP: dict[str, CommandDef] = _build_command_lookup()
 
 
+def resolve_external_slash_command(name: str | None):
+    """Resolve an external OMX/Open Spec slash command if available."""
+    try:
+        from hermes_cli.external_slash_commands import resolve_external_slash_command as _resolve
+    except Exception:
+        return None
+    return _resolve(name)
+
+
 def resolve_command(name: str) -> CommandDef | None:
     """Resolve a command name or alias to its CommandDef.
 
@@ -304,7 +313,12 @@ def should_bypass_active_session(command_name: str | None) -> bool:
     ACTIVE_SESSION_BYPASS_COMMANDS remains the subset of commands with
     explicit Level-2 handlers; the rest fall through to the catch-all.
     """
-    return resolve_command(command_name) is not None if command_name else False
+    if not command_name:
+        return False
+    return (
+        resolve_command(command_name) is not None
+        or resolve_external_slash_command(command_name) is not None
+    )
 
 
 def _resolve_config_gates() -> set[str]:
@@ -567,6 +581,42 @@ def _collect_gateway_skill_entries(
     return all_entries[:max_slots], hidden_count
 
 
+def collect_external_telegram_commands(
+    max_slots: int,
+    reserved_names: set[str],
+) -> tuple[list[tuple[str, str, str]], int]:
+    """Collect externally-discovered OMX/Open Spec commands for Telegram."""
+    try:
+        from hermes_cli.external_slash_commands import list_external_slash_commands
+    except Exception:
+        return [], 0
+
+    pairs: list[tuple[str, str, str]] = []
+    for cmd in list_external_slash_commands():
+        name = _sanitize_telegram_name(cmd.name)
+        if not name:
+            continue
+        desc = cmd.description or "External command"
+        if len(desc) > 40:
+            desc = desc[:37] + "..."
+        pairs.append((name, desc, cmd.name))
+
+    clamped = _clamp_command_names([(n, d) for n, d, _ in pairs], reserved_names)
+    kept_names = {name for name, _ in clamped}
+    reserved_names.update(kept_names)
+
+    kept: list[tuple[str, str, str]] = []
+    for name, desc, original in pairs:
+        if name in kept_names:
+            kept.append((name, desc, original))
+            kept_names.remove(name)
+            if len(kept) >= max_slots:
+                break
+
+    hidden_count = max(0, len(pairs) - len(kept))
+    return kept[:max_slots], hidden_count
+
+
 # ---------------------------------------------------------------------------
 # Platform-specific wrappers
 # ---------------------------------------------------------------------------
@@ -602,7 +652,14 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
     )
     # Drop the cmd_key — Telegram only needs (name, desc) pairs.
     all_commands.extend((n, d) for n, d, _k in entries)
-    return all_commands[:max_commands], hidden_count
+
+    remaining_slots = max(0, max_commands - len(all_commands))
+    external_entries, hidden_external = collect_external_telegram_commands(
+        max_slots=remaining_slots,
+        reserved_names=reserved_names,
+    )
+    all_commands.extend((n, d) for n, d, _k in external_entries)
+    return all_commands[:max_commands], hidden_count + hidden_external
 
 
 def discord_skill_commands(
