@@ -398,6 +398,7 @@ def test_brave_provider_lists_split_key_layout():
         "BRAVE_FREE_API_KEY",
         "BRAVE_ANSWERS_API_KEY",
         "BRAVE_AUTOSUGGEST_API_KEY",
+        "BRAVE_API_URL",
     ]
 
 

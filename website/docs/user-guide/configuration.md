@@ -84,14 +84,16 @@ Hermes supports Brave as a split integration. Different Brave endpoint families 
 | `BRAVE_ANSWERS_API_KEY` | `brave_answers` | `Free AI`, `Answers` | Opaque Brave token string, typically starting with `BSA...` |
 | `BRAVE_AUTOSUGGEST_API_KEY` | `brave_suggest` | `Free Autosuggest`, `Autosuggest` | Opaque Brave token string, typically starting with `BSA...` |
 | `BRAVE_API_KEY` | Legacy fallback only | Legacy / backward-compat only | Same opaque Brave token shape |
+| `BRAVE_API_URL` | Optional base URL override for Brave-backed tools | n/a | Full Brave-compatible base URL like `https://api.search.brave.com/res/v1` |
 
 ### Example `.env`
 
 ```bash
-BRAVE_SEARCH_API_KEY=BSA...
-BRAVE_FREE_API_KEY=BSA...
-BRAVE_ANSWERS_API_KEY=BSA...
-BRAVE_AUTOSUGGEST_API_KEY=BSA...
+BRAVE_SEARCH_API_KEY=***
+BRAVE_FREE_API_KEY=***
+BRAVE_ANSWERS_API_KEY=***
+BRAVE_AUTOSUGGEST_API_KEY=***
+BRAVE_API_URL=https://api.search.brave.com/res/v1
 ```
 
 ### Supported vs unsupported

@@ -157,7 +157,7 @@ TTS settings are read from **two** OpenClaw config locations with this priority:
 | Gateway auth token | `gateway.auth.token` | `.env` → `HERMES_GATEWAY_TOKEN` | Requires `--migrate-secrets` |
 | Working directory | `agents.defaults.workspace` | `.env` → `MESSAGING_CWD` | |
 
-> Brave Search accepts both key names at runtime. The setup wizard and status view prefer `BRAVE_SEARCH_API_KEY`, while migration currently writes `BRAVE_API_KEY` as the compatibility fallback.
+> Brave Search accepts both key names at runtime. The setup wizard and status view prefer `BRAVE_SEARCH_API_KEY`, while migration currently writes `BRAVE_API_KEY` as the compatibility fallback. If you need to route Brave through a proxy or alternate gateway, set `BRAVE_API_URL` manually after migration.
 
 ## Brave plan support
 

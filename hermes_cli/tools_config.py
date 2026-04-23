@@ -254,6 +254,7 @@ TOOL_CATEGORIES = {
                     {"key": "BRAVE_FREE_API_KEY", "prompt": "Brave Free API key (optional alias)", "url": "https://api-dashboard.search.brave.com/"},
                     {"key": "BRAVE_ANSWERS_API_KEY", "prompt": "Brave Answers API key (optional)", "url": "https://api-dashboard.search.brave.com/"},
                     {"key": "BRAVE_AUTOSUGGEST_API_KEY", "prompt": "Brave Autosuggest API key (optional)", "url": "https://api-dashboard.search.brave.com/"},
+                    {"key": "BRAVE_API_URL", "prompt": "Brave API base URL (optional override)", "url": "https://api.search.brave.com/res/v1"},
                 ],
             },
             {
