@@ -12,6 +12,15 @@ class ForumChannel:
     pass
 
 
+class MediaChannel:
+    pass
+
+
+class FakeType:
+    def __init__(self, value):
+        self.value = value
+
+
 @pytest.mark.asyncio
 async def test_sethome_uses_parent_channel_for_discord_thread(monkeypatch, tmp_path):
     import gateway.run as gateway_run
@@ -64,7 +73,7 @@ async def test_sethome_keeps_forum_thread_as_home_target(monkeypatch, tmp_path):
     parent.id = 222
     parent.name = "ideas"
     parent.guild = guild
-    parent.type = 15
+    parent.type = FakeType(15)
     channel = SimpleNamespace(parent=parent, parent_id=parent.id, guild=guild)
     raw_message = SimpleNamespace(channel=channel)
 
@@ -90,6 +99,88 @@ async def test_sethome_keeps_forum_thread_as_home_target(monkeypatch, tmp_path):
     assert "stable Discord home delivery" not in result
     config = yaml.safe_load((tmp_path / "config.yaml").read_text())
     assert config["DISCORD_HOME_CHANNEL"] == "333"
+
+
+@pytest.mark.asyncio
+async def test_sethome_keeps_media_thread_as_home_target(monkeypatch, tmp_path):
+    import gateway.run as gateway_run
+
+    runner = object.__new__(gateway_run.GatewayRunner)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("DISCORD_HOME_CHANNEL", raising=False)
+
+    guild = SimpleNamespace(name="GSV")
+    parent = MediaChannel()
+    parent.id = 444
+    parent.name = "media"
+    parent.guild = guild
+    parent.type = FakeType(16)
+    channel = SimpleNamespace(parent=parent, parent_id=parent.id, guild=guild)
+    raw_message = SimpleNamespace(channel=channel)
+
+    event = MessageEvent(
+        text="/sethome",
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="555",
+            chat_name="GSV / media / post-1",
+            chat_type="thread",
+            thread_id="555",
+            user_id="u1",
+            user_name="tester",
+        ),
+        raw_message=raw_message,
+        message_id="m-media",
+    )
+
+    result = await runner._handle_set_home_command(event)
+
+    assert "GSV / media / post-1" in result
+    assert "(ID: 555)" in result
+    assert "stable Discord home delivery" not in result
+    config = yaml.safe_load((tmp_path / "config.yaml").read_text())
+    assert config["DISCORD_HOME_CHANNEL"] == "555"
+
+
+@pytest.mark.asyncio
+async def test_sethome_uses_media_class_name_fallback_when_type_missing(monkeypatch, tmp_path):
+    import gateway.run as gateway_run
+
+    runner = object.__new__(gateway_run.GatewayRunner)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("DISCORD_HOME_CHANNEL", raising=False)
+
+    guild = SimpleNamespace(name="GSV")
+    parent = MediaChannel()
+    parent.id = 666
+    parent.name = "media"
+    parent.guild = guild
+    parent.type = None
+    channel = SimpleNamespace(parent=parent, parent_id=parent.id, guild=guild)
+    raw_message = SimpleNamespace(channel=channel)
+
+    event = MessageEvent(
+        text="/sethome",
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="777",
+            chat_name="GSV / media / post-2",
+            chat_type="thread",
+            thread_id="777",
+            user_id="u1",
+            user_name="tester",
+        ),
+        raw_message=raw_message,
+        message_id="m-media-fallback",
+    )
+
+    result = await runner._handle_set_home_command(event)
+
+    assert "GSV / media / post-2" in result
+    assert "(ID: 777)" in result
+    assert "stable Discord home delivery" not in result
+    config = yaml.safe_load((tmp_path / "config.yaml").read_text())
+    assert config["DISCORD_HOME_CHANNEL"] == "777"
 
 
 @pytest.mark.asyncio

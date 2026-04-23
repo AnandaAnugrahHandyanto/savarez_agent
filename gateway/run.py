@@ -5091,9 +5091,9 @@ class GatewayRunner:
         reroute_note = None
 
         # In Discord text-channel threads, the stable home destination should be the
-        # parent channel rather than the specific thread. Forum posts keep their own
-        # thread ID because deliveries without metadata.thread_id target chat_id
-        # directly, and a forum parent is not a normal send destination.
+        # parent channel rather than the specific thread. Forum/media posts keep
+        # their own thread ID because deliveries without metadata.thread_id target
+        # chat_id directly, and those parents are not normal send destinations.
         if platform_name == "discord" and getattr(source, "chat_type", None) == "thread":
             raw = getattr(event, "raw_message", None)
             channel = getattr(raw, "channel", None)
@@ -5101,7 +5101,8 @@ class GatewayRunner:
             parent_id = getattr(parent, "id", None) or getattr(channel, "parent_id", None)
             parent_type = getattr(parent, "type", None)
             parent_type_value = getattr(parent_type, "value", parent_type)
-            is_forum_parent = parent_type_value == 15 or getattr(parent.__class__, "__name__", "") == "ForumChannel"
+            parent_class_name = getattr(parent.__class__, "__name__", "")
+            is_forum_parent = parent_type_value in (15, 16) or parent_class_name in {"ForumChannel", "MediaChannel"}
             if parent is not None and parent_id is not None and not is_forum_parent:
                 chat_id = str(parent_id)
                 parent_name = getattr(parent, "name", None)
