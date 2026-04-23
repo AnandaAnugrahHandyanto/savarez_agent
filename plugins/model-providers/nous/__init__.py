@@ -30,6 +30,9 @@ class NousProfile(ProviderProfile):
                 if rc.get("enabled") is False:
                     pass  # Nous omits reasoning when disabled
                 else:
+                    effort = str(rc.get("effort") or "").strip().lower()
+                    if effort == "max":
+                        rc["effort"] = "xhigh"
                     extra_body["reasoning"] = rc
             else:
                 extra_body["reasoning"] = {"enabled": True, "effort": "medium"}

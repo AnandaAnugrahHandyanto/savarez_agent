@@ -1268,8 +1268,8 @@ DEFAULT_CONFIG = {
                                        # no ceiling). High-reasoning models on large tasks
                                        # (e.g. gpt-5.5 xhigh, opus-4.6) need generous budgets;
                                        # raise if children time out before producing output.
-        "reasoning_effort": "",  # reasoning effort for subagents: "xhigh", "high", "medium",
-                                 # "low", "minimal", "none" (empty = inherit parent's level)
+        "reasoning_effort": "",  # reasoning effort for subagents: "max", "xhigh", "high",
+                                 # "medium", "low", "minimal", "none" (empty = inherit parent's level)
         "max_concurrent_children": 3,  # max parallel children per batch; floor of 1 enforced, no ceiling
         # Orchestrator role controls (see tools/delegate_tool.py:_get_max_spawn_depth
         # and _get_orchestrator_enabled).  Values are clamped to [1, 3] with a
@@ -4604,7 +4604,7 @@ _COMMENTED_SECTIONS = """
 
 # ── Mixture of Agents ────────────────────────────────────────────────
 # Per-model roster for the MoA tool.  Each entry accepts `model`,
-# `provider`, and optional `reasoning` ({minimal,low,medium,high,xhigh,none}).
+# `provider`, and optional `reasoning` ({minimal,low,medium,high,xhigh,max,none}).
 # Warning: routing multiple reference models through `openai-codex`
 # multiplies consumption against the Codex plan's daily cap.
 #

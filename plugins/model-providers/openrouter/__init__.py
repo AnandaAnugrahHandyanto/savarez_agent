@@ -83,7 +83,12 @@ class OpenRouterProfile(ProviderProfile):
         extra_body: dict[str, Any] = {}
         if supports_reasoning:
             if reasoning_config is not None:
-                extra_body["reasoning"] = dict(reasoning_config)
+                rc = dict(reasoning_config)
+                if rc.get("enabled") is not False:
+                    effort = str(rc.get("effort") or "").strip().lower()
+                    if effort == "max":
+                        rc["effort"] = "xhigh"
+                extra_body["reasoning"] = rc
             else:
                 extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
 

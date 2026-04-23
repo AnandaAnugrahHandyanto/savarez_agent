@@ -18,7 +18,7 @@ _LM_VALID_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
 
 # Toggle-style models publish allowed_options as ["off","on"] in /api/v1/models.
 # Map them onto the OpenAI-compatible request vocabulary.
-_LM_EFFORT_ALIASES = {"off": "none", "on": "medium"}
+_LM_EFFORT_ALIASES = {"off": "none", "on": "medium", "max": "xhigh"}
 
 
 def resolve_lmstudio_effort(

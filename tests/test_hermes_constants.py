@@ -158,7 +158,7 @@ class TestParseReasoningEffort:
 
     @pytest.mark.parametrize(
         "value",
-        ["bogus", "very-high", "max", "0", "off", "true", "default"],
+        ["bogus", "very-high", "0", "off", "true", "default"],
     )
     def test_unknown_levels_return_none(self, value):
         """Unrecognized strings fall back to the caller default (None)."""
@@ -272,8 +272,13 @@ class TestSecureParentDir:
         ({}, "medium"),
         ({"enabled": False}, "none"),
         ({"enabled": True, "effort": "high"}, "high"),
+        ({"enabled": True, "effort": "max"}, "max"),
         ({"enabled": True, "effort": "bogus"}, "medium"),
     ],
 )
 def test_reasoning_effort_label(reasoning_config, expected):
     assert reasoning_effort_label(reasoning_config) == expected
+
+
+def test_parse_reasoning_effort_accepts_max():
+    assert parse_reasoning_effort("max") == {"enabled": True, "effort": "max"}

@@ -227,6 +227,17 @@ class TestChatCompletionsBuildKwargs:
         # Nous rejects enabled=false; reasoning omitted entirely
         assert "reasoning" not in kw.get("extra_body", {})
 
+    def test_reasoning_max_clamped_to_xhigh_for_extra_body(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="anthropic/claude-opus-4.7",
+            messages=msgs,
+            supports_reasoning=True,
+            is_openrouter=True,
+            reasoning_config={"enabled": True, "effort": "max"},
+        )
+        assert kw["extra_body"]["reasoning"] == {"enabled": True, "effort": "xhigh"}
+
     def test_ollama_num_ctx(self, transport):
         from providers import get_provider_profile
         profile = get_provider_profile("custom")
@@ -338,6 +349,17 @@ class TestChatCompletionsBuildKwargs:
             provider_name="gemini",
             base_url="https://generativelanguage.googleapis.com/v1beta/openai",
             reasoning_config={"enabled": True, "effort": "xhigh"},
+        )
+        assert kw["extra_body"]["extra_body"]["google"]["thinking_config"]["thinking_level"] == "high"
+
+    def test_gemini_openai_compat_max_clamps_to_high(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemini-3-flash-preview",
+            messages=msgs,
+            provider_name="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            reasoning_config={"enabled": True, "effort": "max"},
         )
         assert kw["extra_body"]["extra_body"]["google"]["thinking_config"]["thinking_level"] == "high"
 
@@ -522,6 +544,33 @@ class TestChatCompletionsKimi:
         # Kimi requires reasoning_effort as a top-level parameter
         assert kw["reasoning_effort"] == "high"
 
+    def test_kimi_reasoning_effort_clamps_max_to_high(self, transport):
+        kw = transport.build_kwargs(
+            model="kimi-k2", messages=[{"role": "user", "content": "Hi"}],
+            is_kimi=True,
+            reasoning_config={"effort": "max"},
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw["reasoning_effort"] == "high"
+
+    def test_kimi_reasoning_effort_clamps_xhigh_to_high(self, transport):
+        kw = transport.build_kwargs(
+            model="kimi-k2", messages=[{"role": "user", "content": "Hi"}],
+            is_kimi=True,
+            reasoning_config={"effort": "xhigh"},
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw["reasoning_effort"] == "high"
+
+    def test_tokenhub_reasoning_effort_clamps_max_to_high(self, transport):
+        kw = transport.build_kwargs(
+            model="hunyuan-t1", messages=[{"role": "user", "content": "Hi"}],
+            is_tokenhub=True,
+            reasoning_config={"effort": "max"},
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw["reasoning_effort"] == "high"
+
     def test_kimi_reasoning_effort_omitted_when_thinking_disabled(self, transport):
         kw = transport.build_kwargs(
             model="kimi-k2", messages=[{"role": "user", "content": "Hi"}],
@@ -641,6 +690,16 @@ class TestChatCompletionsLmStudioReasoning:
             lmstudio_reasoning_options=["off", "low", "medium", "high"],
         )
         assert kw["reasoning_effort"] == "high"
+
+    def test_max_aliases_to_xhigh_when_allowed(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-oss", messages=[{"role": "user", "content": "Hi"}],
+            is_lmstudio=True,
+            supports_reasoning=True,
+            reasoning_config={"effort": "max"},
+            lmstudio_reasoning_options=["off", "low", "medium", "high", "xhigh"],
+        )
+        assert kw["reasoning_effort"] == "xhigh"
 
     def test_passes_through_aliased_on_for_toggle(self, transport):
         # User has reasoning enabled at the default "medium"; toggle model

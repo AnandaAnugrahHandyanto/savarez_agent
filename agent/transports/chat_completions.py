@@ -53,6 +53,8 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
     if normalized_model.startswith("gemini-2.5-"):
         return thinking_config
 
+    if effort == "max":
+        effort = "xhigh"
     if effort not in {"minimal", "low", "medium", "high", "xhigh"}:
         effort = "medium"
 
@@ -311,7 +313,11 @@ class ChatCompletionsTransport(ProviderTransport):
                 _kimi_effort = "medium"
                 if reasoning_config and isinstance(reasoning_config, dict):
                     _e = (reasoning_config.get("effort") or "").strip().lower()
-                    if _e in {"low", "medium", "high"}:
+                    # Kimi exposes low/medium/high only; map stronger global
+                    # tiers to its highest supported setting.
+                    if _e in ("xhigh", "max"):
+                        _e = "high"
+                    if _e in ("low", "medium", "high"):
                         _kimi_effort = _e
                 api_kwargs["reasoning_effort"] = _kimi_effort
 
@@ -326,7 +332,9 @@ class ChatCompletionsTransport(ProviderTransport):
                 _tokenhub_effort = "high"
                 if reasoning_config and isinstance(reasoning_config, dict):
                     _e = (reasoning_config.get("effort") or "").strip().lower()
-                    if _e in {"low", "medium", "high"}:
+                    if _e in ("xhigh", "max"):
+                        _e = "high"
+                    if _e in ("low", "medium", "high"):
                         _tokenhub_effort = _e
                 api_kwargs["reasoning_effort"] = _tokenhub_effort
 
@@ -348,6 +356,7 @@ class ChatCompletionsTransport(ProviderTransport):
         is_openrouter = params.get("is_openrouter", False)
         is_nous = params.get("is_nous", False)
         is_github_models = params.get("is_github_models", False)
+        is_qwen = params.get("is_qwen_portal", False)
         provider_name = str(params.get("provider_name") or "").strip().lower()
         base_url = params.get("base_url")
 
@@ -388,7 +397,41 @@ class ChatCompletionsTransport(ProviderTransport):
                 if gh_reasoning is not None:
                     extra_body["reasoning"] = gh_reasoning
             else:
-                extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
+                if reasoning_config is not None:
+                    rc = dict(reasoning_config)
+                    if rc.get("enabled") is not False:
+                        effort = str(rc.get("effort") or "").strip().lower()
+                        if effort == "max":
+                            # OpenAI-style reasoning routes top out at xhigh;
+                            # reserve literal "max" for Anthropic's native transport.
+                            rc["effort"] = "xhigh"
+                    if is_nous and rc.get("enabled") is False:
+                        pass  # omit for Nous when disabled
+                    else:
+                        extra_body["reasoning"] = rc
+                else:
+                    extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
+
+        if is_nous:
+            extra_body["tags"] = ["product=hermes-agent"]
+
+        # Ollama num_ctx
+        ollama_ctx = params.get("ollama_num_ctx")
+        if ollama_ctx:
+            options = extra_body.get("options", {})
+            options["num_ctx"] = ollama_ctx
+            extra_body["options"] = options
+
+        # Ollama/custom think=false
+        if params.get("is_custom_provider", False):
+            if reasoning_config and isinstance(reasoning_config, dict):
+                _effort = (reasoning_config.get("effort") or "").strip().lower()
+                _enabled = reasoning_config.get("enabled", True)
+                if _effort == "none" or _enabled is False:
+                    extra_body["think"] = False
+
+        if is_qwen:
+            extra_body["vl_high_resolution_images"] = True
 
         if provider_name == "gemini":
             raw_thinking_config = _build_gemini_thinking_config(model, reasoning_config)

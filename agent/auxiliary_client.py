@@ -695,6 +695,8 @@ class _CodexCompletionsAdapter:
                 # the main-agent Codex transport behavior.
                 if effort == "minimal":
                     effort = "low"
+                elif effort == "max":
+                    effort = "xhigh"
                 resp_kwargs["reasoning"] = {"effort": effort, "summary": "auto"}
                 resp_kwargs["include"] = ["reasoning.encrypted_content"]
 

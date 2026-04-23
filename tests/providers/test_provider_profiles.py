@@ -85,6 +85,14 @@ class TestKimiProfile:
         eb, tl = p.build_api_kwargs_extras(reasoning_config={"enabled": True})
         assert tl["reasoning_effort"] == "medium"
 
+    def test_reasoning_effort_max_clamps_to_high(self):
+        p = get_provider_profile("kimi")
+        eb, tl = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "max"}
+        )
+        assert eb["thinking"] == {"type": "enabled"}
+        assert tl["reasoning_effort"] == "high"
+
     def test_no_config_defaults(self):
         p = get_provider_profile("kimi")
         eb, tl = p.build_api_kwargs_extras(reasoning_config=None)
@@ -150,6 +158,14 @@ class TestOpenRouterProfile:
             supports_reasoning=True,
         )
         assert eb["reasoning"] == {"enabled": True, "effort": "high"}
+
+    def test_reasoning_max_clamps_to_xhigh(self):
+        p = get_provider_profile("openrouter")
+        eb, _ = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "max"},
+            supports_reasoning=True,
+        )
+        assert eb["reasoning"] == {"enabled": True, "effort": "xhigh"}
 
     def test_reasoning_disabled_still_passes(self):
         """OpenRouter passes disabled reasoning through (unlike Nous)."""
@@ -230,6 +246,14 @@ class TestNousProfile:
             supports_reasoning=True,
         )
         assert eb["reasoning"] == {"enabled": True, "effort": "medium"}
+
+    def test_reasoning_max_clamps_to_xhigh(self):
+        p = get_provider_profile("nous")
+        eb, _ = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "max"},
+            supports_reasoning=True,
+        )
+        assert eb["reasoning"] == {"enabled": True, "effort": "xhigh"}
 
     def test_reasoning_omitted_when_disabled(self):
         p = get_provider_profile("nous")
