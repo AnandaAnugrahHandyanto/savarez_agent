@@ -2051,8 +2051,9 @@ class AIAgent:
         old_norm = (old_provider or "").strip().lower()
         new_norm = (new_provider or "").strip().lower()
         if old_norm and new_norm and old_norm != new_norm:
+            fallback_chain = getattr(self, "_fallback_chain", []) or []
             self._fallback_chain = [
-                entry for entry in self._fallback_chain
+                entry for entry in fallback_chain
                 if (entry.get("provider") or "").strip().lower() not in {old_norm, new_norm}
             ]
             self._fallback_model = self._fallback_chain[0] if self._fallback_chain else None
@@ -6806,8 +6807,9 @@ class AIAgent:
     def _get_transport(self, api_mode: str = None):
         """Return the cached transport for the given (or current) api_mode.
 
-        Lazy-initializes on first call per api_mode. Returns None if no
-        transport is registered for the mode.
+        Lazy-initializes on first call per api_mode. If registry discovery was
+        disrupted by test-time module reloading, make one explicit best-effort
+        import for known transports before giving up.
         """
         mode = api_mode or self.api_mode
         cache = getattr(self, "_transport_cache", None)
@@ -6818,6 +6820,23 @@ class AIAgent:
         if t is None:
             from agent.transports import get_transport
             t = get_transport(mode)
+            if t is None:
+                try:
+                    direct_transports = {
+                        "anthropic_messages": ("agent.transports.anthropic", "AnthropicTransport"),
+                        "chat_completions": ("agent.transports.chat_completions", "ChatCompletionsTransport"),
+                        "codex_responses": ("agent.transports.codex", "ResponsesApiTransport"),
+                        "bedrock_converse": ("agent.transports.bedrock", "BedrockTransport"),
+                    }
+                    module_name, class_name = direct_transports.get(mode, (None, None))
+                    if module_name and class_name:
+                        import importlib
+                        module = importlib.import_module(module_name)
+                        transport_cls = getattr(module, class_name, None)
+                        if transport_cls is not None:
+                            t = transport_cls()
+                except Exception:
+                    pass
             cache[mode] = t
         return t
 
@@ -6974,6 +6993,9 @@ class AIAgent:
         """Build the keyword arguments dict for the active API mode."""
         if self.api_mode == "anthropic_messages":
             _transport = self._get_transport()
+            if _transport is None:
+                from agent.transports.anthropic import AnthropicTransport
+                _transport = AnthropicTransport()
             anthropic_messages = self._prepare_anthropic_messages_for_api(api_messages)
             ctx_len = getattr(self, "context_compressor", None)
             ctx_len = ctx_len.context_length if ctx_len else None
