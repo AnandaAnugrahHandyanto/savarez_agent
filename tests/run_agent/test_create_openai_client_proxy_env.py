@@ -22,7 +22,7 @@ from unittest.mock import patch
 
 import httpx
 
-from run_agent import AIAgent, _get_proxy_from_env
+from run_agent import AIAgent, _get_proxy_from_env, _should_bypass_proxy
 
 
 def _make_agent():
@@ -141,5 +141,140 @@ def test_create_openai_client_no_proxy_when_env_unset(mock_openai, monkeypatch):
     assert "HTTPProxy" not in pool_types, (
         "No proxy env set but httpx.Client still mounted HTTPProxy; "
         "pools were %r" % (pool_types,)
+    )
+    http_client.close()
+
+
+# ---------------------------------------------------------------------------
+# _should_bypass_proxy unit tests (#14451)
+# ---------------------------------------------------------------------------
+
+def test_should_bypass_proxy_no_env(monkeypatch):
+    """Without no_proxy set, nothing is bypassed."""
+    monkeypatch.delenv("no_proxy", raising=False)
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    assert _should_bypass_proxy("http://localhost:11434") is False
+    assert _should_bypass_proxy("https://api.openai.com") is False
+
+
+def test_should_bypass_proxy_localhost_match(monkeypatch):
+    """no_proxy=localhost should match localhost URLs."""
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.setenv("no_proxy", "localhost")
+    assert _should_bypass_proxy("http://localhost:11434/v1") is True
+    assert _should_bypass_proxy("https://api.openai.com/v1") is False
+
+
+def test_should_bypass_proxy_remote_still_proxied(monkeypatch):
+    """Remote hosts must not match a localhost-only no_proxy."""
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.setenv("no_proxy", "localhost,127.0.0.1")
+    assert _should_bypass_proxy("https://api.anthropic.com/v1") is False
+
+
+def test_should_bypass_proxy_wildcard(monkeypatch):
+    """no_proxy=* should bypass all hosts."""
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.setenv("no_proxy", "*")
+    assert _should_bypass_proxy("https://api.openai.com/v1") is True
+    assert _should_bypass_proxy("http://localhost:11434") is True
+
+
+def test_should_bypass_proxy_domain_suffix(monkeypatch):
+    """Domain suffixes (with or without leading dot) should match subdomains."""
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.setenv("no_proxy", ".example.com")
+    assert _should_bypass_proxy("https://api.example.com/v1") is True
+    assert _should_bypass_proxy("https://example.com/v1") is True
+    assert _should_bypass_proxy("https://notexample.com/v1") is False
+
+
+def test_should_bypass_proxy_case_insensitive(monkeypatch):
+    """Pattern matching must be case-insensitive."""
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.setenv("no_proxy", "LOCALHOST")
+    assert _should_bypass_proxy("http://Localhost:8080") is True
+
+
+def test_should_bypass_proxy_reads_NO_PROXY_uppercase(monkeypatch):
+    """NO_PROXY (uppercase) should be respected when no_proxy is absent."""
+    monkeypatch.delenv("no_proxy", raising=False)
+    monkeypatch.setenv("NO_PROXY", "localhost")
+    assert _should_bypass_proxy("http://localhost:11434") is True
+
+
+def test_should_bypass_proxy_empty_string(monkeypatch):
+    """Empty no_proxy should not bypass anything."""
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.setenv("no_proxy", "  ")
+    assert _should_bypass_proxy("http://localhost:11434") is False
+
+
+# ---------------------------------------------------------------------------
+# Integration: _build_keepalive_http_client respects no_proxy (#14451)
+# ---------------------------------------------------------------------------
+
+@patch("run_agent.OpenAI")
+def test_create_openai_client_no_proxy_bypasses_localhost(mock_openai, monkeypatch):
+    """With HTTPS_PROXY set but no_proxy=localhost, a localhost base_url must
+    NOT route through the proxy."""
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                "https_proxy", "http_proxy", "all_proxy"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+    monkeypatch.setenv("no_proxy", "localhost")
+
+    agent = _make_agent()
+    kwargs = {
+        "api_key": "test-key",
+        "base_url": "http://localhost:11434/v1",
+    }
+    agent._create_openai_client(kwargs, reason="test", shared=False)
+
+    forwarded = mock_openai.call_args.kwargs
+    http_client = _extract_http_client(forwarded)
+    assert isinstance(http_client, httpx.Client)
+    pool_types = [
+        type(mount._pool).__name__
+        for mount in http_client._mounts.values()
+        if mount is not None and hasattr(mount, "_pool")
+    ]
+    assert "HTTPProxy" not in pool_types, (
+        "no_proxy=localhost should suppress proxy for localhost base_url; "
+        "pools were %r" % (pool_types,)
+    )
+    http_client.close()
+
+
+@patch("run_agent.OpenAI")
+def test_create_openai_client_no_proxy_still_proxies_remote(mock_openai, monkeypatch):
+    """With HTTPS_PROXY set and no_proxy=localhost, a remote base_url must
+    still route through the proxy."""
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                "https_proxy", "http_proxy", "all_proxy"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+    monkeypatch.setenv("no_proxy", "localhost")
+
+    agent = _make_agent()
+    kwargs = {
+        "api_key": "test-key",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+    }
+    agent._create_openai_client(kwargs, reason="test", shared=False)
+
+    forwarded = mock_openai.call_args.kwargs
+    http_client = _extract_http_client(forwarded)
+    assert isinstance(http_client, httpx.Client)
+    proxied_pools = [
+        type(mount._pool).__name__
+        for mount in http_client._mounts.values()
+        if mount is not None and hasattr(mount, "_pool")
+    ]
+    assert "HTTPProxy" in proxied_pools, (
+        "Remote base_url should still use proxy when no_proxy only lists "
+        "localhost; pools were %r" % (proxied_pools,)
     )
     http_client.close()

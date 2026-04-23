@@ -181,6 +181,40 @@ def _get_proxy_from_env() -> Optional[str]:
     return None
 
 
+def _should_bypass_proxy(url: str) -> bool:
+    """Return True when *url* matches a ``no_proxy``/``NO_PROXY`` pattern.
+
+    Pattern matching follows the standard convention used by curl, wget, and
+    the Python ``urllib`` stack:
+
+    * Comma-separated hostnames or domain suffixes (leading dot optional).
+    * ``*`` matches everything (bypass proxy for all hosts).
+    * Comparison is case-insensitive and performed against the hostname part
+      of *url*.
+    """
+    no_proxy = os.environ.get("no_proxy", os.environ.get("NO_PROXY", "")).strip()
+    if not no_proxy:
+        return False
+
+    from urllib.parse import urlparse
+
+    hostname = (urlparse(url).hostname or "").lower()
+    if not hostname:
+        return False
+
+    for pattern in no_proxy.split(","):
+        pattern = pattern.strip().lower()
+        if not pattern:
+            continue
+        if pattern == "*":
+            return True
+        # Strip optional leading dot so ".example.com" matches like "example.com"
+        pattern = pattern.lstrip(".")
+        if hostname == pattern or hostname.endswith("." + pattern):
+            return True
+    return False
+
+
 def _install_safe_stdio() -> None:
     """Wrap stdout/stderr so best-effort console output cannot crash the agent."""
     for stream_name in ("stdout", "stderr"):
@@ -4466,7 +4500,7 @@ class AIAgent:
         return False
 
     @staticmethod
-    def _build_keepalive_http_client() -> Any:
+    def _build_keepalive_http_client(base_url: Optional[str] = None) -> Any:
         try:
             import httpx as _httpx
             import socket as _socket
@@ -4482,6 +4516,12 @@ class AIAgent:
             # from env vars (allow_env_proxies = trust_env and transport is None).
             # Explicitly read proxy settings to ensure HTTP_PROXY/HTTPS_PROXY work.
             _proxy = _get_proxy_from_env()
+            # Respect no_proxy / NO_PROXY: if the target base URL matches a
+            # bypass pattern, do not route through the proxy.  Without this,
+            # localhost/LAN endpoints behind a proxy env var fail with
+            # connection-refused or tunnel errors (#14451).
+            if _proxy and base_url and _should_bypass_proxy(base_url):
+                _proxy = None
             return _httpx.Client(
                 transport=_httpx.HTTPTransport(socket_options=_sock_opts),
                 proxy=_proxy,
@@ -4539,7 +4579,7 @@ class AIAgent:
                     if k in {"api_key", "base_url", "default_headers", "timeout", "http_client"}
                 }
                 if "http_client" not in safe_kwargs:
-                    keepalive_http = self._build_keepalive_http_client()
+                    keepalive_http = self._build_keepalive_http_client(base_url=base_url)
                     if keepalive_http is not None:
                         safe_kwargs["http_client"] = keepalive_http
                 client = GeminiNativeClient(**safe_kwargs)
@@ -4568,7 +4608,9 @@ class AIAgent:
         # Tests in ``tests/run_agent/test_create_openai_client_reuse.py`` and
         # ``tests/run_agent/test_sequential_chats_live.py`` pin this invariant.
         if "http_client" not in client_kwargs:
-            keepalive_http = self._build_keepalive_http_client()
+            keepalive_http = self._build_keepalive_http_client(
+                base_url=str(client_kwargs.get("base_url") or ""),
+            )
             if keepalive_http is not None:
                 client_kwargs["http_client"] = keepalive_http
         client = OpenAI(**client_kwargs)
