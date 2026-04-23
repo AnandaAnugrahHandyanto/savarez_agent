@@ -522,6 +522,72 @@ def profile_env(tmp_path, monkeypatch):
 
 ---
 
+## Development Workflow
+
+**Rule: Always write tests BEFORE implementing.** This ensures correctness is verified
+before and after the change, and prevents regressions.
+
+### Before Implementing
+
+1. **Write a failing unit test** covering the new behavior or bug fix. Place it in the
+   appropriate `tests/` subdirectory following existing patterns:
+   ```bash
+   # Example: test a new function in tools/send_message_tool.py
+   touch tests/tools/test_send_message_tool.py
+   # Then write the test with the expected (failing) behavior
+   ```
+
+2. **Run the test to confirm it fails** (red-green loop):
+   ```bash
+   scripts/run_tests.sh tests/tools/test_send_message_tool.py::test_my_new_feature -v
+   ```
+
+### After Implementing
+
+Once the test passes, run the full format and lint pipeline before committing:
+
+```bash
+# 1. Format all changed Python files with ruff
+ruff format
+
+# 2. Lint with ruff (E402 is ignored — pre-existing pattern)
+ruff check --fix
+
+# 3. Format shell, YAML, Markdown if changed
+shfmt -w .
+npx prettier --write '**/*.{yaml,yml,md}' '!website/**' '!ui-tui/node_modules/**' '!.venv/**'
+
+# 4. Run the affected tests
+scripts/run_tests.sh tests/path/to/your/test.py -v
+```
+
+### Commit Message Format
+
+```
+<type>(<scope>): <description>
+
+[type]   — feat, fix, refactor, test, docs, chore, style
+[scope]  — affected area (e.g., gateway, tools, cli, agent)
+[desc]   — imperative, present tense, no period
+```
+
+Example: `feat(gateway): add webhook retry backoff`
+
+### Pre-commit Hooks (Optional)
+
+Install pre-commit to run formatters automatically on commit:
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+
+This runs ruff, shfmt, and prettier on staged files before each commit.
+
+
+---
+
 ## Testing
 
 **ALWAYS use `scripts/run_tests.sh`** — do not call `pytest` directly. The script enforces
