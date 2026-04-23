@@ -22,6 +22,15 @@ from agent.redact import redact_sensitive_text
 logger = logging.getLogger(__name__)
 
 
+def _resolve_path(path: str) -> Path:
+    """Resolve a path against TERMINAL_CWD (worktree root) when set, else CWD."""
+    p = Path(path).expanduser()
+    if not p.is_absolute():
+        base = os.environ.get("TERMINAL_CWD") or os.getcwd()
+        return (Path(base) / p).resolve()
+    return p.resolve()
+
+
 _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
 
 # ---------------------------------------------------------------------------
