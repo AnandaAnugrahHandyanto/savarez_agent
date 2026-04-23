@@ -500,6 +500,23 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- Feishu: special handling for media attachments ---
+    if platform == Platform.FEISHU:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_feishu(
+                pconfig,
+                chat_id,
+                chunk,
+                media_files=media_files if is_last else [],
+                thread_id=thread_id,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Non-Telegram/Discord platforms ---
     if media_files and not message.strip():
         return {
@@ -535,8 +552,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_homeassistant(pconfig.token, pconfig.extra, chat_id, chunk)
         elif platform == Platform.DINGTALK:
             result = await _send_dingtalk(pconfig.extra, chat_id, chunk)
-        elif platform == Platform.FEISHU:
-            result = await _send_feishu(pconfig, chat_id, chunk, thread_id=thread_id)
         elif platform == Platform.WECOM:
             result = await _send_wecom(pconfig.extra, chat_id, chunk)
         elif platform == Platform.BLUEBUBBLES:
