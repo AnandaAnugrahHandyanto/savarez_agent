@@ -418,13 +418,19 @@ def _compute_scorecard(data: Dict[str, Any]) -> Dict[str, Any]:
     else:
         breakdown["Bus close hygiene"] = ("🔴", f"{bus['open_count']} open task 漏關")
 
-    # HF cards (1)
+    # HF cards (1) — Rule 8 checklist requires 72h alarm
     hf = data["hf"]
-    if hf.get("health_ok"):
-        breakdown["HF discipline"] = ("🟢", "無超期 pending card")
+    oldest = hf.get("oldest_pending_hours", 0) or 0
+    if oldest >= 72:
+        breakdown["HF discipline"] = ("🔴", f"⚠️ Rule 8 72h 例外條件觸發：最老 pending {oldest}h")
+    elif oldest >= 48:
+        breakdown["HF discipline"] = ("🟡", f"最老 pending {oldest}h（逼近 72h）")
+        score += 1  # still counts but warn
+    elif hf.get("health_ok"):
+        breakdown["HF discipline"] = ("🟢", f"無超期 pending card（最老 {oldest}h）")
         score += 1
     else:
-        breakdown["HF discipline"] = ("🔴", f"最老 pending {hf.get('oldest_pending_hours')}h")
+        breakdown["HF discipline"] = ("🔴", f"最老 pending {oldest}h")
 
     # M2 symmetry (2)
     ev = data["evolution"]
@@ -451,8 +457,14 @@ def _compute_scorecard(data: Dict[str, Any]) -> Dict[str, Any]:
         actions.append("OpenClaw 寫本週第一篇 inbound `*_evolution_*.md`（主題建議：openclaw-outbound-hook，見 coaching session empty-chair Q2.3）")
     if data["coaching"].get("blanks_openclaw", 0) > 0:
         actions.append(f"OpenClaw 回填 coaching session 的 {data['coaching']['blanks_openclaw']} 個待填答")
-    if not hf.get("health_ok"):
-        actions.append(f"處理超期 pending HF card（最老 {hf.get('oldest_pending_hours')}h）")
+    if oldest >= 72:
+        actions.append(
+            f"⚠️ Rule 8 72h 例外條件已觸發（最老 pending {oldest}h）— 觸發 Brian 拍板流程"
+        )
+    elif oldest >= 48:
+        actions.append(f"逼近 Rule 8 72h 閾值（最老 pending {oldest}h），48h 內須處理")
+    elif not hf.get("health_ok"):
+        actions.append(f"處理超期 pending HF card（最老 {oldest}h）")
     if bus.get("open_count", 0) > 0:
         actions.append(f"清 bus {bus['open_count']} 個 open task，驗證 finalizer gate")
     if q.get("force_review", 0) > 0:
