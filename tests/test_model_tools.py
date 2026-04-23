@@ -181,3 +181,21 @@ class TestCoerceNumber:
         result = _coerce_number("not_a_number")
         assert result == "not_a_number"
         assert isinstance(result, str)
+
+
+# =========================================================================
+# Tool discovery
+# =========================================================================
+
+class TestToolDiscovery:
+    def test_http_request_discovered(self):
+        """http_request tool must be discovered by _discover_tools()."""
+        assert "http_request" in get_all_tool_names()
+
+    def test_http_request_has_schema(self):
+        """http_request tool must have a valid schema after discovery."""
+        from model_tools import registry
+        schema = registry.get_schema("http_request")
+        assert schema is not None
+        assert schema["name"] == "http_request"
+        assert "url" in schema["parameters"]["properties"]
