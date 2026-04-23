@@ -1100,6 +1100,70 @@ class TestSendToPlatformDiscordMedia:
         assert call_kwargs["media_files"] == [("/fake/img.png", False)]
 
 
+class TestSendToPlatformFeishuMedia:
+    """_send_to_platform routes Feishu media correctly."""
+
+    def test_media_files_passed_on_last_chunk_only(self):
+        call_log = []
+
+        async def mock_send_feishu(pconfig, chat_id, message, media_files=None, thread_id=None):
+            call_log.append(
+                {
+                    "message": message,
+                    "media_files": media_files or [],
+                    "thread_id": thread_id,
+                }
+            )
+            return {"success": True, "platform": "feishu", "chat_id": chat_id, "message_id": "1"}
+
+        long_msg = "A" * 5000 + " " + "B" * 5000
+
+        with patch("tools.send_message_tool._send_feishu", side_effect=mock_send_feishu):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.FEISHU,
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "oc_chat",
+                    long_msg,
+                    thread_id="oc_thread",
+                    media_files=[("/fake/img.png", False)],
+                )
+            )
+
+        assert result["success"] is True
+        assert len(call_log) == 2
+        assert call_log[0]["media_files"] == []
+        assert call_log[1]["media_files"] == [("/fake/img.png", False)]
+        assert all(call["thread_id"] == "oc_thread" for call in call_log)
+
+    def test_media_only_routes_to_feishu_without_warning_or_error(self):
+        async def mock_send_feishu(pconfig, chat_id, message, media_files=None, thread_id=None):
+            return {
+                "success": True,
+                "platform": "feishu",
+                "chat_id": chat_id,
+                "message_id": "img1",
+                "warnings": ["upstream-warning"],
+            }
+
+        with patch("tools.send_message_tool._send_feishu", side_effect=mock_send_feishu) as send_mock:
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.FEISHU,
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "oc_chat",
+                    "   ",
+                    media_files=[("/fake/img.png", False)],
+                )
+            )
+
+        assert result["success"] is True
+        assert result["warnings"] == ["upstream-warning"]
+        send_mock.assert_awaited_once()
+        assert send_mock.await_args.kwargs["media_files"] == [("/fake/img.png", False)]
+        assert send_mock.await_args.args[2].strip() == ""
+
+
 class TestSendMatrixUrlEncoding:
     """_send_matrix URL-encodes Matrix room IDs in the API path."""
 
