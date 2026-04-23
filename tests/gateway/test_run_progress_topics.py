@@ -783,6 +783,22 @@ async def test_base_processing_releases_post_delivery_callback_after_main_send()
 
 
 @pytest.mark.asyncio
+async def test_post_delivery_callbacks_compose_for_same_session():
+    """Multiple post-delivery callbacks for a session should all run."""
+    adapter = ProgressCaptureAdapter()
+    fired = []
+
+    adapter.register_post_delivery_callback("sess", lambda: fired.append("first"), generation=3)
+    adapter.register_post_delivery_callback("sess", lambda: fired.append("second"), generation=3)
+
+    callback = adapter.pop_post_delivery_callback("sess", generation=3)
+    assert callable(callback)
+    callback()
+
+    assert fired == ["first", "second"]
+
+
+@pytest.mark.asyncio
 async def test_run_agent_drops_tool_progress_after_generation_invalidation(monkeypatch, tmp_path):
     import yaml
 

@@ -7,6 +7,7 @@ import pytest
 
 from agent.title_generator import (
     generate_title,
+    generate_title_if_missing,
     auto_title_session,
     maybe_auto_title,
 )
@@ -89,19 +90,26 @@ class TestAutoTitleSession:
     def test_skips_if_no_session_db(self):
         auto_title_session(None, "sess-1", "hi", "hello")  # should not crash
 
-    def test_skips_if_title_exists(self):
+    def test_generate_title_if_missing_skips_if_title_exists(self):
         db = MagicMock()
         db.get_session_title.return_value = "Existing Title"
 
         with patch("agent.title_generator.generate_title") as gen:
-            auto_title_session(db, "sess-1", "hi", "hello")
+            assert generate_title_if_missing(db, "sess-1", "hi", "hello") is None
             gen.assert_not_called()
+
+    def test_generate_title_if_missing_returns_generated_title(self):
+        db = MagicMock()
+        db.get_session_title.return_value = None
+
+        with patch("agent.title_generator.generate_title", return_value="New Title"):
+            assert generate_title_if_missing(db, "sess-1", "hi", "hello") == "New Title"
 
     def test_generates_and_sets_title(self):
         db = MagicMock()
         db.get_session_title.return_value = None
 
-        with patch("agent.title_generator.generate_title", return_value="New Title"):
+        with patch("agent.title_generator.generate_title_if_missing", return_value="New Title"):
             auto_title_session(db, "sess-1", "hi", "hello")
             db.set_session_title.assert_called_once_with("sess-1", "New Title")
 
@@ -109,7 +117,7 @@ class TestAutoTitleSession:
         db = MagicMock()
         db.get_session_title.return_value = None
 
-        with patch("agent.title_generator.generate_title", return_value=None):
+        with patch("agent.title_generator.generate_title_if_missing", return_value=None):
             auto_title_session(db, "sess-1", "hi", "hello")
             db.set_session_title.assert_not_called()
 
