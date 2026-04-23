@@ -54,6 +54,7 @@ const randId = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toSt
 
 export default function ChatPage() {
   const gwRef = useRef<GatewayClient | null>(null);
+  const bootstrapSeqRef = useRef(0);
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -90,6 +91,7 @@ export default function ChatPage() {
   const pushSystem = useCallback((text: string) => pushMessage("system", text), [pushMessage]);
 
   const bootstrap = useCallback(async () => {
+    const seq = ++bootstrapSeqRef.current;
     setEntries([]);
     setSessionId("");
     setSessionInfo(null);
@@ -100,30 +102,38 @@ export default function ChatPage() {
     gwRef.current?.close();
     const gw = new GatewayClient();
     gwRef.current = gw;
-    gw.onState(setConnState);
+
+    const isCurrent = () => gwRef.current === gw && bootstrapSeqRef.current === seq;
+
+    gw.onState((state) => {
+      if (isCurrent()) setConnState(state);
+    });
 
     gw.on<SessionInfoPayload>("session.info", (ev) => {
-      if (ev.payload) setSessionInfo(ev.payload);
+      if (isCurrent() && ev.payload) setSessionInfo(ev.payload);
     });
 
     gw.on("message.start", () => {
+      if (!isCurrent()) return;
       pushMessage("assistant", "", { streaming: true });
       setBusy(true);
     });
 
     gw.on<{ text?: string }>("message.delta", (ev) => {
+      if (!isCurrent()) return;
       const delta = ev.payload?.text ?? "";
       if (!delta) return;
       updateStreamingAssistant((m) => ({ ...m, text: m.text + delta }));
     });
 
     gw.on<{ text?: string }>("message.complete", (ev) => {
+      if (!isCurrent()) return;
       updateStreamingAssistant((m) => ({ ...m, text: ev.payload?.text ?? m.text, streaming: false }));
       setBusy(false);
     });
 
     gw.on<{ tool_id: string; name?: string; context?: string }>("tool.start", (ev) => {
-      if (!ev.payload) return;
+      if (!isCurrent() || !ev.payload) return;
       const row: ToolEntry = {
         kind: "tool",
         id: `t-${ev.payload.tool_id}`,
@@ -145,6 +155,7 @@ export default function ChatPage() {
     });
 
     gw.on<{ name?: string; preview?: string }>("tool.progress", (ev) => {
+      if (!isCurrent()) return;
       const name = ev.payload?.name ?? "";
       const preview = ev.payload?.preview ?? "";
       if (!name || !preview) return;
@@ -152,27 +163,32 @@ export default function ChatPage() {
     });
 
     gw.on<{ tool_id: string; summary?: string; error?: string; inline_diff?: string }>("tool.complete", (ev) => {
-      if (!ev.payload) return;
+      if (!isCurrent() || !ev.payload) return;
       setEntries((list) => list.map((e) => e.kind === "tool" && e.tool_id === ev.payload!.tool_id ? { ...e, status: ev.payload?.error ? "error" : "done", summary: ev.payload?.summary, error: ev.payload?.error, inline_diff: ev.payload?.inline_diff, completedAt: Date.now() } : e));
     });
 
     gw.on<{ message?: string }>("error", (ev) => {
+      if (!isCurrent()) return;
       setRuntimeError(ev.payload?.message ?? "unknown error");
       setBusy(false);
     });
 
     try {
       await gw.connect();
+      if (!isCurrent()) return;
       if (resumeId) {
         const resp = await gw.request<SessionResumeResponse>("session.resume", { session_id: resumeId, cols: 100 });
+        if (!isCurrent()) return;
         setSessionId(resp.session_id);
         setEntries(hydrateMessages(resp.messages ?? []));
         pushSystem(`resumed session ${resp.resumed} · ${resp.message_count ?? resp.messages?.length ?? 0} messages`);
       } else {
         const { session_id } = await gw.request<{ session_id: string }>("session.create", { cols: 100 });
+        if (!isCurrent()) return;
         setSessionId(session_id);
       }
     } catch (err) {
+      if (!isCurrent()) return;
       setConnectError(err instanceof Error ? err.message : String(err));
     }
   }, [pushMessage, pushSystem, resumeId, updateStreamingAssistant]);
