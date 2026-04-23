@@ -296,6 +296,7 @@ class ContextCompressor(ContextEngine):
         self._previous_summary = None
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
+        self._last_compression_time = 0.0
 
     def update_model(
         self,
@@ -317,6 +318,8 @@ class ContextCompressor(ContextEngine):
             int(context_length * self.threshold_percent),
             MINIMUM_CONTEXT_LENGTH,
         )
+        if self.threshold_tokens >= context_length:
+            self.threshold_tokens = int(context_length * self.threshold_percent)
 
     def __init__(
         self,
@@ -353,10 +356,17 @@ class ContextCompressor(ContextEngine):
         # the percentage would suggest a lower value.  This prevents premature
         # compression on large-context models at 50% while keeping the % sane
         # for models right at the minimum.
+        # However, when context_length <= MINIMUM_CONTEXT_LENGTH the floor
+        # would make threshold >= 100% of context, which is unreachable — the
+        # API errors out before prompt_tokens can reach that value.  In that
+        # case fall back to the percentage-based value so compression can
+        # actually trigger.
         self.threshold_tokens = max(
             int(self.context_length * threshold_percent),
             MINIMUM_CONTEXT_LENGTH,
         )
+        if self.threshold_tokens >= self.context_length:
+            self.threshold_tokens = int(self.context_length * threshold_percent)
         self.compression_count = 0
 
         # Derive token budgets: ratio is relative to the threshold, not total context
@@ -388,6 +398,8 @@ class ContextCompressor(ContextEngine):
         # Anti-thrashing: track whether last compression was effective
         self._last_compression_savings_pct: float = 100.0
         self._ineffective_compression_count: int = 0
+        self._last_compression_time: float = 0.0
+        self._ANTI_THRASH_RECOVERY_SECONDS: float = 300.0
         self._summary_failure_cooldown_until: float = 0.0
 
     def update_from_response(self, usage: Dict[str, Any]):
@@ -406,15 +418,28 @@ class ContextCompressor(ContextEngine):
         if tokens < self.threshold_tokens:
             return False
         # Anti-thrashing: back off if recent compressions were ineffective
+        # Auto-recovery: if enough time has passed since the last compression
+        # attempt, reset the counter.  Without this, a session that had two
+        # ineffective compressions early on will never auto-compress again,
+        # even as the context grows far beyond the threshold.
         if self._ineffective_compression_count >= 2:
-            if not self.quiet_mode:
-                logger.warning(
-                    "Compression skipped — last %d compressions saved <10%% each. "
-                    "Consider /new to start a fresh session, or /compress <topic> "
-                    "for focused compression.",
-                    self._ineffective_compression_count,
-                )
-            return False
+            _elapsed = time.monotonic() - self._last_compression_time
+            if _elapsed > self._ANTI_THRASH_RECOVERY_SECONDS:
+                self._ineffective_compression_count = 0
+                if not self.quiet_mode:
+                    logger.info(
+                        "Anti-thrashing reset: %.0fs since last compression attempt",
+                        _elapsed,
+                    )
+            else:
+                if not self.quiet_mode:
+                    logger.warning(
+                        "Compression skipped — last %d compressions saved <10%% each. "
+                        "Consider /new to start a fresh session, or /compress <topic> "
+                        "for focused compression.",
+                        self._ineffective_compression_count,
+                    )
+                return False
         return True
 
     # ------------------------------------------------------------------
@@ -1258,6 +1283,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         # Anti-thrashing: track compression effectiveness
         savings_pct = (saved_estimate / display_tokens * 100) if display_tokens > 0 else 0
         self._last_compression_savings_pct = savings_pct
+        self._last_compression_time = time.monotonic()
         if savings_pct < 10:
             self._ineffective_compression_count += 1
         else:
