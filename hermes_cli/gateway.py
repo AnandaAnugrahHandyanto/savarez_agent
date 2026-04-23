@@ -1531,6 +1531,8 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     # (#8202). 30s of headroom covers the worst case we've observed.
     _drain_timeout = int(_get_restart_drain_timeout() or 0)
     restart_timeout = max(60, _drain_timeout) + 30
+    ld_library_path = os.environ.get("LD_LIBRARY_PATH", "")
+    _ld_lib_env = ('Environment="LD_LIBRARY_PATH=' + ld_library_path + '"\n') if ld_library_path else ""
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
@@ -1567,7 +1569,7 @@ Environment="LOGNAME={username}"
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
-Restart=on-failure
+{_ld_lib_env}Restart=on-failure
 RestartSec=30
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
@@ -1599,7 +1601,7 @@ WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
-Restart=on-failure
+{_ld_lib_env}Restart=on-failure
 RestartSec=30
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
