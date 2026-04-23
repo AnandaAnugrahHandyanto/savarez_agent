@@ -652,7 +652,7 @@ DEFAULT_CONFIG = {
     
     "stt": {
         "enabled": True,
-        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe)
+        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "bytedance" (Seed-ASR)
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
@@ -662,6 +662,9 @@ DEFAULT_CONFIG = {
         },
         "mistral": {
             "model": "voxtral-mini-latest",  # voxtral-mini-latest, voxtral-mini-2602
+        },
+        "bytedance": {
+            "model": "seedasr",  # seedasr (Seed-ASR 2.0)
         },
     },
 
@@ -1460,6 +1463,13 @@ OPTIONAL_ENV_VARS = {
         "description": "Mistral API key for Voxtral TTS and transcription (STT)",
         "prompt": "Mistral API key",
         "url": "https://console.mistral.ai/",
+        "password": True,
+        "category": "tool",
+    },
+    "BYTEDANCE_API_KEY": {
+        "description": "ByteDance Seed-ASR API key for voice transcription (STT)",
+        "prompt": "ByteDance Seed-ASR API Key",
+        "url": "https://console.volcengine.com/speech/service/8",
         "password": True,
         "category": "tool",
     },

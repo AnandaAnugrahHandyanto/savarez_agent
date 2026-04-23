@@ -2,17 +2,19 @@
 """
 Transcription Tools Module
 
-Provides speech-to-text transcription with three providers:
+Provides speech-to-text transcription with five providers:
 
   - **local** (default, free) — faster-whisper running locally, no API key needed.
     Auto-downloads the model (~150 MB for ``base``) on first use.
   - **groq** (free tier) — Groq Whisper API, requires ``GROQ_API_KEY``.
   - **openai** (paid) — OpenAI Whisper API, requires ``VOICE_TOOLS_OPENAI_KEY``.
+  - **mistral** (paid) — Mistral Voxtral Transcribe, requires ``MISTRAL_API_KEY``.
+  - **bytedance** (paid, 20h free) — ByteDance Seed-ASR, requires ``BYTEDANCE_API_KEY``.
 
 Used by the messaging gateway to automatically transcribe voice messages
 sent by users on Telegram, Discord, WhatsApp, Slack, and Signal.
 
-Supported input formats: mp3, mp4, mpeg, mpga, m4a, wav, webm, ogg, aac
+Supported input formats: mp3, mp4, mpeg, mpga, m4a, wav, webm, ogg, aac, flac
 
 Usage::
 
@@ -67,6 +69,10 @@ DEFAULT_LOCAL_STT_LANGUAGE = "en"
 DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
 DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest")
+DEFAULT_BYTEDANCE_STT_MODEL = os.getenv("STT_BYTEDANCE_MODEL", "seedasr")
+BYTEDANCE_SUBMIT_URL = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit"
+BYTEDANCE_QUERY_URL = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/query"
+BYTEDANCE_RESOURCE_ID = "volc.seedasr.auc"
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
@@ -242,6 +248,14 @@ def _get_provider(stt_config: dict) -> str:
             )
             return "none"
 
+        if provider == "bytedance":
+            if os.getenv("BYTEDANCE_API_KEY"):
+                return "bytedance"
+            logger.warning(
+                "STT provider 'bytedance' configured but BYTEDANCE_API_KEY not set"
+            )
+            return "none"
+
         return provider  # Unknown — let it fail downstream
 
     # --- Auto-detect (no explicit provider): local > groq > openai > mistral -
@@ -259,6 +273,9 @@ def _get_provider(stt_config: dict) -> str:
     if _HAS_MISTRAL and os.getenv("MISTRAL_API_KEY"):
         logger.info("No local STT available, using Mistral Voxtral Transcribe API")
         return "mistral"
+    if os.getenv("BYTEDANCE_API_KEY"):
+        logger.info("No local STT available, using ByteDance Seed-ASR")
+        return "bytedance"
     return "none"
 
 # ---------------------------------------------------------------------------
@@ -574,6 +591,112 @@ def _transcribe_mistral(file_path: str, model_name: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Provider: ByteDance Seed-ASR (豆包语音识别)
+# ---------------------------------------------------------------------------
+
+_BYTEDANCE_FORMAT_MAP = {
+    ".mp3": "mp3", ".ogg": "ogg", ".wav": "wav", ".m4a": "m4a",
+    ".flac": "flac", ".mp4": "mp4", ".webm": "webm", ".aac": "aac",
+    ".mpeg": "mpeg", ".mpga": "mp3",
+}
+
+
+def _transcribe_bytedance(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe using ByteDance Seed-ASR API (豆包).
+
+    Uses the async file-recognition endpoint: submit task with base64 audio,
+    then poll for the result.  No external SDK needed — only ``requests``.
+    """
+    import base64
+    import time
+    import uuid
+
+    import requests
+
+    api_key = os.getenv("BYTEDANCE_API_KEY")
+    if not api_key:
+        return {"success": False, "transcript": "", "error": "BYTEDANCE_API_KEY not set"}
+
+    audio_path = Path(file_path)
+    audio_fmt = _BYTEDANCE_FORMAT_MAP.get(audio_path.suffix.lower(), "mp3")
+    request_id = str(uuid.uuid4())
+
+    try:
+        with open(file_path, "rb") as f:
+            audio_b64 = base64.b64encode(f.read()).decode()
+
+        headers = {
+            "X-Api-Key": api_key,
+            "X-Api-Resource-Id": BYTEDANCE_RESOURCE_ID,
+            "X-Api-Request-Id": request_id,
+            "X-Api-Sequence": "-1",
+            "Content-Type": "application/json",
+        }
+
+        body = {
+            "user": {"uid": "hermes-agent"},
+            "audio": {
+                "data": audio_b64,
+                "format": audio_fmt,
+                "codec": "raw",
+            },
+            "request": {
+                "model_name": model_name if model_name != "seedasr" else "bigmodel",
+                "enable_punc": True,
+                "enable_itn": True,
+            },
+        }
+
+        # Submit task
+        resp = requests.post(BYTEDANCE_SUBMIT_URL, headers=headers, json=body, timeout=30)
+        status_code = resp.headers.get("X-Api-Status-Code", "")
+        if status_code != "20000000":
+            msg = resp.headers.get("X-Api-Message", resp.text[:200])
+            return {"success": False, "transcript": "", "error": f"Seed-ASR submit failed ({status_code}): {msg}"}
+
+        # Poll for result
+        deadline = time.monotonic() + 300  # 5 min timeout
+        while time.monotonic() < deadline:
+            time.sleep(3)
+            try:
+                poll_resp = requests.post(BYTEDANCE_QUERY_URL, headers=headers, json={}, timeout=30)
+            except (requests.Timeout, requests.ConnectionError) as e:
+                logger.warning("Seed-ASR poll network error (will retry): %s", e)
+                continue
+            poll_status = poll_resp.headers.get("X-Api-Status-Code", "")
+
+            if poll_status == "20000000":  # done
+                try:
+                    data = poll_resp.json()
+                except Exception:
+                    data = {}
+                text = data.get("result", {}).get("text", "")
+                if not text:
+                    utterances = data.get("result", {}).get("utterances", [])
+                    text = " ".join(u.get("text", "") for u in utterances).strip()
+                logger.info(
+                    "Transcribed %s via ByteDance Seed-ASR (%s, %d chars)",
+                    audio_path.name, model_name, len(text),
+                )
+                return {"success": True, "transcript": text, "provider": "bytedance"}
+
+            if poll_status == "20000003":  # silent audio
+                return {"success": True, "transcript": "", "provider": "bytedance"}
+
+            if poll_status not in ("20000001", "20000002"):  # unexpected error
+                msg = poll_resp.headers.get("X-Api-Message", "")
+                return {"success": False, "transcript": "", "error": f"Seed-ASR poll error ({poll_status}): {msg}"}
+
+        return {"success": False, "transcript": "", "error": "Seed-ASR transcription timed out (300s)"}
+
+    except PermissionError:
+        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
+    except Exception as e:
+        logger.error("ByteDance Seed-ASR transcription failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"ByteDance transcription failed: {type(e).__name__}"}
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -641,6 +764,11 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         model_name = model or mistral_cfg.get("model", DEFAULT_MISTRAL_STT_MODEL)
         return _transcribe_mistral(file_path, model_name)
 
+    if provider == "bytedance":
+        bd_cfg = stt_config.get("bytedance", {})
+        model_name = model or bd_cfg.get("model", DEFAULT_BYTEDANCE_STT_MODEL)
+        return _transcribe_bytedance(file_path, model_name)
+
     # No provider available
     return {
         "success": False,
@@ -649,7 +777,8 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             "No STT provider available. Install faster-whisper for free local "
             f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
             "set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral "
-            "Voxtral Transcribe, or set VOICE_TOOLS_OPENAI_KEY "
+            "Voxtral Transcribe, set BYTEDANCE_API_KEY for ByteDance Seed-ASR, "
+            "or set VOICE_TOOLS_OPENAI_KEY "
             "or OPENAI_API_KEY for the OpenAI Whisper API."
         ),
     }
