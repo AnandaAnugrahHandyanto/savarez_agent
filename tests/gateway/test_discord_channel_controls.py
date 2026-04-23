@@ -147,6 +147,19 @@ async def test_non_ignored_channel_processes_normally(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_ignored_channel_name_blocks_message(adapter, monkeypatch):
+    """ignored_channels should accept channel names as well as IDs."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "ops-alerts")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    message = make_message(channel=FakeTextChannel(channel_id=500, name="ops-alerts"), content="hello")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_allowed_channel_id_still_matches(adapter, monkeypatch):
     """allowed_channels should continue to accept numeric channel IDs."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
