@@ -106,6 +106,10 @@ class TestCheckSensitivePathMacOSBypass:
         from tools.file_tools import _check_sensitive_path
         assert _check_sensitive_path("/tmp/safe_file.txt") is None
 
+    def test_active_tempdir_under_private_var_allowed(self, tmp_path: Path):
+        from tools.file_tools import _check_sensitive_path
+        assert _check_sensitive_path(str(tmp_path / "safe.txt")) is None
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
