@@ -1173,7 +1173,7 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 8
+        assert version == 9
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -1229,12 +1229,12 @@ class TestSchemaInit:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to v8
+        # Open with SessionDB — should migrate to v9
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 8
+        assert cursor.fetchone()[0] == 9
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
@@ -1246,6 +1246,12 @@ class TestSchemaInit:
             "SELECT api_call_count FROM sessions WHERE id = 'existing'"
         )
         assert cursor.fetchone()[0] == 0
+
+        # Verify last_active_at was backfilled from started_at for existing rows
+        cursor = migrated_db._conn.execute(
+            "SELECT last_active_at FROM sessions WHERE id = 'existing'"
+        )
+        assert cursor.fetchone()[0] == 1000.0
 
         # Verify we can set title on migrated session
         assert migrated_db.set_session_title("existing", "Migrated Title") is True
@@ -1437,6 +1443,23 @@ class TestListSessionsRich:
         sessions = db.list_sessions_rich()
         # No messages, so last_active falls back to started_at
         assert sessions[0]["last_active"] == sessions[0]["started_at"]
+
+    def test_reopen_session_refreshes_last_active_over_old_messages(self, db):
+        import time
+
+        db.create_session("s1", "cli")
+        db.append_message("s1", "user", "Hello")
+        sessions = db.list_sessions_rich()
+        previous_last_active = sessions[0]["last_active"]
+
+        time.sleep(0.01)
+        db.end_session("s1", end_reason="user_exit")
+        time.sleep(0.01)
+        db.reopen_session("s1")
+
+        refreshed = db.list_sessions_rich()[0]
+        assert refreshed["ended_at"] is None
+        assert refreshed["last_active"] > previous_last_active
 
     def test_rich_list_includes_title(self, db):
         db.create_session("s1", "cli")

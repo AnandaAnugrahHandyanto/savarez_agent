@@ -31,7 +31,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     pricing_version TEXT,
     title TEXT,
     api_call_count INTEGER DEFAULT 0,
+    last_active_at REAL,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -347,8 +348,7 @@ class SessionDB:
                 cursor.execute("UPDATE schema_version SET version = 7")
             if current_version < 8:
                 # v8: add api_call_count column to sessions — tracks the number
-                # of individual LLM API calls made within a session (as opposed
-                # to the session count itself).
+                # of update_token_counts() calls for richer session analytics.
                 try:
                     cursor.execute(
                         'ALTER TABLE sessions ADD COLUMN "api_call_count" INTEGER DEFAULT 0'
@@ -356,9 +356,22 @@ class SessionDB:
                 except sqlite3.OperationalError:
                     pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 8")
+            if current_version < 9:
+                # v9: track explicit session reactivation time so resumed CLI
+                # sessions surface as active before the next user message lands.
+                try:
+                    cursor.execute(
+                        'ALTER TABLE sessions ADD COLUMN "last_active_at" REAL'
+                    )
+                except sqlite3.OperationalError:
+                    pass  # Column already exists
+                cursor.execute(
+                    "UPDATE sessions SET last_active_at = COALESCE(last_active_at, started_at)"
+                )
+                cursor.execute("UPDATE schema_version SET version = 9")
 
-        # Unique title index — always ensure it exists (safe to run after migrations
-        # since the title column is guaranteed to exist at this point)
+            self._conn.commit()
+
         try:
             cursor.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique "
@@ -391,10 +404,11 @@ class SessionDB:
     ) -> str:
         """Create a new session record. Returns the session_id."""
         def _do(conn):
+            now = time.time()
             conn.execute(
                 """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
-                   system_prompt, parent_session_id, started_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   system_prompt, parent_session_id, started_at, last_active_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     source,
@@ -403,7 +417,8 @@ class SessionDB:
                     json.dumps(model_config) if model_config else None,
                     system_prompt,
                     parent_session_id,
-                    time.time(),
+                    now,
+                    now,
                 ),
             )
         self._execute_write(_do)
@@ -428,11 +443,11 @@ class SessionDB:
         self._execute_write(_do)
 
     def reopen_session(self, session_id: str) -> None:
-        """Clear ended_at/end_reason so a session can be resumed."""
+        """Clear ended_at/end_reason and refresh activity for resumed sessions."""
         def _do(conn):
             conn.execute(
-                "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?",
-                (session_id,),
+                "UPDATE sessions SET ended_at = NULL, end_reason = NULL, last_active_at = ? WHERE id = ?",
+                (time.time(), session_id),
             )
         self._execute_write(_do)
 
@@ -842,9 +857,9 @@ class SessionDB:
                      ORDER BY m.timestamp, m.id LIMIT 1),
                     ''
                 ) AS _preview_raw,
-                COALESCE(
-                    (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
-                    s.started_at
+                MAX(
+                    COALESCE((SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id), 0),
+                    COALESCE(s.last_active_at, s.started_at)
                 ) AS last_active
             FROM sessions s
             {where_sql}
@@ -917,9 +932,9 @@ class SessionDB:
                      ORDER BY m.timestamp, m.id LIMIT 1),
                     ''
                 ) AS _preview_raw,
-                COALESCE(
-                    (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
-                    s.started_at
+                MAX(
+                    COALESCE((SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id), 0),
+                    COALESCE(s.last_active_at, s.started_at)
                 ) AS last_active
             FROM sessions s
             WHERE s.id = ?

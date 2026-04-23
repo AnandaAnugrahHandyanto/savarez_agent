@@ -3495,14 +3495,9 @@ class HermesCLI:
             )
             return False
 
-        # Re-open the session (clear ended_at so it's active again)
+        # Re-open the session (clear ended_at and refresh activity so UIs see it as live)
         try:
-            self._session_db._conn.execute(
-                "UPDATE sessions SET ended_at = NULL, end_reason = NULL "
-                "WHERE id = ?",
-                (self.session_id,),
-            )
-            self._session_db._conn.commit()
+            self._session_db.reopen_session(self.session_id)
         except Exception:
             pass
 
