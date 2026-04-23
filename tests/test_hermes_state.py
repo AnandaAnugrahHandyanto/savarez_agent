@@ -1,8 +1,8 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
 import time
+
 import pytest
-from pathlib import Path
 
 from hermes_state import SessionDB
 
@@ -19,6 +19,7 @@ def db(tmp_path):
 # =========================================================================
 # Session lifecycle
 # =========================================================================
+
 
 class TestSessionLifecycle:
     def test_create_and_get_session(self, db):
@@ -118,6 +119,7 @@ class TestSessionLifecycle:
 # =========================================================================
 # Message storage
 # =========================================================================
+
 
 class TestMessageStorage:
     def test_append_and_get_messages(self, db):
@@ -298,6 +300,7 @@ class TestMessageStorage:
 # FTS5 search
 # =========================================================================
 
+
 class TestFTS5Search:
     def test_search_finds_content(self, db):
         db.create_session(session_id="s1", source="cli")
@@ -372,14 +375,14 @@ class TestFTS5Search:
 
         # Each of these previously caused sqlite3.OperationalError
         dangerous_queries = [
-            'C++',              # + is FTS5 column filter
-            '"unterminated',    # unbalanced double-quote
-            '(problem',         # unbalanced parenthesis
-            'hello AND',        # dangling boolean operator
-            '***',              # repeated wildcard
-            '{test}',           # curly braces (column reference)
-            'OR hello',         # leading boolean operator
-            'a AND OR b',       # adjacent operators
+            "C++",  # + is FTS5 column filter
+            '"unterminated',  # unbalanced double-quote
+            "(problem",  # unbalanced parenthesis
+            "hello AND",  # dangling boolean operator
+            "***",  # repeated wildcard
+            "{test}",  # curly braces (column reference)
+            "OR hello",  # leading boolean operator
+            "a AND OR b",  # adjacent operators
         ]
         for query in dangerous_queries:
             # Must not raise — should return list (possibly empty)
@@ -404,8 +407,7 @@ class TestFTS5Search:
         results = db.search_messages("chat-send")
         assert isinstance(results, list)
         assert len(results) >= 1
-        assert any("chat-send" in (r.get("snippet") or r.get("content", "")).lower()
-                    for r in results)
+        assert any("chat-send" in (r.get("snippet") or r.get("content", "")).lower() for r in results)
 
     def test_search_dotted_term_does_not_crash(self, db):
         """Dotted terms like 'P2.2' or 'simulate.p2.test.ts' should not crash FTS5."""
@@ -437,23 +439,25 @@ class TestFTS5Search:
     def test_sanitize_fts5_query_strips_dangerous_chars(self):
         """Unit test for _sanitize_fts5_query static method."""
         from hermes_state import SessionDB
+
         s = SessionDB._sanitize_fts5_query
-        assert s('hello world') == 'hello world'
-        assert '+' not in s('C++')
+        assert s("hello world") == "hello world"
+        assert "+" not in s("C++")
         assert '"' not in s('"unterminated')
-        assert '(' not in s('(problem')
-        assert '{' not in s('{test}')
+        assert "(" not in s("(problem")
+        assert "{" not in s("{test}")
         # Dangling operators removed
-        assert s('hello AND') == 'hello'
-        assert s('OR world') == 'world'
+        assert s("hello AND") == "hello"
+        assert s("OR world") == "world"
         # Leading bare * removed
-        assert s('***') == ''
+        assert s("***") == ""
         # Valid prefix kept
-        assert s('deploy*') == 'deploy*'
+        assert s("deploy*") == "deploy*"
 
     def test_sanitize_fts5_preserves_quoted_phrases(self):
         """Properly paired double-quoted phrases should be preserved."""
         from hermes_state import SessionDB
+
         s = SessionDB._sanitize_fts5_query
         # Simple quoted phrase
         assert s('"exact phrase"') == '"exact phrase"'
@@ -469,18 +473,19 @@ class TestFTS5Search:
     def test_sanitize_fts5_quotes_hyphenated_terms(self):
         """Hyphenated terms should be wrapped in quotes for exact matching."""
         from hermes_state import SessionDB
+
         s = SessionDB._sanitize_fts5_query
         # Simple hyphenated term
-        assert s('chat-send') == '"chat-send"'
+        assert s("chat-send") == '"chat-send"'
         # Multiple hyphens
-        assert s('docker-compose-up') == '"docker-compose-up"'
+        assert s("docker-compose-up") == '"docker-compose-up"'
         # Hyphenated term with other words
-        result = s('fix chat-send bug')
+        result = s("fix chat-send bug")
         assert '"chat-send"' in result
-        assert 'fix' in result
-        assert 'bug' in result
+        assert "fix" in result
+        assert "bug" in result
         # Multiple hyphenated terms with OR
-        result = s('chat-send OR deploy-prod')
+        result = s("chat-send OR deploy-prod")
         assert '"chat-send"' in result
         assert '"deploy-prod"' in result
         # Already-quoted hyphenated term — no double quoting
@@ -491,28 +496,30 @@ class TestFTS5Search:
     def test_sanitize_fts5_quotes_dotted_terms(self):
         """Dotted terms should be wrapped in quotes to avoid FTS5 query parse edge cases."""
         from hermes_state import SessionDB
+
         s = SessionDB._sanitize_fts5_query
 
-        assert s('P2.2') == '"P2.2"'
-        assert s('simulate.p2') == '"simulate.p2"'
-        assert s('simulate.p2.test.ts') == '"simulate.p2.test.ts"'
+        assert s("P2.2") == '"P2.2"'
+        assert s("simulate.p2") == '"simulate.p2"'
+        assert s("simulate.p2.test.ts") == '"simulate.p2.test.ts"'
 
         # Already quoted — no double quoting
         assert s('"P2.2"') == '"P2.2"'
 
         # Works with boolean syntax
-        result = s('P2.2 OR simulate.p2')
+        result = s("P2.2 OR simulate.p2")
         assert '"P2.2"' in result
         assert '"simulate.p2"' in result
 
         # Mixed dots and hyphens — single pass avoids double-quoting
-        assert s('my-app.config') == '"my-app.config"'
-        assert s('my-app.config.ts') == '"my-app.config.ts"'
+        assert s("my-app.config") == '"my-app.config"'
+        assert s("my-app.config.ts") == '"my-app.config.ts"'
 
 
 # =========================================================================
 # CJK (Chinese/Japanese/Korean) LIKE fallback
 # =========================================================================
+
 
 class TestCJKSearchFallback:
     """Regression tests for CJK search (see #11511).
@@ -526,6 +533,7 @@ class TestCJKSearchFallback:
 
     def test_cjk_detection_covers_all_ranges(self):
         from hermes_state import SessionDB
+
         f = SessionDB._contains_cjk
         # Chinese (CJK Unified Ideographs)
         assert f("记忆断裂") is True
@@ -545,7 +553,8 @@ class TestCJKSearchFallback:
         """The headline bug: multi-char Chinese query must not return []."""
         db.create_session(session_id="s1", source="cli")
         db.append_message(
-            "s1", role="user",
+            "s1",
+            role="user",
             content="昨天和其他Agent的聊天记录，记忆断裂问题复现了",
         )
         results = db.search_messages("记忆断裂")
@@ -609,7 +618,8 @@ class TestCJKSearchFallback:
         long_prefix = "这是一段很长的前缀用来把匹配位置推到文档中间" * 3
         long_suffix = "这是一段很长的后缀内容填充剩余空间" * 3
         db.append_message(
-            "s1", role="user",
+            "s1",
+            role="user",
             content=f"{long_prefix}记忆断裂{long_suffix}",
         )
         results = db.search_messages("记忆断裂")
@@ -649,6 +659,7 @@ class TestCJKSearchFallback:
 # Session search and listing
 # =========================================================================
 
+
 class TestSearchSessions:
     def test_list_all_sessions(self, db):
         db.create_session(session_id="s1", source="cli")
@@ -679,6 +690,7 @@ class TestSearchSessions:
 # =========================================================================
 # Counts
 # =========================================================================
+
 
 class TestCounts:
     def test_session_count(self, db):
@@ -714,6 +726,7 @@ class TestCounts:
 # =========================================================================
 # Delete and export
 # =========================================================================
+
 
 class TestDeleteAndExport:
     def test_delete_session(self, db):
@@ -778,6 +791,7 @@ class TestDeleteAndExport:
 # =========================================================================
 # Prune
 # =========================================================================
+
 
 class TestPruneSessions:
     def test_prune_old_ended_sessions(self, db):
@@ -846,9 +860,7 @@ class TestPruneSessions:
 
         # Backdate A and B to be old; C and D stay recent
         for sid, ts in [("A", old_ts), ("B", old_ts), ("C", recent_ts), ("D", recent_ts)]:
-            db._conn.execute(
-                "UPDATE sessions SET started_at = ? WHERE id = ?", (ts, sid)
-            )
+            db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (ts, sid))
         db._conn.commit()
 
         # Should not raise IntegrityError
@@ -876,9 +888,7 @@ class TestPruneSessions:
         db.end_session("Z", end_reason="done")
 
         for sid in ("X", "Y", "Z"):
-            db._conn.execute(
-                "UPDATE sessions SET started_at = ? WHERE id = ?", (old_ts, sid)
-            )
+            db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (old_ts, sid))
         db._conn.commit()
 
         pruned = db.prune_sessions(older_than_days=90)
@@ -915,6 +925,7 @@ class TestDeleteSessionOrphansChildren:
 # =========================================================================
 # Session title
 # =========================================================================
+
 
 class TestSessionTitle:
     def test_set_and_get_title(self, db):
@@ -1090,9 +1101,7 @@ class TestSchemaInit:
         assert cursor.fetchone()[0] == 1
 
     def test_tables_exist(self, db):
-        cursor = db._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-        )
+        cursor = db._conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
         tables = {row[0] for row in cursor.fetchall()}
         assert "sessions" in tables
         assert "messages" in tables
@@ -1234,6 +1243,7 @@ class TestTitleLineage:
     def test_resolve_returns_latest_numbered(self, db):
         """When numbered variants exist, return the most recent one."""
         import time
+
         db.create_session("s1", "cli")
         db.set_session_title("s1", "my project")
         time.sleep(0.01)
@@ -1346,6 +1356,7 @@ class TestListSessionsRich:
 
     def test_last_active_from_latest_message(self, db):
         import time
+
         db.create_session("s1", "cli")
         db.append_message("s1", "user", "Hello")
         time.sleep(0.01)
@@ -1381,181 +1392,10 @@ class TestListSessionsRich:
         assert "Line one Line two" in sessions[0]["preview"]
 
 
-class TestCompressionChainProjection:
-    """Tests for lineage-aware list_sessions_rich — compressed conversations
-    surface as their live continuation tip, not the dead parent root.
-    """
-
-    def _build_compression_chain(self, db, t0: float):
-        """Helper: builds root -> delegate -> compression-child -> tip chain.
-
-        Returns (root_id, delegate_id, mid_id, tip_id).
-        """
-        import time as _time
-        # Root that gets compressed
-        db.create_session("root1", "cli")
-        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "root1"))
-        db.append_message("root1", "user", "help me refactor auth")
-
-        # Delegate subagent spawned while root1 was live (before it ended)
-        db.create_session("delegate1", "cli", parent_session_id="root1")
-        db._conn.execute(
-            "UPDATE sessions SET started_at=?, ended_at=? WHERE id=?",
-            (t0 + 600, t0 + 650, "delegate1"),
-        )
-        db.append_message("delegate1", "user", "delegate task")
-
-        # root1 compressed at t0+1800
-        t_compress_root = t0 + 1800
-        db._conn.execute(
-            "UPDATE sessions SET ended_at=?, end_reason=? WHERE id=?",
-            (t_compress_root, "compression", "root1"),
-        )
-
-        # Continuation mid created 1s after parent ended
-        db.create_session("mid1", "cli", parent_session_id="root1")
-        db._conn.execute(
-            "UPDATE sessions SET started_at=? WHERE id=?",
-            (t_compress_root + 1, "mid1"),
-        )
-        db.append_message("mid1", "user", "continuing")
-
-        # mid1 also compressed
-        t_compress_mid = t_compress_root + 1800
-        db._conn.execute(
-            "UPDATE sessions SET ended_at=?, end_reason=? WHERE id=?",
-            (t_compress_mid, "compression", "mid1"),
-        )
-
-        # Tip — latest continuation
-        db.create_session("tip1", "cli", parent_session_id="mid1")
-        db._conn.execute(
-            "UPDATE sessions SET started_at=? WHERE id=?",
-            (t_compress_mid + 1, "tip1"),
-        )
-        db.append_message("tip1", "user", "latest message")
-
-        db._conn.commit()
-        return ("root1", "delegate1", "mid1", "tip1")
-
-    def test_get_compression_tip_walks_full_chain(self, db):
-        import time as _time
-        self._build_compression_chain(db, _time.time() - 3600)
-        assert db.get_compression_tip("root1") == "tip1"
-        assert db.get_compression_tip("mid1") == "tip1"
-        assert db.get_compression_tip("tip1") == "tip1"
-
-    def test_get_compression_tip_returns_self_for_uncompressed(self, db):
-        db.create_session("solo", "cli")
-        assert db.get_compression_tip("solo") == "solo"
-
-    def test_get_compression_tip_skips_delegate_children(self, db):
-        """Delegate subagents have parent_session_id set but were created
-        BEFORE the parent ended. They must not be followed as compression
-        continuations — the started_at >= ended_at guard handles this.
-        """
-        import time as _time
-        self._build_compression_chain(db, _time.time() - 3600)
-        # delegate1 is a child of root1 but NOT a compression continuation.
-        # root1's tip must be tip1 (via mid1), not delegate1.
-        assert db.get_compression_tip("root1") == "tip1"
-
-    def test_list_surfaces_tip_for_compressed_root(self, db):
-        """The list must show the tip's id/message_count/preview in place of
-        the root row, so users can see and resume the live conversation.
-        """
-        import time as _time
-        self._build_compression_chain(db, _time.time() - 3600)
-        # Add an uncompressed root for comparison.
-        db.create_session("solo", "cli")
-        db.append_message("solo", "user", "standalone")
-        db._conn.commit()
-
-        sessions = db.list_sessions_rich(source="cli", limit=20)
-        ids = [s["id"] for s in sessions]
-        # Only top-level conversations appear: tip1 (projected from root1) + solo.
-        # Delegate children, mid1, and the dead root1 must NOT be in the list.
-        assert "tip1" in ids
-        assert "solo" in ids
-        assert "root1" not in ids
-        assert "mid1" not in ids
-        assert "delegate1" not in ids
-
-        tip_row = next(s for s in sessions if s["id"] == "tip1")
-        # The row surfaces the tip's identity but preserves the root's start
-        # timestamp for stable ordering and lineage tracking.
-        assert tip_row["_lineage_root_id"] == "root1"
-        assert tip_row["preview"].startswith("latest message")
-        assert tip_row["ended_at"] is None  # tip is still live
-        assert tip_row["end_reason"] is None
-
-    def test_list_without_projection_returns_raw_root(self, db):
-        """project_compression_tips=False returns the raw parent-NULL root
-        rows — useful for admin/debug UIs.
-        """
-        import time as _time
-        self._build_compression_chain(db, _time.time() - 3600)
-        sessions = db.list_sessions_rich(
-            source="cli", limit=20, project_compression_tips=False
-        )
-        ids = [s["id"] for s in sessions]
-        assert "root1" in ids
-        assert "tip1" not in ids
-
-        root_row = next(s for s in sessions if s["id"] == "root1")
-        assert root_row["end_reason"] == "compression"
-        assert "_lineage_root_id" not in root_row
-
-    def test_list_preserves_sort_by_started_at(self, db):
-        """Chronological ordering uses the ROOT's started_at (conversation
-        start), not the tip's. This keeps lineage entries stable in the list
-        even as new compressions push the tip forward in time.
-        """
-        import time as _time
-        t0 = _time.time() - 3600
-        self._build_compression_chain(db, t0)
-
-        # Create a newer standalone session that should sort above the lineage
-        # if we used tip.started_at, but below if we correctly use root.started_at.
-        t_between = t0 + 120  # between root1 and its compression
-        db.create_session("newer", "cli")
-        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t_between, "newer"))
-        db.append_message("newer", "user", "newer session started after root1")
-        db._conn.commit()
-
-        sessions = db.list_sessions_rich(source="cli", limit=20)
-        ids_in_order = [s["id"] for s in sessions]
-        # 'newer' started AFTER root1 but BEFORE tip1's actual started_at.
-        # Correct ordering (by root started_at): newer > tip1's lineage entry.
-        assert ids_in_order.index("newer") < ids_in_order.index("tip1")
-
-    def test_list_handles_broken_chain_gracefully(self, db):
-        """A compression root with no child (e.g. DB corruption or a partial
-        end_session call that didn't finish creating the child) must not
-        crash the list — it should fall back to surfacing the root as-is.
-        """
-        import time as _time
-        t0 = _time.time() - 100
-        db.create_session("orphan", "cli")
-        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "orphan"))
-        db._conn.execute(
-            "UPDATE sessions SET ended_at=?, end_reason=? WHERE id=?",
-            (t0 + 10, "compression", "orphan"),
-        )
-        db._conn.commit()
-
-        sessions = db.list_sessions_rich(source="cli", limit=10)
-        ids = [s["id"] for s in sessions]
-        assert "orphan" in ids
-        row = next(s for s in sessions if s["id"] == "orphan")
-        # No tip means no projection — row stays raw.
-        assert "_lineage_root_id" not in row
-        assert row["end_reason"] == "compression"
-
-
 # =========================================================================
 # Session source exclusion (--source flag for third-party isolation)
 # =========================================================================
+
 
 class TestExcludeSources:
     """Tests for exclude_sources on list_sessions_rich and search_messages."""
@@ -1629,9 +1469,7 @@ class TestExcludeSources:
         db.create_session("s3", "tool")
         db.append_message("s3", "user", "Golang test")
         # Include cli+tool, but exclude tool → should only return cli
-        results = db.search_messages(
-            "Golang", source_filter=["cli", "tool"], exclude_sources=["tool"]
-        )
+        results = db.search_messages("Golang", source_filter=["cli", "tool"], exclude_sources=["tool"])
         sources = [r["source"] for r in results]
         assert sources == ["cli"]
 
@@ -1655,6 +1493,7 @@ class TestResolveSessionByNameOrId:
 # =========================================================================
 # Concurrent write safety / lock contention fixes (#3139)
 # =========================================================================
+
 
 class TestConcurrentWriteSafety:
     def test_create_session_insert_or_ignore_is_idempotent(self, db):
@@ -1706,10 +1545,9 @@ class TestConcurrentWriteSafety:
         """Connection timeout should be >= 30s to survive CLI/gateway contention."""
         # Access the underlying connection timeout via sqlite3 introspection.
         # There is no public API, so we check the kwarg via the module default.
-        import sqlite3
         import inspect
+
         from hermes_state import SessionDB as _SessionDB
+
         src = inspect.getsource(_SessionDB.__init__)
-        assert "30" in src, (
-            "SQLite timeout should be at least 30s to handle CLI/gateway lock contention"
-        )
+        assert "30" in src, "SQLite timeout should be at least 30s to handle CLI/gateway lock contention"

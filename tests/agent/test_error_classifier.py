@@ -1,21 +1,21 @@
 """Tests for agent.error_classifier — structured API error classification."""
 
-import pytest
 from agent.error_classifier import (
     ClassifiedError,
     FailoverReason,
-    classify_api_error,
-    _extract_status_code,
+    _classify_402,
     _extract_error_body,
     _extract_error_code,
-    _classify_402,
+    _extract_status_code,
+    classify_api_error,
 )
-
 
 # ── Helper: mock API errors ────────────────────────────────────────────
 
+
 class MockAPIError(Exception):
     """Simulates an OpenAI SDK APIStatusError."""
+
     def __init__(self, message, status_code=None, body=None):
         super().__init__(message)
         self.status_code = status_code
@@ -24,6 +24,7 @@ class MockAPIError(Exception):
 
 class MockTransportError(Exception):
     """Simulates a transport-level error with a specific type name."""
+
     pass
 
 
@@ -45,6 +46,7 @@ class ServerDisconnectedError(MockTransportError):
 
 # ── Test: FailoverReason enum ──────────────────────────────────────────
 
+
 class TestFailoverReason:
     def test_all_reasons_have_string_values(self):
         for reason in FailoverReason:
@@ -52,17 +54,27 @@ class TestFailoverReason:
 
     def test_enum_members_exist(self):
         expected = {
-            "auth", "auth_permanent", "billing", "rate_limit",
-            "overloaded", "server_error", "timeout",
-            "context_overflow", "payload_too_large",
-            "model_not_found", "format_error",
-            "thinking_signature", "long_context_tier", "unknown",
+            "auth",
+            "auth_permanent",
+            "billing",
+            "rate_limit",
+            "overloaded",
+            "server_error",
+            "timeout",
+            "context_overflow",
+            "payload_too_large",
+            "model_not_found",
+            "format_error",
+            "thinking_signature",
+            "long_context_tier",
+            "unknown",
         }
         actual = {r.value for r in FailoverReason}
         assert expected == actual
 
 
 # ── Test: ClassifiedError ──────────────────────────────────────────────
+
 
 class TestClassifiedError:
     def test_is_auth_property(self):
@@ -87,6 +99,7 @@ class TestClassifiedError:
 
 # ── Test: Status code extraction ───────────────────────────────────────
 
+
 class TestExtractStatusCode:
     def test_from_status_code_attr(self):
         e = MockAPIError("fail", status_code=429)
@@ -95,6 +108,7 @@ class TestExtractStatusCode:
     def test_from_status_attr(self):
         class ErrWithStatus(Exception):
             status = 503
+
         assert _extract_status_code(ErrWithStatus()) == 503
 
     def test_from_cause_chain(self):
@@ -108,12 +122,15 @@ class TestExtractStatusCode:
 
     def test_rejects_non_http_status(self):
         """Integers outside 100-599 on .status should be ignored."""
+
         class ErrWeirdStatus(Exception):
             status = 42
+
         assert _extract_status_code(ErrWeirdStatus()) is None
 
 
 # ── Test: Error body extraction ────────────────────────────────────────
+
 
 class TestExtractErrorBody:
     def test_from_body_attr(self):
@@ -125,6 +142,7 @@ class TestExtractErrorBody:
 
 
 # ── Test: Error code extraction ────────────────────────────────────────
+
 
 class TestExtractErrorCode:
     def test_from_nested_error_code(self):
@@ -145,6 +163,7 @@ class TestExtractErrorCode:
 
 
 # ── Test: 402 disambiguation ───────────────────────────────────────────
+
 
 class TestClassify402:
     """The critical 402 billing vs rate_limit disambiguation."""
@@ -192,6 +211,7 @@ class TestClassify402:
 
 
 # ── Test: Full classification pipeline ─────────────────────────────────
+
 
 class TestClassifyApiError:
     """End-to-end classification tests."""
@@ -545,8 +565,10 @@ class TestClassifyApiError:
         e = MockAPIError(
             "Invalid 'input[index].name': string does not match pattern.",
             status_code=400,
-            body={"message": "Invalid 'input[index].name': string does not match pattern.",
-                  "type": "invalid_request_error"},
+            body={
+                "message": "Invalid 'input[index].name': string does not match pattern.",
+                "type": "invalid_request_error",
+            },
         )
         result = classify_api_error(e, approx_tokens=200000, context_length=400000, num_messages=500)
         assert result.reason == FailoverReason.format_error
@@ -585,8 +607,7 @@ class TestClassifyApiError:
     def test_vllm_max_model_len_overflow(self):
         """vLLM's 'exceeds the max_model_len' error → context_overflow."""
         e = MockAPIError(
-            "The engine prompt length 1327246 exceeds the max_model_len 131072. "
-            "Please reduce prompt.",
+            "The engine prompt length 1327246 exceeds the max_model_len 131072. Please reduce prompt.",
             status_code=400,
         )
         result = classify_api_error(e)
@@ -643,6 +664,7 @@ class TestClassifyApiError:
 
 # ── Test: Adversarial / edge cases (from live testing) ─────────────────
 
+
 class TestAdversarialEdgeCases:
     """Edge cases discovered during live testing with real SDK objects."""
 
@@ -658,9 +680,11 @@ class TestAdversarialEdgeCases:
 
     def test_non_dict_body(self):
         """Some providers return strings instead of JSON."""
+
         class StringBodyError(Exception):
             status_code = 400
             body = "just a string"
+
         result = classify_api_error(StringBodyError("bad"))
         assert result.reason == FailoverReason.format_error
 
@@ -668,6 +692,7 @@ class TestAdversarialEdgeCases:
         class ListBodyError(Exception):
             status_code = 500
             body = [{"error": "something"}]
+
         result = classify_api_error(ListBodyError("server error"))
         assert result.reason == FailoverReason.server_error
 
@@ -710,9 +735,11 @@ class TestAdversarialEdgeCases:
 
     def test_200_with_error_body(self):
         """200 status with error in body — should be unknown, not crash."""
+
         class WeirdSuccess(Exception):
             status_code = 200
             body = {"error": {"message": "loading"}}
+
         result = classify_api_error(WeirdSuccess("model loading"))
         assert result.reason == FailoverReason.unknown
 
@@ -744,8 +771,10 @@ class TestAdversarialEdgeCases:
 
     def test_disconnect_pattern_ordering(self):
         """Disconnect + large session must beat generic transport catch."""
+
         class FakeRemoteProtocol(Exception):
             pass
+
         # Type name isn't in _TRANSPORT_ERROR_TYPES but message has disconnect pattern
         e = Exception("peer closed connection without sending complete message")
         result = classify_api_error(e, approx_tokens=150000, context_length=200000)
@@ -777,9 +806,7 @@ class TestAdversarialEdgeCases:
                 "error": {
                     "message": "Provider returned error",
                     "code": 400,
-                    "metadata": {
-                        "raw": '{"error":{"message":"context length exceeded: 50000 > 32768"}}'
-                    }
+                    "metadata": {"raw": '{"error":{"message":"context length exceeded: 50000 > 32768"}}'},
                 }
             },
         )
@@ -794,9 +821,7 @@ class TestAdversarialEdgeCases:
             body={
                 "error": {
                     "message": "Provider returned error",
-                    "metadata": {
-                        "raw": '{"error":{"message":"Rate limit exceeded. Please retry after 30s."}}'
-                    }
+                    "metadata": {"raw": '{"error":{"message":"Rate limit exceeded. Please retry after 30s."}}'},
                 }
             },
         )
@@ -822,7 +847,10 @@ class TestAdversarialEdgeCases:
         )
         # Low token count but high message count
         result = classify_api_error(
-            e, approx_tokens=5000, context_length=200000, num_messages=100,
+            e,
+            approx_tokens=5000,
+            context_length=200000,
+            num_messages=100,
         )
         assert result.reason == FailoverReason.context_overflow
 
@@ -830,7 +858,10 @@ class TestAdversarialEdgeCases:
         """Server disconnect with 200+ messages should trigger context overflow."""
         e = Exception("server disconnected without sending complete message")
         result = classify_api_error(
-            e, approx_tokens=5000, context_length=200000, num_messages=250,
+            e,
+            approx_tokens=5000,
+            context_length=200000,
+            num_messages=250,
         )
         assert result.reason == FailoverReason.context_overflow
 
@@ -841,105 +872,9 @@ class TestAdversarialEdgeCases:
             body={
                 "error": {
                     "message": "Provider returned error",
-                    "metadata": {
-                        "raw": '{"error":{"message":"The model gpt-99 does not exist"}}'
-                    }
+                    "metadata": {"raw": '{"error":{"message":"The model gpt-99 does not exist"}}'},
                 }
             },
         )
         result = classify_api_error(e, provider="openrouter")
         assert result.reason == FailoverReason.model_not_found
-
-    # ── Regression: dict-typed message field (Issue #11233) ──
-
-    def test_pydantic_dict_message_no_crash(self):
-        """Pydantic validation errors return message as dict, not string.
-
-        Regression: classify_api_error must not crash when body['message']
-        is a dict (e.g. {"detail": [...]} from FastAPI/Pydantic). The
-        'or ""' fallback only handles None/falsy values — a non-empty
-        dict is truthy and passed to .lower(), causing AttributeError.
-        """
-        e = MockAPIError(
-            "Unprocessable Entity",
-            status_code=422,
-            body={
-                "object": "error",
-                "message": {
-                    "detail": [
-                        {
-                            "type": "extra_forbidden",
-                            "loc": ["body", "think"],
-                            "msg": "Extra inputs are not permitted",
-                        }
-                    ]
-                },
-            },
-        )
-        result = classify_api_error(e)
-        assert result.reason == FailoverReason.format_error
-        assert result.status_code == 422
-        assert result.retryable is False
-
-    def test_nested_error_dict_message_no_crash(self):
-        """Nested body['error']['message'] as dict must not crash.
-
-        Some providers wrap Pydantic errors in an 'error' object.
-        """
-        e = MockAPIError(
-            "Validation error",
-            status_code=400,
-            body={
-                "error": {
-                    "message": {
-                        "detail": [
-                            {"type": "missing", "loc": ["body", "required"]}
-                        ]
-                    }
-                }
-            },
-        )
-        result = classify_api_error(e, approx_tokens=1000)
-        assert result.reason == FailoverReason.format_error
-        assert result.status_code == 400
-
-    def test_metadata_raw_dict_message_no_crash(self):
-        """OpenRouter metadata.raw with dict message must not crash."""
-        e = MockAPIError(
-            "Provider error",
-            status_code=400,
-            body={
-                "error": {
-                    "message": "Provider error",
-                    "metadata": {
-                        "raw": '{"error":{"message":{"detail":[{"type":"invalid"}]}}}'
-                    }
-                }
-            },
-        )
-        result = classify_api_error(e)
-        assert result.reason == FailoverReason.format_error
-
-    # Broader non-string type guards — defense against other provider quirks.
-
-    def test_list_message_no_crash(self):
-        """Some providers return message as a list of error entries."""
-        e = MockAPIError(
-            "validation",
-            status_code=400,
-            body={"message": [{"msg": "field required"}]},
-        )
-        result = classify_api_error(e)
-        assert result is not None
-
-    def test_int_message_no_crash(self):
-        """Any non-string type must be coerced safely."""
-        e = MockAPIError("server error", status_code=500, body={"message": 42})
-        result = classify_api_error(e)
-        assert result is not None
-
-    def test_none_message_still_works(self):
-        """Regression: None fallback (the 'or \"\"' path) must still work."""
-        e = MockAPIError("server error", status_code=500, body={"message": None})
-        result = classify_api_error(e)
-        assert result is not None

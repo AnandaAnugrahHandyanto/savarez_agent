@@ -128,6 +128,22 @@ hermes_cli = ["web_dist/**/*"]
 [tool.setuptools.packages.find]
 include = ["agent", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "acp_adapter", "plugins", "plugins.*"]
 
+[tool.ruff]
+line-length = 120
+indent-width = 4
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501", "E402"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["agent", "tools", "hermes_cli", "gateway", "tui_gateway", "cron", "acp_adapter", "plugins"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [

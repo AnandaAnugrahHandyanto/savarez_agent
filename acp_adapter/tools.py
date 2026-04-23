@@ -9,7 +9,6 @@ from typing import Any, Dict, List, Optional
 import acp
 from acp.schema import (
     ToolCallLocation,
-    ToolCallStart,
     ToolCallProgress,
     ToolKind,
 )
@@ -83,7 +82,7 @@ def build_tool_title(tool_name: str, args: Dict[str, Any]) -> str:
     if tool_name == "web_extract":
         urls = args.get("urls", [])
         if urls:
-            return f"extract: {urls[0]}" + (f" (+{len(urls)-1})" if len(urls) > 1 else "")
+            return f"extract: {urls[0]}" + (f" (+{len(urls) - 1})" if len(urls) > 1 else "")
         return "web extract"
     if tool_name == "delegate_task":
         goal = args.get("goal", "")
@@ -154,9 +153,7 @@ def _build_patch_mode_content(patch_text: str) -> List[Any]:
                 continue
 
             if op.operation == OperationType.MOVE:
-                content.append(
-                    acp.tool_content(acp.text_block(f"Move file: {op.file_path} -> {op.new_path}"))
-                )
+                content.append(acp.tool_content(acp.text_block(f"Move file: {op.file_path} -> {op.new_path}")))
 
         return content or [acp.tool_content(acp.text_block(patch_text))]
     except Exception:
@@ -287,7 +284,11 @@ def build_tool_start(
             patch_text = arguments.get("patch", "")
             content = _build_patch_mode_content(patch_text)
         return acp.start_tool_call(
-            tool_call_id, title, kind=kind, content=content, locations=locations,
+            tool_call_id,
+            title,
+            kind=kind,
+            content=content,
+            locations=locations,
             raw_input=arguments,
         )
 
@@ -296,7 +297,11 @@ def build_tool_start(
         file_content = arguments.get("content", "")
         content = [acp.tool_diff_content(path=path, new_text=file_content)]
         return acp.start_tool_call(
-            tool_call_id, title, kind=kind, content=content, locations=locations,
+            tool_call_id,
+            title,
+            kind=kind,
+            content=content,
+            locations=locations,
             raw_input=arguments,
         )
 
@@ -304,7 +309,11 @@ def build_tool_start(
         command = arguments.get("command", "")
         content = [acp.tool_content(acp.text_block(f"$ {command}"))]
         return acp.start_tool_call(
-            tool_call_id, title, kind=kind, content=content, locations=locations,
+            tool_call_id,
+            title,
+            kind=kind,
+            content=content,
+            locations=locations,
             raw_input=arguments,
         )
 
@@ -312,7 +321,11 @@ def build_tool_start(
         path = arguments.get("path", "")
         content = [acp.tool_content(acp.text_block(f"Reading {path}"))]
         return acp.start_tool_call(
-            tool_call_id, title, kind=kind, content=content, locations=locations,
+            tool_call_id,
+            title,
+            kind=kind,
+            content=content,
+            locations=locations,
             raw_input=arguments,
         )
 
@@ -321,19 +334,28 @@ def build_tool_start(
         target = arguments.get("target", "content")
         content = [acp.tool_content(acp.text_block(f"Searching for '{pattern}' ({target})"))]
         return acp.start_tool_call(
-            tool_call_id, title, kind=kind, content=content, locations=locations,
+            tool_call_id,
+            title,
+            kind=kind,
+            content=content,
+            locations=locations,
             raw_input=arguments,
         )
 
     # Generic fallback
     import json
+
     try:
         args_text = json.dumps(arguments, indent=2, default=str)
     except (TypeError, ValueError):
         args_text = str(arguments)
     content = [acp.tool_content(acp.text_block(args_text))]
     return acp.start_tool_call(
-        tool_call_id, title, kind=kind, content=content, locations=locations,
+        tool_call_id,
+        title,
+        kind=kind,
+        content=content,
+        locations=locations,
         raw_input=arguments,
     )
 

@@ -54,7 +54,6 @@ logger = logging.getLogger(__name__)
 VALID_HOOKS: Set[str] = {
     "pre_tool_call",
     "post_tool_call",
-    "transform_terminal_output",
     "pre_llm_call",
     "post_llm_call",
     "pre_api_request",
@@ -79,6 +78,7 @@ def _get_disabled_plugins() -> set:
     """Read the disabled plugins list from config.yaml."""
     try:
         from hermes_cli.config import load_config
+
         config = load_config()
         disabled = config.get("plugins", {}).get("disabled", [])
         return set(disabled) if isinstance(disabled, list) else set()
@@ -89,6 +89,7 @@ def _get_disabled_plugins() -> set:
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class PluginManifest:
@@ -101,7 +102,7 @@ class PluginManifest:
     requires_env: List[Union[str, Dict[str, Any]]] = field(default_factory=list)
     provides_tools: List[str] = field(default_factory=list)
     provides_hooks: List[str] = field(default_factory=list)
-    source: str = ""        # "user", "project", or "entrypoint"
+    source: str = ""  # "user", "project", or "entrypoint"
     path: Optional[str] = None
 
 
@@ -121,6 +122,7 @@ class LoadedPlugin:
 # ---------------------------------------------------------------------------
 # PluginContext  – handed to each plugin's ``register()`` function
 # ---------------------------------------------------------------------------
+
 
 class PluginContext:
     """Facade given to plugins so they can register tools and hooks."""
@@ -243,11 +245,12 @@ class PluginContext:
         # Reject if it conflicts with a built-in command
         try:
             from hermes_cli.commands import resolve_command
+
             if resolve_command(clean) is not None:
                 logger.warning(
-                    "Plugin '%s' tried to register command '/%s' which conflicts "
-                    "with a built-in command. Skipping.",
-                    self.manifest.name, clean,
+                    "Plugin '%s' tried to register command '/%s' which conflicts with a built-in command. Skipping.",
+                    self.manifest.name,
+                    clean,
                 )
                 return
         except Exception:
@@ -310,17 +313,18 @@ class PluginContext:
             return
         # Defer the import to avoid circular deps at module level
         from agent.context_engine import ContextEngine
+
         if not isinstance(engine, ContextEngine):
             logger.warning(
-                "Plugin '%s' tried to register a context engine that does not "
-                "inherit from ContextEngine. Ignoring.",
+                "Plugin '%s' tried to register a context engine that does not inherit from ContextEngine. Ignoring.",
                 self.manifest.name,
             )
             return
         self._manager._context_engine = engine
         logger.info(
             "Plugin '%s' registered context engine: %s",
-            self.manifest.name, engine.name,
+            self.manifest.name,
+            engine.name,
         )
 
     # -- hook registration --------------------------------------------------
@@ -333,8 +337,7 @@ class PluginContext:
         """
         if hook_name not in VALID_HOOKS:
             logger.warning(
-                "Plugin '%s' registered unknown hook '%s' "
-                "(valid: %s)",
+                "Plugin '%s' registered unknown hook '%s' (valid: %s)",
                 self.manifest.name,
                 hook_name,
                 ", ".join(sorted(VALID_HOOKS)),
@@ -371,9 +374,7 @@ class PluginContext:
                 f"'{self.manifest.name}' automatically)."
             )
         if not name or not _NAMESPACE_RE.match(name):
-            raise ValueError(
-                f"Invalid skill name '{name}'. Must match [a-zA-Z0-9_-]+."
-            )
+            raise ValueError(f"Invalid skill name '{name}'. Must match [a-zA-Z0-9_-]+.")
         if not path.exists():
             raise FileNotFoundError(f"SKILL.md not found at {path}")
 
@@ -386,13 +387,15 @@ class PluginContext:
         }
         logger.debug(
             "Plugin %s registered skill: %s",
-            self.manifest.name, qualified,
+            self.manifest.name,
+            qualified,
         )
 
 
 # ---------------------------------------------------------------------------
 # PluginManager
 # ---------------------------------------------------------------------------
+
 
 class PluginManager:
     """Central manager that discovers, loads, and invokes plugins."""
@@ -547,12 +550,9 @@ class PluginManager:
                 ctx = PluginContext(manifest, self)
                 register_fn(ctx)
                 loaded.tools_registered = [
-                    t for t in self._plugin_tool_names
-                    if t not in {
-                        n
-                        for name, p in self._plugins.items()
-                        for n in p.tools_registered
-                    }
+                    t
+                    for t in self._plugin_tool_names
+                    if t not in {n for name, p in self._plugins.items() for n in p.tools_registered}
                 ]
                 loaded.hooks_registered = list(
                     {
@@ -560,15 +560,10 @@ class PluginManager:
                         for h, cbs in self._hooks.items()
                         if cbs  # non-empty
                     }
-                    - {
-                        h
-                        for name, p in self._plugins.items()
-                        for h in p.hooks_registered
-                    }
+                    - {h for name, p in self._plugins.items() for h in p.hooks_registered}
                 )
                 loaded.commands_registered = [
-                    c for c in self._plugin_commands
-                    if self._plugin_commands[c].get("plugin") == manifest.name
+                    c for c in self._plugin_commands if self._plugin_commands[c].get("plugin") == manifest.name
                 ]
                 loaded.enabled = True
 
@@ -622,9 +617,7 @@ class PluginManager:
             if ep.name == manifest.name:
                 return ep.load()
 
-        raise ImportError(
-            f"Entry point '{manifest.name}' not found in group '{ENTRY_POINTS_GROUP}'"
-        )
+        raise ImportError(f"Entry point '{manifest.name}' not found in group '{ENTRY_POINTS_GROUP}'")
 
     # -----------------------------------------------------------------------
     # Hook invocation
@@ -701,11 +694,7 @@ class PluginManager:
     def list_plugin_skills(self, plugin_name: str) -> List[str]:
         """Return sorted bare names of all skills registered by *plugin_name*."""
         prefix = f"{plugin_name}:"
-        return sorted(
-            e["bare_name"]
-            for qn, e in self._plugin_skills.items()
-            if qn.startswith(prefix)
-        )
+        return sorted(e["bare_name"] for qn, e in self._plugin_skills.items() if qn.startswith(prefix))
 
     def remove_plugin_skill(self, qualified_name: str) -> None:
         """Remove a stale registry entry (silently ignores missing keys)."""
@@ -738,7 +727,6 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     Returns a list of non-``None`` return values from plugin callbacks.
     """
     return get_plugin_manager().invoke_hook(hook_name, **kwargs)
-
 
 
 def get_pre_tool_call_block_message(

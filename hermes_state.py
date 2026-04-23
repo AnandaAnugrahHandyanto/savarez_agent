@@ -22,8 +22,9 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
-from hermes_constants import get_hermes_home
 from typing import Any, Callable, Dict, List, Optional, TypeVar
+
+from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -130,8 +131,8 @@ class SessionDB:
     # application level with random jitter, which naturally staggers competing
     # writers and avoids the convoy.
     _WRITE_MAX_RETRIES = 15
-    _WRITE_RETRY_MIN_S = 0.020   # 20ms
-    _WRITE_RETRY_MAX_S = 0.150   # 150ms
+    _WRITE_RETRY_MIN_S = 0.020  # 20ms
+    _WRITE_RETRY_MAX_S = 0.150  # 150ms
     # Attempt a PASSIVE WAL checkpoint every N successful writes.
     _CHECKPOINT_EVERY_N_WRITES = 50
 
@@ -209,9 +210,7 @@ class SessionDB:
                 # Non-lock error or retries exhausted — propagate.
                 raise
         # Retries exhausted (shouldn't normally reach here).
-        raise last_err or sqlite3.OperationalError(
-            "database is locked after max retries"
-        )
+        raise last_err or sqlite3.OperationalError("database is locked after max retries")
 
     def _try_wal_checkpoint(self) -> None:
         """Best-effort PASSIVE WAL checkpoint.  Never blocks, never raises.
@@ -223,13 +222,12 @@ class SessionDB:
         """
         try:
             with self._lock:
-                result = self._conn.execute(
-                    "PRAGMA wal_checkpoint(PASSIVE)"
-                ).fetchone()
+                result = self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
                 if result and result[1] > 0:
                     logger.debug(
                         "WAL checkpoint: %d/%d pages checkpointed",
-                        result[2], result[1],
+                        result[2],
+                        result[1],
                     )
         except Exception:
             pass  # Best effort — never fatal.
@@ -323,9 +321,7 @@ class SessionDB:
                 ]:
                     try:
                         safe = col_name.replace('"', '""')
-                        cursor.execute(
-                            f'ALTER TABLE messages ADD COLUMN "{safe}" {col_type}'
-                        )
+                        cursor.execute(f'ALTER TABLE messages ADD COLUMN "{safe}" {col_type}')
                     except sqlite3.OperationalError:
                         pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 6")
@@ -334,8 +330,7 @@ class SessionDB:
         # since the title column is guaranteed to exist at this point)
         try:
             cursor.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique "
-                "ON sessions(title) WHERE title IS NOT NULL"
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique ON sessions(title) WHERE title IS NOT NULL"
             )
         except sqlite3.OperationalError:
             pass  # Index already exists
@@ -363,6 +358,7 @@ class SessionDB:
         parent_session_id: str = None,
     ) -> str:
         """Create a new session record. Returns the session_id."""
+
         def _do(conn):
             conn.execute(
                 """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
@@ -379,6 +375,7 @@ class SessionDB:
                     time.time(),
                 ),
             )
+
         self._execute_write(_do)
         return session_id
 
@@ -392,30 +389,35 @@ class SessionDB:
         with a different reason. Use ``reopen_session()`` first if you
         intentionally need to re-end a closed session with a new reason.
         """
+
         def _do(conn):
             conn.execute(
-                "UPDATE sessions SET ended_at = ?, end_reason = ? "
-                "WHERE id = ? AND ended_at IS NULL",
+                "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ? AND ended_at IS NULL",
                 (time.time(), end_reason, session_id),
             )
+
         self._execute_write(_do)
 
     def reopen_session(self, session_id: str) -> None:
         """Clear ended_at/end_reason so a session can be resumed."""
+
         def _do(conn):
             conn.execute(
                 "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?",
                 (session_id,),
             )
+
         self._execute_write(_do)
 
     def update_system_prompt(self, session_id: str, system_prompt: str) -> None:
         """Store the full assembled system prompt snapshot."""
+
         def _do(conn):
             conn.execute(
                 "UPDATE sessions SET system_prompt = ? WHERE id = ?",
                 (system_prompt, session_id),
             )
+
         self._execute_write(_do)
 
     def update_token_counts(
@@ -504,8 +506,10 @@ class SessionDB:
             model,
             session_id,
         )
+
         def _do(conn):
             conn.execute(sql, params)
+
         self._execute_write(_do)
 
     def ensure_session(
@@ -520,6 +524,7 @@ class SessionDB:
         create_session() call (e.g. transient SQLite lock at agent startup).
         INSERT OR IGNORE is safe to call even when the row already exists.
         """
+
         def _do(conn):
             conn.execute(
                 """INSERT OR IGNORE INTO sessions
@@ -527,14 +532,13 @@ class SessionDB:
                    VALUES (?, ?, ?, ?)""",
                 (session_id, source, model, time.time()),
             )
+
         self._execute_write(_do)
 
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Get a session by ID."""
         with self._lock:
-            cursor = self._conn.execute(
-                "SELECT * FROM sessions WHERE id = ?", (session_id,)
-            )
+            cursor = self._conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
             row = cursor.fetchone()
         return dict(row) if row else None
 
@@ -549,12 +553,7 @@ class SessionDB:
         if exact:
             return exact["id"]
 
-        escaped = (
-            session_id_or_prefix
-            .replace("\\", "\\\\")
-            .replace("%", "\\%")
-            .replace("_", "\\_")
-        )
+        escaped = session_id_or_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT id FROM sessions WHERE id LIKE ? ESCAPE '\\' ORDER BY started_at DESC LIMIT 2",
@@ -588,27 +587,26 @@ class SessionDB:
         # Remove ASCII control characters (0x00-0x1F, 0x7F) but keep
         # whitespace chars (\t=0x09, \n=0x0A, \r=0x0D) so they can be
         # normalized to spaces by the whitespace collapsing step below
-        cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', title)
+        cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", title)
 
         # Remove problematic Unicode control characters:
         # - Zero-width chars (U+200B-U+200F, U+FEFF)
         # - Directional overrides (U+202A-U+202E, U+2066-U+2069)
         # - Object replacement (U+FFFC), interlinear annotation (U+FFF9-U+FFFB)
         cleaned = re.sub(
-            r'[\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\ufffc\ufff9-\ufffb]',
-            '', cleaned,
+            r"[\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\ufffc\ufff9-\ufffb]",
+            "",
+            cleaned,
         )
 
         # Collapse internal whitespace runs and strip
-        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
 
         if not cleaned:
             return None
 
         if len(cleaned) > SessionDB.MAX_TITLE_LENGTH:
-            raise ValueError(
-                f"Title too long ({len(cleaned)} chars, max {SessionDB.MAX_TITLE_LENGTH})"
-            )
+            raise ValueError(f"Title too long ({len(cleaned)} chars, max {SessionDB.MAX_TITLE_LENGTH})")
 
         return cleaned
 
@@ -621,6 +619,7 @@ class SessionDB:
         Empty/whitespace-only strings are normalized to None (clearing the title).
         """
         title = self.sanitize_title(title)
+
         def _do(conn):
             if title:
                 # Check uniqueness (allow the same session to keep its own title)
@@ -630,32 +629,27 @@ class SessionDB:
                 )
                 conflict = cursor.fetchone()
                 if conflict:
-                    raise ValueError(
-                        f"Title '{title}' is already in use by session {conflict['id']}"
-                    )
+                    raise ValueError(f"Title '{title}' is already in use by session {conflict['id']}")
             cursor = conn.execute(
                 "UPDATE sessions SET title = ? WHERE id = ?",
                 (title, session_id),
             )
             return cursor.rowcount
+
         rowcount = self._execute_write(_do)
         return rowcount > 0
 
     def get_session_title(self, session_id: str) -> Optional[str]:
         """Get the title for a session, or None."""
         with self._lock:
-            cursor = self._conn.execute(
-                "SELECT title FROM sessions WHERE id = ?", (session_id,)
-            )
+            cursor = self._conn.execute("SELECT title FROM sessions WHERE id = ?", (session_id,))
             row = cursor.fetchone()
         return row["title"] if row else None
 
     def get_session_by_title(self, title: str) -> Optional[Dict[str, Any]]:
         """Look up a session by exact title. Returns session dict or None."""
         with self._lock:
-            cursor = self._conn.execute(
-                "SELECT * FROM sessions WHERE title = ?", (title,)
-            )
+            cursor = self._conn.execute("SELECT * FROM sessions WHERE title = ?", (title,))
             row = cursor.fetchone()
         return dict(row) if row else None
 
@@ -675,8 +669,7 @@ class SessionDB:
         escaped = title.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         with self._lock:
             cursor = self._conn.execute(
-                "SELECT id, title, started_at FROM sessions "
-                "WHERE title LIKE ? ESCAPE '\\' ORDER BY started_at DESC",
+                "SELECT id, title, started_at FROM sessions WHERE title LIKE ? ESCAPE '\\' ORDER BY started_at DESC",
                 (f"{escaped} #%",),
             )
             numbered = cursor.fetchall()
@@ -695,7 +688,7 @@ class SessionDB:
         the highest existing number and increments.
         """
         # Strip existing #N suffix to find the true base
-        match = re.match(r'^(.*?) #(\d+)$', base_title)
+        match = re.match(r"^(.*?) #(\d+)$", base_title)
         if match:
             base = match.group(1)
         else:
@@ -717,47 +710,11 @@ class SessionDB:
         # Find the highest number
         max_num = 1  # The unnumbered original counts as #1
         for t in existing:
-            m = re.match(r'^.* #(\d+)$', t)
+            m = re.match(r"^.* #(\d+)$", t)
             if m:
                 max_num = max(max_num, int(m.group(1)))
 
         return f"{base} #{max_num + 1}"
-
-    def get_compression_tip(self, session_id: str) -> Optional[str]:
-        """Walk the compression-continuation chain forward and return the tip.
-
-        A compression continuation is a child session where:
-        1. The parent's ``end_reason = 'compression'``
-        2. The child was created AFTER the parent was ended (started_at >= ended_at)
-
-        The second condition distinguishes compression continuations from
-        delegate subagents or branch children, which can also have a
-        ``parent_session_id`` but were created while the parent was still live.
-
-        Returns the session_id of the latest continuation in the chain, or the
-        input ``session_id`` if it isn't part of a compression chain (or if the
-        input itself doesn't exist).
-        """
-        current = session_id
-        # Bound the walk defensively — compression chains this deep are
-        # pathological and shouldn't happen in practice. 100 = plenty.
-        for _ in range(100):
-            with self._lock:
-                cursor = self._conn.execute(
-                    "SELECT id FROM sessions "
-                    "WHERE parent_session_id = ? "
-                    "  AND started_at >= ("
-                    "      SELECT ended_at FROM sessions "
-                    "      WHERE id = ? AND end_reason = 'compression'"
-                    "  ) "
-                    "ORDER BY started_at DESC LIMIT 1",
-                    (current, current),
-                )
-                row = cursor.fetchone()
-            if row is None:
-                return current
-            current = row["id"]
-        return current
 
     def list_sessions_rich(
         self,
@@ -766,7 +723,6 @@ class SessionDB:
         limit: int = 20,
         offset: int = 0,
         include_children: bool = False,
-        project_compression_tips: bool = True,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -778,14 +734,6 @@ class SessionDB:
 
         By default, child sessions (subagent runs, compression continuations)
         are excluded.  Pass ``include_children=True`` to include them.
-
-        With ``project_compression_tips=True`` (default), sessions that are
-        roots of compression chains are projected forward to their latest
-        continuation — one logical conversation = one list entry, showing the
-        live continuation's id/message_count/title/last_active. This prevents
-        compressed continuations from being invisible to users while keeping
-        delegate subagents and branches hidden. Pass ``False`` to return the
-        raw root rows (useful for admin/debug UIs).
         """
         where_clauses = []
         params = []
@@ -836,76 +784,7 @@ class SessionDB:
                 s["preview"] = ""
             sessions.append(s)
 
-        # Project compression roots forward to their tips. Each row whose
-        # end_reason is 'compression' has a continuation child; replace the
-        # surfaced fields (id, message_count, title, last_active, ended_at,
-        # end_reason, preview) with the tip's values so the list entry acts
-        # as the live conversation. Keep the root's started_at to preserve
-        # chronological ordering by original conversation start.
-        if project_compression_tips and not include_children:
-            projected = []
-            for s in sessions:
-                if s.get("end_reason") != "compression":
-                    projected.append(s)
-                    continue
-                tip_id = self.get_compression_tip(s["id"])
-                if tip_id == s["id"]:
-                    projected.append(s)
-                    continue
-                tip_row = self._get_session_rich_row(tip_id)
-                if not tip_row:
-                    projected.append(s)
-                    continue
-                # Preserve the root's started_at for stable sort order, but
-                # surface the tip's identity and activity data.
-                merged = dict(s)
-                for key in (
-                    "id", "ended_at", "end_reason", "message_count",
-                    "tool_call_count", "title", "last_active", "preview",
-                    "model", "system_prompt",
-                ):
-                    if key in tip_row:
-                        merged[key] = tip_row[key]
-                merged["_lineage_root_id"] = s["id"]
-                projected.append(merged)
-            sessions = projected
-
         return sessions
-
-    def _get_session_rich_row(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """Fetch a single session with the same enriched columns as
-        ``list_sessions_rich`` (preview + last_active). Returns None if the
-        session doesn't exist.
-        """
-        query = """
-            SELECT s.*,
-                COALESCE(
-                    (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
-                     FROM messages m
-                     WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
-                     ORDER BY m.timestamp, m.id LIMIT 1),
-                    ''
-                ) AS _preview_raw,
-                COALESCE(
-                    (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
-                    s.started_at
-                ) AS last_active
-            FROM sessions s
-            WHERE s.id = ?
-        """
-        with self._lock:
-            cursor = self._conn.execute(query, (session_id,))
-            row = cursor.fetchone()
-        if not row:
-            return None
-        s = dict(row)
-        raw = s.pop("_preview_raw", "").strip()
-        if raw:
-            text = raw[:60]
-            s["preview"] = text + ("..." if len(raw) > 60 else "")
-        else:
-            s["preview"] = ""
-        return s
 
     # =========================================================================
     # Message storage
@@ -932,14 +811,8 @@ class SessionDB:
         if role is 'tool' or tool_calls is present).
         """
         # Serialize structured fields to JSON before entering the write txn
-        reasoning_details_json = (
-            json.dumps(reasoning_details)
-            if reasoning_details else None
-        )
-        codex_items_json = (
-            json.dumps(codex_reasoning_items)
-            if codex_reasoning_items else None
-        )
+        reasoning_details_json = json.dumps(reasoning_details) if reasoning_details else None
+        codex_items_json = json.dumps(codex_reasoning_items) if codex_reasoning_items else None
         tool_calls_json = json.dumps(tool_calls) if tool_calls else None
 
         # Pre-compute tool call count
@@ -1084,7 +957,7 @@ class SessionDB:
         sanitized = re.sub(r'"[^"]*"', _preserve_quoted, query)
 
         # Step 2: Strip remaining (unmatched) FTS5-special characters
-        sanitized = re.sub(r'[+{}()\"^]', " ", sanitized)
+        sanitized = re.sub(r"[+{}()\"^]", " ", sanitized)
 
         # Step 3: Collapse repeated * (e.g. "***") into a single one,
         # and remove leading * (prefix-only needs at least one char before *)
@@ -1110,19 +983,20 @@ class SessionDB:
 
         return sanitized.strip()
 
-
     @staticmethod
     def _contains_cjk(text: str) -> bool:
         """Check if text contains CJK (Chinese, Japanese, Korean) characters."""
         for ch in text:
             cp = ord(ch)
-            if (0x4E00 <= cp <= 0x9FFF or    # CJK Unified Ideographs
-                0x3400 <= cp <= 0x4DBF or    # CJK Extension A
-                0x20000 <= cp <= 0x2A6DF or  # CJK Extension B
-                0x3000 <= cp <= 0x303F or    # CJK Symbols
-                0x3040 <= cp <= 0x309F or    # Hiragana
-                0x30A0 <= cp <= 0x30FF or    # Katakana
-                0xAC00 <= cp <= 0xD7AF):     # Hangul Syllables
+            if (
+                0x4E00 <= cp <= 0x9FFF  # CJK Unified Ideographs
+                or 0x3400 <= cp <= 0x4DBF  # CJK Extension A
+                or 0x20000 <= cp <= 0x2A6DF  # CJK Extension B
+                or 0x3000 <= cp <= 0x303F  # CJK Symbols
+                or 0x3040 <= cp <= 0x309F  # Hiragana
+                or 0x30A0 <= cp <= 0x30FF  # Katakana
+                or 0xAC00 <= cp <= 0xD7AF
+            ):  # Hangul Syllables
                 return True
         return False
 
@@ -1232,7 +1106,7 @@ class SessionDB:
                        s.source, s.model, s.started_at AS session_started
                 FROM messages m
                 JOIN sessions s ON s.id = m.session_id
-                WHERE {' AND '.join(like_where)}
+                WHERE {" AND ".join(like_where)}
                 ORDER BY m.timestamp DESC
                 LIMIT ? OFFSET ?
             """
@@ -1255,8 +1129,7 @@ class SessionDB:
                         (match["session_id"], match["id"], match["id"]),
                     )
                     context_msgs = [
-                        {"role": r["role"], "content": (r["content"] or "")[:200]}
-                        for r in ctx_cursor.fetchall()
+                        {"role": r["role"], "content": (r["content"] or "")[:200]} for r in ctx_cursor.fetchall()
                     ]
                 match["context"] = context_msgs
             except Exception:
@@ -1296,9 +1169,7 @@ class SessionDB:
         """Count sessions, optionally filtered by source."""
         with self._lock:
             if source:
-                cursor = self._conn.execute(
-                    "SELECT COUNT(*) FROM sessions WHERE source = ?", (source,)
-                )
+                cursor = self._conn.execute("SELECT COUNT(*) FROM sessions WHERE source = ?", (source,))
             else:
                 cursor = self._conn.execute("SELECT COUNT(*) FROM sessions")
             return cursor.fetchone()[0]
@@ -1307,9 +1178,7 @@ class SessionDB:
         """Count messages, optionally for a specific session."""
         with self._lock:
             if session_id:
-                cursor = self._conn.execute(
-                    "SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)
-                )
+                cursor = self._conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,))
             else:
                 cursor = self._conn.execute("SELECT COUNT(*) FROM messages")
             return cursor.fetchone()[0]
@@ -1340,14 +1209,14 @@ class SessionDB:
 
     def clear_messages(self, session_id: str) -> None:
         """Delete all messages for a session and reset its counters."""
+
         def _do(conn):
-            conn.execute(
-                "DELETE FROM messages WHERE session_id = ?", (session_id,)
-            )
+            conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute(
                 "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?",
                 (session_id,),
             )
+
         self._execute_write(_do)
 
     def delete_session(self, session_id: str) -> bool:
@@ -1357,21 +1226,20 @@ class SessionDB:
         than cascade-deleted, so they remain accessible independently.
         Returns True if the session was found and deleted.
         """
+
         def _do(conn):
-            cursor = conn.execute(
-                "SELECT COUNT(*) FROM sessions WHERE id = ?", (session_id,)
-            )
+            cursor = conn.execute("SELECT COUNT(*) FROM sessions WHERE id = ?", (session_id,))
             if cursor.fetchone()[0] == 0:
                 return False
             # Orphan child sessions so FK constraint is satisfied
             conn.execute(
-                "UPDATE sessions SET parent_session_id = NULL "
-                "WHERE parent_session_id = ?",
+                "UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id = ?",
                 (session_id,),
             )
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             return True
+
         return self._execute_write(_do)
 
     def prune_sessions(self, older_than_days: int = 90, source: str = None) -> int:
@@ -1403,8 +1271,7 @@ class SessionDB:
             # Orphan any sessions whose parent is about to be deleted
             placeholders = ",".join("?" * len(session_ids))
             conn.execute(
-                f"UPDATE sessions SET parent_session_id = NULL "
-                f"WHERE parent_session_id IN ({placeholders})",
+                f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({placeholders})",
                 list(session_ids),
             )
 

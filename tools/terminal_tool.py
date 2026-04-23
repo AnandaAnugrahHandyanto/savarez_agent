@@ -30,19 +30,19 @@ Usage:
     result = terminal_tool("python server.py", background=True)
 """
 
+import atexit
 import importlib.util
 import json
 import logging
 import os
 import platform
 import re
-import time
-import threading
-import atexit
 import shutil
 import subprocess
+import threading
+import time
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -52,25 +52,19 @@ logger = logging.getLogger(__name__)
 # The terminal tool polls this during command execution so it can kill
 # long-running subprocesses immediately instead of blocking until timeout.
 # ---------------------------------------------------------------------------
-from tools.interrupt import is_interrupted, _interrupt_event  # noqa: F401 — re-exported
 # display_hermes_home imported lazily at call site (stale-module safety during hermes update)
-
-
-
-
 # =============================================================================
 # Custom Singularity Environment with more space
 # =============================================================================
-
 # Singularity helpers (scratch dir, SIF cache) now live in tools/environments/singularity.py
 from tools.environments.singularity import _get_scratch_dir
+from tools.interrupt import _interrupt_event, is_interrupted  # noqa: F401 — re-exported
 from tools.tool_backend_helpers import (
     coerce_modal_mode,
     has_direct_modal_credentials,
     managed_nous_tools_enabled,
     resolve_modal_backend_state,
 )
-
 
 # Hard cap on foreground timeout; override via TERMINAL_MAX_FOREGROUND_TIMEOUT env var.
 FOREGROUND_MAX_TIMEOUT = int(os.getenv("TERMINAL_MAX_FOREGROUND_TIMEOUT", "600"))
@@ -87,21 +81,25 @@ def _check_disk_usage_warning():
         # Get total size of hermes directories
         total_bytes = 0
         import glob
+
         for path in glob.glob(str(scratch_dir / "hermes-*")):
-            for f in Path(path).rglob('*'):
+            for f in Path(path).rglob("*"):
                 if f.is_file():
                     try:
                         total_bytes += f.stat().st_size
                     except OSError as e:
                         logger.debug("Could not stat file %s: %s", f, e)
-        
-        total_gb = total_bytes / (1024 ** 3)
-        
+
+        total_gb = total_bytes / (1024**3)
+
         if total_gb > DISK_USAGE_WARNING_THRESHOLD_GB:
-            logger.warning("Disk usage (%.1fGB) exceeds threshold (%.0fGB). Consider running cleanup_all_environments().",
-                           total_gb, DISK_USAGE_WARNING_THRESHOLD_GB)
+            logger.warning(
+                "Disk usage (%.1fGB) exceeds threshold (%.0fGB). Consider running cleanup_all_environments().",
+                total_gb,
+                DISK_USAGE_WARNING_THRESHOLD_GB,
+            )
             return True
-        
+
         return False
     except Exception as e:
         logger.debug("Disk usage warning check failed: %s", e, exc_info=True)
@@ -131,6 +129,7 @@ def set_approval_callback(cb):
     global _approval_callback
     _approval_callback = cb
 
+
 # =============================================================================
 # Dangerous Command Approval System
 # =============================================================================
@@ -143,15 +142,14 @@ from tools.approval import (
 
 def _check_all_guards(command: str, env_type: str) -> dict:
     """Delegate to consolidated guard (tirith + dangerous cmd) with CLI callback."""
-    return _check_all_guards_impl(command, env_type,
-                                  approval_callback=_approval_callback)
+    return _check_all_guards_impl(command, env_type, approval_callback=_approval_callback)
 
 
 # Allowlist: characters that can legitimately appear in directory paths.
 # Covers alphanumeric, path separators, Windows drive/UNC separators, tilde,
 # dot, hyphen, underscore, space, plus, at, equals, and comma.  Everything
 # else is rejected.
-_WORKDIR_SAFE_RE = re.compile(r'^[A-Za-z0-9/\\:_\-.~ +@=,]+$')
+_WORKDIR_SAFE_RE = re.compile(r"^[A-Za-z0-9/\\:_\-.~ +@=,]+$")
 
 
 def _validate_workdir(workdir: str) -> str | None:
@@ -179,38 +177,42 @@ def _validate_workdir(workdir: str) -> str | None:
 def _handle_sudo_failure(output: str, env_type: str) -> str:
     """
     Check for sudo failure and add helpful message for messaging contexts.
-    
+
     Returns enhanced output if sudo failed in messaging context, else original.
     """
     is_gateway = os.getenv("HERMES_GATEWAY_SESSION")
-    
+
     if not is_gateway:
         return output
-    
+
     # Check for sudo failure indicators
     sudo_failures = [
         "sudo: a password is required",
         "sudo: no tty present",
         "sudo: a terminal is required",
     ]
-    
+
     for failure in sudo_failures:
         if failure in output:
             from hermes_constants import display_hermes_home as _dhh
-            return output + f"\n\n💡 Tip: To enable sudo over messaging, add SUDO_PASSWORD to {_dhh()}/.env on the agent machine."
-    
+
+            return (
+                output
+                + f"\n\n💡 Tip: To enable sudo over messaging, add SUDO_PASSWORD to {_dhh()}/.env on the agent machine."
+            )
+
     return output
 
 
 def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
     """
     Prompt user for sudo password with timeout.
-    
+
     Returns the password if entered, or empty string if:
     - User presses Enter without input (skip)
     - Timeout expires (45s default)
     - Any error occurs
-    
+
     Only works in interactive mode (HERMES_INTERACTIVE=1).
     If a _sudo_password_callback is registered (by the CLI), delegates to it
     so the prompt integrates with prompt_toolkit's UI.  Otherwise reads
@@ -218,7 +220,7 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
     """
     import sys
     import time as time_module
-    
+
     # Use the registered callback when available (prompt_toolkit-compatible)
     if _sudo_password_callback is not None:
         try:
@@ -227,7 +229,7 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
             return ""
 
     result = {"password": None, "done": False}
-    
+
     def read_password_thread():
         """Read password with echo disabled. Uses msvcrt on Windows, /dev/tty on Unix."""
         tty_fd = None
@@ -235,6 +237,7 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
         try:
             if platform.system() == "Windows":
                 import msvcrt
+
                 chars = []
                 while True:
                     c = msvcrt.getwch()
@@ -246,6 +249,7 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
                 result["password"] = "".join(chars)
             else:
                 import termios
+
                 tty_fd = os.open("/dev/tty", os.O_RDONLY)
                 old_attrs = termios.tcgetattr(tty_fd)
                 new_attrs = termios.tcgetattr(tty_fd)
@@ -266,6 +270,7 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
             if tty_fd is not None and old_attrs is not None:
                 try:
                     import termios as _termios
+
                     _termios.tcsetattr(tty_fd, _termios.TCSAFLUSH, old_attrs)
                 except Exception as e:
                     logger.debug("Failed to restore terminal attributes: %s", e)
@@ -275,11 +280,11 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
                 except Exception as e:
                     logger.debug("Failed to close tty fd: %s", e)
             result["done"] = True
-    
+
     try:
         os.environ["HERMES_SPINNER_PAUSE"] = "1"
         time_module.sleep(0.2)
-        
+
         print()
         print("┌" + "─" * 58 + "┐")
         print("│  🔐 SUDO PASSWORD REQUIRED" + " " * 30 + "│")
@@ -290,11 +295,11 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
         print("└" + "─" * 58 + "┘")
         print()
         print("  Password (hidden): ", end="", flush=True)
-        
+
         password_thread = threading.Thread(target=read_password_thread, daemon=True)
         password_thread.start()
         password_thread.join(timeout=timeout_seconds)
-        
+
         if result["done"]:
             password = result["password"] or ""
             print()  # newline after hidden input
@@ -311,7 +316,7 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
             print()
             sys.stdout.flush()
             return ""
-            
+
     except (EOFError, KeyboardInterrupt):
         print()
         print("  ⏭ Cancelled - continuing without sudo")
@@ -326,6 +331,7 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
         if "HERMES_SPINNER_PAUSE" in os.environ:
             del os.environ["HERMES_SPINNER_PAUSE"]
 
+
 def _safe_command_preview(command: Any, limit: int = 200) -> str:
     """Return a log-safe preview for possibly-invalid command values."""
     if command is None:
@@ -336,6 +342,7 @@ def _safe_command_preview(command: Any, limit: int = 200) -> str:
         return repr(command)[:limit]
     except Exception:
         return f"<{type(command).__name__}>"
+
 
 def _looks_like_env_assignment(token: str) -> bool:
     """Return True when *token* is a leading shell environment assignment."""
@@ -409,7 +416,7 @@ def _rewrite_real_sudo_invocations(command: str) -> tuple[str, bool]:
             continue
 
         if command.startswith("&&", i) or command.startswith("||", i) or command.startswith(";;", i):
-            out.append(command[i:i + 2])
+            out.append(command[i : i + 2])
             i += 2
             command_start = True
             continue
@@ -665,14 +672,13 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
 
 
 # Environment classes now live in tools/environments/
+from tools.environments.docker import DockerEnvironment as _DockerEnvironment
 from tools.environments.local import LocalEnvironment as _LocalEnvironment
+from tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
+from tools.environments.modal import ModalEnvironment as _ModalEnvironment
 from tools.environments.singularity import SingularityEnvironment as _SingularityEnvironment
 from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
-from tools.environments.docker import DockerEnvironment as _DockerEnvironment
-from tools.environments.modal import ModalEnvironment as _ModalEnvironment
-from tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
-
 
 # Tool description for LLM
 TERMINAL_TOOL_DESCRIPTION = """Execute shell commands on a Linux environment. Filesystem usually persists between calls.
@@ -744,7 +750,9 @@ def clear_task_env_overrides(task_id: str):
     """
     _task_env_overrides.pop(task_id, None)
 
+
 # Configuration from environment variables
+
 
 def _parse_env_var(name: str, default: str, converter=int, type_label: str = "integer"):
     """Parse an environment variable with *converter*, raising a clear error on bad values.
@@ -757,8 +765,7 @@ def _parse_env_var(name: str, default: str, converter=int, type_label: str = "in
         return converter(raw)
     except (ValueError, json.JSONDecodeError):
         raise ValueError(
-            f"Invalid value for {name}: {raw!r} (expected {type_label}). "
-            f"Check ~/.hermes/.env or environment variables."
+            f"Invalid value for {name}: {raw!r} (expected {type_label}). Check ~/.hermes/.env or environment variables."
         )
 
 
@@ -767,7 +774,7 @@ def _get_env_config() -> Dict[str, Any]:
     # Default image with Python and Node.js for maximum compatibility
     default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
     env_type = os.getenv("TERMINAL_ENV", "local")
-    
+
     mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in ("true", "1", "yes")
 
     # Default cwd: local uses the host's current directory, everything
@@ -790,9 +797,8 @@ def _get_env_config() -> Dict[str, Any]:
     if env_type == "docker" and mount_docker_cwd:
         docker_cwd_source = os.getenv("TERMINAL_CWD") or os.getcwd()
         candidate = os.path.abspath(os.path.expanduser(docker_cwd_source))
-        if (
-            any(candidate.startswith(p) for p in host_prefixes)
-            or (os.path.isabs(candidate) and os.path.isdir(candidate) and not candidate.startswith(("/workspace", "/root")))
+        if any(candidate.startswith(p) for p in host_prefixes) or (
+            os.path.isabs(candidate) and os.path.isdir(candidate) and not candidate.startswith(("/workspace", "/root"))
         ):
             host_cwd = candidate
             cwd = "/workspace"
@@ -801,9 +807,12 @@ def _get_env_config() -> Dict[str, Any]:
         is_host_path = any(cwd.startswith(p) for p in host_prefixes)
         is_relative = not os.path.isabs(cwd)  # e.g. "." or "src/"
         if (is_host_path or is_relative) and cwd != default_cwd:
-            logger.info("Ignoring TERMINAL_CWD=%r for %s backend "
-                        "(host/relative path won't work in sandbox). Using %r instead.",
-                        cwd, env_type, default_cwd)
+            logger.info(
+                "Ignoring TERMINAL_CWD=%r for %s backend (host/relative path won't work in sandbox). Using %r instead.",
+                cwd,
+                env_type,
+                default_cwd,
+            )
             cwd = default_cwd
 
     return {
@@ -830,12 +839,13 @@ def _get_env_config() -> Dict[str, Any]:
         "ssh_persistent": os.getenv(
             "TERMINAL_SSH_PERSISTENT",
             os.getenv("TERMINAL_PERSISTENT_SHELL", "true"),
-        ).lower() in ("true", "1", "yes"),
+        ).lower()
+        in ("true", "1", "yes"),
         "local_persistent": os.getenv("TERMINAL_LOCAL_PERSISTENT", "false").lower() in ("true", "1", "yes"),
         # Container resource config (applies to docker, singularity, modal, daytona -- ignored for local/ssh)
         "container_cpu": _parse_env_var("TERMINAL_CONTAINER_CPU", "1", float, "number"),
-        "container_memory": _parse_env_var("TERMINAL_CONTAINER_MEMORY", "5120"),     # MB (default 5GB)
-        "container_disk": _parse_env_var("TERMINAL_CONTAINER_DISK", "51200"),        # MB (default 50GB)
+        "container_memory": _parse_env_var("TERMINAL_CONTAINER_MEMORY", "5120"),  # MB (default 5GB)
+        "container_disk": _parse_env_var("TERMINAL_CONTAINER_DISK", "51200"),  # MB (default 50GB)
         "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in ("true", "1", "yes"),
         "docker_volumes": _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON"),
     }
@@ -850,14 +860,20 @@ def _get_modal_backend_state(modal_mode: object | None) -> Dict[str, Any]:
     )
 
 
-def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
-                        ssh_config: dict = None, container_config: dict = None,
-                        local_config: dict = None,
-                        task_id: str = "default",
-                        host_cwd: str = None):
+def _create_environment(
+    env_type: str,
+    image: str,
+    cwd: str,
+    timeout: int,
+    ssh_config: dict = None,
+    container_config: dict = None,
+    local_config: dict = None,
+    task_id: str = "default",
+    host_cwd: str = None,
+):
     """
     Create an execution environment for sandboxed command execution.
-    
+
     Args:
         env_type: One of "local", "docker", "singularity", "modal", "daytona", "ssh"
         image: Docker/Singularity/Modal image name (ignored for local/ssh)
@@ -867,7 +883,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
         container_config: Resource config for container backends (cpu, memory, disk, persistent)
         task_id: Task identifier for environment reuse and snapshot keying
         host_cwd: Optional host working directory to bind into Docker when explicitly enabled
-        
+
     Returns:
         Environment instance with execute() method
     """
@@ -882,26 +898,36 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
 
     if env_type == "local":
         return _LocalEnvironment(cwd=cwd, timeout=timeout)
-    
+
     elif env_type == "docker":
         return _DockerEnvironment(
-            image=image, cwd=cwd, timeout=timeout,
-            cpu=cpu, memory=memory, disk=disk,
-            persistent_filesystem=persistent, task_id=task_id,
+            image=image,
+            cwd=cwd,
+            timeout=timeout,
+            cpu=cpu,
+            memory=memory,
+            disk=disk,
+            persistent_filesystem=persistent,
+            task_id=task_id,
             volumes=volumes,
             host_cwd=host_cwd,
             auto_mount_cwd=cc.get("docker_mount_cwd_to_workspace", False),
             forward_env=docker_forward_env,
             env=docker_env,
         )
-    
+
     elif env_type == "singularity":
         return _SingularityEnvironment(
-            image=image, cwd=cwd, timeout=timeout,
-            cpu=cpu, memory=memory, disk=disk,
-            persistent_filesystem=persistent, task_id=task_id,
+            image=image,
+            cwd=cwd,
+            timeout=timeout,
+            cpu=cpu,
+            memory=memory,
+            disk=disk,
+            persistent_filesystem=persistent,
+            task_id=task_id,
         )
-    
+
     elif env_type == "modal":
         sandbox_kwargs = {}
         if cpu > 0:
@@ -910,7 +936,10 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             sandbox_kwargs["memory"] = memory
         if disk > 0:
             try:
-                import inspect, modal
+                import inspect
+
+                import modal
+
                 if "ephemeral_disk" in inspect.signature(modal.Sandbox.create).parameters:
                     sandbox_kwargs["ephemeral_disk"] = disk
             except Exception:
@@ -920,9 +949,12 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
 
         if modal_state["selected_backend"] == "managed":
             return _ManagedModalEnvironment(
-                image=image, cwd=cwd, timeout=timeout,
+                image=image,
+                cwd=cwd,
+                timeout=timeout,
                 modal_sandbox_kwargs=sandbox_kwargs,
-                persistent_filesystem=persistent, task_id=task_id,
+                persistent_filesystem=persistent,
+                task_id=task_id,
             )
 
         if modal_state["selected_backend"] != "direct":
@@ -949,18 +981,27 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             raise ValueError(message)
 
         return _ModalEnvironment(
-            image=image, cwd=cwd, timeout=timeout,
+            image=image,
+            cwd=cwd,
+            timeout=timeout,
             modal_sandbox_kwargs=sandbox_kwargs,
-            persistent_filesystem=persistent, task_id=task_id,
+            persistent_filesystem=persistent,
+            task_id=task_id,
         )
-    
+
     elif env_type == "daytona":
         # Lazy import so daytona SDK is only required when backend is selected.
         from tools.environments.daytona import DaytonaEnvironment as _DaytonaEnvironment
+
         return _DaytonaEnvironment(
-            image=image, cwd=cwd, timeout=timeout,
-            cpu=int(cpu), memory=memory, disk=disk,
-            persistent_filesystem=persistent, task_id=task_id,
+            image=image,
+            cwd=cwd,
+            timeout=timeout,
+            cpu=int(cpu),
+            memory=memory,
+            disk=disk,
+            persistent_filesystem=persistent,
+            task_id=task_id,
         )
 
     elif env_type == "ssh":
@@ -976,7 +1017,9 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
         )
 
     else:
-        raise ValueError(f"Unknown environment type: {env_type}. Use 'local', 'docker', 'singularity', 'modal', 'daytona', or 'ssh'")
+        raise ValueError(
+            f"Unknown environment type: {env_type}. Use 'local', 'docker', 'singularity', 'modal', 'daytona', or 'ssh'"
+        )
 
 
 def _cleanup_inactive_envs(lifetime_seconds: int = 300):
@@ -987,6 +1030,7 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     # background processes (their _last_activity gets refreshed to keep them alive).
     try:
         from tools.process_registry import process_registry
+
         for task_id in list(_last_activity.keys()):
             if process_registry.has_active_processes(task_id):
                 _last_activity[task_id] = current_time  # Keep sandbox alive
@@ -1019,16 +1063,17 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
         # ShellFileOperations from referencing a dead sandbox)
         try:
             from tools.file_tools import clear_file_ops_cache
+
             clear_file_ops_cache(task_id)
         except ImportError:
             pass
 
         try:
-            if hasattr(env, 'cleanup'):
+            if hasattr(env, "cleanup"):
                 env.cleanup()
-            elif hasattr(env, 'stop'):
+            elif hasattr(env, "stop"):
                 env.stop()
-            elif hasattr(env, 'terminate'):
+            elif hasattr(env, "terminate"):
                 env.terminate()
 
             logger.info("Cleaned up inactive environment for task: %s", task_id)
@@ -1101,30 +1146,29 @@ def is_persistent_env(task_id: str) -> bool:
     return bool(getattr(env, "_persistent", False))
 
 
-
-
 def cleanup_all_environments():
     """Clean up ALL active environments. Use with caution."""
     task_ids = list(_active_environments.keys())
     cleaned = 0
-    
+
     for task_id in task_ids:
         try:
             cleanup_vm(task_id)
             cleaned += 1
         except Exception as e:
             logger.error("Error cleaning %s: %s", task_id, e, exc_info=True)
-    
+
     # Also clean any orphaned directories
     scratch_dir = _get_scratch_dir()
     import glob
+
     for path in glob.glob(str(scratch_dir / "hermes-*")):
         try:
             shutil.rmtree(path, ignore_errors=True)
             logger.info("Removed orphaned: %s", path)
         except OSError as e:
             logger.debug("Failed to remove orphaned path %s: %s", path, e)
-    
+
     if cleaned > 0:
         logger.info("Cleaned %d environments", cleaned)
     return cleaned
@@ -1147,6 +1191,7 @@ def cleanup_vm(task_id: str):
     # Invalidate stale file_ops cache entry
     try:
         from tools.file_tools import clear_file_ops_cache
+
         clear_file_ops_cache(task_id)
     except ImportError:
         pass
@@ -1155,11 +1200,11 @@ def cleanup_vm(task_id: str):
         return
 
     try:
-        if hasattr(env, 'cleanup'):
+        if hasattr(env, "cleanup"):
             env.cleanup()
-        elif hasattr(env, 'stop'):
+        elif hasattr(env, "stop"):
             env.stop()
-        elif hasattr(env, 'terminate'):
+        elif hasattr(env, "terminate"):
             env.terminate()
 
         logger.info("Manually cleaned up environment for task: %s", task_id)
@@ -1180,6 +1225,7 @@ def _atexit_cleanup():
         logger.info("Shutting down %d remaining sandbox(es)...", count)
         cleanup_all_environments()
 
+
 atexit.register(_atexit_cleanup)
 
 
@@ -1190,6 +1236,7 @@ atexit.register(_atexit_cleanup)
 # to indicate failure.  The model sees a raw exit_code=1 from `grep` and
 # wastes a turn investigating something that just means "no matches".
 # This lookup adds a human-readable note so the agent can move on.
+
 
 def _interpret_exit_code(command: str, exit_code: int) -> str | None:
     """Return a human-readable note when a non-zero exit code is non-erroneous.
@@ -1204,7 +1251,7 @@ def _interpret_exit_code(command: str, exit_code: int) -> str | None:
     # Extract the last command in a pipeline/chain — that determines the
     # exit code.  Handles  `cmd1 && cmd2`, `cmd1 | cmd2`, `cmd1; cmd2`.
     # Deliberately simple: split on shell operators and take the last piece.
-    segments = re.split(r'\s*(?:\|\||&&|[|;])\s*', command)
+    segments = re.split(r"\s*(?:\|\||&&|[|;])\s*", command)
     last_segment = (segments[-1] if segments else command).strip()
 
     # Get base command name (first word), stripping env var assignments
@@ -1223,29 +1270,29 @@ def _interpret_exit_code(command: str, exit_code: int) -> str | None:
     # Command-specific semantics
     semantics: dict[str, dict[int, str]] = {
         # grep/rg/ag/ack: 1=no matches found (normal), 2+=real error
-        "grep":  {1: "No matches found (not an error)"},
+        "grep": {1: "No matches found (not an error)"},
         "egrep": {1: "No matches found (not an error)"},
         "fgrep": {1: "No matches found (not an error)"},
-        "rg":    {1: "No matches found (not an error)"},
-        "ag":    {1: "No matches found (not an error)"},
-        "ack":   {1: "No matches found (not an error)"},
+        "rg": {1: "No matches found (not an error)"},
+        "ag": {1: "No matches found (not an error)"},
+        "ack": {1: "No matches found (not an error)"},
         # diff: 1=files differ (expected), 2+=real error
-        "diff":  {1: "Files differ (expected, not an error)"},
+        "diff": {1: "Files differ (expected, not an error)"},
         "colordiff": {1: "Files differ (expected, not an error)"},
         # find: 1=some dirs inaccessible but results may still be valid
-        "find":  {1: "Some directories were inaccessible (partial results may still be valid)"},
+        "find": {1: "Some directories were inaccessible (partial results may still be valid)"},
         # test/[: 1=condition is false (expected)
-        "test":  {1: "Condition evaluated to false (expected, not an error)"},
-        "[":     {1: "Condition evaluated to false (expected, not an error)"},
+        "test": {1: "Condition evaluated to false (expected, not an error)"},
+        "[": {1: "Condition evaluated to false (expected, not an error)"},
         # curl: common non-error codes
-        "curl":  {
+        "curl": {
             6: "Could not resolve host",
             7: "Failed to connect to host",
             22: "HTTP response code indicated error (e.g. 404, 500)",
             28: "Operation timed out",
         },
         # git: 1 is context-dependent but often normal (e.g. git diff with changes)
-        "git":   {1: "Non-zero exit (often normal — e.g. 'git diff' returns 1 when files differ)"},
+        "git": {1: "Non-zero exit (often normal — e.g. 'git diff' returns 1 when files differ)"},
     }
 
     cmd_semantics = semantics.get(base_cmd)
@@ -1264,10 +1311,7 @@ def _command_requires_pipe_stdin(command: str) -> bool:
     newline, so the command appears to hang forever with no visible progress.
     """
     normalized = " ".join(command.lower().split())
-    return (
-        normalized.startswith("gh auth login")
-        and "--with-token" in normalized
-    )
+    return normalized.startswith("gh auth login") and "--with-token" in normalized
 
 
 _SHELL_LEVEL_BACKGROUND_RE = re.compile(r"\b(?:nohup|disown|setsid)\b", re.IGNORECASE)
@@ -1366,7 +1410,7 @@ def terminal_tool(
 
         # With custom timeout
         >>> result = terminal_tool(command="long_task.sh", timeout=300)
-        
+
         # Force run after user confirmation
         # Note: force parameter is internal only, not exposed to model API
     """
@@ -1376,12 +1420,15 @@ def terminal_tool(
                 "Rejected invalid terminal command value: %s",
                 type(command).__name__,
             )
-            return json.dumps({
-                "output": "",
-                "exit_code": -1,
-                "error": f"Invalid command: expected string, got {type(command).__name__}",
-                "status": "error",
-            }, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "output": "",
+                    "exit_code": -1,
+                    "error": f"Invalid command: expected string, got {type(command).__name__}",
+                    "status": "error",
+                },
+                ensure_ascii=False,
+            )
 
         # Get configuration
         config = _get_env_config()
@@ -1393,7 +1440,7 @@ def terminal_tool(
         # Check per-task overrides (set by environments like TerminalBench2Env)
         # before falling back to global env var config
         overrides = _task_env_overrides.get(effective_task_id, {})
-        
+
         # Select image based on env type, with per-task override support
         if env_type == "docker":
             image = overrides.get("docker_image") or config["docker_image"]
@@ -1413,25 +1460,31 @@ def terminal_tool(
         # Reject foreground commands where the model explicitly requests
         # a timeout above FOREGROUND_MAX_TIMEOUT — nudge it toward background.
         if not background and timeout and timeout > FOREGROUND_MAX_TIMEOUT:
-            return json.dumps({
-                "error": (
-                    f"Foreground timeout {timeout}s exceeds the maximum of "
-                    f"{FOREGROUND_MAX_TIMEOUT}s. Use background=true with "
-                    f"notify_on_complete=true for long-running commands."
-                ),
-            }, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "error": (
+                        f"Foreground timeout {timeout}s exceeds the maximum of "
+                        f"{FOREGROUND_MAX_TIMEOUT}s. Use background=true with "
+                        f"notify_on_complete=true for long-running commands."
+                    ),
+                },
+                ensure_ascii=False,
+            )
 
         # Guardrail: long-lived server/watch commands should run as managed
         # background sessions, not foreground shell hacks.
         if not background:
             guidance = _foreground_background_guidance(command)
             if guidance:
-                return json.dumps({
-                    "output": "",
-                    "exit_code": -1,
-                    "error": guidance,
-                    "status": "error",
-                }, ensure_ascii=False)
+                return json.dumps(
+                    {
+                        "output": "",
+                        "exit_code": -1,
+                        "error": guidance,
+                        "status": "error",
+                    },
+                    ensure_ascii=False,
+                )
 
         # Start cleanup thread
         _start_cleanup_thread()
@@ -1508,12 +1561,15 @@ def terminal_tool(
                             host_cwd=config.get("host_cwd"),
                         )
                     except ImportError as e:
-                        return json.dumps({
-                            "output": "",
-                            "exit_code": -1,
-                            "error": f"Terminal tool disabled: environment creation failed ({e})",
-                            "status": "disabled"
-                        }, ensure_ascii=False)
+                        return json.dumps(
+                            {
+                                "output": "",
+                                "exit_code": -1,
+                                "error": f"Terminal tool disabled: environment creation failed ({e})",
+                                "status": "disabled",
+                            },
+                            ensure_ascii=False,
+                        )
 
                     with _env_lock:
                         _active_environments[effective_task_id] = new_env
@@ -1529,27 +1585,30 @@ def terminal_tool(
             if not approval["approved"]:
                 # Check if this is an approval_required (gateway ask mode)
                 if approval.get("status") == "approval_required":
-                    return json.dumps({
-                        "output": "",
-                        "exit_code": -1,
-                        "error": approval.get("message", "Waiting for user approval"),
-                        "status": "approval_required",
-                        "command": approval.get("command", command),
-                        "description": approval.get("description", "command flagged"),
-                        "pattern_key": approval.get("pattern_key", ""),
-                    }, ensure_ascii=False)
+                    return json.dumps(
+                        {
+                            "output": "",
+                            "exit_code": -1,
+                            "error": approval.get("message", "Waiting for user approval"),
+                            "status": "approval_required",
+                            "command": approval.get("command", command),
+                            "description": approval.get("description", "command flagged"),
+                            "pattern_key": approval.get("pattern_key", ""),
+                        },
+                        ensure_ascii=False,
+                    )
                 # Command was blocked
                 desc = approval.get("description", "command flagged")
-                fallback_msg = (
-                    f"Command denied: {desc}. "
-                    "Use the approval prompt to allow it, or rephrase the command."
+                fallback_msg = f"Command denied: {desc}. Use the approval prompt to allow it, or rephrase the command."
+                return json.dumps(
+                    {
+                        "output": "",
+                        "exit_code": -1,
+                        "error": approval.get("message", fallback_msg),
+                        "status": "blocked",
+                    },
+                    ensure_ascii=False,
                 )
-                return json.dumps({
-                    "output": "",
-                    "exit_code": -1,
-                    "error": approval.get("message", fallback_msg),
-                    "status": "blocked"
-                }, ensure_ascii=False)
             # Track whether approval was explicitly granted by the user
             if approval.get("user_approved"):
                 desc = approval.get("description", "flagged as dangerous")
@@ -1562,14 +1621,12 @@ def terminal_tool(
         if workdir:
             workdir_error = _validate_workdir(workdir)
             if workdir_error:
-                logger.warning("Blocked dangerous workdir: %s (command: %s)",
-                               workdir[:200], _safe_command_preview(command))
-                return json.dumps({
-                    "output": "",
-                    "exit_code": -1,
-                    "error": workdir_error,
-                    "status": "blocked"
-                }, ensure_ascii=False)
+                logger.warning(
+                    "Blocked dangerous workdir: %s (command: %s)", workdir[:200], _safe_command_preview(command)
+                )
+                return json.dumps(
+                    {"output": "", "exit_code": -1, "error": workdir_error, "status": "blocked"}, ensure_ascii=False
+                )
 
         # Prepare command for execution
         pty_disabled_reason = None
@@ -1599,7 +1656,7 @@ def terminal_tool(
                         cwd=effective_cwd,
                         task_id=effective_task_id,
                         session_key=session_key,
-                        env_vars=env.env if hasattr(env, 'env') else None,
+                        env_vars=env.env if hasattr(env, "env") else None,
                         use_pty=effective_pty,
                     )
                 else:
@@ -1628,6 +1685,7 @@ def terminal_tool(
                 # routed back to the correct chat/thread.
                 if background and (notify_on_complete or watch_patterns):
                     from gateway.session_context import get_session_env as _gse
+
                     _gw_platform = _gse("HERMES_SESSION_PLATFORM", "")
                     if _gw_platform:
                         _gw_chat_id = _gse("HERMES_SESSION_CHAT_ID", "")
@@ -1650,17 +1708,19 @@ def terminal_tool(
                     # turn.  CLI mode uses the completion_queue directly.
                     if proc_session.watcher_platform:
                         proc_session.watcher_interval = 5
-                        process_registry.pending_watchers.append({
-                            "session_id": proc_session.id,
-                            "check_interval": 5,
-                            "session_key": session_key,
-                            "platform": proc_session.watcher_platform,
-                            "chat_id": proc_session.watcher_chat_id,
-                            "user_id": proc_session.watcher_user_id,
-                            "user_name": proc_session.watcher_user_name,
-                            "thread_id": proc_session.watcher_thread_id,
-                            "notify_on_complete": True,
-                        })
+                        process_registry.pending_watchers.append(
+                            {
+                                "session_id": proc_session.id,
+                                "check_interval": 5,
+                                "session_key": session_key,
+                                "platform": proc_session.watcher_platform,
+                                "chat_id": proc_session.watcher_chat_id,
+                                "user_id": proc_session.watcher_user_id,
+                                "user_name": proc_session.watcher_user_name,
+                                "thread_id": proc_session.watcher_thread_id,
+                                "notify_on_complete": True,
+                            }
+                        )
 
                 # Set watch patterns for output monitoring
                 if watch_patterns and background:
@@ -1669,17 +1729,16 @@ def terminal_tool(
 
                 return json.dumps(result_data, ensure_ascii=False)
             except Exception as e:
-                return json.dumps({
-                    "output": "",
-                    "exit_code": -1,
-                    "error": f"Failed to start background process: {str(e)}"
-                }, ensure_ascii=False)
+                return json.dumps(
+                    {"output": "", "exit_code": -1, "error": f"Failed to start background process: {str(e)}"},
+                    ensure_ascii=False,
+                )
         else:
             # Run foreground command with retry logic
             max_retries = 3
             retry_count = 0
             result = None
-            
+
             while retry_count <= max_retries:
                 try:
                     execute_kwargs = {"timeout": effective_timeout}
@@ -1689,60 +1748,61 @@ def terminal_tool(
                 except Exception as e:
                     error_str = str(e).lower()
                     if "timeout" in error_str:
-                        return json.dumps({
-                            "output": "",
-                            "exit_code": 124,
-                            "error": f"Command timed out after {effective_timeout} seconds"
-                        }, ensure_ascii=False)
-                    
+                        return json.dumps(
+                            {
+                                "output": "",
+                                "exit_code": 124,
+                                "error": f"Command timed out after {effective_timeout} seconds",
+                            },
+                            ensure_ascii=False,
+                        )
+
                     # Retry on transient errors
                     if retry_count < max_retries:
                         retry_count += 1
-                        wait_time = 2 ** retry_count
-                        logger.warning("Execution error, retrying in %ds (attempt %d/%d) - Command: %s - Error: %s: %s - Task: %s, Backend: %s",
-                                       wait_time, retry_count, max_retries, _safe_command_preview(command), type(e).__name__, e, effective_task_id, env_type)
+                        wait_time = 2**retry_count
+                        logger.warning(
+                            "Execution error, retrying in %ds (attempt %d/%d) - Command: %s - Error: %s: %s - Task: %s, Backend: %s",
+                            wait_time,
+                            retry_count,
+                            max_retries,
+                            _safe_command_preview(command),
+                            type(e).__name__,
+                            e,
+                            effective_task_id,
+                            env_type,
+                        )
                         time.sleep(wait_time)
                         continue
-                    
-                    logger.error("Execution failed after %d retries - Command: %s - Error: %s: %s - Task: %s, Backend: %s",
-                                 max_retries, _safe_command_preview(command), type(e).__name__, e, effective_task_id, env_type)
-                    return json.dumps({
-                        "output": "",
-                        "exit_code": -1,
-                        "error": f"Command execution failed: {type(e).__name__}: {str(e)}"
-                    }, ensure_ascii=False)
-                
+
+                    logger.error(
+                        "Execution failed after %d retries - Command: %s - Error: %s: %s - Task: %s, Backend: %s",
+                        max_retries,
+                        _safe_command_preview(command),
+                        type(e).__name__,
+                        e,
+                        effective_task_id,
+                        env_type,
+                    )
+                    return json.dumps(
+                        {
+                            "output": "",
+                            "exit_code": -1,
+                            "error": f"Command execution failed: {type(e).__name__}: {str(e)}",
+                        },
+                        ensure_ascii=False,
+                    )
+
                 # Got a result
                 break
-            
+
             # Extract output
             output = result.get("output", "")
             returncode = result.get("returncode", 0)
-            
+
             # Add helpful message for sudo failures in messaging context
             output = _handle_sudo_failure(output, env_type)
 
-            # Foreground terminal output canonicalization seam: plugins receive
-            # the full output string before default truncation and may only
-            # replace it by returning a string from transform_terminal_output.
-            # The hook is fail-open, and the first valid string return wins.
-            try:
-                from hermes_cli.plugins import invoke_hook
-                hook_results = invoke_hook(
-                    "transform_terminal_output",
-                    command=command,
-                    output=output,
-                    returncode=returncode,
-                    task_id=effective_task_id or "",
-                    env_type=env_type,
-                )
-                for hook_result in hook_results:
-                    if isinstance(hook_result, str):
-                        output = hook_result
-                        break
-            except Exception:
-                pass
-            
             # Truncate output if too long, keeping both head and tail
             MAX_OUTPUT_CHARS = 50000
             if len(output) > MAX_OUTPUT_CHARS:
@@ -1750,18 +1810,19 @@ def terminal_tool(
                 tail_chars = MAX_OUTPUT_CHARS - head_chars  # 60% tail (most recent/relevant output)
                 omitted = len(output) - head_chars - tail_chars
                 truncated_notice = (
-                    f"\n\n... [OUTPUT TRUNCATED - {omitted} chars omitted "
-                    f"out of {len(output)} total] ...\n\n"
+                    f"\n\n... [OUTPUT TRUNCATED - {omitted} chars omitted out of {len(output)} total] ...\n\n"
                 )
                 output = output[:head_chars] + truncated_notice + output[-tail_chars:]
 
             # Strip ANSI escape sequences so the model never sees terminal
             # formatting — prevents it from copying escapes into file writes.
             from tools.ansi_strip import strip_ansi
+
             output = strip_ansi(output)
 
             # Redact secrets from command output (catches env/printenv leaking keys)
             from agent.redact import redact_sensitive_text
+
             output = redact_sensitive_text(output.strip()) if output else ""
 
             # Interpret non-zero exit codes that aren't real errors
@@ -1782,15 +1843,19 @@ def terminal_tool(
 
     except Exception as e:
         import traceback
+
         tb_str = traceback.format_exc()
         logger.error("terminal_tool exception:\n%s", tb_str)
-        return json.dumps({
-            "output": "",
-            "exit_code": -1,
-            "error": f"Failed to execute command: {str(e)}",
-            "traceback": tb_str,
-            "status": "error"
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "output": "",
+                "exit_code": -1,
+                "error": f"Failed to execute command: {str(e)}",
+                "traceback": tb_str,
+                "status": "error",
+            },
+            ensure_ascii=False,
+        )
 
 
 def check_terminal_requirements() -> bool:
@@ -1804,6 +1869,7 @@ def check_terminal_requirements() -> bool:
 
         elif env_type == "docker":
             from tools.environments.docker import find_docker
+
             docker = find_docker()
             if not docker:
                 logger.error("Docker executable not found in PATH or common install locations")
@@ -1884,12 +1950,12 @@ def check_terminal_requirements() -> bool:
 
         elif env_type == "daytona":
             from daytona import Daytona  # noqa: F401 — SDK presence check
+
             return os.getenv("DAYTONA_API_KEY") is not None
 
         else:
             logger.error(
-                "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
-                "modal, daytona, ssh.",
+                "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, modal, daytona, ssh.",
                 env_type,
             )
             return False
@@ -1902,7 +1968,7 @@ if __name__ == "__main__":
     # Simple test when run directly
     print("Terminal Tool Module")
     print("=" * 50)
-    
+
     config = _get_env_config()
     print("\nCurrent Configuration:")
     print(f"  Environment type: {config['env_type']}")
@@ -1936,6 +2002,7 @@ if __name__ == "__main__":
     print(f"  TERMINAL_DAYTONA_IMAGE: {os.getenv('TERMINAL_DAYTONA_IMAGE', default_img)}")
     print(f"  TERMINAL_CWD: {os.getenv('TERMINAL_CWD', os.getcwd())}")
     from hermes_constants import display_hermes_home as _dhh
+
     print(f"  TERMINAL_SANDBOX_DIR: {os.getenv('TERMINAL_SANDBOX_DIR', f'{_dhh()}/sandboxes')}")
     print(f"  TERMINAL_TIMEOUT: {os.getenv('TERMINAL_TIMEOUT', '60')}")
     print(f"  TERMINAL_LIFETIME_SECONDS: {os.getenv('TERMINAL_LIFETIME_SECONDS', '300')}")
@@ -1952,42 +2019,39 @@ TERMINAL_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "command": {
-                "type": "string",
-                "description": "The command to execute on the VM"
-            },
+            "command": {"type": "string", "description": "The command to execute on the VM"},
             "background": {
                 "type": "boolean",
                 "description": "Run the command in the background. Two patterns: (1) Long-lived processes that never exit (servers, watchers). (2) Long-running tasks paired with notify_on_complete=true — you can keep working and get notified when the task finishes. For short commands, prefer foreground with a generous timeout instead.",
-                "default": False
+                "default": False,
             },
             "timeout": {
                 "type": "integer",
                 "description": f"Max seconds to wait (default: 180, foreground max: {FOREGROUND_MAX_TIMEOUT}). Returns INSTANTLY when command finishes — set high for long tasks, you won't wait unnecessarily. Foreground timeout above {FOREGROUND_MAX_TIMEOUT}s is rejected; use background=true for longer commands.",
-                "minimum": 1
+                "minimum": 1,
             },
             "workdir": {
                 "type": "string",
-                "description": "Working directory for this command (absolute path). Defaults to the session working directory."
+                "description": "Working directory for this command (absolute path). Defaults to the session working directory.",
             },
             "pty": {
                 "type": "boolean",
                 "description": "Run in pseudo-terminal (PTY) mode for interactive CLI tools like Codex, Claude Code, or Python REPL. Only works with local and SSH backends. Default: false.",
-                "default": False
+                "default": False,
             },
             "notify_on_complete": {
                 "type": "boolean",
                 "description": "When true (and background=true), you'll be automatically notified when the process finishes — no polling needed. Use this for tasks that take a while (tests, builds, deployments) so you can keep working on other things in the meantime.",
-                "default": False
+                "default": False,
             },
             "watch_patterns": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Strings to watch for in background process output. Fires a notification the first time each pattern matches a line of output. **Use ONLY for mid-process signals** you want to react to before the process exits — errors, readiness markers, intermediate step markers (e.g. [\"ERROR\", \"Traceback\", \"listening on port\"]). Do NOT use for end-of-run markers (summary headers, 'DONE', 'PASS' printed right before exit) — use `notify_on_complete` for that instead. Stacking end-of-run patterns on top of `notify_on_complete` produces duplicate, delayed notifications that arrive after you've already moved on, since delivery is asynchronous and continues after the process exits."
-            }
+                "description": 'Strings to watch for in background process output. Fires a notification the first time each pattern matches a line of output. **Use ONLY for mid-process signals** you want to react to before the process exits — errors, readiness markers, intermediate step markers (e.g. ["ERROR", "Traceback", "listening on port"]). Do NOT use for end-of-run markers (summary headers, \'DONE\', \'PASS\' printed right before exit) — use `notify_on_complete` for that instead. Stacking end-of-run patterns on top of `notify_on_complete` produces duplicate, delayed notifications that arrive after you\'ve already moved on, since delivery is asynchronous and continues after the process exits.',
+            },
         },
-        "required": ["command"]
-    }
+        "required": ["command"],
+    },
 }
 
 

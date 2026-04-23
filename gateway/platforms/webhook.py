@@ -31,6 +31,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import re
 import subprocess
 import time
@@ -655,15 +656,33 @@ class WebhookAdapter(BasePlatformAdapter):
         return await self._deliver_cross_platform(deliver_type, content, delivery)
 
     async def _deliver_gitlab_comment(self, content: str, delivery: dict) -> SendResult:
-        """Post agent response as a Gitlab MR/issue comment via ``glab`` CLI."""
+        """Post agent response as a GitLab MR/issue comment via the REST API.
+
+        Uses ``GITLAB_TOKEN`` (required) and ``GITLAB_URL`` (default:
+        https://gitlab.com) environment variables for authentication and
+        endpoint resolution.  Falls back to ``glab`` CLI if the token is
+        not available.
+
+        If ``deliver_extra.inline_comments`` is provided, each entry is
+        posted as an inline discussion on the MR with a position.
+        """
         extra = delivery.get("deliver_extra", {})
         repo = extra.get("repo", "")
         mr_id = extra.get("mr_id", "")
+        inline_comments = extra.get("inline_comments", [])
 
         if not repo or not mr_id:
             logger.error("[webhook] gitlab_comment delivery missing repo or mr_id")
             return SendResult(success=False, error="Missing repo or mr_id")
-        # glab mr note 123 -m "Looks good to me!"
+
+        # --- Try REST API first (preferred) ---
+        gitlab_token = os.environ.get("GITLAB_TOKEN", "").strip()
+        if gitlab_token:
+            return await self._deliver_gitlab_comment_api(
+                content, repo, mr_id, gitlab_token, inline_comments
+            )
+
+        # --- Fallback: glab CLI ---
         try:
             result = subprocess.run(
                 [
@@ -681,20 +700,152 @@ class WebhookAdapter(BasePlatformAdapter):
                 timeout=30,
             )
             if result.returncode == 0:
-                logger.info("[webhook] Posted comment on %s#%s", repo, mr_id)
+                logger.info("[webhook] Posted comment on %s#%s via glab", repo, mr_id)
                 return SendResult(success=True)
             else:
                 logger.error("[webhook] glab mr note failed: %s", result.stderr)
                 return SendResult(success=False, error=result.stderr)
         except FileNotFoundError:
             logger.error(
-                "[webhook] 'glab' CLI not found — install Glab CLI for "
-                "github_comment delivery"
+                "[webhook] 'glab' CLI not found and GITLAB_TOKEN not set — "
+                "cannot deliver gitlab_comment"
             )
-            return SendResult(success=False, error="gh CLI not installed")
+            return SendResult(success=False, error="glab CLI not installed and GITLAB_TOKEN not set")
         except Exception as e:
             logger.error("[webhook] glab delivery error: %s", e)
             return SendResult(success=False, error=str(e))
+
+    async def _deliver_gitlab_comment_api(
+        self,
+        content: str,
+        repo: str,
+        mr_id: str,
+        token: str,
+        inline_comments: list,
+    ) -> SendResult:
+        """Deliver a GitLab comment via the REST API v4.
+
+        Posts a general note and optionally creates inline discussion
+        threads for each entry in *inline_comments*.
+        """
+        import urllib.parse
+
+        try:
+            import httpx
+        except ImportError:
+            logger.error("[webhook] httpx not installed — cannot use GitLab REST API")
+            return SendResult(success=False, error="httpx not installed")
+
+        gitlab_url = os.environ.get("GITLAB_URL", "https://gitlab.com").rstrip("/")
+        encoded_repo = urllib.parse.quote(repo, safe="")
+        base_api = f"{gitlab_url}/api/v4/projects/{encoded_repo}"
+        headers = {"PRIVATE-TOKEN": token, "Content-Type": "application/json"}
+
+        posted_notes = 0
+        errors = []
+
+        # 1. Post the general summary comment
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(
+                    f"{base_api}/merge_requests/{mr_id}/notes",
+                    headers=headers,
+                    json={"body": content},
+                )
+                if resp.status_code >= 400:
+                    errors.append(f"Note POST {resp.status_code}: {resp.text[:200]}")
+                    logger.error(
+                        "[webhook] GitLab note POST %d: %s",
+                        resp.status_code,
+                        resp.text[:200],
+                    )
+                else:
+                    posted_notes += 1
+                    logger.info("[webhook] Posted comment on %s#%s via API", repo, mr_id)
+        except Exception as e:
+            errors.append(f"Note POST error: {e}")
+            logger.error("[webhook] GitLab API note error: %s", e)
+
+        # 2. Post inline comments (if provided)
+        for ic in inline_comments:
+            file_path = ic.get("file_path", "")
+            line = ic.get("line")
+            body = ic.get("body", "")
+            if not file_path or line is None or not body:
+                continue
+
+            # Resolve diff_refs from the MR if head_sha is not provided
+            head_sha = ic.get("head_sha", "")
+            base_sha = ic.get("base_sha", "")
+            start_sha = ic.get("start_sha", "")
+
+            if not head_sha or not base_sha or not start_sha:
+                try:
+                    async with httpx.AsyncClient(timeout=15) as client:
+                        mr_resp = await client.get(
+                            f"{base_api}/merge_requests/{mr_id}",
+                            headers=headers,
+                        )
+                        if mr_resp.status_code == 200:
+                            diff_refs = mr_resp.json().get("diff_refs", {})
+                            head_sha = head_sha or diff_refs.get("head_sha", "")
+                            base_sha = base_sha or diff_refs.get("base_sha", "")
+                            start_sha = start_sha or diff_refs.get("start_sha", "")
+                except Exception:
+                    pass
+
+            if not head_sha or not base_sha or not start_sha:
+                errors.append(f"Inline comment on {file_path}:{line} — cannot resolve diff_refs")
+                continue
+
+            line_type = ic.get("line_type", "new")
+            position = {
+                "base_sha": base_sha,
+                "head_sha": head_sha,
+                "start_sha": start_sha,
+                "position_type": "text",
+                "new_path": file_path,
+                "old_path": file_path,
+            }
+            if line_type == "old":
+                position["old_line"] = line
+            else:
+                position["new_line"] = line
+
+            try:
+                async with httpx.AsyncClient(timeout=15) as client:
+                    resp = await client.post(
+                        f"{base_api}/merge_requests/{mr_id}/discussions",
+                        headers=headers,
+                        json={"body": body, "position": position},
+                    )
+                    if resp.status_code >= 400:
+                        errors.append(
+                            f"Inline {file_path}:{line} POST {resp.status_code}"
+                        )
+                        logger.debug(
+                            "[webhook] Inline comment failed %d: %s",
+                            resp.status_code,
+                            resp.text[:200],
+                        )
+                    else:
+                        posted_notes += 1
+                        logger.info(
+                            "[webhook] Posted inline comment on %s:%s in %s#%s",
+                            file_path,
+                            line,
+                            repo,
+                            mr_id,
+                        )
+            except Exception as e:
+                errors.append(f"Inline {file_path}:{line} error: {e}")
+
+        if posted_notes > 0:
+            return SendResult(
+                success=True,
+                error="; ".join(errors) if errors else None,
+            )
+        return SendResult(success=False, error="; ".join(errors) or "No notes posted")
 
     async def _deliver_github_comment(self, content: str, delivery: dict) -> SendResult:
         """Post agent response as a GitHub PR/issue comment via ``gh`` CLI."""

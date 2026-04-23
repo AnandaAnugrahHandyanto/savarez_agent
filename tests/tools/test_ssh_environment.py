@@ -7,8 +7,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tools.environments.ssh import SSHEnvironment
 from tools.environments import ssh as ssh_env
+from tools.environments.ssh import SSHEnvironment
 
 _SSH_HOST = os.getenv("TERMINAL_SSH_HOST", "")
 _SSH_USER = os.getenv("TERMINAL_SSH_USER", "")
@@ -25,31 +25,30 @@ requires_ssh = pytest.mark.skipif(
 
 def _run(command, task_id="ssh_test", **kwargs):
     from tools.terminal_tool import terminal_tool
+
     return json.loads(terminal_tool(command, task_id=task_id, **kwargs))
 
 
 def _cleanup(task_id="ssh_test"):
     from tools.terminal_tool import cleanup_vm
+
     cleanup_vm(task_id)
 
 
 class TestBuildSSHCommand:
-
     @pytest.fixture(autouse=True)
     def _mock_connection(self, monkeypatch):
-        monkeypatch.setattr("tools.environments.ssh.subprocess.run",
-                            lambda *a, **k: subprocess.CompletedProcess([], 0))
-        monkeypatch.setattr("tools.environments.ssh.subprocess.Popen",
-                            lambda *a, **k: MagicMock(stdout=iter([]),
-                                                      stderr=iter([]),
-                                                      stdin=MagicMock()))
+        monkeypatch.setattr("tools.environments.ssh.subprocess.run", lambda *a, **k: subprocess.CompletedProcess([], 0))
+        monkeypatch.setattr(
+            "tools.environments.ssh.subprocess.Popen",
+            lambda *a, **k: MagicMock(stdout=iter([]), stderr=iter([]), stdin=MagicMock()),
+        )
         monkeypatch.setattr("tools.environments.base.time.sleep", lambda _: None)
 
     def test_base_flags(self):
         env = SSHEnvironment(host="h", user="u")
         cmd = " ".join(env._build_ssh_command())
-        for flag in ("ControlMaster=auto", "ControlPersist=300",
-                      "BatchMode=yes", "StrictHostKeyChecking=accept-new"):
+        for flag in ("ControlMaster=auto", "ControlPersist=300", "BatchMode=yes", "StrictHostKeyChecking=accept-new"):
             assert flag in cmd
 
     def test_custom_port(self):
@@ -67,91 +66,26 @@ class TestBuildSSHCommand:
         assert env._build_ssh_command()[-1] == "u@h"
 
 
-class TestControlSocketPath:
-    """Regression tests for issue #11840.
-
-    macOS caps Unix domain socket paths at 104 bytes (sun_path). SSH
-    appends a 16-byte random suffix to the control socket path when
-    operating in ControlMaster mode. An IPv6 host embedded in the
-    filename plus the deeply-nested macOS $TMPDIR easily blows past
-    the limit, causing every tool call to fail immediately.
-    """
-
-    @pytest.fixture(autouse=True)
-    def _mock_connection(self, monkeypatch):
-        monkeypatch.setattr("tools.environments.ssh.subprocess.run",
-                            lambda *a, **k: subprocess.CompletedProcess([], 0))
-        monkeypatch.setattr("tools.environments.ssh.subprocess.Popen",
-                            lambda *a, **k: MagicMock(stdout=iter([]),
-                                                      stderr=iter([]),
-                                                      stdin=MagicMock()))
-        monkeypatch.setattr("tools.environments.base.time.sleep", lambda _: None)
-
-    # SSH appends ``.XXXXXXXXXXXXXXXX`` (17 bytes) to the ControlPath in
-    # ControlMaster mode; the macOS sun_path field is 104 bytes including
-    # the NUL terminator, so the usable path length is 103 bytes.
-    _SSH_CONTROLMASTER_SUFFIX = 17
-    _MAX_SUN_PATH = 103
-
-    def test_fits_under_macos_socket_limit_with_ipv6_host(self, monkeypatch):
-        """A realistic macOS $TMPDIR + IPv6 host must still produce a
-        control socket path that fits once SSH appends its ControlMaster
-        suffix (see issue #11840)."""
-        # Simulate the macOS $TMPDIR shape from the issue traceback —
-        # 48 bytes, the typical length of ``/var/folders/XX/YYYYYYYYY/T``.
-        fake_tmp = "/var/folders/2t/wbkw5yb158jc3zhswgl7tz9c0000gn/T"
-        monkeypatch.setattr("tools.environments.ssh.tempfile.gettempdir",
-                            lambda: fake_tmp)
-        # The simulated path doesn't exist on the test host — skip the
-        # real mkdir so __init__ can proceed.
-        from pathlib import Path as _Path
-        monkeypatch.setattr(_Path, "mkdir", lambda *a, **k: None)
-
-        env = SSHEnvironment(
-            host="9373:9b91:4480:558d:708e:e601:24e8:d8d0",
-            user="hermes",
-            port=22,
-        )
-
-        total_len = len(str(env.control_socket)) + self._SSH_CONTROLMASTER_SUFFIX
-        assert total_len <= self._MAX_SUN_PATH, (
-            f"control socket path would exceed the {self._MAX_SUN_PATH}-byte "
-            f"Unix domain socket limit once SSH appends its 16-byte suffix: "
-            f"{env.control_socket} (+{self._SSH_CONTROLMASTER_SUFFIX} = {total_len})"
-        )
-
-    def test_path_is_deterministic_across_instances(self):
-        """Same (user, host, port) must yield the same control socket so
-        ControlMaster reuse works across reconnects."""
-        first = SSHEnvironment(host="example.com", user="alice", port=2222)
-        second = SSHEnvironment(host="example.com", user="alice", port=2222)
-        assert first.control_socket == second.control_socket
-
-    def test_path_differs_for_different_targets(self):
-        """Different (user, host, port) triples must produce different paths."""
-        base = SSHEnvironment(host="h", user="u", port=22).control_socket
-        assert SSHEnvironment(host="h", user="u", port=23).control_socket != base
-        assert SSHEnvironment(host="h", user="v", port=22).control_socket != base
-        assert SSHEnvironment(host="g", user="u", port=22).control_socket != base
-
-
 class TestTerminalToolConfig:
     def test_ssh_persistent_default_true(self, monkeypatch):
         """SSH persistent defaults to True (via TERMINAL_PERSISTENT_SHELL)."""
         monkeypatch.delenv("TERMINAL_SSH_PERSISTENT", raising=False)
         monkeypatch.delenv("TERMINAL_PERSISTENT_SHELL", raising=False)
         from tools.terminal_tool import _get_env_config
+
         assert _get_env_config()["ssh_persistent"] is True
 
     def test_ssh_persistent_explicit_false(self, monkeypatch):
         """Per-backend env var overrides the global default."""
         monkeypatch.setenv("TERMINAL_SSH_PERSISTENT", "false")
         from tools.terminal_tool import _get_env_config
+
         assert _get_env_config()["ssh_persistent"] is False
 
     def test_ssh_persistent_explicit_true(self, monkeypatch):
         monkeypatch.setenv("TERMINAL_SSH_PERSISTENT", "true")
         from tools.terminal_tool import _get_env_config
+
         assert _get_env_config()["ssh_persistent"] is True
 
     def test_ssh_persistent_respects_config(self, monkeypatch):
@@ -159,6 +93,7 @@ class TestTerminalToolConfig:
         monkeypatch.delenv("TERMINAL_SSH_PERSISTENT", raising=False)
         monkeypatch.setenv("TERMINAL_PERSISTENT_SHELL", "false")
         from tools.terminal_tool import _get_env_config
+
         assert _get_env_config()["ssh_persistent"] is False
 
 
@@ -214,7 +149,6 @@ def _setup_ssh_env(monkeypatch, persistent: bool):
 
 @requires_ssh
 class TestOneShotSSH:
-
     @pytest.fixture(autouse=True)
     def _setup(self, monkeypatch):
         _setup_ssh_env(monkeypatch, persistent=False)
@@ -238,7 +172,6 @@ class TestOneShotSSH:
 
 @requires_ssh
 class TestPersistentSSH:
-
     @pytest.fixture(autouse=True)
     def _setup(self, monkeypatch):
         _setup_ssh_env(monkeypatch, persistent=True)

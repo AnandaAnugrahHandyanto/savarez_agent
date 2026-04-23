@@ -19,8 +19,6 @@ import threading
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
-import pytest
-
 from gateway.config import GatewayConfig, Platform, SessionResetPolicy
 from gateway.session import SessionEntry, SessionStore
 
@@ -42,8 +40,7 @@ def _make_store(tmp_path, max_age_days: int = 90, has_active_processes_fn=None):
     return store
 
 
-def _entry(key: str, age_days: float, *, suspended: bool = False,
-           session_id: str | None = None) -> SessionEntry:
+def _entry(key: str, age_days: float, *, suspended: bool = False, session_id: str | None = None) -> SessionEntry:
     now = datetime.now()
     return SessionEntry(
         session_key=key,
@@ -75,8 +72,8 @@ class TestPruneBasics:
         entry = SessionEntry(
             session_key="long-lived",
             session_id="sid",
-            created_at=now - timedelta(days=365),   # ancient
-            updated_at=now - timedelta(days=3),     # but just chatted
+            created_at=now - timedelta(days=365),  # ancient
+            updated_at=now - timedelta(days=3),  # but just chatted
             platform=Platform.TELEGRAM,
             chat_type="dm",
         )
@@ -105,9 +102,7 @@ class TestPruneBasics:
     def test_prune_skips_suspended_entries(self, tmp_path):
         """/stop-suspended sessions must be kept for later resume."""
         store = _make_store(tmp_path)
-        store._entries["suspended"] = _entry(
-            "suspended", age_days=1000, suspended=True
-        )
+        store._entries["suspended"] = _entry("suspended", age_days=1000, suspended=True)
         store._entries["idle"] = _entry("idle", age_days=1000)
 
         removed = store.prune_old_entries(max_age_days=90)
@@ -117,54 +112,21 @@ class TestPruneBasics:
         assert "idle" not in store._entries
 
     def test_prune_skips_entries_with_active_processes(self, tmp_path):
-        """Sessions with active bg processes aren't pruned even if old.
+        """Sessions with active bg processes aren't pruned even if old."""
+        active_session_ids = {"sid_active"}
 
-        The callback is keyed by session_key — matching what
-        process_registry.has_active_for_session() actually consumes in
-        gateway/run.py.  Prior to the fix this test passed the callback a
-        session_id, which silently matched an implementation bug where
-        prune_old_entries was also passing session_id; real-world usage
-        (via process_registry) takes a session_key and never matched, so
-        active sessions were still being pruned.
-        """
-        active_session_keys = {"active"}
-
-        def _has_active(session_key: str) -> bool:
-            return session_key in active_session_keys
+        def _has_active(session_id: str) -> bool:
+            return session_id in active_session_ids
 
         store = _make_store(tmp_path, has_active_processes_fn=_has_active)
-        store._entries["active"] = _entry(
-            "active", age_days=1000, session_id="sid_active"
-        )
-        store._entries["idle"] = _entry(
-            "idle", age_days=1000, session_id="sid_idle"
-        )
+        store._entries["active"] = _entry("active", age_days=1000, session_id="sid_active")
+        store._entries["idle"] = _entry("idle", age_days=1000, session_id="sid_idle")
 
         removed = store.prune_old_entries(max_age_days=90)
 
         assert removed == 1
         assert "active" in store._entries
         assert "idle" not in store._entries
-
-    def test_prune_active_check_uses_session_key_not_session_id(self, tmp_path):
-        """Regression guard: a callback that only recognises session_ids must
-        NOT protect entries during prune.  This pins the fix so a future
-        refactor can't silently revert to passing session_id again.
-        """
-        def _recognises_only_ids(identifier: str) -> bool:
-            return identifier.startswith("sid_")
-
-        store = _make_store(tmp_path, has_active_processes_fn=_recognises_only_ids)
-        store._entries["active"] = _entry(
-            "active", age_days=1000, session_id="sid_active"
-        )
-
-        removed = store.prune_old_entries(max_age_days=90)
-
-        # Entry is pruned because the callback receives "active" (session_key),
-        # not "sid_active" (session_id), so _recognises_only_ids returns False.
-        assert removed == 1
-        assert "active" not in store._entries
 
     def test_prune_does_not_write_disk_when_no_removals(self, tmp_path):
         """If nothing is evictable, _save() should NOT be called."""

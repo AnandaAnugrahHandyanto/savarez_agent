@@ -2,24 +2,24 @@
 
 import os
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import yaml
 
 from hermes_cli.config import (
     DEFAULT_CONFIG,
-    get_hermes_home,
+    _sanitize_env_lines,
     ensure_hermes_home,
     get_compatible_custom_providers,
+    get_hermes_home,
     load_config,
     load_env,
     migrate_config,
     remove_env_value,
+    sanitize_env_file,
     save_config,
     save_env_value,
     save_env_value_secure,
-    sanitize_env_file,
-    _sanitize_env_lines,
 )
 
 
@@ -322,10 +322,7 @@ class TestSanitizeEnvLines:
     def test_save_env_value_fixes_corruption_on_write(self, tmp_path):
         """save_env_value sanitizes corrupted lines when writing a new key."""
         env_file = tmp_path / ".env"
-        env_file.write_text(
-            "ANTHROPIC_API_KEY=sk-antOPENAI_BASE_URL=https://api.openai.com/v1\n"
-            "FAL_KEY=existing\n"
-        )
+        env_file.write_text("ANTHROPIC_API_KEY=sk-antOPENAI_BASE_URL=https://api.openai.com/v1\nFAL_KEY=existing\n")
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             save_env_value("MESSAGING_CWD", "/tmp")
 
@@ -340,10 +337,7 @@ class TestSanitizeEnvLines:
     def test_sanitize_env_file_returns_fix_count(self, tmp_path):
         """sanitize_env_file reports how many entries were fixed."""
         env_file = tmp_path / ".env"
-        env_file.write_text(
-            "FAL_KEY=good\n"
-            "OPENROUTER_API_KEY=valFIRECRAWL_API_KEY=val2\n"
-        )
+        env_file.write_text("FAL_KEY=good\nOPENROUTER_API_KEY=valFIRECRAWL_API_KEY=val2\n")
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             fixes = sanitize_env_file()
             assert fixes > 0
@@ -368,26 +362,31 @@ class TestOptionalEnvVarsRegistry:
     def test_tavily_api_key_registered(self):
         """TAVILY_API_KEY is listed in OPTIONAL_ENV_VARS."""
         from hermes_cli.config import OPTIONAL_ENV_VARS
+
         assert "TAVILY_API_KEY" in OPTIONAL_ENV_VARS
 
     def test_tavily_api_key_is_tool_category(self):
         """TAVILY_API_KEY is in the 'tool' category."""
         from hermes_cli.config import OPTIONAL_ENV_VARS
+
         assert OPTIONAL_ENV_VARS["TAVILY_API_KEY"]["category"] == "tool"
 
     def test_tavily_api_key_is_password(self):
         """TAVILY_API_KEY is marked as password."""
         from hermes_cli.config import OPTIONAL_ENV_VARS
+
         assert OPTIONAL_ENV_VARS["TAVILY_API_KEY"]["password"] is True
 
     def test_tavily_api_key_has_url(self):
         """TAVILY_API_KEY has a URL."""
         from hermes_cli.config import OPTIONAL_ENV_VARS
+
         assert OPTIONAL_ENV_VARS["TAVILY_API_KEY"]["url"] == "https://app.tavily.com/home"
 
     def test_tavily_in_env_vars_by_version(self):
         """TAVILY_API_KEY is listed in ENV_VARS_BY_VERSION."""
         from hermes_cli.config import ENV_VARS_BY_VERSION
+
         all_vars = []
         for vars_list in ENV_VARS_BY_VERSION.values():
             all_vars.extend(vars_list)
@@ -400,16 +399,20 @@ class TestAnthropicTokenMigration:
     def _write_config_version(self, tmp_path, version):
         config_path = tmp_path / "config.yaml"
         import yaml
+
         config_path.write_text(yaml.safe_dump({"_config_version": version}))
 
     def test_clears_token_on_upgrade_to_v9(self, tmp_path):
         """ANTHROPIC_TOKEN is cleared unconditionally when upgrading to v9."""
         self._write_config_version(tmp_path, 8)
         (tmp_path / ".env").write_text("ANTHROPIC_TOKEN=old-token\n")
-        with patch.dict(os.environ, {
-            "HERMES_HOME": str(tmp_path),
-            "ANTHROPIC_TOKEN": "old-token",
-        }):
+        with patch.dict(
+            os.environ,
+            {
+                "HERMES_HOME": str(tmp_path),
+                "ANTHROPIC_TOKEN": "old-token",
+            },
+        ):
             migrate_config(interactive=False, quiet=True)
             assert load_env().get("ANTHROPIC_TOKEN") == ""
 
@@ -417,10 +420,13 @@ class TestAnthropicTokenMigration:
         """Already at v9 — ANTHROPIC_TOKEN is not touched."""
         self._write_config_version(tmp_path, 9)
         (tmp_path / ".env").write_text("ANTHROPIC_TOKEN=current-token\n")
-        with patch.dict(os.environ, {
-            "HERMES_HOME": str(tmp_path),
-            "ANTHROPIC_TOKEN": "current-token",
-        }):
+        with patch.dict(
+            os.environ,
+            {
+                "HERMES_HOME": str(tmp_path),
+                "ANTHROPIC_TOKEN": "current-token",
+            },
+        ):
             migrate_config(interactive=False, quiet=True)
             assert load_env().get("ANTHROPIC_TOKEN") == "current-token"
 
@@ -447,9 +453,7 @@ class TestCustomProviderCompatibility:
                             "model": "gpt-5-mini",
                         }
                     ],
-                    "fallback_providers": [
-                        {"provider": "openai-direct", "model": "gpt-5-mini"}
-                    ],
+                    "fallback_providers": [{"provider": "openai-direct", "model": "gpt-5-mini"}],
                 }
             ),
             encoding="utf-8",
@@ -629,10 +633,3 @@ class TestDiscordChannelPromptsConfig:
         assert raw["_config_version"] == 20
         assert raw["discord"]["auto_thread"] is True
         assert raw["discord"]["channel_prompts"] == {}
-
-
-class TestUserMessagePreviewConfig:
-    def test_default_config_preview_line_counts(self):
-        preview = DEFAULT_CONFIG["display"]["user_message_preview"]
-        assert preview["first_lines"] == 2
-        assert preview["last_lines"] == 2
