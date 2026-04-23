@@ -85,6 +85,30 @@ def test_handle_people_message_returns_short_adhoc_prep_from_saved_state(tmp_pat
     assert "family summer travels" in result
 
 
+def test_handle_people_message_persists_multiline_one_on_one_blocks(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    from people_manager.storage import load_report
+
+    handle_people_message(
+        "New report: Alice Chen - Head of IR - own investor cadence",
+        lane_id="telegram:c1",
+        workspace="people",
+    )
+
+    result = handle_people_message(
+        "1:1 Alice Chen:\n- investor follow-up stalled\n- needs sharper owner by Friday",
+        lane_id="telegram:c1",
+        workspace="people",
+    )
+    report = load_report("alice-chen")
+    entry = report["interaction_log"][-1]
+
+    assert result == "1:1 notes saved for Alice Chen."
+    assert entry["facts"] == ["- investor follow-up stalled\n- needs sharper owner by Friday"]
+    assert entry["source"]["message_text"].startswith("1:1 Alice Chen:")
+
+
 
 def test_handle_people_message_reschedule_once_creates_override_and_log_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))

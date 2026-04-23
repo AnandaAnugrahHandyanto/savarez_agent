@@ -46,6 +46,7 @@ from hermes_cli.config import (
     redact_key,
 )
 from gateway.status import get_running_pid, read_runtime_status
+from people_manager import api_service as people_api
 
 try:
     from fastapi import FastAPI, HTTPException, Request
@@ -2233,6 +2234,233 @@ async def rescan_dashboard_plugins():
     """Force re-scan of dashboard plugins."""
     plugins = _get_dashboard_plugins(force_rescan=True)
     return {"ok": True, "count": len(plugins)}
+
+
+@app.get("/api/people/profiles")
+async def people_profiles():
+    return people_api.list_profiles()
+
+
+@app.get("/api/people/profiles/{slug}")
+async def people_profile(slug: str):
+    try:
+        return people_api.get_profile(slug)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+
+@app.post("/api/people/profiles")
+async def create_people_profile(payload: dict[str, Any]):
+    return people_api.create_profile(payload)
+
+
+@app.patch("/api/people/profiles/{slug}")
+async def patch_people_profile(slug: str, payload: dict[str, Any]):
+    try:
+        return people_api.patch_profile(slug, payload)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+
+@app.get("/api/people/profiles/{slug}/interactions")
+async def people_profile_interactions(slug: str):
+    try:
+        return people_api.list_interactions(slug)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+
+@app.post("/api/people/profiles/{slug}/interactions")
+async def create_people_profile_interaction(slug: str, payload: dict[str, Any]):
+    try:
+        return people_api.add_interaction(slug, payload)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/people/profiles/{slug}/open-loops")
+async def create_people_profile_open_loop(slug: str, payload: dict[str, Any]):
+    try:
+        return people_api.add_open_loop(slug, payload)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+
+@app.patch("/api/people/profiles/{slug}/open-loops/{loop_id}")
+async def patch_people_profile_open_loop(slug: str, loop_id: str, payload: dict[str, Any]):
+    try:
+        return people_api.update_open_loop(slug, loop_id, payload)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Open loop not found")
+
+
+@app.get("/api/people/profiles/{slug}/prep")
+async def people_profile_prep(slug: str, mode: str = "adhoc", minutes_until: int = 5):
+    try:
+        return people_api.get_prep(slug, mode=mode, minutes_until=minutes_until)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+
+@app.post("/api/people/profiles/{slug}/prep/preview")
+async def people_profile_prep_preview(slug: str, payload: dict[str, Any]):
+    try:
+        return people_api.preview_prep(slug, payload)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+
+@app.get("/api/people/team-scan")
+async def people_team_scan():
+    return people_api.get_team_scan()
+
+
+@app.get("/api/people/schedules")
+async def people_schedules(now: str | None = None):
+    return people_api.list_schedules(now=now)
+
+
+@app.get("/api/people/schedules/{slug}")
+async def people_schedule(slug: str, now: str | None = None):
+    try:
+        return people_api.get_schedule(slug, now=now)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+
+
+@app.post("/api/people/schedules")
+async def create_people_schedule(payload: dict[str, Any]):
+    return people_api.create_schedule(payload)
+
+
+@app.patch("/api/people/schedules/{slug}")
+async def patch_people_schedule(slug: str, payload: dict[str, Any]):
+    try:
+        return people_api.patch_schedule(slug, payload)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+
+
+@app.post("/api/people/schedules/{slug}/enable")
+async def enable_people_schedule(slug: str):
+    try:
+        return people_api.set_schedule_enabled(slug, True)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+
+
+@app.post("/api/people/schedules/{slug}/disable")
+async def disable_people_schedule(slug: str):
+    try:
+        return people_api.set_schedule_enabled(slug, False)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+
+
+@app.post("/api/people/schedules/{slug}/preview")
+async def people_schedule_preview(slug: str, payload: dict[str, Any]):
+    try:
+        return people_api.preview_schedule(slug, now=payload.get("now"))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+
+
+@app.post("/api/people/schedules/{slug}/reschedule-once")
+async def people_schedule_reschedule_once(slug: str, payload: dict[str, Any]):
+    try:
+        return people_api.reschedule_once(slug, payload)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.delete("/api/people/schedules/{slug}")
+async def delete_people_schedule(slug: str):
+    try:
+        return people_api.delete_schedule(slug)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+
+
+@app.get("/api/people/ops/due-now")
+async def people_ops_due_now(now: str | None = None):
+    return people_api.ops_due_now(now=now)
+
+
+@app.get("/api/people/ops/log")
+async def people_ops_log(month: str | None = None, slug: str | None = None, limit: int = 20):
+    return people_api.ops_log(month=month, slug=slug, limit=limit)
+
+
+@app.get("/api/people/ops/audit")
+async def people_ops_audit():
+    return people_api.ops_audit()
+
+
+@app.post("/api/people/ops/run-once")
+async def people_ops_run_once(payload: dict[str, Any] | None = None):
+    payload = payload or {}
+    return people_api.ops_run_once(now=payload.get("now"))
+
+
+@app.get("/nexusos")
+async def nexusos_dashboard():
+    token_script = (
+        "<script>window.__HERMES_SESSION_TOKEN__ = "
+        + json.dumps(_SESSION_TOKEN)
+        + ";</script>"
+    )
+    html = """
+    <!doctype html>
+    <html><head><title>NexusOS</title><style>
+    body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 24px; background: #0f1115; color: #f3f4f6; }
+    h1,h2 { margin-bottom: 8px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .card { background: #171923; border: 1px solid #2a2f3a; border-radius: 12px; padding: 16px; }
+    pre { white-space: pre-wrap; word-break: break-word; }
+    ul { padding-left: 20px; }
+    </style></head>
+    <body>
+      <h1>NexusOS</h1>
+      <div class='grid'>
+        <section class='card'><h2>Team Overview</h2><ul id='team-overview'></ul></section>
+        <section class='card'><h2>Prep View</h2><pre id='prep-view'>Loading…</pre></section>
+        <section class='card'><h2>Team Scan / Calibration</h2><pre id='team-scan'>Loading…</pre></section>
+        <section class='card'><h2>Ops / Schedule View</h2><pre id='ops-view'>Loading…</pre></section>
+      </div>
+      <section class='card' style='margin-top:16px;'><h2>Person Profile</h2><pre id='person-profile'>Loading…</pre></section>
+      <script>
+      const token = window.__HERMES_SESSION_TOKEN__ || '';
+      async function api(path) {
+        const resp = await fetch(path, {headers: {Authorization: `Bearer ${token}`}});
+        return await resp.json();
+      }
+      async function load() {
+        const profiles = await api('/api/people/profiles');
+        const first = profiles.profiles[0];
+        document.getElementById('team-overview').innerHTML = profiles.profiles.map(p => `<li>${p.name} — ${p.role_title || 'Unknown role'}</li>`).join('');
+        const scan = await api('/api/people/team-scan');
+        document.getElementById('team-scan').textContent = scan.markdown;
+        const ops = await api('/api/people/schedules');
+        document.getElementById('ops-view').textContent = JSON.stringify(ops, null, 2);
+        if (first) {
+          const profile = await api(`/api/people/profiles/${first.slug}`);
+          const prep = await api(`/api/people/profiles/${first.slug}/prep?mode=adhoc`);
+          document.getElementById('person-profile').textContent = JSON.stringify(profile.profile, null, 2);
+          document.getElementById('prep-view').textContent = prep.brief;
+        } else {
+          document.getElementById('person-profile').textContent = 'No profiles yet.';
+          document.getElementById('prep-view').textContent = 'No profiles yet.';
+        }
+      }
+      load();
+      </script>
+    </body></html>
+    """
+    return HTMLResponse(html.replace("</head>", f"{token_script}</head>", 1), headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
 
 
 @app.get("/dashboard-plugins/{plugin_name}/{file_path:path}")

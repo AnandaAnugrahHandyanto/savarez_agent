@@ -29,6 +29,15 @@ def test_parse_one_on_one():
     assert parsed.report_name == "Alice Chen"
 
 
+def test_parse_multiline_one_on_one_preserves_body():
+    parsed = parse_message("1:1 Alice Chen:\n- blocked on investor follow-up\n- needs decision by Friday")
+
+    assert parsed is not None
+    assert parsed.action == "one_on_one"
+    assert parsed.report_name == "Alice Chen"
+    assert parsed.body == "- blocked on investor follow-up\n- needs decision by Friday"
+
+
 def test_parse_assessment():
     parsed = parse_message("Assessment Alice Chen: solid operator but reactive")
 
