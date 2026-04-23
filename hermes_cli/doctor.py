@@ -246,9 +246,9 @@ def run_doctor(args):
     
     # Check ~/.hermes/.env (primary location for user config)
     env_path = HERMES_HOME / '.env'
-    if env_path.exists():
+    if env_path.is_file():
         check_ok(f"{_DHH}/.env file exists")
-        
+
         # Check for common issues
         content = env_path.read_text()
         if _has_provider_env_config(content):
@@ -259,7 +259,7 @@ def run_doctor(args):
     else:
         # Also check project root as fallback
         fallback_env = PROJECT_ROOT / '.env'
-        if fallback_env.exists():
+        if fallback_env.is_file():
             check_ok(".env file exists (in project directory)")
         else:
             check_fail(f"{_DHH}/.env file missing")
