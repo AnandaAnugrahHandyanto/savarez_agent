@@ -6618,17 +6618,39 @@ class HermesCLI:
             else:
                 print(f"   ⚠ Port {_port} is not reachable at {cdp_url}")
 
-            os.environ["BROWSER_CDP_URL"] = cdp_url
+            try:
+                from tools.browser_tool import (
+                    _ensure_cdp_supervisor,  # type: ignore[import-not-found]
+                    _is_cdp_discovery_shorthand,
+                    _resolve_cdp_override,
+                )
+
+                resolved_cdp_url = _resolve_cdp_override(cdp_url)
+                if (
+                    _is_cdp_discovery_shorthand(cdp_url)
+                    and resolved_cdp_url == cdp_url
+                ):
+                    print()
+                    print("   ⚠ Chrome is listening, but Hermes could not resolve a usable CDP websocket")
+                    print("     Discovery endpoint /json/version did not expose webSocketDebuggerUrl.")
+                    print("     Use a full ws://.../devtools/browser/... endpoint, or launch Chrome")
+                    print("     with --remote-debugging-port and a non-default --user-data-dir.")
+                    return
+            except Exception as exc:
+                print()
+                print(f"   ⚠ Could not validate CDP endpoint {cdp_url}: {exc}")
+                return
+
+            os.environ["BROWSER_CDP_URL"] = resolved_cdp_url
             # Eagerly start the CDP supervisor so pending_dialogs + frame_tree
             # show up in the next browser_snapshot.  No-op if already started.
             try:
-                from tools.browser_tool import _ensure_cdp_supervisor  # type: ignore[import-not-found]
                 _ensure_cdp_supervisor("default")
             except Exception:
                 pass
             print()
             print("🌐 Browser connected to live Chrome via CDP")
-            print(f"   Endpoint: {cdp_url}")
+            print(f"   Endpoint: {resolved_cdp_url}")
             print()
 
             # Inject context message so the model knows

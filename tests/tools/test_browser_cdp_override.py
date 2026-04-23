@@ -9,6 +9,19 @@ VERSION_URL = f"{HTTP_URL}/json/version"
 
 
 class TestResolveCdpOverride:
+    def test_identifies_discovery_shorthand_inputs(self):
+        from tools.browser_tool import _is_cdp_discovery_shorthand
+
+        assert _is_cdp_discovery_shorthand("http://localhost:9222")
+        assert _is_cdp_discovery_shorthand("http://localhost:9222/json/version")
+        assert _is_cdp_discovery_shorthand("ws://localhost:9222")
+        assert not _is_cdp_discovery_shorthand(
+            "ws://localhost:9222/devtools/browser/abc123"
+        )
+        assert not _is_cdp_discovery_shorthand(
+            "wss://connect.browserbase.example/session/abc123"
+        )
+
     def test_keeps_full_devtools_websocket_url(self):
         from tools.browser_tool import _resolve_cdp_override
 
