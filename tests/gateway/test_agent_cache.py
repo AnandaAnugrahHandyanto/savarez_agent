@@ -692,8 +692,8 @@ class TestAgentCacheSpilloverLive:
         """A genuine AIAgent; no API calls are made during these tests."""
         from run_agent import AIAgent
         return AIAgent(
-            model="anthropic/claude-sonnet-4", api_key="test",
-            base_url="https://openrouter.ai/api/v1", provider="openrouter",
+            model="gpt-4o-mini", api_key="test",
+            base_url="https://example.test/v1", provider="custom",
             max_iterations=5, quiet_mode=True,
             skip_context_files=True, skip_memory=True,
             platform="telegram",
@@ -780,8 +780,8 @@ class TestAgentCacheSpilloverLive:
             for j in range(PER_THREAD):
                 a = self._real_agent()
                 key = f"t{tid}-s{j}"
+                runner._store_cached_agent(key, a, "sig")
                 with runner._agent_cache_lock:
-                    runner._agent_cache[key] = (a, "sig")
                     runner._enforce_agent_cache_cap()
 
         threads = [

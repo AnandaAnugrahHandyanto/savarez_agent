@@ -2119,6 +2119,8 @@ class AIAgent:
                 # Fall back to the generic GPT-5 rule if Copilot-specific
                 # logic is unavailable for any reason.
                 pass
+        if normalized_provider in {"custom", "local", "openai_compat"}:
+            return False
         return AIAgent._model_requires_responses_api(model)
 
     def _max_tokens_param(self, value: int) -> dict:
