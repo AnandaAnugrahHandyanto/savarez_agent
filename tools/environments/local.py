@@ -153,10 +153,10 @@ def _find_bash() -> str:
     if custom and os.path.isfile(custom):
         return custom
 
-    found = shutil.which("bash")
-    if found:
-        return found
-
+    # Prefer Git Bash over shutil.which("bash") — on Windows with WSL
+    # installed, which("bash") returns C:\Windows\System32\bash.exe
+    # (the WSL launcher).  WSL uses /mnt/d/... path convention instead of
+    # Git Bash's /d/..., which breaks all of Hermes' path normalization.
     for candidate in (
         os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
         os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
@@ -165,11 +165,38 @@ def _find_bash() -> str:
         if candidate and os.path.isfile(candidate):
             return candidate
 
+    # Fall back to PATH lookup, but skip the WSL launcher.
+    found = shutil.which("bash")
+    if found and not _is_wsl_bash(found):
+        return found
+
     raise RuntimeError(
         "Git Bash not found. Hermes Agent requires Git for Windows on Windows.\n"
-        "Install it from: https://git-scm.com/download/win\n"
-        "Or set HERMES_GIT_BASH_PATH to your bash.exe location."
+        "WSL bash is not supported — it uses /mnt/d/... paths which differ\n"
+        "from Git Bash's /d/... format expected by Hermes' path normalization.\n"
+        "Install Git for Windows from: https://git-scm.com/download/win\n"
+        "Or set HERMES_GIT_BASH_PATH to your Git Bash bash.exe location."
     )
+
+
+def _is_wsl_bash(path: str) -> bool:
+    """Return True if *path* is the WSL bash launcher (C:\\Windows\\System32\\bash.exe).
+
+    The WSL launcher reports Linux paths (``/mnt/d/...``) instead of Git Bash's
+    ``/d/...`` format, which breaks Hermes' path normalization.  We detect it
+    by path match since both share the name ``bash.exe``.
+    """
+    try:
+        normalized = os.path.normcase(os.path.normpath(path))
+        system32 = os.path.normcase(os.path.normpath(
+            os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "bash.exe")
+        ))
+        sysnative = os.path.normcase(os.path.normpath(
+            os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "Sysnative", "bash.exe")
+        ))
+        return normalized in (system32, sysnative)
+    except Exception:
+        return False
 
 
 # Backward compat — process_registry.py imports this name
@@ -305,21 +332,44 @@ class LocalEnvironment(BaseEnvironment):
     """
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
-        super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
+        if _IS_WINDOWS:
+            from tools.platform_compat import windows_path_to_msys
+            # Convert Windows CWD to MSYS form so bash 'cd' works in Git Bash.
+            # os.getcwd() returns 'D:\Code\...' which Git Bash may mishandle;
+            # '/d/Code/...' is unambiguous in MSYS coreutils.
+            init_cwd = windows_path_to_msys(cwd) if cwd else windows_path_to_msys(os.getcwd())
+        else:
+            init_cwd = cwd or os.getcwd()
+
+        super().__init__(cwd=init_cwd, timeout=timeout, env=env)
+
+        if _IS_WINDOWS:
+            from tools.platform_compat import msys_path_to_windows
+            self._snapshot_path_win = msys_path_to_windows(self._snapshot_path)
+            self._cwd_file_win = msys_path_to_windows(self._cwd_file)
+        else:
+            self._snapshot_path_win = self._snapshot_path
+            self._cwd_file_win = self._cwd_file
+
         self.init_session()
 
     def get_temp_dir(self) -> str:
         """Return a shell-safe writable temp dir for local execution.
 
-        Termux does not provide /tmp by default, but exposes a POSIX TMPDIR.
-        Prefer POSIX-style env vars when available, keep using /tmp on regular
-        Unix systems, and only fall back to tempfile.gettempdir() when it also
-        resolves to a POSIX path.
+        On Windows: returns the MSYS form of the Windows temp dir so that
+        bash scripts can write snapshot/cwd files there.  Python file ops
+        (open, unlink) use _snapshot_path_win / _cwd_file_win instead,
+        which are the Windows-form equivalents readable by Python's open().
 
-        Check the environment configured for this backend first so callers can
-        override the temp root explicitly (for example via terminal.env or a
-        custom TMPDIR), then fall back to the host process environment.
+        On non-Windows / Termux: keeps the existing POSIX logic.
         """
+        if _IS_WINDOWS:
+            from tools.platform_compat import get_host_temp_dir, windows_path_to_msys
+            # get_host_temp_dir creates the dir (mkdir -p equivalent) and
+            # returns a Python Path.  Convert to MSYS form for bash scripts.
+            win_path = str(get_host_temp_dir("hermes"))
+            return windows_path_to_msys(win_path)
+
         for env_var in ("TMPDIR", "TMP", "TEMP"):
             candidate = self.env.get(env_var) or os.environ.get(env_var)
             if candidate and candidate.startswith("/"):
@@ -351,6 +401,14 @@ class LocalEnvironment(BaseEnvironment):
         args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
         run_env = _make_run_env(self.env)
 
+        # On Windows, self.cwd is stored in MSYS form (/d/...) for bash cd
+        # commands, but subprocess.Popen needs a Windows path for its cwd.
+        if _IS_WINDOWS:
+            from tools.platform_compat import msys_path_to_windows
+            popen_cwd = msys_path_to_windows(self.cwd) if self.cwd else None
+        else:
+            popen_cwd = self.cwd
+
         proc = subprocess.Popen(
             args,
             text=True,
@@ -361,7 +419,7 @@ class LocalEnvironment(BaseEnvironment):
             stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
-            cwd=self.cwd,
+            cwd=popen_cwd,
         )
 
         if stdin_data is not None:
@@ -390,7 +448,10 @@ class LocalEnvironment(BaseEnvironment):
     def _update_cwd(self, result: dict):
         """Read CWD from temp file (local-only, no round-trip needed)."""
         try:
-            cwd_path = open(self._cwd_file).read().strip()
+            # Use the Windows-form path so Python's open() finds the file.
+            # On Windows, self._cwd_file is the MSYS path (used in bash scripts)
+            # and self._cwd_file_win is the Windows path readable by Python.
+            cwd_path = open(self._cwd_file_win).read().strip()
             if cwd_path:
                 self.cwd = cwd_path
         except (OSError, FileNotFoundError):
@@ -401,7 +462,8 @@ class LocalEnvironment(BaseEnvironment):
 
     def cleanup(self):
         """Clean up temp files."""
-        for f in (self._snapshot_path, self._cwd_file):
+        # Use Windows-form paths so os.unlink() can find the files on Windows.
+        for f in (self._snapshot_path_win, self._cwd_file_win):
             try:
                 os.unlink(f)
             except OSError:
