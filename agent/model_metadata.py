@@ -4,6 +4,7 @@ Pure utility functions with no AIAgent dependency. Used by ContextCompressor
 and run_agent.py for pre-flight context checks.
 """
 
+import ipaddress
 import logging
 import os
 import re
@@ -90,6 +91,11 @@ DEFAULT_FALLBACK_CONTEXT = CONTEXT_PROBE_TIERS[0]
 # Sessions, model switches, and cron jobs should reject models below this.
 MINIMUM_CONTEXT_LENGTH = 64_000
 
+# Tailscale's CGNAT range (RFC 6598). `ipaddress.is_private` excludes this
+# block, so without an explicit check Ollama reached over Tailscale wouldn't be
+# treated as local and its stream read / stale timeouts wouldn't get bumped.
+_TAILSCALE_CGNAT = ipaddress.IPv4Network("100.64.0.0/10")
+
 # Thin fallback defaults — only broad model family patterns.
 # These fire only when provider is unknown AND models.dev/OpenRouter/Anthropic
 # all miss. Replaced the previous 80+ entry dict.
@@ -112,6 +118,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     # Google
     "gemini": 1048576,
     # Gemma (open models served via AI Studio)
+    "gemma-4": 256000,
+    "gemma4": 256000,
     "gemma-4-31b": 256000,
     "gemma-4-26b": 256000,
     "gemma-3": 131072,
@@ -254,7 +262,11 @@ def _is_known_provider_base_url(base_url: str) -> bool:
 
 
 def is_local_endpoint(base_url: str) -> bool:
-    """Return True if base_url points to a local machine (localhost / RFC-1918 / WSL)."""
+    """Return True if base_url points to a local machine.
+
+    Recognises loopback, container-internal DNS names, RFC-1918 private ranges,
+    link-local, and Tailscale CGNAT (100.64.0.0/10).
+    """
     normalized = _normalize_base_url(base_url)
     if not normalized:
         return False
@@ -269,14 +281,17 @@ def is_local_endpoint(base_url: str) -> bool:
     # Docker / Podman / Lima internal DNS names (e.g. host.docker.internal)
     if any(host.endswith(suffix) for suffix in _CONTAINER_LOCAL_SUFFIXES):
         return True
-    # RFC-1918 private ranges and link-local
-    import ipaddress
+    # RFC-1918 private ranges, link-local, and Tailscale CGNAT
     try:
         addr = ipaddress.ip_address(host)
-        return addr.is_private or addr.is_loopback or addr.is_link_local
+        if addr.is_private or addr.is_loopback or addr.is_link_local:
+            return True
+        if isinstance(addr, ipaddress.IPv4Address) and addr in _TAILSCALE_CGNAT:
+            return True
     except ValueError:
         pass
     # Bare IP that looks like a private range (e.g. 172.26.x.x for WSL)
+    # or Tailscale CGNAT (100.64.x.x–100.127.x.x).
     parts = host.split(".")
     if len(parts) == 4:
         try:
@@ -286,6 +301,8 @@ def is_local_endpoint(base_url: str) -> bool:
             if first == 172 and 16 <= second <= 31:
                 return True
             if first == 192 and second == 168:
+                return True
+            if first == 100 and 64 <= second <= 127:
                 return True
         except ValueError:
             pass

@@ -1065,6 +1065,12 @@ def _run_browser_command(
 
         browser_env["PATH"] = ":".join(path_parts)
         browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
+
+        # Let the daemon self-terminate after our configured inactivity timeout.
+        # This complements the Python-side inactivity reaper and reduces orphaned
+        # browser/Chrome processes when the parent dies uncleanly.
+        if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in browser_env:
+            browser_env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = str(BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
         
         # Use temp files for stdout/stderr instead of pipes.
         # agent-browser starts a background daemon that inherits file

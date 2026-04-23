@@ -2081,8 +2081,9 @@ class GatewayRunner:
             except Exception:
                 pass
 
-            from gateway.status import remove_pid_file
+            from gateway.status import remove_pid_file, release_gateway_runtime_lock
             remove_pid_file()
+            release_gateway_runtime_lock()
 
             # Write a clean-shutdown marker so the next startup knows this
             # wasn't a crash.  suspend_recently_active() only needs to run
@@ -8802,7 +8803,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # setups (each profile using a distinct HERMES_HOME) will naturally
     # allow concurrent instances without tripping this guard.
     import time as _time
-    from gateway.status import get_running_pid, remove_pid_file, terminate_pid
+    from gateway.status import (
+        acquire_gateway_runtime_lock,
+        get_running_pid,
+        release_gateway_runtime_lock,
+        remove_pid_file,
+        terminate_pid,
+    )
     existing_pid = get_running_pid()
     if existing_pid is not None and existing_pid != os.getpid():
         if replace:
@@ -8930,8 +8937,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # Write PID file so CLI can detect gateway is running
     import atexit
     from gateway.status import write_pid_file, remove_pid_file
+    if not acquire_gateway_runtime_lock():
+        logger.error("Gateway runtime lock is already held by another instance. Exiting.")
+        return False
     write_pid_file()
     atexit.register(remove_pid_file)
+    atexit.register(release_gateway_runtime_lock)
     
     # Start background cron ticker so scheduled jobs fire automatically.
     # Pass the event loop so cron delivery can use live adapters (E2EE support).
