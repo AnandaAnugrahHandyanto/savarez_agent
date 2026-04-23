@@ -528,7 +528,6 @@ class DiscordAdapter(BasePlatformAdapter):
         # Reply threading mode: "off" (no replies), "first" (reply on first
         # chunk only, default), "all" (reply-reference on every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
-        self._slash_commands: bool = self.config.extra.get("slash_commands", True)
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -543,6 +542,7 @@ class DiscordAdapter(BasePlatformAdapter):
             # ctypes.util.find_library fails on macOS with Homebrew-installed libs,
             # so fall back to known Homebrew paths if needed.
             if not opus_path:
+                import sys
                 _homebrew_paths = (
                     "/opt/homebrew/lib/libopus.dylib",  # Apple Silicon
                     "/usr/local/lib/libopus.dylib",     # Intel Mac
@@ -746,8 +746,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     )
 
             # Register slash commands
-            if self._slash_commands:
-                self._register_slash_commands()
+            self._register_slash_commands()
 
             # Start the bot in background
             self._bot_task = asyncio.create_task(self._client.start(self.config.token))
@@ -815,11 +814,12 @@ class DiscordAdapter(BasePlatformAdapter):
 
             summary = await self._safe_sync_slash_commands()
             logger.info(
-                "[%s] Safely reconciled %d slash command(s): unchanged=%d updated=%d created=%d deleted=%d",
+                "[%s] Safely reconciled %d slash command(s): unchanged=%d updated=%d recreated=%d created=%d deleted=%d",
                 self.name,
                 summary["total"],
                 summary["unchanged"],
                 summary["updated"],
+                summary["recreated"],
                 summary["created"],
                 summary["deleted"],
             )
@@ -844,19 +844,22 @@ class DiscordAdapter(BasePlatformAdapter):
 
     def _canonicalize_app_command_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Reduce command payloads to the semantic fields Hermes manages."""
-        canonical: Dict[str, Any] = {
+        return {
             "type": int(payload.get("type", 1) or 1),
             "name": str(payload.get("name", "") or ""),
             "description": str(payload.get("description", "") or ""),
             "default_member_permissions": payload.get("default_member_permissions"),
             "dm_permission": payload.get("dm_permission", True),
             "nsfw": bool(payload.get("nsfw", False)),
-            "options": [self._canonicalize_app_command_option(item) for item in payload.get("options", []) or []],
+            "options": [
+                self._canonicalize_app_command_option(item)
+                for item in payload.get("options", []) or []
+                if isinstance(item, dict)
+            ],
         }
-        return canonical
 
     def _canonicalize_app_command_option(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        canonical: Dict[str, Any] = {
+        return {
             "type": int(payload.get("type", 0) or 0),
             "name": str(payload.get("name", "") or ""),
             "description": str(payload.get("description", "") or ""),
@@ -881,12 +884,27 @@ class DiscordAdapter(BasePlatformAdapter):
                 if isinstance(item, dict)
             ],
         }
-        return canonical
+
+    def _patchable_app_command_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Fields supported by discord.py's edit_global_command route."""
+        canonical = self._canonicalize_app_command_payload(payload)
+        return {
+            "name": canonical["name"],
+            "description": canonical["description"],
+            "options": canonical["options"],
+        }
 
     async def _safe_sync_slash_commands(self) -> Dict[str, int]:
         """Diff existing global commands and only mutate the commands that changed."""
         if not self._client:
-            return {"total": 0, "unchanged": 0, "updated": 0, "created": 0, "deleted": 0}
+            return {
+                "total": 0,
+                "unchanged": 0,
+                "updated": 0,
+                "recreated": 0,
+                "created": 0,
+                "deleted": 0,
+            }
 
         tree = self._client.tree
         app_id = getattr(self._client, "application_id", None) or getattr(getattr(self._client, "user", None), "id", None)
@@ -898,15 +916,18 @@ class DiscordAdapter(BasePlatformAdapter):
             (int(payload.get("type", 1) or 1), str(payload.get("name", "") or "").lower()): payload
             for payload in desired_payloads
         }
-
         existing_commands = await tree.fetch_commands()
         existing_by_key = {
-            (int(getattr(getattr(command, "type", None), "value", getattr(command, "type", 1)) or 1), str(command.name or "").lower()): command
+            (
+                int(getattr(getattr(command, "type", None), "value", getattr(command, "type", 1)) or 1),
+                str(command.name or "").lower(),
+            ): command
             for command in existing_commands
         }
 
         unchanged = 0
         updated = 0
+        recreated = 0
         created = 0
         deleted = 0
         http = self._client.http
@@ -918,8 +939,16 @@ class DiscordAdapter(BasePlatformAdapter):
                 created += 1
                 continue
 
-            if self._canonicalize_app_command_payload(current.to_dict()) == self._canonicalize_app_command_payload(desired):
+            current_payload = self._canonicalize_app_command_payload(current.to_dict())
+            desired_payload = self._canonicalize_app_command_payload(desired)
+            if current_payload == desired_payload:
                 unchanged += 1
+                continue
+
+            if self._patchable_app_command_payload(current.to_dict()) == self._patchable_app_command_payload(desired):
+                await http.delete_global_command(app_id, current.id)
+                await http.upsert_global_command(app_id, desired)
+                recreated += 1
                 continue
 
             await http.edit_global_command(app_id, current.id, desired)
@@ -933,6 +962,7 @@ class DiscordAdapter(BasePlatformAdapter):
             "total": len(desired_payloads),
             "unchanged": unchanged,
             "updated": updated,
+            "recreated": recreated,
             "created": created,
             "deleted": deleted,
         }
@@ -1549,7 +1579,8 @@ class DiscordAdapter(BasePlatformAdapter):
         speaking_user_ids: set = set()
         receiver = self._voice_receivers.get(guild_id)
         if receiver:
-            now = time.monotonic()
+            import time as _time
+            now = _time.monotonic()
             with receiver._lock:
                 for ssrc, last_t in receiver._last_packet_time.items():
                     # Consider "speaking" if audio received within last 2 seconds
@@ -2258,7 +2289,6 @@ class DiscordAdapter(BasePlatformAdapter):
         # hermes_cli/commands.py automatically appear as Discord slash
         # commands without needing a manual entry here.
         def _build_auto_slash_command(_name: str, _description: str, _args_hint: str = ""):
-            """Build a discord.app_commands.Command that proxies to _run_simple_slash."""
             discord_name = _name.lower()[:32]
             desc = (_description or f"Run /{_name}")[:100]
             has_args = bool(_args_hint)
@@ -2289,7 +2319,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 callback=handler,
             )
 
-        already_registered: set[str] = set()
+        already_registered = set()
         try:
             from hermes_cli.commands import COMMAND_REGISTRY, _is_gateway_available, _resolve_config_gates
 
@@ -2327,22 +2357,19 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.warning("Discord auto-register from COMMAND_REGISTRY failed: %s", e)
 
-        # ── Plugin-registered slash commands ──
-        # Plugins register via PluginContext.register_command(); we mirror
-        # those into Discord's native slash picker so users get the same
-        # autocomplete UX as for built-in commands. No per-platform plugin
-        # API needed — plugin commands are platform-agnostic.
+        # Plugin-registered gateway commands for Discord.
         try:
-            from hermes_cli.commands import _iter_plugin_command_entries
+            from hermes_cli.plugins import get_plugin_gateway_commands
 
-            for plugin_name, plugin_desc, plugin_args_hint in _iter_plugin_command_entries():
-                discord_name = plugin_name.lower()[:32]
+            for command_name, cmd_meta in get_plugin_gateway_commands("discord").items():
+                discord_name = command_name.lower()[:32]
                 if discord_name in already_registered:
                     continue
+
                 auto_cmd = _build_auto_slash_command(
-                    plugin_name,
-                    plugin_desc,
-                    plugin_args_hint,
+                    command_name,
+                    cmd_meta.get("description") or f"Run /{command_name}",
+                    cmd_meta.get("args_hint") or "",
                 )
                 try:
                     tree.add_command(auto_cmd)
@@ -2353,7 +2380,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     pass
         except Exception as e:
             logger.warning(
-                "Discord auto-register from plugin commands failed: %s", e
+                "Discord auto-register from plugin gateway commands failed: %s", e
             )
 
         # Register skills under a single /skill command group with category
@@ -3121,17 +3148,6 @@ class DiscordAdapter(BasePlatformAdapter):
             parent_channel_id = self._get_parent_channel_id(message.channel)
 
         is_voice_linked_channel = False
-
-        # Save mention-stripped text before auto-threading since create_thread()
-        # can clobber message.content, breaking /command detection in channels.
-        raw_content = message.content.strip()
-        normalized_content = raw_content
-        mention_prefix = False
-        if self._client.user and self._client.user in message.mentions:
-            mention_prefix = True
-            normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
-            normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
-            message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:
@@ -3169,8 +3185,13 @@ class DiscordAdapter(BasePlatformAdapter):
             in_bot_thread = is_thread and thread_id in self._threads
 
             if require_mention and not is_free_channel and not in_bot_thread:
-                if self._client.user not in message.mentions and not mention_prefix:
+                if self._client.user not in message.mentions:
                     return
+
+            if self._client.user and self._client.user in message.mentions:
+                message.content = message.content.replace(f"<@{self._client.user.id}>", "").strip()
+                message.content = message.content.replace(f"<@!{self._client.user.id}>", "").strip()
+
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).
         # Messages already inside threads or DMs are unaffected.
@@ -3192,7 +3213,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         # Determine message type
         msg_type = MessageType.TEXT
-        if normalized_content.startswith("/"):
+        if message.content.startswith("/"):
             msg_type = MessageType.COMMAND
         elif message.attachments:
             # Check attachment types
@@ -3332,9 +3353,7 @@ class DiscordAdapter(BasePlatformAdapter):
                                 att.filename, e, exc_info=True,
                             )
 
-        # Use normalized_content (saved before auto-threading) instead of message.content,
-        # to detect /slash commands in channel messages.
-        event_text = normalized_content
+        event_text = message.content
         if pending_text_injection:
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
 

@@ -1129,6 +1129,15 @@ def get_plugin_commands() -> Dict[str, dict]:
     return _ensure_plugins_discovered()._plugin_commands
 
 
+def get_plugin_gateway_commands(platform: str | None = None) -> Dict[str, dict]:
+    """Backward-compatible accessor for plugin gateway commands.
+
+    Current plugin command registration is not platform-scoped, so this
+    returns the same command mapping regardless of ``platform``.
+    """
+    return get_plugin_commands()
+
+
 def get_plugin_toolsets() -> List[tuple]:
     """Return plugin toolsets as ``(key, label, description)`` tuples.
 
