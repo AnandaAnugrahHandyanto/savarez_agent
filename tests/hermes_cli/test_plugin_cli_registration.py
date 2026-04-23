@@ -20,6 +20,7 @@ from hermes_cli.plugins import (
     PluginContext,
     PluginManager,
     PluginManifest,
+    get_plugin_cli_commands,
 )
 
 
@@ -61,6 +62,44 @@ class TestRegisterCliCommand:
         ctx, mgr = self._make_ctx()
         ctx.register_cli_command("nocb", "test", MagicMock())
         assert mgr._cli_commands["nocb"]["handler_fn"] is None
+
+
+class TestGeneralPluginCliDiscovery:
+    def test_discovers_enabled_standalone_plugin_cli_commands(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes_home"
+        plugins_dir = hermes_home / "plugins"
+        plugin_dir = plugins_dir / "a2a"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.yaml").write_text(
+            "name: a2a\ndescription: Test A2A plugin\nversion: 0.1.0\n"
+        )
+        (plugin_dir / "__init__.py").write_text(
+            "def register(ctx):\n"
+            "    def setup(parser):\n"
+            "        parser.add_argument('action')\n"
+            "    def handle(args):\n"
+            "        return args.action\n"
+            "    ctx.register_cli_command(\n"
+            "        name='a2a',\n"
+            "        help='Operate A2A',\n"
+            "        setup_fn=setup,\n"
+            "        handler_fn=handle,\n"
+            "        description='A2A plugin command',\n"
+            "    )\n"
+        )
+        (hermes_home / "config.yaml").write_text("plugins:\n  enabled:\n    - a2a\n")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        import hermes_cli.plugins as plugin_module
+
+        monkeypatch.setattr(plugin_module, "_plugin_manager", None)
+        commands = get_plugin_cli_commands()
+
+        assert "a2a" in commands
+        assert commands["a2a"]["help"] == "Operate A2A"
+        assert commands["a2a"]["plugin"] == "a2a"
+        assert callable(commands["a2a"]["setup_fn"])
+        assert callable(commands["a2a"]["handler_fn"])
 
 
 # ── Memory plugin CLI discovery ───────────────────────────────────────────

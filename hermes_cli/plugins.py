@@ -1076,6 +1076,16 @@ def get_plugin_commands() -> Dict[str, dict]:
     return _ensure_plugins_discovered()._plugin_commands
 
 
+def get_plugin_cli_commands() -> Dict[str, dict]:
+    """Return plugin-registered top-level CLI commands.
+
+    The returned dict maps command name to the metadata captured by
+    ``PluginContext.register_cli_command()``: ``help``, ``description``,
+    ``setup_fn``, ``handler_fn``, and ``plugin``.
+    """
+    return _ensure_plugins_discovered()._cli_commands
+
+
 def get_plugin_toolsets() -> List[tuple]:
     """Return plugin toolsets as ``(key, label, description)`` tuples.
 
