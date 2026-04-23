@@ -1076,7 +1076,7 @@ BRAVE_ANSWERS_SCHEMA = {
                 "description": "Enable citations",
             },
         },
-        "anyOf": [{"required": ["query"]}, {"required": ["messages"]}],
+        "description": "Provide either `query` or `messages`. If both are provided, `messages` takes precedence.",
     },
 }
 

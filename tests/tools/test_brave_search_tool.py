@@ -503,10 +503,12 @@ class TestBraveSearch:
         from tools.brave_search_tool import BRAVE_ANSWERS_SCHEMA
 
         parameters = BRAVE_ANSWERS_SCHEMA["parameters"]
-        assert "anyOf" in parameters
-        assert {"required": ["query"]} in parameters["anyOf"]
-        assert {"required": ["messages"]} in parameters["anyOf"]
-        assert "required" not in parameters or "query" not in parameters.get("required", [])
+        assert parameters.get("type") == "object"
+        assert "anyOf" not in parameters
+        assert "oneOf" not in parameters
+        assert "allOf" not in parameters
+        assert "required" not in parameters
+        assert "either `query` or `messages`" in parameters.get("description", "")
         messages_schema = parameters["properties"]["messages"]
         assert messages_schema["minItems"] == 1
         assert messages_schema["maxItems"] == 1
