@@ -2,7 +2,7 @@
 Cron job storage and management.
 
 Jobs are stored in ~/.hermes/cron/jobs.json
-Output is saved to ~/.hermes/cron/output/{job_id}/{timestamp}.md
+Output is saved to ~/.hermes/cron/output/{name}-{id}/{timestamp}.md
 """
 
 import copy
@@ -68,6 +68,17 @@ def _apply_skill_fields(job: Dict[str, Any]) -> Dict[str, Any]:
     normalized["skills"] = skills
     normalized["skill"] = skills[0] if skills else None
     return normalized
+
+
+def _slugify(text: str) -> str:
+    """Convert text to a path-friendly slug (lowercase, alphanumeric + hyphens)."""
+    if not text:
+        return ""
+    # Replace non-word characters with hyphens
+    # \w matches [a-zA-Z0-9_] plus Unicode word characters (like Chinese) in Python 3
+    s = re.sub(r'[^\w\s-]', '', text).strip().lower()
+    s = re.sub(r'[-\s]+', '-', s)
+    return s.strip('-')
 
 
 def _secure_dir(path: Path):
@@ -748,10 +759,31 @@ def get_due_jobs() -> List[Dict[str, Any]]:
     return due
 
 
-def save_job_output(job_id: str, output: str):
+def save_job_output(job_id: str, output: str, job_name: Optional[str] = None):
     """Save job output to file."""
     ensure_dirs()
-    job_output_dir = OUTPUT_DIR / job_id
+
+    # Construct directory name: {slug}-{id} or just {id}
+    dir_name = job_id
+    if job_name:
+        slug = _slugify(job_name)
+        if slug:
+            dir_name = f"{slug}-{job_id}"
+
+    job_output_dir = OUTPUT_DIR / dir_name
+
+    # Migration: if an old-style directory exists, rename it to the new name.
+    old_output_dir = OUTPUT_DIR / job_id
+    if dir_name != job_id and old_output_dir.exists() and old_output_dir.is_dir():
+        try:
+            # If both exist (e.g. name changed), we don't merge, just keep using the new one.
+            # But if only old exists, we migrate.
+            if not job_output_dir.exists():
+                old_output_dir.rename(job_output_dir)
+                logger.info("Migrated job output directory for %s: %s -> %s", job_id, job_id, dir_name)
+        except Exception as e:
+            logger.warning("Failed to migrate job output directory for %s: %s", job_id, e)
+
     job_output_dir.mkdir(parents=True, exist_ok=True)
     _secure_dir(job_output_dir)
     

@@ -1142,7 +1142,7 @@ class TestSilentDelivery:
             save_mock.return_value = "/tmp/out.md"
             from cron.scheduler import tick
             tick(verbose=False)
-        save_mock.assert_called_once_with("monitor-job", "# full output")
+        save_mock.assert_called_once_with("monitor-job", "# full output", job_name="monitor")
         deliver_mock.assert_not_called()
 
 

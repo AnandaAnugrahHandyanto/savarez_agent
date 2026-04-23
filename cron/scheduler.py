@@ -1112,7 +1112,7 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
             try:
                 success, output, final_response, error = run_job(job)
 
-                output_file = save_job_output(job["id"], output)
+                output_file = save_job_output(job["id"], output, job_name=job.get("name"))
                 if verbose:
                     logger.info("Output saved to: %s", output_file)
 
