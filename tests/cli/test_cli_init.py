@@ -345,3 +345,130 @@ class TestProviderResolution:
         cli = _make_cli()
         assert isinstance(cli.model, str)
         assert isinstance(cli.model, str) and '/' in cli.model
+
+
+class TestProfileInheritance:
+    """When HERMES_HOME points at ``profiles/<name>/``, ``load_cli_config``
+    must inherit ``model`` / ``custom_providers`` / ``providers`` /
+    ``delegation`` / ``fallback_model`` from the root ``~/.hermes/config.yaml``
+    — the same way ``hermes_cli.config.load_config`` does for every other
+    command (status / model / platform gateway / cron subagents).
+
+    Regression guard for the bug where ``hermes --profile X chat -q ...``
+    reported ``No inference provider configured`` on any profile that did
+    not redundantly copy the model section from the root config.
+    """
+
+    def _write_root_and_profile(self, tmp_path, root_yaml, profile_yaml):
+        import yaml
+
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir()
+        (hermes_root / "config.yaml").write_text(yaml.safe_dump(root_yaml))
+
+        profile_dir = hermes_root / "profiles" / "myprofile"
+        profile_dir.mkdir(parents=True)
+        (profile_dir / "config.yaml").write_text(yaml.safe_dump(profile_yaml))
+
+        return hermes_root, profile_dir
+
+    def test_profile_inherits_model_from_root(self, tmp_path, monkeypatch):
+        """A profile with no ``model:`` section must pick up the root's model."""
+        hermes_root, profile_dir = self._write_root_and_profile(
+            tmp_path,
+            root_yaml={
+                "model": {
+                    "default": "glm-5-turbo",
+                    "provider": "custom:hub",
+                },
+            },
+            profile_yaml={
+                # Profile only overrides discord — must still inherit model.
+                "discord": {"token": "fake"},
+            },
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        import cli
+        monkeypatch.setattr(cli, "_hermes_home", profile_dir)
+        cfg = cli.load_cli_config()
+
+        assert cfg["model"]["default"] == "glm-5-turbo"
+        assert cfg["model"]["provider"] == "custom:hub"
+
+    def test_profile_inherits_custom_providers_from_root(self, tmp_path, monkeypatch):
+        """Custom providers (e.g. ``custom:hub``) referenced by ``model.provider``
+        must be visible inside the profile scope — otherwise ``resolve_runtime_
+        provider`` cannot resolve the provider referenced by the inherited model.
+        """
+        hermes_root, profile_dir = self._write_root_and_profile(
+            tmp_path,
+            root_yaml={
+                "model": {"default": "glm-5-turbo", "provider": "custom:hub"},
+                "custom_providers": {
+                    "custom:hub": {
+                        "base_url": "https://hub.example.com/v1",
+                        "api_key_env": "HUB_API_KEY",
+                    },
+                },
+            },
+            profile_yaml={"discord": {"token": "fake"}},
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        import cli
+        monkeypatch.setattr(cli, "_hermes_home", profile_dir)
+        cfg = cli.load_cli_config()
+
+        providers = cfg.get("custom_providers") or {}
+        assert isinstance(providers, dict)
+        assert "custom:hub" in providers
+        assert providers["custom:hub"]["base_url"] == "https://hub.example.com/v1"
+
+    def test_profile_can_override_inherited_model(self, tmp_path, monkeypatch):
+        """When the profile explicitly sets a model, it wins over the root's."""
+        hermes_root, profile_dir = self._write_root_and_profile(
+            tmp_path,
+            root_yaml={
+                "model": {"default": "glm-5-turbo", "provider": "custom:hub"},
+            },
+            profile_yaml={
+                "model": {"default": "anthropic/claude-sonnet-4"},
+            },
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        import cli
+        monkeypatch.setattr(cli, "_hermes_home", profile_dir)
+        cfg = cli.load_cli_config()
+
+        assert cfg["model"]["default"] == "anthropic/claude-sonnet-4"
+        # provider falls through from root (profile didn't override it)
+        assert cfg["model"]["provider"] == "custom:hub"
+
+    def test_root_only_config_unchanged(self, tmp_path, monkeypatch):
+        """When HERMES_HOME is the root (not a profile), inheritance is a no-op.
+
+        This guards against the regression where the inheritance shortcut
+        would accidentally re-normalize root-level keys and defeat the
+        ``load_cli_config`` stale-root-key fallback protection that lives
+        further down in this function.
+        """
+        import yaml
+
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir()
+        (hermes_root / "config.yaml").write_text(yaml.safe_dump({
+            "provider": "opencode-go",  # stale root key
+            "model": {"default": "google/gemini-3-flash-preview"},
+        }))
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_root))
+        import cli
+        monkeypatch.setattr(cli, "_hermes_home", hermes_root)
+        cfg = cli.load_cli_config()
+
+        # Stale root-level "opencode-go" must NOT leak through when
+        # HERMES_HOME is the root — same guarantee as the existing
+        # TestRootLevelProviderOverride suite.
+        assert cfg["model"]["provider"] != "opencode-go"
