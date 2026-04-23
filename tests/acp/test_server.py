@@ -1,6 +1,7 @@
 """Tests for acp_adapter.server — HermesACPAgent ACP server."""
 
 import asyncio
+import json
 import os
 from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch
@@ -612,6 +613,36 @@ class TestPrompt:
             for call in mock_conn.session_update.await_args_list
         ]
         assert "agent_thought_chunk" in update_types
+
+    @pytest.mark.asyncio
+    async def test_prompt_force_moa_writes_forensics_log(self, agent, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.mode = "force-moa"
+        state.agent.run_conversation = MagicMock()
+
+        with patch(
+            "tools.mixture_of_agents_tool.mixture_of_agents_tool",
+            AsyncMock(
+                return_value='{"success": true, "response": "moa answer", "models_used": {"reference_models": ["minimax/MiniMax-M2.7-highspeed", "deepseek/deepseek-reasoner"], "aggregator_model": "xiaomi/mimo-v2-pro"}}'
+            ),
+        ):
+            await agent.prompt(
+                prompt=[TextContentBlock(type="text", text="analyze this hard problem")],
+                session_id=new_resp.session_id,
+            )
+
+        forensic_path = tmp_path / ".hermes" / "logs" / "route_forensics.jsonl"
+        events = [json.loads(line) for line in forensic_path.read_text().splitlines()]
+        result_event = next(event for event in events if event["event"] == "route_result")
+        assert result_event["session_id"] == new_resp.session_id
+        assert result_event["route"] == "force-moa"
+        assert result_event["tool"]["models_used"]["aggregator_model"] == "xiaomi/mimo-v2-pro"
+        assert result_event["tool"]["models_used"]["reference_models"] == [
+            "minimax/MiniMax-M2.7-highspeed",
+            "deepseek/deepseek-reasoner",
+        ]
 
     @pytest.mark.asyncio
     async def test_prompt_updates_history(self, agent):

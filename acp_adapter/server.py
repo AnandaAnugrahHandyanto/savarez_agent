@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Deque, Optional
@@ -65,6 +66,7 @@ from acp_adapter.events import (
 )
 from acp_adapter.permissions import make_approval_callback
 from acp_adapter.session import SessionManager, SessionState
+from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +144,7 @@ _ROUTED_HISTORY_MAX_MESSAGES = 8
 # Roughly ~1500 tokens of history, leaving headroom for the wrapper text and
 # the force-routed tool's own output inside the downstream model budget.
 _ROUTED_HISTORY_MAX_CHARS = 6000
+_ROUTE_FORENSICS_LOG = "route_forensics.jsonl"
 
 
 def _extract_text(
@@ -189,6 +192,75 @@ def _parse_tool_json(raw_text: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("tool output must be a JSON object")
     return payload
+
+
+def _append_route_forensics(event: dict[str, Any]) -> None:
+    try:
+        path = get_hermes_home() / "logs" / _ROUTE_FORENSICS_LOG
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except Exception:
+        logger.exception("Failed to write routed prompt forensics")
+
+
+def _summarize_routed_payload(prompt_route: str, raw_output: str) -> dict[str, Any]:
+    payload = _parse_tool_json(raw_output)
+    summary: dict[str, Any] = {
+        "success": bool(payload.get("success")),
+        "models_used": payload.get("models_used"),
+    }
+    error = str(payload.get("error") or "").strip()
+    if error:
+        summary["error"] = error[:500]
+    if prompt_route == "force-spar":
+        summary["approved"] = bool(payload.get("approved"))
+        summary["disagreement"] = bool(payload.get("disagreement"))
+        judge_verdict = payload.get("judge_verdict")
+        if isinstance(judge_verdict, dict):
+            summary["judge_verdict"] = {
+                key: judge_verdict.get(key)
+                for key in ("approved", "summary")
+                if key in judge_verdict
+            }
+    return summary
+
+
+def _log_route_forensics(
+    *,
+    event_type: str,
+    session_id: str,
+    selected_mode: str,
+    prompt_route: str,
+    user_text: str,
+    routed_prompt: str,
+    history_messages: int,
+    raw_output: str | None = None,
+    final_text: str | None = None,
+    error: Exception | None = None,
+) -> None:
+    event: dict[str, Any] = {
+        "ts": time.time(),
+        "event": event_type,
+        "session_id": session_id,
+        "selected_mode": selected_mode,
+        "route": prompt_route,
+        "history_messages": history_messages,
+        "user_text_chars": len(user_text),
+        "user_text_preview": user_text[:200],
+        "routed_prompt_chars": len(routed_prompt),
+    }
+    if raw_output is not None:
+        try:
+            event["tool"] = _summarize_routed_payload(prompt_route, raw_output)
+        except Exception:
+            event["tool"] = {"raw_output_preview": raw_output[:500]}
+    if final_text is not None:
+        event["final_response_chars"] = len(final_text)
+        event["final_response_preview"] = final_text[:200]
+    if error is not None:
+        event["error"] = str(error)
+    _append_route_forensics(event)
 
 
 def _build_routed_prompt(
@@ -768,6 +840,15 @@ class HermesACPAgent(acp.Agent):
                 user_text[:100],
             )
             routed_prompt = _build_routed_prompt(user_text, state.history)
+            _log_route_forensics(
+                event_type="route_start",
+                session_id=session_id,
+                selected_mode=selected_mode,
+                prompt_route=prompt_route,
+                user_text=user_text,
+                routed_prompt=routed_prompt,
+                history_messages=len(state.history),
+            )
             try:
                 await _send_forced_mode_thought(conn, session_id, prompt_route)
                 if prompt_route == "force-spar":
@@ -780,6 +861,17 @@ class HermesACPAgent(acp.Agent):
 
                     raw_output = await mixture_of_agents_tool(user_prompt=routed_prompt)
                     final_text = _format_moa_output(raw_output)
+                _log_route_forensics(
+                    event_type="route_result",
+                    session_id=session_id,
+                    selected_mode=selected_mode,
+                    prompt_route=prompt_route,
+                    user_text=user_text,
+                    routed_prompt=routed_prompt,
+                    history_messages=len(state.history),
+                    raw_output=raw_output,
+                    final_text=final_text,
+                )
                 result = {
                     "final_response": final_text,
                     "messages": [
@@ -791,6 +883,16 @@ class HermesACPAgent(acp.Agent):
             except Exception as exc:
                 logger.exception("Mode-routed prompt failed in session %s", session_id)
                 error_text = f"Error: {exc}"
+                _log_route_forensics(
+                    event_type="route_error",
+                    session_id=session_id,
+                    selected_mode=selected_mode,
+                    prompt_route=prompt_route,
+                    user_text=user_text,
+                    routed_prompt=routed_prompt,
+                    history_messages=len(state.history),
+                    error=exc,
+                )
                 result = {
                     "final_response": error_text,
                     "messages": [
