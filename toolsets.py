@@ -70,6 +70,8 @@ _HERMES_CORE_TOOLS = [
     "kanban_unblock",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # Video generation via xAI (gated on XAI_API_KEY via check_fn)
+    "video_generate",
 ]
 
 
@@ -117,12 +119,18 @@ TOOLSETS = {
         "includes": []
     },
 
+    "video_gen": {
+        "description": "Generate, edit, or extend videos via xAI grok-imagine-video",
+        "tools": ["video_generate"],
+        "includes": []
+    },
+
     "terminal": {
         "description": "Terminal/command execution and process management tools",
         "tools": ["terminal", "process"],
         "includes": []
     },
-    
+
     "moa": {
         "description": "Advanced reasoning and problem-solving tools",
         "tools": ["mixture_of_agents"],
