@@ -1,0 +1,94 @@
+episode_id: ep001
+model: fal-ai/gpt-image-2
+output_dir: renders/ep001/panels_style_locked_bubbles
+panels:
+  - id: p01
+    output: p01.png
+    prompt_file: prompts/ep001-p01-style-lock.md
+  - id: p02
+    output: p02.png
+    prompt_file: prompts/ep001-p02-style-lock.md
+  - id: p03
+    output: p03.png
+    prompt_file: prompts/ep001-p03-style-lock.md
+  - id: p04
+    output: p04.png
+    prompt_file: prompts/ep001-p04-style-lock.md
+  - id: p05
+    output: p05.png
+    prompt_file: prompts/ep001-p05-style-lock.md
+  - id: p06
+    output: p06.png
+    prompt_file: prompts/ep001-p06-style-lock.md
+  - id: p07
+    output: p07.png
+    prompt_file: prompts/ep001-p07-style-lock.md
+  - id: p08
+    output: p08.png
+    prompt_file: prompts/ep001-p08-style-lock.md
+  - id: p09
+    output: p09.png
+    prompt_file: prompts/ep001-p09-style-lock.md
+  - id: p10
+    output: p10.png
+    prompt_file: prompts/ep001-p10-style-lock.md
+  - id: p11
+    output: p11.png
+    prompt_file: prompts/ep001-p11-style-lock.md
+  - id: p12
+    output: p12.png
+    prompt_file: prompts/ep001-p12-style-lock.md
+  - id: p13
+    output: p13.png
+    prompt_file: prompts/ep001-p13-style-lock.md
+  - id: p14
+    output: p14.png
+    prompt_file: prompts/ep001-p14-style-lock.md
+  - id: p15
+    output: p15.png
+    prompt_file: prompts/ep001-p15-style-lock.md
+  - id: p16
+    output: p16.png
+    prompt_file: prompts/ep001-p16-style-lock.md
+  - id: p17
+    output: p17.png
+    prompt_file: prompts/ep001-p17-style-lock.md
+  - id: p18
+    output: p18.png
+    prompt_file: prompts/ep001-p18-style-lock.md
+  - id: p19
+    output: p19.png
+    prompt_file: prompts/ep001-p19-style-lock.md
+  - id: p20
+    output: p20.png
+    prompt_file: prompts/ep001-p20-style-lock.md
+  - id: p21
+    output: p21.png
+    prompt_file: prompts/ep001-p21-style-lock.md
+  - id: p22
+    output: p22.png
+    prompt_file: prompts/ep001-p22-style-lock.md
+  - id: p23
+    output: p23.png
+    prompt_file: prompts/ep001-p23-style-lock.md
+  - id: p24
+    output: p24.png
+    prompt_file: prompts/ep001-p24-style-lock.md
+  - id: p25
+    output: p25.png
+    prompt_file: prompts/ep001-p25-style-lock.md
+  - id: p26
+    output: p26.png
+    prompt_file: prompts/ep001-p26-style-lock.md
+  - id: p27
+    output: p27.png
+    prompt_file: prompts/ep001-p27-style-lock.md
+  - id: p28
+    output: p28.png
+    prompt_file: prompts/ep001-p28-style-lock.md
+  - id: p29
+    output: p29.png
+    prompt_file: prompts/ep001-p29-style-lock.md
+  - id: p30
+    output: p30.png
+    prompt_file: prompts/ep001-p30-style-lock.md

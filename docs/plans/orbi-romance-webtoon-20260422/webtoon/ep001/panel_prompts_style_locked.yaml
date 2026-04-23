@@ -1,0 +1,110 @@
+episode_id: ep001
+title: "6평 백점 맞으면, 내가 먼저 고백할게"
+text_policy:
+  integrated_bubbles: true
+  integrated_captions: true
+  language: ko
+  max_text_elements_per_panel: 2
+style_lock:
+  protagonist_lock: "same protagonist design across all panels, pale slim Korean male student, messy medium-length black layered hair with long bangs covering the eyebrows, narrow tired almond eyes with slight dark circles, pointed jawline, thin lips, dark hoodie or dark school cardigan, narrow shoulders, thin neck"
+  heroine_lock: "same heroine design across all panels, slim Korean female student, long straight dark-brown hair, cold sharp eyes, pale skin, neat school uniform, restrained expression, realistic school-top-student mood"
+  aesthetic: "mainstream Korean teen webtoon aesthetic, clean Naver-style school drama lineart, stylized not photorealistic, soft cel shading, semi-flat clean colors, simplified school and study-room backgrounds, mobile-readable vertical webtoon composition"
+  negatives:
+    - "no photorealism"
+    - "no live-action look"
+    - "no painterly skin texture"
+    - "no realistic hair strands"
+    - "no glossy idol styling"
+    - "no mature adult facial structure"
+panels:
+  - id: p01
+    scene: "시험장 복도 석양, 모두 빠져나가고 도윤만 혼자 남는 오프닝"
+    caption: "시험 끝난 날이 제일 싫다."
+  - id: p02
+    scene: "휴대폰 단톡과 텅 빈 알림창"
+    note: "읽지 않은 메시지 0"
+  - id: p03
+    scene: "자판기 앞에서 구겨진 수학 시험지 확인"
+    dialogue: "또 여기서 터졌네..."
+  - id: p04
+    scene: "서린 첫 등장, 시험지를 빼앗아 보는 장면"
+    dialogue: "서도윤이 이 점수면, 오늘 좀 심각한데?"
+  - id: p05
+    scene: "도윤 눈 클로즈업, 자존심 긁히는 순간"
+    dialogue: "돌려줘."
+  - id: p06
+    scene: "서린의 냉소, 반수 도발"
+    dialogue: "반수 생각 중이야?"
+  - id: p07
+    scene: "도윤 정색"
+    dialogue: "네가 상관할 일 아니잖아."
+  - id: p08
+    scene: "복도 창가, 거래 제안 직전"
+    dialogue: "그럼 거래할래?"
+  - id: p09
+    scene: "도윤 비웃음"
+    dialogue: "너랑?"
+  - id: p10
+    scene: "서린 정면 히어로샷"
+    dialogue: "6평 수학 백 받으면, 내가 먼저 고백할게."
+  - id: p11
+    scene: "정적과 멍해진 도윤"
+    caption: "장난치지 마."
+  - id: p12
+    scene: "분노하는 도윤"
+    dialogue: "사람 열등감으로 놀리는 거 재밌냐?"
+  - id: p13
+    scene: "서린의 진지한 반박"
+    dialogue: "놀리는 거 아니야. 넌 원래 이런 데서 안 무너졌잖아."
+  - id: p14
+    scene: "계단으로 내려가는 도윤"
+    dialogue: "백점 맞아도 너 안 만져."
+  - id: p15
+    scene: "계단참에서 손 떨리는 도윤"
+    caption: "근데 왜 심장이 먼저 반응하지."
+  - id: p16
+    scene: "밤 방 안, 오르비와 반수 글, 성적표"
+    message: "반수열차 탑승권 구매 마렵네"
+  - id: p17
+    scene: "도윤, N제 펼치고 결의"
+    dialogue: "진짜로 받아낸다."
+  - id: p18
+    scene: "새벽 공부 몽타주"
+    caption: "고백보다 먼저, 자존심이 걸렸다."
+  - id: p19
+    scene: "자습실에서 몰래 지켜보는 서린"
+    dialogue: "진짜 시작했네..."
+  - id: p20
+    scene: "서린 손 안의 봉투와 흔들린 표정"
+    caption: "사실 무너진 건 나도 마찬가지였다."
+  - id: p21
+    scene: "여주의 부모 문자와 압박"
+    message: "이번에도 못 올리면 재수 다시 생각해"
+  - id: p22
+    scene: "막히는 도윤, 책상 치는 장면"
+    dialogue: "젠장."
+  - id: p23
+    scene: "서린이 오답 위치 짚어 주기"
+    dialogue: "여기서 조건을 하나 덜 봤어."
+  - id: p24
+    scene: "도윤의 경계"
+    dialogue: "네가 왜 도와주는데."
+  - id: p25
+    scene: "서린 시선 회피"
+    dialogue: "네가 백점 맞아야 하니까."
+  - id: p26
+    scene: "흔들리는 도윤 심장 연출"
+    caption: "미친 것처럼 들리는데, 그래서 더 못 믿겠다."
+  - id: p27
+    scene: "직구 질문"
+    dialogue: "너, 나 좋아하냐?"
+  - id: p28
+    scene: "흔들리는 서린 클로즈업"
+    dialogue: "...그건 네가 백점 맞고 물어봐."
+  - id: p29
+    scene: "돌아서는 서린의 떨리는 손끝"
+    caption: "장난이면 너무 진심 같았다."
+  - id: p30
+    scene: "문제집 첫 장에 다짐을 적는 도윤"
+    note: "한서린한테 고백 받기 전까지 안 끝냄"
+    caption: "그날부터, 내 수학은 걔 입술이 됐다."

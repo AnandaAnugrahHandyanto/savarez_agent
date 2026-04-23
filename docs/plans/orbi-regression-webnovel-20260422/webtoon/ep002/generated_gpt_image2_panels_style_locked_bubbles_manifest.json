@@ -1,0 +1,50 @@
+{
+  "episode": "ep002",
+  "model": "fal-ai/gpt-image-2",
+  "render_mode": "style_locked_with_integrated_bubbles",
+  "output_dir": "docs/plans/orbi-regression-webnovel-20260422/renders/ep002/panels_style_locked_bubbles",
+  "assets": [
+    {
+      "panel_id": "p01",
+      "prompt_file": "docs/plans/orbi-regression-webnovel-20260422/webtoon/ep002/prompts/20-p01-style-lock.md",
+      "source_url": "https://v3b.fal.media/files/b/0a974012/RcpFePja2i3Y4zM4z4-qn_22tNmhlR.png",
+      "saved_path": "docs/plans/orbi-regression-webnovel-20260422/renders/ep002/panels_style_locked_bubbles/p01.png"
+    },
+    {
+      "panel_id": "p02",
+      "prompt_file": "docs/plans/orbi-regression-webnovel-20260422/webtoon/ep002/prompts/21-p02-style-lock.md",
+      "source_url": "https://v3b.fal.media/files/b/0a974017/AYiY43kIb3x61bFmjxHhd_DYublQw7.png",
+      "saved_path": "docs/plans/orbi-regression-webnovel-20260422/renders/ep002/panels_style_locked_bubbles/p02.png"
+    },
+    {
+      "panel_id": "p03",
+      "prompt_file": "docs/plans/orbi-regression-webnovel-20260422/webtoon/ep002/prompts/22-p03-style-lock.md",
+      "source_url": "https://v3b.fal.media/files/b/0a97401d/iLlxVTjPz4CVIUjWrNTSx_A6oboWob.png",
+      "saved_path": "docs/plans/orbi-regression-webnovel-20260422/renders/ep002/panels_style_locked_bubbles/p03.png"
+    },
+    {
+      "panel_id": "p04",
+      "prompt_file": "docs/plans/orbi-regression-webnovel-20260422/webtoon/ep002/prompts/23-p04-style-lock.md",
+      "source_url": "https://v3b.fal.media/files/b/0a974025/g8g0MSqlPFsmwlpmcFDTH_CcegpE7v.png",
+      "saved_path": "docs/plans/orbi-regression-webnovel-20260422/renders/ep002/panels_style_locked_bubbles/p04.png"
+    },
+    {
+      "panel_id": "p05",
+      "prompt_file": "docs/plans/orbi-regression-webnovel-20260422/webtoon/ep002/prompts/24-p05-style-lock.md",
+      "source_url": "https://v3b.fal.media/files/b/0a97402a/hJ4RrgD2tQ5KWNBcM1Gaz_zpZSKykZ.png",
+      "saved_path": "docs/plans/orbi-regression-webnovel-20260422/renders/ep002/panels_style_locked_bubbles/p05.png"
+    },
+    {
+      "panel_id": "p06",
+      "prompt_file": "docs/plans/orbi-regression-webnovel-20260422/webtoon/ep002/prompts/25-p06-style-lock.md",
+      "source_url": "https://v3b.fal.media/files/b/0a97402e/KMzeSnmBEMLd0NntMBrjf_gSDxM45f.png",
+      "saved_path": "docs/plans/orbi-regression-webnovel-20260422/renders/ep002/panels_style_locked_bubbles/p06.png"
+    },
+    {
+      "panel_id": "p07",
+      "prompt_file": "docs/plans/orbi-regression-webnovel-20260422/webtoon/ep002/prompts/26-p07-style-lock.md",
+      "source_url": "https://v3b.fal.media/files/b/0a974035/fUp6ggoakWNSAucgt7tin_sgXNFpl0.png",
+      "saved_path": "docs/plans/orbi-regression-webnovel-20260422/renders/ep002/panels_style_locked_bubbles/p07.png"
+    }
+  ]
+}

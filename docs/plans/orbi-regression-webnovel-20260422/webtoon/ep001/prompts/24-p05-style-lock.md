@@ -1,0 +1,9 @@
+# Prompt — ep001 p05 style lock
+
+Mainstream Korean teen webtoon aesthetic, clean Naver-style school drama lineart, polished digital manhwa illustration, stylized not photorealistic, youthful late-teen face proportions, soft cel shading, semi-flat clean colors, smooth even pale skin, grouped hair clumps instead of realistic strands, simplified bedroom desk background, mobile-readable vertical webtoon composition.
+
+Same protagonist design in every panel: pale slim Korean male student, messy medium-length black layered hair with long bangs covering the eyebrows, narrow tired almond eyes with visible dark circles, small sharp face with pointed jawline, thin lips, dark plain sweatshirt or faded black hoodie, narrow shoulders, thin neck, quiet depressed intensity.
+
+Panel beat: close-up of an opened notebook on the desk with urgent handwritten guidance from the protagonist's past self, his slim hand grips the page edge tightly, prep books, pens, and mock exam papers frame the notebook, the reveal is the focus, keep the prop clean and readable in silhouette even if the text itself is not perfectly legible.
+
+Negative constraints: no photorealism, no live-action look, no cinematic prestige-drama lighting, no skin pores, no painterly texture, no realistic hair strands, no glossy idol styling, no mature adult anatomy, no broad shoulders, no gritty realism, no western comic style, no 3D render, no watermark, no logo, no speech bubbles.

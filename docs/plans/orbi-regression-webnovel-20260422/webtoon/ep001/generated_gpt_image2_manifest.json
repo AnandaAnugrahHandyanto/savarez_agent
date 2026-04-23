@@ -1,0 +1,19 @@
+{
+  "episode": "ep001",
+  "model": "fal-ai/gpt-image-2",
+  "generated_at": "2026-04-22",
+  "assets": [
+    {
+      "job_id": "ep001_teaser",
+      "prompt_file": "docs/plans/orbi-regression-webnovel-20260422/webtoon/ep001/prompts/00-ep001-teaser.md",
+      "source_url": "https://v3b.fal.media/files/b/0a973cf9/whU5PXOc2DSkyquxcHuOk_Lq5ws7p4.png",
+      "saved_path": "docs/plans/orbi-regression-webnovel-20260422/renders/ep001/ep001_teaser_gpt_image2.png"
+    },
+    {
+      "job_id": "ep001_p07_hero",
+      "prompt_file": "docs/plans/orbi-regression-webnovel-20260422/webtoon/ep001/prompts/01-p07-hero.md",
+      "source_url": "https://v3b.fal.media/files/b/0a973cfe/ec-hPz6mQco0jCBntRMb7_p63ZVnRA.png",
+      "saved_path": "docs/plans/orbi-regression-webnovel-20260422/renders/ep001/ep001_p07_hero_gpt_image2.png"
+    }
+  ]
+}

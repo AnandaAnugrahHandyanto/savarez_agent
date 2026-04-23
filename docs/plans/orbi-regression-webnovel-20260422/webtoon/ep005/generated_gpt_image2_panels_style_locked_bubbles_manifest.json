@@ -1,0 +1,15 @@
+{
+  "episode": "ep005",
+  "model": "fal-ai/gpt-image-2",
+  "render_mode": "style_locked_with_integrated_bubbles",
+  "output_dir": "docs/plans/orbi-regression-webnovel-20260422/renders/ep005/panels_style_locked_bubbles",
+  "assets": [
+    {"panel_id":"p01","saved_path":"docs/plans/orbi-regression-webnovel-20260422/renders/ep005/panels_style_locked_bubbles/p01.png","source_url":"https://v3b.fal.media/files/b/0a9740b2/WwxuOmJ0tzoWqrJ2KNTem_sXCC0rbK.png"},
+    {"panel_id":"p02","saved_path":"docs/plans/orbi-regression-webnovel-20260422/renders/ep005/panels_style_locked_bubbles/p02.png","source_url":"https://v3b.fal.media/files/b/0a9740b8/WIYB5QHfnWVceYH-8XTS-_c2AcstZq.png"},
+    {"panel_id":"p03","saved_path":"docs/plans/orbi-regression-webnovel-20260422/renders/ep005/panels_style_locked_bubbles/p03.png","source_url":"https://v3b.fal.media/files/b/0a9740bd/jZh9-0U4Pjrvueewvun7K_MGmY8znu.png"},
+    {"panel_id":"p04","saved_path":"docs/plans/orbi-regression-webnovel-20260422/renders/ep005/panels_style_locked_bubbles/p04.png","source_url":"https://v3b.fal.media/files/b/0a9740c4/XFNEnbbgGp6Czw7cdIQc1_fP1RVdAI.png"},
+    {"panel_id":"p05","saved_path":"docs/plans/orbi-regression-webnovel-20260422/renders/ep005/panels_style_locked_bubbles/p05.png","source_url":"https://v3b.fal.media/files/b/0a9740c9/rXrbdhpHiHyvGKstaf4aX_e8jIC1o1.png"},
+    {"panel_id":"p06","saved_path":"docs/plans/orbi-regression-webnovel-20260422/renders/ep005/panels_style_locked_bubbles/p06.png","source_url":"https://v3b.fal.media/files/b/0a9740ce/m-tuFmuO4VuddLeJ4u4Tu_SIrzopys.png"},
+    {"panel_id":"p07","saved_path":"docs/plans/orbi-regression-webnovel-20260422/renders/ep005/panels_style_locked_bubbles/p07.png","source_url":"https://v3b.fal.media/files/b/0a9740d3/rLSwNal4q9Tuz7eVZ6NLb_ZEuyYmkr.png"}
+  ]
+}

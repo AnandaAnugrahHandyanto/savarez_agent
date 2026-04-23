@@ -1,0 +1,50 @@
+{
+  "episode": "ep001",
+  "model": "fal-ai/gpt-image-2",
+  "render_mode": "consistency_lock_full_panel_rerender",
+  "output_dir": "docs/plans/orbi-regression-webnovel-20260422/renders/ep001/panels_consistency_lock",
+  "assets": [
+    {
+      "panel_id": "p01",
+      "prompt_file": "docs/plans/orbi-regression-webnovel-20260422/webtoon/ep001/prompts/10-p01-exam-hand-lock.md",
+      "source_url": "https://v3b.fal.media/files/b/0a973db5/RZ3KAURYRQPPXuJde5bCc_R0KOMuP4.png",
+      "saved_path": "docs/plans/orbi-regression-webnovel-20260422/renders/ep001/panels_consistency_lock/p01.png"
+    },
+    {
+      "panel_id": "p02",
+      "prompt_file": "docs/plans/orbi-regression-webnovel-20260422/webtoon/ep001/prompts/11-p02-score-desk-lock.md",
+      "source_url": "https://v3b.fal.media/files/b/0a973e21/kUwg9vZlyAyXol_nbkVeu_UrkKFEPh.png",
+      "saved_path": "docs/plans/orbi-regression-webnovel-20260422/renders/ep001/panels_consistency_lock/p02.png"
+    },
+    {
+      "panel_id": "p03",
+      "prompt_file": "docs/plans/orbi-regression-webnovel-20260422/webtoon/ep001/prompts/12-p03-library-bansu-lock.md",
+      "source_url": "https://v3b.fal.media/files/b/0a973e54/AgivK88h3jT3Q5s9tHur7_EHw9mc0K.png",
+      "saved_path": "docs/plans/orbi-regression-webnovel-20260422/renders/ep001/panels_consistency_lock/p03.png"
+    },
+    {
+      "panel_id": "p04",
+      "prompt_file": "docs/plans/orbi-regression-webnovel-20260422/webtoon/ep001/prompts/13-p04-wakeup-date-lock.md",
+      "source_url": "https://v3b.fal.media/files/b/0a973e6c/ZO7e2yvFTs0KKQsBRujkn_zQcpumNl.png",
+      "saved_path": "docs/plans/orbi-regression-webnovel-20260422/renders/ep001/panels_consistency_lock/p04.png"
+    },
+    {
+      "panel_id": "p05",
+      "prompt_file": "docs/plans/orbi-regression-webnovel-20260422/webtoon/ep001/prompts/14-p05-note-reveal-lock.md",
+      "source_url": "https://v3b.fal.media/files/b/0a973e71/R9tdP_fyhKZSnxlqxf_FM_7raAb4zi.png",
+      "saved_path": "docs/plans/orbi-regression-webnovel-20260422/renders/ep001/panels_consistency_lock/p05.png"
+    },
+    {
+      "panel_id": "p06",
+      "prompt_file": "docs/plans/orbi-regression-webnovel-20260422/webtoon/ep001/prompts/15-p06-mother-door-lock.md",
+      "source_url": "https://v3b.fal.media/files/b/0a973e76/-YS8VYnqDzeqVbnPxDPZp_dGBAMZIO.png",
+      "saved_path": "docs/plans/orbi-regression-webnovel-20260422/renders/ep001/panels_consistency_lock/p06.png"
+    },
+    {
+      "panel_id": "p07",
+      "prompt_file": "docs/plans/orbi-regression-webnovel-20260422/webtoon/ep001/prompts/16-p07-mirror-hero-lock.md",
+      "source_url": "https://v3b.fal.media/files/b/0a973e7c/Aac92LOYsd6UFbS-MZdVI_jEopeZn1.png",
+      "saved_path": "docs/plans/orbi-regression-webnovel-20260422/renders/ep001/panels_consistency_lock/p07.png"
+    }
+  ]
+}
