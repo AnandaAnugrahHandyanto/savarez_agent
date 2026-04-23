@@ -10,6 +10,7 @@ Covers all error paths in run_agent.py's run_conversation() for api_mode=anthrop
 """
 
 import asyncio
+import json
 import sys
 import types
 from types import SimpleNamespace
@@ -282,6 +283,39 @@ def test_400_bad_request_is_non_retryable(monkeypatch):
     result = _run_with_agent(monkeypatch, agent_cls)
     assert result["api_calls"] == 1
     assert "400" in str(result.get("final_response", ""))
+
+
+def test_jsondecode_error_is_retried_and_recovers(monkeypatch):
+    """Provider-side JSON parse failures should use the normal retry path."""
+    calls = {"n": 0}
+
+    class _JSONDecodeThenSuccessAgent(run_agent.AIAgent):
+        def __init__(self, *args, **kwargs):
+            kwargs.setdefault("skip_context_files", True)
+            kwargs.setdefault("skip_memory", True)
+            kwargs.setdefault("max_iterations", 4)
+            super().__init__(*args, **kwargs)
+            self._cleanup_task_resources = lambda task_id: None
+            self._persist_session = lambda messages, history=None: None
+            self._save_trajectory = lambda messages, user_message, completed: None
+            self._save_session_log = lambda messages: None
+
+        def run_conversation(self, user_message, conversation_history=None, task_id=None):
+            def _fake_api_call(api_kwargs, **kw):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise json.JSONDecodeError("Expecting value", "", 0)
+                return _anthropic_response("Recovered after retry")
+
+            self._interruptible_api_call = _fake_api_call
+            self._interruptible_streaming_api_call = _fake_api_call
+            return super().run_conversation(
+                user_message, conversation_history=conversation_history, task_id=task_id
+            )
+
+    result = _run_with_agent(monkeypatch, _JSONDecodeThenSuccessAgent)
+    assert calls["n"] == 2
+    assert result["final_response"] == "Recovered after retry"
 
 
 def test_500_server_error_is_retried_and_recovers(monkeypatch):
