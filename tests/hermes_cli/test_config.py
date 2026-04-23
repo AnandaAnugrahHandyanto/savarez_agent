@@ -429,6 +429,16 @@ class TestOptionalEnvVarsRegistry:
 
         assert OPTIONAL_ENV_VARS["BRAVE_ANSWERS_API_KEY"]["tools"] == ["brave_answers"]
 
+    def test_brave_legacy_api_key_lists_compatibility_surface(self):
+        """BRAVE_API_KEY remains visible as an advanced compatibility fallback."""
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+
+        info = OPTIONAL_ENV_VARS["BRAVE_API_KEY"]
+        tools = set(info["tools"])
+        assert info["advanced"] is True
+        assert info["category"] == "tool"
+        assert {"web_search", "brave_search", "brave_suggest", "brave_answers"}.issubset(tools)
+
     def test_brave_autosuggest_api_key_lists_suggest_tool(self):
         """BRAVE_AUTOSUGGEST_API_KEY advertises the native Brave suggest tool."""
         from hermes_cli.config import OPTIONAL_ENV_VARS

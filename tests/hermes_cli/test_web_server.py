@@ -218,6 +218,17 @@ class TestWebServerEndpoints:
         # Should contain known env var names
         assert any(k.endswith("_API_KEY") or k.endswith("_TOKEN") for k in data.keys())
 
+        assert data["BRAVE_SEARCH_API_KEY"]["category"] == "tool"
+        assert data["BRAVE_SEARCH_API_KEY"]["is_password"] is True
+        assert data["BRAVE_FREE_API_KEY"]["category"] == "tool"
+        assert data["BRAVE_FREE_API_KEY"]["is_password"] is True
+        assert data["BRAVE_API_KEY"]["category"] == "tool"
+        assert data["BRAVE_API_KEY"]["is_password"] is True
+        assert data["BRAVE_ANSWERS_API_KEY"]["category"] == "tool"
+        assert data["BRAVE_AUTOSUGGEST_API_KEY"]["category"] == "tool"
+        assert data["BRAVE_API_URL"]["category"] == "tool"
+        assert data["BRAVE_API_URL"]["is_password"] is False
+
     def test_reveal_env_var(self, tmp_path):
         """POST /api/env/reveal should return the real unredacted value."""
         from hermes_cli.config import save_env_value

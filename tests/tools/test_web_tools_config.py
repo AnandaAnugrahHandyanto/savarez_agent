@@ -679,6 +679,17 @@ class TestCheckWebApiKey:
                     from tools.web_tools import check_web_api_key
                     assert check_web_api_key() is True
 
+    def test_configured_brave_backend_uses_parallel_fallback_for_search_availability(self):
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "brave"}):
+            with patch.dict(os.environ, {"PARALLEL_API_KEY": "par-test"}, clear=False):
+                from tools.registry import registry
+                from tools.web_tools import check_web_api_key
+
+                assert check_web_api_key() is True
+                entry = registry.get_entry("web_search")
+                assert entry is not None
+                assert entry.check_fn() is True
+
 
 def test_web_requires_env_includes_brave_keys():
     from tools.web_tools import _web_requires_env

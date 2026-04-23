@@ -46,3 +46,21 @@ def test_setup_summary_marks_placeholders(tmp_path, capsys):
 
     out = capsys.readouterr().out
     assert "hermes config set <key> <value>" in out
+
+
+def test_show_config_displays_brave_legacy_and_api_url(tmp_path, capsys):
+    with patch.dict(
+        os.environ,
+        {
+            "HERMES_HOME": str(tmp_path),
+            "BRAVE_API_KEY": "brlg-1...cdef",
+            "BRAVE_API_URL": "https://proxy.example.com/custom/res/v1",
+        },
+    ):
+        show_config()
+
+    out = capsys.readouterr().out
+    assert "Brave Legacy" in out
+    assert "Brave API URL" in out
+    assert "brlg...cdef" in out
+    assert "https://proxy.example.com/custom/res/v1" in out

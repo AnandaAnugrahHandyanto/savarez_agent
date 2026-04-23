@@ -1359,6 +1359,25 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "BRAVE_API_KEY": {
+        "description": "Legacy Brave API key compatibility fallback for search-style Brave tools and shared Answers/Suggest fallback behavior.",
+        "prompt": "Brave legacy API key",
+        "url": "https://api-dashboard.search.brave.com/",
+        "tools": [
+            "web_search",
+            "brave_search",
+            "brave_news",
+            "brave_images",
+            "brave_videos",
+            "brave_local_pois",
+            "brave_local_descriptions",
+            "brave_suggest",
+            "brave_answers",
+        ],
+        "password": True,
+        "category": "tool",
+        "advanced": True,
+    },
     "BRAVE_ANSWERS_API_KEY": {
         "description": "Brave Answers API key for the native brave_answers tool (Free AI / Answers plans). Expected shape: opaque Brave token string, typically starting with BSA...",
         "prompt": "Brave Answers API key",
@@ -3594,6 +3613,7 @@ def show_config():
         ("BRAVE_FREE_API_KEY", "Brave Free"),
         ("BRAVE_ANSWERS_API_KEY", "Brave Answers"),
         ("BRAVE_AUTOSUGGEST_API_KEY", "Brave Autosuggest"),
+        ("BRAVE_API_KEY", "Brave Legacy"),
         ("BROWSERBASE_API_KEY", "Browserbase"),
         ("BROWSER_USE_API_KEY", "Browser Use"),
         ("FAL_KEY", "FAL"),
@@ -3602,6 +3622,8 @@ def show_config():
     for env_key, name in keys:
         value = get_env_value(env_key)
         print(f"  {name:<14} {redact_key(value)}")
+    brave_api_url = get_env_value("BRAVE_API_URL") or color("(not set)", Colors.DIM)
+    print(f"  {'Brave API URL':<14} {brave_api_url}")
     from hermes_cli.auth import get_anthropic_key
     anthropic_value = get_anthropic_key()
     print(f"  {'Anthropic':<14} {redact_key(anthropic_value)}")

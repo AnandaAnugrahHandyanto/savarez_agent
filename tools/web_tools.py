@@ -1969,24 +1969,16 @@ def check_firecrawl_api_key() -> bool:
     return _has_direct_firecrawl_config() or _is_tool_gateway_ready()
 
 
-def _check_web_backend_available(capability: str = "search") -> bool:
-    """Check whether a backend for the requested web capability is available."""
-    capability = (capability or "search").strip().lower()
-    configured = _load_web_config().get("backend", "").lower().strip()
-    backends = _SEARCH_BACKENDS if capability == "search" else _CONTENT_BACKENDS
-    if configured in backends:
-        return _is_backend_available(configured)
-    return any(_is_backend_available(backend) for backend in backends)
-
-
 def check_web_api_key() -> bool:
     """Check whether a search-capable web backend is available."""
-    return _check_web_backend_available("search")
+    backend = _get_backend("search")
+    return _is_backend_available(backend)
 
 
 def check_web_content_api_key() -> bool:
     """Check whether an extract/crawl-capable web backend is available."""
-    return _check_web_backend_available("content")
+    backend = _get_backend("content")
+    return _is_backend_available(backend)
 
 
 def check_auxiliary_model() -> bool:

@@ -3,6 +3,7 @@
 from unittest.mock import patch
 
 from hermes_cli.models import (
+    CANONICAL_PROVIDERS,
     copilot_model_api_mode,
     fetch_github_model_catalog,
     curated_models_for_provider,
@@ -159,6 +160,9 @@ class TestNormalizeProvider:
     def test_case_insensitive(self):
         assert normalize_provider("OpenRouter") == "openrouter"
 
+    def test_brave_search_is_not_treated_as_model_provider_alias(self):
+        assert normalize_provider("brave-search") == "brave-search"
+
 
 class TestProviderLabel:
     def test_known_labels_and_auto(self):
@@ -170,6 +174,11 @@ class TestProviderLabel:
 
     def test_unknown_provider_preserves_original_name(self):
         assert provider_label("my-custom-provider") == "my-custom-provider"
+
+
+class TestCanonicalProviders:
+    def test_brave_not_listed_as_model_provider(self):
+        assert "brave" not in [p.slug for p in CANONICAL_PROVIDERS]
 
 
 # -- provider_model_ids ------------------------------------------------------

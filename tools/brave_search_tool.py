@@ -22,6 +22,7 @@ import json
 import logging
 import os
 from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import urlparse
 
 import httpx
 
@@ -35,7 +36,11 @@ _BRAVE_DEFAULT_MODEL = "brave-pro"
 
 def _brave_base_url() -> str:
     """Return the Brave API base URL, honoring an optional proxy override."""
-    return (os.getenv("BRAVE_API_URL", _BRAVE_DEFAULT_BASE_URL).strip() or _BRAVE_DEFAULT_BASE_URL).rstrip("/")
+    candidate = (os.getenv("BRAVE_API_URL", _BRAVE_DEFAULT_BASE_URL).strip() or _BRAVE_DEFAULT_BASE_URL).rstrip("/")
+    parsed = urlparse(candidate)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("BRAVE_API_URL must be a valid http(s) base URL")
+    return candidate
 
 
 def _brave_search_api_key() -> str:

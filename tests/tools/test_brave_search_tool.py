@@ -85,6 +85,20 @@ class TestBraveSearch:
         assert result["success"] is True
         assert mock_get.call_args.args[0] == "https://proxy.example.com/custom/res/v1/web/search"
 
+    def test_search_rejects_invalid_brave_api_url_override(self):
+        with patch.dict(
+            os.environ,
+            {"BRAVE_SEARCH_API_KEY": "brave-test", "BRAVE_API_URL": "ftp://example.com/not-allowed"},
+            clear=False,
+        ), patch("tools.brave_search_tool.httpx.get") as mock_get:
+            from tools.brave_search_tool import brave_search
+
+            result = json.loads(brave_search("python testing", count=1))
+
+        assert result["error"]
+        assert "BRAVE_API_URL" in result["error"]
+        mock_get.assert_not_called()
+
     def test_search_forwards_documented_brave_query_params(self):
         response = MagicMock()
         response.raise_for_status = MagicMock()
@@ -519,6 +533,54 @@ class TestBraveSearch:
             result = json.loads(brave_answers("Fallback?"))
 
         assert "BRAVE_ANSWERS_API_KEY" in result["error"]
+
+    def test_answers_accepts_legacy_key_fallback(self):
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        response.headers = {"content-type": "application/json"}
+        response.json.return_value = {
+            "choices": [{"message": {"content": "Fallback answer."}}],
+        }
+
+        with patch.dict(os.environ, {"BRAVE_API_KEY": "brave-legacy-test"}, clear=True), \
+             patch("tools.brave_search_tool.httpx.post", return_value=response) as mock_post:
+            from tools.brave_search_tool import brave_answers
+
+            result = json.loads(brave_answers("Fallback?"))
+
+        assert result["success"] is True
+        assert result["data"]["answer"] == "Fallback answer."
+        assert mock_post.call_args.kwargs["headers"]["X-Subscription-Token"] == "brave-legacy-test"
+
+    def test_suggest_accepts_search_key_fallback(self):
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        response.json.return_value = {"results": [{"query": "python test"}]}
+
+        with patch.dict(os.environ, {"BRAVE_SEARCH_API_KEY": "brave-test"}, clear=True), \
+             patch("tools.brave_search_tool.httpx.get", return_value=response) as mock_get:
+            from tools.brave_search_tool import brave_suggest
+
+            result = json.loads(brave_suggest("python te"))
+
+        assert result["success"] is True
+        assert result["data"]["suggestions"] == ["python test"]
+        assert mock_get.call_args.kwargs["headers"]["X-Subscription-Token"] == "brave-test"
+
+    def test_suggest_accepts_legacy_key_fallback(self):
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        response.json.return_value = {"results": [{"query": "python test"}]}
+
+        with patch.dict(os.environ, {"BRAVE_API_KEY": "brave-legacy-test"}, clear=True), \
+             patch("tools.brave_search_tool.httpx.get", return_value=response) as mock_get:
+            from tools.brave_search_tool import brave_suggest
+
+            result = json.loads(brave_suggest("python te"))
+
+        assert result["success"] is True
+        assert result["data"]["suggestions"] == ["python test"]
+        assert mock_get.call_args.kwargs["headers"]["X-Subscription-Token"] == "brave-legacy-test"
 
     def test_answers_defaults_to_non_streaming_requests(self):
         response = MagicMock()

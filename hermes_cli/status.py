@@ -157,6 +157,14 @@ def show_status(args):
     brave_autosuggest_display = redact_key(brave_autosuggest_value) if not show_all else brave_autosuggest_value
     print(f"  {'Brave Suggest':<12}  {check_mark(bool(brave_autosuggest_value))} {brave_autosuggest_display}")
 
+    brave_legacy_value = get_env_value("BRAVE_API_KEY")
+    brave_legacy_display = redact_key(brave_legacy_value) if not show_all else brave_legacy_value
+    print(f"  {'Brave Legacy':<12}  {check_mark(bool(brave_legacy_value))} {brave_legacy_display}")
+
+    brave_api_url = get_env_value("BRAVE_API_URL") or ""
+    brave_api_url_display = brave_api_url if brave_api_url else color("(not set)", Colors.DIM)
+    print(f"  {'Brave API URL':<12}  {check_mark(bool(brave_api_url))} {brave_api_url_display}")
+
     from hermes_cli.auth import get_anthropic_key
     anthropic_value = get_anthropic_key()
     anthropic_display = redact_key(anthropic_value) if not show_all else anthropic_value
