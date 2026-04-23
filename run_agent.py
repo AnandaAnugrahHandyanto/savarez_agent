@@ -70,6 +70,7 @@ from model_tools import (
     handle_function_call,
     check_toolset_requirements,
 )
+from tools.agent_context import current_agent
 from tools.terminal_tool import cleanup_vm, get_active_env, is_persistent_env
 from tools.tool_result_storage import maybe_persist_tool_result, enforce_turn_budget
 from tools.interrupt import set_interrupt as _set_interrupt
@@ -7731,13 +7732,19 @@ class AIAgent:
         elif function_name == "delegate_task":
             return self._dispatch_delegate_task(function_args)
         else:
-            return handle_function_call(
-                function_name, function_args, effective_task_id,
-                tool_call_id=tool_call_id,
-                session_id=self.session_id or "",
-                enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
-                skip_pre_tool_call_hook=True,
-            )
+            # Expose the calling agent to plugin tool handlers via contextvar.
+            # Built-in delegate_task gets parent_agent via the hardcoded path
+            # above; every other tool (including plugin-registered ones) flows
+            # through handle_function_call, whose signature doesn't thread the
+            # agent through. See tools/agent_context.py for the full rationale.
+            with current_agent(self):
+                return handle_function_call(
+                    function_name, function_args, effective_task_id,
+                    tool_call_id=tool_call_id,
+                    session_id=self.session_id or "",
+                    enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                    skip_pre_tool_call_hook=True,
+                )
 
     @staticmethod
     def _wrap_verbose(label: str, text: str, indent: str = "     ") -> str:
@@ -8324,13 +8331,15 @@ class AIAgent:
                     spinner.start()
                 _spinner_result = None
                 try:
-                    function_result = handle_function_call(
-                        function_name, function_args, effective_task_id,
-                        tool_call_id=tool_call.id,
-                        session_id=self.session_id or "",
-                        enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
-                        skip_pre_tool_call_hook=True,
-                    )
+                    # See _invoke_tool for rationale on the current_agent wrap.
+                    with current_agent(self):
+                        function_result = handle_function_call(
+                            function_name, function_args, effective_task_id,
+                            tool_call_id=tool_call.id,
+                            session_id=self.session_id or "",
+                            enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                            skip_pre_tool_call_hook=True,
+                        )
                     _spinner_result = function_result
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
@@ -8344,13 +8353,15 @@ class AIAgent:
                         self._vprint(f"  {cute_msg}")
             else:
                 try:
-                    function_result = handle_function_call(
-                        function_name, function_args, effective_task_id,
-                        tool_call_id=tool_call.id,
-                        session_id=self.session_id or "",
-                        enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
-                        skip_pre_tool_call_hook=True,
-                    )
+                    # See _invoke_tool for rationale on the current_agent wrap.
+                    with current_agent(self):
+                        function_result = handle_function_call(
+                            function_name, function_args, effective_task_id,
+                            tool_call_id=tool_call.id,
+                            session_id=self.session_id or "",
+                            enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                            skip_pre_tool_call_hook=True,
+                        )
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
                     logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
