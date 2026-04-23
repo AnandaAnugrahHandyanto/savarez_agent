@@ -1202,12 +1202,14 @@ def _run_browser_command(
         stdout_fd = os.open(stdout_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
-            proc = subprocess.Popen(, encoding='utf-8', errors='replace'
+            proc = subprocess.Popen(
                 cmd_parts,
                 stdout=stdout_fd,
                 stderr=stderr_fd,
                 stdin=subprocess.DEVNULL,
                 env=browser_env,
+                encoding='utf-8',
+                errors='replace',
             )
         finally:
             os.close(stdout_fd)
