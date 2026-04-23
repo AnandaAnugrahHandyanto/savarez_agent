@@ -149,6 +149,100 @@ class TestAppMentionHandler:
         assert "assistant_thread_context_changed" in registered_events
         assert "/hermes" in registered_commands
 
+    def test_connect_monitors_socket_mode_task(self):
+        """connect() should watch the background Socket Mode task for failures."""
+        config = PlatformConfig(enabled=True, token="xoxb-fake")
+        adapter = SlackAdapter(config)
+
+        mock_app = MagicMock()
+        mock_app.event.return_value = lambda fn: fn
+        mock_app.command.return_value = lambda fn: fn
+        mock_app.action.return_value = lambda fn: fn
+
+        mock_web_client = AsyncMock()
+        mock_web_client.auth_test = AsyncMock(return_value={
+            "user_id": "U_BOT",
+            "user": "testbot",
+            "team_id": "T_FAKE",
+            "team": "FakeTeam",
+        })
+        mock_task = MagicMock()
+
+        with patch.object(_slack_mod, "AsyncApp", return_value=mock_app), \
+             patch.object(_slack_mod, "AsyncWebClient", return_value=mock_web_client), \
+             patch.object(_slack_mod, "AsyncSocketModeHandler", return_value=MagicMock()), \
+             patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}), \
+             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
+             patch("asyncio.create_task", return_value=mock_task):
+            assert asyncio.run(adapter.connect()) is True
+
+        mock_task.add_done_callback.assert_called_once_with(
+            adapter._handle_socket_mode_task_done
+        )
+
+    @pytest.mark.asyncio
+    async def test_socket_mode_task_failure_marks_retryable_fatal(self):
+        """A dead Socket Mode task should trigger the gateway fatal/reconnect path."""
+        config = PlatformConfig(enabled=True, token="xoxb-fake")
+        adapter = SlackAdapter(config)
+        fatal_handler = AsyncMock()
+        adapter.set_fatal_error_handler(fatal_handler)
+        adapter._running = True
+
+        async def fail_socket_mode():
+            raise RuntimeError("socket died")
+
+        task = asyncio.create_task(fail_socket_mode())
+        await asyncio.sleep(0)
+        adapter._handle_socket_mode_task_done(task)
+        await asyncio.sleep(0)
+
+        assert adapter.has_fatal_error is True
+        assert adapter.fatal_error_code == "slack_socket_mode_task_exit"
+        assert adapter.fatal_error_retryable is True
+        assert "socket died" in adapter.fatal_error_message
+        fatal_handler.assert_awaited_once_with(adapter)
+
+    @pytest.mark.asyncio
+    async def test_socket_mode_task_completion_marks_retryable_fatal(self):
+        """Normal task completion is unexpected while Slack is marked running."""
+        config = PlatformConfig(enabled=True, token="xoxb-fake")
+        adapter = SlackAdapter(config)
+        fatal_handler = AsyncMock()
+        adapter.set_fatal_error_handler(fatal_handler)
+        adapter._running = True
+
+        async def finish_socket_mode():
+            return None
+
+        task = asyncio.create_task(finish_socket_mode())
+        await asyncio.sleep(0)
+        adapter._handle_socket_mode_task_done(task)
+        await asyncio.sleep(0)
+
+        assert adapter.fatal_error_code == "slack_socket_mode_task_exit"
+        assert "exited unexpectedly" in adapter.fatal_error_message
+        fatal_handler.assert_awaited_once_with(adapter)
+
+    @pytest.mark.asyncio
+    async def test_socket_mode_task_done_ignored_after_disconnect(self):
+        """disconnect() flips running false before task callbacks can fire."""
+        config = PlatformConfig(enabled=True, token="xoxb-fake")
+        adapter = SlackAdapter(config)
+        fatal_handler = AsyncMock()
+        adapter.set_fatal_error_handler(fatal_handler)
+        adapter._running = False
+
+        async def finish_socket_mode():
+            return None
+
+        task = asyncio.create_task(finish_socket_mode())
+        await asyncio.sleep(0)
+        adapter._handle_socket_mode_task_done(task)
+
+        assert adapter.has_fatal_error is False
+        fatal_handler.assert_not_awaited()
+
 
 class TestSlackConnectCleanup:
     """Regression coverage for failed connect() cleanup."""

@@ -225,6 +225,7 @@ class SlackAdapter(BasePlatformAdapter):
             # Start Socket Mode handler in background
             self._handler = AsyncSocketModeHandler(self._app, app_token)
             self._socket_mode_task = asyncio.create_task(self._handler.start_async())
+            self._socket_mode_task.add_done_callback(self._handle_socket_mode_task_done)
 
             self._running = True
             logger.info(
@@ -240,14 +241,42 @@ class SlackAdapter(BasePlatformAdapter):
             if lock_acquired and not self._running:
                 self._release_platform_lock()
 
+    def _handle_socket_mode_task_done(self, task: asyncio.Task) -> None:
+        """Promote unexpected Socket Mode task exits into gateway fatal state."""
+        if not self._running:
+            return
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            return
+
+        if exc is None:
+            message = "Slack Socket Mode task exited unexpectedly"
+        else:
+            message = f"Slack Socket Mode task failed: {type(exc).__name__}: {exc}"
+        logger.error("[Slack] %s", message, exc_info=exc)
+        self._set_fatal_error("slack_socket_mode_task_exit", message, retryable=True)
+        try:
+            asyncio.create_task(self._notify_fatal_error())
+        except RuntimeError:
+            logger.debug("[Slack] Could not schedule fatal-error notification", exc_info=True)
+
     async def disconnect(self) -> None:
         """Disconnect from Slack."""
+        self._running = False
         if self._handler:
             try:
                 await self._handler.close_async()
             except Exception as e:  # pragma: no cover - defensive logging
                 logger.warning("[Slack] Error while closing Socket Mode handler: %s", e, exc_info=True)
-        self._running = False
+
+        if self._socket_mode_task and not self._socket_mode_task.done():
+            self._socket_mode_task.cancel()
+            try:
+                await self._socket_mode_task
+            except asyncio.CancelledError:
+                pass
+        self._socket_mode_task = None
 
         self._release_platform_lock()
 
