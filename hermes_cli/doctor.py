@@ -30,7 +30,6 @@ load_dotenv(PROJECT_ROOT / ".env", override=False, encoding="utf-8")
 
 from hermes_cli.colors import Colors, color
 from hermes_constants import OPENROUTER_MODELS_URL
-from utils import base_url_host_matches
 
 
 _PROVIDER_ENV_HINTS = (
@@ -114,6 +113,40 @@ def _apply_doctor_tool_availability_overrides(available: list[str], unavailable:
             continue
         updated_unavailable.append(item)
     return updated_available, updated_unavailable
+
+
+def _get_delegation_readiness_diagnosis() -> dict:
+    """Return a delegation readiness diagnosis for the doctor command."""
+    try:
+        from tools.delegate_tool import get_delegate_readiness_status
+        return get_delegate_readiness_status()
+    except Exception as exc:
+        return {
+            "available": False,
+            "reason": f"could not inspect delegation readiness: {exc}",
+            "fix": "Check tools.delegate_tool import health and delegation config.",
+        }
+
+
+
+def _print_delegation_readiness_section(issues: list[str]) -> None:
+    """Surface one canonical delegation readiness call + fix path."""
+    diagnosis = _get_delegation_readiness_diagnosis()
+
+    print()
+    print(color("◆ Delegation Readiness", Colors.CYAN, Colors.BOLD))
+
+    reason = str(diagnosis.get("reason") or "").strip()
+    fix = str(diagnosis.get("fix") or "").strip()
+    if diagnosis.get("available"):
+        check_ok("Delegation ready", f"({reason})" if reason else "")
+        return
+
+    check_warn("Delegation blocked", f"({reason})" if reason else "")
+    if fix:
+        check_info(fix)
+        issues.append(f"Delegation readiness: {fix}")
+
 
 
 def check_ok(text: str, detail: str = ""):
@@ -912,7 +945,6 @@ def run_doctor(args):
     _apikey_providers = [
         ("Z.AI / GLM",      ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), "https://api.z.ai/api/paas/v4/models", "GLM_BASE_URL", True),
         ("Kimi / Moonshot",  ("KIMI_API_KEY",),                              "https://api.moonshot.ai/v1/models",   "KIMI_BASE_URL", True),
-        ("StepFun Step Plan",   ("STEPFUN_API_KEY",),                           "https://api.stepfun.ai/step_plan/v1/models", "STEPFUN_BASE_URL", True),
         ("Kimi / Moonshot (China)", ("KIMI_CN_API_KEY",),                    "https://api.moonshot.cn/v1/models",   None, True),
         ("Arcee AI",         ("ARCEEAI_API_KEY",),                            "https://api.arcee.ai/api/v1/models",  "ARCEE_BASE_URL", True),
         ("DeepSeek",         ("DEEPSEEK_API_KEY",),                           "https://api.deepseek.com/v1/models",  "DEEPSEEK_BASE_URL", True),
@@ -944,22 +976,18 @@ def run_doctor(args):
             try:
                 import httpx
                 _base = os.getenv(_base_env, "") if _base_env else ""
-                # Auto-detect Kimi Code keys (sk-kimi-) → api.kimi.com/coding/v1
-                # (OpenAI-compat surface, which exposes /models for health check).
+                # Auto-detect Kimi Code keys (sk-kimi-) → api.kimi.com
                 if not _base and _key.startswith("sk-kimi-"):
                     _base = "https://api.kimi.com/coding/v1"
-                # Anthropic-compat endpoints (/anthropic, api.kimi.com/coding
-                # with no /v1) don't support /models.  Rewrite to the OpenAI-compat
-                # /v1 surface for health checks.
+                # Anthropic-compat endpoints (/anthropic) don't support /models.
+                # Rewrite to the OpenAI-compat /v1 surface for health checks.
                 if _base and _base.rstrip("/").endswith("/anthropic"):
                     from agent.auxiliary_client import _to_openai_base_url
                     _base = _to_openai_base_url(_base)
-                if base_url_host_matches(_base, "api.kimi.com") and _base.rstrip("/").endswith("/coding"):
-                    _base = _base.rstrip("/") + "/v1"
                 _url = (_base.rstrip("/") + "/models") if _base else _default_url
                 _headers = {"Authorization": f"Bearer {_key}"}
-                if base_url_host_matches(_base, "api.kimi.com"):
-                    _headers["User-Agent"] = "claude-code/0.1.0"
+                if "api.kimi.com" in _url.lower():
+                    _headers["User-Agent"] = "KimiCLI/1.30.0"
                 _resp = httpx.get(
                     _url,
                     headers=_headers,
@@ -1054,6 +1082,8 @@ def run_doctor(args):
             issues.append("Run 'hermes setup' to configure missing API keys for full tool access")
     except Exception as e:
         check_warn("Could not check tool availability", f"({e})")
+
+    _print_delegation_readiness_section(issues)
     
     # =========================================================================
     # Check: Skills Hub

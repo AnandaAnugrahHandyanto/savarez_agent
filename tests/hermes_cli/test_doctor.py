@@ -74,6 +74,45 @@ class TestDoctorToolAvailabilityOverrides:
         assert unavailable == [honcho_entry]
 
 
+class TestDoctorDelegationReadiness:
+    def test_reports_ready_status(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            doctor,
+            "_get_delegation_readiness_diagnosis",
+            lambda: {"available": True, "reason": "override resolves successfully via openrouter", "fix": ""},
+        )
+
+        issues = []
+        doctor._print_delegation_readiness_section(issues)
+        out = capsys.readouterr().out
+
+        assert "Delegation Readiness" in out
+        assert "Delegation ready" in out
+        assert issues == []
+
+    def test_reports_blocked_status_with_fix(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            doctor,
+            "_get_delegation_readiness_diagnosis",
+            lambda: {
+                "available": False,
+                "reason": "Delegation provider 'minimax' resolved but has no API key.",
+                "fix": "Set a working delegation.provider or delegation.base_url/api_key, or clear the override to inherit the parent runtime.",
+            },
+        )
+
+        issues = []
+        doctor._print_delegation_readiness_section(issues)
+        out = capsys.readouterr().out
+
+        assert "Delegation Readiness" in out
+        assert "Delegation blocked" in out
+        assert "no API key" in out
+        assert issues == [
+            "Delegation readiness: Set a working delegation.provider or delegation.base_url/api_key, or clear the override to inherit the parent runtime."
+        ]
+
+
 class TestHonchoDoctorConfigDetection:
     def test_reports_configured_when_enabled_with_api_key(self, monkeypatch):
         fake_config = SimpleNamespace(enabled=True, api_key="***")

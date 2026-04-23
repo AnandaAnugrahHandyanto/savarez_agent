@@ -1061,7 +1061,11 @@ def _run_single_child(
     _stale_count = [0]
 
     def _heartbeat_loop():
-        while not _heartbeat_stop.wait(_HEARTBEAT_INTERVAL):
+        first_tick = True
+        while True:
+            if not first_tick and _heartbeat_stop.wait(_HEARTBEAT_INTERVAL):
+                break
+            first_tick = False
             if parent_agent is None:
                 continue
             touch = getattr(parent_agent, "_touch_activity", None)
@@ -1893,6 +1897,18 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
     if configured_base_url:
         api_key = configured_api_key or os.getenv("OPENAI_API_KEY", "").strip()
+        runtime = None
+        if not api_key and configured_provider:
+            try:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+
+                runtime = resolve_runtime_provider(requested=configured_provider)
+                api_key = str(runtime.get("api_key") or "").strip()
+            except Exception as exc:
+                raise ValueError(
+                    f"Delegation base_url is configured but provider '{configured_provider}' could not resolve credentials: {exc}. "
+                    "Set delegation.api_key, fix delegation.provider config, or set OPENAI_API_KEY."
+                ) from exc
         if not api_key:
             raise ValueError(
                 "Delegation base_url is configured but no API key was found. "
@@ -1900,8 +1916,8 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             )
 
         base_lower = configured_base_url.lower()
-        provider = "custom"
-        api_mode = "chat_completions"
+        provider = (runtime or {}).get("provider") or (configured_provider if runtime else None) or "custom"
+        api_mode = str((runtime or {}).get("api_mode") or "").strip() or "chat_completions"
         if (
             base_url_hostname(configured_base_url) == "chatgpt.com"
             and "/backend-api/codex" in base_lower
@@ -1912,7 +1928,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             provider = "anthropic"
             api_mode = "anthropic_messages"
         elif "api.kimi.com/coding" in base_lower:
-            provider = "custom"
+            provider = configured_provider or "custom"
             api_mode = "anthropic_messages"
 
         return {
