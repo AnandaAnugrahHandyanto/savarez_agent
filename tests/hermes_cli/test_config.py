@@ -482,7 +482,7 @@ class TestCustomProviderCompatibility:
                     "providers": {
                         "openai-direct": {
                             "api": "https://api.openai.com/v1",
-                            "api_key": "test-key",
+                            "api_key": "***",
                             "default_model": "gpt-5-mini",
                             "name": "OpenAI Direct",
                             "transport": "codex_responses",
@@ -501,6 +501,38 @@ class TestCustomProviderCompatibility:
         assert compatible[0]["base_url"] == "https://api.openai.com/v1"
         assert compatible[0]["provider_key"] == "openai-direct"
         assert compatible[0]["api_mode"] == "codex_responses"
+
+    def test_providers_dict_expands_env_placeholders_before_url_validation(self, tmp_path):
+        """Runtime compat view should accept env-backed provider URLs from providers dict."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 17,
+                    "providers": {
+                        "provider-a": {
+                            "name": "Provider A",
+                            "base_url": "${PROVIDER_A_BASE_URL}",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(tmp_path), "PROVIDER_A_BASE_URL": "https://provider-a.example.com/v1"},
+        ):
+            compatible = get_compatible_custom_providers()
+
+        assert compatible == [
+            {
+                "name": "Provider A",
+                "base_url": "https://provider-a.example.com/v1",
+                "provider_key": "provider-a",
+            }
+        ]
 
     def test_compatible_custom_providers_prefers_base_url_then_url_then_api(self, tmp_path):
         """URL field precedence is base_url > url > api (PR #9332)."""

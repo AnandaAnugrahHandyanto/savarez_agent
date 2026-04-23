@@ -2004,7 +2004,7 @@ def _normalize_custom_provider_entry(
     for url_key in ("base_url", "url", "api"):
         raw_url = entry.get(url_key)
         if isinstance(raw_url, str) and raw_url.strip():
-            candidate = raw_url.strip()
+            candidate = str(_expand_env_vars(raw_url)).strip()
             parsed = urlparse(candidate)
             if parsed.scheme and parsed.netloc:
                 base_url = candidate

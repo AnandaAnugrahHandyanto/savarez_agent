@@ -72,11 +72,24 @@ class TestNormalizeCustomProviderEntry:
         entry = {
             "base_url": "https://correct.example.com/v1",
             "api": "https://wrong.example.com/v1",
-            "api_key": "sk-test-key",
+            "api_key": "***",
         }
         result = _normalize_custom_provider_entry(entry, provider_key="test")
         assert result is not None
         assert result["base_url"] == "https://correct.example.com/v1"
+
+    def test_expands_env_placeholders_before_validating_base_url(self, monkeypatch):
+        """base_url placeholders should be expanded before URL validation."""
+        monkeypatch.setenv("PROVIDER_A_BASE_URL", "https://provider-a.example.com/v1")
+        entry = {
+            "base_url": "${PROVIDER_A_BASE_URL}",
+            "api_key": "***",
+        }
+
+        result = _normalize_custom_provider_entry(entry, provider_key="provider-a")
+
+        assert result is not None
+        assert result["base_url"] == "https://provider-a.example.com/v1"
 
     def test_unknown_keys_logged(self, caplog):
         """Unknown config keys should produce a warning."""
