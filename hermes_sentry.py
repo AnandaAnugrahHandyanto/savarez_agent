@@ -214,7 +214,7 @@ def start_transaction(
 
     When *trace_parent* (a ``sentry-trace`` header value) is provided, the
     transaction is created as a child of the remote trace — enabling
-    distributed trace linking across subprocess boundaries.
+    distributed trace linking across peer-query subprocess boundaries.
 
     Usage::
 

@@ -7741,12 +7741,12 @@ class HermesCLI:
                 if _agent_name:
                     _txn_tags["agent_name"] = _agent_name
                 # Distributed trace continuation — when this process was
-                # spawned as a child, pick up the parent trace so the
-                # child's work nests under the caller's Sentry trace.
+                # spawned by a peer sidecar, pick up the parent trace so
+                # Agent B's work nests under Agent A's Sentry trace.
                 _trace_parent = os.environ.pop("SENTRY_TRACE_PARENT", "") or ""
                 _trace_baggage = os.environ.pop("SENTRY_BAGGAGE", "") or ""
                 if _trace_parent:
-                    _txn_tags["trace_origin"] = "child-continuation"
+                    _txn_tags["trace_origin"] = "peer-continuation"
                 with _sentry_txn(
                     op="hermes.chat",
                     name=_msg_preview.replace("\n", " "),
