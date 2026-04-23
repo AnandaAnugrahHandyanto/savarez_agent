@@ -7,7 +7,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
 import { AlertCircle, Copy, RefreshCw, Send, Square } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 type MessageRole = "user" | "assistant" | "system";
 
@@ -58,6 +58,7 @@ export default function ChatPage() {
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const resumeId = searchParams.get("resume") ?? "";
 
@@ -90,7 +91,7 @@ export default function ChatPage() {
 
   const pushSystem = useCallback((text: string) => pushMessage("system", text), [pushMessage]);
 
-  const bootstrap = useCallback(async () => {
+  const bootstrap = useCallback(async (opts?: { fresh?: boolean }) => {
     const seq = ++bootstrapSeqRef.current;
     setEntries([]);
     setSessionId("");
@@ -176,7 +177,7 @@ export default function ChatPage() {
     try {
       await gw.connect();
       if (!isCurrent()) return;
-      if (resumeId) {
+      if (resumeId && !opts?.fresh) {
         const resp = await gw.request<SessionResumeResponse>("session.resume", { session_id: resumeId, cols: 100 });
         if (!isCurrent()) return;
         setSessionId(resp.session_id);
@@ -192,6 +193,11 @@ export default function ChatPage() {
       setConnectError(err instanceof Error ? err.message : String(err));
     }
   }, [pushMessage, pushSystem, resumeId, updateStreamingAssistant]);
+
+  const startNewSession = useCallback(() => {
+    if (resumeId) navigate("/chat", { replace: true });
+    void bootstrap({ fresh: true });
+  }, [bootstrap, navigate, resumeId]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -264,8 +270,8 @@ export default function ChatPage() {
               <Copy className="h-3.5 w-3.5" /> {sessionId}
             </button>
           )}
-          <Button onClick={bootstrap} variant="outline" size="sm">
-            <RefreshCw className="h-3.5 w-3.5" /> Reset
+          <Button onClick={startNewSession} variant="outline" size="sm">
+            <RefreshCw className="h-3.5 w-3.5" /> New session
           </Button>
           {busy && (
             <Button onClick={interrupt} variant="outline" size="sm">

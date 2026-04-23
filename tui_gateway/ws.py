@@ -85,7 +85,8 @@ async def handle_ws(ws: Any) -> None:
         while True:
             try:
                 raw = await ws.receive_text()
-            except _WebSocketDisconnect:
+            except (_WebSocketDisconnect, RuntimeError) as exc:
+                _log.debug("ws receive loop ended: %s", exc)
                 break
 
             line = raw.strip()
