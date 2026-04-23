@@ -36,10 +36,12 @@ docker run -d \
   --restart unless-stopped \
   -v ~/.hermes:/opt/data \
   -p 8642:8642 \
+  -e API_SERVER_KEY="$(openssl rand -hex 32)" \
   nousresearch/hermes-agent gateway run
 ```
 
 Port 8642 exposes the gateway's [OpenAI-compatible API server](./api-server.md) and health endpoint. It's optional if you only use chat platforms (Telegram, Discord, etc.), but required if you want the dashboard or external tools to reach the gateway.
+When `API_SERVER_KEY` is set, the containerized API server binds to `0.0.0.0` by default so the published port is reachable from the host. Set `API_SERVER_HOST` explicitly if you want a different bind address.
 
 Opening any port on an internet facing machine is a security risk. You should not do it unless you understand the risks.
 

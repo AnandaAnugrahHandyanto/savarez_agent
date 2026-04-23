@@ -46,17 +46,34 @@ from gateway.platforms.base import (
     SendResult,
     is_network_accessible,
 )
+from hermes_constants import is_container
 
 logger = logging.getLogger(__name__)
 
 # Default settings
 DEFAULT_HOST = "127.0.0.1"
+CONTAINER_DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 1_000_000  # 1 MB default limit for POST bodies
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+
+
+def _resolve_default_host(explicit_host: Any, *, api_key: str) -> str:
+    """Choose the API server bind host when the user did not set one.
+
+    In Docker/Podman, a loopback-only bind makes ``-p 8642:8642`` appear
+    broken from the host. When an API key is configured, default to a
+    container-friendly bind so the mapped port is actually reachable.
+    """
+    host = str(explicit_host or "").strip()
+    if host:
+        return host
+    if api_key and is_container():
+        return CONTAINER_DEFAULT_HOST
+    return DEFAULT_HOST
 
 
 def _normalize_chat_content(
@@ -569,9 +586,12 @@ class APIServerAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.API_SERVER)
         extra = config.extra or {}
-        self._host: str = extra.get("host", os.getenv("API_SERVER_HOST", DEFAULT_HOST))
-        self._port: int = int(extra.get("port", os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))))
         self._api_key: str = extra.get("key", os.getenv("API_SERVER_KEY", ""))
+        self._host: str = _resolve_default_host(
+            extra.get("host", os.getenv("API_SERVER_HOST", "")),
+            api_key=self._api_key,
+        )
+        self._port: int = int(extra.get("port", os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))))
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")),
         )

@@ -282,7 +282,7 @@ The default bind address (`127.0.0.1`) is for local-only use. Browser access is 
 |----------|---------|-------------|
 | `API_SERVER_ENABLED` | `false` | Enable the API server |
 | `API_SERVER_PORT` | `8642` | HTTP server port |
-| `API_SERVER_HOST` | `127.0.0.1` | Bind address (localhost only by default) |
+| `API_SERVER_HOST` | `127.0.0.1` | Bind address (localhost only by default; inside Docker/Podman with `API_SERVER_KEY`, defaults to `0.0.0.0` so published ports work) |
 | `API_SERVER_KEY` | _(none)_ | Bearer token for auth |
 | `API_SERVER_CORS_ORIGINS` | _(none)_ | Comma-separated allowed browser origins |
 | `API_SERVER_MODEL_NAME` | _(profile name)_ | Model name on `/v1/models`. Defaults to profile name, or `hermes-agent` for default profile. |

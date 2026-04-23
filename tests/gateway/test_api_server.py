@@ -240,6 +240,18 @@ class TestAdapterInit:
             "http://127.0.0.1:3000",
         )
 
+    def test_container_with_key_defaults_to_network_bind(self):
+        config = PlatformConfig(enabled=True, extra={"key": "sk-test"})
+        with patch("gateway.platforms.api_server.is_container", return_value=True):
+            adapter = APIServerAdapter(config)
+        assert adapter._host == "0.0.0.0"
+
+    def test_container_without_key_keeps_loopback_default(self):
+        config = PlatformConfig(enabled=True)
+        with patch("gateway.platforms.api_server.is_container", return_value=True):
+            adapter = APIServerAdapter(config)
+        assert adapter._host == "127.0.0.1"
+
 
 # ---------------------------------------------------------------------------
 # Auth checking
