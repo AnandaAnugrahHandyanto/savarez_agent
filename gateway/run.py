@@ -11103,11 +11103,32 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     try:
         write_pid_file()
     except FileExistsError:
-        release_gateway_runtime_lock()
-        logger.error(
-            "PID file race lost to another gateway instance. Exiting."
+        # The PID file already exists.  This can happen when a previous
+        # gateway instance was killed (SIGKILL / OOM / crash) before its
+        # atexit handler could clean up the file.  Before giving up, check
+        # whether the recorded PID is still alive.  If the process is gone,
+        # remove the stale file and retry once.
+        stale_pid = get_running_pid(cleanup_stale=True)
+        if stale_pid is not None:
+            # A live gateway really is running — genuine race.
+            release_gateway_runtime_lock()
+            logger.error(
+                "PID file race lost to another gateway instance (PID %d). Exiting.",
+                stale_pid,
+            )
+            return False
+        # get_running_pid(cleanup_stale=True) removed the stale file; retry.
+        logger.info(
+            "Removed stale PID file left by a crashed gateway. Retrying."
         )
-        return False
+        try:
+            write_pid_file()
+        except FileExistsError:
+            release_gateway_runtime_lock()
+            logger.error(
+                "PID file race lost to another gateway instance. Exiting."
+            )
+            return False
     atexit.register(remove_pid_file)
     atexit.register(release_gateway_runtime_lock)
 
