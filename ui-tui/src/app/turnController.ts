@@ -57,6 +57,11 @@ class TurnController {
   private reasoningTimer: Timer = null
   private streamTimer: Timer = null
   private toolProgressTimer: Timer = null
+  private subagentTimer: Timer = null
+  private pendingSubagentUpdates: Map<string, {
+    patch: (current: SubagentProgress) => Partial<SubagentProgress>
+    payload: SubagentEventPayload
+  }> = new Map()
 
   clearReasoning() {
     this.reasoningTimer = clear(this.reasoningTimer)
@@ -78,6 +83,8 @@ class TurnController {
     this.endReasoningPhase()
     this.activeTools = []
     this.streamTimer = clear(this.streamTimer)
+    this.subagentTimer = clear(this.subagentTimer)
+    this.pendingSubagentUpdates.clear()
     this.bufRef = ''
     this.pendingInlineDiffs = []
     this.pendingSegmentTools = []
@@ -402,6 +409,8 @@ class TurnController {
   reset() {
     this.clearReasoning()
     this.clearStatusTimer()
+    this.subagentTimer = clear(this.subagentTimer)
+    this.pendingSubagentUpdates.clear()
     this.idle()
     this.bufRef = ''
     this.interrupted = false
@@ -470,17 +479,64 @@ class TurnController {
     // for older gateways that omit the field — those produce a flat list.
     const id = p.subagent_id || `sa:${p.task_index}:${p.goal || 'subagent'}`
 
-    patchTurnState(state => {
-      const existing = state.subagents.find(item => item.id === id)
+    // Always create immediately if missing so the record is tracked, but
+    // defer updates to already-known subagents to avoid event-loop churn.
+    const exists = getTurnState().subagents.some(item => item.id === id)
 
-      // Late events (subagent.complete/tool/progress arriving after message.complete
-      // has already fired idle()) would otherwise resurrect a finished
-      // subagent into turn.subagents and block the "finished" title on the
-      // /agents overlay.  When `createIfMissing` is false we drop silently.
-      if (!existing && !opts.createIfMissing) {
-        return state
+    if (!exists && !opts.createIfMissing) {
+      return
+    }
+
+    if (!exists) {
+      this.applySubagentUpdate(id, p, patch)
+    } else {
+      this.pendingSubagentUpdates.set(id, { patch, payload: p })
+
+      if (this.subagentTimer) {
+        return
       }
 
+      this.subagentTimer = setTimeout(() => {
+        this.subagentTimer = null
+        this.flushSubagentUpdates()
+      }, STREAM_BATCH_MS)
+    }
+  }
+
+  private flushSubagentUpdates() {
+    const updates = Array.from(this.pendingSubagentUpdates.entries())
+
+    this.pendingSubagentUpdates.clear()
+
+    patchTurnState(state => {
+      let subagents = [...state.subagents]
+      let changed = false
+
+      for (const [id, { patch, payload: p }] of updates) {
+        const index = subagents.findIndex(item => item.id === id)
+
+        if (index < 0) {
+          continue
+        }
+
+        const base = subagents[index]!
+        const next = this.buildSubagentNext(base, p, patch)
+
+        subagents[index] = next
+        changed = true
+      }
+
+      return changed ? { ...state, subagents } : state
+    })
+  }
+
+  private applySubagentUpdate(
+    id: string,
+    p: SubagentEventPayload,
+    patch: (current: SubagentProgress) => Partial<SubagentProgress>
+  ) {
+    patchTurnState(state => {
+      const existing = state.subagents.find(item => item.id === id)
       const base: SubagentProgress = existing ?? {
         depth: p.depth ?? 0,
         goal: p.goal,
@@ -498,47 +554,53 @@ class TurnController {
         toolsets: p.toolsets
       }
 
-      // Map snake_case payload keys onto camelCase state.  Only overwrite
-      // when the event actually carries the field; `??` preserves prior
-      // values across streaming events that emit partial payloads.
-      const outputTail = p.output_tail
-        ? p.output_tail.map(e => ({
-            isError: Boolean(e.is_error),
-            preview: String(e.preview ?? ''),
-            tool: String(e.tool ?? 'tool')
-          }))
-        : base.outputTail
-
-      const next: SubagentProgress = {
-        ...base,
-        apiCalls: p.api_calls ?? base.apiCalls,
-        costUsd: p.cost_usd ?? base.costUsd,
-        depth: p.depth ?? base.depth,
-        filesRead: p.files_read ?? base.filesRead,
-        filesWritten: p.files_written ?? base.filesWritten,
-        goal: p.goal || base.goal,
-        inputTokens: p.input_tokens ?? base.inputTokens,
-        iteration: p.iteration ?? base.iteration,
-        model: p.model ?? base.model,
-        outputTail,
-        outputTokens: p.output_tokens ?? base.outputTokens,
-        parentId: p.parent_id ?? base.parentId,
-        reasoningTokens: p.reasoning_tokens ?? base.reasoningTokens,
-        taskCount: p.task_count ?? base.taskCount,
-        toolCount: p.tool_count ?? base.toolCount,
-        toolsets: p.toolsets ?? base.toolsets,
-        ...patch(base)
-      }
+      const next = this.buildSubagentNext(base, p, patch)
 
       // Stable order: by spawn (depth, parent, index) rather than insert time.
-      // Without it, grandchildren can shuffle relative to siblings when
-      // events arrive out of order under high concurrency.
       const subagents = existing
         ? state.subagents.map(item => (item.id === id ? next : item))
         : [...state.subagents, next].sort((a, b) => a.depth - b.depth || a.index - b.index)
 
       return { ...state, subagents }
     })
+  }
+
+  private buildSubagentNext(
+    base: SubagentProgress,
+    p: SubagentEventPayload,
+    patch: (current: SubagentProgress) => Partial<SubagentProgress>
+  ): SubagentProgress {
+    // Map snake_case payload keys onto camelCase state.  Only overwrite
+    // when the event actually carries the field; `??` preserves prior
+    // values across streaming events that emit partial payloads.
+    const outputTail = p.output_tail
+      ? p.output_tail.map(e => ({
+          isError: Boolean(e.is_error),
+          preview: String(e.preview ?? ''),
+          tool: String(e.tool ?? 'tool')
+        }))
+      : base.outputTail
+
+    return {
+      ...base,
+      apiCalls: p.api_calls ?? base.apiCalls,
+      costUsd: p.cost_usd ?? base.costUsd,
+      depth: p.depth ?? base.depth,
+      filesRead: p.files_read ?? base.filesRead,
+      filesWritten: p.files_written ?? base.filesWritten,
+      goal: p.goal || base.goal,
+      inputTokens: p.input_tokens ?? base.inputTokens,
+      iteration: p.iteration ?? base.iteration,
+      model: p.model ?? base.model,
+      outputTail,
+      outputTokens: p.output_tokens ?? base.outputTokens,
+      parentId: p.parent_id ?? base.parentId,
+      reasoningTokens: p.reasoning_tokens ?? base.reasoningTokens,
+      taskCount: p.task_count ?? base.taskCount,
+      toolCount: p.tool_count ?? base.toolCount,
+      toolsets: p.toolsets ?? base.toolsets,
+      ...patch(base)
+    }
   }
 }
 
