@@ -1,7 +1,7 @@
 ---
 name: gitlab-code-review
-description: Review code changes on GitLab Merge Requests by analyzing diffs, leaving inline comments, and performing thorough pre-merge review. Uses the gitlab-review plugin tools for native API integration.
-version: 1.0.0
+description: Review code changes on GitLab Merge Requests by analyzing diffs, leaving inline comments, and performing thorough pre-merge review. Uses the gitlab-review plugin tools for native API integration with buffered review submission.
+version: 2.0.0
 author: Hermes Agent
 license: MIT
 metadata:
@@ -12,7 +12,7 @@ metadata:
 
 # GitLab Merge Request Code Review
 
-Perform code reviews on GitLab Merge Requests using native API tools. The `gitlab-review` plugin provides first-class tools for viewing MRs, reading diffs, posting inline comments, and submitting formal reviews.
+Perform code reviews on GitLab Merge Requests using native API tools. The `gitlab-review` plugin provides tools for viewing MRs, reading diffs, posting comments, and submitting reviews. **Comments are buffered** and submitted all at once so the reviewer sees the complete review in one shot, with the summary at the top.
 
 ## Prerequisites
 
@@ -34,15 +34,19 @@ fi
 
 ## 1. Reviewing a Merge Request
 
-### Step 1: Get MR Metadata
+### Step 1: Get MR Metadata + Diff
 
-Use the `gitlab_mr_view` tool to understand the MR scope:
+Use `gitlab_mr_view` to understand the MR scope. By default it returns metadata, diff, and file list all in one call:
 
 ```
 gitlab_mr_view(project="group/project", mr_iid=42)
 ```
 
-This returns: title, description, author, branches, state, labels, merge status.
+For large MRs, get metadata only (lighter response):
+
+```
+gitlab_mr_view(project="group/project", mr_iid=42, include_diff=false)
+```
 
 ### Step 2: Check Existing Discussions
 
@@ -52,81 +56,79 @@ Avoid duplicating feedback already given:
 gitlab_mr_discussions(project="group/project", mr_iid=42)
 ```
 
-### Step 3: See the Scope of Changes
-
-```
-gitlab_mr_list_files(project="group/project", mr_iid=42)
-```
-
-This lists all changed files — use it to prioritize which files need the most attention.
-
-### Step 4: Read the Full Diff
-
-```
-gitlab_mr_diff(project="group/project", mr_iid=42)
-```
-
-For large MRs, review the diff file by file. Use the `read_file` tool on individual files for full context around the changes.
-
-### Step 5: Check CI/CD Pipeline Status
+### Step 3: Check CI/CD Pipeline Status
 
 ```
 gitlab_mr_pipelines(project="group/project", mr_iid=42)
 ```
 
-If pipelines are failing, investigate:
+### Step 4: Start a Buffered Review Session
+
+**Always call this before posting review comments.** It opens a buffer so comments are collected instead of posted immediately:
 
 ```
-gitlab_pipeline_jobs(project="group/project", pipeline_id=12345)
+gitlab_mr_review_start(project="group/project", mr_iid=42)
 ```
 
-### Step 6: Check Related Context
+This automatically fetches the MR's diff_refs (head_sha, base_sha, start_sha) so you don't need to provide them for inline comments.
+
+### Step 5: Apply the Review Checklist
+
+Go through each category systematically (see Section 2 below). For each file, use `read_file` if you need more context around the changes.
+
+### Step 6: Post Comments (Buffered)
+
+After starting a review session, all comments are **buffered** — they won't appear on GitLab until you submit.
+
+#### General Comment
 
 ```
-gitlab_mr_context(project="group/project", mr_iid=42)
+gitlab_mr_comment(project="group/project", mr_iid=42, body="Overall the code looks clean.")
 ```
 
-This shows issues the MR closes and commits in the branch comparison.
+#### Inline Comment on a Specific Line
 
-### Step 7: Apply the Review Checklist
-
-Go through each category systematically (see Section 2 below).
-
-### Step 8: Post the Review
-
-#### General Summary Comment
+No need to provide `head_sha`/`base_sha`/`start_sha` — they're auto-resolved from the review session:
 
 ```
-gitlab_mr_comments(project="group/project", mr_iid=42, body="## Code Review Summary\n\n...")
-```
-
-#### Inline Comments on Specific Lines
-
-```
-gitlab_mr_inline_comment(
+gitlab_mr_comment(
     project="group/project",
     mr_iid=42,
     file_path="src/auth/login.py",
     line=45,
-    body="🔴 **Critical:** SQL injection — use parameterized queries.",
-    head_sha="abc123..."
+    body="🔴 **Critical:** SQL injection — use parameterized queries."
 )
 ```
 
-The `head_sha` is available from `gitlab_mr_view` output.
-
-#### Submit Formal Review
+For comments on deleted lines (old version):
 
 ```
-# Approve
-gitlab_mr_review(project="group/project", mr_iid=42, action="approve", body="LGTM!")
+gitlab_mr_comment(
+    project="group/project",
+    mr_iid=42,
+    file_path="src/auth/login.py",
+    line=30,
+    line_type="old",
+    body="This removed line was handling auth correctly — consider keeping it."
+)
+```
 
-# Request changes
-gitlab_mr_review(project="group/project", mr_iid=42, action="request_changes", body="See inline comments.")
+### Step 7: Submit the Review
+
+When done, submit all buffered comments at once. The `summary` appears **first** (at the top of the review), followed by all inline comments below:
+
+```
+# Approve with summary
+gitlab_mr_review_submit(summary="## Review Summary\n\nOverall clean implementation. Approved.", action="approve")
+
+# Request changes with summary
+gitlab_mr_review_submit(summary="## Review Summary\n\nCritical issues found that must be fixed.", action="request_changes")
 
 # Comment only (no approval change)
-gitlab_mr_review(project="group/project", mr_iid=42, action="comment", body="Some suggestions, nothing blocking.")
+gitlab_mr_review_submit(summary="## Review Summary\n\nSome suggestions, nothing blocking.", action="comment")
 ```
+
+**The summary always appears at the top on GitLab UI** — the tool enforces this ordering regardless of when you wrote the summary vs inline comments.
 
 ---
 
@@ -176,7 +178,7 @@ When performing a code review, systematically check:
 
 ## 3. Review Output Format
 
-When posting a review, use this structured format for the summary comment:
+When submitting a review, use this structured format for the summary:
 
 ```markdown
 ## Code Review Summary
@@ -204,7 +206,7 @@ When posting a review, use this structured format for the summary comment:
 *Reviewed by Hermes Agent*
 ```
 
-For the inline comment format:
+For inline comments, use these severity prefixes:
 
 - 🔴 **Critical** — Must fix before merge
 - ⚠️ **Warning** — Should fix, but not a blocker
@@ -238,16 +240,14 @@ No other configuration changes are needed — the tools use `GITLAB_URL` as the 
 
 When asked to "review MR #42" or "review the merge request":
 
-1. `gitlab_mr_view(project, mr_iid=42)` — understand scope and context
+1. `gitlab_mr_view(project, mr_iid=42)` — get metadata + diff + file list
 2. `gitlab_mr_discussions(project, mr_iid=42)` — check existing feedback
-3. `gitlab_mr_list_files(project, mr_iid=42)` — see changed files
-4. `gitlab_mr_diff(project, mr_iid=42)` — read the full diff
-5. `gitlab_mr_pipelines(project, mr_iid=42)` — check CI status
-6. For each changed file, use `read_file` if you need more context
-7. Apply the review checklist (Section 2)
-8. Post inline comments with `gitlab_mr_inline_comment` for specific issues
-9. Post summary with `gitlab_mr_comments`
-10. Submit formal review with `gitlab_mr_review` (approve / request changes / comment)
+3. `gitlab_mr_pipelines(project, mr_iid=42)` — check CI status
+4. `gitlab_mr_review_start(project, mr_iid=42)` — **start buffered review session**
+5. For each changed file, use `read_file` if you need more context
+6. Apply the review checklist (Section 2)
+7. `gitlab_mr_comment(...)` — post inline comments (buffered)
+8. `gitlab_mr_review_submit(summary="...", action="approve|request_changes|comment")` — **submit all at once (summary first)**
 
 ### Extracting project path
 
@@ -256,3 +256,17 @@ The `project` parameter accepts either:
 - A numeric project ID: `"12345"`
 
 You can find the project path from the GitLab URL: `https://gitlab.com/group/project/-/merge_requests/42` → project is `"group/project"`.
+
+---
+
+## Tool Reference
+
+| Action | Tool | Notes |
+|--------|------|-------|
+| View MR (metadata + diff + files) | `gitlab_mr_view(project, mr_iid, include_diff?)` | `include_diff=false` for metadata only |
+| Start buffered review | `gitlab_mr_review_start(project, mr_iid)` | Required before review comments |
+| Post comment (general or inline) | `gitlab_mr_comment(project, mr_iid, body, file_path?, line?)` | Add `file_path`+`line` for inline |
+| Submit review (summary first) | `gitlab_mr_review_submit(summary?, action?)` | Posts all buffered comments at once |
+| List MRs | `gitlab_mr_list(project, state?)` | Filter by state, labels, author |
+| Check pipelines | `gitlab_mr_pipelines(project, mr_iid)` | CI/CD pipeline status |
+| View discussions | `gitlab_mr_discussions(project, mr_iid)` | Existing comment threads |

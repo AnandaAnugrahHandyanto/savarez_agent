@@ -1,7 +1,7 @@
 ---
 name: gitlab-mr-workflow
 description: Full Merge Request lifecycle — create branches, commit changes, open MRs, monitor CI pipelines, auto-fix failures, and merge. Works with gitlab.com and self-hosted GitLab.
-version: 1.0.0
+version: 2.0.0
 author: Hermes Agent
 license: MIT
 metadata:
@@ -127,12 +127,6 @@ curl -s --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
   "${GITLAB_URL:-https://gitlab.com}/api/v4/projects/$(python3 -c "import urllib.parse; print(urllib.parse.quote('group/project', safe=''))")/merge_requests/42/pipelines"
 ```
 
-### Get Pipeline Job Logs
-
-```
-gitlab_pipeline_jobs(project="group/project", pipeline_id=12345)
-```
-
 ### Poll Until Complete
 
 ```bash
@@ -158,11 +152,7 @@ When CI fails, diagnose and fix:
 
 ### Step 1: Get Failure Details
 
-```
-gitlab_pipeline_jobs(project="group/project", pipeline_id=12345)
-```
-
-This returns job details and trace (log) excerpts for failed jobs.
+Check the pipeline status with `gitlab_mr_pipelines` and use the GitLab UI or API to get job logs.
 
 ### Step 2: Fix and Push
 
@@ -174,26 +164,16 @@ git commit -m "fix: resolve CI failure in <check_name>"
 git push
 ```
 
-### Step 3: Retry the Pipeline
-
-```
-gitlab_pipeline_retry(project="group/project", pipeline_id=12345)
-```
-
-### Auto-Fix Loop Pattern
-
-1. Check pipeline status → identify failures
-2. Read failure logs → understand the error
-3. Use `read_file` + `patch`/`write_file` → fix the code
-4. `git add . && git commit -m "fix: ..." && git push`
-5. Wait for pipeline → re-check status
-6. Repeat if still failing (up to 3 attempts, then ask the user)
-
 ## 6. Merging
 
-### Via Plugin Tool
+### Via Plugin Tool (Buffered Review + Approve)
 
-Use the `gitlab_mr_review` tool to approve, then accept the merge via API:
+```
+gitlab_mr_review_start(project="group/project", mr_iid=42)
+gitlab_mr_review_submit(summary="Approved: all checks pass.", action="approve")
+```
+
+Then accept the merge via API:
 
 ```bash
 PROJECT="group/project"
@@ -255,17 +235,12 @@ git push -u origin HEAD
 
 ## Useful MR Commands Reference
 
-| Action | Plugin Tool / API |
-|--------|-------------------|
-| View MR | `gitlab_mr_view(project, mr_iid)` |
-| Get diff | `gitlab_mr_diff(project, mr_iid)` |
-| List changed files | `gitlab_mr_list_files(project, mr_iid)` |
-| Post comment | `gitlab_mr_comments(project, mr_iid, body)` |
-| Post inline comment | `gitlab_mr_inline_comment(project, mr_iid, file_path, line, body, head_sha)` |
-| Submit review | `gitlab_mr_review(project, mr_iid, action, body)` |
-| List MRs | `gitlab_mr_list(project, state)` |
-| Check pipelines | `gitlab_mr_pipelines(project, mr_iid)` |
-| Get job logs | `gitlab_pipeline_jobs(project, pipeline_id)` |
-| Retry pipeline | `gitlab_pipeline_retry(project, pipeline_id)` |
-| View discussions | `gitlab_mr_discussions(project, mr_iid)` |
-| Get MR context | `gitlab_mr_context(project, mr_iid)` |
+| Action | Tool | Notes |
+|--------|------|-------|
+| View MR (metadata + diff + files) | `gitlab_mr_view(project, mr_iid, include_diff?)` | `include_diff=false` for metadata only |
+| Start buffered review | `gitlab_mr_review_start(project, mr_iid)` | Required before review comments |
+| Post comment (general or inline) | `gitlab_mr_comment(project, mr_iid, body, file_path?, line?)` | Add `file_path`+`line` for inline |
+| Submit review (summary first) | `gitlab_mr_review_submit(summary?, action?)` | Posts all buffered comments at once |
+| List MRs | `gitlab_mr_list(project, state?)` | Filter by state, labels, author |
+| Check pipelines | `gitlab_mr_pipelines(project, mr_iid)` | CI/CD pipeline status |
+| View discussions | `gitlab_mr_discussions(project, mr_iid)` | Existing comment threads |
