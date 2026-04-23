@@ -1893,7 +1893,10 @@ def get_text_auxiliary_client(
     Callers may override the returned model via config.yaml
     (e.g. auxiliary.compression.model, auxiliary.web_extract.model).
     """
-    provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None)
+    provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+        task or None,
+        main_runtime=main_runtime,
+    )
     return resolve_provider_client(
         provider,
         model=model,
@@ -1911,7 +1914,10 @@ def get_async_text_auxiliary_client(task: str = "", *, main_runtime: Optional[Di
     (AsyncCodexAuxiliaryClient, model) which wraps the Responses API.
     Returns (None, None) when no provider is available.
     """
-    provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None)
+    provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+        task or None,
+        main_runtime=main_runtime,
+    )
     return resolve_provider_client(
         provider,
         model=model,
@@ -2414,6 +2420,7 @@ def _resolve_task_provider_model(
     model: str = None,
     base_url: str = None,
     api_key: str = None,
+    main_runtime: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]:
     """Determine provider + model for a call.
 
@@ -2441,7 +2448,12 @@ def _resolve_task_provider_model(
         cfg_api_key = str(task_config.get("api_key", "")).strip() or None
         cfg_api_mode = str(task_config.get("api_mode", "")).strip() or None
 
+    runtime = _normalize_main_runtime(main_runtime)
+    runtime_model = runtime.get("model")
     resolved_model = model or cfg_model
+    requested_provider = str(provider or cfg_provider or "").strip().lower()
+    if not resolved_model and runtime_model and requested_provider == "main":
+        resolved_model = runtime_model
     resolved_api_mode = cfg_api_mode
 
     if base_url:
@@ -2702,7 +2714,7 @@ def call_llm(
         RuntimeError: If no provider is configured.
     """
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
-        task, provider, model, base_url, api_key)
+        task, provider, model, base_url, api_key, main_runtime=main_runtime)
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
 

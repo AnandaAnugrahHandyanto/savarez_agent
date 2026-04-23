@@ -21,6 +21,7 @@ from agent.auxiliary_client import (
     _is_payment_error,
     _try_payment_fallback,
     _resolve_auto,
+    _resolve_task_provider_model,
 )
 
 
@@ -449,6 +450,78 @@ class TestExplicitProviderRouting:
 
 class TestGetTextAuxiliaryClient:
     """Test the full resolution chain for get_text_auxiliary_client."""
+
+    def test_resolve_task_provider_model_uses_live_main_model_for_main_provider(self):
+        with patch("hermes_cli.config.load_config", return_value={
+            "auxiliary": {"compression": {"provider": "main", "model": ""}}
+        }):
+            provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+                "compression",
+                main_runtime={"provider": "openai-codex", "model": "gpt-5.4"},
+            )
+
+        assert provider == "main"
+        assert model == "gpt-5.4"
+        assert base_url is None
+        assert api_key is None
+        assert api_mode is None
+
+    def test_resolve_task_provider_model_prefers_explicit_task_model_override(self):
+        with patch("hermes_cli.config.load_config", return_value={
+            "auxiliary": {"compression": {"provider": "main", "model": "gpt-5.4-mini"}}
+        }):
+            provider, model, *_ = _resolve_task_provider_model(
+                "compression",
+                main_runtime={"provider": "openai-codex", "model": "gpt-5.4"},
+            )
+
+        assert provider == "main"
+        assert model == "gpt-5.4-mini"
+
+    def test_get_text_auxiliary_client_passes_main_runtime_through_resolution(self):
+        runtime = {"provider": "openai-codex", "model": "gpt-5.4"}
+        with (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("main", "gpt-5.4", None, None, None),
+            ) as mock_resolve,
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(MagicMock(), "gpt-5.4"),
+            ),
+        ):
+            get_text_auxiliary_client("compression", main_runtime=runtime)
+
+        assert mock_resolve.call_args.args[0] == "compression"
+        assert mock_resolve.call_args.kwargs["main_runtime"] == runtime
+
+    def test_call_llm_passes_main_runtime_through_resolution(self):
+        runtime = {"provider": "openai-codex", "model": "gpt-5.4"}
+        client = MagicMock()
+        client.base_url = "https://chatgpt.com/backend-api/codex"
+        client.chat.completions.create.return_value = {"ok": True}
+        with (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("main", "gpt-5.4", None, None, None),
+            ) as mock_resolve,
+            patch(
+                "agent.auxiliary_client._get_cached_client",
+                return_value=(client, "gpt-5.4"),
+            ),
+            patch(
+                "agent.auxiliary_client._validate_llm_response",
+                side_effect=lambda resp, _task: resp,
+            ),
+        ):
+            result = call_llm(
+                task="compression",
+                main_runtime=runtime,
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert result == {"ok": True}
+        assert mock_resolve.call_args.kwargs["main_runtime"] == runtime
 
     def test_codex_pool_entry_takes_priority_over_auth_store(self):
         class _Entry:
