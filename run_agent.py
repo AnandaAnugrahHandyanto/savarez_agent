@@ -35,6 +35,7 @@ import sys
 import tempfile
 import time
 import threading
+from collections import deque
 from types import SimpleNamespace
 import uuid
 from typing import List, Dict, Any, Optional
@@ -976,6 +977,7 @@ class AIAgent:
         self._delegate_depth = 0        # 0 = top-level agent, incremented for children
         self._active_children = []      # Running child AIAgents (for interrupt propagation)
         self._active_children_lock = threading.Lock()
+        self._reset_delegate_soft_guardrails()
         
         # Store OpenRouter provider preferences
         self.providers_allowed = providers_allowed
@@ -1558,6 +1560,26 @@ class AIAgent:
         compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in ("true", "1", "yes")
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
         compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
+        compression_threshold_tokens = _compression_cfg.get("threshold_tokens")
+        if compression_threshold_tokens is not None:
+            try:
+                compression_threshold_tokens = int(compression_threshold_tokens)
+                if compression_threshold_tokens <= 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Invalid compression.threshold_tokens in config.yaml: %r — "
+                    "must be a positive integer. Falling back to percentage-based threshold.",
+                    compression_threshold_tokens,
+                )
+                print(
+                    f"\n⚠ Invalid compression.threshold_tokens in config.yaml: {compression_threshold_tokens!r}\n"
+                    f"  Must be a positive integer.\n"
+                    f"  Falling back to percentage-based compression threshold.\n",
+                    file=sys.stderr,
+                )
+                compression_threshold_tokens = None
+        self._compression_threshold_tokens_config = compression_threshold_tokens
 
         # Read optional explicit context_length override for the auxiliary
         # compression model. Custom endpoints often cannot report this via
@@ -1714,6 +1736,7 @@ class AIAgent:
                 config_context_length=_config_context_length,
                 provider=self.provider,
                 api_mode=self.api_mode,
+                threshold_tokens_override=compression_threshold_tokens,
             )
         self.compression_enabled = compression_enabled
 
@@ -1802,7 +1825,16 @@ class AIAgent:
 
         if not self.quiet_mode:
             if compression_enabled:
-                print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (compress at {int(compression_threshold*100)}% = {self.context_compressor.threshold_tokens:,})")
+                if getattr(self.context_compressor, "threshold_tokens_override", None) is not None:
+                    print(
+                        f"📊 Context limit: {self.context_compressor.context_length:,} tokens "
+                        f"(compress at custom threshold {self.context_compressor.threshold_tokens:,})"
+                    )
+                else:
+                    print(
+                        f"📊 Context limit: {self.context_compressor.context_length:,} tokens "
+                        f"(compress at {int(compression_threshold*100)}% = {self.context_compressor.threshold_tokens:,})"
+                    )
             else:
                 print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (auto-compression disabled)")
 
@@ -2234,11 +2266,15 @@ class AIAgent:
                 # so the new threshold is always >= 64K.
                 old_threshold = threshold
                 new_threshold = aux_context
-                self.context_compressor.threshold_tokens = new_threshold
-                # Keep threshold_percent in sync so future main-model
-                # context_length changes (update_model) re-derive from a
-                # sensible number rather than the original too-high value.
                 main_ctx = self.context_compressor.context_length
+                _set_threshold_override = getattr(
+                    self.context_compressor,
+                    "set_threshold_tokens_override",
+                    None,
+                )
+                if callable(_set_threshold_override):
+                    _set_threshold_override(new_threshold, update_percent=True)
+                self.context_compressor.threshold_tokens = new_threshold
                 if main_ctx:
                     self.context_compressor.threshold_percent = (
                         new_threshold / main_ctx
@@ -4322,6 +4358,93 @@ class AIAgent:
             delegate_count - max_children, max_children,
         )
         return truncated
+
+    def _reset_delegate_soft_guardrails(self) -> None:
+        """Reset per-run delegate cadence state.
+
+        Soft guardrails should accumulate across rounds within one top-level
+        run_conversation() call, but not leak into the next user request.
+        """
+        self._delegate_call_timestamps = deque()
+        self._delegate_consecutive_rounds = 0
+        self._delegate_guardrail_last_notice_ts = 0.0
+
+    def _apply_delegate_soft_guardrails(self, tool_calls: list) -> list:
+        """Soft-limit repeated delegation bursts across rounds.
+
+        This is intentionally gentler than the per-turn concurrency cap:
+        - warn when delegation is becoming the dominant strategy
+        - queue a steer/checkpoint reminder for the next iteration
+        - when multiple delegate_task calls are present, keep only the first
+          one so the model must regroup before fanning out again
+
+        Non-delegate calls are preserved.
+        """
+        delegate_calls = [tc for tc in tool_calls if tc.function.name == "delegate_task"]
+        if not delegate_calls:
+            self._delegate_consecutive_rounds = 0
+            return tool_calls
+
+        timestamps = getattr(self, "_delegate_call_timestamps", None)
+        if timestamps is None:
+            timestamps = deque()
+            self._delegate_call_timestamps = timestamps
+        elif not isinstance(timestamps, deque):
+            timestamps = deque(timestamps)
+            self._delegate_call_timestamps = timestamps
+        now = time.monotonic()
+        window_seconds = 60.0
+        max_calls_per_window = 6
+        max_consecutive_rounds = 3
+        while timestamps and (now - timestamps[0]) > window_seconds:
+            timestamps.popleft()
+        for _ in delegate_calls:
+            timestamps.append(now)
+
+        self._delegate_consecutive_rounds = (
+            getattr(self, "_delegate_consecutive_rounds", 0) + 1
+        )
+        window_count = len(timestamps)
+        triggered = (
+            window_count > max_calls_per_window
+            or self._delegate_consecutive_rounds >= max_consecutive_rounds
+        )
+        if not triggered:
+            return tool_calls
+
+        notice = (
+            "Delegation soft guardrail triggered: repeated delegate_task usage "
+            f"({window_count} calls in the last {int(window_seconds)}s; "
+            f"{self._delegate_consecutive_rounds} consecutive delegate-heavy rounds). "
+            "Checkpoint now: summarize findings, decisions, and acceptance criteria; "
+            "if more delegation is still needed, prefer one broader delegate_task next turn."
+        )
+        last_notice_ts = float(getattr(self, "_delegate_guardrail_last_notice_ts", 0.0) or 0.0)
+        if now - last_notice_ts >= 5.0:
+            self._delegate_guardrail_last_notice_ts = now
+            self._emit_status(notice)
+        try:
+            self.steer(notice)
+        except Exception:
+            logger.debug("Failed to enqueue delegation guardrail steer", exc_info=True)
+
+        if len(delegate_calls) <= 1:
+            return tool_calls
+
+        trimmed = []
+        kept_delegate = False
+        for tc in tool_calls:
+            if tc.function.name != "delegate_task":
+                trimmed.append(tc)
+                continue
+            if not kept_delegate:
+                trimmed.append(tc)
+                kept_delegate = True
+        logger.warning(
+            "Soft guardrail reduced delegate_task fan-out from %d call(s) to 1 for this turn",
+            len(delegate_calls),
+        )
+        return trimmed
 
     @staticmethod
     def _deduplicate_tool_calls(tool_calls: list) -> list:
@@ -8720,6 +8843,9 @@ class AIAgent:
         
         # Reset retry counters and iteration budget at the start of each turn
         # so subagent usage from a previous turn doesn't eat into the next one.
+        # Delegate soft-guardrail cadence is also per top-level user request,
+        # not a sticky cross-request counter on a reused AIAgent instance.
+        self._reset_delegate_soft_guardrails()
         self._invalid_tool_retries = 0
         self._invalid_json_retries = 0
         self._empty_content_retries = 0
@@ -11242,6 +11368,9 @@ class AIAgent:
 
                     # ── Post-call guardrails ──────────────────────────
                     assistant_message.tool_calls = self._cap_delegate_task_calls(
+                        assistant_message.tool_calls
+                    )
+                    assistant_message.tool_calls = self._apply_delegate_soft_guardrails(
                         assistant_message.tool_calls
                     )
                     assistant_message.tool_calls = self._deduplicate_tool_calls(

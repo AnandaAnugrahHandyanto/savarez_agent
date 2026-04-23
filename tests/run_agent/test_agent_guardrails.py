@@ -7,6 +7,7 @@ Covers three static methods on AIAgent (inspired by PR #1321 — @alireza78a):
 """
 
 import types
+from unittest.mock import MagicMock
 
 from run_agent import AIAgent
 from tools.delegate_tool import _get_max_concurrent_children
@@ -166,6 +167,66 @@ class TestCapDelegateTaskCalls:
         assert len(out) == len(expected)
         for i, (actual, exp) in enumerate(zip(out, expected)):
             assert actual is exp, f"mismatch at index {i}"
+
+
+class TestDelegateSoftGuardrails:
+
+    @staticmethod
+    def _make_agent_stub():
+        agent = object.__new__(AIAgent)
+        agent._delegate_call_timestamps = []
+        agent._delegate_consecutive_rounds = 0
+        agent._delegate_guardrail_last_notice_ts = 0.0
+        agent._emit_status = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        return agent
+
+    def test_reset_delegate_soft_guardrails_clears_all_state(self):
+        agent = self._make_agent_stub()
+        agent._delegate_call_timestamps = [1.0, 2.0]
+        agent._delegate_consecutive_rounds = 5
+        agent._delegate_guardrail_last_notice_ts = 123.4
+
+        AIAgent._reset_delegate_soft_guardrails(agent)
+
+        assert list(agent._delegate_call_timestamps) == []
+        assert agent._delegate_consecutive_rounds == 0
+        assert agent._delegate_guardrail_last_notice_ts == 0.0
+
+    def test_no_delegate_calls_reset_consecutive_counter(self):
+        agent = self._make_agent_stub()
+        agent._delegate_consecutive_rounds = 4
+        tcs = [make_tc("terminal"), make_tc("web_search")]
+        out = agent._apply_delegate_soft_guardrails(tcs)
+        assert out is tcs
+        assert agent._delegate_consecutive_rounds == 0
+        agent._emit_status.assert_not_called()
+        agent.steer.assert_not_called()
+
+    def test_triggered_by_consecutive_rounds_keeps_one_delegate(self):
+        agent = self._make_agent_stub()
+        agent._delegate_call_timestamps = [0.0, 0.0]
+        agent._delegate_consecutive_rounds = 2
+        tcs = [make_tc("delegate_task", '{"goal":"a"}'), make_tc("terminal"), make_tc("delegate_task", '{"goal":"b"}')]
+        out = agent._apply_delegate_soft_guardrails(tcs)
+        names = [tc.function.name for tc in out]
+        assert names.count("delegate_task") == 1
+        assert "terminal" in names
+        agent._emit_status.assert_called_once()
+        agent.steer.assert_called_once()
+        assert agent._delegate_consecutive_rounds == 3
+
+    def test_triggered_by_window_with_single_delegate_warns_without_trimming(self):
+        import time
+
+        agent = self._make_agent_stub()
+        now = time.monotonic()
+        agent._delegate_call_timestamps = [now] * 6
+        tcs = [make_tc("delegate_task", '{"goal":"only"}'), make_tc("read_file")]
+        out = agent._apply_delegate_soft_guardrails(tcs)
+        assert out is tcs
+        agent._emit_status.assert_called_once()
+        agent.steer.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

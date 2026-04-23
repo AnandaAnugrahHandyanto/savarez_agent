@@ -594,6 +594,17 @@ def _format_gateway_process_notification(evt: dict) -> "str | None":
     return None
 
 
+def _format_verbose_tool_progress(tool_name: str, args: dict, preview_len: int) -> str:
+    """Render verbose gateway tool progress while preserving per-tool emoji."""
+    from agent.display import get_tool_emoji
+
+    emoji = get_tool_emoji(tool_name, default="⚙️")
+    args_str = json.dumps(args, ensure_ascii=False, default=str)
+    if preview_len > 0 and len(args_str) > preview_len:
+        args_str = args_str[:preview_len - 3] + "..."
+    return f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
+
+
 class GatewayRunner:
     """
     Main gateway controller.
@@ -9339,8 +9350,28 @@ class GatewayRunner:
             if not progress_queue or not _run_still_current():
                 return
 
-            # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
-            if event_type not in ("tool.started",):
+            # Surface a compact subset of progress events in gateway chats.
+            if event_type not in ("tool.started", "subagent.complete"):
+                return
+
+            if event_type == "subagent.complete":
+                try:
+                    from tools.delegate_tool import _subagent_progress_message
+
+                    msg = _subagent_progress_message(
+                        event_type,
+                        tool_name=tool_name,
+                        preview=preview,
+                        args=args,
+                        **kwargs,
+                    )
+                except Exception:
+                    msg = None
+                if not msg:
+                    return
+                progress_queue.put(msg)
+                last_progress_msg[0] = msg
+                repeat_count[0] = 0
                 return
 
             # "new" mode: only report when tool changes
@@ -9349,40 +9380,29 @@ class GatewayRunner:
             last_tool[0] = tool_name
             
             # Build progress message with primary argument preview
-            from agent.display import get_tool_emoji
-            emoji = get_tool_emoji(tool_name, default="⚙️")
+            from tools.delegate_tool import _subagent_progress_message
+
+            msg = _subagent_progress_message(
+                event_type,
+                tool_name=tool_name,
+                preview=preview,
+                args=args,
+                **kwargs,
+            )
+            if msg is None:
+                return
             
             # Verbose mode: show detailed arguments, respects tool_preview_length
             if progress_mode == "verbose":
                 if args:
                     from agent.display import get_tool_preview_max_len
                     _pl = get_tool_preview_max_len()
-                    args_str = json.dumps(args, ensure_ascii=False, default=str)
                     # When tool_preview_length is 0 (default), don't truncate
                     # in verbose mode — the user explicitly asked for full
                     # detail.  Platform message-length limits handle the rest.
-                    if _pl > 0 and len(args_str) > _pl:
-                        args_str = args_str[:_pl - 3] + "..."
-                    msg = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
-                elif preview:
-                    msg = f"{emoji} {tool_name}: \"{preview}\""
-                else:
-                    msg = f"{emoji} {tool_name}..."
+                    msg = _format_verbose_tool_progress(tool_name, args, _pl)
                 progress_queue.put(msg)
                 return
-            
-            # "all" / "new" modes: short preview, respects tool_preview_length
-            # config (defaults to 40 chars when unset to keep gateway messages
-            # compact — unlike CLI spinners, these persist as permanent messages).
-            if preview:
-                from agent.display import get_tool_preview_max_len
-                _pl = get_tool_preview_max_len()
-                _cap = _pl if _pl > 0 else 40
-                if len(preview) > _cap:
-                    preview = preview[:_cap - 3] + "..."
-                msg = f"{emoji} {tool_name}: \"{preview}\""
-            else:
-                msg = f"{emoji} {tool_name}..."
             
             # Dedup: collapse consecutive identical progress messages.
             # Common with execute_code where models iterate with the same

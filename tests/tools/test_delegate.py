@@ -58,6 +58,31 @@ def _make_mock_parent(depth=0):
     return parent
 
 
+_DEFAULT_TEST_DELEGATION_CREDS = {
+    "model": None,
+    "provider": None,
+    "base_url": None,
+    "api_key": None,
+    "api_mode": None,
+    "command": None,
+    "args": None,
+}
+
+
+class _DelegateCredentialPatchMixin:
+    def setUp(self):
+        super().setUp()
+        self._delegate_cred_patcher = patch(
+            "tools.delegate_tool._resolve_delegation_credentials",
+            return_value=dict(_DEFAULT_TEST_DELEGATION_CREDS),
+        )
+        self._delegate_cred_patcher.start()
+
+    def tearDown(self):
+        self._delegate_cred_patcher.stop()
+        super().tearDown()
+
+
 class TestDelegateRequirements(unittest.TestCase):
     def test_always_available(self):
         self.assertTrue(check_delegate_requirements())
@@ -70,6 +95,7 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("context", props)
         self.assertIn("toolsets", props)
         self.assertIn("max_iterations", props)
+        self.assertIn("detail_level", props)
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
 
 
@@ -105,7 +131,7 @@ class TestStripBlockedTools(unittest.TestCase):
         self.assertEqual(result, [])
 
 
-class TestDelegateTask(unittest.TestCase):
+class TestDelegateTask(_DelegateCredentialPatchMixin, unittest.TestCase):
     def test_no_parent_agent(self):
         result = json.loads(delegate_task(goal="test"))
         self.assertIn("error", result)
@@ -306,7 +332,7 @@ class TestDelegateTask(unittest.TestCase):
         parent.tool_progress_callback.assert_not_called()
 
 
-class TestToolNamePreservation(unittest.TestCase):
+class TestToolNamePreservation(_DelegateCredentialPatchMixin, unittest.TestCase):
     """Verify _last_resolved_tool_names is restored after subagent runs."""
 
     def test_global_tool_names_restored_after_delegation(self):
@@ -402,16 +428,16 @@ class TestToolNamePreservation(unittest.TestCase):
         self.assertEqual(captured["saved"], expected_tools)
 
 
-class TestDelegateObservability(unittest.TestCase):
+class TestDelegateObservability(_DelegateCredentialPatchMixin, unittest.TestCase):
     """Tests for enriched metadata returned by _run_single_child."""
 
-    def test_observability_fields_present(self):
-        """Completed child should return tool_trace, tokens, model, exit_reason."""
+    def test_observability_fields_require_detailed_mode(self):
         parent = _make_mock_parent(depth=0)
 
         with patch("run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
             mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_id = "child-session-1"
             mock_child.session_prompt_tokens = 5000
             mock_child.session_completion_tokens = 1200
             mock_child.run_conversation.return_value = {
@@ -430,10 +456,33 @@ class TestDelegateObservability(unittest.TestCase):
             }
             MockAgent.return_value = mock_child
 
-            result = json.loads(delegate_task(goal="Test observability", parent_agent=parent))
-            entry = result["results"][0]
+            slim = json.loads(delegate_task(goal="Test observability", parent_agent=parent))
+            slim_entry = slim["results"][0]
+            self.assertEqual(slim_entry["exit_reason"], "completed")
+            self.assertEqual(slim_entry["duration_seconds"] >= 0, True)
+            self.assertTrue(slim_entry["delegation_id"].startswith("deleg-"))
+            self.assertEqual(slim_entry["child_session_id"], "child-session-1")
+            self.assertEqual(slim_entry["child_role"], "leaf")
+            self.assertEqual(slim_entry["depth"], 1)
+            self.assertNotIn("model", slim_entry)
+            self.assertNotIn("tokens", slim_entry)
+            self.assertNotIn("tool_trace", slim_entry)
+            self.assertNotIn("api_calls", slim_entry)
+
+            detailed = json.loads(
+                delegate_task(
+                    goal="Test observability",
+                    detail_level="detailed",
+                    parent_agent=parent,
+                )
+            )
+            entry = detailed["results"][0]
 
             # Core observability fields
+            self.assertTrue(entry["delegation_id"].startswith("deleg-"))
+            self.assertEqual(entry["child_session_id"], "child-session-1")
+            self.assertEqual(entry["child_role"], "leaf")
+            self.assertEqual(entry["depth"], 1)
             self.assertEqual(entry["model"], "claude-sonnet-4-6")
             self.assertEqual(entry["exit_reason"], "completed")
             self.assertEqual(entry["tokens"]["input"], 5000)
@@ -447,7 +496,7 @@ class TestDelegateObservability(unittest.TestCase):
             self.assertEqual(entry["tool_trace"][0]["status"], "ok")
 
     def test_tool_trace_detects_error(self):
-        """Tool results containing 'error' should be marked as error status."""
+
         parent = _make_mock_parent(depth=0)
 
         with patch("run_agent.AIAgent") as MockAgent:
@@ -469,7 +518,13 @@ class TestDelegateObservability(unittest.TestCase):
             }
             MockAgent.return_value = mock_child
 
-            result = json.loads(delegate_task(goal="Test error trace", parent_agent=parent))
+            result = json.loads(
+                delegate_task(
+                    goal="Test error trace",
+                    detail_level="detailed",
+                    parent_agent=parent,
+                )
+            )
             trace = result["results"][0]["tool_trace"]
             self.assertEqual(trace[0]["status"], "error")
 
@@ -501,7 +556,13 @@ class TestDelegateObservability(unittest.TestCase):
             }
             MockAgent.return_value = mock_child
 
-            result = json.loads(delegate_task(goal="Test parallel", parent_agent=parent))
+            result = json.loads(
+                delegate_task(
+                    goal="Test parallel",
+                    detail_level="detailed",
+                    parent_agent=parent,
+                )
+            )
             trace = result["results"][0]["tool_trace"]
 
             # All three tool calls should have results
@@ -540,7 +601,12 @@ class TestDelegateObservability(unittest.TestCase):
             }
             MockAgent.return_value = mock_child
 
-            result = json.loads(delegate_task(goal="Test interrupt", parent_agent=parent))
+            result = json.loads(
+                delegate_task(
+                    goal="Test interrupt",
+                    parent_agent=parent,
+                )
+            )
             self.assertEqual(result["results"][0]["exit_reason"], "interrupted")
 
     def test_exit_reason_max_iterations(self):
@@ -561,7 +627,12 @@ class TestDelegateObservability(unittest.TestCase):
             }
             MockAgent.return_value = mock_child
 
-            result = json.loads(delegate_task(goal="Test max iter", parent_agent=parent))
+            result = json.loads(
+                delegate_task(
+                    goal="Test max iter",
+                    parent_agent=parent,
+                )
+            )
             self.assertEqual(result["results"][0]["exit_reason"], "max_iterations")
 
 
@@ -1160,7 +1231,40 @@ class TestChildCredentialLeasing(unittest.TestCase):
         )
 
         self.assertEqual(result["status"], "error")
+        self.assertEqual(result["exit_reason"], "error")
         child._credential_pool.release_lease.assert_called_once_with("cred-a")
+
+
+class TestDelegateBatchFallbackExitReasons(_DelegateCredentialPatchMixin, unittest.TestCase):
+    @patch("tools.delegate_tool._run_single_child")
+    def test_batch_fabricated_error_entry_includes_exit_reason(self, mock_run):
+        parent = _make_mock_parent()
+
+        def _side_effect(*args, **kwargs):
+            goal = kwargs.get("goal")
+            if goal == "boom":
+                raise RuntimeError("batch exploded")
+            return {
+                "task_index": kwargs["task_index"],
+                "status": "completed",
+                "summary": "ok",
+                "exit_reason": "completed",
+                "api_calls": 1,
+                "duration_seconds": 0.1,
+            }
+
+        mock_run.side_effect = _side_effect
+
+        result = json.loads(
+            delegate_task(
+                tasks=[{"goal": "boom"}, {"goal": "ok"}],
+                parent_agent=parent,
+            )
+        )
+
+        self.assertEqual(result["results"][0]["status"], "error")
+        self.assertEqual(result["results"][0]["exit_reason"], "error")
+        self.assertIn("batch exploded", result["results"][0]["error"])
 
 
 class TestDelegateHeartbeat(unittest.TestCase):

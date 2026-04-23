@@ -67,6 +67,20 @@ _SUBAGENT_TOOLSETS = sorted(
 _TOOLSET_LIST_STR = ", ".join(f"'{n}'" for n in _SUBAGENT_TOOLSETS)
 
 _DEFAULT_MAX_CONCURRENT_CHILDREN = 3
+_DEFAULT_DETAIL_LEVEL = "slim"
+_DETAIL_LEVELS = frozenset({"slim", "detailed"})
+_DETAILED_RESULT_FIELDS = (
+    "api_calls",
+    "model",
+    "tokens",
+    "tool_trace",
+)
+_TRACEABILITY_FIELDS = (
+    "delegation_id",
+    "child_session_id",
+    "child_role",
+    "depth",
+)
 MAX_DEPTH = 1  # flat by default: parent (0) -> child (1); grandchild rejected unless max_spawn_depth raised.
 # Configurable depth cap consulted by _get_max_spawn_depth; MAX_DEPTH
 # stays as the default fallback and is still the symbol tests import.
@@ -261,6 +275,99 @@ def _normalize_role(r: Optional[str]) -> str:
         return r_norm
     logger.warning("Unknown delegate_task role=%r, coercing to 'leaf'", r)
     return "leaf"
+
+
+def _normalize_detail_level(detail_level: Optional[str]) -> str:
+    """Return the public delegate_task result detail level.
+
+    Defaults to ``slim`` to reduce parent-context growth, but accepts
+    ``detailed`` for the legacy rich payload with tool traces and token stats.
+    Unknown values degrade to the default with a warning.
+    """
+    if detail_level is None or not str(detail_level).strip():
+        return _DEFAULT_DETAIL_LEVEL
+    normalized = str(detail_level).strip().lower()
+    if normalized in _DETAIL_LEVELS:
+        return normalized
+    logger.warning(
+        "Unknown delegate_task detail_level=%r, coercing to %r",
+        detail_level,
+        _DEFAULT_DETAIL_LEVEL,
+    )
+    return _DEFAULT_DETAIL_LEVEL
+
+
+def _public_delegate_entry(entry: Dict[str, Any], detail_level: str) -> Dict[str, Any]:
+    """Strip internal-only and optional heavy fields from a child result entry."""
+    public = dict(entry)
+    public.pop("_child_role", None)
+    if detail_level != "detailed":
+        for field in _DETAILED_RESULT_FIELDS:
+            public.pop(field, None)
+    return public
+
+
+def _delegate_trace_fields(child) -> Dict[str, Any]:
+    """Return lightweight per-child traceability metadata for parent payloads."""
+    fields: Dict[str, Any] = {}
+    delegation_id = getattr(child, "_delegation_id", None)
+    if isinstance(delegation_id, str) and delegation_id:
+        fields["delegation_id"] = delegation_id
+    child_session_id = getattr(child, "session_id", None)
+    if isinstance(child_session_id, str) and child_session_id:
+        fields["child_session_id"] = child_session_id
+    child_role = getattr(child, "_delegate_role", None)
+    if isinstance(child_role, str) and child_role:
+        fields["child_role"] = child_role
+    depth = getattr(child, "_delegate_depth", None)
+    if isinstance(depth, int):
+        fields["depth"] = depth
+    return fields
+
+
+def _subagent_progress_message(
+    event_type: str,
+    tool_name: Optional[str] = None,
+    preview: Optional[str] = None,
+    args: Optional[dict] = None,
+    **kwargs,
+) -> Optional[str]:
+    """Return a compact gateway progress line for supported subagent/tool events."""
+    from agent.display import get_tool_emoji
+
+    if event_type == "tool.started":
+        emoji = get_tool_emoji(tool_name, default="⚙️")
+        if preview:
+            from agent.display import get_tool_preview_max_len
+
+            _pl = get_tool_preview_max_len()
+            _cap = _pl if _pl > 0 else 40
+            if len(preview) > _cap:
+                preview = preview[:_cap - 3] + "..."
+            return f"{emoji} {tool_name}: \"{preview}\""
+        return f"{emoji} {tool_name}..."
+
+    if event_type == "subagent.complete":
+        idx = kwargs.get("task_index")
+        status = str(kwargs.get("status") or "completed")
+        summary = str(kwargs.get("summary") or kwargs.get("preview") or "").strip()
+        duration = kwargs.get("duration_seconds")
+        status_icon = "✓" if status == "completed" else "✗"
+        label = f"subagent {idx}" if idx is not None else "subagent"
+        tail = []
+        if duration not in (None, ""):
+            try:
+                tail.append(f"{float(duration):.1f}s")
+            except (TypeError, ValueError):
+                pass
+        if summary:
+            if len(summary) > 120:
+                summary = summary[:117] + "..."
+            tail.append(summary)
+        suffix = f": {' — '.join(tail)}" if tail else ""
+        return f"{status_icon} {label} {status}{suffix}"
+
+    return None
 
 
 def _get_max_concurrent_children() -> int:
@@ -584,6 +691,7 @@ def _build_child_progress_callback(
     depth: Optional[int] = None,
     model: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
+    delegation_id: Optional[str] = None,
 ) -> Optional[callable]:
     """Build a callback that relays child agent tool calls to the parent display.
 
@@ -592,7 +700,7 @@ def _build_child_progress_callback(
       Gateway: batches tool names and relays to parent's progress callback
 
     The identity kwargs (``subagent_id``, ``parent_id``, ``depth``, ``model``,
-    ``toolsets``) are threaded into every relayed event so the TUI can
+    ``toolsets``, ``delegation_id``) are threaded into every relayed event so the TUI can
     reconstruct the live spawn tree and route per-branch controls (kill,
     pause) back by ``subagent_id``.  All are optional for backward compat —
     older callers that ignore them still produce a flat list on the TUI.
@@ -631,6 +739,8 @@ def _build_child_progress_callback(
             kw["model"] = model
         if toolsets is not None:
             kw["toolsets"] = list(toolsets)
+        if delegation_id is not None:
+            kw["delegation_id"] = delegation_id
         kw["tool_count"] = _tool_count[0]
         return kw
 
@@ -781,6 +891,7 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    delegation_id: Optional[str] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -881,12 +992,13 @@ def _build_child_agent(
         task_index,
         goal,
         parent_agent,
-        task_count,
+        task_count=task_count,
         subagent_id=subagent_id,
-        parent_id=parent_subagent_id,
+        parent_id=(parent_subagent_id if isinstance(parent_subagent_id, str) else None),
         depth=tui_depth,
-        model=effective_model_for_cb,
-        toolsets=child_toolsets,
+        model=effective_model_for_cb if isinstance(effective_model_for_cb, str) else None,
+        toolsets=list(child_toolsets),
+        delegation_id=delegation_id,
     )
 
     # Each subagent gets its own iteration budget capped at max_iterations
@@ -977,6 +1089,7 @@ def _build_child_agent(
     # Stash the post-degrade role for introspection (leaf if the
     # kill switch or depth bounded the caller's requested role).
     child._delegate_role = effective_role
+    child._delegation_id = delegation_id
     # Stash subagent identity for nested-delegation event propagation and
     # for _run_single_child / interrupt_subagent to look up by id.
     child._subagent_id = subagent_id
@@ -1219,6 +1332,7 @@ def _run_single_child(
                 "exit_reason": "timeout" if is_timeout else "error",
                 "api_calls": 0,
                 "duration_seconds": duration,
+                **_delegate_trace_fields(child),
                 "_child_role": getattr(child, "_delegate_role", None),
             }
         finally:
@@ -1316,6 +1430,7 @@ def _run_single_child(
                 ),
             },
             "tool_trace": tool_trace,
+            **_delegate_trace_fields(child),
             # Captured before the finally block calls child.close() so the
             # parent thread can fire subagent_stop with the correct role.
             # Stripped before the dict is serialised back to the model.
@@ -1405,6 +1520,7 @@ def _run_single_child(
             "files_read": _files_read,
             "files_written": _files_written,
             "output_tail": _output_tail,
+            **_delegate_trace_fields(child),
         }
         if _cost_usd is not None:
             try:
@@ -1439,8 +1555,10 @@ def _run_single_child(
             "status": "error",
             "summary": None,
             "error": str(exc),
+            "exit_reason": "error",
             "api_calls": 0,
             "duration_seconds": duration,
+            **_delegate_trace_fields(child),
             "_child_role": getattr(child, "_delegate_role", None),
         }
 
@@ -1502,6 +1620,7 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    detail_level: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -1532,6 +1651,10 @@ def delegate_task(
 
     # Normalise the top-level role once; per-task overrides re-normalise.
     top_role = _normalize_role(role)
+    public_detail_level = _normalize_detail_level(detail_level)
+
+    import uuid as _uuid
+    delegation_id = f"deleg-{_uuid.uuid4().hex[:10]}"
 
     # Depth limit — configurable via delegation.max_spawn_depth,
     # default 2 for parity with the original MAX_DEPTH constant.
@@ -1637,6 +1760,7 @@ def delegate_task(
                     else (acp_args if acp_args is not None else creds.get("args"))
                 ),
                 role=effective_role,
+                delegation_id=delegation_id,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -1693,8 +1817,10 @@ def delegate_task(
                                     "status": "error",
                                     "summary": None,
                                     "error": str(exc),
+                                    "exit_reason": "error",
                                     "api_calls": 0,
                                     "duration_seconds": 0,
+                                    **_delegate_trace_fields(_child_by_index.get(idx)),
                                     "_child_role": getattr(
                                         _child_by_index.get(idx), "_delegate_role", None
                                     ),
@@ -1705,8 +1831,10 @@ def delegate_task(
                                 "status": "interrupted",
                                 "summary": None,
                                 "error": "Parent agent interrupted — child did not finish in time",
+                                "exit_reason": "interrupted",
                                 "api_calls": 0,
                                 "duration_seconds": 0,
+                                **_delegate_trace_fields(_child_by_index.get(idx)),
                                 "_child_role": getattr(
                                     _child_by_index.get(idx), "_delegate_role", None
                                 ),
@@ -1730,8 +1858,10 @@ def delegate_task(
                             "status": "error",
                             "summary": None,
                             "error": str(exc),
+                            "exit_reason": "error",
                             "api_calls": 0,
                             "duration_seconds": 0,
+                            **_delegate_trace_fields(_child_by_index.get(idx)),
                             "_child_role": getattr(
                                 _child_by_index.get(idx), "_delegate_role", None
                             ),
@@ -1822,10 +1952,13 @@ def delegate_task(
             logger.debug("subagent_stop hook invocation failed", exc_info=True)
 
     total_duration = round(time.monotonic() - overall_start, 2)
+    public_results = [
+        _public_delegate_entry(entry, public_detail_level) for entry in results
+    ]
 
     return json.dumps(
         {
-            "results": results,
+            "results": public_results,
             "total_duration_seconds": total_duration,
         },
         ensure_ascii=False,
@@ -2018,7 +2151,9 @@ DELEGATE_TASK_SCHEMA = {
         "(default 2) and can be disabled globally via "
         "delegation.orchestrator_enabled=false.\n"
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
-        "- Results are always returned as an array, one entry per task."
+        "- Results are always returned as an array, one entry per task. Default detail_level='slim' returns only the"
+        " fields most useful for parent decisions; use detail_level='detailed' when you explicitly need metrics,"
+        " token counts, model info, or tool traces."
     ),
     "parameters": {
         "type": "object",
@@ -2112,6 +2247,15 @@ DELEGATE_TASK_SCHEMA = {
                     "delegation.orchestrator_enabled=false."
                 ),
             },
+            "detail_level": {
+                "type": "string",
+                "enum": ["slim", "detailed"],
+                "description": (
+                    "Public result payload size. 'slim' (default) keeps parent-context usage low while preserving status,"
+                    " summary, duration, and exit_reason. 'detailed' restores metrics like api_calls, model, tokens, and"
+                    " tool_trace for debugging or instrumentation."
+                ),
+            },
             "acp_command": {
                 "type": "string",
                 "description": (
@@ -2151,6 +2295,7 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        detail_level=args.get("detail_level"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,
