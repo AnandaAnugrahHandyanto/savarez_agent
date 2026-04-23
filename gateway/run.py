@@ -10345,6 +10345,26 @@ class GatewayRunner:
 
         _notify_task = asyncio.create_task(_notify_long_running())
 
+        def _stream_confirmed_final_delivery(
+            consumer,
+            final_text: str,
+            *,
+            previewed: bool = False,
+        ) -> bool:
+            """Return True only when the actual final reply reached the user."""
+            if consumer is None:
+                return False
+            if getattr(consumer, "final_response_sent", False):
+                return True
+            if previewed:
+                has_delivered_text = getattr(consumer, "has_delivered_text", None)
+                if callable(has_delivered_text):
+                    try:
+                        return bool(has_delivered_text(final_text))
+                    except Exception:
+                        return False
+            return False
+
         try:
             # Run in thread pool to not block.  Use an *inactivity*-based
             # timeout instead of a wall-clock limit: the agent can run for
@@ -10645,11 +10665,12 @@ class GatewayRunner:
                         except Exception as e:
                             logger.debug("Stream consumer wait before queued message failed: %s", e)
                     _previewed = bool(result.get("response_previewed"))
-                    _already_streamed = bool(
-                        (_sc and getattr(_sc, "final_response_sent", False))
-                        or _previewed
-                    )
                     first_response = result.get("final_response", "")
+                    _already_streamed = _stream_confirmed_final_delivery(
+                        _sc,
+                        first_response,
+                        previewed=_previewed,
+                    )
                     if first_response and not _already_streamed:
                         try:
                             logger.info(
@@ -10785,13 +10806,17 @@ class GatewayRunner:
         if isinstance(response, dict) and not response.get("failed"):
             _final = response.get("final_response") or ""
             _is_empty_sentinel = not _final or _final == "(empty)"
-            _streamed = bool(
-                _sc and getattr(_sc, "final_response_sent", False)
-            )
             # response_previewed means the interim_assistant_callback already
-            # sent the final text via the adapter (non-streaming path).
+            # saw the final text, but only suppress the normal send if that
+            # exact final text was delivered. Unrelated commentary/progress
+            # must not be mistaken for the final response (#14238).
             _previewed = bool(response.get("response_previewed"))
-            if not _is_empty_sentinel and (_streamed or _previewed):
+            _streamed = _stream_confirmed_final_delivery(
+                _sc,
+                _final,
+                previewed=_previewed,
+            )
+            if not _is_empty_sentinel and _streamed:
                 logger.info(
                     "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s).",
                     session_key[:20] if session_key else "?",

@@ -100,6 +100,7 @@ class GatewayStreamConsumer:
         self._flood_strikes = 0         # Consecutive flood-control edit failures
         self._current_edit_interval = self.cfg.edit_interval  # Adaptive backoff
         self._final_response_sent = False
+        self._delivered_commentary_texts: list[str] = []
         # Cache adapter lifecycle capability: only platforms that need an
         # explicit finalize call (e.g. DingTalk AI Cards) force us to make
         # a redundant final edit.  Everyone else keeps the fast path.
@@ -122,6 +123,16 @@ class GatewayStreamConsumer:
     def final_response_sent(self) -> bool:
         """True when the stream consumer delivered the final assistant reply."""
         return self._final_response_sent
+
+    def has_delivered_text(self, text: str) -> bool:
+        """Return True if *text* was already delivered as visible chat content."""
+        target = self._clean_for_display(text or "").strip()
+        if not target:
+            return False
+        visible_prefix = self._visible_prefix().strip()
+        if visible_prefix == target:
+            return True
+        return any(sent.strip() == target for sent in self._delivered_commentary_texts)
 
     def on_segment_break(self) -> None:
         """Finalize the current stream segment and start a fresh message."""
@@ -729,6 +740,8 @@ class GatewayStreamConsumer:
             # tool..."), not the final response. Setting already_sent would cause
             # the final response to be incorrectly suppressed when there are
             # multiple tool calls. See: https://github.com/NousResearch/hermes-agent/issues/10454
+            if result.success:
+                self._delivered_commentary_texts.append(text)
             return result.success
         except Exception as e:
             logger.error("Commentary send error: %s", e)
