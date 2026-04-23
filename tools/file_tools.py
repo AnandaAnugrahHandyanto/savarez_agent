@@ -18,6 +18,7 @@ from tools.file_operations import (
 )
 from tools import file_state
 from agent.redact import redact_sensitive_text
+from hermes_constants import is_within_profile_boundary
 
 logger = logging.getLogger(__name__)
 
@@ -354,6 +355,11 @@ def clear_file_ops_cache(task_id: str = None):
 
 def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers."""
+    # ── Profile boundary guard ────────────────────────────────────
+    allowed, reason = is_within_profile_boundary(path)
+    if not allowed:
+        return json.dumps({"error": reason})
+
     try:
         offset, limit = normalize_read_pagination(offset, limit)
 
@@ -618,6 +624,11 @@ def _check_file_staleness(filepath: str, task_id: str) -> str | None:
 
 def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
     """Write content to a file."""
+    # ── Profile boundary guard ────────────────────────────────────
+    allowed, reason = is_within_profile_boundary(path)
+    if not allowed:
+        return json.dumps({"error": reason})
+
     sensitive_err = _check_sensitive_path(path)
     if sensitive_err:
         return tool_error(sensitive_err)
@@ -672,6 +683,16 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                new_string: str = None, replace_all: bool = False, patch: str = None,
                task_id: str = "default") -> str:
     """Patch a file using replace mode or V4A patch format."""
+    # ── Profile boundary guard ────────────────────────────────────
+    # Check explicit path first, then extract paths from V4A patch content
+    _paths_to_check = []
+    if path:
+        _paths_to_check.append(path)
+    for _p in _paths_to_check:
+        allowed, reason = is_within_profile_boundary(_p)
+        if not allowed:
+            return json.dumps({"error": reason})
+
     # Check sensitive paths for both replace (explicit path) and V4A patch (extract paths)
     _paths_to_check = []
     if path:
@@ -767,6 +788,11 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 output_mode: str = "content", context: int = 0,
                 task_id: str = "default") -> str:
     """Search for content or files."""
+    # ── Profile boundary guard ────────────────────────────────────
+    allowed, reason = is_within_profile_boundary(path)
+    if not allowed:
+        return json.dumps({"error": reason})
+
     try:
         offset, limit = normalize_search_pagination(offset, limit)
 
