@@ -1,0 +1,5 @@
+# Revisions to ignore in git blame
+# These are formatting-only commits that don't change logic
+
+# style: apply ruff format to fork-changed Python files
+504ccd47c61b6e0868f171699cb9add133965b23
