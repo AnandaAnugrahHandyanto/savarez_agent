@@ -376,6 +376,12 @@ class ResponseStore:
         except Exception:
             pass
 
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
     def __len__(self) -> int:
         row = self._conn.execute("SELECT COUNT(*) FROM responses").fetchone()
         return row[0] if row else 0

@@ -3236,6 +3236,7 @@ class HermesCLI:
                 runtime["command"],
                 tuple(runtime["args"]),
             ),
+            "route_reason": "primary-runtime",
         }
 
         service_tier = getattr(self, "service_tier", None)
@@ -3247,6 +3248,9 @@ class HermesCLI:
             overrides = resolve_fast_mode_overrides(route["model"])
         except Exception:
             overrides = None
+            route["route_reason"] = "fast-mode-resolution-failed"
+        else:
+            route["route_reason"] = "fast-mode-requested" if overrides else "fast-mode-unsupported"
         route["request_overrides"] = overrides
         return route
 
@@ -7177,6 +7181,8 @@ class HermesCLI:
         parts = command.split()
         days = 30
         source = None
+        markdown_output = None
+        title = None
         i = 1
         while i < len(parts):
             if parts[i] == "--days" and i + 1 < len(parts):
@@ -7189,6 +7195,12 @@ class HermesCLI:
             elif parts[i] == "--source" and i + 1 < len(parts):
                 source = parts[i + 1]
                 i += 2
+            elif parts[i] == "--markdown-output" and i + 1 < len(parts):
+                markdown_output = parts[i + 1]
+                i += 2
+            elif parts[i] == "--title" and i + 1 < len(parts):
+                title = parts[i + 1]
+                i += 2
             else:
                 i += 1
 
@@ -7199,6 +7211,9 @@ class HermesCLI:
             db = SessionDB()
             engine = InsightsEngine(db)
             report = engine.generate(days=days, source=source)
+            if markdown_output:
+                output_path = engine.write_markdown_report(report, markdown_output, title=title)
+                print(f"  Saved markdown report to {output_path}")
             print(engine.format_terminal(report))
             db.close()
         except Exception as e:

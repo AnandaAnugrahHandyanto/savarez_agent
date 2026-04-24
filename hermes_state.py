@@ -256,6 +256,12 @@ class SessionDB:
                 self._conn.close()
                 self._conn = None
 
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
     def _init_schema(self):
         """Create tables and FTS if they don't exist, run migrations."""
         cursor = self._conn.cursor()

@@ -596,7 +596,24 @@ class SessionStore:
             self._db = SessionDB()
         except Exception as e:
             print(f"[gateway] Warning: SQLite session store unavailable, falling back to JSONL: {e}")
-    
+
+    def close(self) -> None:
+        """Close the underlying session database connection if present."""
+        db = getattr(self, "_db", None)
+        if db is None:
+            return
+        try:
+            db.close()
+        except Exception:
+            pass
+        self._db = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
     def _ensure_loaded(self) -> None:
         """Load sessions index from disk if not already loaded."""
         with self._lock:

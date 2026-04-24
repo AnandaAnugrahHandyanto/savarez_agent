@@ -23,6 +23,22 @@ from gateway.platforms.api_server import APIServerAdapter, cors_middleware
 _MOD = "gateway.platforms.api_server"
 
 
+@pytest.fixture(autouse=True)
+def _refresh_api_server_module():
+    import gateway.platforms.api_server as api_server_mod
+    import cron.jobs as cron_jobs
+
+    api_server_mod._CRON_AVAILABLE = True
+    api_server_mod._cron_list = cron_jobs.list_jobs
+    api_server_mod._cron_get = cron_jobs.get_job
+    api_server_mod._cron_create = cron_jobs.create_job
+    api_server_mod._cron_update = cron_jobs.update_job
+    api_server_mod._cron_remove = cron_jobs.remove_job
+    api_server_mod._cron_pause = cron_jobs.pause_job
+    api_server_mod._cron_resume = cron_jobs.resume_job
+    api_server_mod._cron_trigger = cron_jobs.trigger_job
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -67,12 +83,16 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
 
 @pytest.fixture
 def adapter():
-    return _make_adapter()
+    adapter = _make_adapter()
+    yield adapter
+    adapter._response_store.close()
 
 
 @pytest.fixture
 def auth_adapter():
-    return _make_adapter(api_key="sk-secret")
+    adapter = _make_adapter(api_key="sk-secret")
+    yield adapter
+    adapter._response_store.close()
 
 
 # ---------------------------------------------------------------------------

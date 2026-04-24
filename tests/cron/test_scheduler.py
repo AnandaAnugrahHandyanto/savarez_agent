@@ -830,6 +830,8 @@ class TestRunJobSessionPersistence:
         fake_db = MagicMock()
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._LOCK_DIR", tmp_path / "cron"), \
+             patch("cron.scheduler._LOCK_FILE", tmp_path / "cron" / ".tick.lock"), \
              patch("cron.scheduler.get_due_jobs", return_value=[job]), \
              patch("cron.scheduler.advance_next_run"), \
              patch("cron.scheduler.mark_job_run") as mock_mark, \
@@ -1164,6 +1166,13 @@ class TestRunJobSkillBacked:
 class TestSilentDelivery:
     """Verify that [SILENT] responses suppress delivery while still saving output."""
 
+    @pytest.fixture(autouse=True)
+    def _isolated_tick_lock(self, tmp_path):
+        lock_dir = tmp_path / "cron"
+        with patch("cron.scheduler._LOCK_DIR", lock_dir), \
+             patch("cron.scheduler._LOCK_FILE", lock_dir / ".tick.lock"):
+            yield
+
     def _make_job(self):
         return {
             "id": "monitor-job",
@@ -1177,12 +1186,13 @@ class TestSilentDelivery:
              patch("cron.scheduler.run_job", return_value=(True, "# output", "[SILENT]", None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.scheduler._deliver_result") as deliver_mock, \
-             patch("cron.scheduler.mark_job_run"):
+             patch("cron.scheduler.mark_job_run"), \
+             patch("cron.scheduler.logger.info") as info_mock:
             from cron.scheduler import tick
             with caplog.at_level(logging.INFO, logger="cron.scheduler"):
                 tick(verbose=False)
         deliver_mock.assert_not_called()
-        assert any(SILENT_MARKER in r.message for r in caplog.records)
+        info_mock.assert_any_call("Job '%s': agent returned %s — skipping delivery", "monitor-job", SILENT_MARKER)
 
     def test_silent_with_note_suppresses_delivery(self):
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \

@@ -32,6 +32,11 @@ def _ensure_telegram_mock():
     telegram_mod.constants.ChatType.SUPERGROUP = "supergroup"
     telegram_mod.constants.ChatType.CHANNEL = "channel"
     telegram_mod.constants.ChatType.PRIVATE = "private"
+    # Keep the root-module and constants-module ChatType objects aligned.
+    # Some test files import from ``telegram.constants`` while others access
+    # ``telegram.ChatType`` through the root mock; both need to compare equal.
+    telegram_mod.ChatType = telegram_mod.constants.ChatType
+    telegram_mod.ParseMode = telegram_mod.constants.ParseMode
 
     for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
         sys.modules.setdefault(name, telegram_mod)
@@ -39,7 +44,30 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
+import gateway.platforms.telegram as telegram_platform  # noqa: E402
 from gateway.platforms.telegram import TelegramAdapter  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _refresh_telegram_module():
+    _ensure_telegram_mock()
+    telegram_mod = sys.modules["telegram"]
+    telegram_platform.TELEGRAM_AVAILABLE = True
+    telegram_platform.Update = telegram_mod.Update
+    telegram_platform.Bot = telegram_mod.Bot
+    telegram_platform.Message = telegram_mod.Message
+    telegram_platform.InlineKeyboardButton = telegram_mod.InlineKeyboardButton
+    telegram_platform.InlineKeyboardMarkup = telegram_mod.InlineKeyboardMarkup
+    telegram_platform.LinkPreviewOptions = getattr(telegram_mod, "LinkPreviewOptions", None)
+    telegram_platform.Application = telegram_mod.ext.Application
+    telegram_platform.CommandHandler = telegram_mod.ext.CommandHandler
+    telegram_platform.CallbackQueryHandler = telegram_mod.ext.CallbackQueryHandler
+    telegram_platform.TelegramMessageHandler = telegram_mod.ext.MessageHandler
+    telegram_platform.ContextTypes = telegram_mod.ext.ContextTypes
+    telegram_platform.filters = telegram_mod.ext.filters
+    telegram_platform.ParseMode = telegram_mod.constants.ParseMode
+    telegram_platform.ChatType = telegram_mod.constants.ChatType
+    telegram_platform.HTTPXRequest = telegram_mod.request.HTTPXRequest
 
 
 def _make_adapter(dm_topics_config=None, group_topics_config=None):
@@ -555,7 +583,7 @@ def test_group_topic_skill_binding():
     ])
 
     msg = _make_mock_message(
-        chat_id=-1001234567890, chat_type=_ChatType.SUPERGROUP, thread_id=5, text="hello"
+        chat_id=-1001234567890, chat_type=telegram_platform.ChatType.SUPERGROUP, thread_id=5, text="hello"
     )
     event = adapter._build_message_event(msg, MessageType.TEXT)
 
@@ -578,7 +606,7 @@ def test_group_topic_skill_binding_second_topic():
     ])
 
     msg = _make_mock_message(
-        chat_id=-1001234567890, chat_type=_ChatType.SUPERGROUP, thread_id=12, text="deal update"
+        chat_id=-1001234567890, chat_type=telegram_platform.ChatType.SUPERGROUP, thread_id=12, text="deal update"
     )
     event = adapter._build_message_event(msg, MessageType.TEXT)
 
@@ -600,7 +628,7 @@ def test_group_topic_no_skill_binding():
     ])
 
     msg = _make_mock_message(
-        chat_id=-1001234567890, chat_type=_ChatType.SUPERGROUP, thread_id=1, text="hey"
+        chat_id=-1001234567890, chat_type=telegram_platform.ChatType.SUPERGROUP, thread_id=1, text="hey"
     )
     event = adapter._build_message_event(msg, MessageType.TEXT)
 
@@ -622,7 +650,7 @@ def test_group_topic_unmapped_thread_id():
     ])
 
     msg = _make_mock_message(
-        chat_id=-1001234567890, chat_type=_ChatType.SUPERGROUP, thread_id=999, text="random"
+        chat_id=-1001234567890, chat_type=telegram_platform.ChatType.SUPERGROUP, thread_id=999, text="random"
     )
     event = adapter._build_message_event(msg, MessageType.TEXT)
 
@@ -644,7 +672,7 @@ def test_group_topic_unmapped_chat_id():
     ])
 
     msg = _make_mock_message(
-        chat_id=-1009999999999, chat_type=_ChatType.SUPERGROUP, thread_id=5, text="wrong group"
+        chat_id=-1009999999999, chat_type=telegram_platform.ChatType.SUPERGROUP, thread_id=5, text="wrong group"
     )
     event = adapter._build_message_event(msg, MessageType.TEXT)
 
@@ -659,7 +687,7 @@ def test_group_topic_no_config():
     adapter = _make_adapter()  # no group_topics_config
 
     msg = _make_mock_message(
-        chat_id=-1001234567890, chat_type=_ChatType.GROUP, thread_id=5, text="hi"
+        chat_id=-1001234567890, chat_type=telegram_platform.ChatType.GROUP, thread_id=5, text="hi"
     )
     event = adapter._build_message_event(msg, MessageType.TEXT)
 
@@ -681,7 +709,7 @@ def test_group_topic_chat_id_int_string_coercion():
     ])
 
     msg = _make_mock_message(
-        chat_id=-1001234567890, chat_type=_ChatType.SUPERGROUP, thread_id=7, text="test"
+        chat_id=-1001234567890, chat_type=telegram_platform.ChatType.SUPERGROUP, thread_id=7, text="test"
     )
     event = adapter._build_message_event(msg, MessageType.TEXT)
 
@@ -714,7 +742,7 @@ def test_build_message_event_group_from_user_none_stays_none():
 
     adapter = _make_adapter()
     msg = _make_mock_message(
-        chat_id=-1001234567890, chat_type=_ChatType.SUPERGROUP,
+        chat_id=-1001234567890, chat_type=telegram_platform.ChatType.SUPERGROUP,
         user_id=42, user_name="Alice"
     )
     msg.from_user = None
