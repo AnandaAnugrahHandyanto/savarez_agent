@@ -985,6 +985,17 @@ BROWSER_TOOL_SCHEMAS = [
 # Utility Functions
 # ============================================================================
 
+def _browser_session_policy(*, runtime_mode: str, transport: str, provider: Optional[str] = None) -> Dict[str, str]:
+    """Return a compact policy descriptor for the active browser session."""
+    return {
+        "runtime_mode": runtime_mode,
+        "context_scope": "per-task",
+        "transport": transport,
+        "provider": provider or "local",
+        "stealth_profile": "local" if runtime_mode == "local" else "remote-proxy",
+    }
+
+
 def _create_local_session(task_id: str) -> Dict[str, str]:
     import uuid
     session_name = f"h_{uuid.uuid4().hex[:10]}"
@@ -995,6 +1006,8 @@ def _create_local_session(task_id: str) -> Dict[str, str]:
         "bb_session_id": None,
         "cdp_url": None,
         "features": {"local": True},
+        "runtime_mode": "local",
+        "browser_policy": _browser_session_policy(runtime_mode="local", transport="local-chromium"),
     }
 
 
@@ -1009,6 +1022,8 @@ def _create_cdp_session(task_id: str, cdp_url: str) -> Dict[str, str]:
         "bb_session_id": None,
         "cdp_url": cdp_url,
         "features": {"cdp_override": True},
+        "runtime_mode": "cdp",
+        "browser_policy": _browser_session_policy(runtime_mode="cdp", transport="user-supplied-cdp"),
     }
 
 
@@ -1043,10 +1058,12 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
     
     # Create session outside the lock (network call in cloud mode)
     cdp_override = _get_cdp_override()
+    provider = None
     if cdp_override:
         session_info = _create_cdp_session(task_id, cdp_override)
     else:
         provider = _get_cloud_provider()
+        provider_name = type(provider).__name__ if provider is not None else None
         if provider is None:
             session_info = _create_local_session(task_id)
         else:
@@ -1082,6 +1099,15 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
                     session_info["fallback_reason"] = str(e)
                     session_info["fallback_provider"] = provider_name
     
+    if isinstance(session_info, dict) and provider is not None:
+        session_info = dict(session_info)
+        session_info["runtime_mode"] = "cloud"
+        session_info["browser_policy"] = _browser_session_policy(
+            runtime_mode="cloud",
+            transport="managed-cloud",
+            provider=provider_name,
+        )
+
     with _cleanup_lock:
         # Double-check: another thread may have created a session while we
         # were doing the network call. Use the existing one to avoid leaking

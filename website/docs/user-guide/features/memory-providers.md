@@ -6,7 +6,7 @@ description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hin
 
 # Memory Providers
 
-Hermes Agent ships with 8 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+Hermes Agent ships with 9 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
 
 ## Quick Start
 
@@ -22,7 +22,7 @@ Or set manually in `~/.hermes/config.yaml`:
 
 ```yaml
 memory:
-  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory
+  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory, skill_factory
 ```
 
 ## How It Works
@@ -39,6 +39,34 @@ When a memory provider is active, Hermes automatically:
 The built-in memory (MEMORY.md / USER.md) continues to work exactly as before. The external provider is additive.
 
 ## Available Providers
+
+### Skill Factory
+
+Local-only procedural memory that watches repeated successful delegations and writes draft `SKILL.md` files under the active Hermes profile. It is designed to close the loop between *doing a task* and *turning that task into reusable know-how*.
+
+|| | |
+||---|---|
+|| **Best for** | Repeated workflows, turning successful delegations into draft skills |
+|| **Requires** | No external service; just the Hermes profile filesystem |
+|| **Data storage** | `$HERMES_HOME/skill_factory/` |
+|| **Cost** | None |
+
+**Behavior:**
+- Records successful `on_delegation()` outcomes
+- Counts repeated workflow fingerprints
+- Writes draft skills locally once a threshold is reached
+- Never auto-installs drafts into `~/.hermes/skills/`
+- Ignores non-primary contexts to avoid contaminating subagent/cron runs
+
+**Setup:**
+```bash
+hermes memory setup
+# choose "skill_factory"
+```
+
+**Config:** `$HERMES_HOME/skill_factory.json`
+
+Useful keys: `enabled`, `auto_write`, `min_hits`, `max_examples`, `draft_dir`, `state_dir`
 
 ### Honcho
 

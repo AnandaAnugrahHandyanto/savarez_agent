@@ -1,0 +1,6 @@
+name: skill_factory
+version: 1.0.0
+description: "Local skill factory memory provider — turns repeated successful workflows into draft SKILL.md files under the active Hermes profile."
+hooks:
+  - on_delegation
+  - on_session_end

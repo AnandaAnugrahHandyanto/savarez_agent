@@ -20,6 +20,7 @@ import json
 import time
 from collections import Counter, defaultdict
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List
 
 from agent.usage_pricing import (
@@ -862,6 +863,119 @@ class InsightsEngine:
             lines.append("")
 
         return "\n".join(lines)
+
+    def format_markdown(self, report: Dict, *, title: str | None = None) -> str:
+        """Format the insights report as markdown for notes/Obsidian exports."""
+        days = report.get("days", 30)
+        source_filter = report.get("source_filter")
+        resolved_title = title or f"Hermes Daily Report — Last {days} days"
+
+        if report.get("empty"):
+            lines = [f"# {resolved_title}", ""]
+            if source_filter:
+                lines.append(f"- Source filter: `{source_filter}`")
+            lines.append(f"No sessions found in the last {days} days.")
+            return "\n".join(lines).rstrip() + "\n"
+
+        o = report["overview"]
+        lines = [f"# {resolved_title}", ""]
+        lines.append(f"- Period: Last {days} days")
+        if source_filter:
+            lines.append(f"- Source filter: `{source_filter}`")
+        if o.get("date_range_start") and o.get("date_range_end"):
+            start_str = datetime.fromtimestamp(o["date_range_start"]).strftime("%Y-%m-%d")
+            end_str = datetime.fromtimestamp(o["date_range_end"]).strftime("%Y-%m-%d")
+            lines.append(f"- Date range: {start_str} → {end_str}")
+        lines.append("")
+
+        lines.append("## Overview")
+        lines.append(f"- Sessions: {o['total_sessions']}")
+        lines.append(f"- Messages: {o['total_messages']:,}")
+        lines.append(f"- Tool calls: {o['total_tool_calls']:,}")
+        lines.append(f"- User messages: {o['user_messages']:,}")
+        lines.append(f"- Input tokens: {o['total_input_tokens']:,}")
+        lines.append(f"- Output tokens: {o['total_output_tokens']:,}")
+        lines.append(f"- Total tokens: {o['total_tokens']:,}")
+        if o["total_hours"] > 0:
+            lines.append(f"- Active time: ~{_format_duration(o['total_hours'] * 3600)}")
+            lines.append(f"- Average session: ~{_format_duration(o['avg_session_duration'])}")
+        lines.append(f"- Average messages/session: {o['avg_messages_per_session']:.1f}")
+        lines.append("")
+
+        if report.get("models"):
+            lines.append("## Models")
+            for m in report["models"][:8]:
+                lines.append(f"- `{m['model'][:48]}` — {m['sessions']} sessions, {m['total_tokens']:,} tokens")
+            lines.append("")
+
+        if report.get("platforms"):
+            lines.append("## Platforms")
+            for p in report["platforms"]:
+                lines.append(f"- `{p['platform']}` — {p['sessions']} sessions, {p['messages']:,} messages, {p['total_tokens']:,} tokens")
+            lines.append("")
+
+        if report.get("tools"):
+            lines.append("## Top Tools")
+            for tool in report["tools"][:12]:
+                lines.append(f"- `{tool['tool']}` — {tool['count']:,} calls ({tool['percentage']:.1f}%)")
+            lines.append("")
+
+        skills = report.get("skills", {})
+        top_skills = skills.get("top_skills", [])
+        if top_skills:
+            lines.append("## Top Skills")
+            for skill in top_skills[:10]:
+                suffix = ""
+                if skill.get("last_used_at"):
+                    suffix = f" (last used {datetime.fromtimestamp(skill['last_used_at']).strftime('%b %d')})"
+                lines.append(
+                    f"- `{skill['skill']}` — {skill['view_count']:,} loads, {skill['manage_count']:,} edits{suffix}"
+                )
+            summary = skills.get("summary", {})
+            lines.append(
+                f"- Distinct skills: {summary.get('distinct_skills_used', 0)}; loads: {summary.get('total_skill_loads', 0):,}; edits: {summary.get('total_skill_edits', 0):,}"
+            )
+            lines.append("")
+
+        act = report.get("activity", {})
+        if act.get("by_day"):
+            lines.append("## Activity")
+            day_values = [d["count"] for d in act["by_day"]]
+            bars = _bar_chart(day_values, max_width=18)
+            for i, d in enumerate(act["by_day"]):
+                bar = bars[i] or "·"
+                lines.append(f"- {d['day']}: {bar} ({d['count']})")
+            if act.get("by_hour"):
+                busy_hours = sorted(act["by_hour"], key=lambda x: x["count"], reverse=True)
+                busy_hours = [h for h in busy_hours if h["count"] > 0][:5]
+                if busy_hours:
+                    peak = []
+                    for h in busy_hours:
+                        hr = h["hour"]
+                        ampm = "AM" if hr < 12 else "PM"
+                        display_hr = hr % 12 or 12
+                        peak.append(f"{display_hr}{ampm} ({h['count']})")
+                    lines.append(f"- Peak hours: {', '.join(peak)}")
+            if act.get("active_days"):
+                lines.append(f"- Active days: {act['active_days']}")
+            if act.get("max_streak") and act["max_streak"] > 1:
+                lines.append(f"- Best streak: {act['max_streak']} consecutive days")
+            lines.append("")
+
+        if report.get("top_sessions"):
+            lines.append("## Notable Sessions")
+            for item in report["top_sessions"]:
+                lines.append(f"- **{item['label']}** — {item['value']} ({item['date']}, `{item['session_id']}`)")
+            lines.append("")
+
+        return "\n".join(lines).rstrip() + "\n"
+
+    def write_markdown_report(self, report: Dict, output_path: str | Path, *, title: str | None = None) -> Path:
+        """Render the markdown report and save it to disk."""
+        path = Path(output_path).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(self.format_markdown(report, title=title), encoding="utf-8")
+        return path
 
     def format_gateway(self, report: Dict) -> str:
         """Format the insights report for gateway/messaging (shorter)."""

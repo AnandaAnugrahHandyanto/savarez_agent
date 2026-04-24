@@ -134,15 +134,17 @@ masks = processor.image_processor.post_process_masks(
 
 ### Model architecture
 
-```
-SAM Architecture:
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│  Image Encoder  │────▶│ Prompt Encoder  │────▶│  Mask Decoder   │
-│     (ViT)       │     │ (Points/Boxes)  │     │ (Transformer)   │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
-        │                       │                       │
-   Image Embeddings      Prompt Embeddings         Masks + IoU
-   (computed once)       (per prompt)             predictions
+```text
+SAM Architecture
+
+Image Encoder (Vision Transformer)
+  -> image embeddings computed once per image
+
+Prompt Encoder (points, boxes, masks)
+  -> prompt embeddings computed per prompt
+
+Mask Decoder (Transformer)
+  -> masks plus Intersection over Union predictions
 ```
 
 ### Model variants
