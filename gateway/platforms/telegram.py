@@ -2347,6 +2347,62 @@ class TelegramAdapter(BasePlatformAdapter):
         cleaned = re.sub(rf"(?i)@{username}\b[,:\-]*\s*", "", text).strip()
         return cleaned or text
 
+    def _is_from_bot_user(self, message: Message) -> bool:
+        user = getattr(message, "from_user", None)
+        return bool(getattr(user, "is_bot", False))
+
+    def _telegram_allow_bots_mode(self) -> str:
+        """Return how Telegram group messages from bot senders are handled.
+
+        Modes:
+        - ``none``: drop all bot-originated group messages
+        - ``signals`` (default): allow only explicit task/terminal status signals
+        - ``mentions``: allow explicit @mentions from bots, but not reply-only triggers
+        - ``all``: preserve legacy behavior and run normal group gating
+        """
+        raw = self.config.extra.get("allow_bots")
+        if raw is None:
+            raw = os.getenv("TELEGRAM_ALLOW_BOTS", "signals")
+        raw = str(raw or "signals").strip().lower()
+        if raw in ("true", "yes", "on", "1"):
+            return "all"
+        if raw in ("false", "no", "off", "0"):
+            return "none"
+        if raw not in {"none", "signals", "mentions", "all"}:
+            logger.warning("[%s] Invalid TELEGRAM_ALLOW_BOTS value %r; using 'signals'", self.name, raw)
+            return "signals"
+        return raw
+
+    def _group_bot_message_has_work_signal(self, message: Message) -> bool:
+        """Return True for the small set of bot-originated group messages
+        that should enter an agent session in ``allow_bots=signals`` mode.
+
+        Telegram treats replies to a bot as direct triggers. In bot-to-bot
+        collaboration that creates reply loops: Bot A sends a status reply,
+        Bot B receives it as a reply-to-self trigger, answers, and the cycle
+        repeats. Only explicit task delivery or real terminal callbacks should
+        survive this gate; ACK/status/no-op chatter must be dropped before it
+        reaches the LLM.
+        """
+        text = (getattr(message, "text", None) or getattr(message, "caption", None) or "").strip()
+        if not text:
+            return False
+        if "[TASK]" in text and self._message_mentions_bot(message):
+            return True
+        if ("[DONE]" in text or "[BLOCKED]" in text) and self._message_mentions_bot(message):
+            return True
+        return False
+
+    def _should_process_bot_group_message(self, message: Message) -> bool:
+        mode = self._telegram_allow_bots_mode()
+        if mode == "all":
+            return True
+        if mode == "none":
+            return False
+        if mode == "mentions":
+            return self._message_mentions_bot(message)
+        return self._group_bot_message_has_work_signal(message)
+
     def _should_process_message(self, message: Message, *, is_command: bool = False) -> bool:
         """Apply Telegram group trigger rules.
 
@@ -2356,6 +2412,10 @@ class TelegramAdapter(BasePlatformAdapter):
         - the message replies to the bot
         - the bot is @mentioned
         - the text/caption matches a configured regex wake-word pattern
+
+        Bot-originated group messages are additionally gated by
+        ``allow_bots``/``TELEGRAM_ALLOW_BOTS`` to prevent bot-to-bot
+        reply/status loops. The safe default is ``signals``.
 
         When ``require_mention`` is enabled, slash commands are not given
         special treatment — they must pass the same mention/reply checks
@@ -2373,6 +2433,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     return False
             except (TypeError, ValueError):
                 logger.warning("[%s] Ignoring non-numeric Telegram message_thread_id: %r", self.name, thread_id)
+        if self._is_from_bot_user(message) and not self._should_process_bot_group_message(message):
+            return False
         if str(getattr(getattr(message, "chat", None), "id", "")) in self._telegram_free_response_chats():
             return True
         if not self._telegram_require_mention():

@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 from gateway.config import Platform, PlatformConfig, load_gateway_config
 
 
-def _make_adapter(require_mention=None, free_response_chats=None, mention_patterns=None, ignored_threads=None):
+def _make_adapter(require_mention=None, free_response_chats=None, mention_patterns=None, ignored_threads=None, allow_bots=None):
     from gateway.platforms.telegram import TelegramAdapter
 
     extra = {}
@@ -17,6 +17,8 @@ def _make_adapter(require_mention=None, free_response_chats=None, mention_patter
         extra["mention_patterns"] = mention_patterns
     if ignored_threads is not None:
         extra["ignored_threads"] = ignored_threads
+    if allow_bots is not None:
+        extra["allow_bots"] = allow_bots
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
@@ -39,6 +41,7 @@ def _group_message(
     entities=None,
     caption=None,
     caption_entities=None,
+    from_bot=False,
 ):
     reply_to_message = None
     if reply_to_bot:
@@ -51,6 +54,7 @@ def _group_message(
         message_thread_id=thread_id,
         chat=SimpleNamespace(id=chat_id, type="group"),
         reply_to_message=reply_to_message,
+        from_user=SimpleNamespace(id=123, is_bot=from_bot),
     )
 
 
@@ -114,12 +118,94 @@ def test_invalid_regex_patterns_are_ignored():
     assert adapter._should_process_message(_group_message("hello everyone")) is False
 
 
+def test_bot_originated_reply_status_is_ignored_even_when_replying_to_bot(monkeypatch):
+    monkeypatch.delenv("TELEGRAM_ALLOW_BOTS", raising=False)
+    adapter = _make_adapter(require_mention=True)
+
+    assert adapter._should_process_message(
+        _group_message("不推进。等待正式 [DONE] / URL。", reply_to_bot=True, from_bot=True)
+    ) is False
+    assert adapter._should_process_message(
+        _group_message("[ACK] 收到，保持静默", reply_to_bot=True, from_bot=True)
+    ) is False
+
+
+def test_bot_originated_task_and_terminal_callbacks_are_allowed_when_mentioned(monkeypatch):
+    monkeypatch.delenv("TELEGRAM_ALLOW_BOTS", raising=False)
+    adapter = _make_adapter(require_mention=True)
+
+    task = "@hermes_bot [TASK] ShipSolo v1\n输入：x\n要求：y"
+    done = "@hermes_bot [DONE] 产物：/tmp/report.md"
+    blocked = "@hermes_bot [BLOCKED] 原因：缺少 URL"
+
+    assert adapter._should_process_message(
+        _group_message(task, entities=[_mention_entity(task)], from_bot=True)
+    ) is True
+    assert adapter._should_process_message(
+        _group_message(done, entities=[_mention_entity(done)], from_bot=True)
+    ) is True
+    assert adapter._should_process_message(
+        _group_message(blocked, entities=[_mention_entity(blocked)], from_bot=True)
+    ) is True
+
+
+def test_bot_originated_done_without_mention_is_ignored(monkeypatch):
+    monkeypatch.delenv("TELEGRAM_ALLOW_BOTS", raising=False)
+    adapter = _make_adapter(require_mention=True)
+
+    assert adapter._should_process_message(
+        _group_message("[DONE] 产物：/tmp/report.md", from_bot=True)
+    ) is False
+
+
+def test_bot_originated_mentions_mode_allows_explicit_mentions_not_replies(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_ALLOW_BOTS", "none")
+    adapter = _make_adapter(require_mention=True, allow_bots="mentions")
+
+    mention = "@hermes_bot please check this"
+    assert adapter._should_process_message(
+        _group_message(mention, entities=[_mention_entity(mention)], from_bot=True)
+    ) is True
+    assert adapter._should_process_message(
+        _group_message("reply-only from bot", reply_to_bot=True, from_bot=True)
+    ) is False
+
+
+def test_bot_originated_all_mode_preserves_reply_to_bot_behavior(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_ALLOW_BOTS", "none")
+    adapter = _make_adapter(require_mention=True, allow_bots="all")
+
+    assert adapter._should_process_message(
+        _group_message("reply-only from bot", reply_to_bot=True, from_bot=True)
+    ) is True
+
+
+def test_bot_originated_none_mode_drops_even_explicit_mentions(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_ALLOW_BOTS", "all")
+    adapter = _make_adapter(require_mention=True, allow_bots="none")
+
+    task = "@hermes_bot [TASK] ShipSolo v1\n输入：x\n要求：y"
+    assert adapter._should_process_message(
+        _group_message(task, entities=[_mention_entity(task)], from_bot=True)
+    ) is False
+
+
+def test_telegram_allow_bots_env_used_when_config_missing(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_ALLOW_BOTS", "all")
+    adapter = _make_adapter(require_mention=True)
+
+    assert adapter._should_process_message(
+        _group_message("reply-only from bot", reply_to_bot=True, from_bot=True)
+    ) is True
+
+
 def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
     (hermes_home / "config.yaml").write_text(
         "telegram:\n"
         "  require_mention: true\n"
+        "  allow_bots: signals\n"
         "  mention_patterns:\n"
         "    - \"^\\\\s*chompy\\\\b\"\n"
         "  free_response_chats:\n"
@@ -129,6 +215,7 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
 
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.delenv("TELEGRAM_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("TELEGRAM_ALLOW_BOTS", raising=False)
     monkeypatch.delenv("TELEGRAM_MENTION_PATTERNS", raising=False)
     monkeypatch.delenv("TELEGRAM_FREE_RESPONSE_CHATS", raising=False)
 
@@ -136,6 +223,7 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
 
     assert config is not None
     assert __import__("os").environ["TELEGRAM_REQUIRE_MENTION"] == "true"
+    assert __import__("os").environ["TELEGRAM_ALLOW_BOTS"] == "signals"
     assert json.loads(__import__("os").environ["TELEGRAM_MENTION_PATTERNS"]) == [r"^\s*chompy\b"]
     assert __import__("os").environ["TELEGRAM_FREE_RESPONSE_CHATS"] == "-123"
 
