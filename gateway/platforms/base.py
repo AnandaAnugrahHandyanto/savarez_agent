@@ -24,6 +24,42 @@ from utils import normalize_proxy_url
 logger = logging.getLogger(__name__)
 
 
+TEXT_COMMAND_PREFIXES = ("/", "!", "oc_")
+
+
+def extract_command_parts(text: str) -> tuple[str, str, str] | None:
+    """Return ``(prefix, command, args)`` for supported text command forms."""
+    stripped = (text or "").strip()
+    if not stripped:
+        return None
+
+    parts = stripped.split(maxsplit=1)
+    token = parts[0]
+    args = parts[1] if len(parts) > 1 else ""
+
+    if token.startswith("/"):
+        prefix = "/"
+        raw = token[1:]
+    elif token.startswith("!"):
+        prefix = "!"
+        raw = token[1:]
+    elif token.lower().startswith("oc_"):
+        prefix = "oc_"
+        raw = token[3:]
+    else:
+        return None
+
+    raw = raw.lower()
+    if raw and "@" in raw:
+        raw = raw.split("@", 1)[0]
+    # Reject file paths: valid command names never contain /
+    if raw and "/" in raw:
+        return None
+    if prefix != "/" and not raw:
+        return None
+    return prefix, raw, args
+
+
 def utf16_len(s: str) -> int:
     """Count UTF-16 code units in *s*.
 
@@ -731,28 +767,19 @@ class MessageEvent:
     
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
-        return self.text.startswith("/")
+        return extract_command_parts(self.text) is not None
     
     def get_command(self) -> Optional[str]:
         """Extract command name if this is a command message."""
-        if not self.is_command():
-            return None
-        # Split on space and get first word, strip the /
-        parts = self.text.split(maxsplit=1)
-        raw = parts[0][1:].lower() if parts else None
-        if raw and "@" in raw:
-            raw = raw.split("@", 1)[0]
-        # Reject file paths: valid command names never contain /
-        if raw and "/" in raw:
-            return None
-        return raw
+        parsed = extract_command_parts(self.text)
+        return parsed[1] if parsed else None
     
     def get_command_args(self) -> str:
         """Get the arguments after a command."""
-        if not self.is_command():
+        parsed = extract_command_parts(self.text)
+        if not parsed:
             return self.text
-        parts = self.text.split(maxsplit=1)
-        args = parts[1] if len(parts) > 1 else ""
+        args = parsed[2]
         # iOS auto-corrects -- to — (em dash) and - to – (en dash)
         args = args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")
         return args

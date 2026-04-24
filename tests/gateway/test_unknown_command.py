@@ -16,9 +16,9 @@ from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
-def _make_source() -> SessionSource:
+def _make_source(platform: Platform = Platform.TELEGRAM) -> SessionSource:
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=platform,
         user_id="u1",
         chat_id="c1",
         user_name="tester",
@@ -26,20 +26,20 @@ def _make_source() -> SessionSource:
     )
 
 
-def _make_event(text: str) -> MessageEvent:
-    return MessageEvent(text=text, source=_make_source(), message_id="m1")
+def _make_event(text: str, platform: Platform = Platform.TELEGRAM) -> MessageEvent:
+    return MessageEvent(text=text, source=_make_source(platform), message_id="m1")
 
 
-def _make_runner():
+def _make_runner(platform: Platform = Platform.TELEGRAM):
     from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
-        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
+        platforms={platform: PlatformConfig(enabled=True, token="***")}
     )
     adapter = MagicMock()
     adapter.send = AsyncMock()
-    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.adapters = {platform: adapter}
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(
         emit=AsyncMock(),
@@ -48,11 +48,11 @@ def _make_runner():
     )
 
     session_entry = SessionEntry(
-        session_key=build_session_key(_make_source()),
+        session_key=build_session_key(_make_source(platform)),
         session_id="sess-1",
         created_at=datetime.now(),
         updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
+        platform=platform,
         chat_type="dm",
     )
     runner.session_store = MagicMock()
@@ -105,6 +105,76 @@ async def test_unknown_slash_command_returns_guidance(monkeypatch):
     assert "/definitely-not-a-command" in result
     assert "/commands" in result
     runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_mattermost_unknown_command_returns_bang_guidance(monkeypatch):
+    """Mattermost should render user-facing command guidance with !commands."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner(Platform.MATTERMOST)
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError(
+            "unknown Mattermost command leaked through to the agent"
+        )
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(
+        _make_event("!definitely-not-a-command", Platform.MATTERMOST)
+    )
+
+    assert result is not None
+    assert "Unknown command" in result
+    assert "!definitely-not-a-command" in result
+    assert "!commands" in result
+    assert "/commands" not in result
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_mattermost_help_renders_bang_prefixed_commands(monkeypatch):
+    """Mattermost help should advertise ! commands, including skills."""
+    from agent import skill_commands
+
+    runner = _make_runner(Platform.MATTERMOST)
+    event = _make_event("!help", Platform.MATTERMOST)
+    monkeypatch.setattr(
+        skill_commands,
+        "get_skill_commands",
+        lambda: {"/example-skill": {"description": "Example skill"}},
+    )
+
+    result = await runner._handle_help_command(event)
+
+    assert "`!help" in result
+    assert "`!commands" in result
+    assert "`!example-skill`" in result
+    assert "`/example-skill`" not in result
+
+
+@pytest.mark.asyncio
+async def test_non_mattermost_help_keeps_slash_prefix(monkeypatch):
+    """Non-Mattermost help should keep the existing slash wording."""
+    from agent import skill_commands
+
+    runner = _make_runner(Platform.TELEGRAM)
+    event = _make_event("/help", Platform.TELEGRAM)
+    monkeypatch.setattr(
+        skill_commands,
+        "get_skill_commands",
+        lambda: {"/example-skill": {"description": "Example skill"}},
+    )
+
+    result = await runner._handle_help_command(event)
+
+    assert "`/help" in result
+    assert "`/commands" in result
+    assert "`/example-skill`" in result
+    assert "`!example-skill`" not in result
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,7 @@ from gateway.platforms.base import (
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
     MessageEvent,
     MessageType,
+    extract_command_parts,
     safe_url_for_log,
     utf16_len,
     _prefix_within_utf16_limit,
@@ -68,6 +69,14 @@ class TestMessageEventIsCommand:
         event = MessageEvent(text="/")
         assert event.is_command() is True
 
+    def test_bang_prefix_command(self):
+        event = MessageEvent(text="!help")
+        assert event.is_command() is True
+
+    def test_openclaw_prefix_command(self):
+        event = MessageEvent(text="oc_model gpt-5.5")
+        assert event.is_command() is True
+
 
 class TestMessageEventGetCommand:
     def test_simple_command(self):
@@ -102,6 +111,18 @@ class TestMessageEventGetCommand:
         event = MessageEvent(text="/RESET@TigerNanoBot")
         assert event.get_command() == "reset"
 
+    def test_bang_prefix_command(self):
+        event = MessageEvent(text="!help")
+        assert event.get_command() == "help"
+
+    def test_bang_prefix_command_with_args(self):
+        event = MessageEvent(text="!model gpt-5.5")
+        assert event.get_command() == "model"
+
+    def test_openclaw_prefix_command(self):
+        event = MessageEvent(text="oc_Model gpt-5.5")
+        assert event.get_command() == "model"
+
 
 class TestMessageEventGetCommandArgs:
     def test_command_with_args(self):
@@ -115,6 +136,25 @@ class TestMessageEventGetCommandArgs:
     def test_not_a_command_returns_full_text(self):
         event = MessageEvent(text="hello world")
         assert event.get_command_args() == "hello world"
+
+    def test_bang_prefix_command_with_args(self):
+        event = MessageEvent(text="!new session id 123")
+        assert event.get_command_args() == "session id 123"
+
+    def test_openclaw_prefix_command_with_args(self):
+        event = MessageEvent(text="oc_new session id 123")
+        assert event.get_command_args() == "session id 123"
+
+
+class TestExtractCommandParts:
+    def test_rejects_empty_bang_command(self):
+        assert extract_command_parts("!") is None
+
+    def test_rejects_slash_path_like_token(self):
+        assert extract_command_parts("/tmp/file.txt") is None
+
+    def test_returns_prefix_command_and_args(self):
+        assert extract_command_parts("!model gpt-5.5") == ("!", "model", "gpt-5.5")
 
 
 # ---------------------------------------------------------------------------

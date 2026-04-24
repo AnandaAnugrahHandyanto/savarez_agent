@@ -288,6 +288,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    extract_command_parts,
     merge_pending_message_event,
 )
 from gateway.restart import (
@@ -430,6 +431,14 @@ def _is_control_interrupt_message(message: Optional[str]) -> bool:
         return False
     normalized = " ".join(str(message).strip().split()).lower()
     return normalized in _CONTROL_INTERRUPT_MESSAGES
+
+
+def _preferred_command_prefix(source_or_event=None) -> str:
+    """Return the command prefix to show users for this gateway source."""
+    source = getattr(source_or_event, "source", source_or_event)
+    if getattr(source, "platform", None) == Platform.MATTERMOST:
+        return "!"
+    return "/"
 
 
 def _check_unavailable_skill(command_name: str) -> str | None:
@@ -3448,9 +3457,10 @@ class GatewayRunner:
             # silently discarded by the slash-command safety net,
             # producing a zero-char response. See #5057, #6252, #10370.
             if _cmd_def_inner:
+                command_prefix = _preferred_command_prefix(source)
                 return (
-                    f"⏳ Agent is running — `/{_cmd_def_inner.name}` can't run "
-                    f"mid-turn. Wait for the current response or `/stop` first."
+                    f"⏳ Agent is running — `{command_prefix}{_cmd_def_inner.name}` can't run "
+                    f"mid-turn. Wait for the current response or `{command_prefix}stop` first."
                 )
 
             if event.message_type == MessageType.PHOTO:
@@ -3837,16 +3847,18 @@ class GatewayRunner:
                     # built-ins (command may be an alias target set by the
                     # quick-command block above, so _cmd_def can be stale).
                     if command.replace("_", "-") not in GATEWAY_KNOWN_COMMANDS:
+                        command_prefix = _preferred_command_prefix(source)
                         logger.warning(
-                            "Unrecognized slash command /%s from %s — "
+                            "Unrecognized command %s%s from %s — "
                             "replying with unknown-command notice",
+                            command_prefix,
                             command,
                             source.platform.value if source.platform else "?",
                         )
                         return (
-                            f"Unknown command `/{command}`. "
-                            f"Type /commands to see what's available, "
-                            f"or resend without the leading slash to send "
+                            f"Unknown command `{command_prefix}{command}`. "
+                            f"Type {command_prefix}commands to see what's available, "
+                            f"or resend without the leading command prefix to send "
                             f"as a regular message."
                         )
             except Exception as e:
@@ -3939,16 +3951,20 @@ class GatewayRunner:
                     _stt_meta = {"thread_id": source.thread_id} if source.thread_id else None
                     if _stt_adapter:
                         try:
+                            command_prefix = _preferred_command_prefix(source)
                             _stt_msg = (
                                 "🎤 I received your voice message but can't transcribe it — "
                                 "no speech-to-text provider is configured.\n\n"
                                 "To enable voice: install faster-whisper "
                                 "(`pip install faster-whisper` in the Hermes venv) "
                                 "and set `stt.enabled: true` in config.yaml, "
-                                "then /restart the gateway."
+                                f"then {command_prefix}restart the gateway."
                             )
                             if self._has_setup_skill():
-                                _stt_msg += "\n\nFor full setup instructions, type: `/skill hermes-agent-setup`"
+                                _stt_msg += (
+                                    "\n\nFor full setup instructions, type: "
+                                    f"`{command_prefix}skill hermes-agent-setup`"
+                                )
                             await _stt_adapter.send(
                                 source.chat_id,
                                 _stt_msg,
@@ -4437,9 +4453,10 @@ class GatewayRunner:
 
         # First-message onboarding -- only on the very first interaction ever
         if not history and not self.session_store.has_any_sessions():
+            command_prefix = _preferred_command_prefix(source)
             context_prompt += (
                 "\n\n[System note: This is the user's very first message ever. "
-                "Briefly introduce yourself and mention that /help shows available commands. "
+                f"Briefly introduce yourself and mention that {command_prefix}help shows available commands. "
                 "Keep the introduction concise -- one or two sentences max.]"
             )
         
@@ -5378,21 +5395,26 @@ class GatewayRunner:
     async def _handle_help_command(self, event: MessageEvent) -> str:
         """Handle /help command - list available commands."""
         from hermes_cli.commands import gateway_help_lines
+        command_prefix = _preferred_command_prefix(event)
         lines = [
             "📖 **Hermes Commands**\n",
-            *gateway_help_lines(),
+            *gateway_help_lines(prefix=command_prefix),
         ]
         try:
             from agent.skill_commands import get_skill_commands
             skill_cmds = get_skill_commands()
             if skill_cmds:
                 lines.append(f"\n⚡ **Skill Commands** ({len(skill_cmds)} active):")
-                # Show first 10, then point to /commands for the rest
+                # Show first 10, then point to the commands list for the rest.
                 sorted_cmds = sorted(skill_cmds)
                 for cmd in sorted_cmds[:10]:
-                    lines.append(f"`{cmd}` — {skill_cmds[cmd]['description']}")
+                    display_cmd = f"{command_prefix}{cmd.lstrip('/')}"
+                    lines.append(f"`{display_cmd}` — {skill_cmds[cmd]['description']}")
                 if len(sorted_cmds) > 10:
-                    lines.append(f"\n... and {len(sorted_cmds) - 10} more. Use `/commands` for the full paginated list.")
+                    lines.append(
+                        f"\n... and {len(sorted_cmds) - 10} more. "
+                        f"Use `{command_prefix}commands` for the full paginated list."
+                    )
         except Exception:
             pass
         return "\n".join(lines)
@@ -5401,17 +5423,18 @@ class GatewayRunner:
         """Handle /commands [page] - paginated list of all commands and skills."""
         from hermes_cli.commands import gateway_help_lines
 
+        command_prefix = _preferred_command_prefix(event)
         raw_args = event.get_command_args().strip()
         if raw_args:
             try:
                 requested_page = int(raw_args)
             except ValueError:
-                return "Usage: `/commands [page]`"
+                return f"Usage: `{command_prefix}commands [page]`"
         else:
             requested_page = 1
 
         # Build combined entry list: built-in commands + skill commands
-        entries = list(gateway_help_lines())
+        entries = list(gateway_help_lines(prefix=command_prefix))
         try:
             from agent.skill_commands import get_skill_commands
             skill_cmds = get_skill_commands()
@@ -5420,7 +5443,8 @@ class GatewayRunner:
                 entries.append("⚡ **Skill Commands**:")
                 for cmd in sorted(skill_cmds):
                     desc = skill_cmds[cmd].get("description", "").strip() or "Skill command"
-                    entries.append(f"`{cmd}` — {desc}")
+                    display_cmd = f"{command_prefix}{cmd.lstrip('/')}"
+                    entries.append(f"`{display_cmd}` — {desc}")
         except Exception:
             pass
 
@@ -5442,9 +5466,9 @@ class GatewayRunner:
         if total_pages > 1:
             nav_parts = []
             if page > 1:
-                nav_parts.append(f"`/commands {page - 1}` ← prev")
+                nav_parts.append(f"`{command_prefix}commands {page - 1}` ← prev")
             if page < total_pages:
-                nav_parts.append(f"next → `/commands {page + 1}`")
+                nav_parts.append(f"next → `{command_prefix}commands {page + 1}`")
             lines.extend(["", " | ".join(nav_parts)])
         if page != requested_page:
             lines.append(f"_(Requested page {requested_page} was out of range, showing page {page}.)_")
@@ -10647,16 +10671,17 @@ class GatewayRunner:
             # as user input.  The primary fix is in base.py (commands bypass the
             # active-session guard), but this catches edge cases where command
             # text leaks through the interrupt_message fallback.
-            if pending and pending.strip().startswith("/"):
-                _pending_parts = pending.strip().split(None, 1)
-                _pending_cmd_word = _pending_parts[0][1:].lower() if _pending_parts else ""
+            _pending_cmd = extract_command_parts(pending or "")
+            if _pending_cmd:
+                _pending_cmd_word = _pending_cmd[1]
                 if _pending_cmd_word:
                     try:
                         from hermes_cli.commands import resolve_command as _rc_pending
                         if _rc_pending(_pending_cmd_word):
                             logger.info(
-                                "Discarding command '/%s' from pending queue — "
+                                "Discarding command '%s%s' from pending queue — "
                                 "commands must not be passed as agent input",
+                                _pending_cmd[0],
                                 _pending_cmd_word,
                             )
                             pending_event = None

@@ -202,6 +202,14 @@ class TestGatewayHelpLines:
         assert len(bg_line) == 1
         assert "/bg" in bg_line[0]
 
+    def test_uses_custom_prefix_for_gateway_help(self):
+        lines = gateway_help_lines(prefix="!")
+        joined = "\n".join(lines)
+        help_line = [line for line in lines if line.startswith("`!help")]
+        assert len(help_line) == 1
+        assert "`!background" in joined
+        assert "`!bg`" in joined
+
 
 class TestTelegramBotCommands:
     def test_returns_list_of_tuples(self):

@@ -372,7 +372,7 @@ def _is_gateway_available(cmd: CommandDef, config_overrides: set[str] | None = N
     return False
 
 
-def gateway_help_lines() -> list[str]:
+def gateway_help_lines(prefix: str = "/") -> list[str]:
     """Generate gateway help text lines from the registry."""
     overrides = _resolve_config_gates()
     lines: list[str] = []
@@ -385,9 +385,9 @@ def gateway_help_lines() -> list[str]:
             # Skip internal aliases like reload_mcp (underscore variant)
             if a.replace("-", "_") == cmd.name.replace("-", "_") and a != cmd.name:
                 continue
-            alias_parts.append(f"`/{a}`")
+            alias_parts.append(f"`{prefix}{a}`")
         alias_note = f" (alias: {', '.join(alias_parts)})" if alias_parts else ""
-        lines.append(f"`/{cmd.name}{args}` -- {cmd.description}{alias_note}")
+        lines.append(f"`{prefix}{cmd.name}{args}` -- {cmd.description}{alias_note}")
     return lines
 
 

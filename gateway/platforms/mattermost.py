@@ -28,6 +28,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    extract_command_parts,
 )
 
 logger = logging.getLogger(__name__)
@@ -616,6 +617,7 @@ class MattermostAdapter(BasePlatformAdapter):
         # Config (env vars):
         #   MATTERMOST_REQUIRE_MENTION: Require @mention in channels (default: true)
         #   MATTERMOST_FREE_RESPONSE_CHANNELS: Channel IDs where bot responds without mention
+        parsed_command = extract_command_parts(message_text)
         if channel_type_raw != "D":
             require_mention = os.getenv(
                 "MATTERMOST_REQUIRE_MENTION", "true"
@@ -634,7 +636,7 @@ class MattermostAdapter(BasePlatformAdapter):
                 for pattern in mention_patterns
             )
 
-            if require_mention and not is_free_channel and not has_mention:
+            if require_mention and not is_free_channel and not has_mention and not parsed_command:
                 logger.debug(
                     "Mattermost: skipping non-DM message without @mention (channel=%s)",
                     channel_id,
@@ -658,7 +660,7 @@ class MattermostAdapter(BasePlatformAdapter):
         # Determine message type.
         file_ids = post.get("file_ids") or []
         msg_type = MessageType.TEXT
-        if message_text.startswith("/"):
+        if extract_command_parts(message_text):
             msg_type = MessageType.COMMAND
 
         # Download file attachments immediately (URLs require auth headers

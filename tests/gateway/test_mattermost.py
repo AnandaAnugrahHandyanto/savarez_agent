@@ -280,6 +280,31 @@ class TestMattermostWebSocketParsing:
         assert msg_event.message_id == "post_abc"
 
     @pytest.mark.asyncio
+    async def test_bang_prefixed_command_is_marked_as_command(self):
+        from gateway.platforms.base import MessageType
+
+        post_data = {
+            "id": "post_cmd",
+            "user_id": "user_123",
+            "channel_id": "chan_456",
+            "message": "!model",
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "O",
+                "sender_name": "@alice",
+            },
+        }
+
+        await self.adapter._handle_ws_event(event)
+        assert self.adapter.handle_message.called
+        msg_event = self.adapter.handle_message.call_args[0][0]
+        assert msg_event.message_type == MessageType.COMMAND
+        assert msg_event.get_command() == "model"
+
+    @pytest.mark.asyncio
     async def test_ignore_own_messages(self):
         """Messages from the bot's own user_id should be ignored."""
         post_data = {
