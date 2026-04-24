@@ -5,7 +5,7 @@ import threading
 from pathlib import Path
 from unittest.mock import patch
 
-from tools.registry import ToolRegistry, discover_builtin_tools
+from hermes_agent.tools.registry import ToolRegistry, discover_builtin_tools
 
 
 def _dummy_handler(args, **kwargs):
@@ -318,7 +318,7 @@ class TestBuiltinDiscovery:
             "tools.web_tools",
         }
 
-        with patch("tools.registry.importlib.import_module"):
+        with patch("hermes_agent.tools.registry.importlib.import_module"):
             imported = discover_builtin_tools(Path(__file__).resolve().parents[2] / "tools")
 
         assert set(imported) == expected
@@ -334,7 +334,7 @@ class TestBuiltinDiscovery:
         )
         (tools_dir / "beta.py").write_text("VALUE = 1\n", encoding="utf-8")
 
-        with patch("tools.registry.importlib.import_module") as mock_import:
+        with patch("hermes_agent.tools.registry.importlib.import_module") as mock_import:
             imported = discover_builtin_tools(tools_dir)
 
         assert imported == ["tools.alpha"]
@@ -353,7 +353,7 @@ class TestBuiltinDiscovery:
             encoding="utf-8",
         )
 
-        with patch("tools.registry.importlib.import_module") as mock_import:
+        with patch("hermes_agent.tools.registry.importlib.import_module") as mock_import:
             imported = discover_builtin_tools(tools_dir)
 
         assert imported == ["tools.alpha"]

@@ -207,7 +207,7 @@ class PluginContext:
         emoji: str = "",
     ) -> None:
         """Register a tool in the global registry **and** track it as plugin-provided."""
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
 
         registry.register(
             name=name,
@@ -350,7 +350,7 @@ class PluginContext:
         Returns:
             JSON string from the tool handler (same format as model tool calls).
         """
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
 
         # Wire up parent agent context when available (CLI mode).
         # In gateway mode _cli_ref is None — tools degrade gracefully
@@ -1140,7 +1140,7 @@ def get_plugin_toolsets() -> List[tuple]:
         return []
 
     try:
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
     except Exception:
         return []
 

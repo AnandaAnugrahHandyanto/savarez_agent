@@ -8,14 +8,14 @@ from unittest.mock import patch, MagicMock, mock_open
 
 import pytest
 
-from tools.browser_tool import (
+from hermes_agent.tools.browser_tool import (
     _discover_homebrew_node_dirs,
     _find_agent_browser,
     _run_browser_command,
     _SANE_PATH,
     check_browser_requirements,
 )
-import tools.browser_tool as _bt
+import hermes_agent.tools.browser_tool as _bt
 
 
 @pytest.fixture(autouse=True)
@@ -258,15 +258,15 @@ class TestRunBrowserCommandPathConstruction:
         browser_path = "/Users/test/Library/Application Support/hermes/node_modules/.bin/agent-browser"
         hermes_home = str(tmp_path / "hermes-home")
 
-        with patch("tools.browser_tool._find_agent_browser", return_value=browser_path), \
-             patch("tools.browser_tool._get_session_info", return_value=fake_session), \
-             patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
-             patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
+        with patch("hermes_agent.tools.browser_tool._find_agent_browser", return_value=browser_path), \
+             patch("hermes_agent.tools.browser_tool._get_session_info", return_value=fake_session), \
+             patch("hermes_agent.tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
+             patch("hermes_agent.tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
              patch("hermes_constants.Path.home", return_value=tmp_path), \
              patch("subprocess.Popen", side_effect=capture_popen), \
              patch("os.open", return_value=99), \
              patch("os.close"), \
-             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("hermes_agent.tools.interrupt.is_interrupted", return_value=False), \
              patch.dict(
                  os.environ,
                  {
@@ -309,15 +309,15 @@ class TestRunBrowserCommandPathConstruction:
         fake_json = json.dumps({"success": True})
         hermes_home = str(tmp_path / "hermes-home")
 
-        with patch("tools.browser_tool._find_agent_browser", return_value="npx agent-browser"), \
-             patch("tools.browser_tool._get_session_info", return_value=fake_session), \
-             patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
-             patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
+        with patch("hermes_agent.tools.browser_tool._find_agent_browser", return_value="npx agent-browser"), \
+             patch("hermes_agent.tools.browser_tool._get_session_info", return_value=fake_session), \
+             patch("hermes_agent.tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
+             patch("hermes_agent.tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
              patch("hermes_constants.Path.home", return_value=tmp_path), \
              patch("subprocess.Popen", side_effect=capture_popen), \
              patch("os.open", return_value=99), \
              patch("os.close"), \
-             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("hermes_agent.tools.interrupt.is_interrupted", return_value=False), \
              patch.dict(
                  os.environ,
                  {
@@ -380,15 +380,15 @@ class TestRunBrowserCommandPathConstruction:
                 return True  # _SANE_PATH dirs
             return real_isdir(p)
 
-        with patch("tools.browser_tool._find_agent_browser", return_value="/usr/local/bin/agent-browser"), \
-             patch("tools.browser_tool._get_session_info", return_value=fake_session), \
-             patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
-             patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=fake_homebrew_dirs), \
+        with patch("hermes_agent.tools.browser_tool._find_agent_browser", return_value="/usr/local/bin/agent-browser"), \
+             patch("hermes_agent.tools.browser_tool._get_session_info", return_value=fake_session), \
+             patch("hermes_agent.tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
+             patch("hermes_agent.tools.browser_tool._discover_homebrew_node_dirs", return_value=fake_homebrew_dirs), \
              patch("os.path.isdir", side_effect=selective_isdir), \
              patch("subprocess.Popen", side_effect=capture_popen), \
              patch("os.open", return_value=99), \
              patch("os.close"), \
-             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("hermes_agent.tools.interrupt.is_interrupted", return_value=False), \
              patch.dict(os.environ, {"PATH": "/usr/bin:/bin", "HOME": "/home/test"}, clear=True):
             # The function reads from temp files for stdout/stderr
             with patch("builtins.open", mock_open(read_data=fake_json)):
@@ -428,15 +428,15 @@ class TestRunBrowserCommandPathConstruction:
                 return True
             return real_isdir(p)
 
-        with patch("tools.browser_tool._find_agent_browser", return_value="/usr/local/bin/agent-browser"), \
-             patch("tools.browser_tool._get_session_info", return_value=fake_session), \
-             patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
-             patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
+        with patch("hermes_agent.tools.browser_tool._find_agent_browser", return_value="/usr/local/bin/agent-browser"), \
+             patch("hermes_agent.tools.browser_tool._get_session_info", return_value=fake_session), \
+             patch("hermes_agent.tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
+             patch("hermes_agent.tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
              patch("os.path.isdir", side_effect=selective_isdir), \
              patch("subprocess.Popen", side_effect=capture_popen), \
              patch("os.open", return_value=99), \
              patch("os.close"), \
-             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("hermes_agent.tools.interrupt.is_interrupted", return_value=False), \
              patch.dict(os.environ, {"PATH": "/usr/bin:/bin", "HOME": "/home/test"}, clear=True):
             with patch("builtins.open", mock_open(read_data=fake_json)):
                 _run_browser_command("test-task", "navigate", ["https://example.com"])
@@ -476,15 +476,15 @@ class TestRunBrowserCommandPathConstruction:
                 return True
             return real_isdir(path)
 
-        with patch("tools.browser_tool._find_agent_browser", return_value="/usr/local/bin/agent-browser"), \
-             patch("tools.browser_tool._get_session_info", return_value=fake_session), \
-             patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
-             patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
+        with patch("hermes_agent.tools.browser_tool._find_agent_browser", return_value="/usr/local/bin/agent-browser"), \
+             patch("hermes_agent.tools.browser_tool._get_session_info", return_value=fake_session), \
+             patch("hermes_agent.tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
+             patch("hermes_agent.tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
              patch("os.path.isdir", side_effect=selective_isdir), \
              patch("subprocess.Popen", side_effect=capture_popen), \
              patch("os.open", return_value=99), \
              patch("os.close"), \
-             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("hermes_agent.tools.interrupt.is_interrupted", return_value=False), \
              patch.dict(os.environ, {"PATH": "/usr/bin:/bin", "HOME": "/home/test"}, clear=True):
             with patch("builtins.open", mock_open(read_data=fake_json)):
                 _run_browser_command("test-task", "navigate", ["https://example.com"])

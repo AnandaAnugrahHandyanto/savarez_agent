@@ -709,7 +709,7 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Not connected")
 
-        from tools.url_safety import is_safe_url
+        from hermes_agent.tools.url_safety import is_safe_url
         if not is_safe_url(image_url):
             logger.warning("[Slack] Blocked unsafe image URL (SSRF protection)")
             return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
@@ -1438,7 +1438,7 @@ class SlackAdapter(BasePlatformAdapter):
 
         # Resolve the approval — this unblocks the agent thread
         try:
-            from tools.approval import resolve_gateway_approval
+            from hermes_agent.tools.approval import resolve_gateway_approval
             count = resolve_gateway_approval(session_key, choice)
             logger.info(
                 "Slack button resolved %d approval(s) for session %s (choice=%s, user=%s)",

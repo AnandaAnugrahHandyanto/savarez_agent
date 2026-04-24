@@ -851,7 +851,7 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
     """Build a compact Nous subscription capability block for the system prompt."""
     try:
         from hermes_agent.cli.nous_subscription import get_nous_subscription_features
-        from tools.tool_backend_helpers import managed_nous_tools_enabled
+        from hermes_agent.tools.tool_backend_helpers import managed_nous_tools_enabled
     except Exception as exc:
         logger.debug("Failed to import Nous subscription helper: %s", exc)
         return ""

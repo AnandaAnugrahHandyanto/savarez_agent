@@ -356,7 +356,7 @@ class TestMediaUpload:
         assert calls[3][1]["chunk_index"] == 2
 
     @pytest.mark.asyncio
-    @patch("tools.url_safety.is_safe_url", return_value=True)
+    @patch("hermes_agent.tools.url_safety.is_safe_url", return_value=True)
     async def test_download_remote_bytes_rejects_large_content_length(self, _mock_safe):
         from hermes_agent.gateway.platforms.wecom import WeComAdapter
 

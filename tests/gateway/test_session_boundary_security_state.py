@@ -8,8 +8,8 @@ import pytest
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.platforms.base import MessageEvent
 from hermes_agent.gateway.session import SessionEntry, SessionSource, build_session_key
-from tools import approval as approval_mod
-from tools.approval import (
+from hermes_agent.tools import approval as approval_mod
+from hermes_agent.tools.approval import (
     approve_session,
     enable_session_yolo,
     is_approved,

@@ -869,7 +869,7 @@ class MatrixAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Download an image URL and upload it to Matrix."""
-        from tools.url_safety import is_safe_url
+        from hermes_agent.tools.url_safety import is_safe_url
 
         if not is_safe_url(image_url):
             logger.warning("Matrix: blocked unsafe image URL (SSRF protection)")

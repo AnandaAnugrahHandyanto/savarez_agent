@@ -83,7 +83,7 @@ WEATHER_SCHEMA = {
 
 # --- Registration ---
 
-from tools.registry import registry
+from hermes_agent.tools.registry import registry
 
 registry.register(
     name="weather",

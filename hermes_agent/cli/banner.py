@@ -103,7 +103,7 @@ def get_available_skills() -> Dict[str, List[str]]:
     user's ``skills.disabled`` config list.
     """
     try:
-        from tools.skills_tool import _find_all_skills
+        from hermes_agent.tools.skills_tool import _find_all_skills
         all_skills = _find_all_skills()  # already filtered
     except Exception:
         return {}
@@ -330,9 +330,9 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         get_toolset_for_tool: Callable to map tool name -> toolset name.
         context_length: Model's context window size in tokens.
     """
-    from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
+    from hermes_agent.backends.model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
     if get_toolset_for_tool is None:
-        from model_tools import get_toolset_for_tool
+        from hermes_agent.backends.model_tools import get_toolset_for_tool
 
     tools = tools or []
     enabled_toolsets = enabled_toolsets or []
@@ -444,7 +444,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
 
     # MCP Servers section (only if configured)
     try:
-        from tools.mcp_tool import get_mcp_status
+        from hermes_agent.tools.mcp_tool import get_mcp_status
         mcp_status = get_mcp_status()
     except Exception:
         mcp_status = []

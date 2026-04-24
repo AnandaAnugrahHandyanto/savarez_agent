@@ -1206,7 +1206,7 @@ class QQAdapter(BasePlatformAdapter):
 
     async def _download_and_cache(self, url: str, content_type: str) -> Optional[str]:
         """Download a URL and cache it locally."""
-        from tools.url_safety import is_safe_url
+        from hermes_agent.tools.url_safety import is_safe_url
 
         if not is_safe_url(url):
             raise ValueError(f"Blocked unsafe URL: {url[:80]}")
@@ -1307,7 +1307,7 @@ class QQAdapter(BasePlatformAdapter):
             is_pre_wav = True
             logger.debug("[%s] STT: using voice_wav_url (pre-converted WAV)", self._log_tag)
 
-        from tools.url_safety import is_safe_url
+        from hermes_agent.tools.url_safety import is_safe_url
         if not is_safe_url(download_url):
             logger.warning("[QQ] STT blocked unsafe URL: %s", download_url[:80])
             return None

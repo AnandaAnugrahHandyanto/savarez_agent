@@ -18,7 +18,7 @@ from hermes_agent.cli.models import provider_label
 from hermes_agent.cli.nous_subscription import get_nous_subscription_features
 from hermes_agent.cli.runtime_provider import resolve_requested_provider
 from hermes_constants import OPENROUTER_MODELS_URL
-from tools.tool_backend_helpers import managed_nous_tools_enabled
+from hermes_agent.tools.tool_backend_helpers import managed_nous_tools_enabled
 
 def check_mark(ok: bool) -> str:
     if ok:

@@ -2,7 +2,7 @@
 
 import json
 
-from tools.todo_tool import TodoStore, todo_tool
+from hermes_agent.tools.todo_tool import TodoStore, todo_tool
 
 
 class TestWriteAndRead:

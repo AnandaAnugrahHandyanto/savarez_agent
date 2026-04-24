@@ -2361,7 +2361,7 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.debug("[Feishu] Approval %s already resolved or unknown", approval_id)
             return
         try:
-            from tools.approval import resolve_gateway_approval
+            from hermes_agent.tools.approval import resolve_gateway_approval
             count = resolve_gateway_approval(state["session_key"], choice)
             logger.info(
                 "Feishu button resolved %d approval(s) for session %s (choice=%s, user=%s)",
@@ -2838,7 +2838,7 @@ class FeishuAdapter(BasePlatformAdapter):
         default_ext: str,
         preferred_name: str,
     ) -> tuple[str, str]:
-        from tools.url_safety import is_safe_url
+        from hermes_agent.tools.url_safety import is_safe_url
         if not is_safe_url(file_url):
             raise ValueError(f"Blocked unsafe URL (SSRF protection): {file_url[:80]}")
 

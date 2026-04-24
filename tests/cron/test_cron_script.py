@@ -233,7 +233,7 @@ class TestCronjobToolScript:
 
     def test_create_with_script(self, cron_env, monkeypatch):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
-        from tools.cronjob_tools import cronjob
+        from hermes_agent.tools.cronjob_tools import cronjob
 
         result = json.loads(cronjob(
             action="create",
@@ -246,7 +246,7 @@ class TestCronjobToolScript:
 
     def test_update_script(self, cron_env, monkeypatch):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
-        from tools.cronjob_tools import cronjob
+        from hermes_agent.tools.cronjob_tools import cronjob
 
         create_result = json.loads(cronjob(
             action="create",
@@ -265,7 +265,7 @@ class TestCronjobToolScript:
 
     def test_clear_script(self, cron_env, monkeypatch):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
-        from tools.cronjob_tools import cronjob
+        from hermes_agent.tools.cronjob_tools import cronjob
 
         create_result = json.loads(cronjob(
             action="create",
@@ -285,7 +285,7 @@ class TestCronjobToolScript:
 
     def test_list_shows_script(self, cron_env, monkeypatch):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
-        from tools.cronjob_tools import cronjob
+        from hermes_agent.tools.cronjob_tools import cronjob
 
         cronjob(
             action="create",
@@ -413,7 +413,7 @@ class TestCronjobToolScriptValidation:
 
     def test_create_with_absolute_script_rejected(self, cron_env, monkeypatch):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
-        from tools.cronjob_tools import cronjob
+        from hermes_agent.tools.cronjob_tools import cronjob
 
         result = json.loads(cronjob(
             action="create",
@@ -426,7 +426,7 @@ class TestCronjobToolScriptValidation:
 
     def test_create_with_tilde_script_rejected(self, cron_env, monkeypatch):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
-        from tools.cronjob_tools import cronjob
+        from hermes_agent.tools.cronjob_tools import cronjob
 
         result = json.loads(cronjob(
             action="create",
@@ -439,7 +439,7 @@ class TestCronjobToolScriptValidation:
 
     def test_create_with_traversal_script_rejected(self, cron_env, monkeypatch):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
-        from tools.cronjob_tools import cronjob
+        from hermes_agent.tools.cronjob_tools import cronjob
 
         result = json.loads(cronjob(
             action="create",
@@ -452,7 +452,7 @@ class TestCronjobToolScriptValidation:
 
     def test_create_with_relative_script_allowed(self, cron_env, monkeypatch):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
-        from tools.cronjob_tools import cronjob
+        from hermes_agent.tools.cronjob_tools import cronjob
 
         result = json.loads(cronjob(
             action="create",
@@ -465,7 +465,7 @@ class TestCronjobToolScriptValidation:
 
     def test_update_with_absolute_script_rejected(self, cron_env, monkeypatch):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
-        from tools.cronjob_tools import cronjob
+        from hermes_agent.tools.cronjob_tools import cronjob
 
         create_result = json.loads(cronjob(
             action="create",
@@ -485,7 +485,7 @@ class TestCronjobToolScriptValidation:
     def test_update_clear_script_allowed(self, cron_env, monkeypatch):
         """Clearing a script (empty string) should always be permitted."""
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
-        from tools.cronjob_tools import cronjob
+        from hermes_agent.tools.cronjob_tools import cronjob
 
         create_result = json.loads(cronjob(
             action="create",
@@ -505,7 +505,7 @@ class TestCronjobToolScriptValidation:
 
     def test_windows_absolute_path_rejected(self, cron_env, monkeypatch):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
-        from tools.cronjob_tools import cronjob
+        from hermes_agent.tools.cronjob_tools import cronjob
 
         result = json.loads(cronjob(
             action="create",

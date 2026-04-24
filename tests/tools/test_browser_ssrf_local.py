@@ -13,7 +13,7 @@ import json
 
 import pytest
 
-from tools import browser_tool
+from hermes_agent.tools import browser_tool
 
 
 def _make_browser_result(url="https://example.com"):

@@ -447,7 +447,7 @@ class TestPlatformToolsetConsistency:
     def test_all_platforms_have_toolset_definitions(self):
         """Each platform's default_toolset must exist in TOOLSETS."""
         from hermes_agent.cli.tools_config import PLATFORMS
-        from toolsets import TOOLSETS
+        from hermes_agent.backends.toolsets import TOOLSETS
 
         for platform, meta in PLATFORMS.items():
             ts_name = meta["default_toolset"]
@@ -459,7 +459,7 @@ class TestPlatformToolsetConsistency:
     def test_gateway_toolset_includes_all_messaging_platforms(self):
         """hermes-gateway includes list should cover all messaging platforms."""
         from hermes_agent.cli.tools_config import PLATFORMS
-        from toolsets import TOOLSETS
+        from hermes_agent.backends.toolsets import TOOLSETS
 
         gateway_includes = set(TOOLSETS["hermes-gateway"]["includes"])
         # Exclude non-messaging platforms from the check

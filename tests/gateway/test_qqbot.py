@@ -163,7 +163,7 @@ class TestVoiceAttachmentSSRFProtection:
         adapter = self._make_adapter(app_id="a", client_secret="b")
         adapter._http_client = mock.AsyncMock()
 
-        with mock.patch("tools.url_safety.is_safe_url", return_value=False):
+        with mock.patch("hermes_agent.tools.url_safety.is_safe_url", return_value=False):
             transcript = asyncio.run(
                 adapter._stt_voice_attachment(
                     "http://127.0.0.1/voice.silk",

@@ -11,7 +11,7 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch, PropertyMock
 
-from tools.interrupt import set_interrupt, is_interrupted
+from hermes_agent.tools.interrupt import set_interrupt, is_interrupted
 
 
 def _make_slow_api_response(delay=5.0):
@@ -79,7 +79,7 @@ class TestRealSubagentInterrupt(unittest.TestCase):
         parent._client_kwargs = {"api_key": "***", "base_url": "http://localhost:1"}
         parent._execution_thread_id = None
 
-        from tools.delegate_tool import _run_single_child
+        from hermes_agent.tools.delegate_tool import _run_single_child
 
         child_started = threading.Event()
         result_holder = [None]

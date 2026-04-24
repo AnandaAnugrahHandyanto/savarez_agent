@@ -31,7 +31,7 @@ from agent.image_gen_provider import (
     save_b64_image,
     success_response,
 )
-from tools.xai_http import hermes_xai_user_agent
+from hermes_agent.tools.xai_http import hermes_xai_user_agent
 
 logger = logging.getLogger(__name__)
 

@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock
 from hermes_agent.gateway.config import Platform, PlatformConfig
 from hermes_agent.gateway.platforms.homeassistant import HomeAssistantAdapter
 from tests.fakes.fake_ha_server import FakeHAServer, ENTITY_STATES
-from tools.homeassistant_tool import (
+from hermes_agent.tools.homeassistant_tool import (
     _async_call_service,
     _async_get_state,
     _async_list_entities,

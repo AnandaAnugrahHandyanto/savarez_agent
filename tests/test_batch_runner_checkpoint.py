@@ -12,7 +12,7 @@ import pytest
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from batch_runner import BatchRunner, _process_batch_worker
+from hermes_agent.backends.batch_runner import BatchRunner, _process_batch_worker
 
 
 @pytest.fixture

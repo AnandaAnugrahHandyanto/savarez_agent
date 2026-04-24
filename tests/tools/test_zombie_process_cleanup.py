@@ -109,9 +109,9 @@ class TestAgentCloseMethod:
             agent._active_children_lock = threading.Lock()
             agent.client = None
 
-            with patch("tools.process_registry.process_registry") as mock_registry, \
-                 patch("tools.terminal_tool.cleanup_vm") as mock_cleanup_vm, \
-                 patch("tools.browser_tool.cleanup_browser") as mock_cleanup_browser:
+            with patch("hermes_agent.tools.process_registry.process_registry") as mock_registry, \
+                 patch("hermes_agent.tools.terminal_tool.cleanup_vm") as mock_cleanup_vm, \
+                 patch("hermes_agent.tools.browser_tool.cleanup_browser") as mock_cleanup_browser:
                 agent.close()
 
                 mock_registry.kill_all.assert_called_once_with(
@@ -234,8 +234,8 @@ class TestGatewayCleanupWiring:
         try:
             with patch("hermes_agent.gateway.status.remove_pid_file"), \
                  patch("hermes_agent.gateway.status.write_runtime_status"), \
-                 patch("tools.terminal_tool.cleanup_all_environments"), \
-                 patch("tools.browser_tool.cleanup_all_browsers"):
+                 patch("hermes_agent.tools.terminal_tool.cleanup_all_environments"), \
+                 patch("hermes_agent.tools.browser_tool.cleanup_all_browsers"):
                 loop.run_until_complete(GatewayRunner.stop(runner))
         finally:
             loop.close()
@@ -269,7 +269,7 @@ class TestDelegationCleanup:
     def test_run_single_child_calls_close(self):
         """_run_single_child finally block should call close() on child."""
         from unittest.mock import MagicMock
-        from tools.delegate_tool import _run_single_child
+        from hermes_agent.tools.delegate_tool import _run_single_child
 
         parent = MagicMock()
         parent._active_children = []

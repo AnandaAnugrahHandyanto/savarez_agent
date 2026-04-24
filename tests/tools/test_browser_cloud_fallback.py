@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-import tools.browser_tool as browser_tool
+import hermes_agent.tools.browser_tool as browser_tool
 
 
 def _reset_session_state(monkeypatch):

@@ -9,7 +9,7 @@ against the tool's JSON Schema before dispatch.
 import pytest
 from unittest.mock import patch
 
-from model_tools import (
+from hermes_agent.backends.model_tools import (
     coerce_tool_args,
     _coerce_value,
     _coerce_number,
@@ -179,7 +179,7 @@ class TestCoerceToolArgs:
 
     def test_coerces_integer_arg(self):
         schema = self._mock_schema({"limit": {"type": "integer"}})
-        with patch("model_tools.registry.get_schema", return_value=schema):
+        with patch("hermes_agent.backends.model_tools.registry.get_schema", return_value=schema):
             args = {"limit": "10"}
             result = coerce_tool_args("test_tool", args)
             assert result["limit"] == 10
@@ -187,34 +187,34 @@ class TestCoerceToolArgs:
 
     def test_coerces_boolean_arg(self):
         schema = self._mock_schema({"merge": {"type": "boolean"}})
-        with patch("model_tools.registry.get_schema", return_value=schema):
+        with patch("hermes_agent.backends.model_tools.registry.get_schema", return_value=schema):
             args = {"merge": "true"}
             result = coerce_tool_args("test_tool", args)
             assert result["merge"] is True
 
     def test_coerces_number_arg(self):
         schema = self._mock_schema({"temperature": {"type": "number"}})
-        with patch("model_tools.registry.get_schema", return_value=schema):
+        with patch("hermes_agent.backends.model_tools.registry.get_schema", return_value=schema):
             args = {"temperature": "0.7"}
             result = coerce_tool_args("test_tool", args)
             assert result["temperature"] == 0.7
 
     def test_leaves_string_args_alone(self):
         schema = self._mock_schema({"path": {"type": "string"}})
-        with patch("model_tools.registry.get_schema", return_value=schema):
+        with patch("hermes_agent.backends.model_tools.registry.get_schema", return_value=schema):
             args = {"path": "/tmp/file.txt"}
             result = coerce_tool_args("test_tool", args)
             assert result["path"] == "/tmp/file.txt"
 
     def test_leaves_already_correct_types(self):
         schema = self._mock_schema({"limit": {"type": "integer"}})
-        with patch("model_tools.registry.get_schema", return_value=schema):
+        with patch("hermes_agent.backends.model_tools.registry.get_schema", return_value=schema):
             args = {"limit": 10}
             result = coerce_tool_args("test_tool", args)
             assert result["limit"] == 10
 
     def test_unknown_tool_returns_args_unchanged(self):
-        with patch("model_tools.registry.get_schema", return_value=None):
+        with patch("hermes_agent.backends.model_tools.registry.get_schema", return_value=None):
             args = {"limit": "10"}
             result = coerce_tool_args("unknown_tool", args)
             assert result["limit"] == "10"
@@ -231,7 +231,7 @@ class TestCoerceToolArgs:
             "items": {"type": "array"},
             "config": {"type": "object"},
         })
-        with patch("model_tools.registry.get_schema", return_value=schema):
+        with patch("hermes_agent.backends.model_tools.registry.get_schema", return_value=schema):
             args = {"items": [1, 2, 3], "config": {"key": "val"}}
             result = coerce_tool_args("test_tool", args)
             assert result["items"] == [1, 2, 3]
@@ -242,7 +242,7 @@ class TestCoerceToolArgs:
         schema = self._mock_schema({
             "messageIds": {"type": "array", "items": {"type": "string"}},
         })
-        with patch("model_tools.registry.get_schema", return_value=schema):
+        with patch("hermes_agent.backends.model_tools.registry.get_schema", return_value=schema):
             args = {"messageIds": '["abc", "def"]'}
             result = coerce_tool_args("test_tool", args)
             assert result["messageIds"] == ["abc", "def"]
@@ -250,7 +250,7 @@ class TestCoerceToolArgs:
     def test_coerces_stringified_object_arg(self):
         """Stringified JSON objects get parsed into dicts."""
         schema = self._mock_schema({"config": {"type": "object"}})
-        with patch("model_tools.registry.get_schema", return_value=schema):
+        with patch("hermes_agent.backends.model_tools.registry.get_schema", return_value=schema):
             args = {"config": '{"max": 50}'}
             result = coerce_tool_args("test_tool", args)
             assert result["config"] == {"max": 50}
@@ -258,7 +258,7 @@ class TestCoerceToolArgs:
     def test_invalid_json_array_preserved_as_string(self):
         """If the string isn't valid JSON, pass it through — let the tool decide."""
         schema = self._mock_schema({"items": {"type": "array"}})
-        with patch("model_tools.registry.get_schema", return_value=schema):
+        with patch("hermes_agent.backends.model_tools.registry.get_schema", return_value=schema):
             args = {"items": "not-json"}
             result = coerce_tool_args("test_tool", args)
             assert result["items"] == "not-json"
@@ -266,7 +266,7 @@ class TestCoerceToolArgs:
     def test_extra_args_without_schema_left_alone(self):
         """Args not in the schema properties are not touched."""
         schema = self._mock_schema({"limit": {"type": "integer"}})
-        with patch("model_tools.registry.get_schema", return_value=schema):
+        with patch("hermes_agent.backends.model_tools.registry.get_schema", return_value=schema):
             args = {"limit": "10", "extra": "42"}
             result = coerce_tool_args("test_tool", args)
             assert result["limit"] == 10
@@ -280,7 +280,7 @@ class TestCoerceToolArgs:
             "full": {"type": "boolean"},
             "path": {"type": "string"},
         })
-        with patch("model_tools.registry.get_schema", return_value=schema):
+        with patch("hermes_agent.backends.model_tools.registry.get_schema", return_value=schema):
             args = {
                 "offset": "1",
                 "limit": "500",
@@ -296,7 +296,7 @@ class TestCoerceToolArgs:
     def test_failed_coercion_preserves_original(self):
         """A non-parseable string stays as string even if schema says integer."""
         schema = self._mock_schema({"limit": {"type": "integer"}})
-        with patch("model_tools.registry.get_schema", return_value=schema):
+        with patch("hermes_agent.backends.model_tools.registry.get_schema", return_value=schema):
             args = {"limit": "not_a_number"}
             result = coerce_tool_args("test_tool", args)
             assert result["limit"] == "not_a_number"

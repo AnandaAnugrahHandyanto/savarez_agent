@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import hermes_agent.cli.plugins as plugins_mod
-import model_tools
+import hermes_agent.backends.model_tools
 
 
 _UNSET = object()
@@ -26,7 +26,7 @@ def _run_handle_function_call(
     invoke_hook=_UNSET,
 ):
     """Drive ``handle_function_call`` with a mocked registry dispatch."""
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     monkeypatch.setattr(
         registry, "dispatch",

@@ -6,7 +6,7 @@ import pytest
 
 
 def _load_module():
-    from tools import browser_camofox_state as state
+    from hermes_agent.tools import browser_camofox_state as state
     return state
 
 

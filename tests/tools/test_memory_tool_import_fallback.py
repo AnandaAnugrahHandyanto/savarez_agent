@@ -4,7 +4,7 @@ import builtins
 import importlib
 import sys
 
-from tools.registry import registry
+from hermes_agent.tools.registry import registry
 
 
 def test_memory_tool_imports_without_fcntl(monkeypatch, tmp_path):

@@ -162,7 +162,7 @@ async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_pa
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = FakeAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
-    import tools.terminal_tool  # noqa: F401 - register terminal emoji for this fake-agent test
+    import hermes_agent.tools.terminal_tool  # noqa: F401 - register terminal emoji for this fake-agent test
 
     adapter = ProgressCaptureAdapter()
     runner = _make_runner(adapter)
@@ -798,7 +798,7 @@ async def test_run_agent_drops_tool_progress_after_generation_invalidation(monke
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = DelayedProgressAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
-    import tools.terminal_tool  # noqa: F401 - register terminal tool metadata
+    import hermes_agent.tools.terminal_tool  # noqa: F401 - register terminal tool metadata
 
     adapter = ProgressCaptureAdapter(platform=Platform.DISCORD)
     runner = _make_runner(adapter)

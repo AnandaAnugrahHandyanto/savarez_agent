@@ -1855,7 +1855,7 @@ class TestConcurrentToolExecution:
 
     def test_invoke_tool_handles_agent_level_tools(self, agent):
         """_invoke_tool should handle todo tool directly."""
-        with patch("tools.todo_tool.todo_tool", return_value='{"ok":true}') as mock_todo:
+        with patch("hermes_agent.tools.todo_tool.todo_tool", return_value='{"ok":true}') as mock_todo:
             result = agent._invoke_tool("todo", {"todos": []}, "task-1")
             mock_todo.assert_called_once()
         assert "ok" in result
@@ -1866,7 +1866,7 @@ class TestConcurrentToolExecution:
             "hermes_cli.plugins.get_pre_tool_call_block_message",
             lambda *args, **kwargs: "Blocked by test policy",
         )
-        with patch("tools.todo_tool.todo_tool", side_effect=AssertionError("should not run")) as mock_todo:
+        with patch("hermes_agent.tools.todo_tool.todo_tool", side_effect=AssertionError("should not run")) as mock_todo:
             result = agent._invoke_tool("todo", {"todos": []}, "task-1")
 
         assert json.loads(result) == {"error": "Blocked by test policy"}
@@ -1919,7 +1919,7 @@ class TestConcurrentToolExecution:
             "hermes_cli.plugins.get_pre_tool_call_block_message",
             lambda *args, **kwargs: "Blocked",
         )
-        with patch("tools.memory_tool.memory_tool", side_effect=AssertionError("should not run")):
+        with patch("hermes_agent.tools.memory_tool.memory_tool", side_effect=AssertionError("should not run")):
             result = agent._invoke_tool(
                 "memory", {"action": "add", "target": "memory", "content": "x"}, "task-1",
             )
@@ -3635,7 +3635,7 @@ class TestAnthropicImageFallback:
         }]
 
         with (
-            patch("tools.vision_tools.vision_analyze_tool", new=AsyncMock(return_value=json.dumps({"success": True, "analysis": "A cat sitting on a chair."}))),
+            patch("hermes_agent.tools.vision_tools.vision_analyze_tool", new=AsyncMock(return_value=json.dumps({"success": True, "analysis": "A cat sitting on a chair."}))),
             patch("agent.anthropic_adapter.build_anthropic_kwargs") as mock_build,
         ):
             mock_build.return_value = {"model": "claude-sonnet-4-20250514", "messages": [], "max_tokens": 4096}
@@ -3675,7 +3675,7 @@ class TestAnthropicImageFallback:
 
         mock_vision = AsyncMock(return_value=json.dumps({"success": True, "analysis": "A small test image."}))
         with (
-            patch("tools.vision_tools.vision_analyze_tool", new=mock_vision),
+            patch("hermes_agent.tools.vision_tools.vision_analyze_tool", new=mock_vision),
             patch("agent.anthropic_adapter.build_anthropic_kwargs") as mock_build,
         ):
             mock_build.return_value = {"model": "claude-sonnet-4-20250514", "messages": [], "max_tokens": 4096}

@@ -22,7 +22,7 @@ import pytest
 def image_tool():
     """Fresh import of tools.image_generation_tool per test."""
     import importlib
-    import tools.image_generation_tool as mod
+    import hermes_agent.tools.image_generation_tool as mod
     return importlib.reload(mod)
 
 

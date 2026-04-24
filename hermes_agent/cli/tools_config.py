@@ -24,7 +24,7 @@ from hermes_agent.cli.nous_subscription import (
     apply_nous_managed_defaults,
     get_nous_subscription_features,
 )
-from tools.tool_backend_helpers import fal_key_is_configured, managed_nous_tools_enabled
+from hermes_agent.tools.tool_backend_helpers import fal_key_is_configured, managed_nous_tools_enabled
 from utils import base_url_hostname
 
 logger = logging.getLogger(__name__)
@@ -549,7 +549,7 @@ def _get_platform_tools(
     include_default_mcp_servers: bool = True,
 ) -> Set[str]:
     """Resolve which individual toolset names are enabled for a platform."""
-    from toolsets import resolve_toolset
+    from hermes_agent.backends.toolsets import resolve_toolset
 
     platform_toolsets = config.get("platform_toolsets") or {}
     toolset_names = platform_toolsets.get(platform)
@@ -764,8 +764,8 @@ def _estimate_tool_tokens() -> Dict[str, int]:
 
     try:
         # Trigger full tool discovery (imports all tool modules).
-        import model_tools  # noqa: F401
-        from tools.registry import registry
+        import hermes_agent.backends.model_tools  # noqa: F401
+        from hermes_agent.tools.registry import registry
     except Exception:
         logger.debug("Tool registry unavailable; skipping token estimation")
         _tool_token_cache = {}
@@ -786,7 +786,7 @@ def _estimate_tool_tokens() -> Dict[str, int]:
 def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str]:
     """Multi-select checklist of toolsets. Returns set of selected toolset keys."""
     from hermes_agent.cli.curses_ui import curses_checklist
-    from toolsets import resolve_toolset
+    from hermes_agent.backends.toolsets import resolve_toolset
 
     # Pre-compute per-tool token counts (cached after first call).
     tool_tokens = _estimate_tool_tokens()
@@ -1100,7 +1100,7 @@ def _detect_active_provider_index(providers: list, config: dict) -> int:
 
 def _fal_model_catalog():
     """Lazy-load the FAL model catalog from the tool module."""
-    from tools.image_generation_tool import FAL_MODELS, DEFAULT_MODEL
+    from hermes_agent.tools.image_generation_tool import FAL_MODELS, DEFAULT_MODEL
     return FAL_MODELS, DEFAULT_MODEL
 
 
@@ -1921,7 +1921,7 @@ def _configure_mcp_tools_interactive(config: dict):
     print(color(f"  Connecting to {len(enabled_names)} server(s): {', '.join(enabled_names)}", Colors.DIM))
 
     try:
-        from tools.mcp_tool import probe_mcp_server_tools
+        from hermes_agent.tools.mcp_tool import probe_mcp_server_tools
         server_tools = probe_mcp_server_tools()
     except Exception as exc:
         _print_error(f"Failed to probe MCP servers: {exc}")

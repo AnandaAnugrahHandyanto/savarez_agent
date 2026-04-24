@@ -8,7 +8,7 @@ import hermes_agent.gateway.run as gateway_run
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.platforms.base import MessageEvent
 from hermes_agent.gateway.session import SessionSource
-from tools.approval import disable_session_yolo, is_session_yolo_enabled
+from hermes_agent.tools.approval import disable_session_yolo, is_session_yolo_enabled
 
 
 @pytest.fixture(autouse=True)

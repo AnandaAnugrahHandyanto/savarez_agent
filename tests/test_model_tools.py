@@ -5,7 +5,7 @@ from unittest.mock import call, patch
 
 import pytest
 
-from model_tools import (
+from hermes_agent.backends.model_tools import (
     handle_function_call,
     get_all_tool_names,
     get_toolset_for_tool,
@@ -42,7 +42,7 @@ class TestHandleFunctionCall:
 
     def test_tool_hooks_receive_session_and_tool_call_ids(self):
         with (
-            patch("model_tools.registry.dispatch", return_value='{"ok":true}'),
+            patch("hermes_agent.backends.model_tools.registry.dispatch", return_value='{"ok":true}'),
             patch("hermes_agent.cli.plugins.invoke_hook") as mock_invoke_hook,
         ):
             result = handle_function_call(

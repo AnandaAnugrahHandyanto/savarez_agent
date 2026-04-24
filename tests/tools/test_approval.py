@@ -5,8 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch as mock_patch
 
-import tools.approval as approval_module
-from tools.approval import (
+import hermes_agent.tools.approval as approval_module
+from hermes_agent.tools.approval import (
     _get_approval_mode,
     _smart_approve,
     approve_session,

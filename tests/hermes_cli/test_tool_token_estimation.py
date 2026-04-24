@@ -198,7 +198,7 @@ def test_status_fn_empty_selection():
         pytest.skip("tiktoken unavailable")
 
     from hermes_agent.cli.tools_config import CONFIGURABLE_TOOLSETS
-    from toolsets import resolve_toolset
+    from hermes_agent.backends.toolsets import resolve_toolset
 
     ts_keys = [ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS]
 
@@ -264,10 +264,10 @@ def test_curses_checklist_numbered_fallback_without_status(monkeypatch, capsys):
 
 def test_registry_get_schema_returns_schema():
     """registry.get_schema() should return a tool's schema dict."""
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     # Import to trigger discovery
-    import model_tools  # noqa: F401
+    import hermes_agent.backends.model_tools  # noqa: F401
 
     schema = registry.get_schema("terminal")
     assert schema is not None
@@ -278,6 +278,6 @@ def test_registry_get_schema_returns_schema():
 
 def test_registry_get_schema_returns_none_for_unknown():
     """registry.get_schema() should return None for unknown tools."""
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     assert registry.get_schema("nonexistent_tool_xyz") is None

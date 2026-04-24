@@ -6,7 +6,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch
 
-from tools.checkpoint_manager import (
+from hermes_agent.tools.checkpoint_manager import (
     CheckpointManager,
     _shadow_repo_path,
     _init_shadow_repo,
@@ -469,7 +469,7 @@ class TestErrorResilience:
             stdout="",
             stderr="",
         )
-        with patch("tools.checkpoint_manager.subprocess.run", return_value=completed):
+        with patch("hermes_agent.tools.checkpoint_manager.subprocess.run", return_value=completed):
             with caplog.at_level(logging.ERROR, logger="tools.checkpoint_manager"):
                 ok, stdout, stderr = _run_git(
                     ["diff", "--cached", "--quiet"],

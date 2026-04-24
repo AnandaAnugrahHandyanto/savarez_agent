@@ -102,7 +102,7 @@ def _session(agent=None, **extra):
 
 
 def test_config_set_yolo_toggles_session_scope():
-    from tools.approval import clear_session, is_session_yolo_enabled
+    from hermes_agent.tools.approval import clear_session, is_session_yolo_enabled
 
     server._sessions["sid"] = _session()
     try:
@@ -430,7 +430,7 @@ def test_session_compress_uses_compress_helper(monkeypatch):
 
 
 def test_prompt_submit_sets_approval_session_key(monkeypatch):
-    from tools.approval import get_current_session_key
+    from hermes_agent.tools.approval import get_current_session_key
 
     captured = {}
 
@@ -1314,7 +1314,7 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
 
     # Shim register/unregister to observe leaks
-    import tools.approval as _approval
+    import hermes_agent.tools.approval as _approval
 
     monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
     monkeypatch.setattr(
@@ -1407,7 +1407,7 @@ def test_session_create_no_race_keeps_worker_alive(monkeypatch):
     monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
 
-    import tools.approval as _approval
+    import hermes_agent.tools.approval as _approval
 
     monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
     monkeypatch.setattr(
@@ -1487,7 +1487,7 @@ def test_session_create_continues_when_state_db_is_unavailable(monkeypatch):
     monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: emits.append(a))
 
-    import tools.approval as _approval
+    import hermes_agent.tools.approval as _approval
     monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
     monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
 

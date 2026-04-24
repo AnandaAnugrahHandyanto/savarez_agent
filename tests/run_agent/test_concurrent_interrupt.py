@@ -176,7 +176,7 @@ def test_running_concurrent_worker_sees_is_interrupted(monkeypatch):
     `agent.interrupt()` from another thread, and asserts the poll sees True
     within one second.
     """
-    from tools.interrupt import is_interrupted
+    from hermes_agent.tools.interrupt import is_interrupted
 
     agent = _make_agent(monkeypatch)
 
@@ -243,7 +243,7 @@ def test_clear_interrupt_clears_worker_tids(monkeypatch):
     """After clear_interrupt(), stale worker-tid bits must be cleared so the
     next turn's tools — which may be scheduled onto recycled tids — don't
     see a false interrupt."""
-    from tools.interrupt import is_interrupted, set_interrupt
+    from hermes_agent.tools.interrupt import is_interrupted, set_interrupt
 
     agent = _make_agent(monkeypatch)
     # Simulate a worker having registered but not yet exited cleanly (e.g. a

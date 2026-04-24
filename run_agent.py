@@ -64,16 +64,16 @@ else:
 
 
 # Import our tool system
-from model_tools import (
+from hermes_agent.backends.model_tools import (
     get_tool_definitions,
     get_toolset_for_tool,
     handle_function_call,
     check_toolset_requirements,
 )
-from tools.terminal_tool import cleanup_vm, get_active_env, is_persistent_env
-from tools.tool_result_storage import maybe_persist_tool_result, enforce_turn_budget
-from tools.interrupt import set_interrupt as _set_interrupt
-from tools.browser_tool import cleanup_browser
+from hermes_agent.tools.terminal_tool import cleanup_vm, get_active_env, is_persistent_env
+from hermes_agent.tools.tool_result_storage import maybe_persist_tool_result, enforce_turn_budget
+from hermes_agent.tools.interrupt import set_interrupt as _set_interrupt
+from hermes_agent.tools.browser_tool import cleanup_browser
 
 
 # Agent internals extracted to agent/ package for modularity
@@ -1372,7 +1372,7 @@ class AIAgent:
         self._cached_system_prompt: Optional[str] = None
         
         # Filesystem checkpoint manager (transparent — not a tool)
-        from tools.checkpoint_manager import CheckpointManager
+        from hermes_agent.tools.checkpoint_manager import CheckpointManager
         self._checkpoint_mgr = CheckpointManager(
             enabled=checkpoints_enabled,
             max_snapshots=checkpoint_max_snapshots,
@@ -1408,7 +1408,7 @@ class AIAgent:
                 )
         
         # In-memory todo list for task planning (one per agent/session)
-        from tools.todo_tool import TodoStore
+        from hermes_agent.tools.todo_tool import TodoStore
         self._todo_store = TodoStore()
         
         # Load config once for memory, skills, and compression sections
@@ -1438,7 +1438,7 @@ class AIAgent:
                 self._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
                 self._memory_flush_min_turns = int(mem_config.get("flush_min_turns", 6))
                 if self._memory_enabled or self._user_profile_enabled:
-                    from tools.memory_tool import MemoryStore
+                    from hermes_agent.tools.memory_tool import MemoryStore
                     self._memory_store = MemoryStore(
                         memory_char_limit=mem_config.get("memory_char_limit", 2200),
                         user_char_limit=mem_config.get("user_char_limit", 1375),
@@ -3969,7 +3969,7 @@ class AIAgent:
 
         # 1. Kill background processes for this task
         try:
-            from tools.process_registry import process_registry
+            from hermes_agent.tools.process_registry import process_registry
             process_registry.kill_all(task_id=task_id)
         except Exception:
             pass
@@ -4314,7 +4314,7 @@ class AIAgent:
 
         Returns the original list if no truncation was needed.
         """
-        from tools.delegate_tool import _get_max_concurrent_children
+        from hermes_agent.tools.delegate_tool import _get_max_concurrent_children
         max_children = _get_max_concurrent_children()
         delegate_count = sum(1 for tc in tool_calls if tc.function.name == "delegate_task")
         if delegate_count <= max_children:
@@ -6688,7 +6688,7 @@ class AIAgent:
 
         description = ""
         try:
-            from tools.vision_tools import vision_analyze_tool
+            from hermes_agent.tools.vision_tools import vision_analyze_tool
 
             result_json = asyncio.run(
                 vision_analyze_tool(image_url=vision_source, user_prompt=analysis_prompt)
@@ -7504,7 +7504,7 @@ class AIAgent:
                     try:
                         args = json.loads(tc.function.arguments)
                         flush_target = args.get("target", "memory")
-                        from tools.memory_tool import memory_tool as _memory_tool
+                        from hermes_agent.tools.memory_tool import memory_tool as _memory_tool
                         _memory_tool(
                             action=args.get("action"),
                             target=flush_target,
@@ -7618,7 +7618,7 @@ class AIAgent:
         # read content is summarised away — if the model re-reads the same
         # file it needs the full content, not a "file unchanged" stub.
         try:
-            from tools.file_tools import reset_file_dedup
+            from hermes_agent.tools.file_tools import reset_file_dedup
             reset_file_dedup(task_id)
         except Exception:
             pass
@@ -7659,7 +7659,7 @@ class AIAgent:
         New DELEGATE_TASK_SCHEMA fields only need to be added here to reach all
         invocation paths (concurrent, sequential, inline).
         """
-        from tools.delegate_tool import delegate_task as _delegate_task
+        from hermes_agent.tools.delegate_tool import delegate_task as _delegate_task
         return _delegate_task(
             goal=function_args.get("goal"),
             context=function_args.get("context"),
@@ -7693,7 +7693,7 @@ class AIAgent:
             return json.dumps({"error": block_message}, ensure_ascii=False)
 
         if function_name == "todo":
-            from tools.todo_tool import todo_tool as _todo_tool
+            from hermes_agent.tools.todo_tool import todo_tool as _todo_tool
             return _todo_tool(
                 todos=function_args.get("todos"),
                 merge=function_args.get("merge", False),
@@ -7702,7 +7702,7 @@ class AIAgent:
         elif function_name == "session_search":
             if not self._session_db:
                 return json.dumps({"success": False, "error": "Session database not available."})
-            from tools.session_search_tool import session_search as _session_search
+            from hermes_agent.tools.session_search_tool import session_search as _session_search
             return _session_search(
                 query=function_args.get("query", ""),
                 role_filter=function_args.get("role_filter"),
@@ -7712,7 +7712,7 @@ class AIAgent:
             )
         elif function_name == "memory":
             target = function_args.get("target", "memory")
-            from tools.memory_tool import memory_tool as _memory_tool
+            from hermes_agent.tools.memory_tool import memory_tool as _memory_tool
             result = _memory_tool(
                 action=function_args.get("action"),
                 target=target,
@@ -7734,7 +7734,7 @@ class AIAgent:
         elif self._memory_manager and self._memory_manager.has_tool(function_name):
             return self._memory_manager.handle_tool_call(function_name, function_args)
         elif function_name == "clarify":
-            from tools.clarify_tool import clarify_tool as _clarify_tool
+            from hermes_agent.tools.clarify_tool import clarify_tool as _clarify_tool
             return _clarify_tool(
                 question=function_args.get("question", ""),
                 choices=function_args.get("choices"),
@@ -7897,7 +7897,7 @@ class AIAgent:
             # The callback is thread-local; the main thread's callback
             # is invisible to worker threads.
             try:
-                from tools.environments.base import set_activity_callback
+                from hermes_agent.tools.environments.base import set_activity_callback
                 set_activity_callback(self._touch_activity)
             except Exception:
                 pass
@@ -8148,7 +8148,7 @@ class AIAgent:
             # the agent while a command is running.
             if _block_msg is None:
                 try:
-                    from tools.environments.base import set_activity_callback
+                    from hermes_agent.tools.environments.base import set_activity_callback
                     set_activity_callback(self._touch_activity)
                 except Exception:
                     pass
@@ -8197,7 +8197,7 @@ class AIAgent:
                 function_result = json.dumps({"error": _block_msg}, ensure_ascii=False)
                 tool_duration = 0.0
             elif function_name == "todo":
-                from tools.todo_tool import todo_tool as _todo_tool
+                from hermes_agent.tools.todo_tool import todo_tool as _todo_tool
                 function_result = _todo_tool(
                     todos=function_args.get("todos"),
                     merge=function_args.get("merge", False),
@@ -8210,7 +8210,7 @@ class AIAgent:
                 if not self._session_db:
                     function_result = json.dumps({"success": False, "error": "Session database not available."})
                 else:
-                    from tools.session_search_tool import session_search as _session_search
+                    from hermes_agent.tools.session_search_tool import session_search as _session_search
                     function_result = _session_search(
                         query=function_args.get("query", ""),
                         role_filter=function_args.get("role_filter"),
@@ -8223,7 +8223,7 @@ class AIAgent:
                     self._vprint(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
             elif function_name == "memory":
                 target = function_args.get("target", "memory")
-                from tools.memory_tool import memory_tool as _memory_tool
+                from hermes_agent.tools.memory_tool import memory_tool as _memory_tool
                 function_result = _memory_tool(
                     action=function_args.get("action"),
                     target=target,
@@ -8245,7 +8245,7 @@ class AIAgent:
                 if self._should_emit_quiet_tool_messages():
                     self._vprint(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")
             elif function_name == "clarify":
-                from tools.clarify_tool import clarify_tool as _clarify_tool
+                from hermes_agent.tools.clarify_tool import clarify_tool as _clarify_tool
                 function_result = _clarify_tool(
                     question=function_args.get("question", ""),
                     choices=function_args.get("choices"),
@@ -11997,8 +11997,8 @@ def main(
     
     # Handle tool listing
     if list_tools:
-        from model_tools import get_all_tool_names, get_available_toolsets
-        from toolsets import get_all_toolsets, get_toolset_info
+        from hermes_agent.backends.model_tools import get_all_tool_names, get_available_toolsets
+        from hermes_agent.backends.toolsets import get_all_toolsets, get_toolset_info
         
         print("📋 Available Tools & Toolsets:")
         print("-" * 50)

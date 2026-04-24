@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.tool_backend_helpers import (
+from hermes_agent.tools.tool_backend_helpers import (
     coerce_modal_mode,
     has_direct_modal_credentials,
     managed_nous_tools_enabled,

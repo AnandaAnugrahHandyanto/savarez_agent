@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 def _clear_approval_state():
     """Reset all module-level approval state between tests."""
-    from tools import approval as mod
+    from hermes_agent.tools import approval as mod
     mod._gateway_queues.clear()
     mod._gateway_notify_cbs.clear()
     mod._session_approved.clear()
@@ -61,7 +61,7 @@ class TestApprovalHeartbeat:
 
     def test_heartbeat_fires_while_waiting_for_approval(self):
         """touch_activity_if_due is called repeatedly during the wait."""
-        from tools.approval import (
+        from hermes_agent.tools.approval import (
             check_all_command_guards,
             register_gateway_notify,
             resolve_gateway_approval,
@@ -129,7 +129,7 @@ class TestApprovalHeartbeat:
 
     def test_wait_returns_immediately_on_user_response(self):
         """Polling slices don't delay responsiveness — resolve is near-instant."""
-        from tools.approval import (
+        from hermes_agent.tools.approval import (
             check_all_command_guards,
             register_gateway_notify,
             resolve_gateway_approval,
@@ -164,7 +164,7 @@ class TestApprovalHeartbeat:
 
     def test_heartbeat_import_failure_does_not_break_wait(self):
         """If tools.environments.base can't be imported, the wait still works."""
-        from tools.approval import (
+        from hermes_agent.tools.approval import (
             check_all_command_guards,
             register_gateway_notify,
             resolve_gateway_approval,

@@ -156,7 +156,7 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
         return None
 
     try:
-        from tools.skills_tool import SKILLS_DIR, skill_view
+        from hermes_agent.tools.skills_tool import SKILLS_DIR, skill_view
 
         identifier_path = Path(raw_identifier).expanduser()
         if identifier_path.is_absolute():
@@ -241,7 +241,7 @@ def _build_skill_message(
     session_id: str | None = None,
 ) -> str:
     """Format a loaded skill into a user/system message payload."""
-    from tools.skills_tool import SKILLS_DIR
+    from hermes_agent.tools.skills_tool import SKILLS_DIR
 
     content = str(loaded_skill.get("content") or "")
 
@@ -344,7 +344,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     global _skill_commands
     _skill_commands = {}
     try:
-        from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, _get_disabled_skill_names
+        from hermes_agent.tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, _get_disabled_skill_names
         from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
         disabled = _get_disabled_skill_names()
         seen_names: set = set()

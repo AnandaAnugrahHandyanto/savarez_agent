@@ -586,7 +586,7 @@ def _collect_gateway_skill_entries(
     skill_triples: list[tuple[str, str, str]] = []
     try:
         from agent.skill_commands import get_skill_commands
-        from tools.skills_tool import SKILLS_DIR
+        from hermes_agent.tools.skills_tool import SKILLS_DIR
         _skills_dir = str(SKILLS_DIR.resolve())
         _hub_dir = str((SKILLS_DIR / ".hub").resolve())
         skill_cmds = get_skill_commands()
@@ -733,7 +733,7 @@ def discord_skill_commands_by_category(
 
     try:
         from agent.skill_commands import get_skill_commands
-        from tools.skills_tool import SKILLS_DIR
+        from hermes_agent.tools.skills_tool import SKILLS_DIR
         _skills_dir = SKILLS_DIR.resolve()
         _hub_dir = (SKILLS_DIR / ".hub").resolve()
         skill_cmds = get_skill_commands()

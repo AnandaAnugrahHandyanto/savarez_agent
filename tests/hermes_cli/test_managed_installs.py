@@ -7,7 +7,7 @@ from hermes_agent.cli.config import (
     recommended_update_command,
 )
 from hermes_agent.cli.main import cmd_update
-from tools.skills_hub import OptionalSkillSource
+from hermes_agent.tools.skills_hub import OptionalSkillSource
 
 
 def test_get_managed_system_homebrew(monkeypatch):

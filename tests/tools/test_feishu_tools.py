@@ -3,7 +3,7 @@
 import importlib
 import unittest
 
-from tools.registry import registry
+from hermes_agent.tools.registry import registry
 
 # Trigger tool discovery so feishu tools get registered
 importlib.import_module("tools.feishu_doc_tool")

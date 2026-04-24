@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from hermes_agent.gateway.config import Platform
-from tools.send_message_tool import (
+from hermes_agent.tools.send_message_tool import (
     _derive_forum_thread_name,
     _parse_target_ref,
     _send_discord,
@@ -79,9 +79,9 @@ class TestSendMessageTool:
             clear=False,
         ), \
              patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
-             patch("tools.interrupt.is_interrupted", return_value=False), \
-             patch("model_tools._run_async", side_effect=_run_async_immediately), \
-             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("hermes_agent.tools.interrupt.is_interrupted", return_value=False), \
+             patch("hermes_agent.backends.model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("hermes_agent.tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
              patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
             result = json.loads(
                 send_message_tool(
@@ -104,10 +104,10 @@ class TestSendMessageTool:
         config, telegram_cfg = _make_config()
 
         with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
-             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("hermes_agent.tools.interrupt.is_interrupted", return_value=False), \
              patch("hermes_agent.gateway.channel_directory.resolve_channel_name", return_value="-1001:17585"), \
-             patch("model_tools._run_async", side_effect=_run_async_immediately), \
-             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("hermes_agent.backends.model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("hermes_agent.tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
              patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True):
             result = json.loads(
                 send_message_tool(
@@ -143,9 +143,9 @@ class TestSendMessageTool:
 
         with patch("hermes_agent.gateway.channel_directory.DIRECTORY_PATH", cache_file), \
              patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
-             patch("tools.interrupt.is_interrupted", return_value=False), \
-             patch("model_tools._run_async", side_effect=_run_async_immediately), \
-             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("hermes_agent.tools.interrupt.is_interrupted", return_value=False), \
+             patch("hermes_agent.backends.model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("hermes_agent.tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
              patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True):
             result = json.loads(
                 send_message_tool(
@@ -178,8 +178,8 @@ class TestSendMessageTool:
             )
 
         with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
-             patch("tools.interrupt.is_interrupted", return_value=False), \
-             patch("model_tools._run_async", side_effect=_raise_and_close):
+             patch("hermes_agent.tools.interrupt.is_interrupted", return_value=False), \
+             patch("hermes_agent.backends.model_tools._run_async", side_effect=_raise_and_close):
             result = json.loads(
                 send_message_tool(
                     {
@@ -313,7 +313,7 @@ class TestSendToPlatformChunking:
         """Messages exceeding the platform limit are split into multiple sends."""
         send = AsyncMock(return_value={"success": True, "message_id": "1"})
         long_msg = "word " * 1000  # ~5000 chars, well over Discord's 2000 limit
-        with patch("tools.send_message_tool._send_discord", send):
+        with patch("hermes_agent.tools.send_message_tool._send_discord", send):
             result = asyncio.run(
                 _send_to_platform(
                     Platform.DISCORD,
@@ -334,7 +334,7 @@ class TestSendToPlatformChunking:
         monkeypatch.setattr(slack_mod, "SLACK_AVAILABLE", True)
         send = AsyncMock(return_value={"success": True, "message_id": "1"})
 
-        with patch("tools.send_message_tool._send_slack", send):
+        with patch("hermes_agent.tools.send_message_tool._send_slack", send):
             result = asyncio.run(
                 _send_to_platform(
                     Platform.SLACK,
@@ -358,7 +358,7 @@ class TestSendToPlatformChunking:
 
         monkeypatch.setattr(slack_mod, "SLACK_AVAILABLE", True)
         send = AsyncMock(return_value={"success": True, "message_id": "1"})
-        with patch("tools.send_message_tool._send_slack", send):
+        with patch("hermes_agent.tools.send_message_tool._send_slack", send):
             result = asyncio.run(
                 _send_to_platform(
                     Platform.SLACK,
@@ -378,7 +378,7 @@ class TestSendToPlatformChunking:
 
         monkeypatch.setattr(slack_mod, "SLACK_AVAILABLE", True)
         send = AsyncMock(return_value={"success": True, "message_id": "1"})
-        with patch("tools.send_message_tool._send_slack", send):
+        with patch("hermes_agent.tools.send_message_tool._send_slack", send):
             result = asyncio.run(
                 _send_to_platform(
                     Platform.SLACK,
@@ -399,7 +399,7 @@ class TestSendToPlatformChunking:
         import hermes_agent.gateway.platforms.slack as slack_mod
         monkeypatch.setattr(slack_mod, "SLACK_AVAILABLE", True)
         send = AsyncMock(return_value={"success": True, "message_id": "1"})
-        with patch("tools.send_message_tool._send_slack", send):
+        with patch("hermes_agent.tools.send_message_tool._send_slack", send):
             result = asyncio.run(
                 _send_to_platform(
                     Platform.SLACK,
@@ -420,7 +420,7 @@ class TestSendToPlatformChunking:
         import hermes_agent.gateway.platforms.slack as slack_mod
         monkeypatch.setattr(slack_mod, "SLACK_AVAILABLE", True)
         send = AsyncMock(return_value={"success": True, "message_id": "1"})
-        with patch("tools.send_message_tool._send_slack", send):
+        with patch("hermes_agent.tools.send_message_tool._send_slack", send):
             result = asyncio.run(
                 _send_to_platform(
                     Platform.SLACK,
@@ -443,7 +443,7 @@ class TestSendToPlatformChunking:
 
         long_msg = "word " * 2000  # ~10000 chars, well over 4096
         media = [("/tmp/photo.png", False)]
-        with patch("tools.send_message_tool._send_telegram", fake_send):
+        with patch("hermes_agent.tools.send_message_tool._send_telegram", fake_send):
             asyncio.run(
                 _send_to_platform(
                     Platform.TELEGRAM,
@@ -462,7 +462,7 @@ class TestSendToPlatformChunking:
 
         try:
             helper = AsyncMock(return_value={"success": True, "platform": "matrix", "chat_id": "!room:example.com", "message_id": "$evt"})
-            with patch("tools.send_message_tool._send_matrix_via_adapter", helper):
+            with patch("hermes_agent.tools.send_message_tool._send_matrix_via_adapter", helper):
                 result = asyncio.run(
                     _send_to_platform(
                         Platform.MATRIX,
@@ -486,8 +486,8 @@ class TestSendToPlatformChunking:
         """Text-only Matrix sends should NOT go through the heavy adapter path."""
         helper = AsyncMock()
         lightweight = AsyncMock(return_value={"success": True, "platform": "matrix", "chat_id": "!room:ex.com", "message_id": "$txt"})
-        with patch("tools.send_message_tool._send_matrix_via_adapter", helper), \
-             patch("tools.send_message_tool._send_matrix", lightweight):
+        with patch("hermes_agent.tools.send_message_tool._send_matrix_via_adapter", helper), \
+             patch("hermes_agent.tools.send_message_tool._send_matrix", lightweight):
             result = asyncio.run(
                 _send_to_platform(
                     Platform.MATRIX,
@@ -563,7 +563,7 @@ class TestSendToPlatformWhatsapp:
         chat_id = "test-user@lid"
         async_mock = AsyncMock(return_value={"success": True, "platform": "whatsapp", "chat_id": chat_id, "message_id": "abc123"})
 
-        with patch("tools.send_message_tool._send_whatsapp", async_mock):
+        with patch("hermes_agent.tools.send_message_tool._send_whatsapp", async_mock):
             result = asyncio.run(
                 _send_to_platform(
                     Platform.WHATSAPP,
@@ -879,7 +879,7 @@ class TestSendToPlatformDiscordThread:
         """Discord platform with thread_id passes it to _send_discord."""
         send_mock = AsyncMock(return_value={"success": True, "message_id": "1"})
 
-        with patch("tools.send_message_tool._send_discord", send_mock):
+        with patch("hermes_agent.tools.send_message_tool._send_discord", send_mock):
             result = asyncio.run(
                 _send_to_platform(
                     Platform.DISCORD,
@@ -899,7 +899,7 @@ class TestSendToPlatformDiscordThread:
         """Discord platform without thread_id passes None."""
         send_mock = AsyncMock(return_value={"success": True, "message_id": "1"})
 
-        with patch("tools.send_message_tool._send_discord", send_mock):
+        with patch("hermes_agent.tools.send_message_tool._send_discord", send_mock):
             result = asyncio.run(
                 _send_to_platform(
                     Platform.DISCORD,
@@ -1063,7 +1063,7 @@ class TestSendToPlatformDiscordMedia:
         # A message long enough to get chunked (Discord limit is 2000)
         long_msg = "A" * 1900 + " " + "B" * 1900
 
-        with patch("tools.send_message_tool._send_discord", side_effect=mock_send_discord):
+        with patch("hermes_agent.tools.send_message_tool._send_discord", side_effect=mock_send_discord):
             result = asyncio.run(
                 _send_to_platform(
                     Platform.DISCORD,
@@ -1083,7 +1083,7 @@ class TestSendToPlatformDiscordMedia:
         """Short message (single chunk) gets media_files directly."""
         send_mock = AsyncMock(return_value={"success": True, "message_id": "1"})
 
-        with patch("tools.send_message_tool._send_discord", send_mock):
+        with patch("hermes_agent.tools.send_message_tool._send_discord", send_mock):
             result = asyncio.run(
                 _send_to_platform(
                     Platform.DISCORD,
@@ -1119,7 +1119,7 @@ class TestSendMatrixUrlEncoding:
         mock_session.__aexit__ = AsyncMock(return_value=None)
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            from tools.send_message_tool import _send_matrix
+            from hermes_agent.tools.send_message_tool import _send_matrix
             result = asyncio.get_event_loop().run_until_complete(
                 _send_matrix(
                     "test_token",
@@ -1321,7 +1321,7 @@ class TestSendToPlatformDiscordForum:
         """Discord messages are routed through _send_discord, which handles forum detection."""
         send_mock = AsyncMock(return_value={"success": True, "message_id": "1"})
 
-        with patch("tools.send_message_tool._send_discord", send_mock):
+        with patch("hermes_agent.tools.send_message_tool._send_discord", send_mock):
             result = asyncio.run(
                 _send_to_platform(
                     Platform.DISCORD,
@@ -1340,7 +1340,7 @@ class TestSendToPlatformDiscordForum:
         """Thread ID is still passed through when sending to Discord."""
         send_mock = AsyncMock(return_value={"success": True, "message_id": "1"})
 
-        with patch("tools.send_message_tool._send_discord", send_mock):
+        with patch("hermes_agent.tools.send_message_tool._send_discord", send_mock):
             result = asyncio.run(
                 _send_to_platform(
                     Platform.DISCORD,
@@ -1376,7 +1376,7 @@ class TestSendDiscordForumMedia:
 
     def test_forum_with_media_uses_multipart(self, tmp_path, monkeypatch):
         """Forum + media → single multipart POST to /threads carrying the starter + files."""
-        from tools import send_message_tool as smt
+        from hermes_agent.tools import send_message_tool as smt
 
         img = tmp_path / "photo.png"
         img.write_bytes(b"\x89PNGbytes")
@@ -1478,11 +1478,11 @@ class TestForumProbeCache:
     """_DISCORD_CHANNEL_TYPE_PROBE_CACHE memoizes forum detection results."""
 
     def setup_method(self):
-        from tools import send_message_tool as smt
+        from hermes_agent.tools import send_message_tool as smt
         smt._DISCORD_CHANNEL_TYPE_PROBE_CACHE.clear()
 
     def test_cache_round_trip(self):
-        from tools.send_message_tool import (
+        from hermes_agent.tools.send_message_tool import (
             _probe_is_forum_cached,
             _remember_channel_is_forum,
         )
@@ -1522,7 +1522,7 @@ class TestForumProbeCache:
         thread_session.post = MagicMock(return_value=thread_resp)
 
         # Two _send_discord calls: first does probe + thread-create; second should skip probe
-        from tools import send_message_tool as smt
+        from hermes_agent.tools import send_message_tool as smt
 
         sessions_created = []
 

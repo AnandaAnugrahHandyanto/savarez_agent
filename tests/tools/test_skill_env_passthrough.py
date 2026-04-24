@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 import pytest
 
-import tools.env_passthrough as _ep_mod
-from tools.env_passthrough import clear_env_passthrough, is_env_passthrough
+import hermes_agent.tools.env_passthrough as _ep_mod
+from hermes_agent.tools.env_passthrough import clear_env_passthrough, is_env_passthrough
 
 
 @pytest.fixture(autouse=True)
@@ -56,8 +56,8 @@ class TestSkillViewRegistersPassthrough:
         monkeypatch.setenv("TENOR_API_KEY", "test-value-123")
 
         # Patch the secret capture callback to not prompt
-        with patch("tools.skills_tool._secret_capture_callback", None):
-            from tools.skills_tool import skill_view
+        with patch("hermes_agent.tools.skills_tool._secret_capture_callback", None):
+            from hermes_agent.tools.skills_tool import skill_view
 
             result = json.loads(skill_view(name="test-skill"))
 
@@ -83,8 +83,8 @@ class TestSkillViewRegistersPassthrough:
         save_env_value("TENOR_API_KEY", "persisted-value-123")
         monkeypatch.delenv("TENOR_API_KEY", raising=False)
 
-        with patch("tools.skills_tool._secret_capture_callback", None):
-            from tools.skills_tool import skill_view
+        with patch("hermes_agent.tools.skills_tool._secret_capture_callback", None):
+            from hermes_agent.tools.skills_tool import skill_view
 
             result = json.loads(skill_view(name="test-skill"))
 
@@ -110,8 +110,8 @@ class TestSkillViewRegistersPassthrough:
         )
         monkeypatch.delenv("NONEXISTENT_SKILL_KEY_XYZ", raising=False)
 
-        with patch("tools.skills_tool._secret_capture_callback", None):
-            from tools.skills_tool import skill_view
+        with patch("hermes_agent.tools.skills_tool._secret_capture_callback", None):
+            from hermes_agent.tools.skills_tool import skill_view
 
             result = json.loads(skill_view(name="test-skill"))
 
@@ -125,11 +125,11 @@ class TestSkillViewRegistersPassthrough:
             "tools.skills_tool.SKILLS_DIR", tmp_path
         )
 
-        with patch("tools.skills_tool._secret_capture_callback", None):
-            from tools.skills_tool import skill_view
+        with patch("hermes_agent.tools.skills_tool._secret_capture_callback", None):
+            from hermes_agent.tools.skills_tool import skill_view
 
             result = json.loads(skill_view(name="simple-skill"))
 
         assert result["success"] is True
-        from tools.env_passthrough import get_all_passthrough
+        from hermes_agent.tools.env_passthrough import get_all_passthrough
         assert len(get_all_passthrough()) == 0

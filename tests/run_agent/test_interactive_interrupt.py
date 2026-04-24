@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from unittest.mock import MagicMock, patch
 from run_agent import AIAgent, IterationBudget
-from tools.interrupt import set_interrupt, is_interrupted
+from hermes_agent.tools.interrupt import set_interrupt, is_interrupted
 
 def make_slow_response(delay=2.0):
     """API response that takes a while."""
@@ -108,7 +108,7 @@ def main() -> int:
             mock_client.close = MagicMock()
             MockOpenAI.return_value = mock_client
 
-            from tools.delegate_tool import _run_single_child
+            from hermes_agent.tools.delegate_tool import _run_single_child
 
             # Signal that child is about to start
             original_init = AIAgent.__init__

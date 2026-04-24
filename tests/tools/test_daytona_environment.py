@@ -95,7 +95,7 @@ def make_env(daytona_sdk, monkeypatch):
 
         daytona_sdk.Daytona = MagicMock(return_value=mock_client)
 
-        from tools.environments.daytona import DaytonaEnvironment
+        from hermes_agent.tools.environments.daytona import DaytonaEnvironment
 
         kwargs.setdefault("disk", 10240)
         env = DaytonaEnvironment(

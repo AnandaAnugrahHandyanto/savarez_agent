@@ -862,7 +862,7 @@ class TestPreprocessImagesWithVision:
 
     def test_single_image_with_text(self, cli, tmp_path):
         img = self._make_image(tmp_path)
-        with patch("tools.vision_tools.vision_analyze_tool", side_effect=self._mock_vision_success()):
+        with patch("hermes_agent.tools.vision_tools.vision_analyze_tool", side_effect=self._mock_vision_success()):
             result = cli._preprocess_images_with_vision("Describe this", [img])
 
         assert isinstance(result, str)
@@ -873,7 +873,7 @@ class TestPreprocessImagesWithVision:
 
     def test_multiple_images(self, cli, tmp_path):
         imgs = [self._make_image(tmp_path, f"img{i}.png") for i in range(3)]
-        with patch("tools.vision_tools.vision_analyze_tool", side_effect=self._mock_vision_success()):
+        with patch("hermes_agent.tools.vision_tools.vision_analyze_tool", side_effect=self._mock_vision_success()):
             result = cli._preprocess_images_with_vision("Compare", imgs)
 
         assert isinstance(result, str)
@@ -884,14 +884,14 @@ class TestPreprocessImagesWithVision:
 
     def test_empty_text_gets_default_question(self, cli, tmp_path):
         img = self._make_image(tmp_path)
-        with patch("tools.vision_tools.vision_analyze_tool", side_effect=self._mock_vision_success()):
+        with patch("hermes_agent.tools.vision_tools.vision_analyze_tool", side_effect=self._mock_vision_success()):
             result = cli._preprocess_images_with_vision("", [img])
         assert isinstance(result, str)
         assert "A test image with colored pixels." in result
 
     def test_missing_image_skipped(self, cli, tmp_path):
         missing = tmp_path / "gone.png"
-        with patch("tools.vision_tools.vision_analyze_tool", side_effect=self._mock_vision_success()):
+        with patch("hermes_agent.tools.vision_tools.vision_analyze_tool", side_effect=self._mock_vision_success()):
             result = cli._preprocess_images_with_vision("test", [missing])
         # No images analyzed, falls back to default
         assert result == "test"
@@ -899,7 +899,7 @@ class TestPreprocessImagesWithVision:
     def test_mix_of_existing_and_missing(self, cli, tmp_path):
         real = self._make_image(tmp_path, "real.png")
         missing = tmp_path / "gone.png"
-        with patch("tools.vision_tools.vision_analyze_tool", side_effect=self._mock_vision_success()):
+        with patch("hermes_agent.tools.vision_tools.vision_analyze_tool", side_effect=self._mock_vision_success()):
             result = cli._preprocess_images_with_vision("test", [real, missing])
         assert str(real) in result
         assert str(missing) not in result
@@ -907,7 +907,7 @@ class TestPreprocessImagesWithVision:
 
     def test_vision_failure_includes_path(self, cli, tmp_path):
         img = self._make_image(tmp_path)
-        with patch("tools.vision_tools.vision_analyze_tool", side_effect=self._mock_vision_failure()):
+        with patch("hermes_agent.tools.vision_tools.vision_analyze_tool", side_effect=self._mock_vision_failure()):
             result = cli._preprocess_images_with_vision("check this", [img])
         assert isinstance(result, str)
         assert str(img) in result  # path still included for retry
@@ -917,7 +917,7 @@ class TestPreprocessImagesWithVision:
         img = self._make_image(tmp_path)
         async def _explode(**kwargs):
             raise RuntimeError("API down")
-        with patch("tools.vision_tools.vision_analyze_tool", side_effect=_explode):
+        with patch("hermes_agent.tools.vision_tools.vision_analyze_tool", side_effect=_explode):
             result = cli._preprocess_images_with_vision("check this", [img])
         assert isinstance(result, str)
         assert str(img) in result  # path still included for retry
@@ -1010,8 +1010,8 @@ class TestVoiceSubmission:
         return cli_obj
 
     def test_voice_transcript_clears_stale_attached_images(self, cli):
-        with patch("tools.voice_mode.play_beep"):
-            with patch("tools.voice_mode.transcribe_recording", return_value={"success": True, "transcript": "hello"}):
+        with patch("hermes_agent.tools.voice_mode.play_beep"):
+            with patch("hermes_agent.tools.voice_mode.transcribe_recording", return_value={"success": True, "transcript": "hello"}):
                 with patch("os.path.isfile", return_value=False):
                     with patch("cli._cprint"):
                         cli._voice_stop_and_transcribe()

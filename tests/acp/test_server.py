@@ -838,8 +838,8 @@ class TestRegisterSessionMcpServers:
             registered_config.update(config_map)
             return ["mcp_test_server_tool1"]
 
-        with patch("tools.mcp_tool.register_mcp_servers", side_effect=capture_register), \
-             patch("model_tools.get_tool_definitions", return_value=[]):
+        with patch("hermes_agent.tools.mcp_tool.register_mcp_servers", side_effect=capture_register), \
+             patch("hermes_agent.backends.model_tools.get_tool_definitions", return_value=[]):
             await agent._register_session_mcp_servers(state, [server])
 
         assert "test-server" in registered_config
@@ -870,8 +870,8 @@ class TestRegisterSessionMcpServers:
             registered_config.update(config_map)
             return []
 
-        with patch("tools.mcp_tool.register_mcp_servers", side_effect=capture_register), \
-             patch("model_tools.get_tool_definitions", return_value=[]):
+        with patch("hermes_agent.tools.mcp_tool.register_mcp_servers", side_effect=capture_register), \
+             patch("hermes_agent.backends.model_tools.get_tool_definitions", return_value=[]):
             await agent._register_session_mcp_servers(state, [server])
 
         assert "http-server" in registered_config
@@ -903,8 +903,8 @@ class TestRegisterSessionMcpServers:
             {"function": {"name": "terminal"}},
         ]
 
-        with patch("tools.mcp_tool.register_mcp_servers", return_value=["mcp_srv_search"]), \
-             patch("model_tools.get_tool_definitions", return_value=fake_tools):
+        with patch("hermes_agent.tools.mcp_tool.register_mcp_servers", return_value=["mcp_srv_search"]), \
+             patch("hermes_agent.backends.model_tools.get_tool_definitions", return_value=fake_tools):
             await agent._register_session_mcp_servers(state, [server])
 
         assert state.agent.tools == fake_tools
@@ -925,6 +925,6 @@ class TestRegisterSessionMcpServers:
             env=[],
         )
 
-        with patch("tools.mcp_tool.register_mcp_servers", side_effect=RuntimeError("boom")):
+        with patch("hermes_agent.tools.mcp_tool.register_mcp_servers", side_effect=RuntimeError("boom")):
             # Should not raise
             await agent._register_session_mcp_servers(state, [server])

@@ -5,8 +5,8 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-import tools.approval as approval_module
-from tools.approval import (
+import hermes_agent.tools.approval as approval_module
+from hermes_agent.tools.approval import (
     approve_session,
     check_all_command_guards,
     is_approved,
@@ -15,7 +15,7 @@ from tools.approval import (
 )
 
 # Ensure the module is importable so we can patch it
-import tools.tirith_security
+import hermes_agent.tools.tirith_security
 
 
 # ---------------------------------------------------------------------------

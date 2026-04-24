@@ -84,13 +84,13 @@ class TestIsSkillDisabled:
     @patch("hermes_agent.cli.config.load_config")
     def test_globally_disabled(self, mock_load):
         mock_load.return_value = {"skills": {"disabled": ["bad-skill"]}}
-        from tools.skills_tool import _is_skill_disabled
+        from hermes_agent.tools.skills_tool import _is_skill_disabled
         assert _is_skill_disabled("bad-skill") is True
 
     @patch("hermes_agent.cli.config.load_config")
     def test_globally_enabled(self, mock_load):
         mock_load.return_value = {"skills": {"disabled": ["other"]}}
-        from tools.skills_tool import _is_skill_disabled
+        from hermes_agent.tools.skills_tool import _is_skill_disabled
         assert _is_skill_disabled("good-skill") is False
 
     @patch("hermes_agent.cli.config.load_config")
@@ -99,7 +99,7 @@ class TestIsSkillDisabled:
             "disabled": [],
             "platform_disabled": {"telegram": ["tg-skill"]}
         }}
-        from tools.skills_tool import _is_skill_disabled
+        from hermes_agent.tools.skills_tool import _is_skill_disabled
         assert _is_skill_disabled("tg-skill", platform="telegram") is True
 
     @patch("hermes_agent.cli.config.load_config")
@@ -108,27 +108,27 @@ class TestIsSkillDisabled:
             "disabled": ["skill-a"],
             "platform_disabled": {"telegram": []}
         }}
-        from tools.skills_tool import _is_skill_disabled
+        from hermes_agent.tools.skills_tool import _is_skill_disabled
         # telegram has explicit empty list -> skill-a is NOT disabled for telegram
         assert _is_skill_disabled("skill-a", platform="telegram") is False
 
     @patch("hermes_agent.cli.config.load_config")
     def test_platform_falls_back_to_global(self, mock_load):
         mock_load.return_value = {"skills": {"disabled": ["skill-a"]}}
-        from tools.skills_tool import _is_skill_disabled
+        from hermes_agent.tools.skills_tool import _is_skill_disabled
         # no platform_disabled for cli -> global
         assert _is_skill_disabled("skill-a", platform="cli") is True
 
     @patch("hermes_agent.cli.config.load_config")
     def test_empty_config(self, mock_load):
         mock_load.return_value = {}
-        from tools.skills_tool import _is_skill_disabled
+        from hermes_agent.tools.skills_tool import _is_skill_disabled
         assert _is_skill_disabled("any-skill") is False
 
     @patch("hermes_agent.cli.config.load_config")
     def test_exception_returns_false(self, mock_load):
         mock_load.side_effect = Exception("config error")
-        from tools.skills_tool import _is_skill_disabled
+        from hermes_agent.tools.skills_tool import _is_skill_disabled
         assert _is_skill_disabled("any-skill") is False
 
     @patch("hermes_agent.cli.config.load_config")
@@ -137,7 +137,7 @@ class TestIsSkillDisabled:
         mock_load.return_value = {"skills": {
             "platform_disabled": {"discord": ["discord-skill"]}
         }}
-        from tools.skills_tool import _is_skill_disabled
+        from hermes_agent.tools.skills_tool import _is_skill_disabled
         assert _is_skill_disabled("discord-skill") is True
 
 
@@ -249,9 +249,9 @@ class TestGetDisabledSkillNames:
 # ---------------------------------------------------------------------------
 
 class TestFindAllSkillsFiltering:
-    @patch("tools.skills_tool._get_disabled_skill_names", return_value={"my-skill"})
-    @patch("tools.skills_tool.skill_matches_platform", return_value=True)
-    @patch("tools.skills_tool.SKILLS_DIR")
+    @patch("hermes_agent.tools.skills_tool._get_disabled_skill_names", return_value={"my-skill"})
+    @patch("hermes_agent.tools.skills_tool.skill_matches_platform", return_value=True)
+    @patch("hermes_agent.tools.skills_tool.SKILLS_DIR")
     def test_disabled_skill_excluded(self, mock_dir, mock_platform, mock_disabled, tmp_path):
         skill_dir = tmp_path / "my-skill"
         skill_dir.mkdir()
@@ -259,13 +259,13 @@ class TestFindAllSkillsFiltering:
         skill_md.write_text("---\nname: my-skill\ndescription: A test skill\n---\nContent")
         mock_dir.exists.return_value = True
         mock_dir.rglob.return_value = [skill_md]
-        from tools.skills_tool import _find_all_skills
+        from hermes_agent.tools.skills_tool import _find_all_skills
         skills = _find_all_skills()
         assert not any(s["name"] == "my-skill" for s in skills)
 
-    @patch("tools.skills_tool._get_disabled_skill_names", return_value=set())
-    @patch("tools.skills_tool.skill_matches_platform", return_value=True)
-    @patch("tools.skills_tool.SKILLS_DIR")
+    @patch("hermes_agent.tools.skills_tool._get_disabled_skill_names", return_value=set())
+    @patch("hermes_agent.tools.skills_tool.skill_matches_platform", return_value=True)
+    @patch("hermes_agent.tools.skills_tool.SKILLS_DIR")
     def test_enabled_skill_included(self, mock_dir, mock_platform, mock_disabled, tmp_path):
         skill_dir = tmp_path / "my-skill"
         skill_dir.mkdir()
@@ -273,13 +273,13 @@ class TestFindAllSkillsFiltering:
         skill_md.write_text("---\nname: my-skill\ndescription: A test skill\n---\nContent")
         mock_dir.exists.return_value = True
         mock_dir.rglob.return_value = [skill_md]
-        from tools.skills_tool import _find_all_skills
+        from hermes_agent.tools.skills_tool import _find_all_skills
         skills = _find_all_skills()
         assert any(s["name"] == "my-skill" for s in skills)
 
-    @patch("tools.skills_tool._get_disabled_skill_names", return_value={"my-skill"})
-    @patch("tools.skills_tool.skill_matches_platform", return_value=True)
-    @patch("tools.skills_tool.SKILLS_DIR")
+    @patch("hermes_agent.tools.skills_tool._get_disabled_skill_names", return_value={"my-skill"})
+    @patch("hermes_agent.tools.skills_tool.skill_matches_platform", return_value=True)
+    @patch("hermes_agent.tools.skills_tool.SKILLS_DIR")
     def test_skip_disabled_returns_all(self, mock_dir, mock_platform, mock_disabled, tmp_path):
         """skip_disabled=True ignores the disabled set (for config UI)."""
         skill_dir = tmp_path / "my-skill"
@@ -288,7 +288,7 @@ class TestFindAllSkillsFiltering:
         skill_md.write_text("---\nname: my-skill\ndescription: A test skill\n---\nContent")
         mock_dir.exists.return_value = True
         mock_dir.rglob.return_value = [skill_md]
-        from tools.skills_tool import _find_all_skills
+        from hermes_agent.tools.skills_tool import _find_all_skills
         skills = _find_all_skills(skip_disabled=True)
         assert any(s["name"] == "my-skill" for s in skills)
 

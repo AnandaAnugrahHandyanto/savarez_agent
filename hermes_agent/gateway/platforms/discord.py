@@ -58,7 +58,7 @@ from hermes_agent.gateway.platforms.base import (
     cache_document_from_bytes,
     SUPPORTED_DOCUMENT_TYPES,
 )
-from tools.url_safety import is_safe_url
+from hermes_agent.tools.url_safety import is_safe_url
 
 
 def _clean_discord_id(entry: str) -> str:
@@ -1169,7 +1169,7 @@ class DiscordAdapter(BasePlatformAdapter):
         reported in ``raw_response['warnings']`` so the caller can surface
         partial-send issues.
         """
-        from tools.send_message_tool import _derive_forum_thread_name
+        from hermes_agent.tools.send_message_tool import _derive_forum_thread_name
 
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
@@ -1231,7 +1231,7 @@ class DiscordAdapter(BasePlatformAdapter):
         ForumChannel accepts the same file/files/content kwargs as
         ``channel.send``, creating the thread and starter message atomically.
         """
-        from tools.send_message_tool import _derive_forum_thread_name
+        from hermes_agent.tools.send_message_tool import _derive_forum_thread_name
 
         if not thread_name:
             # Prefer the text content, fall back to the first attached
@@ -1699,7 +1699,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
     async def _process_voice_input(self, guild_id: int, user_id: int, pcm_data: bytes):
         """Convert PCM -> WAV -> STT -> callback."""
-        from tools.voice_mode import is_whisper_hallucination
+        from hermes_agent.tools.voice_mode import is_whisper_hallucination
 
         tmp_f = tempfile.NamedTemporaryFile(suffix=".wav", prefix="vc_listen_", delete=False)
         wav_path = tmp_f.name
@@ -1707,7 +1707,7 @@ class DiscordAdapter(BasePlatformAdapter):
         try:
             await asyncio.to_thread(VoiceReceiver.pcm_to_wav, pcm_data, wav_path)
 
-            from tools.transcription_tools import transcribe_audio
+            from hermes_agent.tools.transcription_tools import transcribe_audio
             result = await asyncio.to_thread(transcribe_audio, wav_path)
 
             if not result.get("success"):
@@ -3597,7 +3597,7 @@ if DISCORD_AVAILABLE:
 
             # Unblock the waiting agent thread via the gateway approval queue
             try:
-                from tools.approval import resolve_gateway_approval
+                from hermes_agent.tools.approval import resolve_gateway_approval
                 count = resolve_gateway_approval(self.session_key, choice)
                 logger.info(
                     "Discord button resolved %d approval(s) for session %s (choice=%s, user=%s)",

@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.skill_manager_tool import (
+from hermes_agent.tools.skill_manager_tool import (
     _create_skill,
     _patch_skill,
     _write_file,

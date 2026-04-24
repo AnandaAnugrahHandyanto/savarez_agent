@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 
 from hermes_agent.cli.nous_subscription import get_nous_subscription_features
-from tools.tool_backend_helpers import managed_nous_tools_enabled
+from hermes_agent.tools.tool_backend_helpers import managed_nous_tools_enabled
 from utils import base_url_hostname
 from hermes_constants import get_optional_skills_dir
 
@@ -1286,8 +1286,8 @@ def setup_terminal_backend(config: dict):
     elif selected_backend == "modal":
         print_success("Terminal backend: Modal")
         print_info("Serverless cloud sandboxes. Each session gets its own container.")
-        from tools.managed_tool_gateway import is_managed_tool_gateway_ready
-        from tools.tool_backend_helpers import normalize_modal_mode
+        from hermes_agent.tools.managed_tool_gateway import is_managed_tool_gateway_ready
+        from hermes_agent.tools.tool_backend_helpers import normalize_modal_mode
 
         managed_modal_available = bool(
             managed_nous_tools_enabled()

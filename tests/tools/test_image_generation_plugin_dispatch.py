@@ -32,7 +32,7 @@ class _FakeCodexProvider(ImageGenProvider):
 
 class TestPluginDispatch:
     def test_dispatch_routes_to_codex_provider(self, monkeypatch, tmp_path):
-        from tools import image_generation_tool
+        from hermes_agent.tools import image_generation_tool
         from agent import image_gen_registry as registry_module
         from hermes_agent.cli import plugins as plugins_module
 
@@ -53,7 +53,7 @@ class TestPluginDispatch:
         assert payload["aspect_ratio"] == "square"
 
     def test_dispatch_reports_missing_registered_provider(self, monkeypatch, tmp_path):
-        from tools import image_generation_tool
+        from hermes_agent.tools import image_generation_tool
         from hermes_agent.cli import plugins as plugins_module
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -70,7 +70,7 @@ class TestPluginDispatch:
         assert "image_gen.provider='missing-codex'" in payload["error"]
 
     def test_dispatch_force_refreshes_plugins_when_provider_initially_missing(self, monkeypatch, tmp_path):
-        from tools import image_generation_tool
+        from hermes_agent.tools import image_generation_tool
         from hermes_agent.cli import plugins as plugins_module
         from agent import image_gen_registry as registry_module
 

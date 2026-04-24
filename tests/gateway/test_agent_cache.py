@@ -867,7 +867,7 @@ class TestAgentCacheIdleResume:
         )
 
         # Spy on process_registry.kill_all — it MUST NOT be called.
-        from tools import process_registry as _pr
+        from hermes_agent.tools import process_registry as _pr
         kill_all_calls: list = []
         original_kill_all = _pr.process_registry.kill_all
         _pr.process_registry.kill_all = lambda **kw: kill_all_calls.append(kw)
@@ -888,8 +888,8 @@ class TestAgentCacheIdleResume:
     def test_release_clients_does_not_touch_terminal_or_browser(self, monkeypatch):
         """release_clients must not call cleanup_vm or cleanup_browser."""
         from run_agent import AIAgent
-        from tools import terminal_tool as _tt
-        from tools import browser_tool as _bt
+        from hermes_agent.tools import terminal_tool as _tt
+        from hermes_agent.tools import browser_tool as _bt
 
         agent = AIAgent(
             model="anthropic/claude-sonnet-4", api_key="test",
@@ -950,7 +950,7 @@ class TestAgentCacheIdleResume:
         release_clients() (soft — session may resume).
         """
         from run_agent import AIAgent
-        from tools import terminal_tool as _tt
+        from hermes_agent.tools import terminal_tool as _tt
 
         # Agent A: evicted from cache (soft) — terminal survives.
         # Agent B: session expired (hard) — terminal torn down.

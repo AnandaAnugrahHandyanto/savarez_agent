@@ -18,7 +18,7 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch, PropertyMock
 
-from tools.interrupt import set_interrupt, is_interrupted
+from hermes_agent.tools.interrupt import set_interrupt, is_interrupted
 
 
 class TestCLISubagentInterrupt(unittest.TestCase):
@@ -98,7 +98,7 @@ class TestCLISubagentInterrupt(unittest.TestCase):
             }
 
         # Patch AIAgent to use our mock
-        from tools.delegate_tool import _run_single_child
+        from hermes_agent.tools.delegate_tool import _run_single_child
         from run_agent import IterationBudget
 
         parent.iteration_budget = IterationBudget(max_total=100)

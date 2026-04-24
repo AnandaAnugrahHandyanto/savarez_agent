@@ -793,7 +793,7 @@ def _session_info(agent) -> dict:
     except Exception:
         pass
     try:
-        from model_tools import get_toolset_for_tool
+        from hermes_agent.backends.model_tools import get_toolset_for_tool
 
         for t in getattr(agent, "tools", []) or []:
             name = t["function"]["name"]
@@ -809,7 +809,7 @@ def _session_info(agent) -> dict:
     except Exception:
         pass
     try:
-        from tools.mcp_tool import get_mcp_status
+        from hermes_agent.tools.mcp_tool import get_mcp_status
 
         info["mcp_servers"] = get_mcp_status()
     except Exception:
@@ -1030,8 +1030,8 @@ def _agent_cbs(sid: str) -> dict:
 
 
 def _wire_callbacks(sid: str):
-    from tools.terminal_tool import set_sudo_password_callback
-    from tools.skills_tool import set_secret_capture_callback
+    from hermes_agent.tools.terminal_tool import set_sudo_password_callback
+    from hermes_agent.tools.skills_tool import set_secret_capture_callback
 
     set_sudo_password_callback(lambda: _block("sudo.request", sid, {}, timeout=120))
 
@@ -1265,7 +1265,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
         # Defer hard-failure to slash.exec; chat still works without slash worker.
         _sessions[sid]["slash_worker"] = None
     try:
-        from tools.approval import register_gateway_notify, load_permanent_allowlist
+        from hermes_agent.tools.approval import register_gateway_notify, load_permanent_allowlist
 
         register_gateway_notify(key, lambda data: _emit("approval.request", sid, data))
         load_permanent_allowlist()
@@ -1297,7 +1297,7 @@ def _resolve_checkpoint_hash(mgr, cwd: str, ref: str) -> str:
 def _enrich_with_attached_images(user_text: str, image_paths: list[str]) -> str:
     """Pre-analyze attached images via vision and prepend descriptions to user text."""
     import asyncio, json as _json
-    from tools.vision_tools import vision_analyze_tool
+    from hermes_agent.tools.vision_tools import vision_analyze_tool
 
     prompt = (
         "Describe everything visible in this image in thorough detail. "
@@ -1437,7 +1437,7 @@ def _(rid, params: dict) -> dict:
                 pass
 
             try:
-                from tools.approval import (
+                from hermes_agent.tools.approval import (
                     register_gateway_notify,
                     load_permanent_allowlist,
                 )
@@ -1474,7 +1474,7 @@ def _(rid, params: dict) -> dict:
                         pass
                 if notify_registered:
                     try:
-                        from tools.approval import unregister_gateway_notify
+                        from hermes_agent.tools.approval import unregister_gateway_notify
 
                         unregister_gateway_notify(key)
                     except Exception:
@@ -1722,7 +1722,7 @@ def _(rid, params: dict) -> dict:
     if not session:
         return _ok(rid, {"closed": False})
     try:
-        from tools.approval import unregister_gateway_notify
+        from hermes_agent.tools.approval import unregister_gateway_notify
 
         unregister_gateway_notify(session["session_key"])
     except Exception:
@@ -1801,7 +1801,7 @@ def _(rid, params: dict) -> dict:
     # process, silently resolving them to empty strings.
     _clear_pending(params.get("session_id", ""))
     try:
-        from tools.approval import resolve_gateway_approval
+        from hermes_agent.tools.approval import resolve_gateway_approval
 
         resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
     except Exception:
@@ -1817,7 +1817,7 @@ def _(rid, params: dict) -> dict:
 
 @method("delegation.status")
 def _(rid, params: dict) -> dict:
-    from tools.delegate_tool import (
+    from hermes_agent.tools.delegate_tool import (
         is_spawn_paused,
         list_active_subagents,
         _get_max_concurrent_children,
@@ -1837,7 +1837,7 @@ def _(rid, params: dict) -> dict:
 
 @method("delegation.pause")
 def _(rid, params: dict) -> dict:
-    from tools.delegate_tool import set_spawn_paused
+    from hermes_agent.tools.delegate_tool import set_spawn_paused
 
     paused = bool(params.get("paused", True))
     return _ok(rid, {"paused": set_spawn_paused(paused)})
@@ -1845,7 +1845,7 @@ def _(rid, params: dict) -> dict:
 
 @method("subagent.interrupt")
 def _(rid, params: dict) -> dict:
-    from tools.delegate_tool import interrupt_subagent
+    from hermes_agent.tools.delegate_tool import interrupt_subagent
 
     subagent_id = str(params.get("subagent_id") or "").strip()
     if not subagent_id:
@@ -2093,7 +2093,7 @@ def _(rid, params: dict) -> dict:
         approval_token = None
         session_tokens = []
         try:
-            from tools.approval import (
+            from hermes_agent.tools.approval import (
                 reset_current_session_key,
                 set_current_session_key,
             )
@@ -2500,7 +2500,7 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     try:
-        from tools.approval import resolve_gateway_approval
+        from hermes_agent.tools.approval import resolve_gateway_approval
 
         return _ok(
             rid,
@@ -2583,7 +2583,7 @@ def _(rid, params: dict) -> dict:
     if key == "yolo":
         try:
             if session:
-                from tools.approval import (
+                from hermes_agent.tools.approval import (
                     disable_session_yolo,
                     enable_session_yolo,
                     is_session_yolo_enabled,
@@ -2836,7 +2836,7 @@ def _(rid, params: dict) -> dict:
 @method("process.stop")
 def _(rid, params: dict) -> dict:
     try:
-        from tools.process_registry import process_registry
+        from hermes_agent.tools.process_registry import process_registry
 
         return _ok(rid, {"killed": process_registry.kill_all()})
     except Exception as e:
@@ -2847,7 +2847,7 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     session = _sessions.get(params.get("session_id", ""))
     try:
-        from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools
+        from hermes_agent.tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools
 
         shutdown_mcp_servers()
         discover_mcp_tools()
@@ -3679,7 +3679,7 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
         elif name == "reload-mcp" and agent and hasattr(agent, "reload_mcp_tools"):
             agent.reload_mcp_tools()
         elif name == "stop":
-            from tools.process_registry import process_registry
+            from hermes_agent.tools.process_registry import process_registry
 
             process_registry.kill_all()
     except Exception as e:
@@ -3809,7 +3809,7 @@ def _(rid, params: dict) -> dict:
             "tts": _voice_tts_enabled(),
         }
         try:
-            from tools.voice_mode import check_voice_requirements
+            from hermes_agent.tools.voice_mode import check_voice_requirements
 
             reqs = check_voice_requirements()
             payload["available"] = bool(reqs.get("available"))
@@ -4070,7 +4070,7 @@ def _(rid, params: dict) -> dict:
         try:
             import urllib.request
             from urllib.parse import urlparse
-            from tools.browser_tool import cleanup_all_browsers
+            from hermes_agent.tools.browser_tool import cleanup_all_browsers
 
             parsed = urlparse(url if "://" in url else f"http://{url}")
             if parsed.scheme not in {"http", "https", "ws", "wss"}:
@@ -4100,7 +4100,7 @@ def _(rid, params: dict) -> dict:
     if action == "disconnect":
         os.environ.pop("BROWSER_CDP_URL", None)
         try:
-            from tools.browser_tool import cleanup_all_browsers
+            from hermes_agent.tools.browser_tool import cleanup_all_browsers
 
             cleanup_all_browsers()
         except Exception:
@@ -4173,7 +4173,7 @@ def _(rid, params: dict) -> dict:
 @method("tools.list")
 def _(rid, params: dict) -> dict:
     try:
-        from toolsets import get_all_toolsets, get_toolset_info
+        from hermes_agent.backends.toolsets import get_all_toolsets, get_toolset_info
 
         session = _sessions.get(params.get("session_id", ""))
         enabled = (
@@ -4204,7 +4204,7 @@ def _(rid, params: dict) -> dict:
 @method("tools.show")
 def _(rid, params: dict) -> dict:
     try:
-        from model_tools import get_toolset_for_tool, get_tool_definitions
+        from hermes_agent.backends.model_tools import get_toolset_for_tool, get_tool_definitions
 
         session = _sessions.get(params.get("session_id", ""))
         enabled = (
@@ -4313,7 +4313,7 @@ def _(rid, params: dict) -> dict:
 @method("toolsets.list")
 def _(rid, params: dict) -> dict:
     try:
-        from toolsets import get_all_toolsets, get_toolset_info
+        from hermes_agent.backends.toolsets import get_all_toolsets, get_toolset_info
 
         session = _sessions.get(params.get("session_id", ""))
         enabled = (
@@ -4343,7 +4343,7 @@ def _(rid, params: dict) -> dict:
 @method("agents.list")
 def _(rid, params: dict) -> dict:
     try:
-        from tools.process_registry import process_registry
+        from hermes_agent.tools.process_registry import process_registry
 
         procs = process_registry.list_sessions()
         return _ok(
@@ -4368,7 +4368,7 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     action, jid = params.get("action", "list"), params.get("name", "")
     try:
-        from tools.cronjob_tools import cronjob
+        from hermes_agent.tools.cronjob_tools import cronjob
 
         if action == "list":
             return _ok(rid, json.loads(cronjob(action="list")))
@@ -4459,7 +4459,7 @@ def _(rid, params: dict) -> dict:
     if not cmd:
         return _err(rid, 4004, "empty command")
     try:
-        from tools.approval import detect_dangerous_command
+        from hermes_agent.tools.approval import detect_dangerous_command
 
         is_dangerous, _, desc = detect_dangerous_command(cmd)
         if is_dangerous:

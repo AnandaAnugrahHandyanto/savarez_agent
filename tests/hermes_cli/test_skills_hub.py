@@ -19,7 +19,7 @@ class _DummyLockFile:
 @pytest.fixture()
 def hub_env(monkeypatch, tmp_path):
     """Set up isolated hub directory paths and return (monkeypatch, tmp_path)."""
-    import tools.skills_hub as hub
+    import hermes_agent.tools.skills_hub as hub
 
     hub_dir = tmp_path / "skills" / ".hub"
     monkeypatch.setattr(hub, "SKILLS_DIR", tmp_path / "skills")
@@ -51,9 +51,9 @@ _BUILTIN_MANIFEST = {"builtin-skill": "abc123"}
 @pytest.fixture()
 def three_source_env(monkeypatch, hub_env):
     """Populate hub/builtin/local skills for source-classification tests."""
-    import tools.skills_hub as hub
-    import tools.skills_sync as skills_sync
-    import tools.skills_tool as skills_tool
+    import hermes_agent.tools.skills_hub as hub
+    import hermes_agent.tools.skills_sync as skills_sync
+    import hermes_agent.tools.skills_tool as skills_tool
 
     monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([_HUB_ENTRY]))
     monkeypatch.setattr(skills_tool, "_find_all_skills", lambda: list(_ALL_THREE_SKILLS))
@@ -71,7 +71,7 @@ def _capture(source_filter: str = "all") -> str:
 
 
 def _capture_check(monkeypatch, results, name=None) -> str:
-    import tools.skills_hub as hub
+    import hermes_agent.tools.skills_hub as hub
 
     sink = StringIO()
     console = Console(file=sink, force_terminal=False, color_system=None)
@@ -81,7 +81,7 @@ def _capture_check(monkeypatch, results, name=None) -> str:
 
 
 def _capture_update(monkeypatch, results) -> tuple[str, list[tuple[str, str, bool]]]:
-    import tools.skills_hub as hub
+    import hermes_agent.tools.skills_hub as hub
     import hermes_agent.cli.skills_hub as cli_hub
 
     sink = StringIO()
@@ -104,8 +104,8 @@ def _capture_update(monkeypatch, results) -> tuple[str, list[tuple[str, str, boo
 
 
 def test_do_list_initializes_hub_dir(monkeypatch, hub_env):
-    import tools.skills_sync as skills_sync
-    import tools.skills_tool as skills_tool
+    import hermes_agent.tools.skills_sync as skills_sync
+    import hermes_agent.tools.skills_tool as skills_tool
 
     monkeypatch.setattr(skills_tool, "_find_all_skills", lambda: [])
     monkeypatch.setattr(skills_sync, "_read_manifest", lambda: {})
@@ -190,15 +190,15 @@ def test_handle_skills_slash_search_accepts_chatconsole_without_status_errors():
         "identifier": "skills-sh/example/kubernetes",
     })()]
 
-    with patch("tools.skills_hub.unified_search", return_value=results), \
-         patch("tools.skills_hub.create_source_router", return_value={}), \
-         patch("tools.skills_hub.GitHubAuth"):
+    with patch("hermes_agent.tools.skills_hub.unified_search", return_value=results), \
+         patch("hermes_agent.tools.skills_hub.create_source_router", return_value={}), \
+         patch("hermes_agent.tools.skills_hub.GitHubAuth"):
         handle_skills_slash("/skills search kubernetes", console=ChatConsole())
 
 
 def test_do_install_scans_with_resolved_identifier(monkeypatch, tmp_path, hub_env):
-    import tools.skills_guard as guard
-    import tools.skills_hub as hub
+    import hermes_agent.tools.skills_guard as guard
+    import hermes_agent.tools.skills_hub as hub
 
     canonical_identifier = "skills-sh/anthropics/skills/frontend-design"
 

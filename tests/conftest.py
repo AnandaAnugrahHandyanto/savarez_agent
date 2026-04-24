@@ -309,7 +309,7 @@ def _reset_module_state():
     """
     # --- tools.approval — the single biggest source of cross-test pollution ---
     try:
-        from tools import approval as _approval_mod
+        from hermes_agent.tools import approval as _approval_mod
         _approval_mod._session_approved.clear()
         _approval_mod._session_yolo.clear()
         _approval_mod._permanent_approved.clear()
@@ -325,7 +325,7 @@ def _reset_module_state():
 
     # --- tools.interrupt — per-thread interrupt flag set ---
     try:
-        from tools import interrupt as _interrupt_mod
+        from hermes_agent.tools import interrupt as _interrupt_mod
         with _interrupt_mod._lock:
             _interrupt_mod._interrupted_threads.clear()
     except Exception:
@@ -356,14 +356,14 @@ def _reset_module_state():
     # LookupError is normal if the test never set it. Setting it to an
     # empty set unconditionally normalizes the starting state.
     try:
-        from tools import env_passthrough as _envp_mod
+        from hermes_agent.tools import env_passthrough as _envp_mod
         _envp_mod._allowed_env_vars_var.set(set())
     except Exception:
         pass
 
     # --- tools.credential_files — ContextVar<dict> ---
     try:
-        from tools import credential_files as _credf_mod
+        from hermes_agent.tools import credential_files as _credf_mod
         _credf_mod._registered_files_var.set({})
     except Exception:
         pass
@@ -373,7 +373,7 @@ def _reset_module_state():
     # capped by _READ_HISTORY_CAP. If entries from a prior test persist, the
     # cap is hit faster than expected and capacity-related tests flake.
     try:
-        from tools import file_tools as _ft_mod
+        from hermes_agent.tools import file_tools as _ft_mod
         with _ft_mod._read_tracker_lock:
             _ft_mod._read_tracker.clear()
         with _ft_mod._file_ops_lock:

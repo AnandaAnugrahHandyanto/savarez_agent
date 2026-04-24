@@ -88,7 +88,7 @@ class TestMakeRunEnvHomeInjection:
         monkeypatch.setenv("HOME", "/root")
         monkeypatch.setenv("PATH", "/usr/bin:/bin")
 
-        from tools.environments.local import _make_run_env
+        from hermes_agent.tools.environments.local import _make_run_env
         result = _make_run_env({})
 
         assert result["HOME"] == str(hermes_home / "home")
@@ -101,7 +101,7 @@ class TestMakeRunEnvHomeInjection:
         monkeypatch.setenv("HOME", "/root")
         monkeypatch.setenv("PATH", "/usr/bin:/bin")
 
-        from tools.environments.local import _make_run_env
+        from hermes_agent.tools.environments.local import _make_run_env
         result = _make_run_env({})
 
         assert result["HOME"] == "/root"
@@ -111,7 +111,7 @@ class TestMakeRunEnvHomeInjection:
         monkeypatch.setenv("HOME", "/home/user")
         monkeypatch.setenv("PATH", "/usr/bin:/bin")
 
-        from tools.environments.local import _make_run_env
+        from hermes_agent.tools.environments.local import _make_run_env
         result = _make_run_env({})
 
         assert result["HOME"] == "/home/user"
@@ -131,7 +131,7 @@ class TestSanitizeSubprocessEnvHomeInjection:
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         base_env = {"HOME": "/root", "PATH": "/usr/bin", "USER": "root"}
-        from tools.environments.local import _sanitize_subprocess_env
+        from hermes_agent.tools.environments.local import _sanitize_subprocess_env
         result = _sanitize_subprocess_env(base_env)
 
         assert result["HOME"] == str(hermes_home / "home")
@@ -142,7 +142,7 @@ class TestSanitizeSubprocessEnvHomeInjection:
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         base_env = {"HOME": "/root", "PATH": "/usr/bin"}
-        from tools.environments.local import _sanitize_subprocess_env
+        from hermes_agent.tools.environments.local import _sanitize_subprocess_env
         result = _sanitize_subprocess_env(base_env)
 
         assert result["HOME"] == "/root"

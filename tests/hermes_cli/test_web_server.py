@@ -595,7 +595,7 @@ class TestNewEndpoints:
             assert "enabled" in skills[0]
 
     def test_skills_list_includes_disabled_skills(self, monkeypatch):
-        import tools.skills_tool as skills_tool
+        import hermes_agent.tools.skills_tool as skills_tool
         import hermes_agent.cli.skills_config as skills_config
         import hermes_agent.cli.web_server as web_server
 
@@ -643,7 +643,7 @@ class TestNewEndpoints:
 
     def test_toolsets_list_matches_cli_enabled_state(self, monkeypatch):
         import hermes_agent.cli.tools_config as tools_config
-        import toolsets as toolsets_module
+        import hermes_agent.backends.toolsets as toolsets_module
         import hermes_agent.cli.web_server as web_server
 
         monkeypatch.setattr(

@@ -12,7 +12,7 @@ from hermes_agent.gateway.config import GatewayConfig, HomeChannel, Platform, _a
 from hermes_agent.gateway.platforms.base import SendResult
 from hermes_agent.gateway.platforms import weixin
 from hermes_agent.gateway.platforms.weixin import ContextTokenStore, WeixinAdapter
-from tools.send_message_tool import _parse_target_ref, _send_to_platform
+from hermes_agent.tools.send_message_tool import _parse_target_ref, _send_to_platform
 
 
 def _make_adapter() -> WeixinAdapter:
@@ -285,7 +285,7 @@ class TestWeixinSendMessageIntegration:
         assert _parse_target_ref("weixin", "filehelper") == ("filehelper", None, True)
         assert _parse_target_ref("weixin", "group@chatroom") == ("group@chatroom", None, True)
 
-    @patch("tools.send_message_tool._send_weixin", new_callable=AsyncMock)
+    @patch("hermes_agent.tools.send_message_tool._send_weixin", new_callable=AsyncMock)
     def test_send_to_platform_routes_weixin_media_to_native_helper(self, send_weixin_mock):
         send_weixin_mock.return_value = {"success": True, "platform": "weixin", "chat_id": "wxid_test123"}
         config = PlatformConfig(enabled=True, token="bot-token", extra={"account_id": "bot-account"})
@@ -472,7 +472,7 @@ class TestWeixinRemoteMediaSafety:
     def test_download_remote_media_blocks_unsafe_urls(self):
         adapter = _make_adapter()
 
-        with patch("tools.url_safety.is_safe_url", return_value=False):
+        with patch("hermes_agent.tools.url_safety.is_safe_url", return_value=False):
             try:
                 asyncio.run(adapter._download_remote_media("http://127.0.0.1/private.png"))
             except ValueError as exc:

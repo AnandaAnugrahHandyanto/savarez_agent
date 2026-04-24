@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.tts_tool import (
+from hermes_agent.tools.tts_tool import (
     ELEVENLABS_MODEL_MAX_TEXT_LENGTH,
     FALLBACK_MAX_TEXT_LENGTH,
     PROVIDER_MAX_TEXT_LENGTH,
@@ -140,7 +140,7 @@ class TestTextToSpeechToolTruncation:
         monkeypatch.setattr("tools.tts_tool._load_tts_config",
                             lambda: {"provider": "openai"})
 
-        from tools.tts_tool import text_to_speech_tool
+        from hermes_agent.tools.tts_tool import text_to_speech_tool
         out = str(tmp_path / "out.mp3")
         result = json.loads(text_to_speech_tool(text=text, output_path=out))
 
@@ -165,7 +165,7 @@ class TestTextToSpeechToolTruncation:
         monkeypatch.setattr("tools.tts_tool._load_tts_config",
                             lambda: {"provider": "xai"})
 
-        from tools.tts_tool import text_to_speech_tool
+        from hermes_agent.tools.tts_tool import text_to_speech_tool
         out = str(tmp_path / "out.mp3")
         result = json.loads(text_to_speech_tool(text=text, output_path=out))
 
@@ -189,7 +189,7 @@ class TestTextToSpeechToolTruncation:
                             lambda: {"provider": "openai",
                                      "openai": {"max_text_length": 100}})
 
-        from tools.tts_tool import text_to_speech_tool
+        from hermes_agent.tools.tts_tool import text_to_speech_tool
         out = str(tmp_path / "out.mp3")
         result = json.loads(text_to_speech_tool(text=text, output_path=out))
 

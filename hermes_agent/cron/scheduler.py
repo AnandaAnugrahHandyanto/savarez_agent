@@ -183,7 +183,7 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
         platform_name, rest = deliver_value.split(":", 1)
         platform_key = platform_name.lower()
 
-        from tools.send_message_tool import _parse_target_ref
+        from hermes_agent.tools.send_message_tool import _parse_target_ref
 
         parsed_chat_id, parsed_thread_id, is_explicit = _parse_target_ref(platform_key, rest)
         if is_explicit:
@@ -316,7 +316,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             return msg
         return None  # local-only jobs don't deliver — not a failure
 
-    from tools.send_message_tool import _send_to_platform
+    from hermes_agent.tools.send_message_tool import _send_to_platform
     from hermes_agent.gateway.config import load_gateway_config, Platform
 
     platform_map = {
@@ -693,7 +693,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     if not skill_names:
         return prompt
 
-    from tools.skills_tool import skill_view
+    from hermes_agent.tools.skills_tool import skill_view
 
     parts = []
     skipped: list[str] = []

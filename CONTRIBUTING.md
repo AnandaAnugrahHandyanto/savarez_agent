@@ -246,7 +246,7 @@ Tools self-register with the central registry. Each tool file co-locates its sch
 """my_tool — Brief description of what this tool does."""
 
 import json
-from tools.registry import registry
+from hermes_agent.tools.registry import registry
 
 
 def my_tool(param1: str, param2: int = 10, **kwargs) -> str:

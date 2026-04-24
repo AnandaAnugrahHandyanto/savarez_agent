@@ -541,7 +541,7 @@ class TestPluginContext:
 
         assert "plugin_echo" in mgr._plugin_tool_names
 
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
         assert "plugin_echo" in registry._tools
 
 
@@ -578,7 +578,7 @@ class TestPluginToolVisibility:
         mgr.discover_and_load()
         monkeypatch.setattr(plugins_mod, "_plugin_manager", mgr)
 
-        from model_tools import get_tool_definitions
+        from hermes_agent.backends.model_tools import get_tool_definitions
 
         # Plugin tools are included when their toolset is explicitly enabled
         tools = get_tool_definitions(enabled_toolsets=["terminal", "plugin_vis_plugin"], quiet_mode=True)
@@ -1049,7 +1049,7 @@ class TestPluginDispatchTool:
 
         with patch("hermes_agent.cli.plugins.PluginContext.dispatch_tool.__module__", "hermes_cli.plugins"):
             with patch.dict("sys.modules", {}):
-                with patch("tools.registry.registry", mock_registry):
+                with patch("hermes_agent.tools.registry.registry", mock_registry):
                     result = ctx.dispatch_tool("web_search", {"query": "test"})
 
         assert result == '{"result": "ok"}'
@@ -1068,7 +1068,7 @@ class TestPluginDispatchTool:
         mock_registry = MagicMock()
         mock_registry.dispatch.return_value = '{"ok": true}'
 
-        with patch("tools.registry.registry", mock_registry):
+        with patch("hermes_agent.tools.registry.registry", mock_registry):
             ctx.dispatch_tool("delegate_task", {"goal": "test"})
 
         mock_registry.dispatch.assert_called_once()
@@ -1085,7 +1085,7 @@ class TestPluginDispatchTool:
         mock_registry = MagicMock()
         mock_registry.dispatch.return_value = '{"ok": true}'
 
-        with patch("tools.registry.registry", mock_registry):
+        with patch("hermes_agent.tools.registry.registry", mock_registry):
             ctx.dispatch_tool("delegate_task", {"goal": "test"})
 
         call_kwargs = mock_registry.dispatch.call_args
@@ -1104,7 +1104,7 @@ class TestPluginDispatchTool:
         mock_registry = MagicMock()
         mock_registry.dispatch.return_value = '{"ok": true}'
 
-        with patch("tools.registry.registry", mock_registry):
+        with patch("hermes_agent.tools.registry.registry", mock_registry):
             ctx.dispatch_tool("delegate_task", {"goal": "test"})
 
         call_kwargs = mock_registry.dispatch.call_args
@@ -1126,7 +1126,7 @@ class TestPluginDispatchTool:
         mock_registry = MagicMock()
         mock_registry.dispatch.return_value = '{"ok": true}'
 
-        with patch("tools.registry.registry", mock_registry):
+        with patch("hermes_agent.tools.registry.registry", mock_registry):
             ctx.dispatch_tool("delegate_task", {"goal": "test"}, parent_agent=explicit_agent)
 
         call_kwargs = mock_registry.dispatch.call_args
@@ -1142,7 +1142,7 @@ class TestPluginDispatchTool:
         mock_registry = MagicMock()
         mock_registry.dispatch.return_value = '{"ok": true}'
 
-        with patch("tools.registry.registry", mock_registry):
+        with patch("hermes_agent.tools.registry.registry", mock_registry):
             ctx.dispatch_tool("some_tool", {"x": 1}, task_id="test-123")
 
         call_kwargs = mock_registry.dispatch.call_args
@@ -1158,7 +1158,7 @@ class TestPluginDispatchTool:
         mock_registry = MagicMock()
         mock_registry.dispatch.return_value = '{"error": "Unknown tool: fake"}'
 
-        with patch("tools.registry.registry", mock_registry):
+        with patch("hermes_agent.tools.registry.registry", mock_registry):
             result = ctx.dispatch_tool("fake", {})
 
         assert '"error"' in result

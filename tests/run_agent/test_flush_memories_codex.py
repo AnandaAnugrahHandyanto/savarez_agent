@@ -108,7 +108,7 @@ class TestFlushMemoriesRespectsConfigTimeout:
                 {"role": "assistant", "content": "Hi"},
                 {"role": "user", "content": "Note this"},
             ]
-            with patch("tools.memory_tool.memory_tool", return_value="Saved."):
+            with patch("hermes_agent.tools.memory_tool.memory_tool", return_value="Saved."):
                 agent.flush_memories(messages)
 
         mock_call.assert_called_once()
@@ -130,7 +130,7 @@ class TestFlushMemoriesRespectsConfigTimeout:
 
         with patch("agent.auxiliary_client.call_llm", side_effect=RuntimeError("no provider")), \
              patch("agent.auxiliary_client._get_task_timeout", return_value=custom_timeout) as mock_gtt, \
-             patch("tools.memory_tool.memory_tool", return_value="Saved."):
+             patch("hermes_agent.tools.memory_tool.memory_tool", return_value="Saved."):
             messages = [
                 {"role": "user", "content": "Hello"},
                 {"role": "assistant", "content": "Hi"},
@@ -161,7 +161,7 @@ class TestFlushMemoriesUsesAuxiliaryClient:
                 {"role": "assistant", "content": "Hi there"},
                 {"role": "user", "content": "Remember this"},
             ]
-            with patch("tools.memory_tool.memory_tool", return_value="Saved.") as mock_memory:
+            with patch("hermes_agent.tools.memory_tool.memory_tool", return_value="Saved.") as mock_memory:
                 agent.flush_memories(messages)
 
         mock_call.assert_called_once()
@@ -180,7 +180,7 @@ class TestFlushMemoriesUsesAuxiliaryClient:
                 {"role": "assistant", "content": "Hi there"},
                 {"role": "user", "content": "Save this"},
             ]
-            with patch("tools.memory_tool.memory_tool", return_value="Saved."):
+            with patch("hermes_agent.tools.memory_tool.memory_tool", return_value="Saved."):
                 agent.flush_memories(messages)
 
         agent.client.chat.completions.create.assert_called_once()
@@ -197,7 +197,7 @@ class TestFlushMemoriesUsesAuxiliaryClient:
                 {"role": "assistant", "content": "Hi"},
                 {"role": "user", "content": "Note this"},
             ]
-            with patch("tools.memory_tool.memory_tool", return_value="Saved.") as mock_memory:
+            with patch("hermes_agent.tools.memory_tool.memory_tool", return_value="Saved.") as mock_memory:
                 agent.flush_memories(messages)
 
         mock_memory.assert_called_once()
@@ -219,7 +219,7 @@ class TestFlushMemoriesUsesAuxiliaryClient:
                 {"role": "user", "content": "Remember X"},
             ]
             original_len = len(messages)
-            with patch("tools.memory_tool.memory_tool", return_value="Saved."):
+            with patch("hermes_agent.tools.memory_tool.memory_tool", return_value="Saved."):
                 agent.flush_memories(messages)
 
         # Messages should not grow from the flush
@@ -257,7 +257,7 @@ class TestFlushMemoriesCodexFallback:
         with patch("agent.auxiliary_client.call_llm", side_effect=RuntimeError("no provider")), \
              patch.object(agent, "_run_codex_stream", return_value=codex_response) as mock_stream, \
              patch.object(agent, "_build_api_kwargs") as mock_build, \
-             patch("tools.memory_tool.memory_tool", return_value="Saved.") as mock_memory:
+             patch("hermes_agent.tools.memory_tool.memory_tool", return_value="Saved.") as mock_memory:
             mock_build.return_value = {
                 "model": "gpt-5-codex",
                 "instructions": "test",

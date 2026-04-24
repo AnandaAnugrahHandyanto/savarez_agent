@@ -273,7 +273,7 @@ class TestApprovalCallbackThreadLocalWiring:
         If this ever starts passing as "visible", the thread-local isolation
         is gone and the ACP race GHSA-qg5c-hvr5-hjgr may be back.
         """
-        from tools.terminal_tool import (
+        from hermes_agent.tools.terminal_tool import (
             set_approval_callback,
             _get_approval_callback,
         )
@@ -301,7 +301,7 @@ class TestApprovalCallbackThreadLocalWiring:
         This is exactly what cli.py's run_agent() closure does. If this test
         fails, the CLI approval prompt freeze (#13617) has regressed.
         """
-        from tools.terminal_tool import (
+        from hermes_agent.tools.terminal_tool import (
             set_approval_callback,
             set_sudo_password_callback,
             _get_approval_callback,

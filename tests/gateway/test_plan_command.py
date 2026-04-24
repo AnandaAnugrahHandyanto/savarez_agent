@@ -102,7 +102,7 @@ class TestGatewayPlanCommand:
             lambda *_args, **_kwargs: 100_000,
         )
 
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_plan_skill(tmp_path)
             scan_skill_commands()
             result = await runner._handle_message(event)
@@ -121,7 +121,7 @@ class TestGatewayPlanCommand:
         runner = _make_runner()
         event = _make_event("/help")
 
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_plan_skill(tmp_path)
             scan_skill_commands()
             result = await runner._handle_help_command(event)

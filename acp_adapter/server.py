@@ -257,7 +257,7 @@ class HermesACPAgent(acp.Agent):
             return
 
         try:
-            from tools.mcp_tool import register_mcp_servers
+            from hermes_agent.tools.mcp_tool import register_mcp_servers
 
             config_map: dict[str, dict] = {}
             for server in mcp_servers:
@@ -285,7 +285,7 @@ class HermesACPAgent(acp.Agent):
             return
 
         try:
-            from model_tools import get_tool_definitions
+            from hermes_agent.backends.model_tools import get_tool_definitions
 
             enabled_toolsets = getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"]
             disabled_toolsets = getattr(state.agent, "disabled_toolsets", None)
@@ -572,7 +572,7 @@ class HermesACPAgent(acp.Agent):
             nonlocal previous_approval_cb, previous_interactive
             if approval_cb:
                 try:
-                    from tools import terminal_tool as _terminal_tool
+                    from hermes_agent.tools import terminal_tool as _terminal_tool
                     previous_approval_cb = _terminal_tool._get_approval_callback()
                     _terminal_tool.set_approval_callback(approval_cb)
                 except Exception:
@@ -599,7 +599,7 @@ class HermesACPAgent(acp.Agent):
                     os.environ["HERMES_INTERACTIVE"] = previous_interactive
                 if approval_cb:
                     try:
-                        from tools import terminal_tool as _terminal_tool
+                        from hermes_agent.tools import terminal_tool as _terminal_tool
                         _terminal_tool.set_approval_callback(previous_approval_cb)
                     except Exception:
                         logger.debug("Could not restore approval callback", exc_info=True)
@@ -753,7 +753,7 @@ class HermesACPAgent(acp.Agent):
 
     def _cmd_tools(self, args: str, state: SessionState) -> str:
         try:
-            from model_tools import get_tool_definitions
+            from hermes_agent.backends.model_tools import get_tool_definitions
             toolsets = getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"]
             tools = get_tool_definitions(enabled_toolsets=toolsets, quiet_mode=True)
             if not tools:

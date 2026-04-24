@@ -2105,7 +2105,7 @@ class SkillToggle(BaseModel):
 
 @app.get("/api/skills")
 async def get_skills():
-    from tools.skills_tool import _find_all_skills
+    from hermes_agent.tools.skills_tool import _find_all_skills
     from hermes_agent.cli.skills_config import get_disabled_skills
     config = load_config()
     disabled = get_disabled_skills(config)
@@ -2135,7 +2135,7 @@ async def get_toolsets():
         _get_platform_tools,
         _toolset_has_keys,
     )
-    from toolsets import resolve_toolset
+    from hermes_agent.backends.toolsets import resolve_toolset
 
     config = load_config()
     enabled_toolsets = _get_platform_tools(

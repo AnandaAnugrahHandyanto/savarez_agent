@@ -630,7 +630,7 @@ Config: `~/.hermes/config.yaml` (settings), `~/.hermes/.env` (API keys).
 **1. Create `tools/your_tool.py`:**
 ```python
 import json, os
-from tools.registry import registry
+from hermes_agent.tools.registry import registry
 
 def check_requirements() -> bool:
     return bool(os.getenv("EXAMPLE_API_KEY"))

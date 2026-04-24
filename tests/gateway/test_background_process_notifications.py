@@ -179,7 +179,7 @@ class TestLoadBackgroundNotificationsMode:
 async def test_run_process_watcher_respects_notification_mode(
     monkeypatch, tmp_path, mode, sessions, expected_calls, expected_fragment
 ):
-    import tools.process_registry as pr_module
+    import hermes_agent.tools.process_registry as pr_module
 
     monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
 
@@ -204,7 +204,7 @@ async def test_run_process_watcher_respects_notification_mode(
 @pytest.mark.asyncio
 async def test_thread_id_passed_to_send(monkeypatch, tmp_path):
     """thread_id from watcher dict is forwarded as metadata to adapter.send()."""
-    import tools.process_registry as pr_module
+    import hermes_agent.tools.process_registry as pr_module
 
     sessions = [SimpleNamespace(output_buffer="done\n", exited=True, exit_code=0)]
     monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
@@ -226,7 +226,7 @@ async def test_thread_id_passed_to_send(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_no_thread_id_sends_no_metadata(monkeypatch, tmp_path):
     """When thread_id is empty, metadata should be None (general topic)."""
-    import tools.process_registry as pr_module
+    import hermes_agent.tools.process_registry as pr_module
 
     sessions = [SimpleNamespace(output_buffer="done\n", exited=True, exit_code=0)]
     monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))

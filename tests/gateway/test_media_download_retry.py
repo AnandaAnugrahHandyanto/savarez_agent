@@ -77,7 +77,7 @@ class TestCacheImageFromBytes:
 # cache_image_from_url (base.py)
 # ---------------------------------------------------------------------------
 
-@patch("tools.url_safety.is_safe_url", return_value=True)
+@patch("hermes_agent.tools.url_safety.is_safe_url", return_value=True)
 class TestCacheImageFromUrl:
     """Tests for gateway.platforms.base.cache_image_from_url"""
 
@@ -215,7 +215,7 @@ class TestCacheImageFromUrl:
 # cache_audio_from_url (base.py)
 # ---------------------------------------------------------------------------
 
-@patch("tools.url_safety.is_safe_url", return_value=True)
+@patch("hermes_agent.tools.url_safety.is_safe_url", return_value=True)
 class TestCacheAudioFromUrl:
     """Tests for gateway.platforms.base.cache_audio_from_url"""
 
@@ -426,7 +426,7 @@ class TestSSRFRedirectGuard:
             return url == "https://public.example.com/image.png"
 
         async def run():
-            with patch("tools.url_safety.is_safe_url", side_effect=fake_safe), \
+            with patch("hermes_agent.tools.url_safety.is_safe_url", side_effect=fake_safe), \
                  patch("httpx.AsyncClient", side_effect=factory):
                 from hermes_agent.gateway.platforms.base import cache_image_from_url
                 await cache_image_from_url(
@@ -455,7 +455,7 @@ class TestSSRFRedirectGuard:
             return url == "https://public.example.com/voice.ogg"
 
         async def run():
-            with patch("tools.url_safety.is_safe_url", side_effect=fake_safe), \
+            with patch("hermes_agent.tools.url_safety.is_safe_url", side_effect=fake_safe), \
                  patch("httpx.AsyncClient", side_effect=factory):
                 from hermes_agent.gateway.platforms.base import cache_audio_from_url
                 await cache_audio_from_url(
@@ -493,7 +493,7 @@ class TestSSRFRedirectGuard:
         mock_client.get = AsyncMock(side_effect=fake_get)
 
         async def run():
-            with patch("tools.url_safety.is_safe_url", return_value=True), \
+            with patch("hermes_agent.tools.url_safety.is_safe_url", return_value=True), \
                  patch("httpx.AsyncClient", side_effect=factory):
                 from hermes_agent.gateway.platforms.base import cache_image_from_url
                 return await cache_image_from_url(
@@ -796,7 +796,7 @@ def _make_aiohttp_resp(status: int, content: bytes = b"file bytes",
     return resp
 
 
-@patch("tools.url_safety.is_safe_url", return_value=True)
+@patch("hermes_agent.tools.url_safety.is_safe_url", return_value=True)
 class TestMattermostSendUrlAsFile:
     """Tests for MattermostAdapter._send_url_as_file"""
 

@@ -4,7 +4,7 @@ import json
 import pytest
 from pathlib import Path
 
-from tools.memory_tool import (
+from hermes_agent.tools.memory_tool import (
     MemoryStore,
     memory_tool,
     _scan_memory_content,

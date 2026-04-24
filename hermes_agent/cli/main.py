@@ -1121,7 +1121,7 @@ def cmd_chat(args):
 
     # Sync bundled skills on every CLI launch (fast -- skips unchanged skills)
     try:
-        from tools.skills_sync import sync_skills
+        from hermes_agent.tools.skills_sync import sync_skills
 
         sync_skills(quiet=True)
     except Exception:
@@ -4653,7 +4653,7 @@ def _update_via_zip(args):
 
     # Sync skills
     try:
-        from tools.skills_sync import sync_skills
+        from hermes_agent.tools.skills_sync import sync_skills
 
         print("→ Syncing bundled skills...")
         result = sync_skills(quiet=True)
@@ -5724,7 +5724,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         # Sync bundled skills (copies new, updates changed, respects user deletions)
         try:
-            from tools.skills_sync import sync_skills
+            from hermes_agent.tools.skills_sync import sync_skills
 
             print()
             print("→ Syncing bundled skills...")

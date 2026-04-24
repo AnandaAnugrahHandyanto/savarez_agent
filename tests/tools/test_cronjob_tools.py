@@ -4,7 +4,7 @@ import json
 import pytest
 from pathlib import Path
 
-from tools.cronjob_tools import (
+from hermes_agent.tools.cronjob_tools import (
     _scan_cron_prompt,
     check_cronjob_requirements,
     cronjob,

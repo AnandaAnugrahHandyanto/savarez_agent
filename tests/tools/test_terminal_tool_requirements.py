@@ -2,7 +2,7 @@
 
 import importlib
 
-from model_tools import get_tool_definitions
+from hermes_agent.backends.model_tools import get_tool_definitions
 
 terminal_tool_module = importlib.import_module("tools.terminal_tool")
 

@@ -165,7 +165,7 @@ def _probe_single_server(
     Returns list of ``(tool_name, description)`` tuples.
     Raises on connection failure.
     """
-    from tools.mcp_tool import (
+    from hermes_agent.tools.mcp_tool import (
         _ensure_mcp_loop,
         _run_on_mcp_loop,
         _connect_server,
@@ -279,7 +279,7 @@ def cmd_mcp_add(args):
         _info(f"Starting OAuth flow for '{name}'...")
         oauth_ok = False
         try:
-            from tools.mcp_oauth_manager import get_manager
+            from hermes_agent.tools.mcp_oauth_manager import get_manager
             oauth_auth = get_manager().get_or_build_provider(name, url, None)
             if oauth_auth:
                 server_config["auth"] = "oauth"
@@ -432,7 +432,7 @@ def cmd_mcp_remove(args):
     # any provider instance cached in the current process (e.g. from an
     # earlier `hermes mcp test` in the same session) is evicted too.
     try:
-        from tools.mcp_oauth_manager import get_manager
+        from hermes_agent.tools.mcp_oauth_manager import get_manager
         get_manager().remove(name)
         _success("Cleaned up OAuth tokens")
     except Exception:
@@ -616,7 +616,7 @@ def cmd_mcp_login(args):
     # Wipe both disk and in-memory cache so the next probe forces a fresh
     # OAuth flow.
     try:
-        from tools.mcp_oauth_manager import get_manager
+        from hermes_agent.tools.mcp_oauth_manager import get_manager
         mgr = get_manager()
         mgr.remove(name)
     except Exception as exc:
@@ -742,7 +742,7 @@ def mcp_command(args):
     action = getattr(args, "mcp_action", None)
 
     if action == "serve":
-        from mcp_serve import run_mcp_server
+        from hermes_agent.backends.mcp_serve import run_mcp_server
         run_mcp_server(verbose=getattr(args, "verbose", False))
         return
 

@@ -129,9 +129,9 @@ class TestDoInstallSkipConfirm:
         """Without skip_confirm, input() is called for confirmation."""
         from hermes_agent.cli.skills_hub import do_install
         with patch("hermes_agent.cli.skills_hub._console"), \
-             patch("tools.skills_hub.ensure_hub_dirs"), \
-             patch("tools.skills_hub.GitHubAuth"), \
-             patch("tools.skills_hub.create_source_router") as mock_router, \
+             patch("hermes_agent.tools.skills_hub.ensure_hub_dirs"), \
+             patch("hermes_agent.tools.skills_hub.GitHubAuth"), \
+             patch("hermes_agent.tools.skills_hub.create_source_router") as mock_router, \
              patch("hermes_agent.cli.skills_hub._resolve_short_name", return_value="test/skill"), \
              patch("hermes_agent.cli.skills_hub._resolve_source_meta_and_bundle") as mock_resolve:
 
@@ -149,7 +149,7 @@ class TestDoUninstallSkipConfirm:
         """With skip_confirm=True, input() should not be called."""
         from hermes_agent.cli.skills_hub import do_uninstall
         with patch("hermes_agent.cli.skills_hub._console") as mock_console, \
-             patch("tools.skills_hub.uninstall_skill", return_value=(True, "Removed")) as mock_uninstall, \
+             patch("hermes_agent.tools.skills_hub.uninstall_skill", return_value=(True, "Removed")) as mock_uninstall, \
              patch("builtins.input") as mock_input:
             do_uninstall("test-skill", skip_confirm=True)
             mock_input.assert_not_called()
@@ -159,7 +159,7 @@ class TestDoUninstallSkipConfirm:
         """Without skip_confirm, input() should be called."""
         from hermes_agent.cli.skills_hub import do_uninstall
         with patch("hermes_agent.cli.skills_hub._console"), \
-             patch("tools.skills_hub.uninstall_skill", return_value=(True, "Removed")), \
+             patch("hermes_agent.tools.skills_hub.uninstall_skill", return_value=(True, "Removed")), \
              patch("builtins.input", return_value="y") as mock_input:
             do_uninstall("test-skill", skip_confirm=False)
             mock_input.assert_called_once()
@@ -168,7 +168,7 @@ class TestDoUninstallSkipConfirm:
         """Without skip_confirm, answering 'n' should cancel."""
         from hermes_agent.cli.skills_hub import do_uninstall
         with patch("hermes_agent.cli.skills_hub._console"), \
-             patch("tools.skills_hub.uninstall_skill") as mock_uninstall, \
+             patch("hermes_agent.tools.skills_hub.uninstall_skill") as mock_uninstall, \
              patch("builtins.input", return_value="n"):
             do_uninstall("test-skill", skip_confirm=False)
             mock_uninstall.assert_not_called()

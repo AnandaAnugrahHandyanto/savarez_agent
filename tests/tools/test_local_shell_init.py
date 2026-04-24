@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.environments.local import (
+from hermes_agent.tools.environments.local import (
     LocalEnvironment,
     _prepend_shell_init,
     _read_terminal_shell_init_config,
