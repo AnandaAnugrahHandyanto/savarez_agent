@@ -601,3 +601,122 @@ class TestImagegenModelPicker:
             _configure_imagegen_model("fal", config)
         assert isinstance(config["image_gen"], dict)
         assert config["image_gen"]["model"] == "fal-ai/flux-2/klein/9b"
+
+
+def test_get_platform_tools_recovers_non_configurable_toolsets_from_composite():
+    """Non-configurable toolsets whose tools are in the composite but not in
+    CONFIGURABLE_TOOLSETS should still appear in the result.
+    """
+    from toolsets import TOOLSETS
+    from hermes_cli.tools_config import PLATFORMS
+    from unittest.mock import patch as mock_patch
+
+    fake_toolsets = dict(TOOLSETS)
+    fake_toolsets["_test_platform_tool"] = {
+        "description": "test",
+        "tools": ["_test_special_tool"],
+        "includes": [],
+    }
+    fake_toolsets["hermes-_test_platform"] = {
+        "description": "test composite",
+        "tools": ["web_search", "web_extract", "terminal", "process", "_test_special_tool"],
+        "includes": [],
+    }
+
+    test_platforms = {
+        "_test_platform": {"label": "Test", "default_toolset": "hermes-_test_platform"},
+    }
+
+    with mock_patch("hermes_cli.tools_config.PLATFORMS", {**PLATFORMS, **test_platforms}):
+        with mock_patch("toolsets.TOOLSETS", fake_toolsets):
+            enabled = _get_platform_tools({}, "_test_platform")
+
+    assert "_test_platform_tool" in enabled
+    assert "web" in enabled
+    assert "terminal" in enabled
+
+
+def test_get_platform_tools_second_pass_skips_fully_claimed_toolsets():
+    """Toolsets whose tools are fully covered by configurable keys should NOT
+    be added by the second pass (prevents 'search', 'hermes-acp' noise).
+    """
+    enabled = _get_platform_tools({}, "cli")
+
+    assert "search" not in enabled
+
+
+def test_get_platform_tools_discord_includes_discord_not_admin():
+    enabled = _get_platform_tools({}, "discord")
+    assert "discord" in enabled
+    assert "discord_admin" not in enabled
+
+
+def test_discord_admin_in_configurable_toolsets():
+    assert any(ts_key == "discord_admin" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
+
+
+def test_discord_admin_in_default_off():
+    assert "discord_admin" in _DEFAULT_OFF_TOOLSETS
+
+
+def test_get_platform_tools_feishu_includes_doc_and_drive():
+    enabled = _get_platform_tools({}, "feishu")
+    assert "feishu_doc" in enabled
+    assert "feishu_drive" in enabled
+
+
+def test_get_platform_tools_feishu_tools_not_on_other_platforms():
+    for plat in ["cli", "telegram", "discord"]:
+        enabled = _get_platform_tools({}, plat)
+        assert "feishu_doc" not in enabled, f"feishu_doc leaked onto {plat}"
+        assert "feishu_drive" not in enabled, f"feishu_drive leaked onto {plat}"
+
+
+def test_save_platform_tools_normalizes_numeric_entries():
+    """YAML may parse bare numeric toolset names as int. They should be
+    normalized to str so they survive the save round-trip.
+    """
+    config = {
+        "platform_toolsets": {
+            "cli": ["web", "terminal", 12306, "custom-mcp"]
+        }
+    }
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", {"web", "browser"})
+
+    saved = config["platform_toolsets"]["cli"]
+    assert "12306" in saved
+    assert 12306 not in saved
+
+
+def test_save_platform_tools_clears_stale_no_mcp():
+    """When the new selection doesn't include no_mcp, the sentinel should
+    be stripped from preserved entries so MCP servers are re-enabled.
+    """
+    config = {
+        "platform_toolsets": {
+            "cli": ["web", "terminal", "no_mcp"]
+        }
+    }
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", {"web", "browser"})
+
+    saved = config["platform_toolsets"]["cli"]
+    assert "no_mcp" not in saved
+
+
+def test_save_platform_tools_preserves_explicit_no_mcp():
+    """When the new selection explicitly includes no_mcp, it should be kept."""
+    config = {
+        "platform_toolsets": {
+            "cli": ["web", "no_mcp"]
+        }
+    }
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", {"web", "no_mcp"})
+
+    saved = config["platform_toolsets"]["cli"]
+    assert "no_mcp" in saved
