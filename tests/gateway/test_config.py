@@ -259,6 +259,22 @@ class TestLoadGatewayConfig:
             "456": "Therapist mode",
         }
 
+    def test_bridges_telegram_group_thread_id_setting_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "telegram:\n"
+            "  preserve_group_thread_ids: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.TELEGRAM].extra["preserve_group_thread_ids"] is True
+
     def test_bridges_telegram_channel_prompts_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
