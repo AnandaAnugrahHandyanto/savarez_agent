@@ -22,6 +22,56 @@ _PLAN_SLUG_RE = re.compile(r"[^a-z0-9]+")
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
 
+# ── TOML index support ────────────────────────────────────────────────────────
+
+_TOML_INDEX_CACHE: Optional[Dict[str, Any]] = None
+
+
+def _get_skills_toml_path() -> Path:
+    """Return the path to skills/.index.toml."""
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "skills" / ".index.toml"
+
+
+def read_index_toml() -> Optional[Dict[str, Any]]:
+    """Read and cache the skills/.index.toml index.
+
+    Returns None if the file doesn't exist or can't be parsed.
+    Uses an in-process cache to avoid re-parsing on every call.
+    """
+    global _TOML_INDEX_CACHE
+    if _TOML_INDEX_CACHE is not None:
+        return _TOML_INDEX_CACHE
+
+    toml_path = _get_skills_toml_path()
+    if not toml_path.exists():
+        logger.debug("skills/.index.toml not found at %s", toml_path)
+        return None
+
+    try:
+        import tomllib
+    except ImportError:
+        try:
+            import tomli as tomllib
+        except ImportError:
+            logger.debug("Neither tomllib nor tomli available for TOML parsing")
+            return None
+
+    try:
+        with open(toml_path, "rb") as f:
+            _TOML_INDEX_CACHE = tomllib.load(f)
+        logger.debug("Loaded skills index from %s", toml_path)
+        return _TOML_INDEX_CACHE
+    except Exception as e:
+        logger.warning("Failed to parse skills/.index.toml: %s", e)
+        return None
+
+
+def invalidate_toml_cache() -> None:
+    """Clear the TOML index cache. Call this if the index file changes."""
+    global _TOML_INDEX_CACHE
+    _TOML_INDEX_CACHE = None
+
 
 def build_plan_path(
     user_instruction: str = "",

@@ -536,12 +536,38 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
         List of skill metadata dicts (name, description, category).
     """
     from agent.skill_utils import get_external_skills_dirs
+    from agent.skill_commands import read_index_toml
 
     skills = []
     seen_names: set = set()
 
     # Load disabled set once (not per-skill)
     disabled = set() if skip_disabled else _get_disabled_skill_names()
+
+    # ── Fast path: try TOML index first ──────────────────────────────────────
+    toml_index = read_index_toml()
+    if toml_index is not None:
+        # Parse [skills] entries from TOML
+        skills_table = toml_index.get("skills", {})
+        for _skill_key, skill_info in skills_table.items():
+            if not isinstance(skill_info, dict):
+                continue
+            name = skill_info.get("name", _skill_key)
+            if name in seen_names or (not skip_disabled and name in disabled):
+                continue
+            description = skill_info.get("description", "")
+            category = skill_info.get("category", "")
+            seen_names.add(name)
+            skills.append({
+                "name": name,
+                "description": description,
+                "category": category,
+            })
+        logger.debug("TOML fast path: %d skills loaded", len(skills))
+
+    # ── Fallback: disk scan ───────────────────────────────────────────────────
+    if not skills:
+        logger.debug("Falling back to disk scan for skills discovery")
 
     # Scan local dir first, then external dirs (local takes precedence)
     dirs_to_scan = []
@@ -566,7 +592,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 name = frontmatter.get("name", skill_dir.name)[:MAX_NAME_LENGTH]
                 if name in seen_names:
                     continue
-                if name in disabled:
+                if not skip_disabled and name in disabled:
                     continue
 
                 description = frontmatter.get("description", "")
