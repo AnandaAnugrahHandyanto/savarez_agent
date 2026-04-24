@@ -222,6 +222,42 @@ class TestBasePlatformTopicSessions:
         ]
 
     @pytest.mark.asyncio
+    async def test_process_message_background_delivery_timeout_releases_session(self):
+        adapter = DummyTelegramAdapter()
+        adapter.config.extra["delivery_timeout_seconds"] = 0.01
+        session_key = build_session_key(_make_event("-1001", "17585").source)
+        delivered = asyncio.Event()
+
+        async def handler(_event):
+            await asyncio.sleep(0)
+            return "ack"
+
+        async def hanging_send(*_args, **_kwargs):
+            delivered.set()
+            await asyncio.Event().wait()
+
+        async def hold_typing(_chat_id, interval=2.0, metadata=None):
+            await asyncio.Event().wait()
+
+        adapter.set_message_handler(handler)
+        adapter._send_with_retry = hanging_send
+        adapter._keep_typing = hold_typing
+        adapter._active_sessions[session_key] = asyncio.Event()
+
+        event = _make_event("-1001", "17585")
+        await asyncio.wait_for(
+            adapter._process_message_background(event, session_key),
+            timeout=0.2,
+        )
+
+        assert delivered.is_set()
+        assert session_key not in adapter._active_sessions
+        assert adapter.processing_hooks == [
+            ("start", "1"),
+            ("complete", "1", ProcessingOutcome.FAILURE),
+        ]
+
+    @pytest.mark.asyncio
     async def test_cancel_background_tasks_marks_expected_cancellation_cancelled(self):
         adapter = DummyTelegramAdapter()
         release = asyncio.Event()
