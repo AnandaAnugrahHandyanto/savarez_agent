@@ -387,6 +387,7 @@ class FeishuAdapterSettings:
     admins: frozenset[str] = frozenset()
     default_group_policy: str = ""
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
+    require_group_mention: bool = True
 
 
 @dataclass
@@ -498,6 +499,23 @@ def _coerce_int(value: Any, default: Optional[int] = None, min_value: int = 0) -
 def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
     parsed = _coerce_int(value, default=default, min_value=min_value)
     return default if parsed is None else parsed
+
+
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    """Coerce common config/env boolean representations."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off"}:
+            return False
+    return default
 
 
 # ---------------------------------------------------------------------------
@@ -1408,6 +1426,7 @@ class FeishuAdapter(BasePlatformAdapter):
             bot_open_id=os.getenv("FEISHU_BOT_OPEN_ID", "").strip(),
             bot_user_id=os.getenv("FEISHU_BOT_USER_ID", "").strip(),
             bot_name=os.getenv("FEISHU_BOT_NAME", "").strip(),
+            require_group_mention=_coerce_bool(extra.get("require_group_mention"), default=True),
             dedup_cache_size=max(
                 32,
                 int(os.getenv("HERMES_FEISHU_DEDUP_CACHE_SIZE", str(_DEFAULT_DEDUP_CACHE_SIZE))),
@@ -1460,6 +1479,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._admins = set(settings.admins)
         self._default_group_policy = settings.default_group_policy or settings.group_policy
         self._group_rules = settings.group_rules
+        self._require_group_mention = settings.require_group_mention
         self._bot_open_id = settings.bot_open_id
         self._bot_user_id = settings.bot_user_id
         self._bot_name = settings.bot_name
@@ -3629,6 +3649,9 @@ class FeishuAdapter(BasePlatformAdapter):
         """Require an explicit @mention before group messages enter the agent."""
         if not self._allow_group_message(sender_id, chat_id):
             return False
+        # When require_group_mention is False, accept all group messages
+        if not self._require_group_mention:
+            return True
         # @_all is Feishu's @everyone placeholder — always route to the bot.
         raw_content = getattr(message, "content", "") or ""
         if "@_all" in raw_content:

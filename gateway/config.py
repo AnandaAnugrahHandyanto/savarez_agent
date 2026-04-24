@@ -582,6 +582,12 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["allow_from"] = platform_cfg["allow_from"]
                 if "group_policy" in platform_cfg:
                     bridged["group_policy"] = platform_cfg["group_policy"]
+                if "require_group_mention" in platform_cfg:
+                    bridged["require_group_mention"] = platform_cfg["require_group_mention"]
+                if "default_group_policy" in platform_cfg:
+                    bridged["default_group_policy"] = platform_cfg["default_group_policy"]
+                if "group_rules" in platform_cfg:
+                    bridged["group_rules"] = platform_cfg["group_rules"]
                 if "group_allow_from" in platform_cfg:
                     bridged["group_allow_from"] = platform_cfg["group_allow_from"]
                 if plat == Platform.DISCORD and "channel_skill_bindings" in platform_cfg:
