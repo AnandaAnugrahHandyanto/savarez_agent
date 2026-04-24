@@ -95,9 +95,10 @@ class TestPtyBridgeIO:
 
 @skip_on_windows
 class TestPtyBridgeResize:
-    def test_resize_updates_child_winsize(self):
+    def test_resize_updates_child_winsize(self, monkeypatch):
         # tput reads COLUMNS/LINES from the TTY ioctl (TIOCGWINSZ).
         # Spawn a shell, resize, then ask tput for the dimensions.
+        monkeypatch.delenv("TERM", raising=False)
         bridge = PtyBridge.spawn(
             ["/bin/sh", "-c", "sleep 0.1; tput cols; tput lines"],
             cols=80,
