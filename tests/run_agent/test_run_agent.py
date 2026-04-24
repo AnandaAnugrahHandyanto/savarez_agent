@@ -1375,6 +1375,122 @@ class TestBuildApiKwargs:
 
 
 
+class TestSafeOrchestrationVerifierHook:
+    def test_sequential_tool_execution_default_off_does_not_run_verifier(
+        self,
+        agent,
+        monkeypatch,
+    ):
+        monkeypatch.delenv("HERMES_OMC_VERIFIER", raising=False)
+        assistant_message = _mock_assistant_msg(
+            content="",
+            tool_calls=[
+                _mock_tool_call(
+                    name="terminal",
+                    arguments='{"command":"pkill -f hermes"}',
+                    call_id="c1",
+                )
+            ],
+        )
+        messages = []
+
+        with (
+            patch("run_agent.handle_function_call", return_value="ok"),
+            patch("run_agent.evaluate_turn", create=True) as mock_evaluate,
+        ):
+            agent._execute_tool_calls_sequential(
+                assistant_message,
+                messages,
+                effective_task_id="test-task",
+            )
+
+        mock_evaluate.assert_not_called()
+        assert messages[-1] == {
+            "role": "tool",
+            "content": "ok",
+            "tool_call_id": "c1",
+        }
+
+    def test_sequential_tool_execution_env_on_runs_report_only_verifier(
+        self,
+        agent,
+        monkeypatch,
+        caplog,
+    ):
+        from agent.verifier import VerifierFinding, VerifierReport
+
+        monkeypatch.setenv("HERMES_OMC_VERIFIER", "1")
+        assistant_message = _mock_assistant_msg(
+            content="",
+            tool_calls=[
+                _mock_tool_call(
+                    name="terminal",
+                    arguments='{"command":"pkill -f hermes"}',
+                    call_id="c1",
+                )
+            ],
+        )
+        messages = []
+        report = VerifierReport(
+            enabled=True,
+            findings=(
+                VerifierFinding(
+                    severity="warning",
+                    code="hermes_process_kill_command",
+                    message="report-only",
+                    tool_name="terminal",
+                ),
+            ),
+        )
+
+        with (
+            patch("run_agent.handle_function_call", return_value="ok"),
+            patch("run_agent.evaluate_turn", return_value=report) as mock_evaluate,
+            caplog.at_level(logging.WARNING, logger="run_agent"),
+        ):
+            agent._execute_tool_calls_sequential(
+                assistant_message,
+                messages,
+                effective_task_id="test-task",
+            )
+
+        mock_evaluate.assert_called_once()
+        records = mock_evaluate.call_args.args[0]
+        assert len(records) == 1
+        assert records[0].name == "terminal"
+        assert records[0].args == {"command": "pkill -f hermes"}
+        assert records[0].status == "ok"
+        assert messages[-1]["content"] == "ok"
+        assert "safe orchestration verifier finding" in caplog.text
+
+    def test_verifier_hook_never_raises_into_tool_execution(
+        self,
+        agent,
+        monkeypatch,
+        caplog,
+    ):
+        monkeypatch.setenv("HERMES_OMC_VERIFIER", "1")
+        assistant_message = _mock_assistant_msg(
+            content="",
+            tool_calls=[_mock_tool_call(name="terminal", arguments='{}', call_id="c1")],
+        )
+        messages = []
+
+        with (
+            patch("run_agent.handle_function_call", return_value="ok"),
+            patch("run_agent.evaluate_turn", side_effect=RuntimeError("boom")),
+            caplog.at_level(logging.WARNING, logger="run_agent"),
+        ):
+            agent._execute_tool_calls_sequential(
+                assistant_message,
+                messages,
+                effective_task_id="test-task",
+            )
+
+        assert messages[-1]["content"] == "ok"
+        assert "safe orchestration verifier failed" in caplog.text
+
+
 class TestBuildAssistantMessage:
     def test_basic_message(self, agent):
         msg = _mock_assistant_msg(content="Hello!")
