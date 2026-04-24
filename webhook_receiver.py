@@ -12,17 +12,14 @@ No buffering. No cron. No separate processor process.
 import os
 import sys
 import json
-import threading
 import werkzeug.exceptions
+from pathlib import Path
 from flask import Flask, request, jsonify
 
 # Import the enrichment pipeline
 from alert_processor import enrich_alert_from_dict, AlertRecord
 
 app = Flask(__name__)
-
-# Processing lock to prevent concurrent access to shared resources
-_processing_lock = threading.Lock()
 
 
 def _checkmk_state_to_severity(state: str) -> str:
@@ -183,6 +180,16 @@ def receive_alert():
     else:
         return jsonify({"status": "error", "message": "Unknown payload format"}), 400
 
+    # Write raw alert to inbox for async NOC MD processor
+    import datetime as _dt
+    import re as _re
+    raw_id = (alert_dict.get("alert_id") or alert_dict.get("device") or "").strip()
+    safe_id = _re.sub(r"[^a-zA-Z0-9_\-]", "-", raw_id) if raw_id else str(_dt.datetime.utcnow().timestamp())
+    inbox_path = Path.home() / "noc" / "inbox" / f"{safe_id}.json"
+    inbox_path.parent.mkdir(parents=True, exist_ok=True)
+    inbox_path.write_text(json.dumps({"alert": alert_dict, "source": source, "received_at": _dt.datetime.utcnow(_dt.timezone.utc).isoformat()}, default=str), encoding="utf-8")
+    print(f"[Webhook] Inbox write: {inbox_path}  (source={source})", flush=True)
+
     # Process the alert synchronously
     try:
         result = enrich_alert_from_dict(alert_dict, source=source)
@@ -200,6 +207,7 @@ def receive_alert():
         "severity": result.get("severity"),
         "sent": result.get("sent"),
         "briefing_length": len(result.get("briefing", "")),
+        "inbox_path": str(inbox_path),
     }), status_code
 
 
