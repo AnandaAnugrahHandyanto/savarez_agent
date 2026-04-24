@@ -21,6 +21,6 @@ export const resolveDetailsMode = (d?: { details_mode?: unknown; thinking_mode?:
       .trim()
       .toLowerCase()
   ] ??
-  'collapsed'
+  'expanded'
 
 export const nextDetailsMode = (m: DetailsMode): DetailsMode => MODES[(MODES.indexOf(m) + 1) % MODES.length]!

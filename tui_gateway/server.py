@@ -2775,13 +2775,13 @@ def _(rid, params: dict) -> dict:
         allowed_dm = frozenset({"hidden", "collapsed", "expanded"})
         raw = (
             str(
-                _load_cfg().get("display", {}).get("details_mode", "collapsed")
-                or "collapsed"
+                _load_cfg().get("display", {}).get("details_mode", "expanded")
+                or "expanded"
             )
             .strip()
             .lower()
         )
-        nv = raw if raw in allowed_dm else "collapsed"
+        nv = raw if raw in allowed_dm else "expanded"
         return _ok(rid, {"value": nv})
     if key == "thinking_mode":
         allowed_tm = frozenset({"collapsed", "truncated", "full"})
@@ -2792,8 +2792,8 @@ def _(rid, params: dict) -> dict:
         else:
             dm = (
                 str(
-                    cfg.get("display", {}).get("details_mode", "collapsed")
-                    or "collapsed"
+                    cfg.get("display", {}).get("details_mode", "expanded")
+                    or "expanded"
                 )
                 .strip()
                 .lower()

@@ -9,7 +9,7 @@ const buildUiState = (): UiState => ({
   bgTasks: new Set(),
   busy: false,
   compact: false,
-  detailsMode: 'collapsed',
+  detailsMode: 'expanded',
   info: null,
   inlineDiffs: true,
   showCost: false,

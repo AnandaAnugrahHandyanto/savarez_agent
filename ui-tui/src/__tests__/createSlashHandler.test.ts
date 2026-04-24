@@ -78,14 +78,14 @@ describe('createSlashHandler', () => {
   it('cycles details mode and persists it', async () => {
     const ctx = buildCtx()
 
-    expect(getUiState().detailsMode).toBe('collapsed')
-    expect(createSlashHandler(ctx)('/details toggle')).toBe(true)
     expect(getUiState().detailsMode).toBe('expanded')
+    expect(createSlashHandler(ctx)('/details toggle')).toBe(true)
+    expect(getUiState().detailsMode).toBe('hidden')
     expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
       key: 'details_mode',
-      value: 'expanded'
+      value: 'hidden'
     })
-    expect(ctx.transcript.sys).toHaveBeenCalledWith('details: expanded')
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('details: hidden')
   })
 
   it('shows tool enable usage when names are missing', () => {
