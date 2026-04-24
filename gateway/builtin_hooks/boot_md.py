@@ -18,6 +18,7 @@ suppress delivery.
 """
 
 import logging
+import os
 import threading
 
 logger = logging.getLogger("hooks.boot-md")
@@ -42,17 +43,74 @@ def _build_boot_prompt(content: str) -> str:
     )
 
 
+def _load_boot_model() -> str:
+    """Read the configured default model for boot agent runs."""
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        model_cfg = cfg.get("model", {})
+        if isinstance(model_cfg, str):
+            return model_cfg
+        if isinstance(model_cfg, dict):
+            return model_cfg.get("default") or model_cfg.get("model") or ""
+    except Exception as exc:
+        logger.debug("boot-md could not load configured model: %s", exc)
+    return ""
+
+
+def _resolve_boot_agent_kwargs() -> dict:
+    """Resolve model/provider credentials for the boot agent.
+
+    Gateway-created agents resolve runtime provider settings before constructing
+    AIAgent. The boot hook runs outside normal message handling, so it must do
+    the same explicitly instead of relying on AIAgent's legacy constructor
+    defaults.
+    """
+    model = _load_boot_model()
+    runtime = {}
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        runtime = resolve_runtime_provider(
+            requested=os.getenv("HERMES_INFERENCE_PROVIDER"),
+        ) or {}
+    except Exception as exc:
+        logger.warning("boot-md could not resolve runtime provider: %s", exc)
+
+    if not model and runtime.get("provider"):
+        try:
+            from hermes_cli.models import get_default_model_for_provider
+
+            model = get_default_model_for_provider(runtime["provider"]) or ""
+        except Exception:
+            pass
+
+    return {
+        "model": model,
+        "api_key": runtime.get("api_key"),
+        "base_url": runtime.get("base_url"),
+        "provider": runtime.get("provider"),
+        "api_mode": runtime.get("api_mode"),
+        "command": runtime.get("command"),
+        "args": list(runtime.get("args") or []),
+        "credential_pool": runtime.get("credential_pool"),
+    }
+
+
 def _run_boot_agent(content: str) -> None:
     """Spawn a one-shot agent session to execute the boot instructions."""
     try:
         from run_agent import AIAgent
 
         prompt = _build_boot_prompt(content)
+        runtime_kwargs = _resolve_boot_agent_kwargs()
         agent = AIAgent(
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
             max_iterations=20,
+            **runtime_kwargs,
         )
         result = agent.run_conversation(prompt)
         response = result.get("final_response", "")
