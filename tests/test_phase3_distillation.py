@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from memory.episodic_store import EpisodicStore
+from memory.store import EpisodicStore
 
 
 @pytest.fixture
@@ -492,7 +492,7 @@ class TestContextInjector:
 
 class TestRecallTools:
     def test_memory_grep(self, store):
-        from memory.episodic_provider import EpisodicMemoryProvider
+        from memory.provider import EpisodicMemoryProvider
 
         # Add turns with specific content
         store.append_turn("test-session-1", "user", "I want to deploy to AWS Lambda")
@@ -508,7 +508,7 @@ class TestRecallTools:
         assert any("Lambda" in r["content"] for r in result["results"])
 
     def test_memory_grep_empty_query(self, store):
-        from memory.episodic_provider import EpisodicMemoryProvider
+        from memory.provider import EpisodicMemoryProvider
 
         provider = EpisodicMemoryProvider()
         provider._store = store
@@ -518,7 +518,7 @@ class TestRecallTools:
         assert "error" in result
 
     def test_memory_expand_episode(self, store):
-        from memory.episodic_provider import EpisodicMemoryProvider
+        from memory.provider import EpisodicMemoryProvider
 
         # Create episode with source turns
         store.ensure_session("s1", source="test")
@@ -536,7 +536,7 @@ class TestRecallTools:
         assert result["turn_count"] == 2
 
     def test_memory_expand_dag_node(self, store):
-        from memory.episodic_provider import EpisodicMemoryProvider
+        from memory.provider import EpisodicMemoryProvider
 
         store.create_dag_node("d0-s1", [], 0, json.dumps({"summary": "test"}))
         store.create_dag_node("d1-day1", ["d0-s1"], 1, json.dumps({"summary": "day summary"}))
@@ -551,7 +551,7 @@ class TestRecallTools:
         assert result["parents"][0]["id"] == "d0-s1"
 
     def test_memory_expand_not_found(self, store):
-        from memory.episodic_provider import EpisodicMemoryProvider
+        from memory.provider import EpisodicMemoryProvider
 
         provider = EpisodicMemoryProvider()
         provider._store = store
@@ -561,7 +561,7 @@ class TestRecallTools:
         assert "error" in result
 
     def test_memory_describe_entity(self, store):
-        from memory.episodic_provider import EpisodicMemoryProvider
+        from memory.provider import EpisodicMemoryProvider
 
         store.upsert_entity("person-test", "person", "TestUser", {"role": "developer"})
         store.ensure_session("s1", source="test")
@@ -577,7 +577,7 @@ class TestRecallTools:
         assert result["related_count"] >= 1
 
     def test_memory_describe_episode(self, store):
-        from memory.episodic_provider import EpisodicMemoryProvider
+        from memory.provider import EpisodicMemoryProvider
 
         store.upsert_entity("proj-x", "project", "ProjectX", {})
         store.ensure_session("s1", source="test")
@@ -598,7 +598,7 @@ class TestRecallTools:
 class TestProviderIntegration:
     def test_extraction_trigger(self, store):
         """Test that extraction is triggered after N turns."""
-        from memory.episodic_provider import EpisodicMemoryProvider
+        from memory.provider import EpisodicMemoryProvider
 
         provider = EpisodicMemoryProvider()
         provider._store = store
@@ -612,7 +612,7 @@ class TestProviderIntegration:
             provider._turn_ids.append(tid)
             provider._turns_since_extract += 1
 
-        with patch("memory.episodic_provider.extract_from_turns") as mock_extract:
+        with patch("memory.provider.extract_from_turns") as mock_extract:
             mock_extract.return_value = {
                 "entities": [{"name": "Test", "type": "concept", "attributes": {}}],
                 "facts": [],
@@ -626,7 +626,7 @@ class TestProviderIntegration:
 
     def test_context_injection_in_prefetch(self, store):
         """Test that prefetch uses context_injector."""
-        from memory.episodic_provider import EpisodicMemoryProvider
+        from memory.provider import EpisodicMemoryProvider
 
         store.ensure_session("s1", source="test")
         store.create_episode("s1", "Docker setup", "Set up Docker containers")
@@ -640,9 +640,9 @@ class TestProviderIntegration:
 
     def test_provider_health_fails_loudly(self):
         """Test that is_available logs errors loudly on failure."""
-        from memory.episodic_provider import EpisodicMemoryProvider
+        from memory.provider import EpisodicMemoryProvider
 
-        with patch("memory.episodic_provider.EpisodicStore") as MockStore:
+        with patch("memory.provider.EpisodicStore") as MockStore:
             MockStore.side_effect = Exception("DB locked")
             provider = EpisodicMemoryProvider()
             result = provider.is_available()
@@ -1114,7 +1114,7 @@ class TestDistillerFallback:
 
 class TestSessionJournal:
     def test_extract_tags_from_github_tool(self):
-        from memory.session_journal import _extract_tags
+        from memory.journal import _extract_tags
         turns = [
             {"role": "assistant", "content": "Pushing files", "tool_name": "mcp_github_push_files"},
         ]
@@ -1122,7 +1122,7 @@ class TestSessionJournal:
         assert "#github" in tags
 
     def test_extract_tags_from_terminal_test_command(self):
-        from memory.session_journal import _extract_tags
+        from memory.journal import _extract_tags
         turns = [
             {"role": "assistant", "content": "Running pytest -xvs", "tool_name": "terminal_tool"},
         ]
@@ -1131,13 +1131,13 @@ class TestSessionJournal:
         assert "#terminal" in tags
 
     def test_extract_tags_heavy_session(self):
-        from memory.session_journal import _extract_tags
+        from memory.journal import _extract_tags
         turns = [{"role": "assistant", "content": "x", "tool_name": "terminal_tool"} for _ in range(12)]
         tags = _extract_tags(turns)
         assert "#heavy-session" in tags
 
     def test_summarize_turns(self):
-        from memory.session_journal import _summarize_turns
+        from memory.journal import _summarize_turns
         turns = [
             {"role": "user", "content": "Hello", "timestamp": 0},
             {"role": "assistant", "content": "Hi there", "timestamp": 60},
@@ -1148,12 +1148,12 @@ class TestSessionJournal:
         assert "~1 min duration" in summary
 
     def test_write_session_journal_skips_empty(self, tmp_path):
-        from memory.session_journal import write_session_journal
+        from memory.journal import write_session_journal
         result = write_session_journal("empty-session", turns=[], output_dir=tmp_path)
         assert result is None
 
     def test_write_session_journal_skips_skill_review_only(self, tmp_path):
-        from memory.session_journal import write_session_journal
+        from memory.journal import write_session_journal
         turns = [
             {"role": "user", "content": "Review the conversation above and consider saving or updating a skill if appropriate."},
         ]
@@ -1161,7 +1161,7 @@ class TestSessionJournal:
         assert result is None
 
     def test_write_session_journal_creates_markdown(self, tmp_path):
-        from memory.session_journal import write_session_journal
+        from memory.journal import write_session_journal
         turns = [
             {"role": "user", "content": "Build the thing\nMore details here."},
             {"role": "assistant", "content": "Running tests", "tool_name": "terminal_tool"},
@@ -1177,7 +1177,7 @@ class TestSessionJournal:
         assert "`terminal_tool`" in content
 
     def test_write_session_journal_uses_weekly_folder(self, tmp_path):
-        from memory.session_journal import write_session_journal, _iso_week_folder
+        from memory.journal import write_session_journal, _iso_week_folder
         from datetime import datetime, timezone
 
         turns = [
@@ -1190,7 +1190,7 @@ class TestSessionJournal:
         assert result.parent.name.startswith("20") and "-W" in result.parent.name
 
     def test_journal_for_jsonl(self, tmp_path):
-        from memory.session_journal import write_journal_for_jsonl
+        from memory.journal import write_journal_for_jsonl
         jsonl_path = tmp_path / "my-session.jsonl"
         jsonl_path.write_text(
             '{"role": "user", "content": "Do the thing"}\n'

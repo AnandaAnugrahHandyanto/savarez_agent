@@ -11,7 +11,7 @@ import time
 
 import pytest
 
-from memory.episodic_store import EpisodicStore
+from memory.store import EpisodicStore
 
 
 @pytest.fixture
@@ -310,7 +310,7 @@ class TestRelationshipExtraction:
 
 class TestProviderTemporalTools:
     def test_memory_stale_facts_all(self, store):
-        from memory.episodic_provider import EpisodicMemoryProvider
+        from memory.provider import EpisodicMemoryProvider
 
         store.upsert_entity("old", "project", "OldProject", {})
 
@@ -323,7 +323,7 @@ class TestProviderTemporalTools:
         assert result["count"] >= 1
 
     def test_memory_stale_facts_entity(self, store):
-        from memory.episodic_provider import EpisodicMemoryProvider
+        from memory.provider import EpisodicMemoryProvider
 
         store.upsert_entity("e1", "project", "Test", {})
         store.record_fact_change("e1", "status", None, "active", "ADD", "test-s1")
@@ -337,7 +337,7 @@ class TestProviderTemporalTools:
         assert "entity" in result
 
     def test_memory_contradictions(self, store):
-        from memory.episodic_provider import EpisodicMemoryProvider
+        from memory.provider import EpisodicMemoryProvider
 
         store.upsert_entity("e1", "project", "Test", {})
         store.record_fact_change("e1", "status", None, "active", "UPDATE", "test-s1")
@@ -352,7 +352,7 @@ class TestProviderTemporalTools:
         assert result["count"] >= 1
 
     def test_memory_relationships(self, store):
-        from memory.episodic_provider import EpisodicMemoryProvider
+        from memory.provider import EpisodicMemoryProvider
 
         store.upsert_entity("a", "person", "Alice", {})
         store.upsert_entity("b", "person", "Bob", {})
@@ -367,7 +367,7 @@ class TestProviderTemporalTools:
         assert len(result["edges"]) == 1
 
     def test_memory_relationships_not_found(self, store):
-        from memory.episodic_provider import EpisodicMemoryProvider
+        from memory.provider import EpisodicMemoryProvider
 
         provider = EpisodicMemoryProvider()
         provider._store = store

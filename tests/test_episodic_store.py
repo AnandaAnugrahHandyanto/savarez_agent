@@ -12,7 +12,7 @@ import pytest
 # Ensure hermes-agent root is on the path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from memory.episodic_store import EpisodicStore, _merge_profiles
+from memory.store import EpisodicStore, _merge_profiles
 
 
 @pytest.fixture
