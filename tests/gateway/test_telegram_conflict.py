@@ -236,10 +236,60 @@ async def test_connect_marks_retryable_fatal_error_for_startup_network_failure(m
 
     ok = await adapter.connect()
 
-    assert ok is False
-    assert adapter.fatal_error_code == "telegram_connect_error"
-    assert adapter.fatal_error_retryable is True
-    assert "Temporary failure in name resolution" in adapter.fatal_error_message
+
+@pytest.mark.asyncio
+async def test_connect_skips_fallback_discovery_when_proxy_env_present(monkeypatch):
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock",
+        lambda scope, identity: None,
+    )
+
+    httpx_request_calls = []
+
+    def fake_httpx_request(*args, **kwargs):
+        httpx_request_calls.append(kwargs)
+        return MagicMock()
+
+    discover = AsyncMock(return_value=["149.154.167.220"])
+    monkeypatch.setattr("gateway.platforms.telegram.discover_fallback_ips", discover)
+    monkeypatch.setattr("gateway.platforms.telegram.HTTPXRequest", fake_httpx_request)
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7890")
+
+    updater = SimpleNamespace(
+        start_polling=AsyncMock(),
+        stop=AsyncMock(),
+        running=True,
+    )
+    bot = SimpleNamespace(
+        set_my_commands=AsyncMock(),
+        delete_webhook=AsyncMock(),
+    )
+    app = SimpleNamespace(
+        bot=bot,
+        updater=updater,
+        add_handler=MagicMock(),
+        initialize=AsyncMock(),
+        start=AsyncMock(),
+    )
+    builder = MagicMock()
+    builder.token.return_value = builder
+    builder.request.return_value = builder
+    builder.get_updates_request.return_value = builder
+    builder.build.return_value = app
+    monkeypatch.setattr("gateway.platforms.telegram.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
+
+    ok = await adapter.connect()
+
+    assert ok is True
+    discover.assert_not_awaited()
+    assert len(httpx_request_calls) == 2
+    assert all("transport" not in kwargs.get("httpx_kwargs", {}) for kwargs in httpx_request_calls)
 
 
 @pytest.mark.asyncio

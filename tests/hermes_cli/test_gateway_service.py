@@ -176,6 +176,35 @@ class TestGatewayStopCleanup:
 
 
 class TestLaunchdServiceRecovery:
+    def test_generate_launchd_plist_uses_wrapper_script(self):
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "<string>/bin/zsh</string>" in plist
+        assert "launchd-gateway.sh" in plist
+        assert "-m</string>" not in plist
+        assert "hermes_cli.main" not in plist
+
+    def test_generate_launchd_wrapper_sets_core_env(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr(gateway_cli, "get_env_value", lambda key: {
+            "https_proxy": "http://127.0.0.1:7890",
+            "NO_PROXY": "localhost,127.0.0.1",
+        }.get(key))
+
+        wrapper_path = gateway_cli._write_launchd_wrapper()
+        wrapper = wrapper_path.read_text(encoding="utf-8")
+
+        assert wrapper_path == hermes_home / "bin" / "launchd-gateway.sh"
+        assert 'export HOME="' in wrapper
+        assert 'export USER="' in wrapper
+        assert 'export LOGNAME="' in wrapper
+        assert 'export PATH="' in wrapper
+        assert 'export https_proxy="http://127.0.0.1:7890"' in wrapper
+        assert 'export NO_PROXY="localhost,127.0.0.1"' in wrapper
+        assert 'exec "' in wrapper
+        assert '"$@"' in wrapper
+
     def test_get_restart_drain_timeout_prefers_env_then_config_then_default(self, monkeypatch):
         monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)
         monkeypatch.setattr(gateway_cli, "read_raw_config", lambda: {})
@@ -217,9 +246,12 @@ class TestLaunchdServiceRecovery:
 
         gateway_cli.launchd_install()
 
+        installed = plist_path.read_text(encoding="utf-8")
+        assert "launchd-gateway.sh" in installed
+        assert "<string>/bin/zsh</string>" in installed
+        assert "--replace" in installed
         label = gateway_cli.get_launchd_label()
         domain = gateway_cli._launchd_domain()
-        assert "--replace" in plist_path.read_text(encoding="utf-8")
         assert calls[:2] == [
             ["launchctl", "bootout", f"{domain}/{label}"],
             ["launchctl", "bootstrap", domain, str(plist_path)],
