@@ -209,13 +209,12 @@ Discord  ←──Webhook──→  Gateway (Cloud)  ──→  Agent Core
                     ┌───────────────┼───────────────┐
                     │               │               │
                     ▼               ▼               ▼
-┌─────────────────────────────────┐  ┌──────────────────┐  ┌─────────────────────────────────┐
-│         Skills Base             │  │    Memory Base    │  │         Skills Base             │
-│  路徑：/skills/                  │  │ 路徑：/memory/    │  │  路徑：/skills/                  │
-│  職責：可執行技能、工具箱        │  │ 職責：對話上下文   │  │  職責：可執行技能、工具箱        │
-│  特性：按需加載，技能執行後      │  │ 特性：每輪對話更新  │  │  特性：按需加載，技能執行後        │
-│        寫入記憶庫               │  │                     │  │        寫入記憶庫               │
-└─────────────────────────────────┘  └──────────────────┘  └─────────────────────────────────┘
+┌────────────────────────────────────────────┐
+│              Skills Base                    │
+│  路徑：/skills/                           │
+│  職責：可執行技能、工具箱                   │
+│  特性：按需加載，技能執行後寫入記憶庫       │
+└────────────────────────────────────────────┘
          │                                    │                     │
          │                                    │                     │
          └────────────────┬───────────────────┘                     │
@@ -418,8 +417,20 @@ python3 -c "import os; assert os.path.exists('knowledge/index.json'); print('Kno
 └─────────────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ STEP 6：創建技能索引                                                         │
+│ STEP 6：創建技能索引（詳細實作）                                            │
 └─────────────────────────────────────────────────────────────────────────────┘
+
+目標：建立技能索引 TOML，替代現有的 skill_commands.py 硬編碼列表
+
+前置條件：STEP 1-5 完成（knowledge/ 目錄已建立）
+
+實作步驟：
+1. 創建 /home/ubuntu/.hermes/hermes-agent/skills/.index.toml（內容見上）
+2. 修改 agent/skill_commands.py：新增 read_index_toml() 函數，fallback 到現有列表
+3. 修改 tools/skills_tool.py：skills_list() 改為讀取 .index.toml
+4. 驗證：python3 -c "from skills import list_skills; print(list_skills())"
+
+風險：低（fallback 保持向後兼容）
 文件：/home/ubuntu/.hermes/hermes-agent/skills/.index.toml
 ```toml
 [skills.github]
@@ -467,40 +478,44 @@ trust_level = "experimental"
 • tools/skills_tool.py：使用 .index.toml 作為技能列表來源
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ STEP 7：實現知識-記憶介面                                                    │
+│ STEP 7：實現知識-記憶介面（詳細實作）                                        │
 └─────────────────────────────────────────────────────────────────────────────┘
-新建文件：/home/ubuntu/.hermes/hermes-agent/agent/knowledge_memory_interface.py
-```python
-class KnowledgeMemoryInterface:
-    def __init__(self, knowledge_path: str, memory_provider):
-        self.knowledge_path = knowledge_path
-        self.memory = memory_provider
-    
-    def search_knowledge(self, query: str) -> List[SearchResult]:
-        """記憶庫查詢知識庫索引"""
-        # 實現語義搜索邏輯
-        pass
-    
-    def link_memory_to_knowledge(self, memory_id: str, knowledge_ref: str):
-        """將記憶條目關聯到知識庫條目"""
-        pass
-```
+
+目標：建立 Knowledge 與 Memory 的關聯橋樑
+
+前置條件：STEP 4（index.json 已建立）
+
+實作步驟：
+1. 新建 agent/knowledge_memory_interface.py
+2. 實現 SearchResult dataclass、link_memory_to_knowledge()
+3. 與 Memory Manager 集成
+4. 驗證：python3 -c "from agent.knowledge_memory_interface import KnowledgeMemoryInterface; print('OK')"
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ STEP 8：增強 BuiltinMemoryProvider                                           │
+│ STEP 8：增強 BuiltinMemoryProvider（詳細實作）                                │
 └─────────────────────────────────────────────────────────────────────────────┘
-新建文件：/home/ubuntu/.hermes/hermes-agent/agent/builtin_memory_provider.py
-（從 memory_provider.py 拆分出來）
 
-修改文件：/home/ubuntu/.hermes/hermes-agent/agent/memory_manager.py
+目標：將內存提供者從 memory_provider.py 拆分出來，獨立維護
+
+前置條件：STEP 7 完成（知識-記憶介面已建立）
+
+實作步驟：
+1. 新建 agent/builtin_memory_provider.py（從 memory_provider.py 抽取邏輯）
+2. 修改 agent/memory_manager.py：使用新的 BuiltinMemoryProvider
+3. 驗證：python3 -c "from agent.builtin_memory_provider import BuiltinMemoryProvider; print('OK')"
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ STEP 9：實現 Context Engine 的三庫協調邏輯                                  │
+│ STEP 9：實現 Context Engine 三庫協調（詳細實作）                              │
 └─────────────────────────────────────────────────────────────────────────────┘
-修改文件：/home/ubuntu/.hermes/hermes-agent/agent/context_engine.py
-新增：
-• build_knowledge_prompt() 方法
-• 與三庫的協調調度邏輯
+
+目標：將三庫協調邏輯整合進 Context Engine
+
+前置條件：STEP 6-8 完成（Skills 索引、知識-記憶介面、內存提供者已建立）
+
+實作步驟：
+1. 修改 agent/context_engine.py：新增 build_knowledge_prompt() 方法
+2. 實現 Memory.prefetch() → Knowledge.search() → Skills.load_needed() 流程
+3. 驗證：python3 -c "from agent.context_engine import ContextEngine; print('OK')"
 
 ---
 
@@ -663,27 +678,32 @@ gateway/run.py → gateway/
 │     風險：低，無需備份即可恢復                                               │
 └─────────────────────────────────────────────────────────────────────────────┘
 
-STEP 1：如有 knowledge/ 目錄，先恢復遷移的文檔
+STEP 1：如有 knowledge/ 目錄，先恢復遷移的文檔（使用前先檢查目錄是否存在）
 ```bash
 cd /home/ubuntu/.hermes/hermes-agent
 
-# 恢復遷移的文檔（反向 mv）
-mv knowledge/docs/plans/* docs/plans/
-mv knowledge/docs/specs/* docs/specs/
-mv knowledge/docs/migration/* docs/migration/
+# 先檢查目錄是否存在
+if [ -d "knowledge/" ]; then
+  # 恢復遷移的文檔（反向 mv）
+  mv knowledge/docs/plans/* docs/plans/
+  mv knowledge/docs/specs/* docs/specs/
+  mv knowledge/docs/migration/* docs/migration/
 
-# 恢復根目錄文件
-mv knowledge/docs/AGENTS.md AGENTS.md
-mv knowledge/facts/SOUL.md SOUL.md
+  # 恢復根目錄文件
+  mv knowledge/docs/AGENTS.md AGENTS.md
+  mv knowledge/facts/SOUL.md SOUL.md
 
-# 恢復記憶庫事實
-mv knowledge/facts/learnings.md memory/learnings.md
-mv knowledge/facts/learnings-v2.md memory/learnings-v2.md
-mv knowledge/facts/OPTIMIZATION-HISTORY.md memory/OPTIMIZATION-HISTORY.md
-mv knowledge/facts/incident-log/ memory/incident-log/
+  # 恢復記憶庫事實
+  mv knowledge/facts/learnings.md memory/learnings.md
+  mv knowledge/facts/learnings-v2.md memory/learnings-v2.md
+  mv knowledge/facts/OPTIMIZATION-HISTORY.md memory/OPTIMIZATION-HISTORY.md
+  mv knowledge/facts/incident-log/ memory/incident-log/
 
-# 刪除知識庫目錄
-rm -rf knowledge/
+  # 刪除知識庫目錄
+  rm -rf knowledge/
+else
+  echo "knowledge/ 目錄不存在，跳過回滾"
+fi
 ```
 
 STEP 2：如有代碼修補需要回滾，恢復原始版本
@@ -793,66 +813,9 @@ python3 -c "from agent.context_engine import ContextEngine; print('OK: ContextEn
 
 ---
 
-## 七、第一個小時的絕對優先行動
+<!-- SECTION 7 DELETED — 內容已整合至 Section 四的 Horizon 1，保留以避免衝突 -->
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                 第一個小時的絕對優先行動（立即執行）                          │
-│                                                                             │
-│  這是整個計劃的起點，必須首先完成這些步驟，否則後續步驟無法開始。             │
-└─────────────────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ ⚡ 行動 1：創建知識庫目錄結構                                                 │
-└─────────────────────────────────────────────────────────────────────────────┘
-
-命令（直接在終端執行）：
-bash
-mkdir -p /home/ubuntu/.hermes/hermes-agent/knowledge/{docs,facts,policies}
-
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ ⚡ 行動 2：遷移 SOUL.md 和 AGENTS.md                                          │
-└─────────────────────────────────────────────────────────────────────────────┘
-
-命令：
-bash
-mv /home/ubuntu/.hermes/hermes-agent/AGENTS.md \
-   /home/ubuntu/.hermes/hermes-agent/knowledge/docs/AGENTS.md
-mv /home/ubuntu/.hermes/hermes-agent/SOUL.md \
-   /home/ubuntu/.hermes/hermes-agent/knowledge/facts/SOUL.md
-
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ ⚡ 行動 3：創建知識庫索引                                                     │
-└─────────────────────────────────────────────────────────────────────────────┘
-
-文件路徑：/home/ubuntu/.hermes/hermes-agent/knowledge/index.json
-內容：
-```json
-{
-  "version": "1.0.0",
-  "last_updated": "2026-04-24",
-  "sections": {
-    "docs": ["plans", "specs", "migration", "AGENTS.md"],
-    "facts": ["SOUL.md"],
-    "policies": []
-  }
-}
-```
-
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ ⚡ 行動 4：驗證                                                               │
-└─────────────────────────────────────────────────────────────────────────────┘
-
-命令：
-bash
-cd /home/ubuntu/.hermes/hermes-agent
-test -f knowledge/index.json && echo "知識庫索引創建成功" || echo "ERROR"
-test -f knowledge/facts/SOUL.md && echo "SOUL.md 遷移成功" || echo "ERROR"
-test -f knowledge/docs/AGENTS.md && echo "AGENTS.md 遷移成功" || echo "ERROR"
-
----
-
-完成這四個行動後，系統就建立了新的 Knowledge Base 結構，可以繼續執行 Horizon 2 的步驟。
+<!-- Section 7 removed. All content unified into Horizon 1 (Section 四, STEP 0-5). -->
 
 ---
 
@@ -947,7 +910,7 @@ test -f knowledge/docs/AGENTS.md && echo "AGENTS.md 遷移成功" || echo "ERROR
 • /home/ubuntu/.hermes/hermes-agent/tools/registry.py               （延遲加載）
 • /home/ubuntu/.hermes/hermes-agent/gateway/run.py                   （瘦身）
 
-【遷移後需刪除的舊文件】
+【遷移後需刪除的舊文件】（待遷移，Horizon 1 STEP 2-3 執行後生效）
 • /home/ubuntu/.hermes/hermes-agent/docs/plans/*                   （已遷移）
 • /home/ubuntu/.hermes/hermes-agent/docs/specs/*                    （已遷移）
 • /home/ubuntu/.hermes/hermes-agent/docs/migration/*                （已遷移）
