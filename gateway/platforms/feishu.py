@@ -387,6 +387,8 @@ class FeishuAdapterSettings:
     admins: frozenset[str] = frozenset()
     default_group_policy: str = ""
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
+    require_mention: bool = True
+    free_response_chats: frozenset[str] = frozenset()
 
 
 @dataclass
@@ -1446,6 +1448,15 @@ class FeishuAdapter(BasePlatformAdapter):
             admins=admins,
             default_group_policy=default_group_policy,
             group_rules=group_rules,
+            require_mention=_to_boolean(
+                extra.get("require_mention", os.getenv("FEISHU_REQUIRE_MENTION", "true"))
+            ),
+            free_response_chats=frozenset(
+                str(c).strip()
+                for raw in [extra.get("free_response_chats") or os.getenv("FEISHU_FREE_RESPONSE_CHATS", "")]
+                for c in (raw.split(",") if isinstance(raw, str) else raw)
+                if str(c).strip()
+            ),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1460,6 +1471,8 @@ class FeishuAdapter(BasePlatformAdapter):
         self._admins = set(settings.admins)
         self._default_group_policy = settings.default_group_policy or settings.group_policy
         self._group_rules = settings.group_rules
+        self._require_mention = settings.require_mention
+        self._free_response_chats = set(settings.free_response_chats)
         self._bot_open_id = settings.bot_open_id
         self._bot_user_id = settings.bot_user_id
         self._bot_name = settings.bot_name
@@ -3626,9 +3639,20 @@ class FeishuAdapter(BasePlatformAdapter):
         return bool(sender_ids and (sender_ids & self._allowed_group_users))
 
     def _should_accept_group_message(self, message: Any, sender_id: Any, chat_id: str = "") -> bool:
-        """Require an explicit @mention before group messages enter the agent."""
+        """Decide whether a group message should enter the agent pipeline."""
+        
+        # 1. Highest priority: Free-response chats bypass ALL checks (mention & user allowlist)
+        if chat_id and chat_id in self._free_response_chats:
+            return True
+
+        # 2. Policy gate (admins, allowlist/blacklist)
         if not self._allow_group_message(sender_id, chat_id):
             return False
+
+        # 3. If mention requirement is disabled, accept all allowed messages
+        if not self._require_mention:
+            return True
+
         # @_all is Feishu's @everyone placeholder — always route to the bot.
         raw_content = getattr(message, "content", "") or ""
         if "@_all" in raw_content:
