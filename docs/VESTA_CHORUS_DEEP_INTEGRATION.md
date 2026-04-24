@@ -49,21 +49,22 @@ Vesta profile activation:
 - Dynamic Hermes webhook routes:
   - `chorus-alerts`
   - `chorus-briefings`
-- Supervised WSL runner is tmux session `vesta-gateway`.
+- Supervised WSL runner is systemd user service `vesta-gateway.service`.
+- Reverse SSH tunnel from devops-hub to local Vesta gateway is systemd user service `vesta-webhook-tunnel.service`.
+- devops-hub exposes the reverse tunnel to the Chorus Docker network through system service `vesta-webhook-socat.service` on host port `18645`.
+- devops-hub firewall allows Docker-network sources (`10.0.0.0/8`) to reach port `18645`; the rule is persisted through `netfilter-persistent`.
 
 Commands:
 
 ```bash
-# Start/restart supervised gateway
-tmux kill-session -t vesta-gateway 2>/dev/null || true
-tmux new-session -d -s vesta-gateway -x 160 -y 45 \
-  'export HERMES_PROFILE=vesta HERMES_HOME=/home/inu/.hermes/profiles/vesta VESTA_CHORUS_HOOKS=1; cd /home/inu/agents-of-proto; vesta gateway run --accept-hooks'
-
-# Health
+# Local WSL supervision
+systemctl --user status vesta-gateway.service vesta-webhook-tunnel.service
+systemctl --user restart vesta-gateway.service vesta-webhook-tunnel.service
 curl -fsS http://127.0.0.1:8644/health
-vesta webhook list
 
-tmux capture-pane -t vesta-gateway -p -S -80 | tail -50
+# devops-hub relay supervision
+ssh root@91.99.210.40 'systemctl status vesta-webhook-socat.service --no-pager'
+ssh root@91.99.210.40 'docker exec chorus-protocol node -e '\''fetch("http://10.0.3.1:18645/health").then(async r=>console.log(r.status, await r.text()))'\'''
 ```
 
 Cron jobs created:
@@ -71,7 +72,21 @@ Cron jobs created:
 - `vesta-stale-workstream-sweep` — daily 08:30
 - `vesta-approval-webhook-health-sweep` — daily 08:45
 
-Chorus webhook registry remains intentionally unregistered until the Chorus signing secret can be connected to the Hermes route secret without exposing it in logs/transcripts. Hermes ingress is live and authenticated locally.
+Chorus webhook registry is now wired to Vesta's Hermes route:
+- Live webhook id: `webhook:5fyyo26aqy3bju9oy6oq`.
+- Registry URL: `http://10.0.3.1:18645/webhooks/chorus-alerts` (reachable from the `chorus-protocol` container through devops-hub host gateway).
+- Filters: rings `agents-of-proto`, `ops`, `vesta-von-der-proto`; all signal types; `min_urgency: 0.6`.
+- The Chorus-generated signing secret is installed only into Vesta's local `webhook_subscriptions.json`; it is not printed or stored in docs.
+- Hermes webhook adapter now accepts `X-Chorus-Signature` and `X-Chorus-Event` on branch `feat/vesta-chorus-deep-integration` / PR #15245.
+- Live schema drift found: `webhook.created_by` expected `string` while the adapter writes `identity:<id>` record ids. Live Surreal schema hotfixed to `record<identity>`; upstream PR #180 codifies the fix.
+- Verification signals delivered with HTTP 202:
+  - `signal:4odx0olkrli9o93dfq58` → `webhook_delivery:yukm82g7eyn4m5d5yjyr`.
+  - `signal:w2udya80yfyeo5niu0rb` → `webhook_delivery:je5mqjpkz1zweyllu15b`.
+
+Supervision:
+- WSL local: `vesta-gateway.service`, `vesta-webhook-tunnel.service`.
+- devops-hub: `vesta-webhook-socat.service` plus persisted iptables rule allowing Docker-network sources to port `18645`.
+
 
 ## Verification
 
