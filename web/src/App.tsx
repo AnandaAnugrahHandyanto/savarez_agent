@@ -21,6 +21,7 @@ import {
   Star,
   Code,
   Eye,
+  LayoutTemplate,
 } from "lucide-react";
 import { Cell, Grid, SelectionSwitcher, Typography } from "@nous-research/ui";
 import { cn } from "@/lib/utils";
@@ -29,6 +30,7 @@ import StatusPage from "@/pages/StatusPage";
 import ConfigPage from "@/pages/ConfigPage";
 import EnvPage from "@/pages/EnvPage";
 import SessionsPage from "@/pages/SessionsPage";
+import OrgChartPage from "@/pages/OrgChartPage";
 import LogsPage from "@/pages/LogsPage";
 import AnalyticsPage from "@/pages/AnalyticsPage";
 import CronPage from "@/pages/CronPage";
@@ -47,6 +49,7 @@ const BUILTIN_NAV: NavItem[] = [
     label: "Sessions",
     icon: MessageSquare,
   },
+  { path: "/org-chart", label: "Org Chart", icon: LayoutTemplate },
   {
     path: "/analytics",
     labelKey: "analytics",
@@ -231,6 +234,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<StatusPage />} />
           <Route path="/sessions" element={<SessionsPage />} />
+          <Route path="/org-chart" element={<OrgChartPage />} />
           <Route path="/analytics" element={<AnalyticsPage />} />
           <Route path="/logs" element={<LogsPage />} />
           <Route path="/cron" element={<CronPage />} />

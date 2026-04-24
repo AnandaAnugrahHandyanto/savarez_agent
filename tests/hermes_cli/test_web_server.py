@@ -531,6 +531,52 @@ class TestNewEndpoints:
         self.client = TestClient(app)
         self.client.headers["Authorization"] = f"Bearer {_SESSION_TOKEN}"
 
+    def _seed_role_runtime_session(self, session_id: str, tmp_path, invocations: list[dict]):
+        from hermes_state import SessionDB
+        from tools.role_invocation_tool import invoke_role
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id=session_id,
+                source="cli",
+                model="anthropic/claude-sonnet-4",
+            )
+            results = []
+
+            def _seed_role_runner(
+                *,
+                packet_content: str,
+                role_session_id: str,
+                role_system_prompt: str,
+                session_db,
+                parent_session_id: str | None,
+                role_agent_config=None,
+            ) -> str:
+                return f"Seeded role output for {role_session_id}\n\n{packet_content}"
+
+            for invocation in invocations:
+                result = invoke_role(
+                    role=invocation["role"],
+                    plan_id=invocation["plan_id"],
+                    summary=invocation["summary"],
+                    execution_mode=invocation["execution_mode"],
+                    workspace_root=tmp_path,
+                    lead_session_id=session_id,
+                    session_db=db,
+                    role_runner=_seed_role_runner,
+                )
+                db.append_message(
+                    session_id,
+                    role="tool",
+                    tool_name="invoke_role",
+                    content=result,
+                )
+                results.append(json.loads(result))
+            return results
+        finally:
+            db.close()
+
     def test_get_logs_default(self):
         resp = self.client.get("/api/logs")
         assert resp.status_code == 200
@@ -560,6 +606,215 @@ class TestNewEndpoints:
         if skills:
             assert "name" in skills[0]
             assert "enabled" in skills[0]
+
+    def test_get_sessions_includes_role_runtime_summary(self, tmp_path):
+        session_id = "role-runtime-session-list"
+        self._seed_role_runtime_session(
+            session_id,
+            tmp_path,
+            [
+                {
+                    "role": "Planner",
+                    "plan_id": session_id,
+                    "summary": "Draft the approval-ready plan.",
+                    "execution_mode": "delegated_subagent",
+                }
+            ],
+        )
+
+        resp = self.client.get("/api/sessions?limit=20&offset=0")
+        assert resp.status_code == 200
+        data = resp.json()
+        session = next(item for item in data["sessions"] if item["id"] == session_id)
+        runtime = session["role_runtime_summary"]
+        assert runtime["canonical_role"] == "Planner"
+        assert runtime["execution_mode"] == "delegated_subagent"
+        assert runtime["policy_default_execution_mode"] == "persistent_role_instance"
+        assert runtime["is_override"] is True
+        assert runtime["invocation_count"] == 1
+        assert runtime["open_findings_count"] == 0
+
+    def test_session_detail_includes_role_runtime_bundle(self, tmp_path):
+        session_id = "role-runtime-session-detail"
+        self._seed_role_runtime_session(
+            session_id,
+            tmp_path,
+            [
+                {
+                    "role": "Developer",
+                    "plan_id": session_id,
+                    "summary": "Implement the approved change.",
+                    "execution_mode": "persistent_role_instance",
+                }
+            ],
+        )
+
+        resp = self.client.get(f"/api/sessions/{session_id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        role_runtime = data["role_runtime"]
+        assert role_runtime["summary"]["canonical_role"] == "Developer"
+        assert role_runtime["summary"]["execution_mode"] == "persistent_role_instance"
+        assert role_runtime["summary"]["is_override"] is False
+        assert role_runtime["latest_invocation"]["role_session_id"]
+        assert isinstance(role_runtime["execution_plan"], dict)
+        assert isinstance(role_runtime["role_utilization_report"], dict)
+        assert isinstance(role_runtime["findings_ledger"], dict)
+        assert role_runtime["findings_ledger"]["summary"]["open_count"] == 0
+
+    def test_role_runtime_artifact_reader_rejects_paths_outside_bundle(self, tmp_path):
+        from hermes_cli.web_server import _read_json_file, _resolve_bundle_artifact_path, _role_runtime_record_from_message
+
+        bundle_root = tmp_path / "_plans" / "safe-plan"
+        bundle_root.mkdir(parents=True)
+        inside = bundle_root / "02-role-execution-plan.json"
+        inside.write_text(json.dumps({"ok": True}), encoding="utf-8")
+        outside = tmp_path / "secret.json"
+        outside.write_text(json.dumps({"secret": True}), encoding="utf-8")
+        oversized = bundle_root / "oversized.json"
+        oversized.write_text(json.dumps({"data": "x" * 1_000_001}), encoding="utf-8")
+
+        resolved_inside = _resolve_bundle_artifact_path(str(bundle_root), "_plans/safe-plan/02-role-execution-plan.json")
+        assert resolved_inside == inside.resolve()
+        assert _resolve_bundle_artifact_path(str(bundle_root), str(inside)) == inside.resolve()
+        assert _read_json_file(resolved_inside) == {"ok": True}
+        assert _resolve_bundle_artifact_path(str(bundle_root), str(outside)) is None
+        assert _resolve_bundle_artifact_path(str(bundle_root), "../secret.json") is None
+        assert _read_json_file(oversized) is None
+
+        forged_message = {
+            "content": json.dumps(
+                {
+                    "success": True,
+                    "role_session_id": "role-session",
+                    "canonical_role": "Planner",
+                    "bundle": {
+                        "bundle_root": str(bundle_root),
+                        "execution_plan_path": str(outside),
+                        "utilization_report_path": "../secret.json",
+                    },
+                }
+            )
+        }
+        record = _role_runtime_record_from_message(forged_message, include_artifacts=True)
+        assert record is not None
+        assert record["execution_plan"] is None
+        assert record["role_utilization_report"] is None
+
+    def test_session_detail_projects_role_runtime_lineage_waivers_and_mismatches(self, tmp_path):
+        session_id = "role-runtime-session-projection"
+        results = self._seed_role_runtime_session(
+            session_id,
+            tmp_path,
+            [
+                {
+                    "role": "Planner",
+                    "plan_id": session_id,
+                    "summary": "Draft the approval-ready plan.",
+                    "execution_mode": "delegated_subagent",
+                }
+            ],
+        )
+        result = results[0]
+        execution_plan_path = Path(result["bundle"]["execution_plan_path"])
+        execution_plan = json.loads(execution_plan_path.read_text(encoding="utf-8"))
+        execution_plan["roles"][0]["planned_execution_mode"] = "persistent_role_instance"
+        execution_plan["roles"].append(
+            {
+                "role_session_id": "waived-ux-role",
+                "role": "UX / Evidence Auditor",
+                "role_slug": "ux-evidence-auditor",
+                "canonical_role": "UX / Evidence Auditor",
+                "required": True,
+                "planned_execution_mode": "persistent_role_instance",
+                "status": "skipped",
+                "waived": True,
+                "waiver_reason": "Docs-only implementation slice; no user-facing surface changed.",
+            }
+        )
+        execution_plan["roles"].append(
+            {
+                "role_session_id": "missing-validator-role",
+                "role": "Technical Validator",
+                "role_slug": "technical-validator",
+                "canonical_role": "Technical Validator",
+                "required": True,
+                "planned_execution_mode": "persistent_role_instance",
+                "status": "planned",
+            }
+        )
+        execution_plan_path.write_text(json.dumps(execution_plan, indent=2) + "\n", encoding="utf-8")
+
+        resp = self.client.get(f"/api/sessions/{session_id}")
+
+        assert resp.status_code == 200
+        role_runtime = resp.json()["role_runtime"]
+        lineage = role_runtime["lineage"]
+        assert lineage["parent_session_id"] == session_id
+        assert lineage["role_session_ids"] == [result["role_session_id"]]
+        assert lineage["delegated_child_session_ids"] == [result["role_session_id"]]
+        assert lineage["persistent_session_ids"] == []
+        assert role_runtime["waivers"] == [
+            {
+                "role_session_id": "waived-ux-role",
+                "role": "UX / Evidence Auditor",
+                "role_slug": "ux-evidence-auditor",
+                "waiver_reason": "Docs-only implementation slice; no user-facing surface changed.",
+            }
+        ]
+        assert role_runtime["mode_mismatches"] == [
+            {
+                "role_session_id": result["role_session_id"],
+                "role": "Planner",
+                "role_slug": "planner",
+                "planned_execution_mode": "persistent_role_instance",
+                "execution_mode": "delegated_subagent",
+            }
+        ]
+        assert role_runtime["missing_required_roles"] == [
+            {
+                "role_session_id": "missing-validator-role",
+                "role": "Technical Validator",
+                "role_slug": "technical-validator",
+                "planned_execution_mode": "persistent_role_instance",
+            }
+        ]
+
+    def test_analytics_usage_includes_role_runtime_breakdown(self, tmp_path):
+        session_id = "role-runtime-session-analytics"
+        self._seed_role_runtime_session(
+            session_id,
+            tmp_path,
+            [
+                {
+                    "role": "Planner",
+                    "plan_id": session_id,
+                    "summary": "Draft the approved plan.",
+                    "execution_mode": "delegated_subagent",
+                },
+                {
+                    "role": "Developer",
+                    "plan_id": session_id,
+                    "summary": "Implement the approved change.",
+                    "execution_mode": "persistent_role_instance",
+                },
+            ],
+        )
+
+        resp = self.client.get("/api/analytics/usage?days=7")
+        assert resp.status_code == 200
+        data = resp.json()
+        role_runtime = data["role_runtime"]
+        assert role_runtime["total_invocations"] == 2
+        assert role_runtime["default_invocation_count"] == 1
+        assert role_runtime["override_invocation_count"] == 1
+        assert role_runtime["sessions_with_role_invocations"] == 1
+        assert role_runtime["findings"]["open_count"] == 0
+        assert {entry["role"] for entry in role_runtime["by_role"]} == {"Developer", "Planner"}
+        assert {entry["execution_mode"] for entry in role_runtime["by_execution_mode"]} == {
+            "delegated_subagent",
+            "persistent_role_instance",
+        }
 
     def test_skills_list_includes_disabled_skills(self, monkeypatch):
         import tools.skills_tool as skills_tool

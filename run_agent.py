@@ -4233,14 +4233,16 @@ class AIAgent:
         # --- Role allowlist: drop messages with roles the API won't accept ---
         filtered = []
         for msg in messages:
-            role = msg.get("role")
+            api_msg = dict(msg)
+            api_msg.pop("tool_name", None)
+            role = api_msg.get("role")
             if role not in AIAgent._VALID_API_ROLES:
                 logger.debug(
                     "Pre-call sanitizer: dropping message with invalid role %r",
                     role,
                 )
                 continue
-            filtered.append(msg)
+            filtered.append(api_msg)
         messages = filtered
 
         surviving_call_ids: set = set()
@@ -7368,6 +7370,7 @@ class AIAgent:
                 api_msg.pop("finish_reason", None)
                 api_msg.pop("_flush_sentinel", None)
                 api_msg.pop("_thinking_prefill", None)
+                api_msg.pop("tool_name", None)
                 if _needs_sanitize:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
                 api_messages.append(api_msg)
@@ -7737,6 +7740,17 @@ class AIAgent:
                 session_id=self.session_id or "",
                 enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                 skip_pre_tool_call_hook=True,
+                session_db=self._session_db,
+                role_agent_config={
+                    "base_url": self.base_url,
+                    "provider": self.provider,
+                    "api_mode": self.api_mode,
+                    "model": self.model,
+                    "max_iterations": self.max_iterations,
+                    "enabled_toolsets": self.enabled_toolsets,
+                    "disabled_toolsets": self.disabled_toolsets,
+                    "quiet_mode": True,
+                },
             )
 
     @staticmethod
@@ -8046,6 +8060,7 @@ class AIAgent:
                 "role": "tool",
                 "content": function_result,
                 "tool_call_id": tc.id,
+                "tool_name": name,
             }
             messages.append(tool_msg)
 
@@ -8330,6 +8345,17 @@ class AIAgent:
                         session_id=self.session_id or "",
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                         skip_pre_tool_call_hook=True,
+                        session_db=self._session_db,
+                        role_agent_config={
+                            "base_url": self.base_url,
+                            "provider": self.provider,
+                            "api_mode": self.api_mode,
+                            "model": self.model,
+                            "max_iterations": self.max_iterations,
+                            "enabled_toolsets": self.enabled_toolsets,
+                            "disabled_toolsets": self.disabled_toolsets,
+                            "quiet_mode": True,
+                        },
                     )
                     _spinner_result = function_result
                 except Exception as tool_error:
@@ -8350,6 +8376,17 @@ class AIAgent:
                         session_id=self.session_id or "",
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                         skip_pre_tool_call_hook=True,
+                        session_db=self._session_db,
+                        role_agent_config={
+                            "base_url": self.base_url,
+                            "provider": self.provider,
+                            "api_mode": self.api_mode,
+                            "model": self.model,
+                            "max_iterations": self.max_iterations,
+                            "enabled_toolsets": self.enabled_toolsets,
+                            "disabled_toolsets": self.disabled_toolsets,
+                            "quiet_mode": True,
+                        },
                     )
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
@@ -8405,7 +8442,8 @@ class AIAgent:
             tool_msg = {
                 "role": "tool",
                 "content": function_result,
-                "tool_call_id": tool_call.id
+                "tool_call_id": tool_call.id,
+                "tool_name": function_name,
             }
             messages.append(tool_msg)
 
@@ -8470,7 +8508,7 @@ class AIAgent:
             api_messages = []
             for msg in messages:
                 api_msg = msg.copy()
-                for internal_field in ("reasoning", "finish_reason", "_thinking_prefill"):
+                for internal_field in ("reasoning", "finish_reason", "_thinking_prefill", "tool_name"):
                     api_msg.pop(internal_field, None)
                 if _needs_sanitize:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
@@ -9133,8 +9171,9 @@ class AIAgent:
                 # Remove finish_reason - not accepted by strict APIs (e.g. Mistral)
                 if "finish_reason" in api_msg:
                     api_msg.pop("finish_reason")
-                # Strip internal thinking-prefill marker
+                # Strip internal thinking-prefill marker and tool metadata used only for persistence/UI.
                 api_msg.pop("_thinking_prefill", None)
+                api_msg.pop("tool_name", None)
                 # Strip Codex Responses API fields (call_id, response_item_id) for
                 # strict providers like Mistral, Fireworks, etc. that reject unknown fields.
                 # Uses new dicts so the internal messages list retains the fields

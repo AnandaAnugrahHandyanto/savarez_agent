@@ -24,6 +24,73 @@ from agent.error_classifier import FailoverReason
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
 
+def test_run_agent_persists_executed_tool_name_for_role_runtime_projection(tmp_path):
+    from hermes_state import SessionDB
+
+    db = SessionDB(tmp_path / "state.db")
+    session_id = "role-runtime-tool-name-session"
+    try:
+        db.create_session(session_id=session_id, source="test", model="test-model")
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("invoke_role")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("run_agent.handle_function_call", return_value=json.dumps({"ok": True})),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                model="test-model",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                session_id=session_id,
+                session_db=db,
+            )
+            tool_call = SimpleNamespace(
+                id="call-invoke-role",
+                function=SimpleNamespace(
+                    name="invoke_role",
+                    arguments=json.dumps(
+                        {
+                            "role": "Planner",
+                            "plan_id": "Role Runtime",
+                            "summary": "Persist role-runtime projection metadata.",
+                        }
+                    ),
+                ),
+            )
+            messages = []
+
+            agent._execute_tool_calls_sequential(
+                SimpleNamespace(tool_calls=[tool_call]),
+                messages,
+                effective_task_id="task-id",
+            )
+            agent._flush_messages_to_session_db(messages, [])
+
+        stored_tool_messages = [msg for msg in db.get_messages(session_id) if msg["role"] == "tool"]
+        assert stored_tool_messages
+        assert stored_tool_messages[-1]["tool_name"] == "invoke_role"
+        assert messages[-1]["tool_name"] == "invoke_role"
+    finally:
+        db.close()
+
+
+def test_sanitize_api_messages_strips_internal_tool_name():
+    messages = [
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "call-1", "function": {"name": "invoke_role"}}]},
+        {"role": "tool", "content": "{}", "tool_call_id": "call-1", "tool_name": "invoke_role"},
+    ]
+
+    sanitized = AIAgent._sanitize_api_messages(messages)
+
+    assert sanitized[1]["role"] == "tool"
+    assert sanitized[1]["tool_call_id"] == "call-1"
+    assert "tool_name" not in sanitized[1]
+    assert messages[1]["tool_name"] == "invoke_role"
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -1806,6 +1873,17 @@ class TestConcurrentToolExecution:
                 session_id=agent.session_id,
                 enabled_tools=list(agent.valid_tool_names),
                 skip_pre_tool_call_hook=True,
+                session_db=agent._session_db,
+                role_agent_config={
+                    "base_url": agent.base_url,
+                    "provider": agent.provider,
+                    "api_mode": agent.api_mode,
+                    "model": agent.model,
+                    "max_iterations": agent.max_iterations,
+                    "enabled_toolsets": agent.enabled_toolsets,
+                    "disabled_toolsets": agent.disabled_toolsets,
+                    "quiet_mode": True,
+                },
             )
             assert result == "result"
 

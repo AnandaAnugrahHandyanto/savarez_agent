@@ -263,6 +263,102 @@ export interface SessionInfo {
   input_tokens: number;
   output_tokens: number;
   preview: string | null;
+  role_runtime_summary?: RoleRuntimeSummary | null;
+}
+
+export interface RoleRuntimeFindingSummary {
+  open_count: number;
+  pending_revalidation_count: number;
+  closed_count: number;
+  send_back_count: number;
+}
+
+export interface RoleRuntimeSummary {
+  invocation_count: number;
+  role_session_id: string | null;
+  canonical_role: string | null;
+  plan_id: string | null;
+  status: string | null;
+  execution_mode: string | null;
+  policy_default_execution_mode: string | null;
+  is_override: boolean;
+  open_findings_count: number;
+  pending_revalidation_count: number;
+  closed_count: number;
+  send_back_count: number;
+  parent_session_id: string | null;
+  message_timestamp: number | null;
+}
+
+export interface RoleRuntimeLineage {
+  parent_session_id: string | null;
+  lead_session_id: string | null;
+  session_id: string | null;
+  role_session_ids: string[];
+  persistent_session_ids: string[];
+  delegated_child_session_ids: string[];
+}
+
+export interface RoleRuntimeWaiver {
+  role_session_id: string | null;
+  role: string | null;
+  role_slug: string | null;
+  waiver_reason: string;
+}
+
+export interface RoleRuntimeModeMismatch {
+  role_session_id: string | null;
+  role: string | null;
+  role_slug: string | null;
+  planned_execution_mode: string | null;
+  execution_mode: string | null;
+}
+
+export interface RoleRuntimeMissingRole {
+  role_session_id: string | null;
+  role: string | null;
+  role_slug: string | null;
+  planned_execution_mode: string | null;
+}
+
+export interface RoleRuntimeInvocationSummary {
+  session_id: string | null;
+  role_session_id: string | null;
+  role: string | null;
+  canonical_role: string | null;
+  role_slug: string | null;
+  plan_id: string | null;
+  summary: string | null;
+  status: string | null;
+  execution_mode: string | null;
+  policy_default_execution_mode: string | null;
+  is_override: boolean;
+  message_timestamp: number | null;
+  started_at: string | null;
+  ended_at: string | null;
+  parent_session_id: string | null;
+  invocation_source: Record<string, unknown>;
+  bundle: Record<string, unknown>;
+  manifest: Record<string, unknown>;
+  artifact_paths: Record<string, unknown>;
+  findings_summary: RoleRuntimeFindingSummary;
+  findings_ledger_path: string | null;
+  execution_plan?: Record<string, unknown> | null;
+  role_utilization_report?: Record<string, unknown> | null;
+  findings_ledger?: Record<string, unknown> | null;
+}
+
+export interface RoleRuntimeDetail {
+  summary: RoleRuntimeSummary | null;
+  invocations: RoleRuntimeInvocationSummary[];
+  latest_invocation: RoleRuntimeInvocationSummary;
+  execution_plan: Record<string, unknown> | null;
+  role_utilization_report: Record<string, unknown> | null;
+  findings_ledger: Record<string, unknown> | null;
+  lineage: RoleRuntimeLineage;
+  waivers: RoleRuntimeWaiver[];
+  mode_mismatches: RoleRuntimeModeMismatch[];
+  missing_required_roles: RoleRuntimeMissingRole[];
 }
 
 export interface PaginatedSessions {
@@ -358,6 +454,15 @@ export interface AnalyticsResponse {
   skills: {
     summary: AnalyticsSkillsSummary;
     top_skills: AnalyticsSkillEntry[];
+  };
+  role_runtime: {
+    total_invocations: number;
+    default_invocation_count: number;
+    override_invocation_count: number;
+    by_role: Array<{ role: string; count: number }>;
+    by_execution_mode: Array<{ execution_mode: string; count: number }>;
+    findings: RoleRuntimeFindingSummary;
+    sessions_with_role_invocations: number;
   };
 }
 

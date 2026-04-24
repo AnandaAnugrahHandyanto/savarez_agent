@@ -25,7 +25,7 @@ from acp.schema import (
 # ---------------------------------------------------------------------------
 
 
-COMMON_HERMES_TOOLS = ["read_file", "search_files", "terminal", "patch", "write_file", "process"]
+COMMON_HERMES_TOOLS = ["read_file", "search_files", "terminal", "patch", "write_file", "process", "invoke_role"]
 
 
 class TestToolKindMap:
@@ -51,6 +51,9 @@ class TestToolKindMap:
 
     def test_tool_kind_execute_code(self):
         assert get_tool_kind("execute_code") == "execute"
+
+    def test_tool_kind_invoke_role(self):
+        assert get_tool_kind("invoke_role") == "execute"
 
     def test_tool_kind_browser_navigate(self):
         assert get_tool_kind("browser_navigate") == "fetch"
@@ -110,6 +113,14 @@ class TestBuildToolTitle:
         title = build_tool_title("web_search", {"query": "python asyncio"})
         assert "python asyncio" in title
 
+    def test_invoke_role_title(self):
+        title = build_tool_title(
+            "invoke_role",
+            {"role": "Planner", "execution_mode": "persistent_role_instance"},
+        )
+        assert "Planner" in title
+        assert "persistent_role_instance" in title
+
     def test_unknown_tool_uses_name(self):
         title = build_tool_title("some_new_tool", {"foo": "bar"})
         assert title == "some_new_tool"
@@ -162,6 +173,19 @@ class TestBuildToolStart:
         # The wrapped text block should contain the command
         text = content_item.content.text
         assert "ls -la /tmp" in text
+
+    def test_build_tool_start_for_invoke_role(self):
+        args = {
+            "role": "Planner",
+            "plan_id": "plan-123",
+            "summary": "Draft the plan",
+            "execution_mode": "persistent_role_instance",
+        }
+        result = build_tool_start("tc-role-1", "invoke_role", args)
+        assert isinstance(result, ToolCallStart)
+        assert result.kind == "execute"
+        assert "Planner" in result.title
+        assert len(result.content) >= 1
 
     def test_build_tool_start_for_read_file(self):
         """read_file should include the path in content."""

@@ -275,6 +275,91 @@ function SkillTable({ skills }: { skills: AnalyticsSkillEntry[] }) {
   );
 }
 
+function RoleRuntimeCard({
+  roleRuntime,
+}: {
+  roleRuntime: AnalyticsResponse["role_runtime"] | null | undefined;
+}) {
+  if (!roleRuntime || roleRuntime.total_invocations === 0) return null;
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <Cpu className="h-5 w-5 text-muted-foreground" />
+          <CardTitle className="text-base">Role runtime</CardTitle>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <SummaryCard
+            icon={BarChart3}
+            label="Role invocations"
+            value={String(roleRuntime.total_invocations)}
+            sub={`${roleRuntime.default_invocation_count} default · ${roleRuntime.override_invocation_count} overrides`}
+          />
+          <SummaryCard
+            icon={Cpu}
+            label="Sessions with role invocations"
+            value={String(roleRuntime.sessions_with_role_invocations)}
+            sub={`${roleRuntime.by_role.length} distinct roles`}
+          />
+          <SummaryCard
+            icon={TrendingUp}
+            label="Findings"
+            value={String(roleRuntime.findings.open_count)}
+            sub={`${roleRuntime.findings.pending_revalidation_count} pending · ${roleRuntime.findings.closed_count} closed · ${roleRuntime.findings.send_back_count} send-backs`}
+          />
+        </div>
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div className="rounded border border-border/60 bg-background/30 p-3">
+            <p className="text-[0.64rem] uppercase tracking-[0.14em] text-muted-foreground">
+              By role
+            </p>
+            <div className="mt-2 space-y-2">
+              {roleRuntime.by_role.length > 0 ? (
+                roleRuntime.by_role.map((entry) => (
+                  <div
+                    key={entry.role}
+                    className="flex items-center justify-between gap-3 rounded border border-border/50 bg-background/60 px-3 py-2"
+                  >
+                    <span className="text-sm text-foreground/90">{entry.role}</span>
+                    <span className="font-mono-ui text-sm text-muted-foreground">{entry.count}</span>
+                  </div>
+                ))
+              ) : (
+                <p className="text-sm text-muted-foreground">No role runtime data.</p>
+              )}
+            </div>
+          </div>
+
+          <div className="rounded border border-border/60 bg-background/30 p-3">
+            <p className="text-[0.64rem] uppercase tracking-[0.14em] text-muted-foreground">
+              By execution mode
+            </p>
+            <div className="mt-2 space-y-2">
+              {roleRuntime.by_execution_mode.length > 0 ? (
+                roleRuntime.by_execution_mode.map((entry) => (
+                  <div
+                    key={entry.execution_mode}
+                    className="flex items-center justify-between gap-3 rounded border border-border/50 bg-background/60 px-3 py-2"
+                  >
+                    <span className="text-sm text-foreground/90">{entry.execution_mode}</span>
+                    <span className="font-mono-ui text-sm text-muted-foreground">{entry.count}</span>
+                  </div>
+                ))
+              ) : (
+                <p className="text-sm text-muted-foreground">No role runtime data.</p>
+              )}
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function AnalyticsPage() {
   const [days, setDays] = useState(30);
   const [data, setData] = useState<AnalyticsResponse | null>(null);
@@ -359,6 +444,7 @@ export default function AnalyticsPage() {
           <DailyTable daily={data.daily} />
           <ModelTable models={data.by_model} />
           <SkillTable skills={data.skills.top_skills} />
+          <RoleRuntimeCard roleRuntime={data.role_runtime} />
         </>
       )}
 

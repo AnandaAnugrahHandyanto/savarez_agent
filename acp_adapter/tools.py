@@ -43,6 +43,7 @@ TOOL_KIND_MAP: Dict[str, ToolKind] = {
     "browser_get_images": "read",
     # Agent internals
     "delegate_task": "execute",
+    "invoke_role": "execute",
     "vision_analyze": "read",
     "image_generate": "execute",
     "text_to_speech": "execute",
@@ -90,6 +91,16 @@ def build_tool_title(tool_name: str, args: Dict[str, Any]) -> str:
         if goal and len(goal) > 60:
             goal = goal[:57] + "..."
         return f"delegate: {goal}" if goal else "delegate task"
+    if tool_name == "invoke_role":
+        role = str(args.get("role") or "").strip()
+        mode = str(args.get("execution_mode") or "").strip()
+        if role and mode:
+            return f"invoke role: {role} ({mode})"
+        if role:
+            return f"invoke role: {role}"
+        if mode:
+            return f"invoke role ({mode})"
+        return "invoke role"
     if tool_name == "execute_code":
         return "execute code"
     if tool_name == "vision_analyze":

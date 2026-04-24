@@ -709,6 +709,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        parent_session_id: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -751,6 +752,7 @@ class APIServerAdapter(BasePlatformAdapter):
             tool_complete_callback=tool_complete_callback,
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
+            parent_session_id=parent_session_id,
         )
         return agent
 
@@ -868,6 +870,9 @@ class APIServerAdapter(BasePlatformAdapter):
         # authenticated.  Without this gate, any unauthenticated client could
         # read arbitrary session history by guessing/enumerating session IDs.
         provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
+        parent_session_id = str(
+            body.get("parent_session_id") or request.headers.get("X-Hermes-Parent-Session-Id") or ""
+        ).strip() or None
         if provided_session_id:
             if not self._api_key:
                 logger.warning(
@@ -984,6 +989,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
+                parent_session_id=parent_session_id,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -1611,6 +1617,9 @@ class APIServerAdapter(BasePlatformAdapter):
         previous_response_id = body.get("previous_response_id")
         conversation = body.get("conversation")
         store = body.get("store", True)
+        parent_session_id = str(
+            body.get("parent_session_id") or request.headers.get("X-Hermes-Parent-Session-Id") or ""
+        ).strip() or None
 
         # conversation and previous_response_id are mutually exclusive
         if conversation and previous_response_id:
@@ -1745,6 +1754,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
+                parent_session_id=parent_session_id,
             ))
 
             response_id = f"resp_{uuid.uuid4().hex[:28]}"
@@ -1773,6 +1783,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=conversation_history,
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
+                parent_session_id=parent_session_id,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -2169,6 +2180,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
+        parent_session_id: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -2191,6 +2203,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_progress_callback=tool_progress_callback,
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
+                parent_session_id=parent_session_id,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent
@@ -2352,6 +2365,9 @@ class APIServerAdapter(BasePlatformAdapter):
                     conversation_history.append({"role": msg["role"], "content": str(content)})
 
         session_id = body.get("session_id") or stored_session_id or run_id
+        parent_session_id = str(
+            body.get("parent_session_id") or request.headers.get("X-Hermes-Parent-Session-Id") or ""
+        ).strip() or None
         ephemeral_system_prompt = instructions
 
         async def _run_and_close():
@@ -2359,6 +2375,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent = self._create_agent(
                     ephemeral_system_prompt=ephemeral_system_prompt,
                     session_id=session_id,
+                    parent_session_id=parent_session_id,
                     stream_delta_callback=_text_cb,
                     tool_progress_callback=event_cb,
                 )

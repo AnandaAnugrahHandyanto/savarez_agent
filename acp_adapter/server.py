@@ -378,7 +378,12 @@ class HermesACPAgent(acp.Agent):
         mcp_servers: list | None = None,
         **kwargs: Any,
     ) -> NewSessionResponse:
-        state = self.session_manager.create_session(cwd=cwd)
+        state = self.session_manager.create_session(
+            cwd=cwd,
+            session_id=kwargs.get("session_id") or kwargs.get("role_session_id"),
+            parent_session_id=kwargs.get("parent_session_id"),
+            role_metadata=kwargs.get("role_metadata"),
+        )
         await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("New session %s (cwd=%s)", state.session_id, cwd)
         self._schedule_available_commands_update(state.session_id)
@@ -413,7 +418,12 @@ class HermesACPAgent(acp.Agent):
         state = self.session_manager.update_cwd(session_id, cwd)
         if state is None:
             logger.warning("resume_session: session %s not found, creating new", session_id)
-            state = self.session_manager.create_session(cwd=cwd)
+            state = self.session_manager.create_session(
+                cwd=cwd,
+                session_id=session_id,
+                parent_session_id=kwargs.get("parent_session_id"),
+                role_metadata=kwargs.get("role_metadata"),
+            )
         await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("Resumed session %s", state.session_id)
         self._schedule_available_commands_update(state.session_id)

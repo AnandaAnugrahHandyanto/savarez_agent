@@ -10,6 +10,7 @@ Usage:
 """
 
 import asyncio
+from collections import Counter
 import hmac
 import importlib.util
 import json
@@ -694,6 +695,395 @@ async def get_action_status(name: str, lines: int = 200):
     }
 
 
+
+
+_MAX_ROLE_RUNTIME_ARTIFACT_BYTES = 1_000_000
+
+
+def _json_dict(value: Any) -> Optional[Dict[str, Any]]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _read_json_file(path_value: Any) -> Optional[Dict[str, Any]]:
+    if not path_value:
+        return None
+    try:
+        path = Path(path_value).expanduser()
+    except (TypeError, ValueError):
+        return None
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        if path.stat().st_size > _MAX_ROLE_RUNTIME_ARTIFACT_BYTES:
+            return None
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _resolve_bundle_artifact_path(bundle_root: Any, artifact_path: Any) -> Optional[Path]:
+    if not artifact_path or not bundle_root:
+        return None
+    try:
+        artifact = Path(artifact_path).expanduser()
+        bundle_path = Path(bundle_root).expanduser().resolve()
+    except (TypeError, ValueError):
+        return None
+    if artifact.is_absolute():
+        try:
+            resolved_artifact = artifact.resolve()
+            resolved_artifact.relative_to(bundle_path)
+        except (OSError, ValueError):
+            return None
+        return resolved_artifact
+
+    workspace_root = bundle_path.parent.parent
+    candidates = [
+        (workspace_root / artifact).resolve(),
+        (bundle_path / artifact).resolve(),
+    ]
+    for candidate in candidates:
+        try:
+            candidate.relative_to(bundle_path)
+        except ValueError:
+            continue
+        return candidate
+    return None
+
+
+def _findings_summary_from_ledger(ledger: Optional[Dict[str, Any]]) -> Dict[str, int]:
+    empty = {
+        "open_count": 0,
+        "pending_revalidation_count": 0,
+        "closed_count": 0,
+        "send_back_count": 0,
+    }
+    if not isinstance(ledger, dict):
+        return empty
+
+    summary = ledger.get("summary")
+    summary = summary if isinstance(summary, dict) else {}
+    findings = ledger.get("findings") if isinstance(ledger.get("findings"), list) else []
+
+    def _coerce(key: str, fallback: int = 0) -> int:
+        value = summary.get(key)
+        if value is not None:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return fallback
+        return fallback
+
+    send_back = summary.get("send_back_count")
+    if send_back is None and findings:
+        send_back = sum(
+            1
+            for finding in findings
+            if isinstance(finding, dict)
+            and str(finding.get("status") or "").strip().lower() in {"in_fix", "pending_revalidation"}
+        )
+
+    return {
+        "open_count": _coerce("open_count"),
+        "pending_revalidation_count": _coerce("pending_revalidation_count"),
+        "closed_count": _coerce("closed_count"),
+        "send_back_count": int(send_back or 0),
+    }
+
+
+def _role_runtime_record_from_message(message: Dict[str, Any], *, include_artifacts: bool) -> Optional[Dict[str, Any]]:
+    payload = _json_dict(message.get("content"))
+    if not payload:
+        return None
+    if not payload.get("success") and not payload.get("canonical_role") and not payload.get("role_session_id"):
+        return None
+
+    manifest = payload.get("manifest") if isinstance(payload.get("manifest"), dict) else {}
+    bundle = payload.get("bundle") if isinstance(payload.get("bundle"), dict) else {}
+    artifact_paths = payload.get("artifact_paths") if isinstance(payload.get("artifact_paths"), dict) else {}
+    manifest_artifacts = manifest.get("artifacts") if isinstance(manifest.get("artifacts"), dict) else {}
+    bundle_root = bundle.get("bundle_root") or manifest.get("bundle_root")
+    findings_ledger_path = bundle.get("findings_ledger_path") or manifest_artifacts.get("findings_ledger")
+    findings_ledger_abs = _resolve_bundle_artifact_path(bundle_root, findings_ledger_path)
+    findings_ledger = _read_json_file(findings_ledger_abs)
+    findings_summary = _findings_summary_from_ledger(findings_ledger)
+
+    execution_plan = None
+    utilization_report = None
+    if include_artifacts:
+        execution_plan = _read_json_file(
+            _resolve_bundle_artifact_path(bundle_root, bundle.get("execution_plan_path"))
+        )
+        utilization_report = _read_json_file(
+            _resolve_bundle_artifact_path(bundle_root, bundle.get("utilization_report_path"))
+        )
+        if execution_plan is None and bundle_root:
+            execution_plan = _read_json_file(
+                _resolve_bundle_artifact_path(bundle_root, manifest_artifacts.get("role_execution_plan"))
+            )
+        if utilization_report is None and bundle_root:
+            utilization_report = _read_json_file(
+                _resolve_bundle_artifact_path(bundle_root, manifest_artifacts.get("role_utilization_report"))
+            )
+
+    execution_mode = payload.get("execution_mode")
+    policy_default_execution_mode = payload.get("policy_default_execution_mode")
+    is_override = (
+        isinstance(execution_mode, str)
+        and isinstance(policy_default_execution_mode, str)
+        and execution_mode != policy_default_execution_mode
+    )
+
+    record = {
+        "session_id": message.get("session_id"),
+        "role_session_id": payload.get("role_session_id"),
+        "role": payload.get("canonical_role") or payload.get("role"),
+        "canonical_role": payload.get("canonical_role") or payload.get("role"),
+        "role_slug": payload.get("role_slug"),
+        "plan_id": payload.get("plan_id"),
+        "summary": payload.get("summary"),
+        "status": payload.get("status"),
+        "execution_mode": execution_mode,
+        "policy_default_execution_mode": policy_default_execution_mode,
+        "is_override": is_override,
+        "message_timestamp": message.get("timestamp"),
+        "started_at": payload.get("started_at"),
+        "ended_at": payload.get("ended_at"),
+        "parent_session_id": payload.get("parent_session_id"),
+        "invocation_source": payload.get("invocation_source") if isinstance(payload.get("invocation_source"), dict) else {},
+        "bundle": bundle,
+        "manifest": manifest,
+        "artifact_paths": artifact_paths,
+        "findings_summary": findings_summary,
+        "findings_ledger_path": str(findings_ledger_abs) if findings_ledger_abs else None,
+    }
+
+    if include_artifacts:
+        record["execution_plan"] = execution_plan
+        record["role_utilization_report"] = utilization_report
+        record["findings_ledger"] = findings_ledger
+
+    return record
+
+
+def _collect_role_runtime_records(
+    db,
+    session_ids: Optional[List[str]] = None,
+    *,
+    include_artifacts: bool = False,
+) -> List[Dict[str, Any]]:
+    session_id_filter = [str(session_id) for session_id in session_ids or [] if str(session_id).strip()]
+    query = (
+        "SELECT session_id, content, timestamp FROM messages "
+        "WHERE tool_name = 'invoke_role'"
+    )
+    params: List[Any] = []
+    if session_id_filter:
+        placeholders = ",".join("?" for _ in session_id_filter)
+        query += f" AND session_id IN ({placeholders})"
+        params.extend(session_id_filter)
+    query += " ORDER BY timestamp, id"
+
+    with db._lock:
+        cursor = db._conn.execute(query, params)
+        rows = cursor.fetchall()
+
+    latest_by_role_session: Dict[str, Dict[str, Any]] = {}
+    anonymous_index = 0
+    for row in rows:
+        message = {"session_id": row["session_id"], "content": row["content"], "timestamp": row["timestamp"]}
+        record = _role_runtime_record_from_message(message, include_artifacts=include_artifacts)
+        if not record:
+            continue
+        key = record.get("role_session_id")
+        if not key:
+            anonymous_index += 1
+            key = f"{row['session_id']}:{row['timestamp']}:{anonymous_index}"
+            record["role_session_id"] = key
+        latest_by_role_session[key] = record
+
+    records = list(latest_by_role_session.values())
+    records.sort(key=lambda item: (item.get("message_timestamp") or 0, item.get("role_session_id") or ""))
+    return records
+
+
+def _role_runtime_summary_from_records(records: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not records:
+        return None
+    latest = records[-1]
+    return {
+        "invocation_count": len(records),
+        "role_session_id": latest.get("role_session_id"),
+        "canonical_role": latest.get("canonical_role"),
+        "plan_id": latest.get("plan_id"),
+        "status": latest.get("status"),
+        "execution_mode": latest.get("execution_mode"),
+        "policy_default_execution_mode": latest.get("policy_default_execution_mode"),
+        "is_override": latest.get("is_override", False),
+        "open_findings_count": latest.get("findings_summary", {}).get("open_count", 0),
+        "pending_revalidation_count": latest.get("findings_summary", {}).get("pending_revalidation_count", 0),
+        "closed_count": latest.get("findings_summary", {}).get("closed_count", 0),
+        "send_back_count": latest.get("findings_summary", {}).get("send_back_count", 0),
+        "parent_session_id": latest.get("parent_session_id"),
+        "message_timestamp": latest.get("message_timestamp"),
+    }
+
+
+def _dedupe_ordered(values: List[Any]) -> List[Any]:
+    seen = set()
+    deduped = []
+    for value in values:
+        if value in (None, "") or value in seen:
+            continue
+        seen.add(value)
+        deduped.append(value)
+    return deduped
+
+
+def _role_runtime_lineage_from_records(records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    latest = records[-1] if records else {}
+    lead_session_id = latest.get("parent_session_id") or latest.get("session_id")
+    return {
+        "parent_session_id": lead_session_id,
+        "lead_session_id": lead_session_id,
+        "session_id": latest.get("session_id"),
+        "role_session_ids": _dedupe_ordered([record.get("role_session_id") for record in records]),
+        "persistent_session_ids": _dedupe_ordered(
+            [record.get("role_session_id") for record in records if record.get("execution_mode") == "persistent_role_instance"]
+        ),
+        "delegated_child_session_ids": _dedupe_ordered(
+            [record.get("role_session_id") for record in records if record.get("execution_mode") == "delegated_subagent"]
+        ),
+    }
+
+
+def _role_runtime_governance_from_artifacts(latest: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
+    execution_plan = latest.get("execution_plan") if isinstance(latest.get("execution_plan"), dict) else {}
+    utilization_report = (
+        latest.get("role_utilization_report") if isinstance(latest.get("role_utilization_report"), dict) else {}
+    )
+    planned_roles = execution_plan.get("roles") if isinstance(execution_plan.get("roles"), list) else []
+    utilized_roles = utilization_report.get("roles") if isinstance(utilization_report.get("roles"), list) else []
+
+    utilized_by_slug: Dict[str, Dict[str, Any]] = {}
+    for role in utilized_roles:
+        if not isinstance(role, dict):
+            continue
+        slug = str(role.get("role_slug") or "").strip()
+        if slug:
+            utilized_by_slug[slug] = role
+
+    waivers: List[Dict[str, Any]] = []
+    mode_mismatches: List[Dict[str, Any]] = []
+    missing_required_roles: List[Dict[str, Any]] = []
+
+    for planned in planned_roles:
+        if not isinstance(planned, dict):
+            continue
+        role_slug = str(planned.get("role_slug") or "").strip()
+        role_name = planned.get("canonical_role") or planned.get("role")
+        role_session_id = planned.get("role_session_id")
+        planned_mode = planned.get("planned_execution_mode") or planned.get("execution_mode")
+        if planned.get("waived") and str(planned.get("waiver_reason") or "").strip():
+            waivers.append(
+                {
+                    "role_session_id": role_session_id,
+                    "role": role_name,
+                    "role_slug": role_slug,
+                    "waiver_reason": str(planned.get("waiver_reason") or "").strip(),
+                }
+            )
+            continue
+
+        utilized = utilized_by_slug.get(role_slug)
+        if planned.get("required", True) and role_slug and utilized is None:
+            missing_required_roles.append(
+                {
+                    "role_session_id": role_session_id,
+                    "role": role_name,
+                    "role_slug": role_slug,
+                    "planned_execution_mode": planned_mode,
+                }
+            )
+            continue
+
+        actual_mode = (utilized or {}).get("execution_mode")
+        if planned_mode and actual_mode and planned_mode != actual_mode:
+            mode_mismatches.append(
+                {
+                    "role_session_id": (utilized or {}).get("role_session_id") or role_session_id,
+                    "role": role_name,
+                    "role_slug": role_slug,
+                    "planned_execution_mode": planned_mode,
+                    "execution_mode": actual_mode,
+                }
+            )
+
+    return {
+        "waivers": waivers,
+        "mode_mismatches": mode_mismatches,
+        "missing_required_roles": missing_required_roles,
+    }
+
+
+def _role_runtime_analytics_from_records(records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    by_role = Counter()
+    by_mode = Counter()
+    default_count = 0
+    override_count = 0
+    open_findings_count = 0
+    pending_revalidation_count = 0
+    closed_count = 0
+    send_back_count = 0
+    sessions_with_invocations = set()
+
+    for record in records:
+        role = str(record.get("canonical_role") or record.get("role") or "unknown")
+        mode = str(record.get("execution_mode") or "unknown")
+        by_role[role] += 1
+        by_mode[mode] += 1
+        if record.get("session_id"):
+            sessions_with_invocations.add(str(record.get("session_id")))
+        if record.get("is_override"):
+            override_count += 1
+        else:
+            default_count += 1
+        findings = record.get("findings_summary") or {}
+        open_findings_count += int(findings.get("open_count") or 0)
+        pending_revalidation_count += int(findings.get("pending_revalidation_count") or 0)
+        closed_count += int(findings.get("closed_count") or 0)
+        send_back_count += int(findings.get("send_back_count") or 0)
+
+    def _entries(counter: Counter, key_name: str) -> List[Dict[str, Any]]:
+        return [
+            {key_name: key, "count": count}
+            for key, count in sorted(counter.items(), key=lambda item: (-item[1], item[0]))
+        ]
+
+    return {
+        "total_invocations": len(records),
+        "default_invocation_count": default_count,
+        "override_invocation_count": override_count,
+        "by_role": _entries(by_role, "role"),
+        "by_execution_mode": _entries(by_mode, "execution_mode"),
+        "findings": {
+            "open_count": open_findings_count,
+            "pending_revalidation_count": pending_revalidation_count,
+            "closed_count": closed_count,
+            "send_back_count": send_back_count,
+        },
+        "sessions_with_role_invocations": len(sessions_with_invocations),
+    }
+
 @app.get("/api/sessions")
 async def get_sessions(limit: int = 20, offset: int = 0):
     try:
@@ -703,11 +1093,20 @@ async def get_sessions(limit: int = 20, offset: int = 0):
             sessions = db.list_sessions_rich(limit=limit, offset=offset)
             total = db.session_count()
             now = time.time()
+            session_ids = [str(s.get("id")) for s in sessions if s.get("id")]
+            runtime_records_by_session: Dict[str, List[Dict[str, Any]]] = {}
+            for record in _collect_role_runtime_records(db, session_ids=session_ids, include_artifacts=False):
+                runtime_records_by_session.setdefault(str(record.get("session_id") or ""), []).append(record)
             for s in sessions:
                 s["is_active"] = (
                     s.get("ended_at") is None
                     and (now - s.get("last_active", s.get("started_at", 0))) < 300
                 )
+                role_runtime_summary = _role_runtime_summary_from_records(
+                    runtime_records_by_session.get(str(s.get("id") or ""), [])
+                )
+                if role_runtime_summary:
+                    s["role_runtime_summary"] = role_runtime_summary
             return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
         finally:
             db.close()
@@ -1896,6 +2295,22 @@ async def get_session_detail(session_id: str):
         session = db.get_session(sid) if sid else None
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
+        runtime_records = _collect_role_runtime_records(db, session_ids=[sid], include_artifacts=True)
+        if runtime_records:
+            latest_runtime_record = runtime_records[-1]
+            governance_projection = _role_runtime_governance_from_artifacts(latest_runtime_record)
+            session["role_runtime"] = {
+                "summary": _role_runtime_summary_from_records(runtime_records),
+                "invocations": runtime_records,
+                "latest_invocation": latest_runtime_record,
+                "execution_plan": latest_runtime_record.get("execution_plan"),
+                "role_utilization_report": latest_runtime_record.get("role_utilization_report"),
+                "findings_ledger": latest_runtime_record.get("findings_ledger"),
+                "lineage": _role_runtime_lineage_from_records(runtime_records),
+                "waivers": governance_projection["waivers"],
+                "mode_mismatches": governance_projection["mode_mismatches"],
+                "missing_required_roles": governance_projection["missing_required_roles"],
+            }
         return session
     finally:
         db.close()
@@ -2231,12 +2646,16 @@ async def get_usage_analytics(days: int = 30):
             "top_skills": [],
         })
 
+        role_runtime = _role_runtime_analytics_from_records(
+            _collect_role_runtime_records(db, include_artifacts=False)
+        )
         return {
             "daily": daily,
             "by_model": by_model,
             "totals": totals,
             "period_days": days,
             "skills": skills,
+            "role_runtime": role_runtime,
         }
     finally:
         db.close()

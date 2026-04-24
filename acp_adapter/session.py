@@ -127,6 +127,8 @@ class SessionState:
     model: str = ""
     history: List[Dict[str, Any]] = field(default_factory=list)
     cancel_event: Any = None  # threading.Event
+    parent_session_id: str | None = None
+    role_metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 class SessionManager:
@@ -153,18 +155,31 @@ class SessionManager:
 
     # ---- public API ---------------------------------------------------------
 
-    def create_session(self, cwd: str = ".") -> SessionState:
+    def create_session(
+        self,
+        cwd: str = ".",
+        session_id: str | None = None,
+        parent_session_id: str | None = None,
+        role_metadata: Dict[str, Any] | None = None,
+    ) -> SessionState:
         """Create a new session with a unique ID and a fresh AIAgent."""
         import threading
 
-        session_id = str(uuid.uuid4())
-        agent = self._make_agent(session_id=session_id, cwd=cwd)
+        session_id = str(session_id or uuid.uuid4())
+        role_metadata = dict(role_metadata or {})
+        agent = self._make_agent(
+            session_id=session_id,
+            cwd=cwd,
+            parent_session_id=parent_session_id,
+        )
         state = SessionState(
             session_id=session_id,
             agent=agent,
             cwd=cwd,
             model=getattr(agent, "model", "") or "",
             cancel_event=threading.Event(),
+            parent_session_id=parent_session_id,
+            role_metadata=role_metadata,
         )
         with self._lock:
             self._sessions[session_id] = state
@@ -208,6 +223,7 @@ class SessionManager:
             session_id=new_id,
             cwd=cwd,
             model=original.model or None,
+            parent_session_id=original.session_id,
         )
         state = SessionState(
             session_id=new_id,
@@ -216,6 +232,8 @@ class SessionManager:
             model=getattr(agent, "model", original.model) or original.model,
             history=copy.deepcopy(original.history),
             cancel_event=threading.Event(),
+            parent_session_id=original.session_id,
+            role_metadata=copy.deepcopy(original.role_metadata),
         )
         with self._lock:
             self._sessions[new_id] = state
@@ -376,6 +394,10 @@ class SessionManager:
         # Ensure model is a plain string (not a MagicMock or other proxy).
         model_str = str(state.model) if state.model else None
         session_meta = {"cwd": state.cwd}
+        if state.parent_session_id:
+            session_meta["parent_session_id"] = state.parent_session_id
+        if state.role_metadata:
+            session_meta["role_metadata"] = copy.deepcopy(state.role_metadata)
         provider = getattr(state.agent, "provider", None)
         base_url = getattr(state.agent, "base_url", None)
         api_mode = getattr(state.agent, "api_mode", None)
@@ -395,15 +417,16 @@ class SessionManager:
                     session_id=state.session_id,
                     source="acp",
                     model=model_str,
-                    model_config={"cwd": state.cwd},
+                    model_config=session_meta,
+                    parent_session_id=state.parent_session_id,
                 )
             else:
                 # Update model_config (contains cwd) if changed.
                 try:
                     with db._lock:
                         db._conn.execute(
-                            "UPDATE sessions SET model_config = ?, model = COALESCE(?, model) WHERE id = ?",
-                            (cwd_json, model_str, state.session_id),
+                            "UPDATE sessions SET model_config = ?, model = COALESCE(?, model), parent_session_id = COALESCE(parent_session_id, ?) WHERE id = ?",
+                            (cwd_json, model_str, state.parent_session_id, state.session_id),
                         )
                         db._conn.commit()
                 except Exception:
@@ -444,12 +467,14 @@ class SessionManager:
         if row.get("source") != "acp":
             return None
 
-        # Extract cwd from model_config.
+        # Extract cwd and role metadata from model_config.
         cwd = "."
+        parent_session_id = row.get("parent_session_id")
         requested_provider = row.get("billing_provider")
         restored_base_url = row.get("billing_base_url")
         restored_api_mode = None
         mc = row.get("model_config")
+        role_metadata: Dict[str, Any] = {}
         if mc:
             try:
                 meta = json.loads(mc)
@@ -458,6 +483,14 @@ class SessionManager:
                     requested_provider = meta.get("provider") or requested_provider
                     restored_base_url = meta.get("base_url") or restored_base_url
                     restored_api_mode = meta.get("api_mode") or restored_api_mode
+                    parent_session_id = meta.get("parent_session_id") or parent_session_id
+                    raw_role_metadata = meta.get("role_metadata")
+                    if isinstance(raw_role_metadata, dict):
+                        role_metadata = {
+                            str(key): value
+                            for key, value in raw_role_metadata.items()
+                            if value is not None
+                        }
             except (json.JSONDecodeError, TypeError):
                 pass
 
@@ -490,6 +523,8 @@ class SessionManager:
             model=model or getattr(agent, "model", "") or "",
             history=history,
             cancel_event=threading.Event(),
+            parent_session_id=parent_session_id,
+            role_metadata=role_metadata,
         )
         with self._lock:
             self._sessions[session_id] = state
@@ -519,6 +554,7 @@ class SessionManager:
         requested_provider: str | None = None,
         base_url: str | None = None,
         api_mode: str | None = None,
+        parent_session_id: str | None = None,
     ):
         if self._agent_factory is not None:
             return self._agent_factory()
@@ -542,6 +578,7 @@ class SessionManager:
             "enabled_toolsets": ["hermes-acp"],
             "quiet_mode": True,
             "session_id": session_id,
+            "parent_session_id": parent_session_id,
             "model": model or default_model,
         }
 
