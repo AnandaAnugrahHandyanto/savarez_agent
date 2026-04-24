@@ -61,16 +61,6 @@ hermes-agent/
 `gateway.log` when running the gateway. Profile-aware via `get_hermes_home()`.
 Browse with `hermes logs [--follow] [--level ...] [--session ...]`.
 
-## Hermes Second-Brain Rule
-
-When evaluating an external agent harness, distill only the reusable upside into Hermes's working rules:
-- use role separation for planning, research, execution, and verification
-- prefer parallel/background work for independent steps
-- convert recurring workflows into reusable skills or wiki pages
-- route by task type and capability instead of manual model juggling
-- preserve the distilled rule set in durable knowledge, not in chat history
-- keep shared standards app-agnostic whenever possible; move app-specific examples into project pages or raw sources, then delete the single-app standard once the reusable rule is captured
-
 ## Execution standard
 - When a task can be researched and verified with tools, run it end-to-end before stopping.
 - Avoid half-step confirmation prompts when the next best action is already knowable from repo/wiki/tool state.
