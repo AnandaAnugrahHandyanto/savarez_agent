@@ -8283,6 +8283,7 @@ Examples:
 
     def cmd_sessions(args):
         import json as _json
+        from hermes_cli.config import load_config as _load_config
 
         try:
             from hermes_state import SessionDB
@@ -8293,8 +8294,10 @@ Examples:
             return
 
         action = args.sessions_action
-        display_cfg = load_config().get("display", {})
-        preview_message = str(display_cfg.get("resume_preview_message", "last")).strip().lower()
+        display_cfg = _load_config().get("display", {})
+        preview_message = str(
+            display_cfg.get("resume_preview_message", "last")
+        ).strip().lower()
         if preview_message not in ("first", "last"):
             preview_message = "last"
 
