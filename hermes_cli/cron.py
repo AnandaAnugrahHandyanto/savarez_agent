@@ -40,7 +40,7 @@ def _cron_api(**kwargs):
 
 def cron_list(show_all: bool = False):
     """List all scheduled jobs."""
-    from cron.jobs import list_jobs
+    from hermes_agent.cron.jobs import list_jobs
 
     jobs = list_jobs(include_disabled=show_all)
 
@@ -120,13 +120,13 @@ def cron_list(show_all: bool = False):
 
 def cron_tick():
     """Run due jobs once and exit."""
-    from cron.scheduler import tick
+    from hermes_agent.cron.scheduler import tick
     tick(verbose=True)
 
 
 def cron_status():
     """Show cron execution status."""
-    from cron.jobs import list_jobs
+    from hermes_agent.cron.jobs import list_jobs
     from hermes_cli.gateway import find_gateway_pids
 
     print()
@@ -185,7 +185,7 @@ def cron_create(args):
 
 
 def cron_edit(args):
-    from cron.jobs import get_job
+    from hermes_agent.cron.jobs import get_job
 
     job = get_job(args.job_id)
     if not job:

@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 # Import from cron module (will be available when properly installed)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from cron.jobs import (
+from hermes_agent.cron.jobs import (
     create_job,
     get_job,
     list_jobs,

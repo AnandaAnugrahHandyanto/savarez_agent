@@ -536,7 +536,7 @@ def _derive_chat_session_id(
 
 _CRON_AVAILABLE = False
 try:
-    from cron.jobs import (
+    from hermes_agent.cron.jobs import (
         list_jobs as _cron_list,
         get_job as _cron_get,
         create_job as _cron_create,

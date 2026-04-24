@@ -702,7 +702,7 @@ from hermes_cli.commands import SlashCommandCompleter, SlashCommandAutoSuggest
 from toolsets import get_all_toolsets, get_toolset_info, validate_toolset
 
 # Cron job system for scheduled tasks (execution is handled by the gateway)
-from cron import get_job
+from hermes_agent.cron import get_job
 
 # Resource cleanup imports for safe shutdown (terminal VMs, browser sessions)
 from tools.terminal_tool import cleanup_all_environments as _cleanup_all_terminals

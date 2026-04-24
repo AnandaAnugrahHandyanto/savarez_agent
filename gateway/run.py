@@ -10893,7 +10893,7 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     Also refreshes the channel directory every 5 minutes and prunes the
     image/audio/document cache once per hour.
     """
-    from cron.scheduler import tick as cron_tick
+    from hermes_agent.cron.scheduler import tick as cron_tick
     from gateway.platforms.base import cleanup_image_cache, cleanup_document_cache
 
     IMAGE_CACHE_EVERY = 60   # ticks — once per hour at default 60s interval

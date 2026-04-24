@@ -2024,13 +2024,13 @@ class CronJobUpdate(BaseModel):
 
 @app.get("/api/cron/jobs")
 async def list_cron_jobs():
-    from cron.jobs import list_jobs
+    from hermes_agent.cron.jobs import list_jobs
     return list_jobs(include_disabled=True)
 
 
 @app.get("/api/cron/jobs/{job_id}")
 async def get_cron_job(job_id: str):
-    from cron.jobs import get_job
+    from hermes_agent.cron.jobs import get_job
     job = get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -2039,7 +2039,7 @@ async def get_cron_job(job_id: str):
 
 @app.post("/api/cron/jobs")
 async def create_cron_job(body: CronJobCreate):
-    from cron.jobs import create_job
+    from hermes_agent.cron.jobs import create_job
     try:
         job = create_job(prompt=body.prompt, schedule=body.schedule,
                          name=body.name, deliver=body.deliver)
@@ -2051,7 +2051,7 @@ async def create_cron_job(body: CronJobCreate):
 
 @app.put("/api/cron/jobs/{job_id}")
 async def update_cron_job(job_id: str, body: CronJobUpdate):
-    from cron.jobs import update_job
+    from hermes_agent.cron.jobs import update_job
     job = update_job(job_id, body.updates)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -2060,7 +2060,7 @@ async def update_cron_job(job_id: str, body: CronJobUpdate):
 
 @app.post("/api/cron/jobs/{job_id}/pause")
 async def pause_cron_job(job_id: str):
-    from cron.jobs import pause_job
+    from hermes_agent.cron.jobs import pause_job
     job = pause_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -2069,7 +2069,7 @@ async def pause_cron_job(job_id: str):
 
 @app.post("/api/cron/jobs/{job_id}/resume")
 async def resume_cron_job(job_id: str):
-    from cron.jobs import resume_job
+    from hermes_agent.cron.jobs import resume_job
     job = resume_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -2078,7 +2078,7 @@ async def resume_cron_job(job_id: str):
 
 @app.post("/api/cron/jobs/{job_id}/trigger")
 async def trigger_cron_job(job_id: str):
-    from cron.jobs import trigger_job
+    from hermes_agent.cron.jobs import trigger_job
     job = trigger_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -2087,7 +2087,7 @@ async def trigger_cron_job(job_id: str):
 
 @app.delete("/api/cron/jobs/{job_id}")
 async def delete_cron_job(job_id: str):
-    from cron.jobs import remove_job
+    from hermes_agent.cron.jobs import remove_job
     if not remove_job(job_id):
         raise HTTPException(status_code=404, detail="Job not found")
     return {"ok": True}

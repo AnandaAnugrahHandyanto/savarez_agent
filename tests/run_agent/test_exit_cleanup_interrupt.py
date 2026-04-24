@@ -39,7 +39,7 @@ class TestCronJobCleanup:
         mock_db = MagicMock()
         mock_db.end_session.side_effect = KeyboardInterrupt
 
-        from cron import scheduler
+        from hermes_agent.cron import scheduler
 
         job = {
             "id": "test-job-1",
@@ -67,7 +67,7 @@ class TestCronJobCleanup:
         mock_db = MagicMock()
         mock_db.close.side_effect = KeyboardInterrupt
 
-        from cron import scheduler
+        from hermes_agent.cron import scheduler
 
         job = {
             "id": "test-job-2",

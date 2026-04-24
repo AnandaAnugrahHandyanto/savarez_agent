@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from cron.jobs import (
+from hermes_agent.cron.jobs import (
     parse_duration,
     parse_schedule,
     compute_next_run,
@@ -386,7 +386,7 @@ class TestAdvanceNextRun:
         assert result is True
 
         updated = get_job(job["id"])
-        from cron.jobs import _ensure_aware, _hermes_now
+        from hermes_agent.cron.jobs import _ensure_aware, _hermes_now
         new_next_dt = _ensure_aware(datetime.fromisoformat(updated["next_run_at"]))
         assert new_next_dt > _hermes_now(), "next_run_at should be in the future after advance"
 
@@ -404,7 +404,7 @@ class TestAdvanceNextRun:
         assert result is True
 
         updated = get_job(job["id"])
-        from cron.jobs import _ensure_aware, _hermes_now
+        from hermes_agent.cron.jobs import _ensure_aware, _hermes_now
         new_next_dt = _ensure_aware(datetime.fromisoformat(updated["next_run_at"]))
         assert new_next_dt > _hermes_now(), "next_run_at should be in the future after advance"
 
@@ -430,7 +430,7 @@ class TestAdvanceNextRun:
         advance_next_run(job["id"])
         # Regardless of return value, the job should still be in the future
         updated = get_job(job["id"])
-        from cron.jobs import _ensure_aware, _hermes_now
+        from hermes_agent.cron.jobs import _ensure_aware, _hermes_now
         new_next_dt = _ensure_aware(datetime.fromisoformat(updated["next_run_at"]))
         assert new_next_dt > _hermes_now(), "next_run_at should remain in the future"
 
@@ -485,7 +485,7 @@ class TestGetDueJobs:
         assert len(due) == 0
         # next_run_at should be fast-forwarded to the future
         updated = get_job(job["id"])
-        from cron.jobs import _ensure_aware, _hermes_now
+        from hermes_agent.cron.jobs import _ensure_aware, _hermes_now
         next_dt = _ensure_aware(datetime.fromisoformat(updated["next_run_at"]))
         assert next_dt > _hermes_now()
 

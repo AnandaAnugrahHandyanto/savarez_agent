@@ -32,7 +32,7 @@ def cron_env(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
     # Clear cached module-level paths
-    import cron.jobs as jobs_mod
+    import hermes_agent.cron.jobs as jobs_mod
     monkeypatch.setattr(jobs_mod, "HERMES_DIR", hermes_home)
     monkeypatch.setattr(jobs_mod, "CRON_DIR", hermes_home / "cron")
     monkeypatch.setattr(jobs_mod, "JOBS_FILE", hermes_home / "cron" / "jobs.json")
@@ -45,7 +45,7 @@ class TestJobScriptField:
     """Test that the script field is stored and retrieved correctly."""
 
     def test_create_job_with_script(self, cron_env):
-        from cron.jobs import create_job, get_job
+        from hermes_agent.cron.jobs import create_job, get_job
 
         job = create_job(
             prompt="Analyze the data",
@@ -58,19 +58,19 @@ class TestJobScriptField:
         assert loaded["script"] == "/path/to/monitor.py"
 
     def test_create_job_without_script(self, cron_env):
-        from cron.jobs import create_job
+        from hermes_agent.cron.jobs import create_job
 
         job = create_job(prompt="Hello", schedule="every 1h")
         assert job.get("script") is None
 
     def test_create_job_empty_script_normalized_to_none(self, cron_env):
-        from cron.jobs import create_job
+        from hermes_agent.cron.jobs import create_job
 
         job = create_job(prompt="Hello", schedule="every 1h", script="  ")
         assert job.get("script") is None
 
     def test_update_job_add_script(self, cron_env):
-        from cron.jobs import create_job, update_job
+        from hermes_agent.cron.jobs import create_job, update_job
 
         job = create_job(prompt="Hello", schedule="every 1h")
         assert job.get("script") is None
@@ -79,7 +79,7 @@ class TestJobScriptField:
         assert updated["script"] == "/new/script.py"
 
     def test_update_job_clear_script(self, cron_env):
-        from cron.jobs import create_job, update_job
+        from hermes_agent.cron.jobs import create_job, update_job
 
         job = create_job(prompt="Hello", schedule="every 1h", script="/some/script.py")
         assert job["script"] == "/some/script.py"
@@ -92,7 +92,7 @@ class TestRunJobScript:
     """Test the _run_job_script() function."""
 
     def test_successful_script(self, cron_env):
-        from cron.scheduler import _run_job_script
+        from hermes_agent.cron.scheduler import _run_job_script
 
         script = cron_env / "scripts" / "test.py"
         script.write_text('print("hello from script")\n')
@@ -102,7 +102,7 @@ class TestRunJobScript:
         assert output == "hello from script"
 
     def test_script_relative_path(self, cron_env):
-        from cron.scheduler import _run_job_script
+        from hermes_agent.cron.scheduler import _run_job_script
 
         script = cron_env / "scripts" / "relative.py"
         script.write_text('print("relative works")\n')
@@ -112,14 +112,14 @@ class TestRunJobScript:
         assert output == "relative works"
 
     def test_script_not_found(self, cron_env):
-        from cron.scheduler import _run_job_script
+        from hermes_agent.cron.scheduler import _run_job_script
 
         success, output = _run_job_script("nonexistent_script.py")
         assert success is False
         assert "not found" in output.lower()
 
     def test_script_nonzero_exit(self, cron_env):
-        from cron.scheduler import _run_job_script
+        from hermes_agent.cron.scheduler import _run_job_script
 
         script = cron_env / "scripts" / "fail.py"
         script.write_text(textwrap.dedent("""\
@@ -135,7 +135,7 @@ class TestRunJobScript:
         assert "error info" in output
 
     def test_script_empty_output(self, cron_env):
-        from cron.scheduler import _run_job_script
+        from hermes_agent.cron.scheduler import _run_job_script
 
         script = cron_env / "scripts" / "empty.py"
         script.write_text("# no output\n")
@@ -145,8 +145,8 @@ class TestRunJobScript:
         assert output == ""
 
     def test_script_timeout(self, cron_env, monkeypatch):
-        from cron import scheduler as sched_mod
-        from cron.scheduler import _run_job_script
+        from hermes_agent.cron import scheduler as sched_mod
+        from hermes_agent.cron.scheduler import _run_job_script
 
         # Use a very short timeout
         monkeypatch.setattr(sched_mod, "_SCRIPT_TIMEOUT", 1)
@@ -160,7 +160,7 @@ class TestRunJobScript:
 
     def test_script_json_output(self, cron_env):
         """Scripts can output structured JSON for the LLM to parse."""
-        from cron.scheduler import _run_job_script
+        from hermes_agent.cron.scheduler import _run_job_script
 
         script = cron_env / "scripts" / "json_out.py"
         script.write_text(textwrap.dedent("""\
@@ -179,7 +179,7 @@ class TestBuildJobPromptWithScript:
     """Test that script output is injected into the prompt."""
 
     def test_script_output_injected(self, cron_env):
-        from cron.scheduler import _build_job_prompt
+        from hermes_agent.cron.scheduler import _build_job_prompt
 
         script = cron_env / "scripts" / "data.py"
         script.write_text('print("new PR: #123 fix typo")\n')
@@ -194,7 +194,7 @@ class TestBuildJobPromptWithScript:
         assert "Report any notable changes." in prompt
 
     def test_script_error_injected(self, cron_env):
-        from cron.scheduler import _build_job_prompt
+        from hermes_agent.cron.scheduler import _build_job_prompt
 
         job = {
             "prompt": "Report status.",
@@ -206,7 +206,7 @@ class TestBuildJobPromptWithScript:
         assert "Report status." in prompt
 
     def test_no_script_unchanged(self, cron_env):
-        from cron.scheduler import _build_job_prompt
+        from hermes_agent.cron.scheduler import _build_job_prompt
 
         job = {"prompt": "Simple job."}
         prompt = _build_job_prompt(job)
@@ -214,7 +214,7 @@ class TestBuildJobPromptWithScript:
         assert "Simple job." in prompt
 
     def test_script_empty_output_noted(self, cron_env):
-        from cron.scheduler import _build_job_prompt
+        from hermes_agent.cron.scheduler import _build_job_prompt
 
         script = cron_env / "scripts" / "noop.py"
         script.write_text("# nothing\n")
@@ -310,7 +310,7 @@ class TestScriptPathContainment:
 
     def test_absolute_path_outside_scripts_dir_blocked(self, cron_env):
         """Absolute paths outside ~/.hermes/scripts/ must be rejected."""
-        from cron.scheduler import _run_job_script
+        from hermes_agent.cron.scheduler import _run_job_script
 
         # Create a script outside the scripts dir
         outside_script = cron_env / "outside.py"
@@ -322,7 +322,7 @@ class TestScriptPathContainment:
 
     def test_absolute_path_tmp_blocked(self, cron_env):
         """Absolute paths to /tmp must be rejected."""
-        from cron.scheduler import _run_job_script
+        from hermes_agent.cron.scheduler import _run_job_script
 
         success, output = _run_job_script("/tmp/evil.py")
         assert success is False
@@ -330,7 +330,7 @@ class TestScriptPathContainment:
 
     def test_tilde_path_blocked(self, cron_env):
         """~ prefixed paths must be rejected (expanduser bypasses check)."""
-        from cron.scheduler import _run_job_script
+        from hermes_agent.cron.scheduler import _run_job_script
 
         success, output = _run_job_script("~/evil.py")
         assert success is False
@@ -338,7 +338,7 @@ class TestScriptPathContainment:
 
     def test_tilde_traversal_blocked(self, cron_env):
         """~/../../../tmp/evil.py must be rejected."""
-        from cron.scheduler import _run_job_script
+        from hermes_agent.cron.scheduler import _run_job_script
 
         success, output = _run_job_script("~/../../../tmp/evil.py")
         assert success is False
@@ -346,7 +346,7 @@ class TestScriptPathContainment:
 
     def test_relative_traversal_still_blocked(self, cron_env):
         """../../etc/passwd style traversal must still be blocked."""
-        from cron.scheduler import _run_job_script
+        from hermes_agent.cron.scheduler import _run_job_script
 
         success, output = _run_job_script("../../etc/passwd")
         assert success is False
@@ -354,7 +354,7 @@ class TestScriptPathContainment:
 
     def test_relative_path_inside_scripts_dir_allowed(self, cron_env):
         """Relative paths within the scripts dir should still work."""
-        from cron.scheduler import _run_job_script
+        from hermes_agent.cron.scheduler import _run_job_script
 
         script = cron_env / "scripts" / "good.py"
         script.write_text('print("ok")\n')
@@ -365,7 +365,7 @@ class TestScriptPathContainment:
 
     def test_subdirectory_inside_scripts_dir_allowed(self, cron_env):
         """Relative paths to subdirectories within scripts/ should work."""
-        from cron.scheduler import _run_job_script
+        from hermes_agent.cron.scheduler import _run_job_script
 
         subdir = cron_env / "scripts" / "monitors"
         subdir.mkdir()
@@ -378,7 +378,7 @@ class TestScriptPathContainment:
 
     def test_absolute_path_inside_scripts_dir_allowed(self, cron_env):
         """Absolute paths that resolve WITHIN scripts/ should work."""
-        from cron.scheduler import _run_job_script
+        from hermes_agent.cron.scheduler import _run_job_script
 
         script = cron_env / "scripts" / "abs_ok.py"
         script.write_text('print("abs ok")\n')
@@ -393,7 +393,7 @@ class TestScriptPathContainment:
     )
     def test_symlink_escape_blocked(self, cron_env, tmp_path):
         """Symlinks pointing outside scripts/ must be rejected."""
-        from cron.scheduler import _run_job_script
+        from hermes_agent.cron.scheduler import _run_job_script
 
         # Create a script outside the scripts dir
         outside = tmp_path / "outside_evil.py"
@@ -543,7 +543,7 @@ class TestRunJobEnvVarCleanup:
             },
         }
 
-        from cron.scheduler import run_job
+        from hermes_agent.cron.scheduler import run_job
 
         # Expect it to fail (no model/API key), but env vars must be cleaned
         try:

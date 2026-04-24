@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
+from hermes_agent.cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
@@ -326,7 +326,7 @@ class TestDeliverResultWrapping:
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
-             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
+             patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
             job = {
                 "id": "test-job",
                 "name": "daily-report",
@@ -352,7 +352,7 @@ class TestDeliverResultWrapping:
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
-             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
+             patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
             job = {
                 "id": "voice-job",
                 "deliver": "origin",
@@ -401,7 +401,7 @@ class TestDeliverResultWrapping:
         }
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
-             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
              patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
             _deliver_result(
                 job,
@@ -451,7 +451,7 @@ class TestDeliverResultWrapping:
         }
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
-             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
              patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
             _deliver_result(
                 job,
@@ -493,7 +493,7 @@ class TestDeliverResultWrapping:
         }
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
-             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
              patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
             _deliver_result(
                 job,
@@ -537,7 +537,7 @@ class TestDeliverResultWrapping:
         }
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
-             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
              patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
             _deliver_result(
                 job,
@@ -638,8 +638,8 @@ class TestRunJobSessionPersistence:
         }
         fake_db = MagicMock()
 
-        with patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler._resolve_origin", return_value=None), \
+        with patch("hermes_agent.cron.scheduler._hermes_home", tmp_path), \
+             patch("hermes_agent.cron.scheduler._resolve_origin", return_value=None), \
              patch("dotenv.load_dotenv"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch(
@@ -677,8 +677,8 @@ class TestRunJobSessionPersistence:
         """Common patches for run_job tests."""
         fake_db = MagicMock()
         return fake_db, [
-            patch("cron.scheduler._hermes_home", tmp_path),
-            patch("cron.scheduler._resolve_origin", return_value=None),
+            patch("hermes_agent.cron.scheduler._hermes_home", tmp_path),
+            patch("hermes_agent.cron.scheduler._resolve_origin", return_value=None),
             patch("dotenv.load_dotenv"),
             patch("hermes_state.SessionDB", return_value=fake_db),
             patch(
@@ -780,8 +780,8 @@ class TestRunJobSessionPersistence:
         }
         fake_db = MagicMock()
 
-        with patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler._resolve_origin", return_value=None), \
+        with patch("hermes_agent.cron.scheduler._hermes_home", tmp_path), \
+             patch("hermes_agent.cron.scheduler._resolve_origin", return_value=None), \
              patch("dotenv.load_dotenv"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch(
@@ -813,8 +813,8 @@ class TestRunJobSessionPersistence:
         tick() should mark the job as error so last_status != 'ok'.
         (issue #8585)
         """
-        from cron.scheduler import tick
-        from cron.jobs import load_jobs, save_jobs
+        from hermes_agent.cron.scheduler import tick
+        from hermes_agent.cron.jobs import load_jobs, save_jobs
 
         job = {
             "id": "empty-job",
@@ -829,13 +829,13 @@ class TestRunJobSessionPersistence:
 
         fake_db = MagicMock()
 
-        with patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler.get_due_jobs", return_value=[job]), \
-             patch("cron.scheduler.advance_next_run"), \
-             patch("cron.scheduler.mark_job_run") as mock_mark, \
-             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
-             patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("cron.scheduler.run_job", return_value=(True, "output", "", None)):
+        with patch("hermes_agent.cron.scheduler._hermes_home", tmp_path), \
+             patch("hermes_agent.cron.scheduler.get_due_jobs", return_value=[job]), \
+             patch("hermes_agent.cron.scheduler.advance_next_run"), \
+             patch("hermes_agent.cron.scheduler.mark_job_run") as mock_mark, \
+             patch("hermes_agent.cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("hermes_agent.cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_agent.cron.scheduler.run_job", return_value=(True, "output", "", None)):
             tick(verbose=False)
 
         # Should be called with success=False because final_response is empty
@@ -872,7 +872,7 @@ class TestRunJobSessionPersistence:
                 seen["thread_id"] = get_session_env("HERMES_CRON_AUTO_DELIVER_THREAD_ID") or None
                 return {"final_response": "ok"}
 
-        with patch("cron.scheduler._hermes_home", tmp_path), \
+        with patch("hermes_agent.cron.scheduler._hermes_home", tmp_path), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -915,8 +915,8 @@ class TestRunJobConfigLogging:
             "prompt": "hello",
         }
 
-        with patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler._resolve_origin", return_value=None), \
+        with patch("hermes_agent.cron.scheduler._hermes_home", tmp_path), \
+             patch("hermes_agent.cron.scheduler._resolve_origin", return_value=None), \
              patch("dotenv.load_dotenv"), \
              patch("run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
@@ -944,8 +944,8 @@ class TestRunJobConfigLogging:
             "prompt": "hello",
         }
 
-        with patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler._resolve_origin", return_value=None), \
+        with patch("hermes_agent.cron.scheduler._hermes_home", tmp_path), \
+             patch("hermes_agent.cron.scheduler._resolve_origin", return_value=None), \
              patch("dotenv.load_dotenv"), \
              patch("run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
@@ -983,8 +983,8 @@ class TestRunJobSkillBacked:
             assert "NOTION_API_KEY" in get_all_passthrough()
             return {"final_response": "ok"}
 
-        with patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler._resolve_origin", return_value=None), \
+        with patch("hermes_agent.cron.scheduler._hermes_home", tmp_path), \
+             patch("hermes_agent.cron.scheduler._resolve_origin", return_value=None), \
              patch("dotenv.load_dotenv"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch(
@@ -1042,8 +1042,8 @@ class TestRunJobSkillBacked:
             assert any("google_token.json" in v for v in registered.values())
             return {"final_response": "ok"}
 
-        with patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler._resolve_origin", return_value=None), \
+        with patch("hermes_agent.cron.scheduler._hermes_home", tmp_path), \
+             patch("hermes_agent.cron.scheduler._resolve_origin", return_value=None), \
              patch("tools.credential_files._resolve_hermes_home", return_value=tmp_path), \
              patch("dotenv.load_dotenv"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
@@ -1081,8 +1081,8 @@ class TestRunJobSkillBacked:
 
         fake_db = MagicMock()
 
-        with patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler._resolve_origin", return_value=None), \
+        with patch("hermes_agent.cron.scheduler._hermes_home", tmp_path), \
+             patch("hermes_agent.cron.scheduler._resolve_origin", return_value=None), \
              patch("dotenv.load_dotenv"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch(
@@ -1127,8 +1127,8 @@ class TestRunJobSkillBacked:
         def _skill_view(name):
             return json.dumps({"success": True, "content": f"# {name}\nInstructions for {name}."})
 
-        with patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler._resolve_origin", return_value=None), \
+        with patch("hermes_agent.cron.scheduler._hermes_home", tmp_path), \
+             patch("hermes_agent.cron.scheduler._resolve_origin", return_value=None), \
              patch("dotenv.load_dotenv"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch(
@@ -1173,68 +1173,68 @@ class TestSilentDelivery:
         }
 
     def test_silent_response_suppresses_delivery(self, caplog):
-        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
-             patch("cron.scheduler.run_job", return_value=(True, "# output", "[SILENT]", None)), \
-             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
-             patch("cron.scheduler._deliver_result") as deliver_mock, \
-             patch("cron.scheduler.mark_job_run"):
-            from cron.scheduler import tick
+        with patch("hermes_agent.cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("hermes_agent.cron.scheduler.run_job", return_value=(True, "# output", "[SILENT]", None)), \
+             patch("hermes_agent.cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("hermes_agent.cron.scheduler._deliver_result") as deliver_mock, \
+             patch("hermes_agent.cron.scheduler.mark_job_run"):
+            from hermes_agent.cron.scheduler import tick
             with caplog.at_level(logging.INFO, logger="cron.scheduler"):
                 tick(verbose=False)
         deliver_mock.assert_not_called()
         assert any(SILENT_MARKER in r.message for r in caplog.records)
 
     def test_silent_with_note_suppresses_delivery(self):
-        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
-             patch("cron.scheduler.run_job", return_value=(True, "# output", "[SILENT] No changes detected", None)), \
-             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
-             patch("cron.scheduler._deliver_result") as deliver_mock, \
-             patch("cron.scheduler.mark_job_run"):
-            from cron.scheduler import tick
+        with patch("hermes_agent.cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("hermes_agent.cron.scheduler.run_job", return_value=(True, "# output", "[SILENT] No changes detected", None)), \
+             patch("hermes_agent.cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("hermes_agent.cron.scheduler._deliver_result") as deliver_mock, \
+             patch("hermes_agent.cron.scheduler.mark_job_run"):
+            from hermes_agent.cron.scheduler import tick
             tick(verbose=False)
         deliver_mock.assert_not_called()
 
     def test_silent_trailing_suppresses_delivery(self):
         """Agent appended [SILENT] after explanation text — must still suppress."""
         response = "2 deals filtered out (like<10, reply<15).\n\n[SILENT]"
-        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
-             patch("cron.scheduler.run_job", return_value=(True, "# output", response, None)), \
-             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
-             patch("cron.scheduler._deliver_result") as deliver_mock, \
-             patch("cron.scheduler.mark_job_run"):
-            from cron.scheduler import tick
+        with patch("hermes_agent.cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("hermes_agent.cron.scheduler.run_job", return_value=(True, "# output", response, None)), \
+             patch("hermes_agent.cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("hermes_agent.cron.scheduler._deliver_result") as deliver_mock, \
+             patch("hermes_agent.cron.scheduler.mark_job_run"):
+            from hermes_agent.cron.scheduler import tick
             tick(verbose=False)
         deliver_mock.assert_not_called()
 
     def test_silent_is_case_insensitive(self):
-        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
-             patch("cron.scheduler.run_job", return_value=(True, "# output", "[silent] nothing new", None)), \
-             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
-             patch("cron.scheduler._deliver_result") as deliver_mock, \
-             patch("cron.scheduler.mark_job_run"):
-            from cron.scheduler import tick
+        with patch("hermes_agent.cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("hermes_agent.cron.scheduler.run_job", return_value=(True, "# output", "[silent] nothing new", None)), \
+             patch("hermes_agent.cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("hermes_agent.cron.scheduler._deliver_result") as deliver_mock, \
+             patch("hermes_agent.cron.scheduler.mark_job_run"):
+            from hermes_agent.cron.scheduler import tick
             tick(verbose=False)
         deliver_mock.assert_not_called()
 
     def test_failed_job_always_delivers(self):
         """Failed jobs deliver regardless of [SILENT] in output."""
-        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
-             patch("cron.scheduler.run_job", return_value=(False, "# output", "", "some error")), \
-             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
-             patch("cron.scheduler._deliver_result") as deliver_mock, \
-             patch("cron.scheduler.mark_job_run"):
-            from cron.scheduler import tick
+        with patch("hermes_agent.cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("hermes_agent.cron.scheduler.run_job", return_value=(False, "# output", "", "some error")), \
+             patch("hermes_agent.cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("hermes_agent.cron.scheduler._deliver_result") as deliver_mock, \
+             patch("hermes_agent.cron.scheduler.mark_job_run"):
+            from hermes_agent.cron.scheduler import tick
             tick(verbose=False)
         deliver_mock.assert_called_once()
 
     def test_output_saved_even_when_delivery_suppressed(self):
-        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
-             patch("cron.scheduler.run_job", return_value=(True, "# full output", "[SILENT]", None)), \
-             patch("cron.scheduler.save_job_output") as save_mock, \
-             patch("cron.scheduler._deliver_result") as deliver_mock, \
-             patch("cron.scheduler.mark_job_run"):
+        with patch("hermes_agent.cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("hermes_agent.cron.scheduler.run_job", return_value=(True, "# full output", "[SILENT]", None)), \
+             patch("hermes_agent.cron.scheduler.save_job_output") as save_mock, \
+             patch("hermes_agent.cron.scheduler._deliver_result") as deliver_mock, \
+             patch("hermes_agent.cron.scheduler.mark_job_run"):
             save_mock.return_value = "/tmp/out.md"
-            from cron.scheduler import tick
+            from hermes_agent.cron.scheduler import tick
             tick(verbose=False)
         save_mock.assert_called_once_with("monitor-job", "# full output")
         deliver_mock.assert_not_called()
@@ -1274,59 +1274,59 @@ class TestParseWakeGate:
     """Unit tests for _parse_wake_gate — pure function, no side effects."""
 
     def test_empty_output_wakes(self):
-        from cron.scheduler import _parse_wake_gate
+        from hermes_agent.cron.scheduler import _parse_wake_gate
         assert _parse_wake_gate("") is True
         assert _parse_wake_gate(None) is True
 
     def test_whitespace_only_wakes(self):
-        from cron.scheduler import _parse_wake_gate
+        from hermes_agent.cron.scheduler import _parse_wake_gate
         assert _parse_wake_gate("   \n\n  \t\n") is True
 
     def test_non_json_last_line_wakes(self):
-        from cron.scheduler import _parse_wake_gate
+        from hermes_agent.cron.scheduler import _parse_wake_gate
         assert _parse_wake_gate("hello world") is True
         assert _parse_wake_gate("line 1\nline 2\nplain text") is True
 
     def test_json_non_dict_wakes(self):
         """Bare arrays, numbers, strings must not be interpreted as a gate."""
-        from cron.scheduler import _parse_wake_gate
+        from hermes_agent.cron.scheduler import _parse_wake_gate
         assert _parse_wake_gate("[1, 2, 3]") is True
         assert _parse_wake_gate("42") is True
         assert _parse_wake_gate('"wakeAgent"') is True
 
     def test_wake_gate_false_skips(self):
-        from cron.scheduler import _parse_wake_gate
+        from hermes_agent.cron.scheduler import _parse_wake_gate
         assert _parse_wake_gate('{"wakeAgent": false}') is False
 
     def test_wake_gate_true_wakes(self):
-        from cron.scheduler import _parse_wake_gate
+        from hermes_agent.cron.scheduler import _parse_wake_gate
         assert _parse_wake_gate('{"wakeAgent": true}') is True
 
     def test_wake_gate_missing_wakes(self):
         """A JSON dict without a wakeAgent key defaults to waking."""
-        from cron.scheduler import _parse_wake_gate
+        from hermes_agent.cron.scheduler import _parse_wake_gate
         assert _parse_wake_gate('{"data": {"foo": "bar"}}') is True
 
     def test_non_boolean_false_still_wakes(self):
         """Only strict ``False`` skips — truthy/falsy shortcuts are too risky."""
-        from cron.scheduler import _parse_wake_gate
+        from hermes_agent.cron.scheduler import _parse_wake_gate
         assert _parse_wake_gate('{"wakeAgent": 0}') is True
         assert _parse_wake_gate('{"wakeAgent": null}') is True
         assert _parse_wake_gate('{"wakeAgent": ""}') is True
 
     def test_only_last_non_empty_line_parsed(self):
-        from cron.scheduler import _parse_wake_gate
+        from hermes_agent.cron.scheduler import _parse_wake_gate
         multi = 'some log output\nmore output\n{"wakeAgent": false}'
         assert _parse_wake_gate(multi) is False
 
     def test_trailing_blank_lines_ignored(self):
-        from cron.scheduler import _parse_wake_gate
+        from hermes_agent.cron.scheduler import _parse_wake_gate
         multi = '{"wakeAgent": false}\n\n\n'
         assert _parse_wake_gate(multi) is False
 
     def test_non_last_json_line_does_not_gate(self):
         """A JSON gate on an earlier line with plain text after it does NOT trigger."""
-        from cron.scheduler import _parse_wake_gate
+        from hermes_agent.cron.scheduler import _parse_wake_gate
         multi = '{"wakeAgent": false}\nactually this is the real output'
         assert _parse_wake_gate(multi) is True
 
@@ -1372,8 +1372,8 @@ class TestRunJobWakeGate:
         """When _run_job_script output ends with {wakeAgent: false}, the agent
         is not invoked and run_job returns the SILENT marker so delivery is
         suppressed."""
-        from cron.scheduler import SILENT_MARKER
-        import cron.scheduler as scheduler
+        from hermes_agent.cron.scheduler import SILENT_MARKER
+        import hermes_agent.cron.scheduler as scheduler
 
         with patch.object(scheduler, "_run_job_script",
                           return_value=(True, '{"wakeAgent": false}')), \
@@ -1389,7 +1389,7 @@ class TestRunJobWakeGate:
     def test_wake_true_runs_agent_with_injected_output(self):
         """When the script returns {wakeAgent: true, data: ...}, the agent is
         invoked and the data line still shows up in the prompt."""
-        import cron.scheduler as scheduler
+        import hermes_agent.cron.scheduler as scheduler
 
         script_output = '{"wakeAgent": true, "data": {"new": 3}}'
         agent = MagicMock()
@@ -1414,7 +1414,7 @@ class TestRunJobWakeGate:
         """Wake-true path must not re-run the script inside _build_job_prompt
         (script would execute twice otherwise, wasting work and risking
         double-side-effects)."""
-        import cron.scheduler as scheduler
+        import hermes_agent.cron.scheduler as scheduler
 
         call_count = 0
         def _script_stub(path):
@@ -1435,7 +1435,7 @@ class TestRunJobWakeGate:
     def test_script_failure_does_not_trigger_gate(self):
         """If _run_job_script returns success=False, the gate is NOT evaluated
         and the agent still runs (the failure is reported as context)."""
-        import cron.scheduler as scheduler
+        import hermes_agent.cron.scheduler as scheduler
 
         # Malicious or broken script whose stderr happens to contain the
         # gate JSON — we must NOT honor it because ran_ok is False.
@@ -1452,7 +1452,7 @@ class TestRunJobWakeGate:
 
     def test_no_script_path_runs_agent_normally(self):
         """Regression: jobs without a script still work."""
-        import cron.scheduler as scheduler
+        import hermes_agent.cron.scheduler as scheduler
 
         agent = MagicMock()
         agent.run_conversation = MagicMock(return_value={
@@ -1562,8 +1562,8 @@ class TestParallelTick:
         """Point the tick file lock at a per-test temp dir to avoid xdist contention."""
         lock_dir = tmp_path / "cron"
         lock_dir.mkdir()
-        with patch("cron.scheduler._LOCK_DIR", lock_dir), \
-             patch("cron.scheduler._LOCK_FILE", lock_dir / ".tick.lock"):
+        with patch("hermes_agent.cron.scheduler._LOCK_DIR", lock_dir), \
+             patch("hermes_agent.cron.scheduler._LOCK_FILE", lock_dir / ".tick.lock"):
             yield
 
     def test_parallel_jobs_run_concurrently(self):
@@ -1586,13 +1586,13 @@ class TestParallelTick:
             {"id": "job-b", "name": "b", "deliver": "local"},
         ]
 
-        with patch("cron.scheduler.get_due_jobs", return_value=jobs), \
-             patch("cron.scheduler.advance_next_run"), \
-             patch("cron.scheduler.run_job", side_effect=mock_run_job), \
-             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
-             patch("cron.scheduler._deliver_result", return_value=None), \
-             patch("cron.scheduler.mark_job_run"):
-            from cron.scheduler import tick
+        with patch("hermes_agent.cron.scheduler.get_due_jobs", return_value=jobs), \
+             patch("hermes_agent.cron.scheduler.advance_next_run"), \
+             patch("hermes_agent.cron.scheduler.run_job", side_effect=mock_run_job), \
+             patch("hermes_agent.cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("hermes_agent.cron.scheduler._deliver_result", return_value=None), \
+             patch("hermes_agent.cron.scheduler.mark_job_run"):
+            from hermes_agent.cron.scheduler import tick
             result = tick(verbose=False)
 
         assert result == 2
@@ -1631,13 +1631,13 @@ class TestParallelTick:
              "origin": {"platform": "discord", "chat_id": "222"}},
         ]
 
-        with patch("cron.scheduler.get_due_jobs", return_value=jobs), \
-             patch("cron.scheduler.advance_next_run"), \
-             patch("cron.scheduler.run_job", side_effect=mock_run_job), \
-             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
-             patch("cron.scheduler._deliver_result", return_value=None), \
-             patch("cron.scheduler.mark_job_run"):
-            from cron.scheduler import tick
+        with patch("hermes_agent.cron.scheduler.get_due_jobs", return_value=jobs), \
+             patch("hermes_agent.cron.scheduler.advance_next_run"), \
+             patch("hermes_agent.cron.scheduler.run_job", side_effect=mock_run_job), \
+             patch("hermes_agent.cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("hermes_agent.cron.scheduler._deliver_result", return_value=None), \
+             patch("hermes_agent.cron.scheduler.mark_job_run"):
+            from hermes_agent.cron.scheduler import tick
             tick(verbose=False)
 
         assert seen["tg-job"] == {"platform": "telegram", "chat_id": "111"}
@@ -1660,13 +1660,13 @@ class TestParallelTick:
             {"id": "s2", "name": "s2", "deliver": "local"},
         ]
 
-        with patch("cron.scheduler.get_due_jobs", return_value=jobs), \
-             patch("cron.scheduler.advance_next_run"), \
-             patch("cron.scheduler.run_job", side_effect=mock_run_job), \
-             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
-             patch("cron.scheduler._deliver_result", return_value=None), \
-             patch("cron.scheduler.mark_job_run"):
-            from cron.scheduler import tick
+        with patch("hermes_agent.cron.scheduler.get_due_jobs", return_value=jobs), \
+             patch("hermes_agent.cron.scheduler.advance_next_run"), \
+             patch("hermes_agent.cron.scheduler.run_job", side_effect=mock_run_job), \
+             patch("hermes_agent.cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("hermes_agent.cron.scheduler._deliver_result", return_value=None), \
+             patch("hermes_agent.cron.scheduler.mark_job_run"):
+            from hermes_agent.cron.scheduler import tick
             result = tick(verbose=False)
 
         assert result == 2
@@ -1728,7 +1728,7 @@ class TestDeliverResultTimeoutCancelsFuture:
         standalone_send = AsyncMock(return_value={"success": True})
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
-             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
              patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
              patch("tools.send_message_tool._send_to_platform", new=standalone_send):
             result = _deliver_result(
