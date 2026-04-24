@@ -9,9 +9,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig, StreamingConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform, PlatformConfig, StreamingConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from hermes_agent.gateway.session import SessionSource
 
 
 class ProgressCaptureAdapter(BasePlatformAdapter):

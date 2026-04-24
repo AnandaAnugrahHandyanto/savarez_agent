@@ -46,7 +46,7 @@ from hermes_cli.config import (
     check_config_version,
     redact_key,
 )
-from gateway.status import get_running_pid, read_runtime_status
+from hermes_agent.gateway.status import get_running_pid, read_runtime_status
 
 try:
     from fastapi import FastAPI, HTTPException, Request
@@ -506,7 +506,7 @@ async def get_status():
     gateway_updated_at = None
     configured_gateway_platforms: set[str] | None = None
     try:
-        from gateway.config import load_gateway_config
+        from hermes_agent.gateway.config import load_gateway_config
 
         gateway_config = load_gateway_config()
         configured_gateway_platforms = {

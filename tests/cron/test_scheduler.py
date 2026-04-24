@@ -269,14 +269,14 @@ class TestDeliverResultWrapping:
 
     def test_delivery_wraps_content_with_header_and_footer(self):
         """Delivered content should include task name header and agent-invisible note."""
-        from gateway.config import Platform
+        from hermes_agent.gateway.config import Platform
 
         pconfig = MagicMock()
         pconfig.enabled = True
         mock_cfg = MagicMock()
         mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
 
-        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+        with patch("hermes_agent.gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
             job = {
                 "id": "test-job",
@@ -296,14 +296,14 @@ class TestDeliverResultWrapping:
 
     def test_delivery_uses_job_id_when_no_name(self):
         """When a job has no name, the wrapper should fall back to job id."""
-        from gateway.config import Platform
+        from hermes_agent.gateway.config import Platform
 
         pconfig = MagicMock()
         pconfig.enabled = True
         mock_cfg = MagicMock()
         mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
 
-        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+        with patch("hermes_agent.gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
             job = {
                 "id": "abc-123",
@@ -317,14 +317,14 @@ class TestDeliverResultWrapping:
 
     def test_delivery_skips_wrapping_when_config_disabled(self):
         """When cron.wrap_response is false, deliver raw content without header/footer."""
-        from gateway.config import Platform
+        from hermes_agent.gateway.config import Platform
 
         pconfig = MagicMock()
         pconfig.enabled = True
         mock_cfg = MagicMock()
         mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
 
-        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+        with patch("hermes_agent.gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
              patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
             job = {
@@ -343,14 +343,14 @@ class TestDeliverResultWrapping:
 
     def test_delivery_extracts_media_tags_before_send(self):
         """Cron delivery should pass MEDIA attachments separately to the send helper."""
-        from gateway.config import Platform
+        from hermes_agent.gateway.config import Platform
 
         pconfig = MagicMock()
         pconfig.enabled = True
         mock_cfg = MagicMock()
         mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
 
-        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+        with patch("hermes_agent.gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
              patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
             job = {
@@ -372,7 +372,7 @@ class TestDeliverResultWrapping:
         """When a live adapter is available, MEDIA files should be sent as native
         platform attachments (e.g., Discord voice, Telegram audio) rather than
         as literal 'MEDIA:/path' text."""
-        from gateway.config import Platform
+        from hermes_agent.gateway.config import Platform
         from concurrent.futures import Future
 
         adapter = AsyncMock()
@@ -400,7 +400,7 @@ class TestDeliverResultWrapping:
             "origin": {"platform": "discord", "chat_id": "9876"},
         }
 
-        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+        with patch("hermes_agent.gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
              patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
             _deliver_result(
@@ -423,7 +423,7 @@ class TestDeliverResultWrapping:
 
     def test_live_adapter_routes_image_to_send_image_file(self):
         """Image MEDIA files should be routed to send_image_file, not send_voice."""
-        from gateway.config import Platform
+        from hermes_agent.gateway.config import Platform
         from concurrent.futures import Future
 
         adapter = AsyncMock()
@@ -450,7 +450,7 @@ class TestDeliverResultWrapping:
             "origin": {"platform": "discord", "chat_id": "1234"},
         }
 
-        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+        with patch("hermes_agent.gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
              patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
             _deliver_result(
@@ -466,7 +466,7 @@ class TestDeliverResultWrapping:
 
     def test_live_adapter_media_only_no_text(self):
         """When content is ONLY a MEDIA tag with no text, media should still be sent."""
-        from gateway.config import Platform
+        from hermes_agent.gateway.config import Platform
         from concurrent.futures import Future
 
         adapter = AsyncMock()
@@ -492,7 +492,7 @@ class TestDeliverResultWrapping:
             "origin": {"platform": "telegram", "chat_id": "999"},
         }
 
-        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+        with patch("hermes_agent.gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
              patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
             _deliver_result(
@@ -510,7 +510,7 @@ class TestDeliverResultWrapping:
     def test_live_adapter_sends_cleaned_text_not_raw(self):
         """The live adapter path must send cleaned text (MEDIA tags stripped),
         not the raw delivery_content with embedded MEDIA: tags."""
-        from gateway.config import Platform
+        from hermes_agent.gateway.config import Platform
         from concurrent.futures import Future
 
         adapter = AsyncMock()
@@ -536,7 +536,7 @@ class TestDeliverResultWrapping:
             "origin": {"platform": "telegram", "chat_id": "555"},
         }
 
-        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+        with patch("hermes_agent.gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
              patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
             _deliver_result(
@@ -552,16 +552,16 @@ class TestDeliverResultWrapping:
 
     def test_no_mirror_to_session_call(self):
         """Cron deliveries should NOT mirror into the gateway session."""
-        from gateway.config import Platform
+        from hermes_agent.gateway.config import Platform
 
         pconfig = MagicMock()
         pconfig.enabled = True
         mock_cfg = MagicMock()
         mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
 
-        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+        with patch("hermes_agent.gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
-             patch("gateway.mirror.mirror_to_session") as mirror_mock:
+             patch("hermes_agent.gateway.mirror.mirror_to_session") as mirror_mock:
             job = {
                 "id": "test-job",
                 "deliver": "origin",
@@ -573,7 +573,7 @@ class TestDeliverResultWrapping:
 
     def test_origin_delivery_preserves_thread_id(self):
         """Origin delivery should forward thread_id to the send helper."""
-        from gateway.config import Platform
+        from hermes_agent.gateway.config import Platform
 
         pconfig = MagicMock()
         pconfig.enabled = True
@@ -591,7 +591,7 @@ class TestDeliverResultWrapping:
             },
         }
 
-        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+        with patch("hermes_agent.gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
             _deliver_result(job, "hello")
 
@@ -603,14 +603,14 @@ class TestDeliverResultErrorReturns:
     """Verify _deliver_result returns error strings on failure, None on success."""
 
     def test_returns_error_when_platform_disabled(self):
-        from gateway.config import Platform
+        from hermes_agent.gateway.config import Platform
 
         pconfig = MagicMock()
         pconfig.enabled = False
         mock_cfg = MagicMock()
         mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
 
-        with patch("gateway.config.load_gateway_config", return_value=mock_cfg):
+        with patch("hermes_agent.gateway.config.load_gateway_config", return_value=mock_cfg):
             job = {
                 "id": "disabled",
                 "deliver": "origin",
@@ -866,7 +866,7 @@ class TestRunJobSessionPersistence:
                 pass
 
             def run_conversation(self, *args, **kwargs):
-                from gateway.session_context import get_session_env
+                from hermes_agent.gateway.session_context import get_session_env
                 seen["platform"] = get_session_env("HERMES_CRON_AUTO_DELIVER_PLATFORM") or None
                 seen["chat_id"] = get_session_env("HERMES_CRON_AUTO_DELIVER_CHAT_ID") or None
                 seen["thread_id"] = get_session_env("HERMES_CRON_AUTO_DELIVER_THREAD_ID") or None
@@ -1605,13 +1605,13 @@ class TestParallelTick:
 
     def test_parallel_jobs_isolated_contextvars(self):
         """Each job's ContextVars must be isolated — no cross-contamination."""
-        from gateway.session_context import get_session_env
+        from hermes_agent.gateway.session_context import get_session_env
         seen = {}
 
         def mock_run_job(job):
             origin = job.get("origin", {})
             # run_job sets ContextVars — verify each job sees its own
-            from gateway.session_context import set_session_vars, clear_session_vars
+            from hermes_agent.gateway.session_context import set_session_vars, clear_session_vars
             tokens = set_session_vars(
                 platform=origin.get("platform", ""),
                 chat_id=str(origin.get("chat_id", "")),
@@ -1686,7 +1686,7 @@ class TestDeliverResultTimeoutCancelsFuture:
         """End-to-end: live adapter hangs past the 60s budget, _deliver_result
         patches the timeout down to a fast value, confirms future.cancel() fires,
         and verifies the standalone fallback path still delivers."""
-        from gateway.config import Platform
+        from hermes_agent.gateway.config import Platform
         from concurrent.futures import Future
 
         # Live adapter whose send() coroutine never resolves within the budget
@@ -1727,7 +1727,7 @@ class TestDeliverResultTimeoutCancelsFuture:
 
         standalone_send = AsyncMock(return_value={"success": True})
 
-        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+        with patch("hermes_agent.gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
              patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
              patch("tools.send_message_tool._send_to_platform", new=standalone_send):

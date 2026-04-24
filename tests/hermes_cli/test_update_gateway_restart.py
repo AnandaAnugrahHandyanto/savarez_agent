@@ -583,7 +583,7 @@ class TestCmdUpdateLaunchdRestart:
             systemd_active=False,
         )
 
-        with patch("gateway.status.get_running_pid", return_value=None):
+        with patch("hermes_agent.gateway.status.get_running_pid", return_value=None):
             cmd_update(mock_args)
 
         captured = capsys.readouterr().out

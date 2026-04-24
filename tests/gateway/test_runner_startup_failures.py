@@ -1,10 +1,10 @@
 import pytest
 from unittest.mock import AsyncMock
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter
-from gateway.run import GatewayRunner
-from gateway.status import read_runtime_status
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.status import read_runtime_status
 
 
 class _RetryableFailureAdapter(BasePlatformAdapter):
@@ -156,7 +156,7 @@ async def test_start_gateway_verbosity_imports_redacting_formatter(monkeypatch, 
     monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
     monkeypatch.setattr("gateway.run.GatewayRunner", _CleanExitRunner)
 
-    from gateway.run import start_gateway
+    from hermes_agent.gateway.run import start_gateway
 
     # verbosity=1 triggers the code path that uses RedactingFormatter.
     # Before the fix this raised NameError.
@@ -206,7 +206,7 @@ async def test_start_gateway_replace_force_uses_terminate_pid(monkeypatch, tmp_p
     monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
     monkeypatch.setattr("gateway.run.GatewayRunner", _CleanExitRunner)
 
-    from gateway.run import start_gateway
+    from hermes_agent.gateway.run import start_gateway
 
     ok = await start_gateway(config=GatewayConfig(), replace=True, verbosity=None)
 
@@ -238,7 +238,7 @@ async def test_start_gateway_replace_writes_takeover_marker_before_sigterm(
             (tmp_path / ".gateway-takeover.json").exists() is False  # not yet
         )
         # Actually write the marker so we can verify cleanup later
-        from gateway.status import _get_takeover_marker_path, _write_json_file, _get_process_start_time
+        from hermes_agent.gateway.status import _get_takeover_marker_path, _write_json_file, _get_process_start_time
         _write_json_file(_get_takeover_marker_path(), {
             "target_pid": target_pid,
             "target_start_time": 0,
@@ -288,7 +288,7 @@ async def test_start_gateway_replace_writes_takeover_marker_before_sigterm(
     monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
     monkeypatch.setattr("gateway.run.GatewayRunner", _CleanExitRunner)
 
-    from gateway.run import start_gateway
+    from hermes_agent.gateway.run import start_gateway
 
     ok = await start_gateway(config=GatewayConfig(), replace=True, verbosity=None)
 
@@ -309,7 +309,7 @@ async def test_start_gateway_replace_clears_marker_on_permission_denied(
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     def write_marker(target_pid: int) -> bool:
-        from gateway.status import _get_takeover_marker_path, _write_json_file
+        from hermes_agent.gateway.status import _get_takeover_marker_path, _write_json_file
         _write_json_file(_get_takeover_marker_path(), {
             "target_pid": target_pid,
             "target_start_time": 0,
@@ -329,7 +329,7 @@ async def test_start_gateway_replace_clears_marker_on_permission_denied(
     monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
     monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
 
-    from gateway.run import start_gateway
+    from hermes_agent.gateway.run import start_gateway
 
     # Should return False due to permission error
     ok = await start_gateway(config=GatewayConfig(), replace=True, verbosity=None)

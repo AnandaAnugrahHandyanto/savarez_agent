@@ -143,7 +143,7 @@ class TestGatewayQuickCommands:
 
     @pytest.mark.asyncio
     async def test_exec_command_returns_output(self):
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
         runner = GatewayRunner.__new__(GatewayRunner)
         runner.config = {"quick_commands": {"limits": {"type": "exec", "command": "echo ok"}}}
         runner._running_agents = {}
@@ -156,7 +156,7 @@ class TestGatewayQuickCommands:
 
     @pytest.mark.asyncio
     async def test_unsupported_type_returns_error(self):
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
         runner = GatewayRunner.__new__(GatewayRunner)
         runner.config = {"quick_commands": {"bad": {"type": "prompt", "command": "echo hi"}}}
         runner._running_agents = {}
@@ -170,7 +170,7 @@ class TestGatewayQuickCommands:
 
     @pytest.mark.asyncio
     async def test_timeout_returns_error(self):
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
         import asyncio
         runner = GatewayRunner.__new__(GatewayRunner)
         runner.config = {"quick_commands": {"slow": {"type": "exec", "command": "sleep 100"}}}
@@ -186,8 +186,8 @@ class TestGatewayQuickCommands:
 
     @pytest.mark.asyncio
     async def test_gateway_config_object_supports_quick_commands(self):
-        from gateway.config import GatewayConfig
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.config import GatewayConfig
+        from hermes_agent.gateway.run import GatewayRunner
 
         runner = GatewayRunner.__new__(GatewayRunner)
         runner.config = GatewayConfig(

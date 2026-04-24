@@ -5,9 +5,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
-from gateway.session import SessionEntry, SessionSource, build_session_key
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import MessageEvent
+from hermes_agent.gateway.session import SessionEntry, SessionSource, build_session_key
 
 
 def _make_source() -> SessionSource:
@@ -25,7 +25,7 @@ def _make_event(text: str) -> MessageEvent:
 
 
 def _make_runner():
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
@@ -117,7 +117,7 @@ async def test_finalize_before_reset(mock_invoke_hook):
 @patch("hermes_cli.plugins.invoke_hook")
 async def test_shutdown_fires_finalize_for_active_agents(mock_invoke_hook):
     """Gateway stop() must fire on_session_finalize for each active agent."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner._running = True
@@ -144,8 +144,8 @@ async def test_shutdown_fires_finalize_for_active_agents(mock_invoke_hook):
     agent2.session_id = "sess-b"
     runner._running_agents = {"key-a": agent1, "key-b": agent2}
 
-    with patch("gateway.status.remove_pid_file"), \
-         patch("gateway.status.write_runtime_status"):
+    with patch("hermes_agent.gateway.status.remove_pid_file"), \
+         patch("hermes_agent.gateway.status.write_runtime_status"):
         await runner.stop()
 
     finalize_calls = [

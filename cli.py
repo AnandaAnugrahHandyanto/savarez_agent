@@ -5816,7 +5816,7 @@ class HermesCLI:
 
     def _show_gateway_status(self):
         """Show status of the gateway and connected messaging platforms."""
-        from gateway.config import load_gateway_config, Platform
+        from hermes_agent.gateway.config import load_gateway_config, Platform
         
         print()
         print("+" + "-" * 60 + "+")
@@ -10879,7 +10879,7 @@ def main(
     # Handle gateway mode (messaging + cron)
     if gateway:
         import asyncio
-        from gateway.run import start_gateway
+        from hermes_agent.gateway.run import start_gateway
         print("Starting Hermes Gateway (messaging platforms)...")
         asyncio.run(start_gateway())
         return

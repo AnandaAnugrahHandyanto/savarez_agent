@@ -9,9 +9,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.base import MessageEvent
+from hermes_agent.gateway.session import SessionSource
 
 
 def _make_event(text="/title", platform=Platform.TELEGRAM,
@@ -28,7 +28,7 @@ def _make_event(text="/title", platform=Platform.TELEGRAM,
 
 def _make_runner(session_db=None):
     """Create a bare GatewayRunner with a mock session_store and optional session_db."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
     runner._voice_mode = {}
@@ -195,14 +195,14 @@ class TestTitleInHelp:
         runner = _make_runner()
         event = _make_event(text="/help")
         # Need hooks for help command
-        from gateway.hooks import HookRegistry
+        from hermes_agent.gateway.hooks import HookRegistry
         runner.hooks = HookRegistry()
         result = await runner._handle_help_command(event)
         assert "/title" in result
 
     def test_title_is_known_command(self):
         """The /title command is in the _known_commands set."""
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
         import inspect
         source = inspect.getsource(GatewayRunner._handle_message)
         assert '"title"' in source

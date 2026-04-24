@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 import hermes_cli.gateway as gateway_cli
-from gateway.restart import (
+from hermes_agent.gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
 )

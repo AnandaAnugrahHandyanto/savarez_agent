@@ -68,17 +68,17 @@ class TestApiServerPlatformConfig:
 
 
 class TestApiServerAdapterToolset:
-    @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", True)
+    @patch("hermes_agent.gateway.platforms.api_server.AIOHTTP_AVAILABLE", True)
     def test_create_agent_reads_config_toolsets(self):
         """API server resolves toolsets from config like all other platforms."""
-        from gateway.platforms.api_server import APIServerAdapter
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.platforms.api_server import APIServerAdapter
+        from hermes_agent.gateway.config import PlatformConfig
 
         adapter = APIServerAdapter(PlatformConfig())
 
-        with patch("gateway.run._resolve_runtime_agent_kwargs") as mock_kwargs, \
-             patch("gateway.run._resolve_gateway_model") as mock_model, \
-             patch("gateway.run._load_gateway_config") as mock_config, \
+        with patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs") as mock_kwargs, \
+             patch("hermes_agent.gateway.run._resolve_gateway_model") as mock_model, \
+             patch("hermes_agent.gateway.run._load_gateway_config") as mock_config, \
              patch("run_agent.AIAgent") as mock_agent_cls:
 
             mock_kwargs.return_value = {"api_key": "test-key", "base_url": None,
@@ -98,17 +98,17 @@ class TestApiServerAdapterToolset:
             assert len(toolsets) > 0
             assert call_kwargs.kwargs.get("platform") == "api_server"
 
-    @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", True)
+    @patch("hermes_agent.gateway.platforms.api_server.AIOHTTP_AVAILABLE", True)
     def test_create_agent_respects_config_override(self):
         """User can override API server toolsets via platform_toolsets in config.yaml."""
-        from gateway.platforms.api_server import APIServerAdapter
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.platforms.api_server import APIServerAdapter
+        from hermes_agent.gateway.config import PlatformConfig
 
         adapter = APIServerAdapter(PlatformConfig())
 
-        with patch("gateway.run._resolve_runtime_agent_kwargs") as mock_kwargs, \
-             patch("gateway.run._resolve_gateway_model") as mock_model, \
-             patch("gateway.run._load_gateway_config") as mock_config, \
+        with patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs") as mock_kwargs, \
+             patch("hermes_agent.gateway.run._resolve_gateway_model") as mock_model, \
+             patch("hermes_agent.gateway.run._load_gateway_config") as mock_config, \
              patch("run_agent.AIAgent") as mock_agent_cls:
 
             mock_kwargs.return_value = {"api_key": "test-key", "base_url": None,

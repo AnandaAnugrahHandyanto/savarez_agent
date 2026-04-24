@@ -193,7 +193,7 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
 
         # Resolve human-friendly labels like "Alice (dm)" to real IDs.
         try:
-            from gateway.channel_directory import resolve_channel_name
+            from hermes_agent.gateway.channel_directory import resolve_channel_name
             resolved = resolve_channel_name(platform_key, chat_id)
             if resolved:
                 parsed_chat_id, parsed_thread_id, resolved_is_explicit = _parse_target_ref(platform_key, resolved)
@@ -317,7 +317,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         return None  # local-only jobs don't deliver — not a failure
 
     from tools.send_message_tool import _send_to_platform
-    from gateway.config import load_gateway_config, Platform
+    from hermes_agent.gateway.config import load_gateway_config, Platform
 
     platform_map = {
         "telegram": Platform.TELEGRAM,
@@ -363,7 +363,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         delivery_content = content
 
     # Extract MEDIA: tags so attachments are forwarded as files, not raw text
-    from gateway.platforms.base import BasePlatformAdapter
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
 
     try:
@@ -787,7 +787,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
     # Use ContextVars for per-job session/delivery state so parallel jobs
     # don't clobber each other's targets (os.environ is process-global).
-    from gateway.session_context import set_session_vars, clear_session_vars, _VAR_MAP
+    from hermes_agent.gateway.session_context import set_session_vars, clear_session_vars, _VAR_MAP
 
     _ctx_tokens = set_session_vars(
         platform=origin["platform"] if origin else "",

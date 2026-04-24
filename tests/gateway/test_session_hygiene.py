@@ -18,9 +18,9 @@ from unittest.mock import patch, MagicMock, AsyncMock
 import pytest
 
 from agent.model_metadata import estimate_messages_tokens_rough
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
-from gateway.session import SessionEntry, SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
+from hermes_agent.gateway.session import SessionEntry, SessionSource
 
 
 # ---------------------------------------------------------------------------

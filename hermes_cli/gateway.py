@@ -15,8 +15,8 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
-from gateway.status import terminate_pid
-from gateway.restart import (
+from hermes_agent.gateway.status import terminate_pid
+from hermes_agent.gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
     parse_restart_drain_timeout,
@@ -357,7 +357,7 @@ def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = Fals
     pids: list[int] = []
     if not all_profiles:
         try:
-            from gateway.status import get_running_pid
+            from hermes_agent.gateway.status import get_running_pid
 
             _append_unique_pid(pids, get_running_pid(), _exclude)
         except Exception:
@@ -446,7 +446,7 @@ def _wait_for_systemd_service_restart(
         sub_state = props.get("SubState", "")
         new_pid = None
         try:
-            from gateway.status import get_running_pid
+            from hermes_agent.gateway.status import get_running_pid
 
             new_pid = get_running_pid()
         except Exception:
@@ -481,7 +481,7 @@ def _recover_pending_systemd_restart(system: bool = False, previous_pid: int | N
         return False
 
     try:
-        from gateway.status import read_runtime_status
+        from hermes_agent.gateway.status import read_runtime_status
     except Exception:
         return False
 
@@ -640,7 +640,7 @@ def stop_profile_gateway() -> bool:
     Returns True if a process was stopped, False if none was found.
     """
     try:
-        from gateway.status import get_running_pid, remove_pid_file
+        from hermes_agent.gateway.status import get_running_pid, remove_pid_file
     except ImportError:
         return False
 
@@ -1846,7 +1846,7 @@ def systemd_restart(system: bool = False):
     else:
         _preflight_user_systemd()
     refresh_systemd_unit_if_needed(system=system)
-    from gateway.status import get_running_pid
+    from hermes_agent.gateway.status import get_running_pid
 
     pid = get_running_pid()
     if pid is not None and _request_gateway_self_restart(pid):
@@ -2220,7 +2220,7 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.
         force_after: Seconds of graceful waiting before escalating to force-kill.
     """
     import time
-    from gateway.status import get_running_pid
+    from hermes_agent.gateway.status import get_running_pid
 
     deadline = time.monotonic() + timeout
     force_deadline = (time.monotonic() + force_after) if force_after is not None else None
@@ -2254,7 +2254,7 @@ def launchd_restart():
     label = get_launchd_label()
     target = f"{_launchd_domain()}/{label}"
     drain_timeout = _get_restart_drain_timeout()
-    from gateway.status import get_running_pid
+    from hermes_agent.gateway.status import get_running_pid
 
     try:
         pid = get_running_pid()
@@ -2337,7 +2337,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     """
     sys.path.insert(0, str(PROJECT_ROOT))
     
-    from gateway.run import start_gateway
+    from hermes_agent.gateway.run import start_gateway
     
     print("┌─────────────────────────────────────────────────────────┐")
     print("│           ⚕ Hermes Gateway Starting...                 │")
@@ -2783,7 +2783,7 @@ def _platform_status(platform: dict) -> str:
 def _runtime_health_lines() -> list[str]:
     """Summarize the latest persisted gateway runtime health state."""
     try:
-        from gateway.status import read_runtime_status
+        from hermes_agent.gateway.status import read_runtime_status
     except Exception:
         return []
 
@@ -3018,7 +3018,7 @@ def _setup_wecom():
     if method_idx == 0:
         # ── QR scan flow ──
         try:
-            from gateway.platforms.wecom import qr_scan_for_bot_info
+            from hermes_agent.gateway.platforms.wecom import qr_scan_for_bot_info
         except Exception as exc:
             print_error(f"  WeCom QR scan import failed: {exc}")
             qr_scan_for_bot_info = None
@@ -3178,7 +3178,7 @@ def _setup_weixin():
             return
 
     try:
-        from gateway.platforms.weixin import check_weixin_requirements, qr_login
+        from hermes_agent.gateway.platforms.weixin import check_weixin_requirements, qr_login
     except Exception as exc:
         print_error(f"  Weixin adapter import failed: {exc}")
         print_info("  Install gateway dependencies first, then retry.")
@@ -3313,7 +3313,7 @@ def _setup_feishu():
     if method_idx == 0:
         # ── QR scan-to-create ──
         try:
-            from gateway.platforms.feishu import qr_register
+            from hermes_agent.gateway.platforms.feishu import qr_register
         except Exception as exc:
             print_error(f"  Feishu / Lark onboard import failed: {exc}")
             qr_register = None
@@ -3354,7 +3354,7 @@ def _setup_feishu():
         # Try to probe the bot with manual credentials
         bot_name = None
         try:
-            from gateway.platforms.feishu import probe_bot
+            from hermes_agent.gateway.platforms.feishu import probe_bot
             bot_info = probe_bot(app_id, app_secret, domain)
             if bot_info:
                 bot_name = bot_info.get("bot_name")
@@ -3485,7 +3485,7 @@ def _setup_qqbot():
     if method_idx == 0:
         # ── QR scan-to-configure ──
         try:
-            from gateway.platforms.qqbot import qr_register
+            from hermes_agent.gateway.platforms.qqbot import qr_register
             credentials = qr_register()
         except KeyboardInterrupt:
             print()

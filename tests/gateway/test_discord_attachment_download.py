@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 
 def _ensure_discord_mock():
@@ -58,7 +58,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from gateway.platforms.discord import DiscordAdapter  # noqa: E402
+from hermes_agent.gateway.platforms.discord import DiscordAdapter  # noqa: E402
 
 
 # Minimal valid image / audio / PDF bytes so the cache_*_from_bytes

@@ -43,8 +43,8 @@ def _ensure_slack_mock():
 
 _ensure_slack_mock()
 
-from gateway.platforms.slack import SlackAdapter
-from gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.slack import SlackAdapter
+from hermes_agent.gateway.config import Platform, PlatformConfig
 
 
 def _make_adapter():

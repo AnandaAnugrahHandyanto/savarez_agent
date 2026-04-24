@@ -126,7 +126,7 @@ py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajector
 hermes_cli = ["web_dist/**/*"]
 
 [tool.setuptools.packages.find]
-include = ["hermes_agent", "hermes_agent.*", "agent", "agent.*", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "acp_adapter", "plugins", "plugins.*"]
+include = ["hermes_agent", "hermes_agent.*", "agent", "agent.*", "tools", "tools.*", "hermes_cli", "tui_gateway", "tui_gateway.*", "acp_adapter", "plugins", "plugins.*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

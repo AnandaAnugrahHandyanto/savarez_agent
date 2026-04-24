@@ -442,7 +442,7 @@ def _save_cfg(cfg: dict):
 
 def _set_session_context(session_key: str) -> list:
     try:
-        from gateway.session_context import set_session_vars
+        from hermes_agent.gateway.session_context import set_session_vars
 
         return set_session_vars(session_key=session_key)
     except Exception:
@@ -453,7 +453,7 @@ def _clear_session_context(tokens: list) -> None:
     if not tokens:
         return
     try:
-        from gateway.session_context import clear_session_vars
+        from hermes_agent.gateway.session_context import clear_session_vars
 
         clear_session_vars(tokens)
     except Exception:

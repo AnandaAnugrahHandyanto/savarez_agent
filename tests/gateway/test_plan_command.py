@@ -7,13 +7,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agent.skill_commands import scan_skill_commands
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
-from gateway.session import SessionEntry, SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import MessageEvent
+from hermes_agent.gateway.session import SessionEntry, SessionSource
 
 
 def _make_runner():
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
@@ -91,7 +91,7 @@ Save plans under the active workspace's .hermes/plans directory.
 class TestGatewayPlanCommand:
     @pytest.mark.asyncio
     async def test_plan_command_loads_skill_and_runs_agent(self, monkeypatch, tmp_path):
-        import gateway.run as gateway_run
+        import hermes_agent.gateway.run as gateway_run
 
         runner = _make_runner()
         event = _make_event("/plan Add OAuth login")

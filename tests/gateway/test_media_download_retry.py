@@ -44,31 +44,31 @@ class TestCacheImageFromBytes:
 
     def test_caches_valid_jpeg(self, tmp_path, monkeypatch):
         monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
-        from gateway.platforms.base import cache_image_from_bytes
+        from hermes_agent.gateway.platforms.base import cache_image_from_bytes
         path = cache_image_from_bytes(b"\xff\xd8\xff fake jpeg data", ".jpg")
         assert path.endswith(".jpg")
 
     def test_caches_valid_png(self, tmp_path, monkeypatch):
         monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
-        from gateway.platforms.base import cache_image_from_bytes
+        from hermes_agent.gateway.platforms.base import cache_image_from_bytes
         path = cache_image_from_bytes(b"\x89PNG\r\n\x1a\n fake png data", ".png")
         assert path.endswith(".png")
 
     def test_rejects_html_content(self, tmp_path, monkeypatch):
         monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
-        from gateway.platforms.base import cache_image_from_bytes
+        from hermes_agent.gateway.platforms.base import cache_image_from_bytes
         with pytest.raises(ValueError, match="non-image data"):
             cache_image_from_bytes(b"<!DOCTYPE html><html><title>Slack</title></html>", ".png")
 
     def test_rejects_empty_data(self, tmp_path, monkeypatch):
         monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
-        from gateway.platforms.base import cache_image_from_bytes
+        from hermes_agent.gateway.platforms.base import cache_image_from_bytes
         with pytest.raises(ValueError, match="non-image data"):
             cache_image_from_bytes(b"", ".jpg")
 
     def test_rejects_plain_text(self, tmp_path, monkeypatch):
         monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
-        from gateway.platforms.base import cache_image_from_bytes
+        from hermes_agent.gateway.platforms.base import cache_image_from_bytes
         with pytest.raises(ValueError, match="non-image data"):
             cache_image_from_bytes(b"just some text, not an image", ".jpg")
 
@@ -96,7 +96,7 @@ class TestCacheImageFromUrl:
 
         async def run():
             with patch("httpx.AsyncClient", return_value=mock_client):
-                from gateway.platforms.base import cache_image_from_url
+                from hermes_agent.gateway.platforms.base import cache_image_from_url
                 return await cache_image_from_url(
                     "http://example.com/img.jpg", ext=".jpg"
                 )
@@ -125,7 +125,7 @@ class TestCacheImageFromUrl:
         async def run():
             with patch("httpx.AsyncClient", return_value=mock_client), \
                  patch("asyncio.sleep", mock_sleep):
-                from gateway.platforms.base import cache_image_from_url
+                from hermes_agent.gateway.platforms.base import cache_image_from_url
                 return await cache_image_from_url(
                     "http://example.com/img.jpg", ext=".jpg", retries=2
                 )
@@ -153,7 +153,7 @@ class TestCacheImageFromUrl:
         async def run():
             with patch("httpx.AsyncClient", return_value=mock_client), \
                  patch("asyncio.sleep", new_callable=AsyncMock):
-                from gateway.platforms.base import cache_image_from_url
+                from hermes_agent.gateway.platforms.base import cache_image_from_url
                 return await cache_image_from_url(
                     "http://example.com/img.jpg", ext=".jpg", retries=2
                 )
@@ -174,7 +174,7 @@ class TestCacheImageFromUrl:
         async def run():
             with patch("httpx.AsyncClient", return_value=mock_client), \
                  patch("asyncio.sleep", new_callable=AsyncMock):
-                from gateway.platforms.base import cache_image_from_url
+                from hermes_agent.gateway.platforms.base import cache_image_from_url
                 await cache_image_from_url(
                     "http://example.com/img.jpg", ext=".jpg", retries=2
                 )
@@ -198,7 +198,7 @@ class TestCacheImageFromUrl:
         async def run():
             with patch("httpx.AsyncClient", return_value=mock_client), \
                  patch("asyncio.sleep", mock_sleep):
-                from gateway.platforms.base import cache_image_from_url
+                from hermes_agent.gateway.platforms.base import cache_image_from_url
                 await cache_image_from_url(
                     "http://example.com/img.jpg", ext=".jpg", retries=2
                 )
@@ -234,7 +234,7 @@ class TestCacheAudioFromUrl:
 
         async def run():
             with patch("httpx.AsyncClient", return_value=mock_client):
-                from gateway.platforms.base import cache_audio_from_url
+                from hermes_agent.gateway.platforms.base import cache_audio_from_url
                 return await cache_audio_from_url(
                     "http://example.com/voice.ogg", ext=".ogg"
                 )
@@ -263,7 +263,7 @@ class TestCacheAudioFromUrl:
         async def run():
             with patch("httpx.AsyncClient", return_value=mock_client), \
                  patch("asyncio.sleep", mock_sleep):
-                from gateway.platforms.base import cache_audio_from_url
+                from hermes_agent.gateway.platforms.base import cache_audio_from_url
                 return await cache_audio_from_url(
                     "http://example.com/voice.ogg", ext=".ogg", retries=2
                 )
@@ -291,7 +291,7 @@ class TestCacheAudioFromUrl:
         async def run():
             with patch("httpx.AsyncClient", return_value=mock_client), \
                  patch("asyncio.sleep", new_callable=AsyncMock):
-                from gateway.platforms.base import cache_audio_from_url
+                from hermes_agent.gateway.platforms.base import cache_audio_from_url
                 return await cache_audio_from_url(
                     "http://example.com/voice.ogg", ext=".ogg", retries=2
                 )
@@ -318,7 +318,7 @@ class TestCacheAudioFromUrl:
         async def run():
             with patch("httpx.AsyncClient", return_value=mock_client), \
                  patch("asyncio.sleep", new_callable=AsyncMock):
-                from gateway.platforms.base import cache_audio_from_url
+                from hermes_agent.gateway.platforms.base import cache_audio_from_url
                 return await cache_audio_from_url(
                     "http://example.com/voice.ogg", ext=".ogg", retries=2
                 )
@@ -339,7 +339,7 @@ class TestCacheAudioFromUrl:
         async def run():
             with patch("httpx.AsyncClient", return_value=mock_client), \
                  patch("asyncio.sleep", new_callable=AsyncMock):
-                from gateway.platforms.base import cache_audio_from_url
+                from hermes_agent.gateway.platforms.base import cache_audio_from_url
                 await cache_audio_from_url(
                     "http://example.com/voice.ogg", ext=".ogg", retries=2
                 )
@@ -363,7 +363,7 @@ class TestCacheAudioFromUrl:
         async def run():
             with patch("httpx.AsyncClient", return_value=mock_client), \
                  patch("asyncio.sleep", mock_sleep):
-                from gateway.platforms.base import cache_audio_from_url
+                from hermes_agent.gateway.platforms.base import cache_audio_from_url
                 await cache_audio_from_url(
                     "http://example.com/voice.ogg", ext=".ogg", retries=2
                 )
@@ -428,7 +428,7 @@ class TestSSRFRedirectGuard:
         async def run():
             with patch("tools.url_safety.is_safe_url", side_effect=fake_safe), \
                  patch("httpx.AsyncClient", side_effect=factory):
-                from gateway.platforms.base import cache_image_from_url
+                from hermes_agent.gateway.platforms.base import cache_image_from_url
                 await cache_image_from_url(
                     "https://public.example.com/image.png", ext=".png"
                 )
@@ -457,7 +457,7 @@ class TestSSRFRedirectGuard:
         async def run():
             with patch("tools.url_safety.is_safe_url", side_effect=fake_safe), \
                  patch("httpx.AsyncClient", side_effect=factory):
-                from gateway.platforms.base import cache_audio_from_url
+                from hermes_agent.gateway.platforms.base import cache_audio_from_url
                 await cache_audio_from_url(
                     "https://public.example.com/voice.ogg", ext=".ogg"
                 )
@@ -495,7 +495,7 @@ class TestSSRFRedirectGuard:
         async def run():
             with patch("tools.url_safety.is_safe_url", return_value=True), \
                  patch("httpx.AsyncClient", side_effect=factory):
-                from gateway.platforms.base import cache_image_from_url
+                from hermes_agent.gateway.platforms.base import cache_image_from_url
                 return await cache_image_from_url(
                     "https://public.example.com/image.png", ext=".jpg"
                 )
@@ -532,11 +532,11 @@ def _ensure_slack_mock():
 
 _ensure_slack_mock()
 
-import gateway.platforms.slack as _slack_mod  # noqa: E402
+import hermes_agent.gateway.platforms.slack as _slack_mod  # noqa: E402
 _slack_mod.SLACK_AVAILABLE = True
 
-from gateway.platforms.slack import SlackAdapter  # noqa: E402
-from gateway.config import Platform, PlatformConfig  # noqa: E402
+from hermes_agent.gateway.platforms.slack import SlackAdapter  # noqa: E402
+from hermes_agent.gateway.config import Platform, PlatformConfig  # noqa: E402
 
 
 def _make_slack_adapter():
@@ -771,7 +771,7 @@ class TestSlackDownloadSlackFileBytes:
 
 def _make_mm_adapter():
     """Build a minimal MattermostAdapter with mocked internals."""
-    from gateway.platforms.mattermost import MattermostAdapter
+    from hermes_agent.gateway.platforms.mattermost import MattermostAdapter
     config = PlatformConfig(
         enabled=True, token="mm-token-fake",
         extra={"url": "https://mm.example.com"},

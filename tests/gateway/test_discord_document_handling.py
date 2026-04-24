@@ -13,8 +13,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.platforms.base import MessageType
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.base import MessageType
 
 
 # ---------------------------------------------------------------------------
@@ -56,8 +56,8 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-import gateway.platforms.discord as discord_platform  # noqa: E402
-from gateway.platforms.discord import DiscordAdapter  # noqa: E402
+import hermes_agent.gateway.platforms.discord as discord_platform  # noqa: E402
+from hermes_agent.gateway.platforms.discord import DiscordAdapter  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

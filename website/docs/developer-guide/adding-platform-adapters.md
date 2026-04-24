@@ -43,8 +43,8 @@ class Platform(str, Enum):
 Create `gateway/platforms/newplat.py`:
 
 ```python
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import (
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import (
     BasePlatformAdapter, MessageEvent, MessageType, SendResult,
 )
 
@@ -234,7 +234,7 @@ For platforms with tight response deadlines (e.g., WeCom's 5-second limit), alwa
 If the adapter holds a persistent connection with a unique credential, add a scoped lock to prevent two profiles from using the same credential:
 
 ```python
-from gateway.status import acquire_scoped_lock, release_scoped_lock
+from hermes_agent.gateway.status import acquire_scoped_lock, release_scoped_lock
 
 async def connect(self):
     if not acquire_scoped_lock("newplat", self._token):

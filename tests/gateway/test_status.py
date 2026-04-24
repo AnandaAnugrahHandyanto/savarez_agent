@@ -4,7 +4,7 @@ import json
 import os
 from types import SimpleNamespace
 
-from gateway import status
+from hermes_agent.gateway import status
 
 
 class TestGatewayPidState:

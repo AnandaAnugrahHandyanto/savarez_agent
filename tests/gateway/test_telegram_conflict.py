@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 
 def _ensure_telegram_mock():
@@ -34,7 +34,7 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
-from gateway.platforms.telegram import TelegramAdapter  # noqa: E402
+from hermes_agent.gateway.platforms.telegram import TelegramAdapter  # noqa: E402
 
 
 @pytest.fixture(autouse=True)

@@ -21,10 +21,10 @@ sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
 sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
-import gateway.run as gateway_run
+import hermes_agent.gateway.run as gateway_run
 import run_agent
-from gateway.config import Platform
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.session import SessionSource
 
 
 # ---------------------------------------------------------------------------

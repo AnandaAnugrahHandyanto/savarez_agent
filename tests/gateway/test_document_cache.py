@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway.platforms.base import (
+from hermes_agent.gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
     cache_document_from_bytes,
     cleanup_document_cache,

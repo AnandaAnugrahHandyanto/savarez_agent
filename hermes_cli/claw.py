@@ -153,7 +153,7 @@ def _warn_if_gateway_running(auto_yes: bool) -> None:
     (e.g. Telegram 409 "terminated by other getUpdates request"). Warn the
     user and let them decide whether to continue.
     """
-    from gateway.status import get_running_pid, read_runtime_status
+    from hermes_agent.gateway.status import get_running_pid, read_runtime_status
 
     if not get_running_pid():
         return

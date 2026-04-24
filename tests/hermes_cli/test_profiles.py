@@ -845,7 +845,7 @@ class TestEdgeCases:
         tmp_path = profile_env
         default_home = tmp_path / ".hermes"
 
-        with patch("gateway.status.get_running_pid", return_value=99999) as mock_get_running_pid:
+        with patch("hermes_agent.gateway.status.get_running_pid", return_value=99999) as mock_get_running_pid:
             assert _check_gateway_running(default_home) is True
         mock_get_running_pid.assert_called_once_with(
             default_home / "gateway.pid",
@@ -858,7 +858,7 @@ class TestEdgeCases:
         tmp_path = profile_env
         default_home = tmp_path / ".hermes"
 
-        with patch("gateway.status.get_running_pid", return_value=None) as mock_get_running_pid:
+        with patch("hermes_agent.gateway.status.get_running_pid", return_value=None) as mock_get_running_pid:
             assert _check_gateway_running(default_home) is False
         mock_get_running_pid.assert_called_once_with(
             default_home / "gateway.pid",

@@ -31,8 +31,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.session import SessionEntry, SessionSource, SessionStore
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.session import SessionEntry, SessionSource, SessionStore
 from tests.gateway.restart_test_helpers import (
     make_restart_runner,
     make_restart_source,
@@ -448,7 +448,7 @@ async def test_drain_timeout_marks_resume_pending():
     session_store.mark_resume_pending = MagicMock(return_value=True)
     runner.session_store = session_store
 
-    with patch("gateway.status.remove_pid_file"), patch(
+    with patch("hermes_agent.gateway.status.remove_pid_file"), patch(
         "gateway.status.write_runtime_status"
     ):
         await runner.stop()
@@ -475,7 +475,7 @@ async def test_drain_timeout_uses_restart_reason_when_restarting():
     session_store.mark_resume_pending = MagicMock(return_value=True)
     runner.session_store = session_store
 
-    with patch("gateway.status.remove_pid_file"), patch(
+    with patch("hermes_agent.gateway.status.remove_pid_file"), patch(
         "gateway.status.write_runtime_status"
     ):
         await runner.stop(restart=True, detached_restart=False, service_restart=True)
@@ -507,7 +507,7 @@ async def test_clean_drain_does_not_mark_resume_pending():
     session_store.mark_resume_pending = MagicMock(return_value=True)
     runner.session_store = session_store
 
-    with patch("gateway.status.remove_pid_file"), patch(
+    with patch("hermes_agent.gateway.status.remove_pid_file"), patch(
         "gateway.status.write_runtime_status"
     ):
         await runner.stop()
@@ -549,7 +549,7 @@ async def test_drain_timeout_only_marks_still_running_sessions():
     session_store.mark_resume_pending = MagicMock(return_value=True)
     runner.session_store = session_store
 
-    with patch("gateway.status.remove_pid_file"), patch(
+    with patch("hermes_agent.gateway.status.remove_pid_file"), patch(
         "gateway.status.write_runtime_status"
     ):
         await runner.stop()
@@ -567,7 +567,7 @@ async def test_drain_timeout_skips_pending_sentinel_sessions():
     ``_interrupt_running_agents()``.  The resume_pending marking must
     mirror that: no agent started means no turn was interrupted.
     """
-    from gateway.run import _AGENT_PENDING_SENTINEL
+    from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL
 
     runner, adapter = make_restart_runner()
     adapter.disconnect = AsyncMock()
@@ -584,7 +584,7 @@ async def test_drain_timeout_skips_pending_sentinel_sessions():
     session_store.mark_resume_pending = MagicMock(return_value=True)
     runner.session_store = session_store
 
-    with patch("gateway.status.remove_pid_file"), patch(
+    with patch("hermes_agent.gateway.status.remove_pid_file"), patch(
         "gateway.status.write_runtime_status"
     ):
         await runner.stop()
@@ -635,7 +635,7 @@ class TestStuckLoopEscalation:
         fresh-session despite resume_pending being set."""
         import json
 
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         store = _make_store(tmp_path)
         source = _make_source()
@@ -667,7 +667,7 @@ class TestStuckLoopEscalation:
         future restart-interrupt starts with a fresh counter."""
         import json
 
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         store = _make_store(tmp_path)
         source = _make_source()

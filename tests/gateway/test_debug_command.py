@@ -4,9 +4,9 @@ from unittest.mock import patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.platforms.base import MessageEvent
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.platforms.base import MessageEvent
+from hermes_agent.gateway.session import SessionSource
 
 
 def _make_event(text="/debug", platform=Platform.TELEGRAM,
@@ -21,7 +21,7 @@ def _make_event(text="/debug", platform=Platform.TELEGRAM,
 
 
 def _make_runner():
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig()

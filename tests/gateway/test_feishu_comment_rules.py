@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from gateway.platforms.feishu_comment_rules import (
+from hermes_agent.gateway.platforms.feishu_comment_rules import (
     CommentsConfig,
     CommentDocumentRule,
     ResolvedCommentRule,
@@ -256,8 +256,8 @@ class TestLoadConfig(unittest.TestCase):
             json.dump(raw, f)
             path = Path(f.name)
         try:
-            with patch("gateway.platforms.feishu_comment_rules.RULES_FILE", path):
-                with patch("gateway.platforms.feishu_comment_rules._rules_cache", _MtimeCache(path)):
+            with patch("hermes_agent.gateway.platforms.feishu_comment_rules.RULES_FILE", path):
+                with patch("hermes_agent.gateway.platforms.feishu_comment_rules._rules_cache", _MtimeCache(path)):
                     cfg = load_config()
             self.assertTrue(cfg.enabled)
             self.assertEqual(cfg.policy, "allowlist")
@@ -269,7 +269,7 @@ class TestLoadConfig(unittest.TestCase):
             path.unlink()
 
     def test_load_missing_file_returns_defaults(self):
-        with patch("gateway.platforms.feishu_comment_rules._rules_cache", _MtimeCache(Path("/nonexistent"))):
+        with patch("hermes_agent.gateway.platforms.feishu_comment_rules._rules_cache", _MtimeCache(Path("/nonexistent"))):
             cfg = load_config()
         self.assertTrue(cfg.enabled)
         self.assertEqual(cfg.policy, "pairing")
@@ -283,7 +283,7 @@ class TestPairingStore(unittest.TestCase):
         self._pairing_file = Path(self._tmpdir) / "pairing.json"
         with open(self._pairing_file, "w") as f:
             json.dump({"approved": {}}, f)
-        self._patcher_file = patch("gateway.platforms.feishu_comment_rules.PAIRING_FILE", self._pairing_file)
+        self._patcher_file = patch("hermes_agent.gateway.platforms.feishu_comment_rules.PAIRING_FILE", self._pairing_file)
         self._patcher_cache = patch(
             "gateway.platforms.feishu_comment_rules._pairing_cache",
             _MtimeCache(self._pairing_file),

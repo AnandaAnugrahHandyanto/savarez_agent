@@ -1688,7 +1688,7 @@ def terminal_tool(
                 # watch-pattern and completion notifications can be
                 # routed back to the correct chat/thread.
                 if background and (notify_on_complete or watch_patterns):
-                    from gateway.session_context import get_session_env as _gse
+                    from hermes_agent.gateway.session_context import get_session_env as _gse
                     _gw_platform = _gse("HERMES_SESSION_PLATFORM", "")
                     if _gw_platform:
                         _gw_chat_id = _gse("HERMES_SESSION_CHAT_ID", "")
