@@ -190,6 +190,26 @@ class TestSendOrEditMediaStripping:
         assert "Here is your image" in sent_text
 
     @pytest.mark.asyncio
+    async def test_first_send_preserves_initial_reply_to(self):
+        """Initial streamed send should reply to the originating user message."""
+        adapter = MagicMock()
+        send_result = SimpleNamespace(success=True, message_id="msg_1")
+        adapter.send = AsyncMock(return_value=send_result)
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            metadata={"thread_id": "omt_thread_1"},
+            reply_to="om_parent_1",
+        )
+        await consumer._send_or_edit("streaming hello")
+
+        adapter.send.assert_called_once()
+        assert adapter.send.call_args.kwargs["reply_to"] == "om_parent_1"
+        assert adapter.send.call_args.kwargs["metadata"] == {"thread_id": "omt_thread_1"}
+
+    @pytest.mark.asyncio
     async def test_edit_strips_media(self):
         """Edit call removes MEDIA: tags from visible text."""
         adapter = MagicMock()

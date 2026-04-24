@@ -127,6 +127,32 @@ class TestFeishuExecApproval:
         assert action_names == [
             "approve_once", "approve_session", "approve_always", "deny"
         ]
+        assert kwargs["reply_to"] is None
+
+    @pytest.mark.asyncio
+    async def test_forwards_reply_target(self):
+        adapter = _make_adapter()
+
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_reply"),
+        )
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+            return_value=mock_response,
+        ) as mock_send:
+            result = await adapter.send_exec_approval(
+                chat_id="oc_12345",
+                command="rm -rf /important",
+                session_key="agent:main:feishu:group:oc_12345",
+                reply_to="om_parent_1",
+                metadata={"thread_id": "omt_thread_1"},
+            )
+
+        assert result.success is True
+        kwargs = mock_send.call_args.kwargs
+        assert kwargs["reply_to"] == "om_parent_1"
+        assert kwargs["metadata"] == {"thread_id": "omt_thread_1"}
 
     @pytest.mark.asyncio
     async def test_stores_approval_state(self):
