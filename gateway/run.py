@@ -84,6 +84,18 @@ def _ensure_ssl_certs() -> None:
 
 _ensure_ssl_certs()
 
+
+def _running_under_service_manager() -> bool:
+    """Return True when the gateway is running under systemd or launchd."""
+    # systemd injects INVOCATION_ID for service-managed processes.
+    if os.environ.get("INVOCATION_ID"):
+        return True
+    # launchd-managed GUI agents expose XPC_SERVICE_NAME. Manual terminal runs
+    # do not, so this lets /restart choose the service-managed path on macOS.
+    if os.environ.get("XPC_SERVICE_NAME"):
+        return True
+    return False
+
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -1174,6 +1186,7 @@ class GatewayRunner:
                 runtime["command"],
                 tuple(runtime["args"]),
             ),
+            "route_reason": "primary-runtime",
         }
 
         service_tier = getattr(self, "_service_tier", None)
@@ -1185,6 +1198,9 @@ class GatewayRunner:
             overrides = resolve_fast_mode_overrides(route["model"])
         except Exception:
             overrides = None
+            route["route_reason"] = "fast-mode-resolution-failed"
+        else:
+            route["route_reason"] = "fast-mode-requested" if overrides else "fast-mode-unsupported"
         route["request_overrides"] = overrides
         return route
 
@@ -5369,8 +5385,7 @@ class GatewayRunner:
         # restarts us.  The detached subprocess approach (setsid + bash)
         # doesn't work under systemd because KillMode=mixed kills all
         # processes in the cgroup, including the detached helper.
-        _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
-        if _under_service:
+        if _running_under_service_manager():
             self.request_restart(detached=False, via_service=True)
         else:
             self.request_restart(detached=True, via_service=False)
@@ -7504,8 +7519,9 @@ class GatewayRunner:
 
         days = 30
         source = None
+        markdown_output = None
+        title = None
 
-        # Parse simple args: /insights 7  or  /insights --days 7
         if args:
             parts = args.split()
             i = 0
@@ -7518,6 +7534,12 @@ class GatewayRunner:
                     i += 2
                 elif parts[i] == "--source" and i + 1 < len(parts):
                     source = parts[i + 1]
+                    i += 2
+                elif parts[i] == "--markdown-output" and i + 1 < len(parts):
+                    markdown_output = parts[i + 1]
+                    i += 2
+                elif parts[i] == "--title" and i + 1 < len(parts):
+                    title = parts[i + 1]
                     i += 2
                 elif parts[i].isdigit():
                     days = int(parts[i])
@@ -7535,7 +7557,11 @@ class GatewayRunner:
                 db = SessionDB()
                 engine = InsightsEngine(db)
                 report = engine.generate(days=days, source=source)
-                result = engine.format_gateway(report)
+                if markdown_output:
+                    output_path = engine.write_markdown_report(report, markdown_output, title=title)
+                    result = f"Saved markdown report to {output_path}\n\n{engine.format_gateway(report)}"
+                else:
+                    result = engine.format_gateway(report)
                 db.close()
                 return result
 

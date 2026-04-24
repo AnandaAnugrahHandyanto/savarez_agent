@@ -81,7 +81,15 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
+import gateway.platforms.discord as discord_platform  # noqa: E402
 from gateway.platforms.discord import _build_allowed_mentions  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _refresh_discord_module():
+    _ensure_discord_mock()
+    discord_platform.DISCORD_AVAILABLE = True
+    discord_platform.discord = sys.modules["discord"]
 
 
 # The four DISCORD_ALLOW_MENTION_* env vars that _build_allowed_mentions reads.

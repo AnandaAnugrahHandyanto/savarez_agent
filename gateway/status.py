@@ -259,6 +259,10 @@ def _cleanup_invalid_pid_path(pid_path: Path, *, cleanup_stale: bool) -> None:
     if not cleanup_stale:
         return
     try:
+        # Stale/invalid PID records must be removed regardless of current
+        # process ownership. remove_pid_file() intentionally refuses to
+        # unlink another process's live record, which is correct for normal
+        # shutdown but wrong for stale-file cleanup during startup checks.
         pid_path.unlink(missing_ok=True)
     except Exception:
         pass
@@ -306,6 +310,16 @@ def _release_file_lock(handle) -> None:
         pass
 
 
+def _is_gateway_lock_handle_for_path(path: Path) -> bool:
+    """Return True when the process-local lock handle owns this lock path."""
+    if _gateway_lock_handle is None:
+        return False
+    try:
+        return Path(_gateway_lock_handle.name) == path
+    except (AttributeError, TypeError):
+        return False
+
+
 def acquire_gateway_runtime_lock() -> bool:
     """Claim the cross-process runtime lock for the gateway.
 
@@ -313,10 +327,12 @@ def acquire_gateway_runtime_lock() -> bool:
     process dies abruptly, the OS releases the lock automatically.
     """
     global _gateway_lock_handle
-    if _gateway_lock_handle is not None:
-        return True
-
     path = _get_gateway_lock_path()
+    if _gateway_lock_handle is not None:
+        if _is_gateway_lock_handle_for_path(path):
+            return True
+        release_gateway_runtime_lock()
+
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = open(path, "a+", encoding="utf-8")
     if not _try_acquire_file_lock(handle):
@@ -345,7 +361,7 @@ def is_gateway_runtime_lock_active(lock_path: Optional[Path] = None) -> bool:
     """Return True when some process currently owns the gateway runtime lock."""
     global _gateway_lock_handle
     resolved_lock_path = lock_path or _get_gateway_lock_path()
-    if _gateway_lock_handle is not None and resolved_lock_path == _get_gateway_lock_path():
+    if _is_gateway_lock_handle_for_path(resolved_lock_path):
         return True
 
     if not resolved_lock_path.exists():

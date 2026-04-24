@@ -70,6 +70,13 @@ import gateway.platforms.discord as discord_platform  # noqa: E402
 from gateway.platforms.discord import DiscordAdapter  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _refresh_discord_module():
+    _ensure_discord_mock()
+    discord_platform.DISCORD_AVAILABLE = True
+    discord_platform.discord = sys.modules["discord"]
+
+
 class FakeTree:
     def __init__(self):
         self.sync = AsyncMock(return_value=[])
