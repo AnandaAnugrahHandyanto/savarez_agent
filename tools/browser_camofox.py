@@ -32,7 +32,7 @@ from typing import Any, Dict, Optional
 
 import requests
 
-from hermes_cli.config import load_config
+import hermes_cli.config as hermes_config
 from tools.browser_camofox_state import get_camofox_identity
 from tools.registry import tool_error
 
@@ -108,7 +108,7 @@ def _managed_persistence_enabled() -> bool:
     Controlled by ``browser.camofox.managed_persistence`` in config.yaml.
     """
     try:
-        camofox_cfg = load_config().get("browser", {}).get("camofox", {})
+        camofox_cfg = hermes_config.load_config().get("browser", {}).get("camofox", {})
     except Exception as exc:
         logger.warning("managed_persistence check failed, defaulting to disabled: %s", exc)
         return False
@@ -285,7 +285,15 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
 
         return json.dumps(result)
     except requests.HTTPError as e:
-        return tool_error(f"Navigation failed: {e}", success=False)
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        if status is not None and status < 500:
+            return tool_error(f"Navigation failed: {e}", success=False)
+        return json.dumps({
+            "success": False,
+            "error": f"Cannot connect to Camofox at {get_camofox_url()}. "
+                     "Is the server running? Start with: npm start (in camofox-browser dir) "
+                     "or: docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser",
+        })
     except requests.ConnectionError:
         return json.dumps({
             "success": False,
@@ -543,7 +551,7 @@ def camofox_vision(question: str, annotate: bool = False,
         )
 
         try:
-            _cfg = load_config()
+            _cfg = hermes_config.load_config()
             _vision_cfg = _cfg.get("auxiliary", {}).get("vision", {})
             _vision_timeout = float(_vision_cfg.get("timeout", 120))
             _vision_temperature = float(_vision_cfg.get("temperature", 0.1))
@@ -598,6 +606,4 @@ def camofox_console(clear: bool = False, task_id: Optional[str] = None) -> str:
         "note": "Console log capture is not available with the Camofox backend. "
                 "Use browser_snapshot or browser_vision to inspect page state.",
     })
-
-
 

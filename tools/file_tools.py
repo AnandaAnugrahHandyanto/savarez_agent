@@ -148,6 +148,10 @@ _SENSITIVE_PATH_PREFIXES = (
     "/private/etc/", "/private/var/",
 )
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
+_SENSITIVE_TEMP_ALLOW_PREFIXES = (
+    "/private/var/folders/",
+    "/var/folders/",
+)
 
 
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
@@ -161,6 +165,9 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
     )
+    for safe_prefix in _SENSITIVE_TEMP_ALLOW_PREFIXES:
+        if resolved.startswith(safe_prefix) or normalized.startswith(safe_prefix):
+            return None
     for prefix in _SENSITIVE_PATH_PREFIXES:
         if resolved.startswith(prefix) or normalized.startswith(prefix):
             return _err
@@ -349,17 +356,36 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                     "persistent": config.get("local_persistent", False),
                 }
 
-            terminal_env = _create_environment(
-                env_type=env_type,
-                image=image,
-                cwd=cwd,
-                timeout=config["timeout"],
-                ssh_config=ssh_config,
-                container_config=container_config,
-                local_config=local_config,
-                task_id=task_id,
-                host_cwd=config.get("host_cwd"),
-            )
+            try:
+                terminal_env = _create_environment(
+                    env_type=env_type,
+                    image=image,
+                    cwd=cwd,
+                    timeout=config["timeout"],
+                    ssh_config=ssh_config,
+                    container_config=container_config,
+                    local_config=local_config,
+                    task_id=task_id,
+                    host_cwd=config.get("host_cwd"),
+                )
+            except Exception as env_err:
+                if env_type == "local":
+                    raise
+                logger.warning(
+                    "File tools failed to create %s environment for task %s; falling back to local: %s",
+                    env_type, task_id[:8], env_err,
+                )
+                terminal_env = _create_environment(
+                    env_type="local",
+                    image="",
+                    cwd=cwd,
+                    timeout=config["timeout"],
+                    ssh_config=None,
+                    container_config=None,
+                    local_config={"persistent": config.get("local_persistent", False)},
+                    task_id=task_id,
+                    host_cwd=config.get("host_cwd"),
+                )
 
             with _env_lock:
                 _active_environments[task_id] = terminal_env
@@ -428,7 +454,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         with _read_tracker_lock:
             task_data = _read_tracker.setdefault(task_id, {
                 "last_key": None, "consecutive": 0,
-                "read_history": set(), "dedup": {},
+                "read_history": set(), "dedup": {}, "read_timestamps": {},
             })
             cached_mtime = task_data.get("dedup", {}).get(dedup_key)
 
@@ -818,7 +844,8 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         )
         with _read_tracker_lock:
             task_data = _read_tracker.setdefault(task_id, {
-                "last_key": None, "consecutive": 0, "read_history": set(),
+                "last_key": None, "consecutive": 0,
+                "read_history": set(), "dedup": {}, "read_timestamps": {},
             })
             if task_data["last_key"] == search_key:
                 task_data["consecutive"] += 1

@@ -41,6 +41,7 @@ import threading
 import atexit
 import shutil
 import subprocess
+import hashlib
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
@@ -765,6 +766,13 @@ _creation_locks_lock = threading.Lock()  # Protects _creation_locks dict itself
 _cleanup_thread = None
 _cleanup_running = False
 
+# Repeated foreground-command loop guard. Tracks consecutive identical
+# successful commands that produce identical output per task_id.
+_terminal_repeat_lock = threading.Lock()
+_terminal_repeat_tracker: Dict[str, Dict[str, Any]] = {}
+_TERMINAL_REPEAT_WARN_THRESHOLD = 3
+_TERMINAL_REPEAT_BLOCK_THRESHOLD = 4
+
 # Per-task environment overrides registry.
 # Allows environments (e.g., TerminalBench2Env) to specify a custom Docker/Modal
 # image for a specific task_id BEFORE the agent loop starts. When the terminal or
@@ -774,6 +782,86 @@ _cleanup_running = False
 # This is never exposed to the model -- only infrastructure code calls it.
 # Thread-safe because each task_id is unique per rollout.
 _task_env_overrides: Dict[str, Dict[str, Any]] = {}
+
+
+def _terminal_repeat_key(command: str, workdir: Optional[str]) -> tuple[str, str]:
+    """Build a stable key for repeated-command detection."""
+    return command, (workdir or "")
+
+
+def _terminal_result_fingerprint(exit_code: int, output: str, error: Optional[str]) -> tuple[int, int, int, str]:
+    """Compact fingerprint for command result equality checks."""
+    out = output or ""
+    err = error or ""
+    digest = hashlib.sha256()
+    digest.update(out.encode("utf-8", errors="replace"))
+    digest.update(b"\0")
+    digest.update(err.encode("utf-8", errors="replace"))
+    return exit_code, len(out), len(err), digest.hexdigest()
+
+
+def _check_repeated_foreground_block(task_id: str, command: str, workdir: Optional[str]) -> int:
+    """Return consecutive repeat count if command should be blocked pre-exec."""
+    key = _terminal_repeat_key(command, workdir)
+    with _terminal_repeat_lock:
+        state = _terminal_repeat_tracker.get(task_id)
+        if not state:
+            return 0
+        if state.get("last_key") == key and state.get("consecutive", 0) >= _TERMINAL_REPEAT_BLOCK_THRESHOLD:
+            return int(state["consecutive"])
+    return 0
+
+
+def _record_foreground_repeat_result(
+    task_id: str,
+    command: str,
+    workdir: Optional[str],
+    *,
+    exit_code: int,
+    output: str,
+    error: Optional[str],
+) -> tuple[int, str | None]:
+    """Track repeated foreground results and return (count, warning_or_error)."""
+    key = _terminal_repeat_key(command, workdir)
+
+    # Only track successful commands. Failed commands should remain retryable.
+    if error is not None or exit_code != 0:
+        with _terminal_repeat_lock:
+            _terminal_repeat_tracker[task_id] = {
+                "last_key": None,
+                "last_result": None,
+                "consecutive": 0,
+            }
+        return 0, None
+
+    fp = _terminal_result_fingerprint(exit_code, output, error)
+    with _terminal_repeat_lock:
+        state = _terminal_repeat_tracker.setdefault(task_id, {
+            "last_key": None,
+            "last_result": None,
+            "consecutive": 0,
+        })
+
+        if state.get("last_key") == key and state.get("last_result") == fp:
+            state["consecutive"] = int(state.get("consecutive", 0)) + 1
+        else:
+            state["last_key"] = key
+            state["last_result"] = fp
+            state["consecutive"] = 1
+
+        count = int(state["consecutive"])
+
+    if count >= _TERMINAL_REPEAT_BLOCK_THRESHOLD:
+        return count, (
+            "BLOCKED: You have run the same foreground command repeatedly with identical successful output. "
+            "The result is not changing. Stop retrying and proceed with a different step."
+        )
+    if count >= _TERMINAL_REPEAT_WARN_THRESHOLD:
+        return count, (
+            f"Repeated command warning: this same foreground command has produced identical successful output "
+            f"{count} times in a row. If you expected a file change, verify your replacement pattern first."
+        )
+    return count, None
 
 
 def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
@@ -1737,6 +1825,22 @@ def terminal_tool(
                 }, ensure_ascii=False)
         else:
             # Run foreground command with retry logic
+            pre_block_count = _check_repeated_foreground_block(
+                effective_task_id,
+                command,
+                workdir,
+            )
+            if pre_block_count:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": (
+                        "BLOCKED: You have run the same foreground command repeatedly with identical successful output. "
+                        f"Already repeated {pre_block_count} times. Stop retrying and proceed with a different step."
+                    ),
+                    "status": "blocked",
+                }, ensure_ascii=False)
+
             max_retries = 3
             retry_count = 0
             result = None
@@ -1839,6 +1943,24 @@ def terminal_tool(
                 result_dict["approval"] = approval_note
             if exit_note:
                 result_dict["exit_code_meaning"] = exit_note
+
+            repeat_count, repeat_msg = _record_foreground_repeat_result(
+                effective_task_id,
+                command,
+                workdir,
+                exit_code=returncode,
+                output=output,
+                error=result_dict.get("error"),
+            )
+            if repeat_count >= _TERMINAL_REPEAT_BLOCK_THRESHOLD and repeat_msg:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": repeat_msg,
+                    "status": "blocked",
+                }, ensure_ascii=False)
+            if repeat_msg:
+                result_dict["_warning"] = repeat_msg
 
             return json.dumps(result_dict, ensure_ascii=False)
 

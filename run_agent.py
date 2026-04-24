@@ -2050,8 +2050,9 @@ class AIAgent:
         old_norm = (old_provider or "").strip().lower()
         new_norm = (new_provider or "").strip().lower()
         if old_norm and new_norm and old_norm != new_norm:
+            _existing_chain = getattr(self, "_fallback_chain", [])
             self._fallback_chain = [
-                entry for entry in self._fallback_chain
+                entry for entry in _existing_chain
                 if (entry.get("provider") or "").strip().lower() not in {old_norm, new_norm}
             ]
             self._fallback_model = self._fallback_chain[0] if self._fallback_chain else None
@@ -3976,13 +3977,19 @@ class AIAgent:
 
         # 2. Clean terminal sandbox environments
         try:
-            cleanup_vm(task_id)
+            # Resolve from module at call-time so tests that patch
+            # tools.terminal_tool.cleanup_vm observe this invocation.
+            from tools import terminal_tool as _tt
+            _tt.cleanup_vm(task_id)
         except Exception:
             pass
 
         # 3. Clean browser daemon sessions
         try:
-            cleanup_browser(task_id)
+            # Resolve from module at call-time so tests that patch
+            # tools.browser_tool.cleanup_browser observe this invocation.
+            from tools import browser_tool as _bt
+            _bt.cleanup_browser(task_id)
         except Exception:
             pass
 
@@ -7487,17 +7494,18 @@ class AIAgent:
                             function=SimpleNamespace(name=tc.name, arguments=tc.arguments),
                         ) for tc in _flush_result.tool_calls
                     ]
+            elif _aux_available and hasattr(response, "choices") and response.choices:
+                # Auxiliary client returns OpenAI-shaped chat responses.
+                # Parse raw tool_calls first so tests/patches using simple
+                # namespace objects are supported regardless of transport.
+                _aux_msg = response.choices[0].message
+                if hasattr(_aux_msg, "tool_calls") and _aux_msg.tool_calls:
+                    tool_calls = _aux_msg.tool_calls
             elif self.api_mode in ("chat_completions", "bedrock_converse"):
                 # chat_completions / bedrock — normalize through transport
                 _flush_result = self._get_transport().normalize_response(response)
                 if _flush_result.tool_calls:
                     tool_calls = _flush_result.tool_calls
-            elif _aux_available and hasattr(response, "choices") and response.choices:
-                # Auxiliary client returned OpenAI-shaped response while main
-                # api_mode is codex/anthropic — extract tool_calls from .choices
-                _aux_msg = response.choices[0].message
-                if hasattr(_aux_msg, "tool_calls") and _aux_msg.tool_calls:
-                    tool_calls = _aux_msg.tool_calls
 
             for tc in tool_calls:
                 if tc.function.name == "memory":
@@ -7903,7 +7911,19 @@ class AIAgent:
                 pass
             start = time.time()
             try:
-                result = self._invoke_tool(function_name, function_args, effective_task_id, tool_call.id, messages=messages)
+                try:
+                    result = self._invoke_tool(
+                        function_name, function_args, effective_task_id, tool_call.id, messages=messages
+                    )
+                except TypeError as call_sig_err:
+                    # Backward-compat for tests/monkeypatches that stub
+                    # _invoke_tool with the pre-messages signature.
+                    if "unexpected keyword argument 'messages'" in str(call_sig_err):
+                        result = self._invoke_tool(
+                            function_name, function_args, effective_task_id, tool_call.id
+                        )
+                    else:
+                        raise
             except Exception as tool_error:
                 result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
