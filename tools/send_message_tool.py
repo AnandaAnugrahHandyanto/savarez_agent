@@ -524,6 +524,10 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if platform == Platform.WEIXIN:
         return await _send_weixin(pconfig, chat_id, message, media_files=media_files)
 
+    # --- QQBot: one-shot adapter send for text + media ---
+    if platform == Platform.QQBOT:
+        return await _send_qqbot(pconfig, chat_id, message, media_files=media_files)
+
     # --- Discord: special handling for media attachments ---
     if platform == Platform.DISCORD:
         last_result = None
@@ -610,7 +614,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, qqbot, yuanbao and feishu; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -618,7 +622,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, qqbot, yuanbao and feishu"
         )
 
     last_result = None
@@ -647,8 +651,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_wecom(pconfig.extra, chat_id, chunk)
         elif platform == Platform.BLUEBUBBLES:
             result = await _send_bluebubbles(pconfig.extra, chat_id, chunk)
-        elif platform == Platform.QQBOT:
-            result = await _send_qqbot(pconfig, chat_id, chunk)
         elif platform == Platform.YUANBAO:
             result = await _send_yuanbao(chat_id, chunk)
         else:
@@ -1666,74 +1668,112 @@ def _check_send_message():
         return False
 
 
-async def _send_qqbot(pconfig, chat_id, message):
-    """Send via QQBot using the REST API directly (no WebSocket needed).
+async def _send_qqbot(pconfig, chat_id, message, media_files=None):
+    """Send a message (and optional media) to a QQ Bot chat.
 
-    Uses the QQ Bot Open Platform REST endpoints to get an access token
-    and post a message. Supports guild channels, C2C (private) chats,
-    and group chats by trying the appropriate endpoints.
+    Constructs a one-shot QQAdapter, injects an HTTP client, and calls the
+    adapter's send pipeline without opening a WebSocket connection.  Message
+    sending only requires a valid access token — no persistent connection needed.
+
+    Chat type (c2c / group / channel) is resolved from the channel directory,
+    which is built from sessions.json on gateway startup.  Defaults to c2c when
+    the chat_id has not been seen before.
     """
     try:
         import httpx
     except ImportError:
         return _error("QQBot direct send requires httpx. Run: pip install httpx")
 
-    extra = pconfig.extra or {}
-    appid = extra.get("app_id") or os.getenv("QQ_APP_ID", "")
-    secret = (pconfig.token or extra.get("client_secret")
-              or os.getenv("QQ_CLIENT_SECRET", ""))
-    if not appid or not secret:
-        return _error("QQBot: QQ_APP_ID / QQ_CLIENT_SECRET not configured.")
+    try:
+        from gateway.platforms.qqbot import QQAdapter, check_qq_requirements
+        if not check_qq_requirements():
+            return _error("QQBot requirements not met (need aiohttp + httpx).")
+    except ImportError:
+        return _error("QQBot adapter not available.")
+
+    # Resolve chat type from channel directory
+    try:
+        from gateway.channel_directory import lookup_channel_type
+        chat_type = lookup_channel_type("qqbot", chat_id) or "dm"
+    except Exception:
+        chat_type = "dm"
+
+    media_files = media_files or []
 
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            # Step 1: Get access token
-            token_resp = await client.post(
-                "https://bots.qq.com/app/getAppAccessToken",
-                json={"appId": str(appid), "clientSecret": str(secret)},
+        adapter = QQAdapter(pconfig)
+        http_client = httpx.AsyncClient(timeout=30.0, follow_redirects=True)
+        adapter.setup_http_client(http_client)
+        # Pre-populate _chat_type_map so _guess_chat_type returns correct type
+        adapter._chat_type_map[chat_id] = (
+            "c2c" if chat_type == "dm"
+            else "guild" if chat_type == "channel"
+            else chat_type  # "group"
+        )
+        await adapter._api.ensure_token()
+
+        try:
+            from qqbot_agent_sdk import (
+                UploadDailyLimitExceededError,
+                UploadFileTooLargeError,
             )
-            if token_resp.status_code != 200:
-                return _error(f"QQBot token request failed: {token_resp.status_code}")
-            token_data = token_resp.json()
-            access_token = token_data.get("access_token")
-            if not access_token:
-                return _error(f"QQBot: no access_token in response")
+            last_result = None
 
-            # Step 2: Send message via REST
-            # QQ Bot API has separate endpoints for channels, C2C, and groups.
-            # We try them in order: channel first, then fallback to C2C.
-            headers = {
-                "Authorization": f"QQBot {access_token}",
-                "Content-Type": "application/json",
+            if message.strip():
+                last_result = await adapter.send(chat_id, message)
+                if not last_result.success:
+                    return _error(last_result.error or "QQBot send failed")
+
+            for media_path, is_voice in media_files:
+                if not os.path.exists(media_path):
+                    return _error(f"Media file not found: {media_path}")
+                ext = os.path.splitext(media_path)[1].lower()
+                try:
+                    from qqbot_agent_sdk import (
+                        MEDIA_TYPE_FILE, MEDIA_TYPE_IMAGE, MEDIA_TYPE_VIDEO, MEDIA_TYPE_VOICE,
+                    )
+
+                    def _qqbot_file_type(ext: str, is_voice: bool) -> int:
+                        if ext in _IMAGE_EXTS:
+                            return MEDIA_TYPE_IMAGE
+                        if ext in _VIDEO_EXTS:
+                            return MEDIA_TYPE_VIDEO
+                        if ext in (_VOICE_EXTS | _AUDIO_EXTS):
+                            return MEDIA_TYPE_VOICE
+                        return MEDIA_TYPE_FILE
+
+                    file_type = _qqbot_file_type(ext, is_voice)
+                    fname = os.path.basename(media_path) if file_type == MEDIA_TYPE_FILE else None
+                    last_result = await adapter._send_media(
+                        chat_id, media_path, file_type, None, None, file_name=fname,
+                    )
+                except UploadDailyLimitExceededError as exc:
+                    return _error(
+                        f"QQBot upload failed: daily upload limit exceeded "
+                        f"(file: {exc.file_name}, size: {exc.file_size_human}). "
+                        f"Retry tomorrow when the quota resets."
+                    )
+                except UploadFileTooLargeError as exc:
+                    return _error(
+                        f"QQBot upload failed: file exceeds platform size limit "
+                        f"(limit: {exc.limit_human}, file: {exc.file_name}, size: {exc.file_size_human}). "
+                        f"Try compressing or splitting the file."
+                    )
+
+                if not last_result.success:
+                    return _error(last_result.error or "QQBot media send failed")
+
+            if last_result is None:
+                return _error("No deliverable text or media")
+
+            return {
+                "success": True,
+                "platform": "qqbot",
+                "chat_id": chat_id,
+                "message_id": last_result.message_id or "",
             }
-            payload = {"content": message[:4000], "msg_type": 0}
-
-            # Try channel endpoint first (works for guild channels)
-            url = f"https://api.sgroup.qq.com/channels/{chat_id}/messages"
-            resp = await client.post(url, json=payload, headers=headers)
-            if resp.status_code in (200, 201):
-                data = resp.json()
-                return {"success": True, "platform": "qqbot", "chat_id": chat_id,
-                        "message_id": data.get("id")}
-
-            # If channel endpoint failed (likely "频道不存在"), try C2C endpoint
-            url_c2c = f"https://api.sgroup.qq.com/v2/users/{chat_id}/messages"
-            resp_c2c = await client.post(url_c2c, json=payload, headers=headers)
-            if resp_c2c.status_code in (200, 201):
-                data = resp_c2c.json()
-                return {"success": True, "platform": "qqbot", "chat_id": chat_id,
-                        "message_id": data.get("id")}
-
-            # If C2C also failed, try group endpoint
-            url_group = f"https://api.sgroup.qq.com/v2/groups/{chat_id}/messages"
-            resp_group = await client.post(url_group, json=payload, headers=headers)
-            if resp_group.status_code in (200, 201):
-                data = resp_group.json()
-                return {"success": True, "platform": "qqbot", "chat_id": chat_id,
-                        "message_id": data.get("id")}
-
-            # All endpoints failed — return the most informative error
-            return _error(f"QQBot send failed: channel={resp.status_code} c2c={resp_c2c.status_code} group={resp_group.status_code}")
+        finally:
+            await http_client.aclose()
     except Exception as e:
         return _error(f"QQBot send failed: {e}")
 
