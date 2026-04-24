@@ -1032,6 +1032,81 @@ class TestStaleBaseUrlWarning:
         assert mod._stale_base_url_warned is True
 
 
+class TestAuxiliaryUnsupportedParameterRetry:
+    def test_sync_call_retries_without_temperature_when_endpoint_rejects_it(self):
+        client = MagicMock()
+        client.base_url = "https://chatgpt.com/backend-api/codex/"
+        response = MagicMock()
+        response.choices = [MagicMock(message=MagicMock(content="ok"))]
+        calls = []
+
+        def create(**kwargs):
+            calls.append(dict(kwargs))
+            if len(calls) == 1:
+                raise Exception(
+                    "HTTP 400: {'detail': 'Unsupported parameter: temperature'}"
+                )
+            return response
+
+        client.chat.completions.create.side_effect = create
+
+        with patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "gpt-5.5"),
+        ), patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("openai-codex", "gpt-5.5", None, None, None),
+        ):
+            result = call_llm(
+                task="flush_memories",
+                messages=[{"role": "user", "content": "hi"}],
+                temperature=0.3,
+                max_tokens=32,
+            )
+
+        assert result is response
+        assert calls[0]["temperature"] == 0.3
+        assert "temperature" not in calls[1]
+        assert calls[1]["max_tokens"] == 32
+
+    @pytest.mark.asyncio
+    async def test_async_call_retries_without_temperature_when_endpoint_rejects_it(self):
+        client = MagicMock()
+        client.base_url = "https://chatgpt.com/backend-api/codex/"
+        response = MagicMock()
+        response.choices = [MagicMock(message=MagicMock(content="ok"))]
+        calls = []
+
+        async def create(**kwargs):
+            calls.append(dict(kwargs))
+            if len(calls) == 1:
+                raise Exception(
+                    "HTTP 400: {'detail': 'Unsupported parameter: temperature'}"
+                )
+            return response
+
+        client.chat.completions.create = AsyncMock(side_effect=create)
+
+        with patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "gpt-5.5"),
+        ), patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("openai-codex", "gpt-5.5", None, None, None),
+        ):
+            result = await async_call_llm(
+                task="flush_memories",
+                messages=[{"role": "user", "content": "hi"}],
+                temperature=0.3,
+                max_tokens=32,
+            )
+
+        assert result is response
+        assert calls[0]["temperature"] == 0.3
+        assert "temperature" not in calls[1]
+        assert calls[1]["max_tokens"] == 32
+
+
 class TestAuxiliaryTaskExtraBody:
     def test_sync_call_merges_task_extra_body_from_config(self):
         client = MagicMock()

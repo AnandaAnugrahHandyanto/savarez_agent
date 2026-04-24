@@ -1349,6 +1349,27 @@ def _is_auth_error(exc: Exception) -> bool:
     return "error code: 401" in err_lower or "authenticationerror" in type(exc).__name__.lower()
 
 
+def _is_unsupported_parameter_error(exc: Exception, param: str) -> bool:
+    """Detect provider 400s for unsupported request parameters.
+
+    Different OpenAI-compatible endpoints phrase this a few ways:
+    ``Unsupported parameter: temperature``, ``unsupported_parameter``,
+    ``Unknown parameter: max_tokens``, etc.  Match by both the parameter name
+    and a generic unsupported/unknown-parameter marker so we can retry with a
+    safer request instead of surfacing a noisy auxiliary failure.
+    """
+    err_lower = str(exc).lower().replace("_", " ")
+    param_lower = (param or "").lower()
+    if not param_lower or param_lower not in err_lower:
+        return False
+    return any(marker in err_lower for marker in (
+        "unsupported parameter",
+        "unknown parameter",
+        "unrecognized parameter",
+        "invalid parameter",
+    ))
+
+
 def _evict_cached_clients(provider: str) -> None:
     """Drop cached auxiliary clients for a provider so fresh creds are used."""
     normalized = _normalize_aux_provider(provider)
@@ -2952,13 +2973,26 @@ def call_llm(
     if _is_anthropic_compat_endpoint(resolved_provider, _client_base):
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
 
-    # Handle max_tokens vs max_completion_tokens retry, then payment fallback.
+    # Handle unsupported parameter retries, then payment/auth fallback.
     try:
         return _validate_llm_response(
             client.chat.completions.create(**kwargs), task)
     except Exception as first_err:
         err_str = str(first_err)
-        if "max_tokens" in err_str or "unsupported_parameter" in err_str:
+        if _is_unsupported_parameter_error(first_err, "temperature") and "temperature" in kwargs:
+            kwargs.pop("temperature", None)
+            try:
+                return _validate_llm_response(
+                    client.chat.completions.create(**kwargs), task)
+            except Exception as retry_err:
+                # Keep processing the new error below.  Providers sometimes
+                # reject temperature first, then reveal max_tokens on retry.
+                first_err = retry_err
+                err_str = str(first_err)
+
+        if max_tokens is not None and (
+            "max_tokens" in err_str or _is_unsupported_parameter_error(first_err, "max_tokens")
+        ):
             kwargs.pop("max_tokens", None)
             kwargs["max_completion_tokens"] = max_tokens
             try:
@@ -3222,7 +3256,20 @@ async def async_call_llm(
             await client.chat.completions.create(**kwargs), task)
     except Exception as first_err:
         err_str = str(first_err)
-        if "max_tokens" in err_str or "unsupported_parameter" in err_str:
+        if _is_unsupported_parameter_error(first_err, "temperature") and "temperature" in kwargs:
+            kwargs.pop("temperature", None)
+            try:
+                return _validate_llm_response(
+                    await client.chat.completions.create(**kwargs), task)
+            except Exception as retry_err:
+                # Keep processing the new error below.  Providers sometimes
+                # reject temperature first, then reveal max_tokens on retry.
+                first_err = retry_err
+                err_str = str(first_err)
+
+        if max_tokens is not None and (
+            "max_tokens" in err_str or _is_unsupported_parameter_error(first_err, "max_tokens")
+        ):
             kwargs.pop("max_tokens", None)
             kwargs["max_completion_tokens"] = max_tokens
             try:
