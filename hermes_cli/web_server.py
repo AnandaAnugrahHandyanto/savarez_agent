@@ -2032,6 +2032,42 @@ async def dispatch_bus_task(req: DispatchRequest, force: bool = False):
         return {"ok": False, "error": str(exc)}
 
 
+@app.get("/api/dual-agent/skills")
+async def list_dual_agent_skills(family: Optional[str] = None, origin: Optional[str] = None):
+    """SKILL.md-driven unified skill catalog (Hermes + OpenClaw).
+
+    Spec: ~/wiki/concepts/hermes-openclaw-deerflow-integration-plan.md §S1 (se-023)
+    """
+    import importlib.util as _iu
+    import sys as _sys
+
+    loader_path = PROJECT_ROOT / "scripts" / "hermes_skill_loader.py"
+    if not loader_path.exists():
+        return {"error": "loader missing", "path": str(loader_path)}
+    mod_name = "_hermes_skill_loader"
+    if mod_name not in _sys.modules:
+        spec = _iu.spec_from_file_location(mod_name, loader_path)
+        if spec is None or spec.loader is None:
+            return {"error": "could not load skill loader"}
+        mod = _iu.module_from_spec(spec)
+        _sys.modules[mod_name] = mod
+        spec.loader.exec_module(mod)
+    mod = _sys.modules[mod_name]
+
+    try:
+        skills = mod.load_skills()
+        if family:
+            skills = [s for s in skills if s.family == family]
+        if origin:
+            skills = [s for s in skills if s.origin == origin]
+        return {
+            "summary": mod.summarize(skills),
+            "skills": [s.to_json_safe() for s in skills],
+        }
+    except Exception as exc:
+        return {"error": f"load failed: {exc}"}
+
+
 @app.get("/api/dual-agent/activity")
 async def get_dual_agent_activity(hours: int = 24):
     """Recent wiki/bus activity as a unified feed — 'what just happened'.
