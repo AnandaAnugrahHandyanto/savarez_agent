@@ -654,6 +654,14 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
     if not model_input:
         raise ValueError("model value required")
 
+    cfg = _load_cfg()
+    cfg_providers = cfg.get("providers")
+    cfg_custom_providers = cfg.get("custom_providers")
+    user_providers = cfg_providers if isinstance(cfg_providers, dict) else {}
+    custom_providers = (
+        cfg_custom_providers if isinstance(cfg_custom_providers, list) else []
+    )
+
     agent = session.get("agent")
     if agent:
         current_provider = getattr(agent, "provider", "") or ""
@@ -675,6 +683,8 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
         current_api_key=current_api_key,
         is_global=persist_global,
         explicit_provider=explicit_provider,
+        user_providers=user_providers,
+        custom_providers=custom_providers,
     )
     if not result.success:
         raise ValueError(result.error_message or "model switch failed")

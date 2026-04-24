@@ -362,6 +362,89 @@ def test_config_set_model_global_persists(monkeypatch):
     assert saved["model"]["base_url"] == "https://api.anthropic.com"
 
 
+def test_config_set_model_resolves_custom_provider_without_global(monkeypatch):
+    class _Agent:
+        provider = "openrouter"
+        model = "old/model"
+        base_url = ""
+        api_key = "sk-old"
+
+        def __init__(self):
+            self.switched = {}
+
+        def switch_model(self, **kwargs):
+            self.switched.update(kwargs)
+
+    agent = _Agent()
+    cfg = {
+        "providers": {},
+        "custom_providers": [
+            {
+                "name": "voyager",
+                "base_url": "http://localhost:8080/v1",
+                "api_key": "sk-voyager",
+                "model": "qwen3.6-27b",
+            }
+        ],
+    }
+    persisted = []
+
+    def _runtime_provider(requested=None, target_model=None):
+        assert requested == "custom:voyager"
+        assert target_model == "qwen3.6-27b"
+        return {
+            "provider": "custom:voyager",
+            "api_key": "sk-voyager",
+            "base_url": "http://localhost:8080/v1",
+            "api_mode": "chat_completions",
+        }
+
+    server._sessions["sid"] = _session(agent=agent)
+    monkeypatch.setattr(server, "_load_cfg", lambda: cfg)
+    monkeypatch.setattr(
+        server, "_persist_model_switch", lambda result: persisted.append(result)
+    )
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda session: None)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_session_info", lambda agent: {"model": agent.model})
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        _runtime_provider,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.validate_requested_model",
+        lambda *args, **kwargs: {"accepted": True, "persist": True},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.get_model_capabilities",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.get_model_info",
+        lambda *args, **kwargs: None,
+    )
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {
+                "session_id": "sid",
+                "key": "model",
+                "value": "qwen3.6-27b --provider custom:voyager",
+            },
+        }
+    )
+
+    assert resp["result"]["value"] == "qwen3.6-27b"
+    assert agent.switched["new_model"] == "qwen3.6-27b"
+    assert agent.switched["new_provider"] == "custom:voyager"
+    assert agent.switched["api_key"] == "sk-voyager"
+    assert agent.switched["base_url"] == "http://localhost:8080/v1"
+    assert os.environ["HERMES_INFERENCE_PROVIDER"] == "custom:voyager"
+    assert persisted == []
+
+
 def test_config_set_model_syncs_inference_provider_env(monkeypatch):
     """After an explicit provider switch, HERMES_INFERENCE_PROVIDER must
     reflect the user's choice so ambient re-resolution (credential pool
