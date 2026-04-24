@@ -2680,10 +2680,17 @@ class AIAgent:
             reasoning_parts.append(assistant_message.reasoning)
         
         # Check reasoning_content field (alternative name used by some providers)
-        if hasattr(assistant_message, 'reasoning_content') and assistant_message.reasoning_content:
+        # DeepSeek returns reasoning_content in model_extra (not a declared field
+        # in OpenAI SDK < 1.60), so we check model_extra first, then the attribute.
+        _rc = None
+        if hasattr(assistant_message, 'model_extra') and assistant_message.model_extra:
+            _rc = assistant_message.model_extra.get('reasoning_content')
+        if not _rc:
+            _rc = getattr(assistant_message, 'reasoning_content', None)
+        if _rc:
             # Don't duplicate if same as reasoning
-            if assistant_message.reasoning_content not in reasoning_parts:
-                reasoning_parts.append(assistant_message.reasoning_content)
+            if _rc not in reasoning_parts:
+                reasoning_parts.append(_rc)
         
         # Check reasoning_details array (OpenRouter unified format)
         # Format: [{"type": "reasoning.summary", "summary": "...", ...}, ...]
