@@ -39,6 +39,8 @@ NON_MATERIAL_PATTERNS = [
     )
 ]
 
+_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)```", re.IGNORECASE)
+
 SPAR_REVIEW_CONTRACT = [
     "Review the following builder result.",
     "Approve only if it fully completes the user's request.",
@@ -164,9 +166,7 @@ def filter_spar_review(review: SparReview) -> SparReview:
 
 
 def parse_spar_review(text: str) -> SparReview:
-    match = re.search(r"\{[\s\S]*\}", str(text or ""))
-    body = match.group(0) if match else str(text or "")
-    data = json.loads(body)
+    data = _extract_review_object(text)
     if not isinstance(data, dict):
         raise ValueError("review payload must be an object")
     if not isinstance(data.get("approved"), bool):
@@ -195,6 +195,23 @@ def parse_spar_review(text: str) -> SparReview:
             fix=fix,
         )
     )
+
+
+def _extract_review_object(text: str) -> dict[str, Any]:
+    raw_text = str(text or "").strip()
+    candidates = [match.group(1).strip() for match in _JSON_FENCE_RE.finditer(raw_text)]
+    candidates.append(raw_text)
+    decoder = json.JSONDecoder()
+
+    for candidate in candidates:
+        for start in [idx for idx, char in enumerate(candidate) if char == "{"]:
+            try:
+                payload, _ = decoder.raw_decode(candidate[start:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                return payload
+    raise ValueError("review payload did not contain a valid JSON object")
 
 
 def format_spar_fix(review: SparReview) -> str:
@@ -261,7 +278,13 @@ async def _run_review(prompt: str, candidate: str, route: Dict[str, str]) -> Spa
         temperature=0.0,
         max_tokens=1200,
     )
-    return parse_spar_review(content)
+    try:
+        return parse_spar_review(content)
+    except Exception as exc:
+        preview = content.replace("\n", "\\n")[:240]
+        raise ValueError(
+            f"{_route_label(route)} returned invalid review JSON: {exc}. Preview: {preview}"
+        ) from exc
 
 
 async def _run_optional_judge(

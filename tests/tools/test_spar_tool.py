@@ -56,6 +56,16 @@ def test_parse_spar_review_coerces_scalar_issues():
     assert review.issues == ["Missing null handling"]
 
 
+def test_parse_spar_review_skips_invalid_prefix_and_extracts_fenced_json():
+    review = spar.parse_spar_review(
+        'bad prefix {not json}\n```json\n{"approved": true, "summary": "Looks good.", "issues": []}\n```\n'
+    )
+
+    assert review.approved is True
+    assert review.summary == "Looks good."
+    assert review.issues == []
+
+
 @pytest.mark.asyncio
 async def test_spar_tool_material_rejection_triggers_single_fix_round(monkeypatch):
     monkeypatch.setattr(

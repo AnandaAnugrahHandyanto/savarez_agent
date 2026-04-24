@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
@@ -104,6 +105,11 @@ _SESSION_MODES = (
         "name": "Force MoA",
         "description": "Always run Mixture of Agents.",
     },
+    {
+        "id": "force-moa-spar",
+        "name": "Force MoA + Spar",
+        "description": "Draft with Mixture of Agents, then run the Spar review gate.",
+    },
 )
 
 _VALID_SESSION_MODE_IDS = {mode["id"] for mode in _SESSION_MODES}
@@ -146,6 +152,7 @@ _ROUTED_HISTORY_MAX_MESSAGES = 8
 _ROUTED_HISTORY_MAX_CHARS = 6000
 _ROUTE_FORENSICS_LOG = "route_forensics.jsonl"
 _MOA_FORENSIC_ENV = "HERMES_MOA_FORENSIC_ANALYSIS"
+_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)```", re.IGNORECASE)
 
 
 def _extract_text(
@@ -192,8 +199,30 @@ def _moa_forensic_analysis_enabled() -> bool:
     return os.getenv(_MOA_FORENSIC_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _parse_tool_json(raw_text: str) -> dict[str, Any]:
-    payload = json.loads(raw_text)
+def _extract_json_object(raw_text: str) -> dict[str, Any]:
+    text = str(raw_text or "").strip()
+    if not text:
+        raise ValueError("tool output is empty")
+    decoder = json.JSONDecoder()
+    candidates = [match.group(1).strip() for match in _JSON_FENCE_RE.finditer(text) if match.group(1).strip()]
+    candidates.append(text)
+    for candidate in candidates:
+        for start in (idx for idx, char in enumerate(candidate) if char == "{"):
+            try:
+                payload, _ = decoder.raw_decode(candidate[start:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                return payload
+    raise ValueError("tool output does not contain a valid JSON object")
+
+
+def _parse_tool_json(raw_text: str, *, stage: str = "tool") -> dict[str, Any]:
+    try:
+        payload = _extract_json_object(raw_text)
+    except Exception as exc:
+        preview = str(raw_text or "").strip().replace("\n", "\\n")[:240]
+        raise ValueError(f"{stage} returned invalid JSON: {exc}. Preview: {preview}") from exc
     if not isinstance(payload, dict):
         raise ValueError("tool output must be a JSON object")
     return payload
@@ -211,6 +240,9 @@ def _append_route_forensics(event: dict[str, Any]) -> None:
 
 def _summarize_routed_payload(prompt_route: str, raw_output: str) -> dict[str, Any]:
     payload = _parse_tool_json(raw_output)
+    has_spar_review = any(
+        key in payload for key in ("approved", "disagreement", "judge_verdict", "final_response", "issues")
+    )
     summary: dict[str, Any] = {
         "success": bool(payload.get("success")),
         "models_used": payload.get("models_used"),
@@ -225,7 +257,7 @@ def _summarize_routed_payload(prompt_route: str, raw_output: str) -> dict[str, A
             for model, preview in reference_previews.items()
             if str(model).strip() and str(preview).strip()
         }
-    if prompt_route == "force-moa":
+    if prompt_route in {"force-moa", "force-moa-spar"}:
         failed_model_errors = payload.get("failed_model_errors")
         if isinstance(failed_model_errors, dict):
             summary["failed_model_errors"] = {
@@ -249,10 +281,16 @@ def _summarize_routed_payload(prompt_route: str, raw_output: str) -> dict[str, A
         aggregator_influence_log = payload.get("aggregator_influence_log")
         if isinstance(aggregator_influence_log, dict):
             summary["aggregator_influence_log"] = aggregator_influence_log
+        moa_candidate_response = str(payload.get("moa_candidate_response") or "").strip()
+        if moa_candidate_response:
+            summary["moa_candidate_response"] = moa_candidate_response
     error = str(payload.get("error") or "").strip()
     if error:
         summary["error"] = error[:500]
-    if prompt_route == "force-spar":
+    review_error = str(payload.get("review_error") or "").strip()
+    if review_error:
+        summary["review_error"] = review_error[:500]
+    if prompt_route == "force-spar" or (prompt_route == "force-moa-spar" and has_spar_review):
         # route_result means Spar executed; approval is tracked separately.
         summary["success"] = bool(payload.get("success", True))
         summary["approved"] = bool(payload.get("approved"))
@@ -264,6 +302,12 @@ def _summarize_routed_payload(prompt_route: str, raw_output: str) -> dict[str, A
                 for key in ("approved", "summary")
                 if key in judge_verdict
             }
+    elif prompt_route == "force-moa-spar":
+        pipeline = payload.get("pipeline") if isinstance(payload.get("pipeline"), dict) else {}
+        if str(pipeline.get("review_status") or "").strip().lower() == "failed":
+            summary["pipeline_stage"] = "spar"
+        else:
+            summary["pipeline_stage"] = "moa"
     return summary
 
 
@@ -402,6 +446,58 @@ def _format_spar_output(raw_text: str) -> str:
     return "\n".join(lines).strip()
 
 
+def _merge_moa_spar_payload(
+    moa_payload: dict[str, Any],
+    spar_payload: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "success": True,
+        "response": str(spar_payload.get("final_response") or moa_payload.get("response") or "").strip(),
+        "models_used": moa_payload.get("models_used"),
+        "failed_models": moa_payload.get("failed_models") or [],
+        "failed_model_errors": moa_payload.get("failed_model_errors") or {},
+        "reference_previews": moa_payload.get("reference_previews") or {},
+        "reference_outputs": moa_payload.get("reference_outputs") or {},
+        "per_model_metrics": moa_payload.get("per_model_metrics") or {},
+        "decision_trace": moa_payload.get("decision_trace") or {},
+        "aggregator_influence_log": moa_payload.get("aggregator_influence_log") or {},
+        "moa_candidate_response": str(moa_payload.get("response") or "").strip(),
+        "approved": bool(spar_payload.get("approved")),
+        "summary": spar_payload.get("summary") or "",
+        "issues": spar_payload.get("issues") or [],
+        "fix": spar_payload.get("fix") or "",
+        "final_response": str(spar_payload.get("final_response") or "").strip(),
+        "judge_verdict": spar_payload.get("judge_verdict"),
+        "disagreement": bool(spar_payload.get("disagreement")),
+        "pipeline": {"candidate_source": "moa", "review_gate": "spar"},
+    }
+
+
+def _build_moa_spar_fallback_payload(
+    moa_payload: dict[str, Any],
+    exc: Exception,
+) -> dict[str, Any]:
+    return {
+        "success": False,
+        "response": str(moa_payload.get("response") or "").strip(),
+        "models_used": moa_payload.get("models_used"),
+        "failed_models": moa_payload.get("failed_models") or [],
+        "failed_model_errors": moa_payload.get("failed_model_errors") or {},
+        "reference_previews": moa_payload.get("reference_previews") or {},
+        "reference_outputs": moa_payload.get("reference_outputs") or {},
+        "per_model_metrics": moa_payload.get("per_model_metrics") or {},
+        "decision_trace": moa_payload.get("decision_trace") or {},
+        "aggregator_influence_log": moa_payload.get("aggregator_influence_log") or {},
+        "moa_candidate_response": str(moa_payload.get("response") or "").strip(),
+        "review_error": str(exc).strip(),
+        "pipeline": {
+            "candidate_source": "moa",
+            "review_gate": "spar",
+            "review_status": "failed",
+        },
+    }
+
+
 async def _send_forced_mode_thought(
     conn: acp.Client | None,
     session_id: str,
@@ -412,7 +508,11 @@ async def _send_forced_mode_thought(
     thought_text = (
         "MoA: gathering reference answers and aggregating them into one final answer."
         if prompt_route == "force-moa"
-        else "Spar: drafting, reviewing, and judge-checking this answer before returning it."
+        else (
+            "MoA + Spar: drafting with MiMo plus reference models, then reviewing before returning it."
+            if prompt_route == "force-moa-spar"
+            else "Spar: drafting, reviewing, and judge-checking this answer before returning it."
+        )
     )
     await conn.session_update(session_id, acp.update_agent_thought_text(thought_text))
 
@@ -897,7 +997,7 @@ class HermesACPAgent(acp.Agent):
 
                     raw_output = await spar_tool(user_prompt=routed_prompt)
                     final_text = _format_spar_output(raw_output)
-                else:
+                elif prompt_route == "force-moa":
                     from tools.mixture_of_agents_tool import mixture_of_agents_tool
 
                     raw_output = await mixture_of_agents_tool(
@@ -905,6 +1005,46 @@ class HermesACPAgent(acp.Agent):
                         enable_forensic_analysis=_moa_forensic_analysis_enabled(),
                     )
                     final_text = _format_moa_output(raw_output)
+                else:
+                    from tools.mixture_of_agents_tool import mixture_of_agents_tool
+                    from tools.spar_tool import spar_tool
+
+                    moa_raw_output = await mixture_of_agents_tool(
+                        user_prompt=routed_prompt,
+                        enable_forensic_analysis=_moa_forensic_analysis_enabled(),
+                    )
+                    moa_payload = _parse_tool_json(moa_raw_output, stage="moa")
+                    if not bool(moa_payload.get("success")):
+                        raw_output = moa_raw_output
+                        final_text = _format_moa_output(moa_raw_output)
+                    else:
+                        try:
+                            spar_raw_output = await spar_tool(
+                                user_prompt=routed_prompt,
+                                candidate_response=str(moa_payload.get("response") or "").strip(),
+                                builder_model=str(
+                                    ((moa_payload.get("models_used") or {}).get("aggregator_model") or "")
+                                ).strip(),
+                            )
+                            spar_payload = _parse_tool_json(spar_raw_output, stage="spar")
+                            merged_payload = _merge_moa_spar_payload(moa_payload, spar_payload)
+                            raw_output = json.dumps(merged_payload, indent=2, ensure_ascii=False)
+                            final_text = _format_spar_output(raw_output)
+                        except Exception as spar_exc:
+                            logger.warning(
+                                "Spar stage failed after successful MoA in session %s: %s",
+                                session_id,
+                                spar_exc,
+                            )
+                            fallback_payload = _build_moa_spar_fallback_payload(moa_payload, spar_exc)
+                            raw_output = json.dumps(fallback_payload, indent=2, ensure_ascii=False)
+                            moa_candidate = str(moa_payload.get("response") or "").strip()
+                            review_note = f"Spar review failed: {spar_exc}"
+                            final_text = (
+                                f"{moa_candidate}\n\n{review_note}".strip()
+                                if moa_candidate
+                                else review_note
+                            )
                 _log_route_forensics(
                     event_type="route_result",
                     session_id=session_id,

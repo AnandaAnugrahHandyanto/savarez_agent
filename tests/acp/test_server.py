@@ -30,7 +30,7 @@ from acp.schema import (
     TextContentBlock,
     Usage,
 )
-from acp_adapter.server import HermesACPAgent, HERMES_VERSION, _build_routed_prompt
+from acp_adapter.server import HermesACPAgent, HERMES_VERSION, _build_routed_prompt, _parse_tool_json
 from acp_adapter.session import SessionManager
 from hermes_state import SessionDB
 
@@ -179,6 +179,7 @@ class TestSessionOps:
             "auto",
             "force-spar",
             "force-moa",
+            "force-moa-spar",
         ]
 
     @pytest.mark.asyncio
@@ -342,6 +343,15 @@ class TestListAndFork:
 
 
 class TestSessionConfiguration:
+    def test_parse_tool_json_extracts_wrapped_json_object(self):
+        payload = _parse_tool_json(
+            "Here is the tool output:\n```json\n{\"success\": true, \"response\": \"ok\"}\n```\nThanks.",
+            stage="wrapped",
+        )
+
+        assert payload["success"] is True
+        assert payload["response"] == "ok"
+
     @pytest.mark.asyncio
     async def test_set_session_mode_returns_response(self, agent):
         new_resp = await agent.new_session(cwd="/tmp")
@@ -588,6 +598,146 @@ class TestPrompt:
         assert routed_prompt.endswith("User: analyze this hard problem")
 
     @pytest.mark.asyncio
+    async def test_prompt_force_moa_spar_routes_moa_then_spar(self, agent):
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.mode = "force-moa-spar"
+        state.agent.run_conversation = MagicMock()
+        state.history = [
+            {"role": "user", "content": "We are choosing between two retirement plans."},
+            {"role": "assistant", "content": "You care about safety first, then upside."},
+        ]
+
+        with patch(
+            "tools.mixture_of_agents_tool.mixture_of_agents_tool",
+            AsyncMock(
+                return_value=json.dumps(
+                    {
+                        "success": True,
+                        "response": "moa draft",
+                        "models_used": {
+                            "reference_models": [
+                                "xiaomi/mimo-v2-pro (self-draft)",
+                                "minimax/MiniMax-M2.7-highspeed",
+                                "deepseek/deepseek-reasoner",
+                            ],
+                            "aggregator_model": "xiaomi/mimo-v2-pro",
+                        },
+                        "failed_models": [],
+                        "failed_model_errors": {},
+                        "reference_previews": {
+                            "minimax/MiniMax-M2.7-highspeed": "minimax preview"
+                        },
+                        "reference_outputs": {
+                            "minimax/MiniMax-M2.7-highspeed": "minimax full output"
+                        },
+                        "per_model_metrics": {
+                            "reference_models": {},
+                            "aggregator": {"model": "xiaomi/mimo-v2-pro", "success": True},
+                            "forensic_analysis": {"skipped": True, "success": False},
+                        },
+                        "decision_trace": {"final_candidates": ["plan-a", "plan-b"]},
+                        "aggregator_influence_log": {"influence_summary": "mimo narrowed the overlap"},
+                    }
+                )
+            ),
+        ) as mock_moa, patch(
+            "tools.spar_tool.spar_tool",
+            AsyncMock(
+                return_value=json.dumps(
+                    {
+                        "approved": True,
+                        "summary": "approved",
+                        "issues": [],
+                        "final_response": "moa spar answer",
+                        "disagreement": False,
+                        "judge_verdict": {"approved": True, "summary": "judge ok"},
+                    }
+                )
+            ),
+        ) as mock_spar:
+            resp = await agent.prompt(
+                prompt=[TextContentBlock(type="text", text="which plan is safer?")],
+                session_id=new_resp.session_id,
+            )
+
+        assert resp.stop_reason == "end_turn"
+        state.agent.run_conversation.assert_not_called()
+        assert state.history[-1]["content"] == "moa spar answer"
+        routed_prompt = mock_moa.await_args.kwargs["user_prompt"]
+        assert routed_prompt.endswith("User: which plan is safer?")
+        assert mock_spar.await_args.kwargs["user_prompt"] == routed_prompt
+        assert mock_spar.await_args.kwargs["candidate_response"] == "moa draft"
+        assert mock_spar.await_args.kwargs["builder_model"] == "xiaomi/mimo-v2-pro"
+
+    @pytest.mark.asyncio
+    async def test_prompt_force_moa_spar_accepts_wrapped_tool_json(self, agent):
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.mode = "force-moa-spar"
+        state.agent.run_conversation = MagicMock()
+
+        moa_wrapped = (
+            "Draft ready:\n```json\n"
+            + json.dumps(
+                {
+                    "success": True,
+                    "response": "wrapped moa draft",
+                    "models_used": {
+                        "reference_models": [
+                            "xiaomi/mimo-v2-pro (self-draft)",
+                            "minimax/MiniMax-M2.7-highspeed",
+                            "deepseek/deepseek-reasoner",
+                        ],
+                        "aggregator_model": "xiaomi/mimo-v2-pro",
+                    },
+                    "failed_models": [],
+                    "failed_model_errors": {},
+                    "reference_previews": {},
+                    "reference_outputs": {},
+                    "per_model_metrics": {
+                        "reference_models": {},
+                        "aggregator": {"model": "xiaomi/mimo-v2-pro", "success": True},
+                        "forensic_analysis": {"skipped": True, "success": False},
+                    },
+                    "decision_trace": {},
+                    "aggregator_influence_log": {},
+                },
+                ensure_ascii=False,
+            )
+            + "\n```"
+        )
+        spar_wrapped = (
+            "Review verdict:\n"
+            + json.dumps(
+                {
+                    "approved": True,
+                    "summary": "ok",
+                    "issues": [],
+                    "final_response": "wrapped final answer",
+                    "disagreement": False,
+                    "judge_verdict": {"approved": True, "summary": "judge ok"},
+                },
+                ensure_ascii=False,
+            )
+        )
+
+        with patch(
+            "tools.mixture_of_agents_tool.mixture_of_agents_tool",
+            AsyncMock(return_value=moa_wrapped),
+        ), patch(
+            "tools.spar_tool.spar_tool",
+            AsyncMock(return_value=spar_wrapped),
+        ):
+            resp = await agent.prompt(
+                prompt=[TextContentBlock(type="text", text="review this long brief")],
+                session_id=new_resp.session_id,
+            )
+
+        assert resp.stop_reason == "end_turn"
+        assert state.history[-1]["content"] == "wrapped final answer"
+
+    @pytest.mark.asyncio
     async def test_prompt_force_moa_can_opt_into_llm_forensics(self, agent, monkeypatch):
         monkeypatch.setenv("HERMES_MOA_FORENSIC_ANALYSIS", "1")
         new_resp = await agent.new_session(cwd=".")
@@ -676,6 +826,187 @@ class TestPrompt:
         assert result_event["tool"]["per_model_metrics"]["aggregator"]["model"] == "xiaomi/mimo-v2-pro"
         assert result_event["tool"]["decision_trace"]["final_candidates"] == ["akg", "lithium"]
         assert result_event["tool"]["aggregator_influence_log"]["influence_summary"] == "mimo used both references but weighted overlap most"
+
+    @pytest.mark.asyncio
+    async def test_prompt_force_moa_spar_writes_combined_forensics_log(self, agent, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.mode = "force-moa-spar"
+        state.agent.run_conversation = MagicMock()
+
+        with patch(
+            "tools.mixture_of_agents_tool.mixture_of_agents_tool",
+            AsyncMock(
+                return_value=json.dumps(
+                    {
+                        "success": True,
+                        "response": "moa draft",
+                        "models_used": {
+                            "reference_models": [
+                                "xiaomi/mimo-v2-pro (self-draft)",
+                                "minimax/MiniMax-M2.7-highspeed",
+                            ],
+                            "aggregator_model": "xiaomi/mimo-v2-pro",
+                        },
+                        "failed_models": [],
+                        "failed_model_errors": {},
+                        "reference_previews": {
+                            "minimax/MiniMax-M2.7-highspeed": "moa answer"
+                        },
+                        "reference_outputs": {
+                            "minimax/MiniMax-M2.7-highspeed": "full minimax output"
+                        },
+                        "per_model_metrics": {
+                            "reference_models": {"minimax/MiniMax-M2.7-highspeed": {"attempts": 1, "latency_seconds": 1.2, "success": True}},
+                            "aggregator": {"model": "xiaomi/mimo-v2-pro", "latency_seconds": 2.4, "success": True},
+                            "forensic_analysis": {"model": "xiaomi/mimo-v2-pro", "latency_seconds": 0.0, "success": False, "skipped": True},
+                        },
+                        "decision_trace": {"final_candidates": ["akg", "lithium"]},
+                        "aggregator_influence_log": {"influence_summary": "mimo used overlap"},
+                    }
+                )
+            ),
+        ), patch(
+            "tools.spar_tool.spar_tool",
+            AsyncMock(
+                return_value=json.dumps(
+                    {
+                        "approved": True,
+                        "summary": "ok",
+                        "issues": [],
+                        "final_response": "moa spar answer",
+                        "disagreement": False,
+                        "judge_verdict": {"approved": True, "summary": "judge ok"},
+                    }
+                )
+            ),
+        ):
+            await agent.prompt(
+                prompt=[TextContentBlock(type="text", text="analyze this hard problem")],
+                session_id=new_resp.session_id,
+            )
+
+        forensic_path = tmp_path / ".hermes" / "logs" / "route_forensics.jsonl"
+        events = [json.loads(line) for line in forensic_path.read_text().splitlines()]
+        result_event = next(event for event in events if event["event"] == "route_result")
+        assert result_event["route"] == "force-moa-spar"
+        assert result_event["tool"]["success"] is True
+        assert result_event["tool"]["approved"] is True
+        assert result_event["tool"]["judge_verdict"] == {"approved": True, "summary": "judge ok"}
+        assert result_event["tool"]["models_used"]["aggregator_model"] == "xiaomi/mimo-v2-pro"
+        assert result_event["tool"]["reference_outputs"] == {
+            "minimax/MiniMax-M2.7-highspeed": "full minimax output"
+        }
+        assert result_event["tool"]["moa_candidate_response"] == "moa draft"
+
+    @pytest.mark.asyncio
+    async def test_prompt_force_moa_spar_preserves_moa_failure_without_fake_spar_success(self, agent, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.mode = "force-moa-spar"
+        state.agent.run_conversation = MagicMock()
+
+        with patch(
+            "tools.mixture_of_agents_tool.mixture_of_agents_tool",
+            AsyncMock(
+                return_value=json.dumps(
+                    {
+                        "success": False,
+                        "response": "MoA processing failed. Please try again or use a single model for this query.",
+                        "models_used": {
+                            "reference_models": [
+                                "xiaomi/mimo-v2-pro (self-draft)",
+                                "minimax/MiniMax-M2.7-highspeed",
+                            ],
+                            "aggregator_model": "xiaomi/mimo-v2-pro",
+                        },
+                        "failed_models": ["deepseek/deepseek-reasoner"],
+                        "failed_model_errors": {"deepseek/deepseek-reasoner": "timeout"},
+                        "reference_previews": {},
+                        "reference_outputs": {},
+                        "per_model_metrics": {},
+                        "decision_trace": {},
+                        "aggregator_influence_log": {},
+                        "error": "Error in MoA processing: timeout",
+                    }
+                )
+            ),
+        ) as mock_moa, patch(
+            "tools.spar_tool.spar_tool",
+            AsyncMock(),
+        ) as mock_spar:
+            await agent.prompt(
+                prompt=[TextContentBlock(type="text", text="review this long brief")],
+                session_id=new_resp.session_id,
+            )
+
+        mock_moa.assert_awaited_once()
+        mock_spar.assert_not_awaited()
+
+        forensic_path = tmp_path / ".hermes" / "logs" / "route_forensics.jsonl"
+        events = [json.loads(line) for line in forensic_path.read_text().splitlines()]
+        result_event = next(event for event in events if event["event"] == "route_result")
+        assert result_event["route"] == "force-moa-spar"
+        assert result_event["tool"]["success"] is False
+        assert result_event["tool"]["pipeline_stage"] == "moa"
+        assert "approved" not in result_event["tool"]
+        assert result_event["tool"]["models_used"]["aggregator_model"] == "xiaomi/mimo-v2-pro"
+
+    @pytest.mark.asyncio
+    async def test_prompt_force_moa_spar_falls_back_to_moa_answer_when_spar_times_out(self, agent, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.mode = "force-moa-spar"
+        state.agent.run_conversation = MagicMock()
+
+        with patch(
+            "tools.mixture_of_agents_tool.mixture_of_agents_tool",
+            AsyncMock(
+                return_value=json.dumps(
+                    {
+                        "success": True,
+                        "response": "moa draft",
+                        "models_used": {
+                            "reference_models": [
+                                "xiaomi/mimo-v2-pro (self-draft)",
+                                "minimax/MiniMax-M2.7-highspeed",
+                            ],
+                            "aggregator_model": "xiaomi/mimo-v2-pro",
+                        },
+                        "failed_models": [],
+                        "failed_model_errors": {},
+                        "reference_previews": {},
+                        "reference_outputs": {},
+                        "per_model_metrics": {},
+                        "decision_trace": {},
+                        "aggregator_influence_log": {},
+                    }
+                )
+            ),
+        ) as mock_moa, patch(
+            "tools.spar_tool.spar_tool",
+            AsyncMock(side_effect=TimeoutError("Request timed out.")),
+        ) as mock_spar:
+            await agent.prompt(
+                prompt=[TextContentBlock(type="text", text="review this long brief")],
+                session_id=new_resp.session_id,
+            )
+
+        mock_moa.assert_awaited_once()
+        mock_spar.assert_awaited_once()
+        assert state.history[-1]["content"] == "moa draft\n\nSpar review failed: Request timed out."
+
+        forensic_path = tmp_path / ".hermes" / "logs" / "route_forensics.jsonl"
+        events = [json.loads(line) for line in forensic_path.read_text().splitlines()]
+        result_event = next(event for event in events if event["event"] == "route_result")
+        assert result_event["route"] == "force-moa-spar"
+        assert result_event["tool"]["success"] is False
+        assert result_event["tool"]["pipeline_stage"] == "spar"
+        assert result_event["tool"]["review_error"] == "Request timed out."
+        assert "approved" not in result_event["tool"]
 
     @pytest.mark.asyncio
     async def test_prompt_force_spar_forensics_marks_completed_review_successfully(self, agent, monkeypatch, tmp_path):
