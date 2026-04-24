@@ -8883,6 +8883,14 @@ class AIAgent:
         messages.append(user_msg)
         current_turn_user_idx = len(messages) - 1
         self._persist_user_message_idx = current_turn_user_idx
+
+        # Early flush: persist the user message immediately so it survives
+        # interruptions (e.g. WebSocket disconnect, page refresh).  Without
+        # this, _flush_messages_to_session_db only runs at loop exit, so a
+        # mid-stream interrupt loses both the user message and any partial
+        # assistant response.
+        if self._session_db and self.persist_session:
+            self._flush_messages_to_session_db(messages, conversation_history)
         
         if not self.quiet_mode:
             _print_preview = _summarize_user_message_for_log(user_message)

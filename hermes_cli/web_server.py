@@ -2913,6 +2913,19 @@ async def tui_gateway_ws(websocket: WebSocket):
 
                 sid_for_run = session_id
 
+                # Ensure the session row exists immediately so the dashboard
+                # can detect the active session even if the agent is interrupted
+                # before its first DB flush.
+                try:
+                    from hermes_state import SessionDB as _SessionDB
+                    _early_db = _SessionDB()
+                    try:
+                        _early_db.ensure_session(sid_for_run, source="api_server")
+                    finally:
+                        _early_db.close()
+                except Exception:
+                    pass
+
                 def _run_agent_thread():
                     try:
                         from run_agent import AIAgent
