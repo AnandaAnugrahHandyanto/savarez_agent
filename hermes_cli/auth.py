@@ -1481,6 +1481,65 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None
         _save_auth_store(auth_store)
 
 
+def _write_codex_cli_tokens(
+    access_token: str,
+    refresh_token: str,
+    last_refresh: Optional[str] = None,
+    account_id: Optional[str] = None,
+    id_token: Optional[str] = None,
+) -> Path:
+    """Write tokens into Codex CLI auth.json (~/.codex/auth.json or $CODEX_HOME/auth.json).
+
+    Preserve any unrelated existing keys while reconciling the top-level
+    ``tokens`` object used by Codex CLI. This lets Hermes align the CLI login
+    state with the currently active pool entry without depending on the Codex
+    CLI implementation module.
+    """
+    codex_home = os.getenv("CODEX_HOME", "").strip()
+    auth_path = Path(codex_home).expanduser() / "auth.json" if codex_home else Path.home() / ".codex" / "auth.json"
+    auth_path.parent.mkdir(parents=True, exist_ok=True)
+
+    payload: Dict[str, Any] = {}
+    if auth_path.exists():
+        try:
+            loaded = json.loads(auth_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                payload = dict(loaded)
+        except Exception:
+            payload = {}
+
+    tokens = payload.get("tokens")
+    if not isinstance(tokens, dict):
+        tokens = {}
+    else:
+        tokens = dict(tokens)
+
+    tokens["access_token"] = access_token
+    tokens["refresh_token"] = refresh_token
+    if id_token:
+        tokens["id_token"] = id_token
+    else:
+        tokens.pop("id_token", None)
+    if account_id:
+        tokens["account_id"] = account_id
+    else:
+        tokens.pop("account_id", None)
+
+    payload["tokens"] = tokens
+    # Codex CLI's Rust auth storage expects these top-level metadata fields in
+    # addition to the nested tokens object. Without them, `codex login status`
+    # can still look healthy, but `codex exec` fails at runtime with
+    # "Token data is not available" after imported/switch-written auth files.
+    payload["auth_mode"] = "chatgpt"
+    payload["last_refresh"] = last_refresh or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    auth_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        auth_path.chmod(0o600)
+    except Exception:
+        pass
+    return auth_path
+
+
 def refresh_codex_oauth_pure(
     access_token: str,
     refresh_token: str,
