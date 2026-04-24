@@ -83,6 +83,12 @@ _EXTRA_KEYS = frozenset({
     "token_type", "scope", "client_id", "portal_base_url", "obtained_at",
     "expires_in", "agent_key_id", "agent_key_expires_in", "agent_key_reused",
     "agent_key_obtained_at", "tls",
+    # Codex account-manager metadata is intentionally stored in extra so callers
+    # can access it like attributes without expanding the core dataclass schema.
+    "email", "account_id", "id_token", "plan_type", "plan_expires_at",
+    "plan_expires_source", "primary_used_percent", "secondary_used_percent",
+    "rate_limit_allowed", "primary_reset_at", "secondary_reset_at",
+    "usage_checked_at",
 })
 
 

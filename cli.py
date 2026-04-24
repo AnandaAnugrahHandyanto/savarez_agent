@@ -26,6 +26,7 @@ import tempfile
 import time
 import uuid
 import textwrap
+import subprocess
 from urllib.parse import unquote, urlparse
 from contextlib import contextmanager
 from pathlib import Path
@@ -5473,6 +5474,48 @@ class HermesCLI:
             return "\n".join(p for p in parts if p)
         return str(value)
 
+    def _run_codextool_cli(self, argv: list[str]) -> tuple[int, str, str]:
+        script_path = Path(__file__).with_name("codex_account_manager.py")
+        result = subprocess.run(
+            [sys.executable, str(script_path), *argv],
+            capture_output=True,
+            text=True,
+            timeout=None,
+        )
+        return result.returncode, result.stdout, result.stderr
+
+    def _handle_codextool_command(self, cmd_original: str) -> None:
+        """Handle /codexTool by dispatching to codex_account_manager.py."""
+        import shlex
+        try:
+            tokens = shlex.split(cmd_original)
+        except ValueError as exc:
+            self._console_print(f"  [red]Invalid /codexTool arguments: {exc}[/]")
+            return
+
+        args = tokens[1:] if len(tokens) > 1 else []
+        if not args:
+            self._console_print("  Usage: /codexTool <list|probe|doctor|switch|remove|run|watch|add> [...]")
+            self._console_print("  Example: /codexTool probe --auto-switch --json")
+            return
+
+        code, stdout, stderr = self._run_codextool_cli(args)
+        output = (stdout or "").strip()
+        err = (stderr or "").strip()
+        if output:
+            self._console_print(_rich_text_from_ansi(output))
+        if code != 0:
+            self._console_print(f"[bold red]/codexTool failed (exit {code})[/]")
+            if err:
+                self._console_print(_rich_text_from_ansi(err))
+        elif err:
+            self._console_print(_rich_text_from_ansi(err))
+
+    def _handle_codex_command(self, cmd_original: str) -> None:
+        """Handle /codex as a short CLI alias for the Codex account manager."""
+        rewritten = "/codexTool" + cmd_original[len("/codex"):]
+        self._handle_codextool_command(rewritten)
+
     def _handle_gquota_command(self, cmd_original: str) -> None:
         """Show Google Gemini Code Assist quota usage for the current OAuth account."""
         try:
@@ -6030,6 +6073,10 @@ class HermesCLI:
             self._show_model_and_providers()
         elif canonical == "gquota":
             self._handle_gquota_command(cmd_original)
+        elif canonical == "codex":
+            self._handle_codex_command(cmd_original)
+        elif canonical == "codextool":
+            self._handle_codextool_command(cmd_original)
 
         elif canonical == "personality":
             # Use original case (handler lowercases the personality name itself)

@@ -21,6 +21,7 @@ import re
 import shlex
 import sys
 import signal
+import subprocess
 import tempfile
 import threading
 import time
@@ -3594,6 +3595,9 @@ class GatewayRunner:
 
         if canonical == "provider":
             return await self._handle_provider_command(event)
+
+        if canonical == "codextool":
+            return await self._handle_codextool_command(event)
         
         if canonical == "personality":
             return await self._handle_personality_command(event)
@@ -5032,6 +5036,37 @@ class GatewayRunner:
             return f"{header}\n\n{session_info}{_tip_line}"
         return f"{header}{_tip_line}"
     
+    def _run_codextool_gateway(self, argv: list[str]) -> tuple[int, str, str]:
+        script_path = Path(__file__).resolve().parent.parent / "codex_account_manager.py"
+        result = subprocess.run(
+            [sys.executable, str(script_path), *argv],
+            capture_output=True,
+            text=True,
+            timeout=None,
+        )
+        return result.returncode, result.stdout, result.stderr
+
+    async def _handle_codextool_command(self, event: MessageEvent) -> str:
+        """Handle /codexTool by dispatching to codex_account_manager.py."""
+        raw_args = event.get_command_args().strip()
+        if not raw_args:
+            return "Usage: /codexTool <list|probe|doctor|switch|remove|run|watch|add> [...]\nExample: `/codexTool probe --auto-switch --json`"
+        try:
+            argv = shlex.split(raw_args)
+        except ValueError as exc:
+            return f"Invalid /codexTool arguments: {exc}"
+        code, stdout, stderr = self._run_codextool_gateway(argv)
+        parts = []
+        if stdout.strip():
+            parts.append(f"```\n{stdout.strip()}\n```")
+        if code != 0:
+            parts.append(f"/codexTool failed (exit {code})")
+            if stderr.strip():
+                parts.append(f"```\n{stderr.strip()}\n```")
+        elif stderr.strip():
+            parts.append(f"```\n{stderr.strip()}\n```")
+        return "\n".join(parts) if parts else "Done."
+
     async def _handle_profile_command(self, event: MessageEvent) -> str:
         """Handle /profile — show active profile name and home directory."""
         from hermes_constants import display_hermes_home

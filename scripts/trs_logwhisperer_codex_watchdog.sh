@@ -53,8 +53,8 @@ out.write_text(text + extra, encoding='utf-8')
 print(f'prompt_written={out}')
 PY
 
-CMD="codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -m gpt-5.2 -C $ROOT - < $PROMPT >> $RUN_LOG 2>&1"
+CMD="codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -m gpt-5.5 -C $ROOT - < $PROMPT >> $RUN_LOG 2>&1"
 $QUEUE add "$CMD" --workdir "$ROOT" --name "TRS-LogWhisperer-v2 auto-continue" \
   --env CODEX_AUTO_GIT_PUSH=1 \
   --env CODEX_AUTO_GIT_BRANCH=master \
-  --env 'CODEX_AUTO_GIT_COMMIT_MESSAGE=chore(codex): sync latest TRS-LogWhisperer-v2 changes'
+  --env 'CODEX_AUTO_GIT_COMMIT_MESSAGE=自动推进LogWhisperer-v2本轮任务'

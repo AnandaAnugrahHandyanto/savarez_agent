@@ -105,6 +105,24 @@ class TestResolveCommand:
         assert resolve_command("set-home").name == "sethome"
         assert resolve_command("reload_mcp").name == "reload-mcp"
         assert resolve_command("tasks").name == "agents"
+        assert resolve_command("codextool").name == "codextool"
+        assert resolve_command("/codexTool").name == "codextool"
+
+    def test_codextool_subcommands_match_account_manager(self):
+        codextool = resolve_command("codextool")
+        assert codextool is not None
+        assert codextool.subcommands == (
+            "add",
+            "list",
+            "switch",
+            "remove",
+            "probe",
+            "watch",
+            "run",
+            "doctor",
+            "help",
+        )
+        assert "watch" in SUBCOMMANDS["/codextool"]
 
     def test_leading_slash_stripped(self):
         assert resolve_command("/help").name == "help"
@@ -193,7 +211,8 @@ class TestGatewayHelpLines:
         joined = "\n".join(lines)
         for cmd in COMMAND_REGISTRY:
             if cmd.cli_only and not cmd.gateway_config_gate:
-                assert f"`/{cmd.name}" not in joined, \
+                assert f"`/{cmd.name}`" not in joined
+                assert f"`/{cmd.name} " not in joined, \
                     f"cli_only command /{cmd.name} should not be in gateway help"
 
     def test_includes_alias_note_for_bg(self):
