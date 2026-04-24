@@ -53,6 +53,7 @@ def test_get_codex_model_ids_falls_back_to_curated_defaults(tmp_path, monkeypatc
     models = get_codex_model_ids()
 
     assert models[: len(DEFAULT_CODEX_MODELS)] == DEFAULT_CODEX_MODELS
+    assert models[0] == "gpt-5.5"
     assert "gpt-5.4" in models
     assert "gpt-5.3-codex-spark" in models
 
@@ -241,7 +242,7 @@ class TestNormalizeModelForProvider:
         assert cli.model == "gpt-5.3-codex"
 
     def test_default_fallback_when_api_fails(self):
-        """No model configured falls back to gpt-5.3-codex when API unreachable."""
+        """No model configured falls back to gpt-5.5 when API unreachable."""
         import cli as _cli_mod
         _clean_config = {
             "model": {
@@ -267,4 +268,4 @@ class TestNormalizeModelForProvider:
         ):
             changed = cli._normalize_model_for_provider("openai-codex")
         assert changed is True
-        assert cli.model == "gpt-5.3-codex"
+        assert cli.model == "gpt-5.5"
