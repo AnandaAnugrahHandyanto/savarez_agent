@@ -536,9 +536,16 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
 
     script_timeout = _get_script_timeout()
 
+    if os.access(str(path), os.X_OK):
+        cmd = [str(path)]
+    elif path.suffix.lower() in {".sh", ".bash"}:
+        cmd = ["/bin/bash", str(path)]
+    else:
+        cmd = [sys.executable, str(path)]
+
     try:
         result = subprocess.run(
-            [sys.executable, str(path)],
+            cmd,
             capture_output=True,
             text=True,
             timeout=script_timeout,
