@@ -70,3 +70,7 @@ Verified result:
 - `hermes auth list` shows `openai-codex` device-code credentials
 - `hermes status` shows `Provider: OpenAI Codex`
 - `hermes chat -q 'Reply with exactly OK'` succeeds under isolated `.hermes-home/`
+- Telegram bot token for `@spak47moltbot` is configured in repo-local `.hermes-home/.env`
+- Telegram access is restricted to Steven (`8459630899`)
+- `hermes gateway start/status` now shows a matching loaded launchd service
+- Steven confirmed in live testing that Hermes received Telegram messages successfully

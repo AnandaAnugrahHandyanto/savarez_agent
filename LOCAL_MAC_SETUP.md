@@ -57,9 +57,35 @@ Then set the active provider/model:
 ./scripts/run-local-hermes.sh config set model.default openai-codex/gpt-5.4
 ```
 
+## Telegram gateway setup on this Mac
+
+Configured locally for Telegram bot:
+- bot username: `@spak47moltbot`
+- allowed user: `8459630899`
+- token is stored only in repo-local `.hermes-home/.env`
+- proxy values are also stored only in repo-local `.hermes-home/.env`
+
+Useful commands:
+
+```bash
+cd /Users/steven/.openclaw/workspace/repos/hermes-agent
+./scripts/run-local-hermes.sh gateway status
+./scripts/run-local-hermes.sh gateway restart
+./scripts/run-local-hermes.sh gateway stop
+./scripts/run-local-hermes.sh gateway start
+```
+
+Logs:
+
+```bash
+tail -f .hermes-home/logs/gateway.log
+tail -f .hermes-home/logs/gateway.error.log
+```
+
 ## Verification summary
 
 Verified locally:
 - CLI entrypoint loads
-- `doctor`, `status`, `gateway --help`, and `chat -q` error handling run under isolated `HERMES_HOME`
-- Missing auth is the remaining blocker for an actual model-backed chat session
+- `doctor`, `status`, `gateway --help`, and `chat -q` run under isolated `HERMES_HOME`
+- OpenAI Codex OAuth is configured and working
+- Telegram gateway is installed and the bot can receive Steven's Telegram messages
