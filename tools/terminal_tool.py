@@ -41,6 +41,7 @@ import threading
 import atexit
 import shutil
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
@@ -189,6 +190,26 @@ def set_approval_callback(cb):
     GHSA-qg5c-hvr5-hjgr.
     """
     _callback_tls.approval = cb
+
+
+@contextmanager
+def bind_interactive_callbacks(*, approval_callback=None, sudo_password_callback=None):
+    """Bind interactive callbacks for the current thread only.
+
+    Dangerous-command approval and sudo prompts are stored in thread-local
+    state. Any worker/background thread that may execute terminal commands
+    must re-register the callbacks inside that thread or approvals fall back
+    to raw stdin input(), which deadlocks against prompt_toolkit in the CLI.
+    """
+    previous_approval = _get_approval_callback()
+    previous_sudo = _get_sudo_password_callback()
+    set_approval_callback(approval_callback)
+    set_sudo_password_callback(sudo_password_callback)
+    try:
+        yield
+    finally:
+        set_approval_callback(previous_approval)
+        set_sudo_password_callback(previous_sudo)
 
 # =============================================================================
 # Dangerous Command Approval System
