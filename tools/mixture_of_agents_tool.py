@@ -99,6 +99,7 @@ AGGREGATOR_TEMPERATURE = 0.4  # Focused synthesis for consistency
 # Failure handling configuration
 MIN_SUCCESSFUL_REFERENCES = 1  # Minimum successful reference models needed to proceed
 SELF_DRAFT_SUFFIX = " (self-draft)"
+_MOA_FORENSIC_REPAIR_ATTEMPTS = 2
 
 # System prompt for the aggregator model (from the research paper)
 AGGREGATOR_SYSTEM_PROMPT = """You have been provided with a set of responses from various open-source models to the latest user query. Your task is to synthesize these responses into a single, high-quality response. It is crucial to critically evaluate the information provided in these responses, recognizing that some of it may be biased or incorrect. Your response should not simply replicate the given answers but should offer a refined, accurate, and comprehensive reply to the instruction. Ensure your response is well-structured, coherent, and adheres to the highest standards of accuracy and reliability.
@@ -734,7 +735,7 @@ async def _run_moa_forensic_analysis(
     try:
         content = ""
         last_exc: Exception | None = None
-        for attempt in range(2):
+        for attempt in range(_MOA_FORENSIC_REPAIR_ATTEMPTS):
             response = await async_call_llm(
                 task="moa",
                 provider=route.get("provider"),
@@ -758,7 +759,7 @@ async def _run_moa_forensic_analysis(
                 return parsed, metrics
             except Exception as exc:
                 last_exc = exc
-                if attempt == 1:
+                if attempt == _MOA_FORENSIC_REPAIR_ATTEMPTS - 1:
                     raise
                 messages.extend([
                     {"role": "assistant", "content": content},

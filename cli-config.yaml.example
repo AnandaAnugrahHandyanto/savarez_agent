@@ -389,6 +389,8 @@ compression:
 #
 #   # Mixture of Agents — for genuinely hard reasoning/coding tasks.
 #   # Default stack: Xiaomi MiMo v2 Pro aggregates direct MiniMax + DeepSeek.
+#   # Optional forensic LLM analysis for forced ACP/Scarf MoA sessions:
+#   # export HERMES_MOA_FORENSIC_ANALYSIS=1
 #   moa:
 #     timeout: 180
 #     extra_body: {}
