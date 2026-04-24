@@ -186,6 +186,37 @@ class WhatsAppAdapter(BasePlatformAdapter):
         self._poll_task: Optional[asyncio.Task] = None
         self._http_session: Optional["aiohttp.ClientSession"] = None
 
+    def _normalized_session_path(self, value: Any) -> Optional[Path]:
+        """Normalize a session path value from config or bridge health payload."""
+        if value is None:
+            return None
+        raw = str(value).strip()
+        if not raw:
+            return None
+        try:
+            return Path(raw).expanduser().resolve()
+        except Exception:
+            return None
+
+    def _bridge_health_session_path(self, data: Dict[str, Any]) -> Optional[Path]:
+        """Return the bridge-reported session path from a health payload, if any."""
+        for key in ("sessionPath", "session_path", "sessionDir", "session_dir"):
+            normalized = self._normalized_session_path(data.get(key))
+            if normalized is not None:
+                return normalized
+        return None
+
+    def _bridge_health_matches_configured_session(self, data: Dict[str, Any]) -> bool:
+        """Whether a bridge health payload belongs to this adapter's session path."""
+        expected = self._normalized_session_path(self._session_path)
+        actual = self._bridge_health_session_path(data)
+        return expected is not None and actual is not None and actual == expected
+
+    def _bridge_health_session_label(self, data: Dict[str, Any]) -> str:
+        """Human-readable session path from a bridge health payload for diagnostics."""
+        actual = self._bridge_health_session_path(data)
+        return str(actual) if actual is not None else "unknown-session"
+
     def _whatsapp_require_mention(self) -> bool:
         configured = self.config.extra.get("require_mention")
         if configured is not None:
@@ -409,12 +440,17 @@ class WhatsAppAdapter(BasePlatformAdapter):
                             data = await resp.json()
                             bridge_status = data.get("status", "unknown")
                             if bridge_status == "connected":
-                                print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
-                                self._mark_connected()
-                                self._bridge_process = None  # Not managed by us
-                                self._http_session = aiohttp.ClientSession()
-                                self._poll_task = asyncio.create_task(self._poll_messages())
-                                return True
+                                if self._bridge_health_matches_configured_session(data):
+                                    print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
+                                    self._mark_connected()
+                                    self._bridge_process = None  # Not managed by us
+                                    self._http_session = aiohttp.ClientSession()
+                                    self._poll_task = asyncio.create_task(self._poll_messages())
+                                    return True
+                                print(
+                                    f"[{self.name}] Bridge found connected for different session "
+                                    f"({self._bridge_health_session_label(data)}), restarting"
+                                )
                             else:
                                 print(f"[{self.name}] Bridge found but not connected (status: {bridge_status}), restarting")
             except Exception:
