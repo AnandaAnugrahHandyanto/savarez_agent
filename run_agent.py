@@ -2107,8 +2107,15 @@ class AIAgent:
             })
 
         # ── Reset fallback state ──
+        # Some tests and lightweight callers construct an agent via __new__()
+        # and invoke switch_model() without running the full __init__ path.
+        # Normalize the legacy fallback attributes here before pruning so the
+        # model switch logic stays robust for those call sites too.
+        fallback_chain = list(getattr(self, "_fallback_chain", []) or [])
+        self._fallback_chain = fallback_chain
         self._fallback_activated = False
         self._fallback_index = 0
+        self._fallback_model = fallback_chain[0] if fallback_chain else None
 
         # When the user deliberately swaps primary providers (e.g. openrouter
         # → anthropic), drop any fallback entries that target the OLD primary
