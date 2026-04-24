@@ -147,8 +147,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("connect", "disconnect", "status")),
     CommandDef("plugins", "List installed plugins and their status",
                "Tools & Skills", cli_only=True),
-    CommandDef("plan", "Enter plan mode — produce a markdown plan for a multi-step task",
-               "Tools & Skills", args_hint="[request]"),
 
     # Info
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",

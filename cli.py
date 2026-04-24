@@ -1688,7 +1688,6 @@ def _looks_like_slash_command(text: str) -> bool:
 from agent.skill_commands import (
     scan_skill_commands,
     build_skill_invocation_message,
-    build_plan_path,
     build_preloaded_skills_prompt,
 )
 
@@ -5959,8 +5958,6 @@ class HermesCLI:
         elif canonical == "personality":
             # Use original case (handler lowercases the personality name itself)
             self._handle_personality_command(cmd_original)
-        elif canonical == "plan":
-            self._handle_plan_command(cmd_original)
         elif canonical == "retry":
             retry_msg = self.retry_last()
             if retry_msg and hasattr(self, '_pending_input'):
@@ -6194,32 +6191,6 @@ class HermesCLI:
                     _cprint(f"{_DIM}{_ACCENT}Type /help for available commands{_RST}")
         
         return True
-    
-    def _handle_plan_command(self, cmd: str):
-        """Handle /plan [request] — load the bundled plan skill."""
-        parts = cmd.strip().split(maxsplit=1)
-        user_instruction = parts[1].strip() if len(parts) > 1 else ""
-
-        plan_path = build_plan_path(user_instruction)
-        msg = build_skill_invocation_message(
-            "/plan",
-            user_instruction,
-            task_id=self.session_id,
-            runtime_note=(
-                "Save the markdown plan with write_file to this exact relative path "
-                f"inside the active workspace/backend cwd: {plan_path}"
-            ),
-        )
-
-        if not msg:
-            ChatConsole().print("[bold red]Failed to load the bundled /plan skill[/]")
-            return
-
-        _cprint(f"  📝 Plan mode queued via skill. Markdown plan target: {plan_path}")
-        if hasattr(self, '_pending_input'):
-            self._pending_input.put(msg)
-        else:
-            ChatConsole().print("[bold red]Plan mode unavailable: input queue not initialized[/]")
     
     def _handle_background_command(self, cmd: str):
         """Handle /background <prompt> — run a prompt in a separate background session.

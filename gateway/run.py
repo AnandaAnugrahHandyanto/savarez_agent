@@ -3632,28 +3632,6 @@ class GatewayRunner:
         if canonical == "personality":
             return await self._handle_personality_command(event)
 
-        if canonical == "plan":
-            try:
-                from agent.skill_commands import build_plan_path, build_skill_invocation_message
-
-                user_instruction = event.get_command_args().strip()
-                plan_path = build_plan_path(user_instruction)
-                event.text = build_skill_invocation_message(
-                    "/plan",
-                    user_instruction,
-                    task_id=_quick_key,
-                    runtime_note=(
-                        "Save the markdown plan with write_file to this exact relative path "
-                        f"inside the active workspace/backend cwd: {plan_path}"
-                    ),
-                )
-                if not event.text:
-                    return "Failed to load the bundled /plan skill."
-                canonical = None
-            except Exception as e:
-                logger.exception("Failed to prepare /plan command")
-                return f"Failed to enter plan mode: {e}"
-        
         if canonical == "retry":
             return await self._handle_retry_command(event)
         
