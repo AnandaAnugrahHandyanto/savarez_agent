@@ -129,6 +129,7 @@ class TestSessionEntryReason:
         assert entry2.was_auto_reset is True
         assert entry2.auto_reset_reason == "idle"
         assert entry2.session_id != entry1.session_id
+        assert entry2.previous_session_id == entry1.session_id
 
     def test_reset_had_activity_false_when_no_tokens(self, tmp_path):
         """Expired session with no tokens → reset_had_activity=False."""

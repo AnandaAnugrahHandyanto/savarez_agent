@@ -188,6 +188,49 @@ class PlatformConfig:
 
 
 @dataclass
+class TopicResumeConfig:
+    """Configuration for topic/thread resume continuity."""
+    enabled: bool = True
+    recent_message_count: int = 8
+    max_message_chars: int = 400
+    include_recent_messages: bool = True
+    include_workspace_decisions: bool = True
+    include_open_loops: bool = True
+    include_next_actions: bool = True
+    trigger_on_new_session: bool = True
+    trigger_on_auto_reset: bool = True
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "recent_message_count": self.recent_message_count,
+            "max_message_chars": self.max_message_chars,
+            "include_recent_messages": self.include_recent_messages,
+            "include_workspace_decisions": self.include_workspace_decisions,
+            "include_open_loops": self.include_open_loops,
+            "include_next_actions": self.include_next_actions,
+            "trigger_on_new_session": self.trigger_on_new_session,
+            "trigger_on_auto_reset": self.trigger_on_auto_reset,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "TopicResumeConfig":
+        if not data:
+            return cls()
+        return cls(
+            enabled=_coerce_bool(data.get("enabled"), True),
+            recent_message_count=int(data.get("recent_message_count", 8)),
+            max_message_chars=int(data.get("max_message_chars", 400)),
+            include_recent_messages=_coerce_bool(data.get("include_recent_messages"), True),
+            include_workspace_decisions=_coerce_bool(data.get("include_workspace_decisions"), True),
+            include_open_loops=_coerce_bool(data.get("include_open_loops"), True),
+            include_next_actions=_coerce_bool(data.get("include_next_actions"), True),
+            trigger_on_new_session=_coerce_bool(data.get("trigger_on_new_session"), True),
+            trigger_on_auto_reset=_coerce_bool(data.get("trigger_on_auto_reset"), True),
+        )
+
+
+@dataclass
 class StreamingConfig:
     """Configuration for real-time token streaming to messaging platforms."""
     enabled: bool = False
@@ -257,6 +300,9 @@ class GatewayConfig:
 
     # Streaming configuration
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
+
+    # Topic/thread resume continuity
+    topic_resume: TopicResumeConfig = field(default_factory=TopicResumeConfig)
 
     # Session store pruning: drop SessionEntry records older than this many
     # days from the in-memory dict and sessions.json.  Keeps the store from
@@ -372,6 +418,7 @@ class GatewayConfig:
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
+            "topic_resume": self.topic_resume.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
         }
     
@@ -441,6 +488,7 @@ class GatewayConfig:
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
+            topic_resume=TopicResumeConfig.from_dict(data.get("topic_resume", {})),
             session_store_max_age_days=session_store_max_age_days,
         )
 
