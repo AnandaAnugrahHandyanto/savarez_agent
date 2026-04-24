@@ -174,11 +174,12 @@ class AttachmentDownloader:
         cached_path.write_bytes(data)
         return str(cached_path)
 
-    async def download(self, url: str, content_type: str) -> Optional[str]:
+    async def download(self, url: str, content_type: str, filename: str = "") -> Optional[str]:
         """Dispatch to the correct download method based on *content_type*.
 
         :param url: CDN URL to download.
         :param content_type: MIME type used for routing.
+        :param filename: Original filename hint passed to :meth:`download_document`.
         :returns: Local file path, or ``None`` on failure.
         """
         ct = content_type.lower()
@@ -186,7 +187,7 @@ class AttachmentDownloader:
             return await self.download_image(url, content_type)
         if ct.startswith("audio/") or ct == "voice":
             return await self.download_audio(url)
-        return await self.download_document(url)
+        return await self.download_document(url, filename)
 
     # ------------------------------------------------------------------
     # Internal helpers

@@ -604,7 +604,7 @@ class QQAdapter(BasePlatformAdapter):
             cached = None
             if url:
                 try:
-                    cached = await self._downloader.download(url, ct)
+                    cached = await self._downloader.download(url, ct, fname)
                 except Exception as exc:
                     logger.debug("[%s] Failed to cache quoted attachment: %s", self._log_tag, exc)
             parts.append(_describe_attachment(ct, fname, cached))
