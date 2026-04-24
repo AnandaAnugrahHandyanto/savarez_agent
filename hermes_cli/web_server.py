@@ -2905,7 +2905,7 @@ async def tui_gateway_ws(websocket: WebSocket):
                     _notify("assistant.delta", {"text": delta})
 
                 def _on_tool_event(event_type: str, tool_name: str = None,
-                                   preview: str = None, **kwargs):
+                                   preview: str = None, *args, **kwargs):
                     if event_type == "tool.started":
                         _notify("tool.started", {"name": tool_name or "", "preview": preview or ""})
                     elif event_type == "tool.completed":
@@ -2950,8 +2950,6 @@ async def tui_gateway_ws(websocket: WebSocket):
                             platform="api_server",
                             stream_delta_callback=_on_delta,
                             tool_progress_callback=_on_tool_event,
-                            tool_start_callback=lambda *a, **kw: _on_tool_event("tool.started", *a, **kw),
-                            tool_complete_callback=lambda *a, **kw: _on_tool_event("tool.completed", *a, **kw),
                             session_db=db,
                             fallback_model=fallback_model,
                         )
