@@ -34,6 +34,10 @@ if (!(Get-Command "uv" -ErrorAction SilentlyContinue)) {
     
     # Reload path to pick up uv
     $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+    if (!(Get-Command "uv" -ErrorAction SilentlyContinue)) {
+        # Fallback for Astral's default install location
+        $env:Path += ";$env:USERPROFILE\.cargoin;$env:USERPROFILE\.localin"
+    }
 } else {
     Write-Output "'uv' is already installed."
 }
@@ -75,11 +79,11 @@ if (!(Test-Path "$RgDir\rg.exe")) {
 Write-Output "Generating hermes.cmd wrapper..."
 $ScriptsDir = "$ProjectRoot\venv\Scripts"
 $HermesCmd = "$ScriptsDir\hermes.cmd"
-$WrapperContent = @"
+$WrapperContent = @'
 @echo off
 rem Hermes Agent CLI Wrapper
 "%~dp0python.exe" -m hermes_cli.main %*
-"@
+'@
 Set-Content -Path $HermesCmd -Value $WrapperContent -Encoding ASCII
 Write-Output "Wrapper generated at $HermesCmd."
 
