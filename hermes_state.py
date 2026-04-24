@@ -392,6 +392,7 @@ class SessionDB:
     ) -> str:
         """Create a new session record. Returns the session_id."""
         def _do(conn):
+            resolved_title = self._allocate_unique_title(conn, title, session_id=session_id)
             conn.execute(
                 """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
                    system_prompt, parent_session_id, title, started_at)
@@ -404,7 +405,7 @@ class SessionDB:
                     json.dumps(model_config) if model_config else None,
                     system_prompt,
                     parent_session_id,
-                    title,
+                    resolved_title,
                     time.time(),
                 ),
             )
@@ -546,6 +547,7 @@ class SessionDB:
         session_id: str,
         source: str = "unknown",
         model: str = None,
+        title: str = None,
     ) -> None:
         """Ensure a session row exists, creating it with minimal metadata if absent.
 
@@ -554,11 +556,12 @@ class SessionDB:
         INSERT OR IGNORE is safe to call even when the row already exists.
         """
         def _do(conn):
+            resolved_title = self._allocate_unique_title(conn, title, session_id=session_id)
             conn.execute(
                 """INSERT OR IGNORE INTO sessions
-                   (id, source, model, started_at)
-                   VALUES (?, ?, ?, ?)""",
-                (session_id, source, model, time.time()),
+                   (id, source, model, title, started_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (session_id, source, model, resolved_title, time.time()),
             )
         self._execute_write(_do)
 
@@ -644,6 +647,48 @@ class SessionDB:
             )
 
         return cleaned
+
+    def _allocate_unique_title(
+        self,
+        conn: sqlite3.Connection,
+        title: Optional[str],
+        session_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """Sanitize a title and allocate a unique lineage variant when needed."""
+        sanitized = self.sanitize_title(title)
+        if sanitized is None:
+            return None
+
+        params = [sanitized]
+        sql = "SELECT 1 FROM sessions WHERE title = ?"
+        if session_id is not None:
+            sql += " AND id != ?"
+            params.append(session_id)
+
+        if conn.execute(sql, tuple(params)).fetchone() is None:
+            return sanitized
+
+        match = re.match(r'^(.*?) #(\d+)$', sanitized)
+        base = match.group(1) if match else sanitized
+        escaped = base.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+        params = [base, f"{escaped} #%"]
+        sql = "SELECT title FROM sessions WHERE (title = ? OR title LIKE ? ESCAPE '\\')"
+        if session_id is not None:
+            sql += " AND id != ?"
+            params.append(session_id)
+
+        existing = [row["title"] for row in conn.execute(sql, tuple(params)).fetchall()]
+        if not existing:
+            return base
+
+        max_num = 1
+        for existing_title in existing:
+            match = re.match(rf'^{re.escape(base)} #(\d+)$', existing_title)
+            if match:
+                max_num = max(max_num, int(match.group(1)))
+
+        return f"{base} #{max_num + 1}"
 
     def set_session_title(self, session_id: str, title: str) -> bool:
         """Set or update a session's title.

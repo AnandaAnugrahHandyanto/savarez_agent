@@ -989,6 +989,18 @@ class TestDeleteSessionOrphansChildren:
 # =========================================================================
 
 class TestSessionTitle:
+    def test_create_session_with_duplicate_title_gets_numbered_variant(self, db):
+        db.create_session(session_id="s1", source="cron", title="wiki-auto-ingest")
+        db.create_session(session_id="s2", source="cron", title="wiki-auto-ingest")
+
+        assert db.get_session("s1")["title"] == "wiki-auto-ingest"
+        assert db.get_session("s2")["title"] == "wiki-auto-ingest #2"
+
+    def test_create_session_sanitizes_title_input(self, db):
+        db.create_session(session_id="s1", source="cron", title="  hello\t\nworld  ")
+
+        assert db.get_session("s1")["title"] == "hello world"
+
     def test_set_and_get_title(self, db):
         db.create_session(session_id="s1", source="cli")
         assert db.set_session_title("s1", "My Session") is True
@@ -1753,6 +1765,19 @@ class TestConcurrentWriteSafety:
         assert row is not None
         assert row["source"] == "gateway"
         assert row["model"] == "test-model"
+
+    def test_ensure_session_preserves_requested_title(self, db):
+        """Late recovery path should still keep the caller's requested title."""
+        db.ensure_session(
+            "late-session",
+            source="cron",
+            model="gpt-4",
+            title="wiki-auto-ingest",
+        )
+
+        row = db.get_session("late-session")
+        assert row is not None
+        assert row["title"] == "wiki-auto-ingest"
 
     def test_ensure_session_is_idempotent(self, db):
         """ensure_session on an existing row must be a no-op (no overwrite)."""

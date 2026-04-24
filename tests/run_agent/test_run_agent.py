@@ -3468,6 +3468,29 @@ class TestSystemPromptStability:
         # Empty string is falsy, so should fall through to fresh build
         assert "Hermes Agent" in agent._cached_system_prompt
 
+
+class TestSessionPersistence:
+    def test_flush_messages_to_session_db_passes_session_title_to_ensure_session(self, agent):
+        mock_db = MagicMock()
+        agent._session_db = mock_db
+        agent._session_title = "wiki-auto-ingest"
+        agent.session_id = "cron-session-1"
+        agent.platform = "cron"
+        agent.model = "test-model"
+        agent._last_flushed_db_idx = 0
+
+        messages = [{"role": "user", "content": "hello"}]
+
+        agent._flush_messages_to_session_db(messages, conversation_history=[])
+
+        mock_db.ensure_session.assert_called_once_with(
+            "cron-session-1",
+            source="cron",
+            model="test-model",
+            title="wiki-auto-ingest",
+        )
+        mock_db.append_message.assert_called_once()
+
 class TestBudgetPressure:
     """Budget exhaustion grace call system."""
 

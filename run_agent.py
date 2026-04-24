@@ -3029,6 +3029,7 @@ class AIAgent:
                 self.session_id,
                 source=self.platform or "cli",
                 model=self.model,
+                title=self._session_title,
             )
             start_idx = len(conversation_history) if conversation_history else 0
             flush_from = max(start_idx, self._last_flushed_db_idx)
