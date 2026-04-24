@@ -9,6 +9,34 @@ mkdir -p "$ARTIFACT_DIR"
 TIMESTAMP="$(date +%Y-%m-%dT%H-%M-%S%z)"
 REPORT_PATH="$ARTIFACT_DIR/upstream-blocker-refresh-$TIMESTAMP.md"
 LATEST_PATH="$ARTIFACT_DIR/latest-upstream-blocker-refresh.md"
+SNAPSHOT_DIR="$(mktemp -d)"
+TOKEN_PATH="$SNAPSHOT_DIR/latest-upstream-blocker-refresh-token"
+BEFORE_TIMESTAMPED="$(mktemp)"
+AFTER_TIMESTAMPED="$(mktemp)"
+RESTORED_LATEST_COUNT=0
+REMOVED_TIMESTAMPED_COUNT=0
+
+LATEST_COMPONENTS=(
+  latest-reviewer-handoff.md
+  latest-workflow-approval-state-change.md
+  latest-pr-review-monitor.md
+  latest-ci-result-interpreter.md
+  latest-workflow-approval-trigger.md
+  latest-workflow-approval-brief.md
+  latest-upstream-blocker-refresh.md
+)
+
+cleanup_tmp() {
+  rm -rf "$SNAPSHOT_DIR" "$BEFORE_TIMESTAMPED" "$AFTER_TIMESTAMPED"
+}
+trap cleanup_tmp EXIT
+
+for component in "${LATEST_COMPONENTS[@]}"; do
+  if [[ -f "$ARTIFACT_DIR/$component" ]]; then
+    cp -p "$ARTIFACT_DIR/$component" "$SNAPSHOT_DIR/$component"
+  fi
+done
+find "$ARTIFACT_DIR" -maxdepth 1 -type f -name '*-20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*.md' -print | sort > "$BEFORE_TIMESTAMPED"
 
 # Keep the maintainer handoff baseline current before running the state-change
 # detector. The detector intentionally reads latest-reviewer-handoff.md as its
@@ -21,7 +49,7 @@ bash "$SCRIPT_DIR/emit-ci-result-interpreter.sh"
 bash "$SCRIPT_DIR/emit-workflow-approval-trigger.sh"
 bash "$SCRIPT_DIR/emit-workflow-approval-brief.sh"
 
-python - "$ARTIFACT_DIR" "$REPORT_PATH" "$LATEST_PATH" <<'PY'
+python - "$ARTIFACT_DIR" "$REPORT_PATH" "$LATEST_PATH" "$TOKEN_PATH" <<'PY'
 import re
 import shutil
 import sys
@@ -58,6 +86,7 @@ def extract_latest_signature(path: Path) -> dict[str, str] | None:
 artifacts_dir = Path(sys.argv[1])
 report_path = Path(sys.argv[2])
 latest_path = Path(sys.argv[3])
+token_path = Path(sys.argv[4])
 
 previous_signature = extract_latest_signature(latest_path)
 
@@ -156,16 +185,42 @@ One-command refresh of the live upstream blocker packet so a cron pass can updat
 {change_summary}
 
 ## Verification note
-This packet is only honest if the five component artifacts above were refreshed in the same run and agree on the live head/base SHA pair. Re-run this script instead of refreshing those files piecemeal when the next cron pass needs a current blocker packet.
+This packet is only honest if the component artifacts above were refreshed in the same run and agree on the live head/base SHA pair. Re-run this script instead of refreshing those files piecemeal when the next cron pass needs a current blocker packet.
 """
-report_path.write_text(report, encoding='utf-8')
-shutil.copyfile(report_path, latest_path)
+if material_change:
+    report_path.write_text(report, encoding='utf-8')
+    shutil.copyfile(report_path, latest_path)
+token_path.write_text(refresh_token + '\n', encoding='utf-8')
 print(report_path)
 print(refresh_token)
 PY
 
 bash "$SCRIPT_DIR/validate-artifact-consistency.sh"
 
+refresh_token="$(cat "$TOKEN_PATH" 2>/dev/null || true)"
+if [[ "$refresh_token" == "UPSTREAM_BLOCKER_PACKET_UNCHANGED" ]]; then
+  for component in "${LATEST_COMPONENTS[@]}"; do
+    if [[ -f "$SNAPSHOT_DIR/$component" ]]; then
+      cp -p "$SNAPSHOT_DIR/$component" "$ARTIFACT_DIR/$component"
+      RESTORED_LATEST_COUNT=$((RESTORED_LATEST_COUNT + 1))
+    elif [[ -f "$ARTIFACT_DIR/$component" ]]; then
+      rm -f "$ARTIFACT_DIR/$component"
+    fi
+  done
+
+  find "$ARTIFACT_DIR" -maxdepth 1 -type f -name '*-20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*.md' -print | sort > "$AFTER_TIMESTAMPED"
+  while IFS= read -r generated_artifact; do
+    [[ -n "$generated_artifact" ]] || continue
+    rm -f "$generated_artifact"
+    REMOVED_TIMESTAMPED_COUNT=$((REMOVED_TIMESTAMPED_COUNT + 1))
+  done < <(comm -13 "$BEFORE_TIMESTAMPED" "$AFTER_TIMESTAMPED")
+  printf 'UNCHANGED_PACKET_HYGIENE restored_latest=%s removed_timestamped=%s\n' "$RESTORED_LATEST_COUNT" "$REMOVED_TIMESTAMPED_COUNT"
+fi
+
 chmod +x "$SCRIPT_DIR/refresh-upstream-blocker-packet.sh"
-printf 'Wrote report: %s\n' "$REPORT_PATH"
+if [[ "$refresh_token" == "UPSTREAM_BLOCKER_PACKET_UNCHANGED" ]]; then
+  printf 'Skipped report write for unchanged blocker packet: %s\n' "$REPORT_PATH"
+else
+  printf 'Wrote report: %s\n' "$REPORT_PATH"
+fi
 printf 'Latest report: %s\n' "$LATEST_PATH"
