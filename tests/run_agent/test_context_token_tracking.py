@@ -15,6 +15,11 @@ sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 import run_agent
+from agent.model_metadata import (
+    estimate_messages_tokens_rough,
+    estimate_request_tokens_rough,
+    estimate_tokens_rough,
+)
 
 
 def _patch_bootstrap(monkeypatch):
@@ -126,3 +131,41 @@ def test_codex_no_cache_fields(monkeypatch):
     agent = _make_agent(monkeypatch, "codex_responses", "openai-codex", resp)
     agent.run_conversation("hi")
     assert agent.context_compressor.last_prompt_tokens == 3000
+
+
+def test_post_compression_estimate_includes_tools(monkeypatch):
+    agent = _make_agent(monkeypatch, "chat_completions", "openrouter", lambda: None)
+    agent.flush_memories = lambda *a, **k: None
+    agent.tools = [{
+        "type": "function",
+        "function": {
+            "name": "wide_tool",
+            "description": "x" * 400,
+            "parameters": {
+                "type": "object",
+                "properties": {"payload": {"type": "string", "description": "y" * 400}},
+            },
+        },
+    }]
+
+    compressed = [{"role": "assistant", "content": "summary"}]
+    agent.context_compressor.compress = lambda messages, current_tokens=None, focus_topic=None: compressed
+
+    _, new_system_prompt = agent._compress_context(
+        [{"role": "user", "content": "original"}],
+        "system prompt",
+        approx_tokens=1234,
+    )
+
+    expected = estimate_request_tokens_rough(
+        compressed,
+        system_prompt=new_system_prompt or "",
+        tools=agent.tools,
+    )
+    old_estimate = (
+        estimate_tokens_rough(new_system_prompt)
+        + estimate_messages_tokens_rough(compressed)
+    )
+
+    assert agent.context_compressor.last_prompt_tokens == expected
+    assert agent.context_compressor.last_prompt_tokens > old_estimate
