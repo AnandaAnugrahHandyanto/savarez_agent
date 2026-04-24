@@ -10,6 +10,49 @@ These notes come from a real multi-agent review of a Seedance 2.0 run that tried
 
 The short version: use `reference-to-video` when you need macro story flow across a compressed sequence. Use narrower `image-to-video` or start/end canaries when you need exact body mechanics, spatial continuity, or a single physical transition.
 
+## Mindset shift: semantic shots, not keyframe chains
+
+The production unit should be the **semantic shot**, not the individual frame.
+
+A semantic shot is a bounded cinematic event with:
+
+- a narrative function
+- an emotional turn
+- a visible before/after change
+- camera grammar
+- duration
+- continuity anchors
+- references and constraints
+- an evaluation rubric
+
+For example:
+
+```text
+A 6-second controlled ritual shot where the accused figure tries to rise despite public proof, black-gold corruption constricts the chest and throat, the upward ascent line breaks downward, and the witness remains outside the action.
+```
+
+That is different from asking for frames 1, 60, and 120. The references stabilize identity, world, and endpoints, but the model's useful capability is spent on motion, performance, atmosphere, camera behavior, and temporal interpolation inside the shot.
+
+This changes the orchestration question from:
+
+```text
+Which keyframes do we need?
+```
+
+to:
+
+```text
+What semantic shot are we compiling, which constraints are locked, and what should remain model-flexible?
+```
+
+A practical packet should separate:
+
+- **locked constraints:** identity, wardrobe, role, location, required prop, start/end state, duration, aspect ratio
+- **soft constraints:** mood, lens feel, movement style, texture, pacing, sound world
+- **free variables:** rain, smoke, robe flutter, small facial variation, particles, background flicker
+
+The goal is not maximum control. The goal is the lightest control mode that still preserves the shot's meaning.
+
 ## When to use this pattern
 
 Use Seedance `reference-to-video` for:
@@ -149,6 +192,8 @@ Low ritual drone under testimony. Rising pressure during the ascent attempt. Cho
 Treat each generation as a different control problem:
 
 - **Macro story ordering:** use `reference-to-video`, 5-8 role-separated references, 10-12 seconds, timed beat blocks, and trailer-board metadata.
+- **Semantic shot compilation:** define the shot as a bounded cinematic event first, then choose the lightest viable control mode: text-only, start frame, start/end keyframes, multi-reference pass, split-shot, or deterministic post.
+- **Constraint budgeting:** lock only what production cannot tolerate changing, guide taste with soft constraints, and leave model-native texture or motion details free.
 - **Exact physical transition:** use a 5-7 second canary, 2-3 references, and one event only.
 - **Concrete evidence beat:** design the prop or accusation object before generation; do not leave "proof" as abstract light or glyphs.
 - **Sequence quality:** always review the generated clip in context. Two individually passing clips can still fail as a stitched film unit.
