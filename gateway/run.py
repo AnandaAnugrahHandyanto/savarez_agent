@@ -7102,17 +7102,36 @@ class GatewayRunner:
                 tmp_agent._print_fn = lambda *a, **kw: None
 
                 compressor = tmp_agent.context_compressor
-                compress_start = compressor.protect_first_n
-                compress_start = compressor._align_boundary_forward(msgs, compress_start)
-                compress_end = compressor._find_tail_cut_by_tokens(msgs, compress_start)
-                if compress_start >= compress_end:
-                    return "Nothing to compress yet (the transcript is still all protected context)."
+
+                # Guard against pluggable context engines (e.g. LCMEngine)
+                # that don't expose legacy ContextCompressor internals.
+                _has_legacy_api = (
+                    hasattr(compressor, '_align_boundary_forward')
+                    and hasattr(compressor, '_find_tail_cut_by_tokens')
+                )
+
+                if _has_legacy_api:
+                    compress_start = compressor.protect_first_n
+                    compress_start = compressor._align_boundary_forward(msgs, compress_start)
+                    compress_end = compressor._find_tail_cut_by_tokens(msgs, compress_start)
+                    if compress_start >= compress_end:
+                        return "Nothing to compress yet (the transcript is still all protected context)."
 
                 loop = asyncio.get_running_loop()
-                compressed, _ = await loop.run_in_executor(
-                    None,
-                    lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens, focus_topic=focus_topic)
-                )
+
+                if _has_legacy_api:
+                    compressed, _ = await loop.run_in_executor(
+                        None,
+                        lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens, focus_topic=focus_topic)
+                    )
+                else:
+                    # Pluggable engine: use the public compress() API
+                    compressed = await loop.run_in_executor(
+                        None,
+                        lambda: compressor.compress(msgs, current_tokens=approx_tokens, focus_topic=focus_topic)
+                    )
+                    if compressed == msgs or len(compressed) >= len(msgs):
+                        return "Nothing to compress yet (the transcript is still all protected context)."
 
                 # _compress_context already calls end_session() on the old session
                 # (preserving its full transcript in SQLite) and creates a new
