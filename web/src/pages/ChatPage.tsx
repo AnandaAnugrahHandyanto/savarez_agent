@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Send, Square, Plus, MessageSquare } from "lucide-react";
+import { Send, Square, Plus, MessageSquare, Copy } from "lucide-react";
 import { H2 } from "@nous-research/ui";
 import { GatewayClient } from "@/lib/gatewayClient";
 import type { GatewayEvent } from "@/lib/gatewayClient";
@@ -103,7 +103,7 @@ export default function ChatPage() {
 
   const clientRef = useRef<GatewayClient | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   // Scroll to bottom on new messages
   useEffect(() => {
@@ -388,17 +388,42 @@ export default function ChatPage() {
             className={msg.role === "user" ? "chat-bubble-user" : "chat-bubble-assistant"}
           >
             {msg.role === "user" ? (
-              <div className="bg-primary/10 px-3 py-2 text-sm text-primary whitespace-pre-wrap">
+              <div className="group relative bg-primary/10 px-3 py-2 text-sm text-primary whitespace-pre-wrap normal-case">
                 {msg.text}
+                <button
+                  type="button"
+                  className="absolute bottom-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-primary/10"
+                  onClick={() => {
+                    navigator.clipboard.writeText(msg.text);
+                    const btn = document.activeElement as HTMLElement;
+                    btn?.setAttribute("data-copied", "1");
+                    setTimeout(() => btn?.removeAttribute("data-copied"), 1500);
+                  }}
+                  aria-label="Copy message"
+                >
+                  <Copy className="h-3.5 w-3.5 text-primary/50 hover:text-primary" />
+                </button>
               </div>
             ) : (
-              <div className="bg-success/5 border border-success/10 px-3 py-2">
-                {msg.text && <Markdown content={msg.text} />}
+              <div className="group relative bg-success/5 border border-success/10 px-3 py-2 normal-case">
                 {msg.tools.map((t) => (
                   <ToolCall key={t.id} tool={t} />
                 ))}
                 {msg.streaming && !msg.text && msg.tools.length === 0 && (
                   <span className="inline-block h-3 w-3 animate-spin rounded-full border-[1.5px] border-success border-t-transparent" />
+                )}
+                {msg.text && <Markdown content={msg.text} />}
+                {!msg.streaming && msg.text && (
+                  <button
+                    type="button"
+                    className="absolute bottom-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-success/10"
+                    onClick={() => {
+                      navigator.clipboard.writeText(msg.text);
+                    }}
+                    aria-label="Copy response"
+                  >
+                    <Copy className="h-3.5 w-3.5 text-success/50 hover:text-success" />
+                  </button>
                 )}
               </div>
             )}
@@ -419,14 +444,21 @@ export default function ChatPage() {
           />
         )}
 
-        <div className="flex gap-2 items-center">
-          <input
+        <div className="flex gap-2 items-end">
+          <textarea
             ref={inputRef}
-            className="flex-1 bg-input/20 border border-border px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+            rows={1}
+            className="flex-1 bg-input/20 border border-border px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50 resize-none overflow-y-auto normal-case"
+            style={{ maxHeight: `${5 * 1.5 * 0.875 + 1}em` }}
             placeholder={status === "ready" ? "Message… (/ for commands)" : "Connecting…"}
             value={input}
             disabled={status !== "ready"}
-            onChange={(e) => handleInputChange(e.target.value)}
+            onChange={(e) => {
+              handleInputChange(e.target.value);
+              const el = e.target;
+              el.style.height = "auto";
+              el.style.height = el.scrollHeight + "px";
+            }}
             onKeyDown={(e) => {
               if (e.key === "Escape") {
                 setShowPicker(false);
@@ -438,7 +470,6 @@ export default function ChatPage() {
               }
             }}
             onBlur={() => {
-              // Delay so onMouseDown in picker fires first
               setTimeout(() => setShowPicker(false), 150);
             }}
             onFocus={() => {

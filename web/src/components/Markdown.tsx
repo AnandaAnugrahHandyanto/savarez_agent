@@ -1,4 +1,5 @@
-import { useMemo } from "react";
+import { useMemo, useState, useCallback } from "react";
+import { Copy, Check } from "lucide-react";
 
 /**
  * Lightweight markdown renderer for LLM output.
@@ -26,6 +27,7 @@ type BlockNode =
   | { type: "heading"; level: number; content: string }
   | { type: "hr" }
   | { type: "list"; ordered: boolean; items: string[] }
+  | { type: "table"; headers: string[]; rows: string[][] }
   | { type: "paragraph"; content: string };
 
 /* ------------------------------------------------------------------ */
@@ -92,6 +94,19 @@ function parseBlocks(text: string): BlockNode[] {
       continue;
     }
 
+    // Table: header | header\n---|---\ncell | cell
+    if (i + 1 < lines.length && /\|/.test(line) && /^\|?\s*[-:]+[-|\s]*$/.test(lines[i + 1])) {
+      const headerCells = line.replace(/^\|/, "").replace(/\|$/, "").split("|").map((c: string) => c.trim());
+      i += 2; // skip header + separator
+      const rows: string[][] = [];
+      while (i < lines.length && /\|/.test(lines[i]) && lines[i].trim() !== "") {
+        rows.push(lines[i].replace(/^\|/, "").replace(/\|$/, "").split("|").map((c: string) => c.trim()));
+        i++;
+      }
+      blocks.push({ type: "table", headers: headerCells, rows });
+      continue;
+    }
+
     // Empty line
     if (line.trim() === "") {
       i++;
@@ -124,14 +139,39 @@ function parseBlocks(text: string): BlockNode[] {
 /*  Block renderer                                                     */
 /* ------------------------------------------------------------------ */
 
+function CodeBlock({ lang, content }: { lang: string; content: string }) {
+  const [copied, setCopied] = useState(false);
+  const doCopy = useCallback(() => {
+    navigator.clipboard.writeText(content).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  }, [content]);
+
+  return (
+    <div className="relative group">
+      <pre className="bg-secondary/60 border border-border px-3 py-2.5 text-xs font-mono leading-relaxed overflow-x-auto">
+        <code>{content}</code>
+      </pre>
+      <div className="absolute top-1 right-1 flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+        {lang && <span className="text-[10px] text-muted-foreground font-mono">{lang}</span>}
+        <button
+          type="button"
+          onClick={doCopy}
+          className="p-1 rounded hover:bg-secondary/80 transition-colors"
+          aria-label="Copy code"
+        >
+          {copied ? <Check className="h-3 w-3 text-success" /> : <Copy className="h-3 w-3 text-muted-foreground" />}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function Block({ block, highlightTerms }: { block: BlockNode; highlightTerms?: string[] }) {
   switch (block.type) {
     case "code":
-      return (
-        <pre className="bg-secondary/60 border border-border px-3 py-2.5 text-xs font-mono leading-relaxed overflow-x-auto">
-          <code>{block.content}</code>
-        </pre>
-      );
+      return <CodeBlock lang={block.lang} content={block.content} />;
 
     case "heading": {
       const Tag = `h${Math.min(block.level, 4)}` as "h1" | "h2" | "h3" | "h4";
@@ -157,6 +197,34 @@ function Block({ block, highlightTerms }: { block: BlockNode; highlightTerms?: s
         </Tag>
       );
     }
+
+    case "table":
+      return (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs border-collapse">
+            <thead>
+              <tr className="border-b border-border">
+                {block.headers.map((h, i) => (
+                  <th key={i} className="px-2 py-1.5 text-left font-semibold text-foreground/80">
+                    <InlineContent text={h} highlightTerms={highlightTerms} />
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {block.rows.map((row, ri) => (
+                <tr key={ri} className="border-b border-border/50">
+                  {row.map((cell, ci) => (
+                    <td key={ci} className="px-2 py-1.5">
+                      <InlineContent text={cell} highlightTerms={highlightTerms} />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
 
     case "paragraph":
       return <p><InlineContent text={block.content} highlightTerms={highlightTerms} /></p>;
