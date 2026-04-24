@@ -127,13 +127,14 @@ by the setup wizard (via `save_config`), or written manually — see
 | Tool | Description |
 |------|-------------|
 | `mem0_oss_search` | Semantic search over stored memories |
+| `mem0_oss_add` | Store a fact, preference, or context explicitly |
 
 Facts are extracted and stored automatically on every conversation turn via
 `sync_turn` — no explicit save call needed.
 
 Writes via the built-in `memory` tool are also mirrored automatically into
 mem0 via `on_memory_write`.  To explicitly save something mid-session, use
-the built-in `memory` tool; it will propagate to mem0 automatically.
+`mem0_oss_add` (or the built-in `memory` tool — both propagate to mem0).
 
 ## Concurrent access (WebUI + gateway)
 
