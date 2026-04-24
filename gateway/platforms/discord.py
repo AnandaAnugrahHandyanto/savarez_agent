@@ -2246,10 +2246,6 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_usage(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/usage")
 
-        @tree.command(name="provider", description="Show available providers")
-        async def slash_provider(interaction: discord.Interaction):
-            await self._run_simple_slash(interaction, "/provider")
-
         @tree.command(name="help", description="Show available commands")
         async def slash_help(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/help")
@@ -2719,7 +2715,12 @@ class DiscordAdapter(BasePlatformAdapter):
         return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no", "off")
 
     def _discord_free_response_channels(self) -> set:
-        """Return Discord channel references where no bot mention is required."""
+        """Return Discord channel references where no bot mention is required.
+
+        A single ``"*"`` entry (either from a list or a comma-separated
+        string) is preserved in the returned set so callers can short-circuit
+        on wildcard membership, consistent with ``allowed_channels``.
+        """
         raw = self.config.extra.get("free_response_channels")
         if raw is None:
             raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
@@ -3926,6 +3927,15 @@ if DISCORD_AVAILABLE:
 
             self.resolved = True
             model_id = interaction.data["values"][0]
+            self.clear_items()
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="⚙ Switching Model",
+                    description=f"Switching to `{model_id}`...",
+                    color=discord.Color.blue(),
+                ),
+                view=None,
+            )
 
             try:
                 result_text = await self.on_model_selected(
@@ -3936,14 +3946,13 @@ if DISCORD_AVAILABLE:
             except Exception as exc:
                 result_text = f"Error switching model: {exc}"
 
-            self.clear_items()
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 embed=discord.Embed(
                     title="⚙ Model Switched",
                     description=result_text,
                     color=discord.Color.green(),
                 ),
-                view=self,
+                view=None,
             )
 
         async def _on_back(self, interaction: discord.Interaction):
