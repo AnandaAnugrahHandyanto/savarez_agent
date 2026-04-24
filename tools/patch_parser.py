@@ -33,6 +33,7 @@ import re
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple, Any
 from enum import Enum
+from tools.file_operations import PatchResult
 
 
 class OperationType(Enum):
@@ -263,7 +264,7 @@ def _validate_operations(
 
             simulated = read_result.content
             for hunk in op.hunks:
-                search_lines = [l.content for l in hunk.lines if l.prefix in (' ', '-')]
+                search_lines = [line.content for line in hunk.lines if line.prefix in (' ', '-')]
                 if not search_lines:
                     # Addition-only hunk: validate context hint uniqueness
                     if hunk.context_hint:
@@ -282,7 +283,7 @@ def _validate_operations(
                     continue
 
                 search_pattern = '\n'.join(search_lines)
-                replace_lines = [l.content for l in hunk.lines if l.prefix in (' ', '+')]
+                replace_lines = [line.content for line in hunk.lines if line.prefix in (' ', '+')]
                 replacement = '\n'.join(replace_lines)
 
                 new_simulated, count, _strategy, match_error = fuzzy_find_and_replace(
@@ -329,7 +330,7 @@ def _validate_operations(
 
 
 def apply_v4a_operations(operations: List[PatchOperation],
-                          file_ops: Any) -> 'PatchResult':
+                          file_ops: Any) -> PatchResult:
     """Apply V4A patch operations using a file operations interface.
 
     Uses a two-phase validate-then-apply approach:
