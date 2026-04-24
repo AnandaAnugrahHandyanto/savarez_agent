@@ -16,6 +16,13 @@ Get Hermes Agent up and running in under two minutes with the one-line installer
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 ```
 
+### Windows 11 (Native)
+
+```powershell
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1" -OutFile "install.ps1"
+.\install.ps1
+```
+
 ### Android / Termux
 
 Hermes now ships a Termux-aware installer path too:
@@ -34,7 +41,7 @@ The installer detects Termux automatically and switches to a tested Android flow
 If you want the fully explicit path, follow the dedicated [Termux guide](./termux.md).
 
 :::warning Windows
-Native Windows is **not supported**. Please install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and run Hermes Agent from there. The install command above works inside WSL2.
+We now fully support Native Windows 11 using the `install.ps1` script above, which will configure Python, `uv`, dependencies, and fetch `ripgrep` for native search capability.
 :::
 
 ### What the Installer Does

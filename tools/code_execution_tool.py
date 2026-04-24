@@ -24,7 +24,7 @@ Architecture (two transports):
 In both cases, only the script's stdout is returned to the LLM; intermediate
 tool results never enter the context window.
 
-Platform: Linux / macOS only (Unix domain sockets for local). Disabled on Windows.
+Platform: Linux / macOS / Windows (Local TCP Sockets for local).
 Remote execution additionally requires Python 3 in the terminal backend.
 """
 
@@ -50,7 +50,7 @@ from typing import Any, Dict, List, Optional
 # Availability gate: UDS requires a POSIX OS
 logger = logging.getLogger(__name__)
 
-SANDBOX_AVAILABLE = sys.platform != "win32"
+SANDBOX_AVAILABLE = True
 
 # The 7 tools allowed inside the sandbox. The intersection of this list
 # and the session's enabled tools determines which stubs are generated.
@@ -72,7 +72,6 @@ MAX_STDERR_BYTES = 10_000    # 10 KB
 
 
 def check_sandbox_requirements() -> bool:
-    """Code execution sandbox requires a POSIX OS for Unix domain sockets."""
     return SANDBOX_AVAILABLE
 
 
@@ -211,13 +210,22 @@ import json, os, socket, shlex, time
 
 _sock = None
 ''' + _COMMON_HELPERS + '''\
-
 def _connect():
     global _sock
     if _sock is None:
-        _sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        _sock.connect(os.environ["HERMES_RPC_SOCKET"])
-        _sock.settimeout(300)
+        port = int(os.environ.get("HERMES_RPC_PORT", "0"))
+        token = os.environ.get("HERMES_RPC_TOKEN", "")
+        socket_path = os.environ.get("HERMES_RPC_SOCKET", "")
+
+        if port:
+            _sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            _sock.connect(("127.0.0.1", port))
+            _sock.settimeout(300)
+            _sock.sendall((token + "\\n").encode())
+        else:
+            _sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            _sock.connect(socket_path)
+            _sock.settimeout(300)
     return _sock
 
 def _call(tool_name, args):
@@ -243,8 +251,6 @@ def _call(tool_name, args):
     return result
 
 '''
-
-# ---- File-based transport (remote backends) -------------------------------
 
 _FILE_TRANSPORT_HEADER = '''\
 """Auto-generated Hermes tools RPC stubs (file-based transport)."""
@@ -307,6 +313,7 @@ _TERMINAL_BLOCKED_PARAMS = {"background", "pty", "notify_on_complete", "watch_pa
 
 def _rpc_server_loop(
     server_sock: socket.socket,
+    expected_token: str,
     task_id: str,
     tool_call_log: list,
     tool_call_counter: list,   # mutable [int] so the thread can increment
@@ -326,6 +333,7 @@ def _rpc_server_loop(
         conn.settimeout(300)
 
         buf = b""
+        authenticated = False
         while True:
             try:
                 chunk = conn.recv(65536)
@@ -340,6 +348,14 @@ def _rpc_server_loop(
                 line, buf = buf.split(b"\n", 1)
                 line = line.strip()
                 if not line:
+                    continue
+
+                if not authenticated:
+                    token = line.decode()
+                    if token != expected_token:
+                        logger.error("RPC authentication failed")
+                        return
+                    authenticated = True
                     continue
 
                 call_start = time.monotonic()
@@ -922,7 +938,7 @@ def execute_code(
     """
     if not SANDBOX_AVAILABLE:
         return json.dumps({
-            "error": "execute_code is not available on Windows. Use normal tool calls instead."
+            "error": "execute_code is not available. Use normal tool calls instead."
         })
 
     if not code or not code.strip():
@@ -976,16 +992,17 @@ def execute_code(
         with open(os.path.join(tmpdir, "script.py"), "w") as f:
             f.write(code)
 
-        # --- Start UDS server ---
-        server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        server_sock.bind(sock_path)
-        os.chmod(sock_path, 0o600)
+        # --- Start TCP server ---
+        server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_sock.bind(("127.0.0.1", 0))
+        server_port = server_sock.getsockname()[1]
         server_sock.listen(1)
+        rpc_token = uuid.uuid4().hex
 
         rpc_thread = threading.Thread(
             target=_rpc_server_loop,
             args=(
-                server_sock, task_id, tool_call_log,
+                server_sock, rpc_token, task_id, tool_call_log,
                 tool_call_counter, max_tool_calls, sandbox_tools,
             ),
             daemon=True,
@@ -1021,7 +1038,8 @@ def execute_code(
             # Allow vars with known safe prefixes.
             if any(k.startswith(p) for p in _SAFE_ENV_PREFIXES):
                 child_env[k] = v
-        child_env["HERMES_RPC_SOCKET"] = sock_path
+        child_env["HERMES_RPC_PORT"] = str(server_port)
+        child_env["HERMES_RPC_TOKEN"] = rpc_token
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"
         # Ensure the hermes-agent root is importable in the sandbox so
         # repo-root modules are available to child scripts.  We also prepend

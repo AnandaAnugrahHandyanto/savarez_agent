@@ -1,3 +1,4 @@
+from agent.platform import platform_info, ProcessManager
 """
 Gateway runtime status helpers.
 
@@ -30,7 +31,7 @@ else:
 _GATEWAY_KIND = "hermes-gateway"
 _RUNTIME_STATUS_FILE = "gateway_state.json"
 _LOCKS_DIRNAME = "gateway-locks"
-_IS_WINDOWS = sys.platform == "win32"
+
 _UNSET = object()
 _GATEWAY_LOCK_FILENAME = "gateway.lock"
 _gateway_lock_handle = None
@@ -74,7 +75,7 @@ def terminate_pid(pid: int, *, force: bool = False) -> None:
     POSIX uses SIGTERM/SIGKILL. Windows uses taskkill /T /F for true force-kill
     because os.kill(..., SIGTERM) is not equivalent to a tree-killing hard stop.
     """
-    if force and _IS_WINDOWS:
+    if force and platform_info.is_windows:
         try:
             result = subprocess.run(
                 ["taskkill", "/PID", str(pid), "/T", "/F"],
@@ -281,7 +282,7 @@ def _write_gateway_lock_record(handle) -> None:
 
 def _try_acquire_file_lock(handle) -> bool:
     try:
-        if _IS_WINDOWS:
+        if platform_info.is_windows:
             handle.seek(0, os.SEEK_END)
             if handle.tell() == 0:
                 handle.write("\n")
@@ -297,7 +298,7 @@ def _try_acquire_file_lock(handle) -> bool:
 
 def _release_file_lock(handle) -> None:
     try:
-        if _IS_WINDOWS:
+        if platform_info.is_windows:
             handle.seek(0)
             msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
         else:

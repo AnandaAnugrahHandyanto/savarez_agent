@@ -17,10 +17,7 @@ import tempfile
 import threading
 import time
 
-try:
-    import fcntl
-except ImportError:
-    fcntl = None  # Windows — file locking skipped
+from agent.platform import FileLocker
 from pathlib import Path
 from typing import Callable
 
@@ -274,16 +271,12 @@ class FileSyncManager:
 
     def _sync_back_locked(self, lock_path: Path) -> None:
         """Sync-back under file lock (serializes concurrent gateways)."""
-        if fcntl is None:
-            # Windows: no flock — run without serialization
-            self._sync_back_impl()
-            return
         lock_fd = open(lock_path, "w")
+        from agent.platform import FileLocker
         try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
-            self._sync_back_impl()
+            with FileLocker.context(lock_fd.fileno()):
+                self._sync_back_impl()
         finally:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
             lock_fd.close()
 
     def _sync_back_impl(self) -> None:

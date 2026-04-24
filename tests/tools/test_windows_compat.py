@@ -47,7 +47,7 @@ class TestNoUnconditionalSetsid:
 
 
 class TestIsWindowsConstant:
-    """Each guarded file must define _IS_WINDOWS."""
+    """Each guarded file must define _IS_WINDOWS or import platform_info."""
 
     @pytest.mark.parametrize("relpath", GUARDED_FILES)
     def test_has_is_windows(self, relpath):
@@ -55,8 +55,8 @@ class TestIsWindowsConstant:
         if not filepath.exists():
             pytest.skip(f"{relpath} not found")
         source = filepath.read_text(encoding="utf-8")
-        assert "_IS_WINDOWS" in source, (
-            f"{relpath} missing _IS_WINDOWS platform guard"
+        assert "_IS_WINDOWS" in source or "platform_info" in source or "ProcessManager" in source, (
+            f"{relpath} missing Windows platform guard"
         )
 
 
@@ -75,6 +75,6 @@ class TestKillpgGuarded:
             if "os.killpg" in stripped or "os.getpgid" in stripped:
                 # Check that there's an _IS_WINDOWS guard in the surrounding context
                 context = "\n".join(lines[max(0, i - 15):i + 1])
-                assert "_IS_WINDOWS" in context or "else:" in context, (
+                assert "_IS_WINDOWS" in context or "else:" in context or "platform_info" in context or "ProcessManager" in context, (
                     f"{relpath}:{i + 1} has unguarded os.killpg/os.getpgid call"
                 )

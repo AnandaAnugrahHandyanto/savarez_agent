@@ -293,7 +293,8 @@ class TestGatewayRuntimeStatus:
 class TestTerminatePid:
     def test_force_uses_taskkill_on_windows(self, monkeypatch):
         calls = []
-        monkeypatch.setattr(status, "_IS_WINDOWS", True)
+        from agent.platform import platform_info
+        monkeypatch.setattr(platform_info, "is_windows", True)
 
         def fake_run(cmd, capture_output=False, text=False, timeout=None):
             calls.append((cmd, capture_output, text, timeout))
@@ -309,7 +310,8 @@ class TestTerminatePid:
 
     def test_force_falls_back_to_sigterm_when_taskkill_missing(self, monkeypatch):
         calls = []
-        monkeypatch.setattr(status, "_IS_WINDOWS", True)
+        from agent.platform import platform_info
+        monkeypatch.setattr(platform_info, "is_windows", True)
 
         def fake_run(*args, **kwargs):
             raise FileNotFoundError

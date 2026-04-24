@@ -307,27 +307,21 @@ class TestPushedHashesPopulated:
 class TestSyncBackFileLock:
     """Verify that fcntl.flock is used during sync-back."""
 
-    @patch("tools.environments.file_sync.fcntl.flock")
-    def test_sync_back_file_lock(self, mock_flock, tmp_path):
+    @patch("agent.platform.FileLocker.context")
+    def test_sync_back_file_lock(self, mock_context, tmp_path):
         download_fn = _make_download_fn({})
         mgr = _make_manager(tmp_path, bulk_download_fn=download_fn)
 
         mgr.sync_back(hermes_home=tmp_path / ".hermes")
 
-        # flock should have been called at least twice: LOCK_EX to acquire, LOCK_UN to release
-        assert mock_flock.call_count >= 2
-
-        lock_calls = mock_flock.call_args_list
-        lock_ops = [c[0][1] for c in lock_calls]
-        assert fcntl.LOCK_EX in lock_ops
-        assert fcntl.LOCK_UN in lock_ops
+        assert mock_context.called
 
     def test_sync_back_skips_flock_when_fcntl_none(self, tmp_path):
         """On Windows (fcntl=None), sync_back should skip file locking."""
         download_fn = _make_download_fn({})
         mgr = _make_manager(tmp_path, bulk_download_fn=download_fn)
 
-        with patch("tools.environments.file_sync.fcntl", None):
+        with patch("agent.platform.FileLocker.lock", MagicMock()), patch("agent.platform.FileLocker.unlock", MagicMock()), patch("agent.platform.FileLocker.context", MagicMock()):
             # Should not raise — locking is skipped
             mgr.sync_back(hermes_home=tmp_path / ".hermes")
 

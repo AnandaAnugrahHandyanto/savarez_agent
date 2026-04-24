@@ -70,10 +70,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
 
-try:
-    import fcntl  # POSIX only; Windows falls back to best-effort without flock.
-except ImportError:  # pragma: no cover
-    fcntl = None  # type: ignore[assignment]
+from agent.platform import FileLocker
 
 from hermes_constants import get_hermes_home
 

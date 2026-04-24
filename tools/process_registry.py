@@ -40,7 +40,7 @@ import threading
 import time
 import uuid
 
-_IS_WINDOWS = platform.system() == "Windows"
+from agent.platform import ProcessManager, platform_info
 from tools.environments.local import _find_shell, _sanitize_subprocess_env
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -282,7 +282,7 @@ class ProcessRegistry:
     @staticmethod
     def _terminate_host_pid(pid: int) -> None:
         """Terminate a host-visible PID without requiring the original process handle."""
-        if _IS_WINDOWS:
+        if platform_info.is_windows:
             os.kill(pid, signal.SIGTERM)
             return
 
@@ -337,7 +337,7 @@ class ProcessRegistry:
         if use_pty:
             # Try PTY mode for interactive CLI tools
             try:
-                if _IS_WINDOWS:
+                if platform_info.is_windows:
                     from winpty import PtyProcess as _PtyProcessCls
                 else:
                     from ptyprocess import PtyProcess as _PtyProcessCls
@@ -395,7 +395,7 @@ class ProcessRegistry:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE,
-            preexec_fn=None if _IS_WINDOWS else os.setsid,
+            preexec_fn=None if platform_info.is_windows else os.setsid,
         )
 
         session.process = proc
@@ -805,7 +805,7 @@ class ProcessRegistry:
             elif session.process:
                 # Local process -- kill the process group
                 try:
-                    if _IS_WINDOWS:
+                    if platform_info.is_windows:
                         session.process.terminate()
                     else:
                         os.killpg(os.getpgid(session.process.pid), signal.SIGTERM)

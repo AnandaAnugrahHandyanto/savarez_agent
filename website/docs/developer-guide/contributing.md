@@ -94,7 +94,7 @@ pytest tests/ -v
 
 ## Cross-Platform Compatibility
 
-Hermes officially supports Linux, macOS, and WSL2. Native Windows is **not supported**, but the codebase includes some defensive coding patterns to avoid hard crashes in edge cases. Key rules:
+Hermes officially supports Linux, macOS, Native Windows 11, and WSL2. Key rules:
 
 ### 1. `termios` and `fcntl` are Unix-only
 
