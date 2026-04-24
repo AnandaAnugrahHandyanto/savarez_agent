@@ -732,6 +732,82 @@ def _qwen_portal_headers() -> dict:
     }
 
 
+def _custom_provider_context_length_for_model(
+    config: Dict[str, Any],
+    model: str,
+    base_url: str,
+) -> Optional[int]:
+    """Return custom_providers[].models[model].context_length for an endpoint.
+
+    Custom endpoints often expose an OpenAI-compatible ``/models`` response
+    that lists the model but omits context-window metadata. Hermes lets users
+    declare the missing value under ``custom_providers[].models``; this helper
+    resolves that override for any model using the same custom endpoint (main
+    chat model or auxiliary compression model).
+    """
+    if not isinstance(config, dict) or not model or not base_url:
+        return None
+
+    def _coerce_context_length(value: Any) -> Optional[int]:
+        if value is None:
+            return None
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
+    base = str(base_url or "").strip().rstrip("/")
+    if not base:
+        return None
+
+    model_candidates = [str(model).strip()]
+    if "/" in model_candidates[0]:
+        model_candidates.append(model_candidates[0].rsplit("/", 1)[-1])
+    if ":" in model_candidates[0]:
+        prefix, suffix = model_candidates[0].split(":", 1)
+        if prefix.lower() in {"custom", "local"} and suffix.strip():
+            model_candidates.append(suffix.strip())
+
+    try:
+        from hermes_cli.config import get_compatible_custom_providers
+        custom_providers = get_compatible_custom_providers(config)
+    except Exception:
+        custom_providers = config.get("custom_providers")
+        if not isinstance(custom_providers, list):
+            custom_providers = []
+
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        entry_base = str(entry.get("base_url") or "").strip().rstrip("/")
+        if not entry_base or entry_base != base:
+            continue
+
+        models = entry.get("models")
+        if isinstance(models, dict):
+            for candidate in model_candidates:
+                model_cfg = models.get(candidate)
+                if model_cfg is None:
+                    lowered = candidate.lower()
+                    for key, value in models.items():
+                        if isinstance(key, str) and key.lower() == lowered:
+                            model_cfg = value
+                            break
+                if isinstance(model_cfg, dict):
+                    ctx = _coerce_context_length(model_cfg.get("context_length"))
+                    if ctx is not None:
+                        return ctx
+
+        ctx = _coerce_context_length(entry.get("context_length"))
+        if ctx is not None:
+            return ctx
+
+        break
+
+    return None
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -2285,11 +2361,21 @@ class AIAgent:
             aux_base_url = str(getattr(client, "base_url", ""))
             aux_api_key = str(getattr(client, "api_key", ""))
 
+            aux_context_config = getattr(self, "_aux_compression_context_length_config", None)
+            if aux_context_config is None:
+                try:
+                    from hermes_cli.config import load_config as _load_agent_config
+                    aux_context_config = _custom_provider_context_length_for_model(
+                        _load_agent_config(), aux_model, aux_base_url
+                    )
+                except Exception:
+                    aux_context_config = None
+
             aux_context = get_model_context_length(
                 aux_model,
                 base_url=aux_base_url,
                 api_key=aux_api_key,
-                config_context_length=getattr(self, "_aux_compression_context_length_config", None),
+                config_context_length=aux_context_config,
             )
 
             # Hard floor: the auxiliary compression model must have at least
