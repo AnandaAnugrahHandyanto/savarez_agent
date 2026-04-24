@@ -405,6 +405,67 @@ def _dequeue_pending_event(adapter, session_key: str) -> MessageEvent | None:
     return adapter.get_pending_message(session_key)
 
 
+def _adapter_supports_message_editing(adapter) -> bool:
+    """Best-effort capability check for editable-message UX."""
+    return bool(adapter) and bool(getattr(adapter, "supports_message_editing", lambda: False)())
+
+
+def _extend_history_with_visible_assistant_text(history, text):
+    """Append transport-visible assistant text for same-turn continuity.
+
+    Some gateway transports send a quick acknowledgment before the model's full
+    reply. The user sees that assistant bubble immediately, so the agent should
+    also see it when composing the follow-up full response.
+    """
+    visible_text = (text or "").strip()
+    if not visible_text:
+        return history
+    return list(history or []) + [{"role": "assistant", "content": visible_text}]
+
+
+async def _generate_quick_ack_text(user_message: str) -> str:
+    """Generate a very brief acknowledgment bubble for non-editable chats."""
+    ack_text = "One sec…"
+    try:
+        from agent.auxiliary_client import call_llm as _ack_call_llm
+
+        ack_resp = await asyncio.to_thread(
+            _ack_call_llm,
+            model="gpt-5.4-mini",
+            max_tokens=30,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a casual iMessage chatbot. The user just sent you a message "
+                        "and you need a moment to think. Generate a very brief, natural "
+                        "acknowledgment (under 8 words) so they know you're working on it. "
+                        "Be conversational, not robotic. No quotes. Just the text."
+                    ),
+                },
+                {"role": "user", "content": user_message[:200]},
+            ],
+        )
+        ack_text = ack_resp.choices[0].message.content.strip() or ack_text
+    except Exception:
+        pass
+    return ack_text
+
+
+def _should_send_quick_ack(adapter, user_message: str, routing_config: dict | None) -> bool:
+    """Return True when the gateway should send a pre-response ack bubble."""
+    if not adapter or _adapter_supports_message_editing(adapter):
+        return False
+    try:
+        from agent.smart_model_routing import choose_cheap_model_route
+
+        if choose_cheap_model_route(user_message, routing_config):
+            return False
+    except Exception:
+        pass
+    return True
+
+
 _INTERRUPT_REASON_STOP = "Stop requested"
 _INTERRUPT_REASON_RESET = "Session reset requested"
 _INTERRUPT_REASON_TIMEOUT = "Execution timed out (inactivity)"
@@ -4424,11 +4485,35 @@ class GatewayRunner:
             }
             await self.hooks.emit("agent:start", hook_ctx)
 
+            # Send a quick contextual acknowledgment on platforms that can't
+            # show typing indicators or editable progress (e.g. iMessage).
+            _ack_adapter = self.adapters.get(source.platform)
+            _visible_assistant_prefix = None
+            if _should_send_quick_ack(
+                _ack_adapter,
+                message_text,
+                getattr(self, "_provider_routing", {}),
+            ):
+                _ack_text = await _generate_quick_ack_text(message_text)
+                _ack_thread = {"thread_id": source.thread_id} if source.thread_id else None
+                _ack_result = await _ack_adapter.send(
+                    chat_id=source.chat_id,
+                    content=_ack_text,
+                    metadata=_ack_thread,
+                )
+                if getattr(_ack_result, "success", False):
+                    _visible_assistant_prefix = _ack_text
+
+            _agent_history = _extend_history_with_visible_assistant_text(
+                history,
+                _visible_assistant_prefix,
+            )
+
             # Run the agent
             agent_result = await self._run_agent(
                 message=message_text,
                 context_prompt=context_prompt,
-                history=history,
+                history=_agent_history,
                 source=source,
                 session_id=session_entry.session_id,
                 session_key=session_key,
