@@ -3812,6 +3812,9 @@ class GatewayRunner:
         if canonical == "voice":
             return await self._handle_voice_command(event)
 
+        if canonical == "footer":
+            return await self._handle_footer_command(event)
+
         if self._draining:
             return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
 
@@ -4731,6 +4734,13 @@ class GatewayRunner:
                     else:
                         display_reasoning = last_reasoning.strip()
                     response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
+
+            response = self._maybe_append_response_footer(
+                response,
+                agent_result,
+                source,
+                session_key,
+            )
 
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
@@ -6043,6 +6053,146 @@ class GatewayRunner:
         if hasattr(raw, "guild") and raw.guild:
             return raw.guild.id
         return None
+
+    @staticmethod
+    def _format_response_footer_enabled(enabled: bool) -> str:
+        return "ON" if enabled else "OFF"
+
+    def _response_footer_reasoning_label(self, session_key: str | None) -> str:
+        reasoning_config = None
+        session_overrides = getattr(self, "_session_reasoning_overrides", None)
+        if session_key and isinstance(session_overrides, dict):
+            reasoning_config = session_overrides.get(session_key)
+        if reasoning_config is None:
+            resolver = getattr(self, "_resolve_reasoning_config", None)
+            if callable(resolver):
+                reasoning_config = resolver(session_key)
+        if reasoning_config is None:
+            reasoning_config = getattr(self, "_reasoning_config", None)
+        if not reasoning_config:
+            return "default"
+        if reasoning_config.get("enabled") is False:
+            return "none"
+        return str(reasoning_config.get("effort") or "medium")
+
+    def _maybe_append_response_footer(
+        self,
+        response: Optional[str],
+        agent_result: Optional[Dict[str, Any]],
+        source: SessionSource,
+        session_key: str | None,
+    ) -> Optional[str]:
+        if not response or not isinstance(agent_result, dict):
+            return response
+
+        user_config = _load_gateway_config()
+        platform_key = _platform_config_key(source.platform)
+        try:
+            from gateway.display_config import resolve_display_setting
+
+            footer_enabled = bool(
+                resolve_display_setting(user_config, platform_key, "response_footer", False)
+            )
+        except Exception:
+            footer_enabled = False
+        if not footer_enabled:
+            return response
+
+        input_tokens = agent_result.get("turn_input_tokens")
+        if input_tokens is None:
+            input_tokens = agent_result.get("input_tokens")
+        output_tokens = agent_result.get("turn_output_tokens")
+        if output_tokens is None:
+            output_tokens = agent_result.get("output_tokens")
+        total_tokens = agent_result.get("turn_total_tokens")
+        if total_tokens is None:
+            total_tokens = agent_result.get("total_tokens")
+
+        try:
+            input_tokens = int(input_tokens or 0)
+            output_tokens = int(output_tokens or 0)
+            total_tokens = int(total_tokens or 0)
+        except (TypeError, ValueError):
+            return response
+
+        if total_tokens <= 0 and input_tokens <= 0 and output_tokens <= 0:
+            return response
+        if total_tokens <= 0:
+            total_tokens = input_tokens + output_tokens
+
+        model_name = (
+            str(agent_result.get("model") or "").strip()
+            or _resolve_gateway_model(user_config)
+            or "unknown"
+        )
+        reasoning_label = self._response_footer_reasoning_label(session_key)
+        footer = (
+            "---\n"
+            f"model: `{model_name}`\n"
+            f"reasoning: `{reasoning_label}`\n"
+            f"tokens: `in {input_tokens:,} / out {output_tokens:,} / total {total_tokens:,}`"
+        )
+        return f"{response.rstrip()}\n\n{footer}"
+
+    async def _handle_footer_command(self, event: MessageEvent) -> str:
+        """Handle /footer [on|off|status] — toggle per-platform response footer."""
+        import yaml
+        from gateway.display_config import resolve_display_setting
+
+        args = (event.get_command_args() or "").strip().lower()
+        config_path = _hermes_home / "config.yaml"
+        platform_key = _platform_config_key(event.source.platform)
+
+        try:
+            user_config = {}
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    user_config = yaml.safe_load(f) or {}
+            if not isinstance(user_config, dict):
+                user_config = {}
+        except Exception as e:
+            logger.error("Failed to load footer config: %s", e)
+            return f"❌ Failed to read config.yaml: {e}"
+
+        current = bool(resolve_display_setting(user_config, platform_key, "response_footer", False))
+
+        if args == "status":
+            return (
+                f"🧾 Response footer for **{platform_key}** is **{self._format_response_footer_enabled(current)}**.\n"
+                "Includes model, reasoning, and per-reply token usage when available."
+            )
+        if args in ("", "toggle"):
+            new_value = not current
+        elif args == "on":
+            new_value = True
+        elif args == "off":
+            new_value = False
+        else:
+            return "Usage: /footer [on|off|status]"
+
+        display_cfg = user_config.get("display")
+        if not isinstance(display_cfg, dict):
+            display_cfg = {}
+            user_config["display"] = display_cfg
+        platforms_cfg = display_cfg.get("platforms")
+        if not isinstance(platforms_cfg, dict):
+            platforms_cfg = {}
+            display_cfg["platforms"] = platforms_cfg
+        platform_cfg = platforms_cfg.get(platform_key)
+        if not isinstance(platform_cfg, dict):
+            platform_cfg = {}
+            platforms_cfg[platform_key] = platform_cfg
+
+        platform_cfg["response_footer"] = new_value
+        try:
+            atomic_yaml_write(config_path, user_config)
+        except Exception as e:
+            logger.error("Failed to save footer config: %s", e)
+            return f"❌ Failed to save config.yaml: {e}"
+        return (
+            f"🧾 Response footer for **{platform_key}** is now **{self._format_response_footer_enabled(new_value)}**.\n"
+            f"_(saved to `display.platforms.{platform_key}.response_footer`; applies to the next reply with usage data)_"
+        )
 
     async def _handle_voice_command(self, event: MessageEvent) -> str:
         """Handle /voice [on|off|tts|channel|leave|status] command."""
@@ -10172,6 +10322,9 @@ class GatewayRunner:
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
+            _pre_input_toks = getattr(agent, "session_input_tokens", 0) or 0
+            _pre_output_toks = getattr(agent, "session_output_tokens", 0) or 0
+            _pre_total_toks = getattr(agent, "session_total_tokens", 0) or (_pre_input_toks + _pre_output_toks)
             try:
                 result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id)
             finally:
@@ -10182,7 +10335,7 @@ class GatewayRunner:
             # Signal the stream consumer that the agent is done
             if _stream_consumer is not None:
                 _stream_consumer.finish()
-            
+
             # Return final response, or a message if something went wrong
             final_response = result.get("final_response")
 
@@ -10190,12 +10343,19 @@ class GatewayRunner:
             _last_prompt_toks = 0
             _input_toks = 0
             _output_toks = 0
+            _total_toks = 0
             _agent = agent_holder[0]
             if _agent and hasattr(_agent, "context_compressor"):
                 _last_prompt_toks = getattr(_agent.context_compressor, "last_prompt_tokens", 0)
-                _input_toks = getattr(_agent, "session_prompt_tokens", 0)
-                _output_toks = getattr(_agent, "session_completion_tokens", 0)
-            _resolved_model = getattr(_agent, "model", None) if _agent else None
+                _input_toks = getattr(_agent, "session_input_tokens", 0) or 0
+                _output_toks = getattr(_agent, "session_output_tokens", 0) or 0
+                _total_toks = getattr(_agent, "session_total_tokens", 0) or (_input_toks + _output_toks)
+            _resolved_model = getattr(_agent, "model", turn_route["model"]) if _agent else turn_route["model"]
+            _turn_input_toks = max(0, _input_toks - _pre_input_toks)
+            _turn_output_toks = max(0, _output_toks - _pre_output_toks)
+            _turn_total_toks = max(0, _total_toks - _pre_total_toks)
+            if _turn_total_toks == 0 and (_turn_input_toks or _turn_output_toks):
+                _turn_total_toks = _turn_input_toks + _turn_output_toks
 
             if not final_response:
                 error_msg = f"⚠️ {result['error']}" if result.get("error") else ""
@@ -10210,9 +10370,13 @@ class GatewayRunner:
                     "last_prompt_tokens": _last_prompt_toks,
                     "input_tokens": _input_toks,
                     "output_tokens": _output_toks,
+                    "total_tokens": _total_toks,
+                    "turn_input_tokens": _turn_input_toks,
+                    "turn_output_tokens": _turn_output_toks,
+                    "turn_total_tokens": _turn_total_toks,
                     "model": _resolved_model,
                 }
-            
+
             # Scan tool results for MEDIA:<path> tags that need to be delivered
             # as native audio/file attachments.  The TTS tool embeds MEDIA: tags
             # in its JSON response, but the model's final text reply usually
@@ -10299,6 +10463,10 @@ class GatewayRunner:
                 "last_prompt_tokens": _last_prompt_toks,
                 "input_tokens": _input_toks,
                 "output_tokens": _output_toks,
+                "total_tokens": _total_toks,
+                "turn_input_tokens": _turn_input_toks,
+                "turn_output_tokens": _turn_output_toks,
+                "turn_total_tokens": _turn_total_toks,
                 "model": _resolved_model,
                 "session_id": effective_session_id,
                 "response_previewed": result.get("response_previewed", False),
