@@ -26,7 +26,7 @@ import os
 import datetime
 import threading
 import uuid
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 from urllib.parse import urlencode
 
 import fal_client
@@ -854,24 +854,33 @@ from tools.registry import registry, tool_error
 IMAGE_GENERATE_SCHEMA = {
     "name": "image_generate",
     "description": (
-        "Generate high-quality images from text prompts. The underlying "
+        "Generate high-quality images from text prompts, optionally "
+        "conditioned on one or more reference images. The underlying "
         "backend (FAL, OpenAI, etc.) and model are user-configured and not "
         "selectable by the agent. Returns either a URL or an absolute file "
         "path in the `image` field; display it with markdown "
-        "![description](url-or-path) and the gateway will deliver it."
+        "![description](url-or-path) and the gateway will deliver it. "
+        "Reference images only work when the active provider advertises "
+        "support for them — otherwise the call fails early with "
+        "error_type='references_unsupported'."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "prompt": {
                 "type": "string",
-                "description": "The text prompt describing the desired image. Be detailed and descriptive.",
+                "description": "The text prompt describing the desired image. Be detailed and descriptive. When passing references, refer to them by index (\"like reference 1\", \"combine references 2 and 3\").",
             },
             "aspect_ratio": {
                 "type": "string",
                 "enum": list(VALID_ASPECT_RATIOS),
                 "description": "The aspect ratio of the generated image. 'landscape' is 16:9 wide, 'portrait' is 16:9 tall, 'square' is 1:1.",
                 "default": DEFAULT_ASPECT_RATIO,
+            },
+            "references": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional list of local image file paths to condition generation on (style transfer, image editing, multi-image composition). Currently honoured only by the openai-codex provider; other providers reject calls that include this field.",
             },
         },
         "required": ["prompt"],
@@ -900,7 +909,11 @@ def _read_configured_image_provider():
     return None
 
 
-def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
+def _dispatch_to_plugin_provider(
+    prompt: str,
+    aspect_ratio: str,
+    references: Optional[List[str]] = None,
+):
     """Route the call to a plugin-registered provider when one is selected.
 
     Returns a JSON string on dispatch, or ``None`` to fall through to the
@@ -910,9 +923,27 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
     it does not point to ``fal`` (FAL still lives in-tree in this PR;
     a later PR ports it into ``plugins/image_gen/fal/``). Any other value
     that matches a registered plugin provider wins.
+
+    When ``references`` is non-empty, the active provider must advertise
+    :attr:`~agent.image_gen_provider.ImageGenProvider.supports_references` —
+    otherwise the call is rejected early with a clear error rather than
+    silently dropping the reference images.
     """
     configured = _read_configured_image_provider()
     if not configured or configured == "fal":
+        # The in-tree FAL path is prompt-only; reject references here so the
+        # user gets an actionable error instead of a silently ignored kwarg.
+        if references:
+            return json.dumps({
+                "success": False,
+                "image": None,
+                "error": (
+                    "The FAL backend does not accept reference images. "
+                    "Switch to a provider that supports them (e.g. "
+                    "openai-codex) or remove the references field."
+                ),
+                "error_type": "references_unsupported",
+            })
         return None
 
     try:
@@ -949,8 +980,24 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
             "error_type": "provider_not_registered",
         })
 
+    call_kwargs: Dict[str, Any] = {"prompt": prompt, "aspect_ratio": aspect_ratio}
+    if references:
+        if not getattr(provider, "supports_references", False):
+            return json.dumps({
+                "success": False,
+                "image": None,
+                "error": (
+                    f"Provider '{getattr(provider, 'name', '?')}' does not "
+                    f"accept reference images. Switch to a provider that "
+                    f"supports them (e.g. openai-codex) or remove the "
+                    f"references field."
+                ),
+                "error_type": "references_unsupported",
+            })
+        call_kwargs["references"] = list(references)
+
     try:
-        result = provider.generate(prompt=prompt, aspect_ratio=aspect_ratio)
+        result = provider.generate(**call_kwargs)
     except Exception as exc:
         logger.warning(
             "Image gen provider '%s' raised: %s",
@@ -978,9 +1025,16 @@ def _handle_image_generate(args, **kw):
         return tool_error("prompt is required for image generation")
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
 
+    raw_references = args.get("references") or []
+    if not isinstance(raw_references, list):
+        return tool_error(
+            "references must be a list of image file paths"
+        )
+    references = [r for r in raw_references if isinstance(r, str) and r.strip()]
+
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path).
-    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio)
+    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio, references)
     if dispatched is not None:
         return dispatched
 

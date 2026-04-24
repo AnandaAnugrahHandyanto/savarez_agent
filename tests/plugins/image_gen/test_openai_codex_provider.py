@@ -283,6 +283,158 @@ class TestGenerate:
         assert "cloudflare 403" in result["error"]
 
 
+# ── References (multi-reference image input) ───────────────────────────────
+
+
+def _write_png(path: Path) -> Path:
+    path.write_bytes(bytes.fromhex(_PNG_HEX))
+    return path
+
+
+class TestReferences:
+    def test_supports_references_flag_is_true(self, provider):
+        # The Codex image_generation tool accepts input_image content items;
+        # the flag is how the dispatcher knows it can forward user-supplied
+        # reference paths without silently dropping them.
+        assert provider.supports_references is True
+
+    def test_references_become_input_image_content_items(
+        self, provider, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        ref1 = _write_png(tmp_path / "ref1.png")
+        ref2 = _write_png(tmp_path / "ref2.png")
+
+        captured: dict = {}
+
+        def _stream(**kwargs):
+            captured.update(kwargs)
+            output_item = SimpleNamespace(
+                type="image_generation_call",
+                status="generating",
+                id="ig_test",
+                result=_b64_png(),
+            )
+            done_event = SimpleNamespace(type="response.output_item.done", item=output_item)
+            final_response = SimpleNamespace(output=[], status="completed", output_text="")
+            return _FakeStream([done_event], final_response)
+
+        fake_client = SimpleNamespace(responses=SimpleNamespace(stream=_stream))
+        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: fake_client)
+
+        result = provider.generate(
+            "combine these two objects",
+            aspect_ratio="square",
+            references=[str(ref1), str(ref2)],
+        )
+        assert result["success"] is True
+        assert result["references"] == 2
+
+        content = captured["input"][0]["content"]
+        # First item is the labelled prompt, then one input_image per reference.
+        assert content[0]["type"] == "input_text"
+        assert "Reference image 1" in content[0]["text"]
+        assert "Reference image 2" in content[0]["text"]
+        image_items = [c for c in content if c["type"] == "input_image"]
+        assert len(image_items) == 2
+        for item in image_items:
+            assert item["image_url"].startswith("data:image/")
+            assert ";base64," in item["image_url"]
+
+    def test_references_cap_at_max(self, provider, monkeypatch, tmp_path):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        # 20 valid PNG paths — the plugin should only forward the first 16.
+        paths = [str(_write_png(tmp_path / f"ref{i}.png")) for i in range(20)]
+
+        captured: dict = {}
+
+        def _stream(**kwargs):
+            captured.update(kwargs)
+            output_item = SimpleNamespace(
+                type="image_generation_call",
+                status="generating",
+                id="ig_test",
+                result=_b64_png(),
+            )
+            done_event = SimpleNamespace(type="response.output_item.done", item=output_item)
+            final_response = SimpleNamespace(output=[], status="completed", output_text="")
+            return _FakeStream([done_event], final_response)
+
+        fake_client = SimpleNamespace(responses=SimpleNamespace(stream=_stream))
+        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: fake_client)
+
+        result = provider.generate("test", references=paths)
+        assert result["success"] is True
+        assert result["references"] == codex_plugin.MAX_REFERENCES
+
+        image_items = [
+            c for c in captured["input"][0]["content"] if c["type"] == "input_image"
+        ]
+        assert len(image_items) == codex_plugin.MAX_REFERENCES
+
+    def test_missing_reference_returns_invalid_reference(
+        self, provider, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        monkeypatch.setattr(
+            codex_plugin,
+            "_build_codex_client",
+            lambda: SimpleNamespace(
+                responses=SimpleNamespace(
+                    stream=lambda **kw: pytest.fail("stream must not be called on invalid ref")
+                )
+            ),
+        )
+
+        result = provider.generate(
+            "test",
+            references=[str(tmp_path / "does-not-exist.png")],
+        )
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_reference"
+        assert "does-not-exist.png" in result["error"]
+
+    def test_non_list_references_rejected(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        result = provider.generate("test", references="not-a-list")
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+
+    def test_zero_references_behaves_like_prompt_only(
+        self, provider, monkeypatch
+    ):
+        # Regression guard: an explicit empty list must not add Reference-image
+        # labelling to the prompt or any input_image items.
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        captured: dict = {}
+
+        def _stream(**kwargs):
+            captured.update(kwargs)
+            output_item = SimpleNamespace(
+                type="image_generation_call",
+                status="generating",
+                id="ig_test",
+                result=_b64_png(),
+            )
+            done_event = SimpleNamespace(type="response.output_item.done", item=output_item)
+            final_response = SimpleNamespace(output=[], status="completed", output_text="")
+            return _FakeStream([done_event], final_response)
+
+        fake_client = SimpleNamespace(responses=SimpleNamespace(stream=_stream))
+        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: fake_client)
+
+        result = provider.generate("a cat", references=[])
+        assert result["success"] is True
+        assert result["references"] == 0
+        content = captured["input"][0]["content"]
+        assert content[0]["text"] == "a cat"
+        assert all(c["type"] != "input_image" for c in content)
+
+
 # ── Plugin entry point ──────────────────────────────────────────────────────
 
 
