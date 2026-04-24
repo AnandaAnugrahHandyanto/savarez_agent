@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 import tools.skills_tool as skills_tool_module
 from agent.skill_commands import (
     build_plan_path,
