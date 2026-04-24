@@ -2,7 +2,7 @@ import { Box, Text, useInput } from '@hermes/ink'
 import { type ReactNode, useState } from 'react'
 
 import type { Theme } from '../theme.js'
-import type { ApprovalReq, ClarifyReq } from '../types.js'
+import type { ApprovalReq, ClarifyReq, ConfirmReq } from '../types.js'
 
 import { TextInput } from './textInput.js'
 
@@ -210,6 +210,59 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, req, t }: Clarify
   )
 }
 
+export function ConfirmPrompt({ onCancel, onConfirm, req, t }: ConfirmPromptProps) {
+  const [sel, setSel] = useState(0)
+
+  useInput((ch, key) => {
+    const lower = ch.toLowerCase()
+
+    if (key.escape || (key.ctrl && lower === 'c') || lower === 'n') {
+      return onCancel()
+    }
+
+    if (lower === 'y') {
+      return onConfirm()
+    }
+
+    if (key.upArrow) {
+      setSel(0)
+    }
+
+    if (key.downArrow) {
+      setSel(1)
+    }
+
+    if (key.return) {
+      sel === 0 ? onCancel() : onConfirm()
+    }
+  })
+
+  const rows = [
+    { color: t.color.cornsilk, label: req.cancelLabel ?? 'No' },
+    { color: req.danger ? t.color.error : t.color.cornsilk, label: req.confirmLabel ?? 'Yes' }
+  ]
+
+  return (
+    <PromptShell
+      footer="↑/↓ select · Enter confirm · Y/N quick · Esc cancel"
+      subtitle={req.detail}
+      t={t}
+      title={req.danger ? 'danger' : 'confirm'}
+      tone={req.danger ? 'warn' : 'accent'}
+    >
+      <Text bold color={req.danger ? t.color.error : t.color.cornsilk}>
+        {req.title}
+      </Text>
+
+      <Box marginTop={1}>
+        {rows.map((row, i) => (
+          <PromptOption active={sel === i} index={i + 1} key={row.label} label={row.label} t={t} />
+        ))}
+      </Box>
+    </PromptShell>
+  )
+}
+
 interface ApprovalPromptProps {
   onChoice: (s: string) => void
   req: ApprovalReq
@@ -221,5 +274,12 @@ interface ClarifyPromptProps {
   onAnswer: (s: string) => void
   onCancel: () => void
   req: ClarifyReq
+  t: Theme
+}
+
+interface ConfirmPromptProps {
+  onCancel: () => void
+  onConfirm: () => void
+  req: ConfirmReq
   t: Theme
 }

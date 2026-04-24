@@ -91,7 +91,7 @@ function mix(a: string, b: string, t: number) {
 
 // ── Defaults ─────────────────────────────────────────────────────────
 
-export const DEFAULT_THEME: Theme = {
+export const DARK_THEME: Theme = {
   color: {
     surfaceBg: '#0b0d14',
     panelBg: '#11141d',
@@ -151,6 +151,67 @@ export const DEFAULT_THEME: Theme = {
   bannerLogo: '',
   bannerHero: ''
 }
+
+export const LIGHT_THEME: Theme = {
+  color: {
+    ...DARK_THEME.color,
+    surfaceBg: '#f7f4ec',
+    panelBg: '#fffaf0',
+    panelAltBg: '#f0eadc',
+    panelBorder: '#b2873d',
+    panelMuted: '#6f624d',
+    chipBg: '#efe8d8',
+    chipBorder: '#b8a37d',
+    chipText: '#2f2a22',
+    chipAccentBg: '#fff0bd',
+    chipAccentBorder: '#b2873d',
+    chipAccentText: '#4f3510',
+    gold: '#8B6914',
+    amber: '#A0651C',
+    bronze: '#7A4F1F',
+    cornsilk: '#3D2F13',
+    dim: '#7A5A0F',
+    completionBg: '#F5F5F5',
+    completionCurrentBg: mix('#F5F5F5', '#A0651C', 0.25),
+    label: '#7A5A0F',
+    ok: '#2E7D32',
+    error: '#C62828',
+    warn: '#E65100',
+    prompt: '#2B2014',
+    sessionLabel: '#7A5A0F',
+    sessionBorder: '#7A5A0F',
+    statusBg: '#F5F5F5',
+    statusFg: '#333333',
+    statusBorder: '#d7c7a8',
+    statusGood: '#2E7D32',
+    statusWarn: '#8B6914',
+    statusBad: '#D84315',
+    statusCritical: '#B71C1C',
+    selectionBg: '#D4E4F7',
+    diffAdded: 'rgb(200,240,200)',
+    diffRemoved: 'rgb(240,200,200)',
+    diffAddedWord: 'rgb(27,94,32)',
+    diffRemovedWord: 'rgb(183,28,28)',
+    shellDollar: '#1565C0'
+  },
+  brand: DARK_THEME.brand,
+  bannerLogo: '',
+  bannerHero: ''
+}
+
+export function detectLightMode(env: Partial<NodeJS.ProcessEnv> = process.env): boolean {
+  const explicit = env.HERMES_TUI_LIGHT?.trim().toLowerCase()
+
+  if (explicit) {
+    return ['1', 'true', 'yes', 'on'].includes(explicit)
+  }
+
+  const bg = env.COLORFGBG?.split(';').at(-1)
+
+  return bg === '7' || bg === '15'
+}
+
+export const DEFAULT_THEME: Theme = detectLightMode() ? LIGHT_THEME : DARK_THEME
 
 // ── Skin → Theme ─────────────────────────────────────────────────────
 

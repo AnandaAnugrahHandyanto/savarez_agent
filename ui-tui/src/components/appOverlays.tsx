@@ -141,7 +141,7 @@ export function FloatingOverlays({
       )}
 
       {overlay.skillsHub && (
-        <FloatBox color={ui.theme.color.bronze}>
+        <FloatBox color={ui.theme.color.bronze} t={ui.theme}>
           <SkillsHub gw={gw} onClose={() => patchOverlayState({ skillsHub: false })} t={ui.theme} />
         </FloatBox>
       )}

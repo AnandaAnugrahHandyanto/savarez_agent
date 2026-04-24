@@ -159,7 +159,7 @@ export function useMainApp(gw: GatewayClient) {
     [historyItems, messageId]
   )
 
-  const virtualHistory = useVirtualHistory(scrollRef, virtualRows)
+  const virtualHistory = useVirtualHistory(scrollRef, virtualRows, cols)
 
   const scrollWithSelection = useCallback(
     (delta: number) => {
@@ -407,14 +407,20 @@ export function useMainApp(gw: GatewayClient) {
     composer: { actions: composerActions, refs: composerRefs, state: composerState },
     gateway,
     terminal: { hasSelection, scrollRef, scrollWithSelection, selection, stdout },
-    voice: { recording: voiceRecording, setProcessing: setVoiceProcessing, setRecording: setVoiceRecording },
+    voice: {
+      enabled: voiceEnabled,
+      recording: voiceRecording,
+      setProcessing: setVoiceProcessing,
+      setRecording: setVoiceRecording,
+      setVoiceEnabled
+    },
     wheelStep: WHEEL_SCROLL_STEP
   })
 
   const onEvent = useMemo(
     () =>
       createGatewayEventHandler({
-        composer: { dequeue: composerActions.dequeue, queueEditRef: composerRefs.queueEditRef, sendQueued },
+        composer: { setInput: composerActions.setInput },
         gateway,
         session: {
           STARTUP_RESUME_ID,
@@ -424,8 +430,14 @@ export function useMainApp(gw: GatewayClient) {
           resumeById: session.resumeById,
           setCatalog
         },
+        submission: { submitRef },
         system: { bellOnComplete, stdout, sys },
-        transcript: { appendMessage, panel, setHistoryItems: updateHistoryItems }
+        transcript: { appendMessage, panel, setHistoryItems: updateHistoryItems },
+        voice: {
+          setProcessing: setVoiceProcessing,
+          setRecording: setVoiceRecording,
+          setVoiceEnabled
+        }
       }),
     [
       appendMessage,
@@ -439,7 +451,11 @@ export function useMainApp(gw: GatewayClient) {
       session.resetSession,
       session.resumeById,
       updateHistoryItems,
+      setVoiceEnabled,
+      setVoiceProcessing,
+      setVoiceRecording,
       stdout,
+      submitRef,
       sys
     ]
   )
@@ -629,6 +645,7 @@ export function useMainApp(gw: GatewayClient) {
       showStickyPrompt: !!stickyPrompt,
       statusColor: statusColorOf(ui.status, ui.theme.color),
       stickyPrompt,
+      turnStartedAt: null,
       voiceLabel: voiceRecording ? 'REC' : voiceProcessing ? 'STT' : `voice ${voiceEnabled ? 'on' : 'off'}`
     }),
     [goodVibesTick, sessionStartedAt, stickyPrompt, ui, voiceEnabled, voiceProcessing, voiceRecording]

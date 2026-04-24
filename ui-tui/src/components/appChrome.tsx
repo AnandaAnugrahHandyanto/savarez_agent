@@ -194,7 +194,8 @@ export function StickyPromptTracker({ messages, offsets, scrollRef, onChange }: 
 
   const s = scrollRef.current
   const top = Math.max(0, (s?.getScrollTop() ?? 0) + (s?.getPendingDelta() ?? 0))
-  const text = stickyPromptFromViewport(messages, offsets, top, s?.isSticky() ?? true)
+  const bottom = top + Math.max(0, (s?.getViewportHeight() ?? 1) - 1)
+  const text = stickyPromptFromViewport(messages, offsets, top, bottom, s?.isSticky() ?? true)
 
   useEffect(() => onChange(text), [onChange, text])
 

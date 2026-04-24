@@ -11,8 +11,26 @@ const DEF_RE = /^\s*:\s+(.+)$/
 const TABLE_DIVIDER_CELL_RE = /^:?-{3,}:?$/
 const MD_URL_RE = '((?:[^\\s()]|\\([^\\s()]*\\))+?)'
 
-const INLINE_RE = new RegExp(
-  `(!\\[(.*?)\\]\\(${MD_URL_RE}\\)|\\[(.+?)\\]\\(${MD_URL_RE}\\)|<((?:https?:\\/\\/|mailto:)[^>\\s]+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,})>|~~(.+?)~~|\`([^\\\`]+)\`|\\*\\*(.+?)\\*\\*|__(.+?)__|\\*(.+?)\\*|_(.+?)_|==(.+?)==|\\[\\^([^\\]]+)\\]|\\^([^^\\s][^^]*?)\\^|~([^~\\s][^~]*?)~|(https?:\\/\\/[^\\s<]+))`,
+export const MEDIA_LINE_RE = /^\s*[`"']?MEDIA:\s*(\S+?)[`"']?\s*$/
+export const AUDIO_DIRECTIVE_RE = /^\s*\[\[audio_as_voice\]\]\s*$/
+
+export const INLINE_RE = new RegExp(
+  [
+    `!\\[(.*?)\\]\\(${MD_URL_RE}\\)`,
+    `\\[(.+?)\\]\\(${MD_URL_RE}\\)`,
+    `<((?:https?:\\/\\/|mailto:)[^>\\s]+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,})>`,
+    `~~(.+?)~~`,
+    '`([^`]+)`',
+    `\\*\\*(.+?)\\*\\*`,
+    `(?<!\\w)__(.+?)__(?!\\w)`,
+    `\\*(.+?)\\*`,
+    `(?<!\\w)_(.+?)_(?!\\w)`,
+    `==(.+?)==`,
+    `\\[\\^([^\\]]+)\\]`,
+    `\\^([^^\\s][^^]*?)\\^`,
+    `~([A-Za-z0-9]{1,8})~`,
+    `https?:\\/\\/[^\\s<]+`
+  ].join('|'),
   'g'
 )
 
@@ -115,7 +133,7 @@ const isTableDivider = (row: string) => {
   return cells.length > 1 && cells.every(cell => TABLE_DIVIDER_CELL_RE.test(cell))
 }
 
-const stripInlineMarkup = (value: string) =>
+export const stripInlineMarkup = (value: string) =>
   value
     .replace(/!\[(.*?)\]\(((?:[^\s()]|\([^\s()]*\))+?)\)/g, '[image: $1] $2')
     .replace(/\[(.+?)\]\(((?:[^\s()]|\([^\s()]*\))+?)\)/g, '$1')
@@ -123,13 +141,13 @@ const stripInlineMarkup = (value: string) =>
     .replace(/~~(.+?)~~/g, '$1')
     .replace(/`([^`]+)`/g, '$1')
     .replace(/\*\*(.+?)\*\*/g, '$1')
-    .replace(/__(.+?)__/g, '$1')
+    .replace(/(?<!\w)__(.+?)__(?!\w)/g, '$1')
     .replace(/\*(.+?)\*/g, '$1')
-    .replace(/_(.+?)_/g, '$1')
+    .replace(/(?<!\w)_(.+?)_(?!\w)/g, '$1')
     .replace(/==(.+?)==/g, '$1')
     .replace(/\[\^([^\]]+)\]/g, '[$1]')
     .replace(/\^([^^\s][^^]*?)\^/g, '^$1')
-    .replace(/~([^~\s][^~]*?)~/g, '_$1')
+    .replace(/~([A-Za-z0-9]{1,8})~/g, '_$1')
 
 const renderTable = (key: number, rows: string[][], t: Theme) => {
   const widths = rows[0]!.map((_, ci) => Math.max(...rows.map(r => stripInlineMarkup(r[ci] ?? '').length)))
