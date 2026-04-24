@@ -29,6 +29,17 @@ export interface RuntimePolicy {
   worktree_strategy: WorktreeStrategy;
 }
 
+export interface RoleSkillTrigger {
+  skill: string;
+  when: string;
+}
+
+export interface RoleSkillPolicy {
+  required: string[];
+  recommended?: string[];
+  triggered?: RoleSkillTrigger[];
+}
+
 export interface OrgRole {
   title: string;
   position: string;
@@ -39,6 +50,7 @@ export interface OrgRole {
   model: string;
   toolFocus: string[];
   invokeFor: string[];
+  skills: RoleSkillPolicy;
   icon: LucideIcon;
   tone?: "default" | "success" | "warning";
   runtimePolicy: RuntimePolicy;
@@ -100,6 +112,31 @@ export const LEAD_ROLE: OrgRole = {
     lead_review_required_before_next_handoff: true,
     requires_revalidation_after_fix: true,
     worktree_strategy: "shared"
+  },
+  skills: {
+    required: [
+      "hermes-lead-workflow",
+      "hermes-role-team-runtime",
+      "repo-grounded-plan-review",
+      "audit-change-followups",
+      "manage-gitlab-work-items"
+    ],
+    recommended: [
+      "run-required-validation",
+      "pre-commit-qc",
+      "update-docs-and-runbooks",
+      "requesting-code-review"
+    ],
+    triggered: [
+      {
+        skill: "triage-release-pipeline",
+        when: "release pipeline state is blocked, failed, skipped, or ambiguous"
+      },
+      {
+        skill: "kinni-migration-plan-refinement",
+        when: "broad Kinni/NoblePro planning or migration work is requested"
+      }
+    ]
   }
 };
 
@@ -158,6 +195,39 @@ export const ORG_SECTIONS: OrgSection[] = [
           lead_review_required_before_next_handoff: true,
           requires_revalidation_after_fix: false,
           worktree_strategy: "shared"
+        },
+        skills: {
+          required: [
+            "repo-grounded-plan-review",
+            "noblepro-gitlab-bug-triage",
+            "audit-change-followups"
+          ],
+          recommended: [
+            "manage-gitlab-work-items",
+            "run-required-validation"
+          ],
+          triggered: [
+            {
+              skill: "change-graphql-contract",
+              when: "GraphQL, API, schema, resolver, generated type, or client operation changes are involved"
+            },
+            {
+              skill: "change-native-update-gate",
+              when: "native version gate, force-update, app version compatibility, or release policy is involved"
+            },
+            {
+              skill: "implement-ui-ux-change",
+              when: "Kinni or Account user-facing UI/UX is involved"
+            },
+            {
+              skill: "upgrade-expo-sdk",
+              when: "Expo, EAS, native modules, config plugins, or SDK migration is involved"
+            },
+            {
+              skill: "stripe-best-practices",
+              when: "Stripe, payment, subscription, billing, or Connect behavior is involved"
+            }
+          ]
         }
       },
       {
@@ -196,6 +266,53 @@ export const ORG_SECTIONS: OrgSection[] = [
           lead_review_required_before_next_handoff: true,
           requires_revalidation_after_fix: true,
           worktree_strategy: "shared"
+        },
+        skills: {
+          required: [
+            "writing-plans",
+            "plan",
+            "repo-grounded-plan-review",
+            "hermes-role-team-runtime"
+          ],
+          recommended: [
+            "run-required-validation",
+            "audit-change-followups",
+            "update-docs-and-runbooks"
+          ],
+          triggered: [
+            {
+              skill: "implement-ui-ux-change",
+              when: "planning user-facing UI work"
+            },
+            {
+              skill: "change-graphql-contract",
+              when: "planning API, schema, or contract work"
+            },
+            {
+              skill: "change-native-update-gate",
+              when: "planning native gate or force-update work"
+            },
+            {
+              skill: "upgrade-expo-sdk",
+              when: "planning Expo or native upgrade work"
+            },
+            {
+              skill: "run-beta-ota-release",
+              when: "planning a beta OTA release"
+            },
+            {
+              skill: "run-beta-native-release",
+              when: "planning a beta native release"
+            },
+            {
+              skill: "run-production-ota-release",
+              when: "planning a production OTA release"
+            },
+            {
+              skill: "run-production-native-release",
+              when: "planning a production native release"
+            }
+          ]
         }
       }
     ]
@@ -242,6 +359,54 @@ export const ORG_SECTIONS: OrgSection[] = [
           lead_review_required_before_next_handoff: true,
           requires_revalidation_after_fix: true,
           worktree_strategy: "isolated_required"
+        },
+        skills: {
+          required: [
+            "test-driven-development",
+            "systematic-debugging"
+          ],
+          recommended: [
+            "subagent-driven-development",
+            "run-required-validation"
+          ],
+          triggered: [
+            {
+              skill: "implement-ui-ux-change",
+              when: "Kinni or Account UI/user-facing behavior changes"
+            },
+            {
+              skill: "change-graphql-contract",
+              when: "GraphQL schema, resolver, codegen, or client operations change"
+            },
+            {
+              skill: "change-native-update-gate",
+              when: "native gate or force-update behavior changes"
+            },
+            {
+              skill: "upgrade-expo-sdk",
+              when: "Expo, EAS, native modules, config plugins, or SDK migration changes"
+            },
+            {
+              skill: "stripe-best-practices",
+              when: "Stripe integration, payment, subscription, billing, or Connect behavior changes"
+            },
+            {
+              skill: "stripe-projects",
+              when: "setting up Stripe Projects or provisioning stack"
+            },
+            {
+              skill: "upgrade-stripe",
+              when: "Stripe API version or SDK upgrade work is involved"
+            },
+            {
+              skill: "kinni-linked-account-oauth-flows",
+              when: "linked-account OAuth flows are involved"
+            },
+            {
+              skill: "noblepro-wordpress-live-fix-workflow",
+              when: "WordPress or SiteGround live fix workflow is involved"
+            }
+          ]
         }
       },
       {
@@ -282,6 +447,40 @@ export const ORG_SECTIONS: OrgSection[] = [
           lead_review_required_before_next_handoff: true,
           requires_revalidation_after_fix: true,
           worktree_strategy: "isolated_if_coding"
+        },
+        skills: {
+          required: [
+            "requesting-code-review",
+            "pre-commit-qc",
+            "run-required-validation",
+            "audit-change-followups"
+          ],
+          recommended: [
+            "systematic-debugging",
+            "repo-grounded-plan-review"
+          ],
+          triggered: [
+            {
+              skill: "change-graphql-contract",
+              when: "contract, schema, or generated GraphQL outputs changed"
+            },
+            {
+              skill: "implement-ui-ux-change",
+              when: "user-facing UI evidence or accessibility coverage is required"
+            },
+            {
+              skill: "change-native-update-gate",
+              when: "native gate or release compatibility behavior changed"
+            },
+            {
+              skill: "triage-release-pipeline",
+              when: "validation concerns involve release pipeline state"
+            },
+            {
+              skill: "upgrade-expo-sdk",
+              when: "Expo or native upgrade validation is required"
+            }
+          ]
         }
       },
       {
@@ -320,6 +519,39 @@ export const ORG_SECTIONS: OrgSection[] = [
           lead_review_required_before_next_handoff: true,
           requires_revalidation_after_fix: true,
           worktree_strategy: "isolated_if_coding"
+        },
+        skills: {
+          required: [
+            "implement-ui-ux-change",
+            "audit-change-followups",
+            "run-required-validation"
+          ],
+          recommended: [
+            "dogfood",
+            "pre-commit-qc"
+          ],
+          triggered: [
+            {
+              skill: "kinni-pixel-linked-account-verification",
+              when: "linked-account behavior requires Android or Pixel evidence"
+            },
+            {
+              skill: "kinni-website-astro-foundation",
+              when: "Kinni website Astro/Starlight UX is involved"
+            },
+            {
+              skill: "kinni-website-storyblok-marketing-seam",
+              when: "Storyblok-backed marketing UX is involved"
+            },
+            {
+              skill: "noblepro-account-hub-localized-myaccount-redirect-fix",
+              when: "Account Hub redirect or login UX is involved"
+            },
+            {
+              skill: "noblepro-wordpress-live-fix-workflow",
+              when: "WordPress user-facing behavior is involved"
+            }
+          ]
         }
       }
     ]
@@ -365,6 +597,43 @@ export const ORG_SECTIONS: OrgSection[] = [
           lead_review_required_before_next_handoff: true,
           requires_revalidation_after_fix: true,
           worktree_strategy: "isolated_if_coding"
+        },
+        skills: {
+          required: [
+            "triage-release-pipeline",
+            "run-required-validation",
+            "manage-gitlab-work-items"
+          ],
+          recommended: [
+            "update-docs-and-runbooks",
+            "pre-commit-qc"
+          ],
+          triggered: [
+            {
+              skill: "run-beta-ota-release",
+              when: "executing or preparing a Kinni beta OTA release"
+            },
+            {
+              skill: "run-beta-native-release",
+              when: "executing or preparing a Kinni beta native release"
+            },
+            {
+              skill: "run-production-ota-release",
+              when: "promoting an OTA-safe beta baseline to production"
+            },
+            {
+              skill: "run-production-native-release",
+              when: "promoting a native-required beta baseline to production"
+            },
+            {
+              skill: "change-native-update-gate",
+              when: "release gate or force-update policy is involved"
+            },
+            {
+              skill: "upgrade-expo-sdk",
+              when: "release includes Expo or native SDK changes"
+            }
+          ]
         }
       },
       {
@@ -402,6 +671,38 @@ export const ORG_SECTIONS: OrgSection[] = [
           lead_review_required_before_next_handoff: true,
           requires_revalidation_after_fix: true,
           worktree_strategy: "isolated_if_coding"
+        },
+        skills: {
+          required: [
+            "change-graphql-contract",
+            "run-required-validation"
+          ],
+          recommended: [
+            "systematic-debugging",
+            "audit-change-followups"
+          ],
+          triggered: [
+            {
+              skill: "change-native-update-gate",
+              when: "GraphQL/API changes affect app version compatibility or force-update behavior"
+            },
+            {
+              skill: "stripe-best-practices",
+              when: "payment, billing, subscription, Connect, or Stripe integration contracts change"
+            },
+            {
+              skill: "stripe-projects",
+              when: "Stripe Projects setup or provisioning contracts are involved"
+            },
+            {
+              skill: "upgrade-stripe",
+              when: "Stripe API or SDK version changes are involved"
+            },
+            {
+              skill: "kinni-linked-account-oauth-flows",
+              when: "OAuth account-linking contracts are involved"
+            }
+          ]
         }
       },
       {
@@ -439,6 +740,35 @@ export const ORG_SECTIONS: OrgSection[] = [
           lead_review_required_before_next_handoff: true,
           requires_revalidation_after_fix: true,
           worktree_strategy: "isolated_if_coding"
+        },
+        skills: {
+          required: [
+            "change-native-update-gate",
+            "upgrade-expo-sdk",
+            "run-required-validation"
+          ],
+          recommended: [
+            "kinni-pixel-linked-account-verification",
+            "systematic-debugging"
+          ],
+          triggered: [
+            {
+              skill: "run-beta-native-release",
+              when: "beta native release behavior or EAS build/submission evidence is involved"
+            },
+            {
+              skill: "run-production-native-release",
+              when: "production native release behavior or store submission evidence is involved"
+            },
+            {
+              skill: "kinni-linked-account-oauth-flows",
+              when: "native OAuth or account-linking flows are involved"
+            },
+            {
+              skill: "implement-ui-ux-change",
+              when: "native/mobile UI behavior is user-facing"
+            }
+          ]
         }
       },
       {
@@ -476,6 +806,34 @@ export const ORG_SECTIONS: OrgSection[] = [
           lead_review_required_before_next_handoff: true,
           requires_revalidation_after_fix: true,
           worktree_strategy: "isolated_if_coding"
+        },
+        skills: {
+          required: [
+            "systematic-debugging",
+            "run-required-validation",
+            "audit-change-followups"
+          ],
+          recommended: [
+            "pre-commit-qc"
+          ],
+          triggered: [
+            {
+              skill: "change-graphql-contract",
+              when: "API, resolver, query, or generated-client performance is involved"
+            },
+            {
+              skill: "implement-ui-ux-change",
+              when: "UI rendering, responsiveness, or interaction performance is involved"
+            },
+            {
+              skill: "upgrade-expo-sdk",
+              when: "native or Expo upgrade could affect runtime performance"
+            },
+            {
+              skill: "kinni-website-astro-foundation",
+              when: "website build or render performance is involved"
+            }
+          ]
         }
       },
       {
@@ -514,6 +872,35 @@ export const ORG_SECTIONS: OrgSection[] = [
           lead_review_required_before_next_handoff: true,
           requires_revalidation_after_fix: true,
           worktree_strategy: "isolated_if_coding"
+        },
+        skills: {
+          required: [
+            "kinni-pixel-linked-account-verification",
+            "run-required-validation",
+            "dogfood"
+          ],
+          recommended: [
+            "change-native-update-gate",
+            "upgrade-expo-sdk"
+          ],
+          triggered: [
+            {
+              skill: "run-beta-native-release",
+              when: "beta native release requires physical-device proof"
+            },
+            {
+              skill: "run-production-native-release",
+              when: "production native release requires physical-device proof"
+            },
+            {
+              skill: "kinni-linked-account-oauth-flows",
+              when: "OAuth or linking needs real-device proof"
+            },
+            {
+              skill: "implement-ui-ux-change",
+              when: "user-facing mobile behavior needs V4 evidence"
+            }
+          ]
         }
       },
       {
@@ -551,6 +938,44 @@ export const ORG_SECTIONS: OrgSection[] = [
           lead_review_required_before_next_handoff: true,
           requires_revalidation_after_fix: true,
           worktree_strategy: "isolated_if_coding"
+        },
+        skills: {
+          required: [
+            "manage-gitlab-work-items",
+            "noblepro-gitlab-bug-triage",
+            "audit-change-followups",
+            "pre-commit-qc",
+            "update-docs-and-runbooks"
+          ],
+          recommended: [
+            "run-required-validation"
+          ],
+          triggered: [
+            {
+              skill: "run-beta-ota-release",
+              when: "beta OTA release artifacts or MRs are involved"
+            },
+            {
+              skill: "run-beta-native-release",
+              when: "beta native release artifacts or MRs are involved"
+            },
+            {
+              skill: "run-production-ota-release",
+              when: "production OTA release artifacts or MRs are involved"
+            },
+            {
+              skill: "run-production-native-release",
+              when: "production native release artifacts or MRs are involved"
+            },
+            {
+              skill: "triage-release-pipeline",
+              when: "release pipeline evidence must be captured"
+            },
+            {
+              skill: "noblepro-plan-cleanup-and-verification",
+              when: "in-repo plan cleanup or MR packaging is involved"
+            }
+          ]
         }
       }
     ]

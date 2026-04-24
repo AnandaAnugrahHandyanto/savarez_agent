@@ -130,6 +130,17 @@ export interface RuntimePolicy {{
   worktree_strategy: WorktreeStrategy;
 }}
 
+export interface RoleSkillTrigger {{
+  skill: string;
+  when: string;
+}}
+
+export interface RoleSkillPolicy {{
+  required: string[];
+  recommended?: string[];
+  triggered?: RoleSkillTrigger[];
+}}
+
 export interface OrgRole {{
   title: string;
   position: string;
@@ -140,6 +151,7 @@ export interface OrgRole {{
   model: string;
   toolFocus: string[];
   invokeFor: string[];
+  skills: RoleSkillPolicy;
   icon: LucideIcon;
   tone?: "default" | "success" | "warning";
   runtimePolicy: RuntimePolicy;

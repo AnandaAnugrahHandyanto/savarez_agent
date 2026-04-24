@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from agent.plan_bundle import (
     bundle_paths,
@@ -32,6 +33,9 @@ from tools.registry import registry, tool_error, tool_result
 DECLARED_ONLY_MODES = {"scheduled_role_run", "inline_lead_exception"}
 SUPPORTED_EXECUTION_MODES = {"persistent_role_instance", "delegated_subagent"}
 ROLE_INVOCATION_TOOLSET = "delegation"
+SKILL_POLICY_SOURCE = "hermesOrgChart.registry.yaml"
+MAX_LOADED_SKILL_BYTES = 100_000
+_SAFE_SKILL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 
 
 def _utc_stamp() -> str:
@@ -87,6 +91,182 @@ def _merge_counts(records: List[Dict[str, Any]]) -> Dict[str, Any]:
         counts["by_status"][status] = counts["by_status"].get(status, 0) + 1
         counts["by_execution_mode"][mode] = counts["by_execution_mode"].get(mode, 0) + 1
     return counts
+
+
+def _skill_policy(role_payload: Dict[str, Any]) -> Dict[str, Any]:
+    raw = role_payload.get("skills") if isinstance(role_payload, dict) else None
+    raw = raw if isinstance(raw, dict) else {}
+    triggered = raw.get("triggered") if isinstance(raw.get("triggered"), list) else []
+    normalized_triggered = [item for item in triggered if isinstance(item, dict)]
+    return {
+        "required": list(raw.get("required") or []),
+        "recommended": list(raw.get("recommended") or []),
+        "triggered": normalized_triggered,
+    }
+
+
+def _skill_policy_markdown(policy: Dict[str, Any], skill_compliance: str) -> str:
+    lines = [
+        "## Skill policy",
+        "",
+        f"Skill compliance: `{skill_compliance}` (required skill content was resolved before packet handoff).",
+        "",
+    ]
+    for label, key in (("Required", "required"), ("Recommended", "recommended")):
+        values = [str(item) for item in policy.get(key) or []]
+        lines.append(f"### {label}")
+        lines.extend(f"- `{item}`" for item in values)
+        if not values:
+            lines.append("- _None declared._")
+        lines.append("")
+    lines.append("### Triggered")
+    triggered = policy.get("triggered") or []
+    if triggered:
+        for item in triggered:
+            skill = item.get("skill")
+            when = item.get("when")
+            lines.append(f"- `{skill}` — {when}")
+    else:
+        lines.append("- _None declared._")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _packet_with_skill_policy(packet_body: str, policy: Dict[str, Any], skill_compliance: str) -> str:
+    if "## Skill policy" in packet_body:
+        return packet_body
+    return packet_body.rstrip() + "\n\n" + _skill_policy_markdown(policy, skill_compliance)
+
+
+def _candidate_workspace_skill_paths(skill_name: str, workspace_root: Path) -> List[Path]:
+    if not _SAFE_SKILL_NAME_RE.fullmatch(skill_name):
+        return []
+    root = workspace_root.resolve()
+    candidates: List[Path] = []
+    for base in (
+        root / "_docs" / "codex-skills",
+        root / ".agents" / "skills",
+    ):
+        try:
+            base_resolved = base.resolve()
+            base_resolved.relative_to(root)
+            skill_md = (base / skill_name / "SKILL.md").resolve()
+            skill_md.relative_to(base_resolved)
+        except (OSError, ValueError):
+            continue
+        candidates.append(skill_md)
+    return candidates
+
+
+def _load_installed_skill(skill_name: str, role_session_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    try:
+        from tools.skills_tool import skill_view
+        loaded = json.loads(skill_view(skill_name, task_id=role_session_id))
+    except Exception:
+        return None
+    if not isinstance(loaded, dict) or not loaded.get("success"):
+        return None
+    content = str(loaded.get("content") or loaded.get("raw_content") or "").strip()
+    if not content or len(content.encode("utf-8")) > MAX_LOADED_SKILL_BYTES:
+        return None
+    return {
+        "name": str(loaded.get("name") or skill_name),
+        "source": "installed",
+        "path": str(loaded.get("path") or ""),
+        "skill_dir": str(loaded.get("skill_dir") or ""),
+        "content": content,
+    }
+
+
+def _load_workspace_skill(skill_name: str, workspace_root: Path) -> Optional[Dict[str, Any]]:
+    for skill_md in _candidate_workspace_skill_paths(skill_name, workspace_root):
+        if not skill_md.is_file():
+            continue
+        try:
+            if skill_md.stat().st_size > MAX_LOADED_SKILL_BYTES:
+                continue
+            content = skill_md.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if not content or len(content.encode("utf-8")) > MAX_LOADED_SKILL_BYTES:
+            continue
+        name = skill_name
+        try:
+            from agent.skill_utils import parse_frontmatter
+            frontmatter, _ = parse_frontmatter(content)
+            if isinstance(frontmatter, dict) and frontmatter.get("name"):
+                name = str(frontmatter["name"])
+        except Exception:
+            pass
+        return {
+            "name": name,
+            "source": "workspace",
+            "path": str(skill_md),
+            "skill_dir": str(skill_md.parent),
+            "content": content,
+        }
+    return None
+
+
+def _load_required_skill_documents(
+    policy: Dict[str, Any],
+    workspace_root: Path,
+    role_session_id: Optional[str],
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    loaded: List[Dict[str, Any]] = []
+    missing: List[str] = []
+    seen: set[str] = set()
+    loaded_bytes = 0
+    for raw_name in policy.get("required") or []:
+        skill_name = str(raw_name or "").strip()
+        if not skill_name or skill_name in seen:
+            continue
+        seen.add(skill_name)
+        if not _SAFE_SKILL_NAME_RE.fullmatch(skill_name):
+            missing.append(skill_name)
+            continue
+        doc = _load_installed_skill(skill_name, role_session_id) or _load_workspace_skill(skill_name, workspace_root)
+        if doc:
+            content_bytes = len(str(doc.get("content") or "").encode("utf-8"))
+            if loaded_bytes + content_bytes > MAX_LOADED_SKILL_BYTES:
+                missing.append(skill_name)
+                continue
+            loaded.append(doc)
+            loaded_bytes += content_bytes
+        else:
+            missing.append(skill_name)
+    return loaded, missing
+
+
+def _loaded_required_skills_markdown(loaded_skills: List[Dict[str, Any]], missing_skills: List[str]) -> str:
+    lines = ["## Loaded required skill content", ""]
+    if loaded_skills:
+        for item in loaded_skills:
+            name = str(item.get("name") or "").strip()
+            source = str(item.get("source") or "unknown")
+            path = str(item.get("path") or "").strip()
+            lines.append(f"### {name}")
+            lines.append(f"- source: `{source}`")
+            if path:
+                lines.append(f"- path: `{path}`")
+            lines.append("")
+            lines.append(str(item.get("content") or "").strip())
+            lines.append("")
+    else:
+        lines.append("_No required skill content was loaded._")
+        lines.append("")
+    if missing_skills:
+        lines.append("### Missing required skills")
+        lines.extend(f"- `{name}`" for name in missing_skills)
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _packet_with_loaded_required_skills(
+    packet_body: str,
+    loaded_skills: List[Dict[str, Any]],
+    missing_skills: List[str],
+) -> str:
+    return packet_body.rstrip() + "\n\n" + _loaded_required_skills_markdown(loaded_skills, missing_skills)
 
 
 INVOKE_ROLE_SCHEMA = {
@@ -316,7 +496,23 @@ def invoke_role(
     output_name = f"{timestamp}-{role_def.slug}-output.md"
     evidence_name = f"{timestamp}-{role_def.slug}-evidence.md"
 
-    packet_body = packet_content or _default_packet(role_def.title, plan_id, summary, chosen_mode, status)
+    skill_policy = _skill_policy(role_def.payload)
+    loaded_required_skills, missing_required_skills = _load_required_skill_documents(
+        skill_policy,
+        workspace,
+        role_sid,
+    )
+    skill_compliance = "verified" if not missing_required_skills else "partial"
+    packet_body = _packet_with_skill_policy(
+        packet_content or _default_packet(role_def.title, plan_id, summary, chosen_mode, status),
+        skill_policy,
+        skill_compliance,
+    )
+    packet_body = _packet_with_loaded_required_skills(
+        packet_body,
+        loaded_required_skills,
+        missing_required_skills,
+    )
     output_path = role_dirs["outputs"] / output_name
     evidence_path = role_dirs["evidence"] / evidence_name
     packet_path = _write_text(role_dirs["packets"] / packet_name, packet_body)
@@ -383,6 +579,22 @@ def invoke_role(
         "status": status,
         "policy_default_execution_mode": role_def.policy.default_execution_mode,
         "execution_mode": chosen_mode,
+        "skill_policy_source": "hermesOrgChart.registry.yaml",
+        "skill_compliance": skill_compliance,
+        "required_skills": list(skill_policy.get("required") or []),
+        "recommended_skills": list(skill_policy.get("recommended") or []),
+        "triggered_skills": list(skill_policy.get("triggered") or []),
+        "loaded_required_skills": [str(item.get("name") or "") for item in loaded_required_skills],
+        "missing_required_skills": list(missing_required_skills),
+        "loaded_skill_sources": [
+            {
+                "name": str(item.get("name") or ""),
+                "source": str(item.get("source") or ""),
+                "path": str(item.get("path") or ""),
+            }
+            for item in loaded_required_skills
+        ],
+        "skill_policy": skill_policy,
         "invocation_source": {
             "session_id": session_id,
             "task_id": task_id,
@@ -442,6 +654,22 @@ def invoke_role(
         "execution_mode": chosen_mode,
         "status": status,
         "summary": summary.strip(),
+        "skill_policy_source": "hermesOrgChart.registry.yaml",
+        "skill_compliance": skill_compliance,
+        "required_skills": list(skill_policy.get("required") or []),
+        "recommended_skills": list(skill_policy.get("recommended") or []),
+        "triggered_skills": list(skill_policy.get("triggered") or []),
+        "loaded_required_skills": [str(item.get("name") or "") for item in loaded_required_skills],
+        "missing_required_skills": list(missing_required_skills),
+        "loaded_skill_sources": [
+            {
+                "name": str(item.get("name") or ""),
+                "source": str(item.get("source") or ""),
+                "path": str(item.get("path") or ""),
+            }
+            for item in loaded_required_skills
+        ],
+        "skill_policy": skill_policy,
         "task_packet_path": rel_packet,
         "artifact_paths": {
             "packet": rel_packet,
@@ -504,6 +732,22 @@ def invoke_role(
             "policy_default_execution_mode": role_def.policy.default_execution_mode,
             "allowed_execution_modes": list(role_def.policy.allowed_execution_modes),
             "worktree_strategy": role_def.policy.worktree_strategy,
+            "skill_policy_source": "hermesOrgChart.registry.yaml",
+            "skill_compliance": skill_compliance,
+            "required_skills": list(skill_policy.get("required") or []),
+            "recommended_skills": list(skill_policy.get("recommended") or []),
+            "triggered_skills": list(skill_policy.get("triggered") or []),
+            "loaded_required_skills": [str(item.get("name") or "") for item in loaded_required_skills],
+            "missing_required_skills": list(missing_required_skills),
+            "loaded_skill_sources": [
+                {
+                    "name": str(item.get("name") or ""),
+                    "source": str(item.get("source") or ""),
+                    "path": str(item.get("path") or ""),
+                }
+                for item in loaded_required_skills
+            ],
+            "skill_policy": skill_policy,
             "bundle": {
                 "bundle_root": str(bundle_root),
                 "manifest_path": str(paths["manifest"]),

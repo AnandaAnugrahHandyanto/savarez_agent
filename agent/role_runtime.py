@@ -263,6 +263,7 @@ def role_system_prompt(role: RoleDefinition) -> str:
     responsibilities = "\n".join(f"- {item}" for item in role.payload.get("responsibilities") or [])
     tool_focus = ", ".join(str(item) for item in role.payload.get("toolFocus") or [])
     invoke_for = "\n".join(f"- {item}" for item in role.payload.get("invokeFor") or [])
+    skill_policy = role.payload.get("skills") or {}
     return (
         f"You are the {role.title} role in the Hermes role-team runtime.\n"
         f"Position: {role.payload.get('position', '')}\n"
@@ -278,6 +279,7 @@ def role_system_prompt(role: RoleDefinition) -> str:
         "- Do not communicate directly with the user.\n"
         "- Send findings to Lead / PM for disposition; do not route side-channel work directly to another role.\n"
         f"Runtime policy: {json.dumps(role.policy.to_dict(), sort_keys=True)}\n"
+        f"Skill policy: {json.dumps(skill_policy, sort_keys=True)}\n"
     )
 
 
