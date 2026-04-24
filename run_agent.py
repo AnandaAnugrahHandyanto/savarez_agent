@@ -7527,6 +7527,21 @@ class AIAgent:
         )
         if kimi_requires_reasoning and source_msg.get("tool_calls"):
             api_msg["reasoning_content"] = ""
+            return
+
+        # DeepSeek v4/v4-flash/v4-pro in thinking mode requires reasoning_content
+        # on EVERY assistant message in history, not only tool-call turns (no
+        # tool_calls gate — see upstream PR #15228). Empty string is a valid
+        # placeholder; real reasoning would have been used by branches above.
+        deepseek_requires_reasoning = (
+            "deepseek" in (self.model or "").lower()
+            # reasoning_config is None = default-enabled (chat_completions.py:256).
+            # enabled is not False keeps injection off when reasoning_effort: none.
+            and (self.reasoning_config is None
+                 or self.reasoning_config.get("enabled") is not False)
+        )
+        if deepseek_requires_reasoning:
+            api_msg["reasoning_content"] = ""
 
     @staticmethod
     def _sanitize_tool_calls_for_strict_api(api_msg: dict) -> dict:
