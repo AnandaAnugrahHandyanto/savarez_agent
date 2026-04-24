@@ -467,8 +467,16 @@ def _build_child_system_prompt(
     role: str = "leaf",
     max_spawn_depth: int = 2,
     child_depth: int = 1,
+    system_prompt_prepend: Optional[str] = None,
 ) -> str:
     """Build a focused system prompt for a child agent.
+
+    When ``system_prompt_prepend`` is non-empty, its trimmed text is
+    inserted AT THE TOP of the child's system prompt — before the
+    standard "You are a focused subagent..." opener. This lets plugin
+    callers (e.g. dobby-specialists) give each specialist its own
+    persona / domain guidance without losing Hermes's default subagent
+    contract (task/context/summary structure).
 
     When role='orchestrator', appends a delegation-capability block
     modeled on OpenClaw's buildSubagentSystemPrompt (canSpawn branch at
@@ -476,11 +484,14 @@ def _build_child_system_prompt(
     The depth note is literal truth (grounded in the passed config) so
     the LLM doesn't confabulate nesting capabilities that don't exist.
     """
-    parts = [
+    parts: list[str] = []
+    if system_prompt_prepend and system_prompt_prepend.strip():
+        parts.extend([system_prompt_prepend.strip(), ""])
+    parts.extend([
         "You are a focused subagent working on a specific delegated task.",
         "",
         f"YOUR TASK:\n{goal}",
-    ]
+    ])
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
     if workspace_path and str(workspace_path).strip():
@@ -781,6 +792,11 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    # Optional specialist persona / domain guidance — prepended to the
+    # standard subagent system prompt. Keeps Hermes's default contract
+    # intact (task/context/summary) while letting callers give each
+    # spawn a distinct voice or domain focus.
+    system_prompt_prepend: Optional[str] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -862,6 +878,7 @@ def _build_child_agent(
         goal,
         context,
         workspace_path=workspace_hint,
+        system_prompt_prepend=system_prompt_prepend,
         role=effective_role,
         max_spawn_depth=max_spawn,
         child_depth=child_depth,

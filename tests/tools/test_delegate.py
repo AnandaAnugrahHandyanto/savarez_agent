@@ -93,6 +93,40 @@ class TestChildSystemPrompt(unittest.TestCase):
         prompt = _build_child_system_prompt("Do something", "  ")
         self.assertNotIn("CONTEXT", prompt)
 
+    def test_system_prompt_prepend_inserted_at_top(self):
+        """Non-empty prepend appears BEFORE the standard subagent opener."""
+        persona = "You are email-agent. Always resolve timezones to UTC."
+        prompt = _build_child_system_prompt(
+            "Check my inbox",
+            system_prompt_prepend=persona,
+        )
+        # Persona lands above the standard opener
+        persona_idx = prompt.find("email-agent")
+        opener_idx = prompt.find("You are a focused subagent")
+        self.assertGreaterEqual(persona_idx, 0, "persona text missing")
+        self.assertGreater(opener_idx, persona_idx, "persona must precede opener")
+
+    def test_system_prompt_prepend_preserves_contract(self):
+        """Default subagent contract (task/summary instructions) still present."""
+        prompt = _build_child_system_prompt(
+            "Fix the tests",
+            system_prompt_prepend="You are bug-agent.",
+        )
+        self.assertIn("You are a focused subagent", prompt)
+        self.assertIn("YOUR TASK", prompt)
+        self.assertIn("Fix the tests", prompt)
+        self.assertIn("concise summary", prompt)
+
+    def test_empty_system_prompt_prepend_is_noop(self):
+        """None / empty / whitespace prepend values do not change the prompt."""
+        baseline = _build_child_system_prompt("Do something")
+        for val in (None, "", "   ", "\n\t  "):
+            prompt = _build_child_system_prompt("Do something", system_prompt_prepend=val)
+            self.assertEqual(
+                prompt, baseline,
+                f"prepend={val!r} should be a no-op",
+            )
+
 
 class TestStripBlockedTools(unittest.TestCase):
     def test_removes_blocked_toolsets(self):
