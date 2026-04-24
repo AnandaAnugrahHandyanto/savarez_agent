@@ -46,8 +46,8 @@ _HERMES_CORE_TOOLS = [
     "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
     # Text-to-speech
     "text_to_speech",
-    # Planning & memory
-    "todo", "memory",
+    # Planning, memory, and persistent tasks
+    "todo", "task", "memory",
     # Session history search
     "session_search",
     # Clarifying questions
@@ -162,6 +162,12 @@ TOOLSETS = {
         "tools": ["todo"],
         "includes": []
     },
+
+    "task": {
+        "description": "Persistent task graph inspection and controlled task lifecycle management",
+        "tools": ["task"],
+        "includes": []
+    },
     
     "memory": {
         "description": "Persistent memory across sessions (personal notes + user profile)",
@@ -184,6 +190,12 @@ TOOLSETS = {
     "code_execution": {
         "description": "Run Python scripts that call tools programmatically (reduces LLM round trips)",
         "tools": ["execute_code"],
+        "includes": []
+    },
+
+    "code_intel": {
+        "description": "Bounded semantic code-intelligence tools for safe refactors and symbol operations",
+        "tools": ["lsp_rename", "code_references", "code_definition"],
         "includes": []
     },
     
@@ -254,13 +266,14 @@ TOOLSETS = {
             "web_search", "web_extract",
             "terminal", "process",
             "read_file", "write_file", "patch", "search_files",
+            "lsp_rename", "code_references", "code_definition",
             "vision_analyze",
             "skills_list", "skill_view", "skill_manage",
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
-            "todo", "memory",
+            "todo", "task", "memory",
             "session_search",
             "execute_code", "delegate_task",
         ],
@@ -286,11 +299,13 @@ TOOLSETS = {
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
             # Planning & memory
-            "todo", "memory",
+            "todo", "task", "memory",
             # Session history search
             "session_search",
             # Code execution + delegation
             "execute_code", "delegate_task",
+            # Code intelligence
+            "lsp_rename", "code_references", "code_definition",
             # Cronjob management
             "cronjob",
             # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
@@ -302,7 +317,7 @@ TOOLSETS = {
     
     "hermes-cli": {
         "description": "Full interactive CLI toolset - all default tools plus cronjob management",
-        "tools": _HERMES_CORE_TOOLS,
+        "tools": _HERMES_CORE_TOOLS + ["lsp_rename", "code_references", "code_definition"],
         "includes": []
     },
 

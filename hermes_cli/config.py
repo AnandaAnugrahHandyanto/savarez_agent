@@ -13,6 +13,7 @@ This module provides:
 """
 
 import copy
+import difflib
 import logging
 import os
 import platform
@@ -61,8 +62,109 @@ _EXTRA_ENV_KEYS = frozenset({
 })
 import yaml
 
+from agent.archetypes import (
+    DEFAULT_ARCHETYPE_NAME,
+    REQUIRED_ARCHETYPE_FIELDS,
+    get_tool_restrictions,
+    normalize_named_agent_contract as _normalize_canonical_named_agent_contract,
+    normalize_named_agent_registry as _normalize_canonical_named_agent_registry,
+    resolve_archetype,
+    resolve_archetype_defaults,
+    resolve_specialist_mapping,
+)
+from agent.route_categories import (
+    BUILTIN_LITERAL_CATEGORIES,
+    BUILTIN_ROUTE_CATEGORIES,
+    DEFAULT_LITERAL_CATEGORY,
+    DEFAULT_ROUTE_CATEGORY,
+    resolve_literal_category,
+)
+from agent.runtime_modes import (
+    BUILTIN_RUNTIME_MODES,
+    DEFAULT_RUNTIME_MODE_NAME,
+    resolve_runtime_mode,
+)
+from agent.task_contracts import REQUIRED_TASK_CONTRACT_FIELDS, validate_task_contract
 from hermes_cli.colors import Colors, color
 from hermes_cli.default_soul import DEFAULT_SOUL_MD
+
+
+DEFAULT_OMO_AGENTS = {
+    "sisyphus": {
+        "archetype": "generalist",
+        "specialist": "builder",
+        "mode": "primary",
+        "color": "blue",
+        "aliases": ["orchestrator"],
+    },
+    "hephaestus": {
+        "archetype": "implementer",
+        "route_category": "deep",
+        "mode": "subagent",
+        "color": "red",
+        "aliases": ["deep_worker"],
+    },
+    "oracle": {
+        "archetype": "researcher",
+        "blocked_tools": ["write_file", "patch", "terminal", "execute_code", "delegate_task", "task"],
+        "mode": "subagent",
+    },
+    "librarian": {
+        "archetype": "researcher",
+        "mode": "subagent",
+        "blocked_tools": ["write_file", "patch", "terminal", "execute_code", "delegate_task", "task"],
+    },
+    "explore": {
+        "archetype": "researcher",
+        "specialist": "investigator",
+        "mode": "subagent",
+        "blocked_tools": ["write_file", "patch", "terminal", "execute_code", "delegate_task", "task"],
+        "aliases": ["explorer"],
+    },
+    "multimodal-looker": {
+        "archetype": "generalist",
+        "specialist": "multimodal_specialist",
+        "allowed_tools": [
+            "read_file",
+            "search_files",
+            "vision_analyze",
+            "browser_vision",
+            "browser_snapshot",
+            "browser_get_images",
+        ],
+        "mode": "subagent",
+        "aliases": ["looker"],
+    },
+    "prometheus": {
+        "archetype": "generalist",
+        "specialist": "planner",
+        "mode": "subagent",
+        "color": "green",
+        "aliases": ["planner"],
+    },
+    "metis": {
+        "archetype": "verifier",
+        "mode": "subagent",
+        "aliases": ["gap_analyzer"],
+    },
+    "momus": {
+        "archetype": "verifier",
+        "mode": "subagent",
+        "blocked_tools": ["write_file", "patch", "terminal", "execute_code", "delegate_task", "task"],
+        "aliases": ["critic"],
+    },
+    "atlas": {
+        "archetype": "generalist",
+        "specialist": "planner",
+        "mode": "subagent",
+        "blocked_tools": ["delegate_task", "task"],
+    },
+    "sisyphus-junior": {
+        "archetype": "implementer",
+        "mode": "subagent",
+        "aliases": ["executor"],
+    },
+}
 
 
 # =============================================================================
@@ -390,7 +492,7 @@ DEFAULT_CONFIG = {
         # bot is dead and /restart.
         "gateway_notify_interval": 180,
     },
-    
+
     "terminal": {
         "backend": "local",
         "modal_mode": "auto",
@@ -459,19 +561,13 @@ DEFAULT_CONFIG = {
         # via TERMINAL_LOCAL_PERSISTENT env var.
         "persistent_shell": True,
     },
-    
+
     "browser": {
         "inactivity_timeout": 120,
         "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
         "allow_private_urls": False,  # Allow navigating to private/internal IPs (localhost, 192.168.x.x, etc.)
         "cdp_url": "",  # Optional persistent CDP endpoint for attaching to an existing Chromium/Chrome
-        # CDP supervisor — dialog + frame detection via a persistent WebSocket.
-        # Active only when a CDP-capable backend is attached (Browserbase or
-        # local Chrome via /browser connect). See
-        # website/docs/developer-guide/browser-supervisor.md.
-        "dialog_policy": "must_respond",  # must_respond | auto_dismiss | auto_accept
-        "dialog_timeout_s": 300,  # Safety auto-dismiss after N seconds under must_respond
         "camofox": {
             # When true, Hermes sends a stable profile-scoped userId to Camofox
             # so the server maps it to a persistent Firefox profile automatically.
@@ -493,38 +589,12 @@ DEFAULT_CONFIG = {
     # 100K chars ≈ 25–35K tokens across typical tokenisers.
     "file_read_max_chars": 100_000,
 
-    # Tool-output truncation thresholds. When terminal output or a
-    # single read_file page exceeds these limits, Hermes truncates the
-    # payload sent to the model (keeping head + tail for terminal,
-    # enforcing pagination for read_file). Tuning these trades context
-    # footprint against how much raw output the model can see in one
-    # shot. Ported from anomalyco/opencode PR #23770.
-    #
-    # - max_bytes:       terminal_tool output cap, in chars
-    #                    (default 50_000 ≈ 12-15K tokens).
-    # - max_lines:       read_file pagination cap — the maximum `limit`
-    #                    a single read_file call can request before
-    #                    being clamped (default 2000).
-    # - max_line_length: per-line cap applied when read_file emits a
-    #                    line-numbered view (default 2000 chars).
-    "tool_output": {
-        "max_bytes": 50_000,
-        "max_lines": 2000,
-        "max_line_length": 2000,
-    },
-
     "compression": {
         "enabled": True,
         "threshold": 0.50,            # compress when context usage exceeds this ratio
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
 
-    },
-
-    # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
-    # cache_ttl must be "5m" or "1h" (Anthropic-supported tiers); other values are ignored.
-    "prompt_caching": {
-        "cache_ttl": "5m",
     },
 
     # AWS Bedrock provider configuration.
@@ -629,7 +699,7 @@ DEFAULT_CONFIG = {
             "extra_body": {},
         },
     },
-    
+
     "display": {
         "compact": False,
         "personality": "kawaii",
@@ -662,7 +732,7 @@ DEFAULT_CONFIG = {
     "privacy": {
         "redact_pii": False,  # When True, hash user IDs and strip phone numbers from LLM context
     },
-    
+
     # Text-to-speech configuration
     # Each provider supports an optional `max_text_length:` override for the
     # per-request input-character cap. Omit it to use the provider's documented
@@ -700,7 +770,7 @@ DEFAULT_CONFIG = {
             "device": "cpu",  # cpu, cuda, or mps
         },
     },
-    
+
     "stt": {
         "enabled": True,
         "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe)
@@ -724,13 +794,13 @@ DEFAULT_CONFIG = {
         "silence_threshold": 200,     # RMS below this = silence (0-32767)
         "silence_duration": 3.0,      # Seconds of silence before auto-stop
     },
-    
+
     "human_delay": {
         "mode": "off",
         "min_ms": 800,
         "max_ms": 2500,
     },
-    
+
     # Context engine -- controls how the context window is managed when
     # approaching the model's token limit.
     # "compressor" = built-in lossy summarization (default).
@@ -739,6 +809,39 @@ DEFAULT_CONFIG = {
     # a plugin in plugins/context_engine/<name>/ or ~/.hermes/plugins/.
     "context": {
         "engine": "compressor",
+    },
+
+    # OMO compatibility / parity-decision surface.
+    # These keys make Hermes' stance explicit without silently cloning
+    # OpenCode/OMO internals. Defaults are safe and backward-compatible:
+    # YAML remains canonical; JSONC is import/interop-only; scheduler and
+    # hashline edit UX are opt-in/config-documented until runtime bridges are
+    # proven by their owning waves.
+    "omo_compat": {
+        "jsonc_config": "import-only",  # canonical config is YAML; JSONC may be translated at import boundaries only
+        "disable_omo_env": False,        # env-bridge kill switch placeholder; false preserves existing env behavior
+        "hashline_edit": False,          # HERMES_HASHLINE_EDIT equivalent; off unless explicitly enabled
+        "stale_edit_mode": "warn",      # warn | error | off; default preserves existing permissive behavior
+        "dynamic_context_pruning": {
+            "protected_tools": [],       # additive aliases for pruning protection; built-ins stay protected in code
+        },
+        "named_agents": {
+            "mode": "primary",          # primary | subagent-only | disabled
+            "color": "auto",
+            "providerOptions": {},
+            "permissions": {},          # e.g. edit/bash/webfetch/doom_loop/external_directory booleans
+        },
+        "task_scheduler": {
+            "enabled": False,            # do not imply Atlas/OMO scheduler parity unless Wave 5 runtime exists
+        },
+        "runtime_modes": {
+            "ralph": {
+                "max_iterations": 100,   # documented OMO-style default; runtime enforcement is wave-backed
+            },
+        },
+        "mcp": {
+            "builtins": "configured",   # configured | disabled; no always-on network defaults
+        },
     },
 
     # Persistent memory -- bounded curated memory injected into system prompt
@@ -789,7 +892,7 @@ DEFAULT_CONFIG = {
     # injected at the start of every API call for few-shot priming.
     # Never saved to sessions, logs, or trajectories.
     "prefill_messages_file": "",
-    
+
     # Skills — external skill directories for sharing skills across tools/agents.
     # Each path is expanded (~, ${VAR}) and resolved.  Read-only — skill creation
     # always goes to ~/.hermes/skills/.
@@ -1926,22 +2029,22 @@ OPTIONAL_ENV_VARS = {
 def get_missing_env_vars(required_only: bool = False) -> List[Dict[str, Any]]:
     """
     Check which environment variables are missing.
-    
+
     Returns list of dicts with var info for missing variables.
     """
     missing = []
-    
+
     # Check required vars
     for var_name, info in REQUIRED_ENV_VARS.items():
         if not get_env_value(var_name):
             missing.append({"name": var_name, **info, "is_required": True})
-    
+
     # Check optional vars (if not required_only)
     if not required_only:
         for var_name, info in OPTIONAL_ENV_VARS.items():
             if not get_env_value(var_name):
                 missing.append({"name": var_name, **info, "is_required": False})
-    
+
     return missing
 
 
@@ -1963,7 +2066,7 @@ def _set_nested(config: dict, dotted_key: str, value):
 def get_missing_config_fields() -> List[Dict[str, Any]]:
     """
     Check which config fields are missing or outdated (recursive).
-    
+
     Walks the DEFAULT_CONFIG tree at arbitrary depth and reports any keys
     present in defaults but absent from the user's loaded config.
     """
@@ -2208,7 +2311,7 @@ def get_compatible_custom_providers(
 def check_config_version() -> Tuple[int, int]:
     """
     Check config version.
-    
+
     Returns (current_version, latest_version).
     """
     config = load_config()
@@ -2227,7 +2330,11 @@ _KNOWN_ROOT_KEYS = {
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
-    "sessions",
+    "sessions", "browser", "bedrock", "honcho", "timezone", "discord",
+    "whatsapp", "telegram", "slack", "mattermost", "approvals",
+    "command_allowlist", "quick_commands", "hooks", "hooks_auto_accept",
+    "personalities", "security", "cron", "code_execution", "skills",
+    "omo_compat",
 }
 
 # Valid fields inside a custom_providers list entry
@@ -2238,6 +2345,184 @@ _VALID_CUSTOM_PROVIDER_FIELDS = {
 
 # Fields that look like they should be inside custom_providers, not at root
 _CUSTOM_PROVIDER_LIKE_FIELDS = {"base_url", "api_key", "rate_limit_delay", "api_mode"}
+
+
+def _looks_like_jsonc_config(raw: str) -> bool:
+    """Best-effort detection for foreign JSONC config files.
+
+    This is intentionally only a diagnostic helper. It does not make JSONC a
+    core config format; it lets `hermes doctor`/validation return a readable
+    error instead of silently falling back to defaults after a YAML parse error.
+    """
+    stripped = raw.lstrip()
+    if not stripped.startswith(("{", "[")):
+        return False
+    return bool(
+        re.search(r"(^|\s)//", raw)
+        or re.search(r"/\*.*?\*/", raw, re.S)
+        or re.search(r",\s*[}\]]", raw)
+    )
+
+
+def _validate_raw_config_file_parse(issues: List["ConfigIssue"]) -> bool:
+    """Return True when a raw config file parse issue was reported."""
+    config_path = get_config_path()
+    if not config_path.exists():
+        return False
+    try:
+        raw = config_path.read_text(encoding="utf-8")
+    except Exception:
+        return False
+    try:
+        yaml.safe_load(raw) or {}
+        return False
+    except Exception as exc:
+        if _looks_like_jsonc_config(raw):
+            issues.append(ConfigIssue(
+                "error",
+                "config.yaml looks like JSONC, but Hermes canonical config is YAML",
+                "Remove JSONC comments/trailing commas or translate the foreign JSONC file into YAML before using it as ~/.hermes/config.yaml.",
+            ))
+        else:
+            issues.append(ConfigIssue(
+                "error",
+                "Could not parse config.yaml",
+                f"Fix YAML syntax before running Hermes. Parser error: {exc}",
+            ))
+        return True
+
+
+def _validate_omo_compat_config(config: Dict[str, Any], issues: List["ConfigIssue"]) -> None:
+    """Validate explicit OMO compatibility decision knobs.
+
+    Wave 8 intentionally keeps Hermes YAML-first. These checks document and
+    enforce the safe compatibility boundary so future config examples cannot
+    accidentally imply core JSONC/OpenCode parity or enabled scheduler parity.
+    """
+    source_format = str(config.get("_source_format", "")).lower()
+    if source_format == "jsonc":
+        issues.append(ConfigIssue(
+            "error",
+            "JSONC is not a core Hermes config format",
+            "Use config.yaml as canonical YAML. JSONC is supported only by explicit import/translation tools, not by load_config().",
+        ))
+
+    compat = config.get("omo_compat")
+    if compat is None:
+        return
+    if not isinstance(compat, dict):
+        issues.append(ConfigIssue(
+            "error",
+            f"omo_compat should be a dict, got {type(compat).__name__}",
+            "Use omo_compat: { jsonc_config: import-only, ... }",
+        ))
+        return
+
+    jsonc_mode = compat.get("jsonc_config")
+    if jsonc_mode is not None and jsonc_mode not in {"import-only", "disabled"}:
+        issues.append(ConfigIssue(
+            "error",
+            "omo_compat.jsonc_config must be 'import-only' or 'disabled' (not core JSONC)",
+            "Hermes canonical config remains YAML; translate foreign JSONC into config.yaml before loading.",
+        ))
+
+    for key in ("disable_omo_env", "hashline_edit"):
+        value = compat.get(key)
+        if value is not None and not isinstance(value, bool):
+            issues.append(ConfigIssue(
+                "error",
+                f"omo_compat.{key} should be a boolean",
+                f"Set omo_compat.{key}: true or false",
+            ))
+
+    stale_mode = compat.get("stale_edit_mode")
+    if stale_mode is not None and stale_mode not in {"warn", "error", "off"}:
+        issues.append(ConfigIssue(
+            "error",
+            "omo_compat.stale_edit_mode must be one of: warn, error, off",
+            "Use warn for backward-compatible default behavior; error for strict stale-edit rejection.",
+        ))
+
+    pruning = compat.get("dynamic_context_pruning")
+    if pruning is not None:
+        if not isinstance(pruning, dict):
+            issues.append(ConfigIssue("error", "omo_compat.dynamic_context_pruning should be a dict", "Use protected_tools: [...]"))
+        else:
+            protected = pruning.get("protected_tools")
+            if protected is not None and not (
+                isinstance(protected, list) and all(isinstance(item, str) for item in protected)
+            ):
+                issues.append(ConfigIssue(
+                    "error",
+                    "omo_compat.dynamic_context_pruning.protected_tools should be a list of strings",
+                    "Example: protected_tools: [delegate_task, todo, session.info]",
+                ))
+
+    named = compat.get("named_agents")
+    if named is not None:
+        if not isinstance(named, dict):
+            issues.append(ConfigIssue("error", "omo_compat.named_agents should be a dict", "Use mode/color/providerOptions/permissions keys."))
+        else:
+            mode = named.get("mode")
+            if mode is not None and mode not in {"primary", "subagent-only", "disabled"}:
+                issues.append(ConfigIssue(
+                    "error",
+                    "omo_compat.named_agents.mode must be one of: primary, subagent-only, disabled",
+                    "Use disabled for aliases that should be documented but not invokable.",
+                ))
+            provider_options = named.get("providerOptions")
+            if provider_options is not None and not isinstance(provider_options, dict):
+                issues.append(ConfigIssue("error", "omo_compat.named_agents.providerOptions should be a dict", "Use providerOptions: {} or provider-specific request fields."))
+            permissions = named.get("permissions")
+            if permissions is not None:
+                if not isinstance(permissions, dict):
+                    issues.append(ConfigIssue("error", "omo_compat.named_agents.permissions should be a dict", "Use permission-name: true/false entries."))
+                else:
+                    for perm, allowed in permissions.items():
+                        if not isinstance(allowed, bool):
+                            issues.append(ConfigIssue(
+                                "error",
+                                f"omo_compat.named_agents.permissions.{perm} should be a boolean",
+                                "Permission gates are explicit true/false values; omit unknown permissions until implemented.",
+                            ))
+
+    scheduler = compat.get("task_scheduler")
+    if scheduler is not None:
+        if not isinstance(scheduler, dict):
+            issues.append(ConfigIssue("error", "omo_compat.task_scheduler should be a dict", "Use enabled: false unless scheduler runtime is installed."))
+        elif "enabled" in scheduler and not isinstance(scheduler.get("enabled"), bool):
+            issues.append(ConfigIssue("error", "omo_compat.task_scheduler.enabled should be a boolean", "Default false avoids overclaiming scheduler parity."))
+
+    runtime_modes = compat.get("runtime_modes")
+    if runtime_modes is not None:
+        if not isinstance(runtime_modes, dict):
+            issues.append(ConfigIssue("error", "omo_compat.runtime_modes should be a dict", "Use runtime_modes.ralph.max_iterations."))
+        else:
+            ralph = runtime_modes.get("ralph")
+            if ralph is not None:
+                if not isinstance(ralph, dict):
+                    issues.append(ConfigIssue("error", "omo_compat.runtime_modes.ralph should be a dict", "Use max_iterations: 100."))
+                else:
+                    max_iterations = ralph.get("max_iterations")
+                    if max_iterations is not None and not (
+                        type(max_iterations) is int and max_iterations >= 1
+                    ):
+                        issues.append(ConfigIssue(
+                            "error",
+                            "omo_compat.runtime_modes.ralph.max_iterations should be a positive integer",
+                            "Use 100 for OMO-style default, or a smaller positive integer for bounded local runs.",
+                        ))
+
+    mcp = compat.get("mcp")
+    if mcp is not None:
+        if not isinstance(mcp, dict):
+            issues.append(ConfigIssue("error", "omo_compat.mcp should be a dict", "Use builtins: configured or disabled."))
+        elif mcp.get("builtins") is not None and mcp.get("builtins") not in {"configured", "disabled"}:
+            issues.append(ConfigIssue(
+                "error",
+                "omo_compat.mcp.builtins must be 'configured' or 'disabled'",
+                "Hermes does not enable network MCP defaults silently; declare servers in MCP config.",
+            ))
 
 
 @dataclass
@@ -2258,12 +2543,82 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
     Can be called with a pre-loaded config dict, or will load from disk.
     """
     if config is None:
+        issues: List[ConfigIssue] = []
+        if _validate_raw_config_file_parse(issues):
+            return issues
         try:
             config = load_config()
         except Exception:
             return [ConfigIssue("error", "Could not load config.yaml", "Run 'hermes setup' to create a valid config")]
 
     issues: List[ConfigIssue] = []
+    agents_cfg = config.get("agents")
+    if agents_cfg is not None and not isinstance(agents_cfg, dict):
+        issues.append(ConfigIssue(
+            "warning",
+            f"agents should be a mapping of named agent configs, got {type(agents_cfg).__name__}",
+            "Change to:\n  agents:\n    oracle:\n      model: openai/gpt-5.4",
+        ))
+    elif isinstance(agents_cfg, dict):
+        for agent_name, agent_entry in agents_cfg.items():
+            if not isinstance(agent_entry, (dict, str)):
+                issues.append(ConfigIssue(
+                    "error",
+                    f"agents.{agent_name} must be a named-agent mapping or model string, got {type(agent_entry).__name__}",
+                    "Change to a mapping such as agents.<name>.model/archetype/mode, or use a string model shorthand.",
+                ))
+                continue
+            if isinstance(agent_entry, str):
+                try:
+                    _normalize_canonical_named_agent_contract(str(agent_name), agent_entry)
+                except ValueError as exc:
+                    issues.append(ConfigIssue(
+                        "error",
+                        f"agents.{agent_name} is not a valid Hermes named-agent contract: {exc}",
+                        "Use a non-empty model string or a mapping with valid named-agent fields.",
+                    ))
+                continue
+            for field_name in agent_entry:
+                if field_name not in _NAMED_AGENT_ALLOWED_FIELDS:
+                    issues.append(ConfigIssue(
+                        "error",
+                        f"agents.{agent_name}.{field_name} is an unknown field for Hermes named agents",
+                        "Use a supported Hermes named-agent field such as role/archetype, specialist, mode, color, category, route_category, provider, model, fallback_models, providerOptions, ultrawork, permission, allowed_tools, blocked_tools, description, safe_claim_text, or disable.",
+                    ))
+            try:
+                _normalize_canonical_named_agent_contract(str(agent_name), agent_entry)
+            except ValueError as exc:
+                issues.append(ConfigIssue(
+                    "error",
+                    f"agents.{agent_name} is not a valid Hermes named-agent contract: {exc}",
+                    "Use mode primary/subagent-only/disabled, known archetype/specialist names, mapping providerOptions/ultrawork, and permission values allow/ask/deny.",
+                ))
+
+    categories_cfg = config.get("categories")
+    if categories_cfg is not None and not isinstance(categories_cfg, dict):
+        issues.append(ConfigIssue(
+            "warning",
+            f"categories should be a mapping of named category configs, got {type(categories_cfg).__name__}",
+            "Change to:\n  categories:\n    research:\n      model: anthropic/claude-haiku-4-5",
+        ))
+
+    runtime_fallback_cfg = config.get("runtime_fallback")
+    if runtime_fallback_cfg is not None and not isinstance(runtime_fallback_cfg, (bool, dict)):
+        issues.append(ConfigIssue(
+            "warning",
+            f"runtime_fallback should be either a boolean or a config dict, got {type(runtime_fallback_cfg).__name__}",
+            "Use either 'runtime_fallback: true' or a mapping like runtime_fallback:\n  enabled: true",
+        ))
+
+    model_capabilities_cfg = config.get("model_capabilities")
+    if model_capabilities_cfg is not None and not isinstance(model_capabilities_cfg, dict):
+        issues.append(ConfigIssue(
+            "warning",
+            f"model_capabilities should be a config dict, got {type(model_capabilities_cfg).__name__}",
+            "Change to:\n  model_capabilities:\n    enabled: true",
+        ))
+
+    _validate_omo_compat_config(config, issues)
 
     # ── custom_providers must be a list, not a dict ──────────────────────
     cp = config.get("custom_providers")
@@ -2441,11 +2796,11 @@ def warn_deprecated_cwd_env_vars(config: Optional[Dict[str, Any]] = None) -> Non
 def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, Any]:
     """
     Migrate config to latest version, prompting for new required fields.
-    
+
     Args:
         interactive: If True, prompt user for missing values
         quiet: If True, suppress output
-        
+
     Returns:
         Dict with migration results: {"env_added": [...], "config_added": [...], "warnings": [...]}
     """
@@ -2461,7 +2816,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
     # Check config version
     current_ver, latest_ver = check_config_version()
-    
+
     # ── Version 3 → 4: migrate tool progress from .env to config.yaml ──
     if current_ver < 4:
         config = load_config()
@@ -2484,7 +2839,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             save_config(config)
             if not quiet:
                 print(f"  ✓ Migrated tool progress to config.yaml: {display['tool_progress']}")
-    
+
     # ── Version 4 → 5: add timezone field ──
     if current_ver < 5:
         config = load_config()
@@ -2783,27 +3138,27 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
-    
+
     # Check for missing required env vars
     missing_env = get_missing_env_vars(required_only=True)
-    
+
     if missing_env and not quiet:
         print("\n⚠️  Missing required environment variables:")
         for var in missing_env:
             print(f"   • {var['name']}: {var['description']}")
-    
+
     if interactive and missing_env:
         print("\nLet's configure them now:\n")
         for var in missing_env:
             if var.get("url"):
                 print(f"  Get your key at: {var['url']}")
-            
+
             if var.get("password"):
                 import getpass
                 value = getpass.getpass(f"  {var['prompt']}: ")
             else:
                 value = input(f"  {var['prompt']}: ").strip()
-            
+
             if value:
                 save_env_value(var["name"], value)
                 results["env_added"].append(var["name"])
@@ -2811,7 +3166,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             else:
                 results["warnings"].append(f"Skipped {var['name']} - some features may not work")
             print()
-    
+
     # Check for missing optional env vars and offer to configure interactively
     # Skip "advanced" vars (like OPENAI_BASE_URL) -- those are for power users
     missing_optional = get_missing_env_vars(required_only=False)
@@ -2820,7 +3175,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         v for v in missing_optional
         if v["name"] not in required_names and not v.get("advanced")
     ]
-    
+
     # Only offer to configure env vars that are NEW since the user's previous version
     new_var_names = set()
     for ver in range(current_ver + 1, latest_ver + 1):
@@ -2862,22 +3217,22 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     print()
             else:
                 print("  Set later with: hermes config set <key> <value>")
-    
+
     # Check for missing config fields
     missing_config = get_missing_config_fields()
-    
+
     if missing_config:
         config = load_config()
-        
+
         for field in missing_config:
             key = field["key"]
             default = field["default"]
-            
+
             _set_nested(config, key, default)
             results["config_added"].append(key)
             if not quiet:
                 print(f"  ✓ Added {key} = {default}")
-        
+
         # Update version and save
         config["_config_version"] = latest_ver
         save_config(config)
@@ -3098,6 +3453,959 @@ def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
     return config
 
 
+def _normalize_openagent_named_bucket(bucket: Any) -> Dict[str, Dict[str, Any]]:
+    """Normalize OpenAgent-style named agent/category mappings."""
+    return _normalize_openagent_named_bucket_with_defaults(bucket)
+
+
+def _normalize_openagent_named_bucket_with_defaults(
+    bucket: Any,
+    defaults: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Dict[str, Dict[str, Any]]:
+    if not isinstance(bucket, dict):
+        bucket = {}
+
+    normalized: Dict[str, Dict[str, Any]] = {}
+    if isinstance(defaults, dict):
+        for raw_name, entry in defaults.items():
+            name = str(raw_name or "").strip()
+            if not name:
+                continue
+            normalized[name] = _normalize_openagent_named_entry(entry)
+
+    alias_map = _build_named_agent_alias_map(normalized)
+    for raw_name, entry in bucket.items():
+        name = str(raw_name or "").strip()
+        if not name:
+            continue
+        name = alias_map.get(name, name)
+        base = dict(normalized.get(name, {}))
+        normalized[name] = _normalize_openagent_named_entry(entry, defaults=base)
+    return normalized
+
+
+def _build_named_agent_alias_map(registry: Dict[str, Dict[str, Any]]) -> Dict[str, str]:
+    """Map every explicit secondary alias to its canonical agent name."""
+    alias_map: Dict[str, str] = {}
+    for canonical_name, entry in registry.items():
+        for alias in _normalize_named_string_list(entry.get("aliases")):
+            alias_map.setdefault(alias, canonical_name)
+    return alias_map
+
+
+def _canonicalize_named_agent_lookup_key(value: Any) -> str:
+    """Normalize named-agent invocation tokens for stable lookup."""
+    token = str(value or "").strip().lower()
+    if not token:
+        return ""
+    token = re.sub(r"[\s_]+", "-", token)
+    token = re.sub(r"-+", "-", token)
+    return token.strip("-")
+
+
+def _build_named_agent_lookup_map(registry: Dict[str, Dict[str, Any]]) -> Dict[str, str]:
+    """Map canonical/alias invocation variants onto canonical names."""
+    lookup: Dict[str, str] = {}
+    for canonical_name, entry in registry.items():
+        lookup.setdefault(_canonicalize_named_agent_lookup_key(canonical_name), canonical_name)
+        for alias in _normalize_named_string_list(entry.get("aliases")):
+            lookup.setdefault(_canonicalize_named_agent_lookup_key(alias), canonical_name)
+    return lookup
+
+
+def _resolve_named_agent_disabled_state(
+    canonical_name: str,
+    *,
+    registry: Dict[str, Dict[str, Any]],
+    config: Optional[Dict[str, Any]],
+) -> Tuple[bool, Optional[str]]:
+    """Return whether an agent is disabled and which canonical surface disabled it."""
+    source = config if isinstance(config, dict) else {}
+    lookup_map = _build_named_agent_lookup_map(registry)
+
+    for entry in source.get("disabled_agents") or []:
+        disabled_name = lookup_map.get(_canonicalize_named_agent_lookup_key(entry))
+        if disabled_name == canonical_name:
+            return True, "disabled_agents"
+
+    raw_agents = source.get("agents")
+    if isinstance(raw_agents, dict):
+        for raw_name, raw_entry in raw_agents.items():
+            if not isinstance(raw_entry, dict) or not raw_entry.get("disable"):
+                continue
+            disabled_name = lookup_map.get(_canonicalize_named_agent_lookup_key(raw_name))
+            if disabled_name == canonical_name:
+                return True, f"agents.{canonical_name}.disable"
+
+    return False, None
+
+
+_NAMED_AGENT_PERMISSION_KEYS = (
+    "edit",
+    "bash",
+    "webfetch",
+    "doom_loop",
+    "external_directory",
+)
+_NAMED_AGENT_PERMISSION_VALUES = {"ask", "allow", "deny"}
+_NAMED_AGENT_ALLOWED_FIELDS = {
+    "acp_args",
+    "acp_command",
+    "aliases",
+    "allowed_tools",
+    "api_key",
+    "archetype",
+    "base_url",
+    "blocked_tools",
+    "category",
+    "color",
+    "description",
+    "disable",
+    "enabled_tools",
+    "fallback_models",
+    "mode",
+    "model",
+    "permission",
+    "provider",
+    "provider_options",
+    "providerOptions",
+    "reasoning_effort",
+    "role",
+    "route_category",
+    "routing_description",
+    "safe_claim_text",
+    "runtime_mode",
+    "specialist",
+    "toolsets",
+    "ultrawork",
+}
+_NAMED_AGENT_MODE_ALIASES = {
+    "primary": "primary",
+    "subagent": "subagent-only",
+    "subagent-only": "subagent-only",
+    "disabled": "disabled",
+}
+_NAMED_AGENT_FALLBACK_MODEL_KEYS = (
+    "model",
+    "variant",
+    "reasoningEffort",
+    "temperature",
+    "top_p",
+    "maxTokens",
+    "thinking",
+)
+
+
+def _normalize_named_agent_permission_surface(value: Any) -> Optional[Dict[str, Any]]:
+    """Normalize the bounded upstream-style named-agent permission surface."""
+    if not isinstance(value, dict):
+        return None
+
+    normalized: Dict[str, Any] = {}
+    for key in _NAMED_AGENT_PERMISSION_KEYS:
+        if key not in value:
+            continue
+        raw = value.get(key)
+        if isinstance(raw, str):
+            permission_value = raw.strip().lower()
+            if permission_value in _NAMED_AGENT_PERMISSION_VALUES:
+                normalized[key] = permission_value
+            continue
+        if key == "bash" and isinstance(raw, dict):
+            per_command: Dict[str, str] = {}
+            for raw_command, raw_permission in raw.items():
+                command = str(raw_command or "").strip()
+                permission_value = str(raw_permission or "").strip().lower()
+                if command and permission_value in _NAMED_AGENT_PERMISSION_VALUES:
+                    per_command[command] = permission_value
+            if per_command:
+                normalized[key] = per_command
+    return normalized or None
+
+
+def _normalize_named_agent_fallback_models(value: Any) -> List[Dict[str, Any]]:
+    """Normalize fallback_models into a bounded list of model entries."""
+    entries = value if isinstance(value, list) else [value]
+    normalized: List[Dict[str, Any]] = []
+    for entry in entries:
+        if isinstance(entry, str):
+            model = entry.strip()
+            if model:
+                normalized.append({"model": model})
+            continue
+        if not isinstance(entry, dict):
+            continue
+        model = str(entry.get("model") or "").strip()
+        if not model:
+            continue
+        normalized_entry: Dict[str, Any] = {"model": model}
+        for key in _NAMED_AGENT_FALLBACK_MODEL_KEYS:
+            if key == "model" or key not in entry:
+                continue
+            raw = entry.get(key)
+            if raw in (None, ""):
+                continue
+            if key == "thinking":
+                if isinstance(raw, dict) and raw:
+                    normalized_entry[key] = copy.deepcopy(raw)
+                continue
+            if isinstance(raw, str):
+                stripped = raw.strip()
+                if stripped:
+                    normalized_entry[key] = stripped
+                continue
+            if isinstance(raw, (int, float)):
+                normalized_entry[key] = raw
+        normalized.append(normalized_entry)
+    return normalized
+
+
+def _normalize_named_agent_disable_flag(value: Any) -> bool:
+    """Normalize a named-agent disable flag to a strict boolean."""
+    return value is True
+
+
+def _normalize_named_agent_mode(value: Any, default: str = "subagent-only") -> str:
+    """Normalize named-agent mode aliases into the canonical Hermes wording."""
+    raw_mode = str(value or "").strip().lower()
+    return _NAMED_AGENT_MODE_ALIASES.get(raw_mode, default)
+
+
+def _sanitize_named_agent_mapping(value: Any) -> Optional[Dict[str, Any]]:
+    """Return a shallow secret-safe mapping summary for status output."""
+    if not isinstance(value, dict):
+        return None
+
+    sanitized: Dict[str, Any] = {}
+    for raw_key, raw_value in value.items():
+        key = str(raw_key or "").strip()
+        if not key:
+            continue
+        lowered = key.lower()
+        if any(secret_token in lowered for secret_token in ("key", "token", "secret", "password", "authorization")):
+            sanitized[key] = "[redacted]"
+            continue
+        if isinstance(raw_value, dict):
+            sanitized[key] = _sanitize_named_agent_mapping(raw_value) or {}
+            continue
+        if isinstance(raw_value, (str, int, float, bool)):
+            sanitized[key] = raw_value
+            continue
+        sanitized[key] = type(raw_value).__name__
+    return sanitized or None
+
+
+def _resolve_disabled_named_agents(
+    registry: Dict[str, Dict[str, Any]],
+    config: Optional[Dict[str, Any]] = None,
+) -> Tuple[set, Dict[str, str]]:
+    """Resolve disabled named agents from per-agent and global config surfaces."""
+    lookup_map = _build_named_agent_lookup_map(registry)
+    disabled_names = set()
+    disabled_via: Dict[str, str] = {}
+
+    for canonical_name, entry in registry.items():
+        if _normalize_named_agent_disable_flag(entry.get("disable")):
+            disabled_names.add(canonical_name)
+            disabled_via.setdefault(canonical_name, f"agents.{canonical_name}.disable")
+
+    raw_disabled_agents = []
+    if isinstance(config, dict):
+        raw_disabled_agents = _normalize_named_string_list(config.get("disabled_agents"))
+    for raw_name in raw_disabled_agents:
+        canonical_name = lookup_map.get(_canonicalize_named_agent_lookup_key(raw_name), raw_name)
+        if canonical_name in registry:
+            disabled_names.add(canonical_name)
+            disabled_via[canonical_name] = "disabled_agents"
+
+    return disabled_names, disabled_via
+
+
+def _format_named_agent_permission_surface(permission_surface: Optional[Dict[str, Any]]) -> str:
+    """Render the bounded named-agent permission surface for detail views."""
+    if not permission_surface:
+        return "-"
+
+    parts: List[str] = []
+    for key in _NAMED_AGENT_PERMISSION_KEYS:
+        if key not in permission_surface:
+            continue
+        value = permission_surface[key]
+        if isinstance(value, dict):
+            command_summary = ",".join(
+                f"{command}:{value[command]}"
+                for command in sorted(value)
+            )
+            parts.append(f"{key}={command_summary}")
+        else:
+            parts.append(f"{key}={value}")
+    return "; ".join(parts) if parts else "-"
+
+
+def _format_named_agent_fallback_models(fallback_models: List[Dict[str, Any]]) -> str:
+    """Render bounded fallback-model truth for detail views."""
+    if not fallback_models:
+        return "-"
+
+    rendered_models: List[str] = []
+    for entry in fallback_models:
+        label = entry.get("model", "")
+        extras: List[str] = []
+        for key in _NAMED_AGENT_FALLBACK_MODEL_KEYS:
+            if key == "model" or key not in entry:
+                continue
+            value = entry[key]
+            if isinstance(value, dict):
+                extras.append(f"{key}={value}")
+            else:
+                extras.append(f"{key}={value}")
+        if extras:
+            label = f"{label} [{' '.join(extras)}]"
+        rendered_models.append(label)
+    return " -> ".join(rendered_models)
+
+
+def _format_named_agent_mapping(value: Optional[Dict[str, Any]]) -> str:
+    """Render a shallow mapping for status output without leaking secrets."""
+    if not value:
+        return "-"
+    parts: List[str] = []
+    for key in sorted(value):
+        rendered = value[key]
+        if isinstance(rendered, dict):
+            nested = ", ".join(f"{nested_key}={rendered[nested_key]}" for nested_key in sorted(rendered))
+            parts.append(f"{key}={{ {nested} }}")
+        else:
+            parts.append(f"{key}={rendered}")
+    return "; ".join(parts) if parts else "-"
+
+
+def _normalize_openagent_named_entry(
+    entry: Any,
+    *,
+    defaults: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    normalized: Dict[str, Any] = copy.deepcopy(defaults or {})
+
+    if isinstance(entry, str):
+        model = entry.strip()
+        if model:
+            normalized["model"] = model
+        return normalized
+
+    if not isinstance(entry, dict):
+        return normalized
+
+    for key, value in entry.items():
+        normalized[key] = copy.deepcopy(value)
+
+    for key in (
+        "model",
+        "provider",
+        "archetype",
+        "specialist",
+        "route_category",
+        "runtime_mode",
+        "color",
+        "description",
+        "base_url",
+        "api_key",
+        "reasoning_effort",
+        "routing_description",
+        "acp_command",
+    ):
+        if key in entry:
+            value = str(entry.get(key) or "").strip()
+            if value:
+                normalized[key] = value
+            else:
+                normalized.pop(key, None)
+
+    for key in ("blocked_tools", "allowed_tools", "toolsets", "enabled_tools", "acp_args", "aliases"):
+        if key in entry:
+            value = _normalize_named_string_list(entry.get(key))
+            if value:
+                normalized[key] = value
+            else:
+                normalized.pop(key, None)
+
+    if "providerOptions" in entry or "provider_options" in entry:
+        provider_options = entry.get("providerOptions") if "providerOptions" in entry else entry.get("provider_options")
+        if isinstance(provider_options, dict):
+            normalized["provider_options"] = copy.deepcopy(provider_options)
+        else:
+            normalized.pop("provider_options", None)
+
+    if "permission" in entry:
+        permission_surface = _normalize_named_agent_permission_surface(entry.get("permission"))
+        if permission_surface:
+            normalized["permission"] = permission_surface
+        else:
+            normalized.pop("permission", None)
+
+    if "fallback_models" in entry:
+        fallback_models = _normalize_named_agent_fallback_models(entry.get("fallback_models"))
+        if fallback_models:
+            normalized["fallback_models"] = fallback_models
+        else:
+            normalized.pop("fallback_models", None)
+
+    if "disable" in entry:
+        if _normalize_named_agent_disable_flag(entry.get("disable")):
+            normalized["disable"] = True
+        else:
+            normalized.pop("disable", None)
+
+    if "ultrawork" in entry:
+        ultrawork = entry.get("ultrawork")
+        if isinstance(ultrawork, dict):
+            normalized_ultrawork = {
+                key: str(ultrawork.get(key) or "").strip()
+                for key in ("model", "variant")
+                if str(ultrawork.get(key) or "").strip()
+            }
+            if normalized_ultrawork:
+                normalized["ultrawork"] = normalized_ultrawork
+            else:
+                normalized.pop("ultrawork", None)
+        else:
+            normalized.pop("ultrawork", None)
+
+    if "mode" in entry:
+        mode = _normalize_named_agent_mode(entry.get("mode"), default="subagent-only")
+        if mode in set(_NAMED_AGENT_MODE_ALIASES.values()):
+            normalized["mode"] = mode
+        else:
+            normalized.pop("mode", None)
+
+    return normalized
+
+
+def _named_agent_contract_to_config_entry(contract: Any, legacy_entry: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Convert canonical NamedAgentContract into the config/status dict shape.
+
+    The canonical contract is the source of truth for Wave 2 runtime fields;
+    legacy config-only fields are preserved for backward-compatible status output.
+    """
+    legacy_entry = copy.deepcopy(legacy_entry or {})
+    entry: Dict[str, Any] = {
+        "name": contract.name,
+        "role": contract.role,
+        "archetype": contract.archetype,
+        "specialist": contract.specialist,
+        "mode": contract.mode,
+        "color": contract.color,
+        "category": contract.category,
+        "route_category": contract.route_category,
+        "provider": contract.provider,
+        "model": contract.model,
+        "fallback_models": [dict(item) for item in contract.fallback_models],
+        "provider_options": dict(contract.providerOptions or {}),
+        "providerOptions": dict(contract.providerOptions or {}),
+        "ultrawork": dict(contract.ultrawork or {}),
+        "allowed_tools": list(contract.allowed_tools),
+        "blocked_tools": list(contract.blocked_tools),
+        "permission": dict(contract.permissions or {}),
+        "permissions": dict(contract.permissions or {}),
+        "description": contract.description,
+        "safe_claim_text": contract.safe_claim_text,
+        "aliases": list(contract.aliases),
+    }
+    for key in (
+        "toolsets",
+        "enabled_tools",
+        "runtime_mode",
+        "base_url",
+        "api_key",
+        "reasoning_effort",
+        "routing_description",
+        "acp_command",
+        "acp_args",
+        "disable",
+    ):
+        if key in legacy_entry:
+            entry[key] = copy.deepcopy(legacy_entry[key])
+    return {key: value for key, value in entry.items() if value not in (None, "", [], {})}
+
+
+def _normalize_named_agent_registry(bucket: Any) -> Dict[str, Dict[str, Any]]:
+    """Normalize named agents, merging user config onto canonical OMO defaults."""
+    legacy_registry = _normalize_openagent_named_bucket_with_defaults(bucket, DEFAULT_OMO_AGENTS)
+    canonical_registry = _normalize_canonical_named_agent_registry(legacy_registry)
+    return {
+        name: _named_agent_contract_to_config_entry(contract, legacy_registry.get(name))
+        for name, contract in canonical_registry.items()
+    }
+
+
+def get_named_agent_registry(config: Optional[Dict[str, Any]] = None) -> Dict[str, Dict[str, Any]]:
+    """Return the normalized named-agent registry from config."""
+    source = load_config() if config is None else config
+    return _normalize_named_agent_registry(source.get("agents"))
+
+
+def describe_named_agent(name: str, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Return a resolved, user-facing description of a named agent."""
+    source = config if isinstance(config, dict) else load_config()
+    registry = get_named_agent_registry(source)
+    requested_name = str(name or "").strip()
+    alias_map = _build_named_agent_alias_map(registry)
+    disabled_names, disabled_via = _resolve_disabled_named_agents(registry, source)
+    canonical_name = alias_map.get(requested_name, requested_name)
+    if canonical_name == requested_name:
+        lookup_map = _build_named_agent_lookup_map(registry)
+        canonical_name = lookup_map.get(_canonicalize_named_agent_lookup_key(requested_name), requested_name)
+    entry = registry.get(canonical_name)
+    if not entry:
+        available = sorted({*registry, *alias_map})
+        hint = ""
+        matches = difflib.get_close_matches(requested_name, available, n=3, cutoff=0.5)
+        if matches:
+            hint = f" Did you mean: {', '.join(matches)}?"
+        raise KeyError(f"Unknown named agent '{requested_name}'.{hint}")
+
+    specialist = str(entry.get("specialist") or "").strip() or None
+    specialist_mapping = resolve_specialist_mapping(specialist)
+    resolved_archetype = str(entry.get("archetype") or "").strip() or (
+        specialist_mapping.archetype_name if specialist_mapping is not None else DEFAULT_ARCHETYPE_NAME
+    )
+    archetype_defaults = resolve_archetype_defaults(resolved_archetype)
+    blocked_tools, allowed_tools = get_tool_restrictions(resolved_archetype, specialist)
+
+    named_blocked = set(_normalize_named_string_list(entry.get("blocked_tools")))
+    named_allowed = set(_normalize_named_string_list(entry.get("allowed_tools")))
+    effective_blocked = set(blocked_tools) | named_blocked
+    effective_allowed = set(allowed_tools)
+    if named_allowed:
+        effective_allowed = effective_allowed.intersection(named_allowed) if effective_allowed else set(named_allowed)
+    effective_allowed.difference_update(effective_blocked)
+    reviewer_like = bool((specialist or "").strip().lower() in {"code_reviewer", "qa_guard"} or resolved_archetype == "verifier")
+    configured_permission_surface = _normalize_named_agent_permission_surface(entry.get("permission"))
+    configured_fallback_models = _normalize_named_agent_fallback_models(entry.get("fallback_models"))
+
+    mode = _normalize_named_agent_mode(entry.get("mode"), default="subagent-only")
+    is_disabled = canonical_name in disabled_names or mode == "disabled"
+    parent_invocation = "allowed" if mode == "primary" and not is_disabled else "blocked"
+    return {
+        "name": canonical_name,
+        "requested_name": requested_name or canonical_name,
+        "aliases": _normalize_named_string_list(entry.get("aliases")),
+        "description": str(entry.get("description") or "").strip(),
+        "mode": mode,
+        "parent_invocation": parent_invocation,
+        "provider": str(entry.get("provider") or "").strip(),
+        "model": str(entry.get("model") or "").strip(),
+        "resolved_archetype": resolved_archetype,
+        "resolved_specialist": specialist,
+        "resolved_category": str(entry.get("category") or "").strip() or str(entry.get("route_category") or archetype_defaults.get("default_route_category") or DEFAULT_ROUTE_CATEGORY).strip(),
+        "resolved_route_category": str(entry.get("route_category") or archetype_defaults.get("default_route_category") or DEFAULT_ROUTE_CATEGORY).strip(),
+        "resolved_runtime_mode": str(entry.get("runtime_mode") or DEFAULT_RUNTIME_MODE_NAME).strip(),
+        "toolsets": _normalize_named_string_list(entry.get("toolsets")),
+        "enabled_tools": _normalize_named_string_list(entry.get("enabled_tools")),
+        "named_allowed_tools": sorted(named_allowed),
+        "named_blocked_tools": sorted(named_blocked),
+        "effective_allowed_tools": sorted(effective_allowed),
+        "effective_blocked_tools": sorted(effective_blocked),
+        "configured_permission_surface": configured_permission_surface,
+        "configured_provider_options": _sanitize_named_agent_mapping(entry.get("provider_options")),
+        "configured_ultrawork": _sanitize_named_agent_mapping(entry.get("ultrawork")),
+        "configured_fallback_models": configured_fallback_models,
+        "permission_truth_surface": "configured_named_agent_surface" if configured_permission_surface else None,
+        "fallback_truth_surface": "configured_named_agent_surface" if configured_fallback_models else None,
+        "completion_gate": "verification_evidence_required" if reviewer_like else None,
+        "behavior_boundary": "reviewer_read_only" if reviewer_like else None,
+        "is_disabled": is_disabled,
+        "disabled_via": disabled_via.get(canonical_name) or ("agents.mode" if mode == "disabled" else None),
+    }
+
+
+def render_named_agents_text(name: Optional[str] = None, config: Optional[Dict[str, Any]] = None) -> str:
+    """Render a CLI/gateway-friendly named-agent overview or detail view."""
+    source = config if isinstance(config, dict) else load_config()
+    registry = get_named_agent_registry(source)
+    requested_name = str(name or "").strip()
+    if requested_name:
+        desc = describe_named_agent(requested_name, config=source)
+        lines = [f"Named agent: {desc['name']}"]
+        if desc["requested_name"] != desc["name"]:
+            lines.append(f"Requested as: {desc['requested_name']}")
+        if desc["aliases"]:
+            lines.append(f"Aliases: {', '.join(desc['aliases'])}")
+        if desc["description"]:
+            lines.append(f"Description: {desc['description']}")
+        lines.append(f"Status: {'disabled' if desc['is_disabled'] else 'enabled'}")
+        if desc["disabled_via"]:
+            lines.append(f"Disabled via: {desc['disabled_via']}")
+        lines.extend(
+            [
+                f"Mode: {desc['mode']}",
+                f"Default parent-agent selection: {desc['parent_invocation']}",
+                f"Invocation: @{desc['name']} <prompt> (leading mention only; disabled agents are not invoked)",
+                f"Archetype: {desc['resolved_archetype']}",
+                f"Specialist: {desc['resolved_specialist'] or '-'}",
+                f"Route category: {desc['resolved_route_category']}",
+                f"Runtime mode: {desc['resolved_runtime_mode']}",
+                f"Provider: {desc['provider'] or '-'}",
+                f"Model: {desc['model'] or '-'}",
+                f"Toolsets: {', '.join(desc['toolsets']) if desc['toolsets'] else '-'}",
+                f"Enabled tools: {', '.join(desc['enabled_tools']) if desc['enabled_tools'] else '-'}",
+                f"Named allowed tools: {', '.join(desc['named_allowed_tools']) if desc['named_allowed_tools'] else '-'}",
+                f"Named blocked tools: {', '.join(desc['named_blocked_tools']) if desc['named_blocked_tools'] else '-'}",
+                f"Effective allowed tools: {', '.join(desc['effective_allowed_tools']) if desc['effective_allowed_tools'] else '-'}",
+                f"Effective blocked tools: {', '.join(desc['effective_blocked_tools']) if desc['effective_blocked_tools'] else '-'}",
+                f"Configured permission surface: {_format_named_agent_permission_surface(desc['configured_permission_surface'])}",
+                f"Configured providerOptions: {_format_named_agent_mapping(desc['configured_provider_options'])}",
+                f"Configured ultrawork override: {_format_named_agent_mapping(desc['configured_ultrawork'])}",
+                f"Permission truth surface: {desc['permission_truth_surface'] or '-'}",
+                f"Configured fallback models: {_format_named_agent_fallback_models(desc['configured_fallback_models'])}",
+                f"Fallback truth surface: {desc['fallback_truth_surface'] or '-'}",
+                f"Behavior boundary: {desc['behavior_boundary'] or '-'}",
+                f"Completion gate: {desc['completion_gate'] or '-'}",
+            ]
+        )
+        return "\n".join(lines)
+
+    visible_agent_names = list(registry)
+    lines = [
+        f"Hermes named agents ({len(visible_agent_names)}):",
+        "Hermes-native named-agent modes: primary, subagent-only, disabled. This is not a claim of OpenCode Tab-cycle parity.",
+    ]
+    for agent_name in visible_agent_names:
+        desc = describe_named_agent(agent_name, config=source)
+        label = agent_name
+        if desc["aliases"]:
+            label = f"{label} (aliases: {', '.join(desc['aliases'])})"
+        summary = [desc["resolved_archetype"]]
+        if desc["resolved_specialist"]:
+            summary.append(desc["resolved_specialist"])
+        summary.append(desc["mode"])
+        if desc["parent_invocation"] == "blocked" and desc["mode"] == "subagent-only":
+            summary.append("subagent-only; leading @ invocation allowed, default parent-agent selection blocked")
+        if desc["is_disabled"]:
+            disabled_label = f"disabled via {desc['disabled_via']}" if desc["disabled_via"] else "disabled"
+            summary.append(disabled_label)
+        if desc["model"]:
+            summary.append(desc["model"])
+        restriction = ""
+        if desc["effective_allowed_tools"]:
+            restriction = f" · allow={len(desc['effective_allowed_tools'])}"
+        elif desc["effective_blocked_tools"]:
+            restriction = f" · block={len(desc['effective_blocked_tools'])}"
+        lines.append(f"- {label} · {' · '.join(summary)}{restriction}")
+    lines.append("Use /named-agents <name> to inspect one agent.")
+    return "\n".join(lines)
+
+
+def _normalize_runtime_fallback_config(config: Any) -> Dict[str, Any]:
+    """Normalize runtime_fallback from bool-or-dict into dict form."""
+    if isinstance(config, bool):
+        return {"enabled": config}
+    if isinstance(config, dict):
+        return dict(config)
+    return {"enabled": False}
+
+
+def _normalize_model_capabilities_config(config: Any) -> Dict[str, Any]:
+    """Normalize model_capabilities to a mapping or empty dict."""
+    return dict(config) if isinstance(config, dict) else {}
+
+
+def _normalize_named_string_list(value: Any) -> List[str]:
+    """Normalize a list/tuple of names into trimmed unique strings."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    normalized: List[str] = []
+    seen = set()
+    for item in value:
+        text = str(item).strip()
+        if not text or text in seen:
+            continue
+        normalized.append(text)
+        seen.add(text)
+    return normalized
+
+
+def _normalize_wave1_route_categories(route_categories: Any) -> Dict[str, Dict[str, Any]]:
+    """Normalize built-in route-category metadata overrides while preserving built-ins."""
+    normalized: Dict[str, Dict[str, Any]] = {
+        name: {
+            "summary": category.summary,
+            "intensity": category.intensity,
+        }
+        for name, category in BUILTIN_ROUTE_CATEGORIES.items()
+    }
+    if not isinstance(route_categories, dict):
+        return normalized
+
+    for raw_name, entry in route_categories.items():
+        name = str(raw_name or "").strip()
+        if not name or name not in normalized:
+            continue
+        if isinstance(entry, str):
+            normalized[name] = {
+                "summary": entry.strip(),
+                "intensity": normalized.get(name, {}).get("intensity", ""),
+            }
+            continue
+        if not isinstance(entry, dict):
+            continue
+        merged = dict(normalized.get(name, {}))
+        if "summary" in entry and entry["summary"] is not None:
+            merged["summary"] = str(entry["summary"]).strip()
+        if "intensity" in entry and entry["intensity"] is not None:
+            merged["intensity"] = str(entry["intensity"]).strip()
+        normalized[name] = merged
+    return normalized
+
+
+def _normalize_wave1_runtime_modes(runtime_modes: Any) -> Dict[str, Dict[str, Any]]:
+    """Normalize built-in runtime-mode metadata overrides while preserving built-ins."""
+    normalized: Dict[str, Dict[str, Any]] = {
+        mode.name: {
+            "description": mode.description,
+            "operating_posture": mode.operating_posture,
+            "kind": mode.kind,
+        }
+        for mode in BUILTIN_RUNTIME_MODES
+    }
+    if not isinstance(runtime_modes, dict):
+        return normalized
+
+    for raw_name, entry in runtime_modes.items():
+        name = str(raw_name or "").strip()
+        if not name or name not in normalized:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        merged = dict(normalized.get(name, {}))
+        for field_name in ("description", "operating_posture", "kind"):
+            if field_name in entry and entry[field_name] is not None:
+                merged[field_name] = str(entry[field_name]).strip()
+        if not merged.get("kind"):
+            merged["kind"] = "runtime_mode"
+        normalized[name] = merged
+    return normalized
+
+
+def _collect_unknown_wave1_metadata_names(entries: Any, known_names: List[str]) -> List[str]:
+    """Return trimmed unknown metadata-override names in stable order."""
+    if not isinstance(entries, dict):
+        return []
+
+    known_name_set = {name.strip() for name in known_names if str(name).strip()}
+    unknown_names: List[str] = []
+    seen_names = set()
+    for raw_name in entries:
+        name = str(raw_name or "").strip()
+        if not name or name in known_name_set or name in seen_names:
+            continue
+        seen_names.add(name)
+        unknown_names.append(name)
+    return unknown_names
+
+
+def _wave1_effective_metadata_override_names(
+    defaults: Dict[str, Dict[str, Any]],
+    normalized: Any,
+) -> List[str]:
+    """Return built-in metadata names whose effective values differ from defaults."""
+    if not isinstance(normalized, dict):
+        return []
+
+    override_names: List[str] = []
+    for name, default_entry in defaults.items():
+        if normalized.get(name) != default_entry:
+            override_names.append(name)
+    return override_names
+
+
+def inspect_wave1_delegation_metadata(
+    config: Optional[Dict[str, Any]] = None,
+    raw_config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, List[str]]:
+    """Inspect effective and ignored Wave 1 delegation metadata overrides."""
+    if config is None:
+        config = load_config()
+    if raw_config is None:
+        raw_config = read_raw_config()
+
+    normalized_delegation = config.get("delegation") if isinstance(config, dict) else {}
+    if not isinstance(normalized_delegation, dict):
+        normalized_delegation = {}
+
+    raw_delegation = raw_config.get("delegation") if isinstance(raw_config, dict) else {}
+    if not isinstance(raw_delegation, dict):
+        raw_delegation = {}
+
+    default_route_categories = {
+        name: {
+            "summary": category.summary,
+            "intensity": category.intensity,
+        }
+        for name, category in BUILTIN_ROUTE_CATEGORIES.items()
+    }
+    default_runtime_modes = {
+        mode.name: {
+            "description": mode.description,
+            "operating_posture": mode.operating_posture,
+            "kind": mode.kind,
+        }
+        for mode in BUILTIN_RUNTIME_MODES
+    }
+
+    return {
+        "effective_route_category_override_names": _wave1_effective_metadata_override_names(
+            default_route_categories,
+            normalized_delegation.get("route_categories"),
+        ),
+        "ignored_route_category_names": _collect_unknown_wave1_metadata_names(
+            raw_delegation.get("route_categories"),
+            list(default_route_categories.keys()),
+        ),
+        "effective_runtime_mode_override_names": _wave1_effective_metadata_override_names(
+            default_runtime_modes,
+            normalized_delegation.get("runtime_modes"),
+        ),
+        "ignored_runtime_mode_names": _collect_unknown_wave1_metadata_names(
+            raw_delegation.get("runtime_modes"),
+            list(default_runtime_modes.keys()),
+        ),
+    }
+
+
+def _normalize_wave1_task_contract(task_contract: Any) -> Optional[Dict[str, Any]]:
+    """Normalize a configured task contract or raise with migration guidance."""
+    if task_contract in (None, "", {}):
+        return None
+    if not isinstance(task_contract, dict):
+        raise ValueError(
+            "delegation.task_contract must be a dict matching the Wave 1 task-contract schema. "
+            "Migration guidance: either remove delegation.task_contract to keep the legacy default-mapping path, "
+            f"or provide all required fields: {', '.join(REQUIRED_TASK_CONTRACT_FIELDS)}"
+        )
+    try:
+        return validate_task_contract(task_contract).model_dump()
+    except Exception as exc:
+        raise ValueError(
+            "Invalid delegation.task_contract in config. Migration guidance: remove delegation.task_contract "
+            "to preserve legacy delegation behavior, or update it to include the required structured fields "
+            f"({', '.join(REQUIRED_TASK_CONTRACT_FIELDS)}). Original error: {exc}"
+        ) from exc
+
+
+def _normalize_wave1_delegation_config(
+    config: Dict[str, Any], *, include_defaults: bool = True,
+) -> Dict[str, Any]:
+    """Resolve Wave 1 delegation surfaces into compatibility-safe defaults."""
+    config = dict(config)
+    if not include_defaults and "delegation" not in config:
+        return config
+
+    delegation = config.get("delegation")
+    if not isinstance(delegation, dict):
+        delegation = {}
+    else:
+        delegation = dict(delegation)
+
+    requested_archetype = delegation.get("archetype")
+    resolved_archetype = resolve_archetype(requested_archetype)
+    delegation["archetype"] = resolved_archetype.name
+
+    archetype_overrides = {}
+    for field_name in REQUIRED_ARCHETYPE_FIELDS:
+        if field_name not in delegation or delegation[field_name] is None:
+            continue
+        value = delegation[field_name]
+        if field_name in {"default_skills", "default_required_tools"}:
+            archetype_overrides[field_name] = _normalize_named_string_list(value)
+        else:
+            archetype_overrides[field_name] = value
+    archetype_defaults = resolve_archetype_defaults(
+        resolved_archetype.name,
+        overrides=archetype_overrides,
+    )
+
+    explicit_category_input = str(
+        delegation.get("category")
+        or delegation.get("default_category")
+        or ""
+    ).strip()
+    resolved_literal_category = resolve_literal_category(explicit_category_input)
+
+    explicit_route_category = str(
+        delegation.get("route_category")
+        or delegation.get("default_route_category")
+        or ""
+    ).strip()
+    resolved_route_category = (
+        explicit_route_category
+        if explicit_route_category in BUILTIN_ROUTE_CATEGORIES
+        else resolved_literal_category.route_category
+        or str(archetype_defaults["default_route_category"]).strip()
+        or DEFAULT_ROUTE_CATEGORY
+    )
+
+    runtime_mode = resolve_runtime_mode(delegation.get("runtime_mode"))
+    delegation["category"] = resolved_literal_category.name
+    delegation["runtime_mode"] = runtime_mode.name
+    delegation["route_category"] = resolved_route_category
+    delegation["default_route_category"] = resolved_route_category
+    delegation["default_category"] = resolved_literal_category.name
+    resolved_default_profile = str(
+        delegation.get("default_delegation_profile")
+        or archetype_defaults["default_delegation_profile"]
+    ).strip()
+    delegation["default_delegation_profile"] = resolved_default_profile
+    delegation["default_skills"] = _normalize_named_string_list(
+        delegation.get("default_skills") or archetype_defaults["default_skills"]
+    )
+    delegation["default_required_tools"] = _normalize_named_string_list(
+        delegation.get("default_required_tools") or archetype_defaults["default_required_tools"]
+    )
+    delegation["permission_preset"] = str(
+        delegation.get("permission_preset") or archetype_defaults["permission_preset"]
+    ).strip()
+    delegation["fallback_policy"] = str(
+        delegation.get("fallback_policy") or archetype_defaults["fallback_policy"]
+    ).strip()
+    delegation["task_contract"] = _normalize_wave1_task_contract(delegation.get("task_contract"))
+    delegation["route_categories"] = _normalize_wave1_route_categories(delegation.get("route_categories"))
+    delegation["runtime_modes"] = _normalize_wave1_runtime_modes(delegation.get("runtime_modes"))
+    normalized_profiles: Dict[str, Dict[str, Any]] = {}
+    for bucket_name in ("delegation_profiles", "categories"):
+        bucket = delegation.get(bucket_name)
+        if not isinstance(bucket, dict):
+            continue
+        for raw_name, entry in _normalize_openagent_named_bucket(bucket).items():
+            merged = dict(normalized_profiles.get(raw_name, {}))
+            if isinstance(entry, dict):
+                merged.update(entry)
+            normalized_profiles[raw_name] = merged
+    delegation["delegation_profiles"] = normalized_profiles
+    delegation["categories"] = copy.deepcopy(normalized_profiles)
+    delegation["archetype_defaults"] = dict(archetype_defaults)
+
+    config["delegation"] = delegation
+    return config
+
+
+def _normalize_openagent_config_buckets(
+    config: Dict[str, Any], *, include_defaults: bool = True,
+) -> Dict[str, Any]:
+    """Normalize OpenAgent-style config buckets while preserving shorthand."""
+    config = dict(config)
+
+    if include_defaults or "agents" in config:
+        config["agents"] = _normalize_named_agent_registry(config.get("agents"))
+    if include_defaults or "categories" in config:
+        config["categories"] = _normalize_openagent_named_bucket(config.get("categories"))
+    if include_defaults or "runtime_fallback" in config:
+        config["runtime_fallback"] = _normalize_runtime_fallback_config(config.get("runtime_fallback"))
+    if include_defaults or "model_capabilities" in config:
+        config["model_capabilities"] = _normalize_model_capabilities_config(config.get("model_capabilities"))
+
+    return config
+
 
 def read_raw_config() -> Dict[str, Any]:
     """Read ~/.hermes/config.yaml as-is, without merging defaults or migrating.
@@ -3121,9 +4429,9 @@ def load_config() -> Dict[str, Any]:
     """Load configuration from ~/.hermes/config.yaml."""
     ensure_hermes_home()
     config_path = get_config_path()
-    
+
     config = copy.deepcopy(DEFAULT_CONFIG)
-    
+
     if config_path.exists():
         try:
             with open(config_path, encoding="utf-8") as f:
@@ -3265,7 +4573,7 @@ def load_env() -> Dict[str, str]:
     """
     env_path = get_env_path()
     env_vars = {}
-    
+
     if env_path.exists():
         # On Windows, open() defaults to the system locale (cp1252) which can
         # fail on UTF-8 .env files. Use explicit UTF-8 only on Windows.
@@ -3280,7 +4588,7 @@ def load_env() -> Dict[str, str]:
             if line and not line.startswith('#') and '=' in line:
                 key, _, value = line.partition('=')
                 env_vars[key.strip()] = value.strip().strip('"\'')
-    
+
     return env_vars
 
 
@@ -3432,7 +4740,7 @@ def save_env_value(key: str, value: str):
     value = _check_non_ascii_credential(key, value)
     ensure_hermes_home()
     env_path = get_env_path()
-    
+
     # On Windows, open() defaults to the system locale (cp1252) which can
     # cause OSError errno 22 on UTF-8 .env files.
     read_kw = {"encoding": "utf-8", "errors": "replace"} if _IS_WINDOWS else {}
@@ -3444,7 +4752,7 @@ def save_env_value(key: str, value: str):
             lines = f.readlines()
         # Sanitize on every read: split concatenated keys, drop stale placeholders
         lines = _sanitize_env_lines(lines)
-    
+
     # Find and update or append
     found = False
     for i, line in enumerate(lines):
@@ -3452,13 +4760,13 @@ def save_env_value(key: str, value: str):
             lines[i] = f"{key}={value}\n"
             found = True
             break
-    
+
     if not found:
         # Ensure there's a newline at the end of the file before appending
         if lines and not lines[-1].endswith("\n"):
             lines[-1] += "\n"
         lines.append(f"{key}={value}\n")
-    
+
     fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
     # Preserve original permissions so Docker volume mounts aren't clobbered.
     original_mode = None
@@ -3604,7 +4912,7 @@ def get_env_value(key: str) -> Optional[str]:
     # Check environment first
     if key in os.environ:
         return os.environ[key]
-    
+
     # Then check .env file
     env_vars = load_env()
     return env_vars.get(key)
@@ -3626,23 +4934,23 @@ def redact_key(key: str) -> str:
 def show_config():
     """Display current configuration."""
     config = load_config()
-    
+
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
     print(color("│              ⚕ Hermes Configuration                    │", Colors.CYAN))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
-    
+
     # Paths
     print()
     print(color("◆ Paths", Colors.CYAN, Colors.BOLD))
     print(f"  Config:       {get_config_path()}")
     print(f"  Secrets:      {get_env_path()}")
     print(f"  Install:      {get_project_root()}")
-    
+
     # API Keys
     print()
     print(color("◆ API Keys", Colors.CYAN, Colors.BOLD))
-    
+
     keys = [
         ("OPENROUTER_API_KEY", "OpenRouter"),
         ("VOICE_TOOLS_OPENAI_KEY", "OpenAI (STT/TTS)"),
@@ -3654,20 +4962,20 @@ def show_config():
         ("BROWSER_USE_API_KEY", "Browser Use"),
         ("FAL_KEY", "FAL"),
     ]
-    
+
     for env_key, name in keys:
         value = get_env_value(env_key)
         print(f"  {name:<14} {redact_key(value)}")
     from hermes_cli.auth import get_anthropic_key
     anthropic_value = get_anthropic_key()
     print(f"  {'Anthropic':<14} {redact_key(anthropic_value)}")
-    
+
     # Model settings
     print()
     print(color("◆ Model", Colors.CYAN, Colors.BOLD))
     print(f"  Model:        {config.get('model', 'not set')}")
     print(f"  Max turns:    {config.get('agent', {}).get('max_turns', DEFAULT_CONFIG['agent']['max_turns'])}")
-    
+
     # Display
     print()
     print(color("◆ Display", Colors.CYAN, Colors.BOLD))
@@ -3687,7 +4995,7 @@ def show_config():
     print(f"  Backend:      {terminal.get('backend', 'local')}")
     print(f"  Working dir:  {terminal.get('cwd', '.')}")
     print(f"  Timeout:      {terminal.get('timeout', 60)}s")
-    
+
     if terminal.get('backend') == 'docker':
         print(f"  Docker image: {terminal.get('docker_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
     elif terminal.get('backend') == 'singularity':
@@ -3705,7 +5013,7 @@ def show_config():
         ssh_user = get_env_value('TERMINAL_SSH_USER')
         print(f"  SSH host:     {ssh_host or '(not set)'}")
         print(f"  SSH user:     {ssh_user or '(not set)'}")
-    
+
     # Timezone
     print()
     print(color("◆ Timezone", Colors.CYAN, Colors.BOLD))
@@ -3731,7 +5039,7 @@ def show_config():
         comp_provider = _aux_comp.get('provider', 'auto')
         if comp_provider and comp_provider != 'auto':
             print(f"  Provider:     {comp_provider}")
-    
+
     # Auxiliary models
     auxiliary = config.get('auxiliary', {})
     aux_tasks = {
@@ -3753,17 +5061,17 @@ def show_config():
                 if mdl:
                     parts.append(f"model={mdl}")
                 print(f"  {label:12s}  {', '.join(parts)}")
-    
+
     # Messaging
     print()
     print(color("◆ Messaging Platforms", Colors.CYAN, Colors.BOLD))
-    
+
     telegram_token = get_env_value('TELEGRAM_BOT_TOKEN')
     discord_token = get_env_value('DISCORD_BOT_TOKEN')
-    
+
     print(f"  Telegram:     {'configured' if telegram_token else color('not configured', Colors.DIM)}")
     print(f"  Discord:      {'configured' if discord_token else color('not configured', Colors.DIM)}")
-    
+
     # Skill config
     try:
         from agent.skill_utils import discover_all_skill_config_vars, resolve_skill_config_values
@@ -3795,15 +5103,15 @@ def edit_config():
         managed_error("edit configuration")
         return
     config_path = get_config_path()
-    
+
     # Ensure config exists
     if not config_path.exists():
         save_config(DEFAULT_CONFIG)
         print(f"Created {config_path}")
-    
+
     # Find editor
     editor = os.getenv('EDITOR') or os.getenv('VISUAL')
-    
+
     if not editor:
         # Try common editors
         for cmd in ['nano', 'vim', 'vi', 'code', 'notepad']:
@@ -3811,12 +5119,12 @@ def edit_config():
             if shutil.which(cmd):
                 editor = cmd
                 break
-    
+
     if not editor:
         print("No editor found. Config file is at:")
         print(f"  {config_path}")
         return
-    
+
     print(f"Opening {config_path} in {editor}...")
     subprocess.run([editor, str(config_path)])
 
@@ -3839,12 +5147,12 @@ def set_config_value(key: str, value: str):
         'GITHUB_TOKEN', 'HONCHO_API_KEY', 'WANDB_API_KEY',
         'TINKER_API_KEY',
     ]
-    
+
     if key.upper() in api_keys or key.upper().endswith(('_API_KEY', '_TOKEN')) or key.upper().startswith('TERMINAL_SSH'):
         save_env_value(key.upper(), value)
         print(f"✓ Set {key} in {get_env_path()}")
         return
-    
+
     # Otherwise it goes to config.yaml
     # Read the raw user config (not merged with defaults) to avoid
     # dumping all default values back to the file
@@ -3856,16 +5164,16 @@ def set_config_value(key: str, value: str):
                 user_config = yaml.safe_load(f) or {}
         except Exception:
             user_config = {}
-    
+
     # Handle nested keys (e.g., "tts.provider")
     parts = key.split('.')
     current = user_config
-    
+
     for part in parts[:-1]:
         if part not in current or not isinstance(current.get(part), dict):
             current[part] = {}
         current = current[part]
-    
+
     # Convert value to appropriate type
     if value.lower() in ('true', 'yes', 'on'):
         value = True
@@ -3875,14 +5183,14 @@ def set_config_value(key: str, value: str):
         value = int(value)
     elif value.replace('.', '', 1).isdigit():
         value = float(value)
-    
+
     current[parts[-1]] = value
-    
+
     # Write only user config back (not the full merged defaults)
     ensure_hermes_home()
     from utils import atomic_yaml_write
     atomic_yaml_write(config_path, user_config, sort_keys=False)
-    
+
     # Keep .env in sync for keys that terminal_tool reads directly from env vars.
     # config.yaml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.
     _config_to_env_sync = {
@@ -3915,13 +5223,13 @@ def set_config_value(key: str, value: str):
 def config_command(args):
     """Handle config subcommands."""
     subcmd = getattr(args, 'config_command', None)
-    
+
     if subcmd is None or subcmd == "show":
         show_config()
-    
+
     elif subcmd == "edit":
         edit_config()
-    
+
     elif subcmd == "set":
         key = getattr(args, 'key', None)
         value = getattr(args, 'value', None)
@@ -3934,81 +5242,81 @@ def config_command(args):
             print("  hermes config set OPENROUTER_API_KEY sk-or-...")
             sys.exit(1)
         set_config_value(key, value)
-    
+
     elif subcmd == "path":
         print(get_config_path())
-    
+
     elif subcmd == "env-path":
         print(get_env_path())
-    
+
     elif subcmd == "migrate":
         print()
         print(color("🔄 Checking configuration for updates...", Colors.CYAN, Colors.BOLD))
         print()
-        
+
         # Check what's missing
         missing_env = get_missing_env_vars(required_only=False)
         missing_config = get_missing_config_fields()
         current_ver, latest_ver = check_config_version()
-        
+
         if not missing_env and not missing_config and current_ver >= latest_ver:
             print(color("✓ Configuration is up to date!", Colors.GREEN))
             print()
             return
-        
+
         # Show what needs to be updated
         if current_ver < latest_ver:
             print(f"  Config version: {current_ver} → {latest_ver}")
-        
+
         if missing_config:
             print(f"\n  {len(missing_config)} new config option(s) will be added with defaults")
-        
+
         required_missing = [v for v in missing_env if v.get("is_required")]
         optional_missing = [
             v for v in missing_env
             if not v.get("is_required") and not v.get("advanced")
         ]
-        
+
         if required_missing:
             print(f"\n  ⚠️  {len(required_missing)} required API key(s) missing:")
             for var in required_missing:
                 print(f"     • {var['name']}")
-        
+
         if optional_missing:
             print(f"\n  ℹ️  {len(optional_missing)} optional API key(s) not configured:")
             for var in optional_missing:
                 tools = var.get("tools", [])
                 tools_str = f" (enables: {', '.join(tools[:2])})" if tools else ""
                 print(f"     • {var['name']}{tools_str}")
-        
+
         print()
-        
+
         # Run migration
         results = migrate_config(interactive=True, quiet=False)
-        
+
         print()
         if results["env_added"] or results["config_added"]:
             print(color("✓ Configuration updated!", Colors.GREEN))
-        
+
         if results["warnings"]:
             print()
             for warning in results["warnings"]:
                 print(color(f"  ⚠️  {warning}", Colors.YELLOW))
-        
+
         print()
-    
+
     elif subcmd == "check":
         # Non-interactive check for what's missing
         print()
         print(color("📋 Configuration Status", Colors.CYAN, Colors.BOLD))
         print()
-        
+
         current_ver, latest_ver = check_config_version()
         if current_ver >= latest_ver:
             print(f"  Config version: {current_ver} ✓")
         else:
             print(color(f"  Config version: {current_ver} → {latest_ver} (update available)", Colors.YELLOW))
-        
+
         print()
         print(color("  Required:", Colors.BOLD))
         for var_name in REQUIRED_ENV_VARS:
@@ -4016,7 +5324,7 @@ def config_command(args):
                 print(f"    ✓ {var_name}")
             else:
                 print(color(f"    ✗ {var_name} (missing)", Colors.RED))
-        
+
         print()
         print(color("  Optional:", Colors.BOLD))
         for var_name, info in OPTIONAL_ENV_VARS.items():
@@ -4026,15 +5334,15 @@ def config_command(args):
                 tools = info.get("tools", [])
                 tools_str = f" → {', '.join(tools[:2])}" if tools else ""
                 print(color(f"    ○ {var_name}{tools_str}", Colors.DIM))
-        
+
         missing_config = get_missing_config_fields()
         if missing_config:
             print()
             print(color(f"  {len(missing_config)} new config option(s) available", Colors.YELLOW))
             print("    Run 'hermes config migrate' to add them")
-        
+
         print()
-    
+
     else:
         print(f"Unknown config command: {subcmd}")
         print()

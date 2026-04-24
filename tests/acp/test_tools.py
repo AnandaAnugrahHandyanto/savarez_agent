@@ -2,6 +2,8 @@
 
 import pytest
 
+pytest.importorskip("acp")
+
 from acp_adapter.tools import (
     TOOL_KIND_MAP,
     build_tool_complete,
@@ -25,7 +27,10 @@ from acp.schema import (
 # ---------------------------------------------------------------------------
 
 
-COMMON_HERMES_TOOLS = ["read_file", "search_files", "terminal", "patch", "write_file", "process"]
+COMMON_HERMES_TOOLS = [
+    "read_file", "search_files", "terminal", "patch", "write_file", "process",
+    "lsp_rename", "code_references", "code_definition",
+]
 
 
 class TestToolKindMap:
@@ -45,6 +50,13 @@ class TestToolKindMap:
 
     def test_tool_kind_write_file(self):
         assert get_tool_kind("write_file") == "edit"
+
+    def test_tool_kind_lsp_rename(self):
+        assert get_tool_kind("lsp_rename") == "edit"
+
+    def test_code_intel_read_only_tools_are_read_kind(self):
+        assert get_tool_kind("code_references") == "read"
+        assert get_tool_kind("code_definition") == "read"
 
     def test_tool_kind_web_search(self):
         assert get_tool_kind("web_search") == "fetch"
@@ -114,6 +126,17 @@ class TestBuildToolTitle:
         title = build_tool_title("some_new_tool", {"foo": "bar"})
         assert title == "some_new_tool"
 
+    def test_lsp_rename_title(self):
+        title = build_tool_title("lsp_rename", {"path": "src/app.py", "new_name": "count"})
+        assert "src/app.py" in title
+        assert "count" in title
+
+    def test_code_intel_read_only_titles(self):
+        references_title = build_tool_title("code_references", {"path": "src/app.py", "line": 12})
+        definition_title = build_tool_title("code_definition", {"path": "src/app.py", "line": 12})
+        assert references_title == "references: src/app.py:12"
+        assert definition_title == "definition: src/app.py:12"
+
 
 # ---------------------------------------------------------------------------
 # build_tool_start
@@ -149,6 +172,17 @@ class TestBuildToolStart:
         diff_item = result.content[0]
         assert isinstance(diff_item, FileEditToolCallContent)
         assert diff_item.path == "new_file.py"
+
+    def test_build_tool_start_for_lsp_rename(self):
+        args = {"path": "pkg/mod.py", "line": 2, "column": 4, "new_name": "count"}
+        result = build_tool_start("tc-r1", "lsp_rename", args)
+        assert isinstance(result, ToolCallStart)
+        assert result.kind == "edit"
+        assert len(result.content) >= 1
+        diff_item = result.content[0]
+        assert isinstance(diff_item, FileEditToolCallContent)
+        assert diff_item.path == "pkg/mod.py"
+        assert diff_item.new_text == "Rename symbol to count"
 
     def test_build_tool_start_for_terminal(self):
         """terminal should produce text content with the command."""
@@ -254,6 +288,20 @@ class TestBuildToolComplete:
         assert diff_item.path.endswith("diff-test.txt")
         assert diff_item.old_text is None
         assert diff_item.new_text == "hello from hermes"
+
+    def test_build_tool_complete_for_lsp_rename_uses_diff_blocks(self):
+        rename_result = (
+            '{"success": true, "diff": "--- a/pkg/mod.py\\n+++ b/pkg/mod.py\\n@@ -1,3 +1,3 @@\\n def demo():\\n-    value = 1\\n-    return value\\n+    count = 1\\n+    return count\\n", '
+            '"files": ["pkg/mod.py"]}'
+        )
+        result = build_tool_complete("tc-r2", "lsp_rename", rename_result)
+        assert isinstance(result, ToolCallProgress)
+        assert len(result.content) == 1
+        diff_item = result.content[0]
+        assert isinstance(diff_item, FileEditToolCallContent)
+        assert diff_item.path == "pkg/mod.py"
+        assert "value = 1" in diff_item.old_text
+        assert "count = 1" in diff_item.new_text
 
 
 # ---------------------------------------------------------------------------

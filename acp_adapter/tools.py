@@ -23,6 +23,9 @@ TOOL_KIND_MAP: Dict[str, ToolKind] = {
     "read_file": "read",
     "write_file": "edit",
     "patch": "edit",
+    "lsp_rename": "edit",
+    "code_references": "read",
+    "code_definition": "read",
     "search_files": "search",
     # Terminal / execution
     "terminal": "execute",
@@ -76,6 +79,12 @@ def build_tool_title(tool_name: str, args: Dict[str, Any]) -> str:
         mode = args.get("mode", "replace")
         path = args.get("path", "?")
         return f"patch ({mode}): {path}"
+    if tool_name == "lsp_rename":
+        return f"rename: {args.get('path', '?')} -> {args.get('new_name', '?')}"
+    if tool_name == "code_references":
+        return f"references: {args.get('path', '?')}:{args.get('line', '?')}"
+    if tool_name == "code_definition":
+        return f"definition: {args.get('path', '?')}:{args.get('line', '?')}"
     if tool_name == "search_files":
         return f"search: {args.get('pattern', '?')}"
     if tool_name == "web_search":
@@ -241,7 +250,7 @@ def _build_tool_complete_content(
     if len(display_result) > 5000:
         display_result = display_result[:4900] + f"\n... ({len(result)} chars total, truncated)"
 
-    if tool_name in {"write_file", "patch", "skill_manage"}:
+    if tool_name in {"write_file", "patch", "skill_manage", "lsp_rename"}:
         try:
             from agent.display import extract_edit_diff
 
@@ -295,6 +304,16 @@ def build_tool_start(
         path = arguments.get("path", "")
         file_content = arguments.get("content", "")
         content = [acp.tool_diff_content(path=path, new_text=file_content)]
+        return acp.start_tool_call(
+            tool_call_id, title, kind=kind, content=content, locations=locations,
+            raw_input=arguments,
+        )
+
+    if tool_name == "lsp_rename":
+        path = arguments.get("path", "")
+        old_text = f"symbol at {arguments.get('line', '?')}:{arguments.get('column', '?')}"
+        new_text = f"Rename symbol to {arguments.get('new_name', '?')}"
+        content = [acp.tool_diff_content(path=path, old_text=old_text, new_text=new_text)]
         return acp.start_tool_call(
             tool_call_id, title, kind=kind, content=content, locations=locations,
             raw_input=arguments,

@@ -71,6 +71,13 @@ class TestLoadConfigDefaults:
             assert config["terminal"]["backend"] == "local"
             assert config["display"]["interim_assistant_messages"] is True
 
+    def test_default_protected_tools_only_include_live_tool_names(self):
+        assert DEFAULT_CONFIG["compression"]["protected_tools"] == [
+            "delegate_task",
+            "todo",
+            "session_search",
+        ]
+
     def test_legacy_root_level_max_turns_migrates_to_agent_config(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             config_path = tmp_path / "config.yaml"
