@@ -103,8 +103,40 @@ def _get_max_concurrent_children() -> int:
         try:
             return max(1, int(env_val))
         except (TypeError, ValueError):
-            pass
+            return _DEFAULT_MAX_CONCURRENT_CHILDREN
     return _DEFAULT_MAX_CONCURRENT_CHILDREN
+
+
+DEFAULT_CHILD_TIMEOUT = 600  # seconds before a child agent is considered stuck
+
+
+def _get_child_timeout() -> float:
+    """Read delegation.child_timeout_seconds from config.
+
+    Returns the number of seconds a single child agent is allowed to run
+    before being considered stuck.  Default: 600 s (10 minutes).
+    """
+    cfg = _load_config()
+    val = cfg.get("child_timeout_seconds")
+    if val is not None:
+        try:
+            return max(30.0, float(val))
+        except (TypeError, ValueError):
+            logger.warning(
+                "delegation.child_timeout_seconds=%r is not a valid number; "
+                "using default %d",
+                val,
+                DEFAULT_CHILD_TIMEOUT,
+            )
+    env_val = os.getenv("DELEGATION_CHILD_TIMEOUT_SECONDS")
+    if env_val:
+        try:
+            return max(30.0, float(env_val))
+        except (TypeError, ValueError):
+            pass
+    return DEFAULT_CHILD_TIMEOUT
+
+
 DEFAULT_MAX_ITERATIONS = 50
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
@@ -2161,7 +2193,18 @@ def delegate_task(
     cfg = _load_config()
     named_agent_registry = full_cfg.get("agents", {}) if isinstance(full_cfg, dict) else {}
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
-    effective_max_iter = max_iterations or default_max_iter
+    # Model-supplied max_iterations is ignored — the config value is authoritative
+    # so users get predictable budgets. The kwarg is retained for internal callers
+    # and tests; a model-emitted value here would only shrink the budget and
+    # surprise the user mid-run. Log and drop it if one slips through from a
+    # cached tool schema or a stale provider.
+    if max_iterations is not None and max_iterations != default_max_iter:
+        logger.debug(
+            "delegate_task: ignoring caller-supplied max_iterations=%s; "
+            "using delegation.max_iterations=%s from config",
+            max_iterations, default_max_iter,
+        )
+    effective_max_iter = default_max_iter
 
     # Resolve delegation credentials (provider:model pair).
     # When delegation.provider is configured, this resolves the full credential
@@ -2971,6 +3014,19 @@ DELEGATE_TASK_SCHEMA = {
             "background": {
                 "type": "boolean",
                 "description": "Launch the delegated task as a persistent background task using Hermes process_registry and return immediately with task/process IDs.",
+            },
+            "role": {
+                "type": "string",
+                "enum": ["leaf", "orchestrator"],
+                "description": (
+                    "Role of the child agent. 'leaf' (default) = focused "
+                    "worker, cannot delegate further. 'orchestrator' = can "
+                    "use delegate_task to spawn its own workers. Requires "
+                    "delegation.max_spawn_depth >= 2 in config; ignored "
+                    "(treated as 'leaf') when the child would exceed "
+                    "max_spawn_depth or when "
+                    "delegation.orchestrator_enabled=false."
+                ),
             },
             "acp_command": {
                 "type": "string",

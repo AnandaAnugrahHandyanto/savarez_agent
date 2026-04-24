@@ -78,6 +78,7 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("max_iterations", props)
         self.assertIn("agent", props)
         self.assertIn("agent", props["tasks"]["items"]["properties"])
+        self.assertIn("role", props)
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
 
 
