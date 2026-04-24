@@ -56,7 +56,12 @@ class TurnController {
   private reasoningStreamingTimer: Timer = null
   private reasoningTimer: Timer = null
   private streamTimer: Timer = null
-  private toolProgressTimer: Timer = null
+  private batchTimer: Timer = null
+  private batchDepth = 0
+  private pendingSubagentUpdates: Map<string, {
+    patch: (current: SubagentProgress) => Partial<SubagentProgress>
+    payload: SubagentEventPayload
+  }> = new Map()
 
   clearReasoning() {
     this.reasoningTimer = clear(this.reasoningTimer)
@@ -78,6 +83,9 @@ class TurnController {
     this.endReasoningPhase()
     this.activeTools = []
     this.streamTimer = clear(this.streamTimer)
+    this.batchTimer = clear(this.batchTimer)
+    this.pendingSubagentUpdates.clear()
+    this.batchDepth = 0
     this.bufRef = ''
     this.pendingInlineDiffs = []
     this.pendingSegmentTools = []
@@ -217,17 +225,9 @@ class TurnController {
   }
 
   pushTrail(line: string) {
-    patchTurnState(state => {
-      if (state.turnTrail.at(-1) === line) {
-        return state
-      }
-
-      const next = [...state.turnTrail.filter(item => !isTransientTrailLine(item)), line].slice(-TRAIL_LIMIT)
-
-      this.turnTools = next
-
-      return { ...state, turnTrail: next }
-    })
+    this.turnTools = [...this.turnTools.filter(item => !isTransientTrailLine(item)), line].slice(-TRAIL_LIMIT)
+    this.batchDepth++
+    this.scheduleBatchUpdate()
   }
 
   recordError() {
@@ -360,11 +360,8 @@ class TurnController {
     }
 
     this.turnTools = next.slice(-TRAIL_LIMIT)
-    patchTurnState({
-      streamPendingTools: this.pendingSegmentTools,
-      tools: this.activeTools,
-      turnTrail: this.turnTools
-    })
+    this.batchDepth++
+    this.scheduleBatchUpdate()
   }
 
   recordToolProgress(toolName: string, preview: string) {
@@ -375,15 +372,8 @@ class TurnController {
     }
 
     this.activeTools = this.activeTools.map((tool, i) => (i === index ? { ...tool, context: preview } : tool))
-
-    if (this.toolProgressTimer) {
-      return
-    }
-
-    this.toolProgressTimer = setTimeout(() => {
-      this.toolProgressTimer = null
-      patchTurnState({ tools: [...this.activeTools] })
-    }, STREAM_BATCH_MS)
+    this.batchDepth++
+    this.scheduleBatchUpdate()
   }
 
   recordToolStart(toolId: string, name: string, context: string) {
@@ -396,12 +386,16 @@ class TurnController {
     this.toolTokenAcc += sample ? estimateTokensRough(sample) : 0
     this.activeTools = [...this.activeTools, { context, id: toolId, name, startedAt: Date.now() }]
 
-    patchTurnState({ toolTokens: this.toolTokenAcc, tools: this.activeTools })
+    this.batchDepth++
+    this.scheduleBatchUpdate()
   }
 
   reset() {
     this.clearReasoning()
     this.clearStatusTimer()
+    this.batchTimer = clear(this.batchTimer)
+    this.pendingSubagentUpdates.clear()
+    this.batchDepth = 0
     this.idle()
     this.bufRef = ''
     this.interrupted = false
@@ -465,80 +459,126 @@ class TurnController {
     patch: (current: SubagentProgress) => Partial<SubagentProgress>,
     opts: { createIfMissing?: boolean } = { createIfMissing: true }
   ) {
-    // Stable id: prefer the server-issued subagent_id (survives nested
-    // grandchildren + cross-tree joins).  Fall back to the composite key
-    // for older gateways that omit the field — those produce a flat list.
     const id = p.subagent_id || `sa:${p.task_index}:${p.goal || 'subagent'}`
 
-    patchTurnState(state => {
-      const existing = state.subagents.find(item => item.id === id)
+    // Always queue subagent updates to avoid re-render churn. Creations
+    // are also batched to prevent stalls during high-concurrency fan-outs.
+    this.pendingSubagentUpdates.set(id, { patch, payload: p })
+    this.batchDepth++
+    this.scheduleBatchUpdate()
+  }
 
-      // Late events (subagent.complete/tool/progress arriving after message.complete
-      // has already fired idle()) would otherwise resurrect a finished
-      // subagent into turn.subagents and block the "finished" title on the
-      // /agents overlay.  When `createIfMissing` is false we drop silently.
-      if (!existing && !opts.createIfMissing) {
-        return state
-      }
+  private scheduleBatchUpdate() {
+    if (this.batchTimer) {
+      return
+    }
 
-      const base: SubagentProgress = existing ?? {
-        depth: p.depth ?? 0,
-        goal: p.goal,
-        id,
-        index: p.task_index,
-        model: p.model,
-        notes: [],
-        parentId: p.parent_id ?? null,
-        startedAt: Date.now(),
-        status: 'running',
-        taskCount: p.task_count ?? 1,
-        thinking: [],
-        toolCount: p.tool_count ?? 0,
-        tools: [],
-        toolsets: p.toolsets
-      }
+    this.batchTimer = setTimeout(() => {
+      this.batchTimer = null
+      this.flushUpdates()
+    }, STREAM_BATCH_MS)
+  }
 
-      // Map snake_case payload keys onto camelCase state.  Only overwrite
-      // when the event actually carries the field; `??` preserves prior
-      // values across streaming events that emit partial payloads.
-      const outputTail = p.output_tail
-        ? p.output_tail.map(e => ({
-            isError: Boolean(e.is_error),
-            preview: String(e.preview ?? ''),
-            tool: String(e.tool ?? 'tool')
-          }))
-        : base.outputTail
+  private flushUpdates() {
+    const subagents = this.getFlushedSubagents()
+    const depth = this.batchDepth
+    this.batchDepth = 0
 
-      const next: SubagentProgress = {
-        ...base,
-        apiCalls: p.api_calls ?? base.apiCalls,
-        costUsd: p.cost_usd ?? base.costUsd,
-        depth: p.depth ?? base.depth,
-        filesRead: p.files_read ?? base.filesRead,
-        filesWritten: p.files_written ?? base.filesWritten,
-        goal: p.goal || base.goal,
-        inputTokens: p.input_tokens ?? base.inputTokens,
-        iteration: p.iteration ?? base.iteration,
-        model: p.model ?? base.model,
-        outputTail,
-        outputTokens: p.output_tokens ?? base.outputTokens,
-        parentId: p.parent_id ?? base.parentId,
-        reasoningTokens: p.reasoning_tokens ?? base.reasoningTokens,
-        taskCount: p.task_count ?? base.taskCount,
-        toolCount: p.tool_count ?? base.toolCount,
-        toolsets: p.toolsets ?? base.toolsets,
-        ...patch(base)
-      }
+    if (depth > 500) {
+      console.warn(`[tui] backpressure: collapsed ${depth} events into one pulse`)
+    } else if (process.env.HERMES_TUI_DEBUG) {
+      console.debug(`[tui] pulse: collapsed ${depth} events`)
+    }
 
-      // Stable order: by spawn (depth, parent, index) rather than insert time.
-      // Without it, grandchildren can shuffle relative to siblings when
-      // events arrive out of order under high concurrency.
-      const subagents = existing
-        ? state.subagents.map(item => (item.id === id ? next : item))
-        : [...state.subagents, next].sort((a, b) => a.depth - b.depth || a.index - b.index)
-
-      return { ...state, subagents }
+    patchTurnState({
+      subagents,
+      tools: [...this.activeTools],
+      toolTokens: this.toolTokenAcc,
+      streamPendingTools: this.pendingSegmentTools,
+      turnTrail: this.turnTools
     })
+  }
+
+  private getFlushedSubagents(): SubagentProgress[] {
+    const updates = Array.from(this.pendingSubagentUpdates.entries())
+    if (updates.length === 0) {
+      return getTurnState().subagents
+    }
+
+    this.pendingSubagentUpdates.clear()
+
+    let nextSubagents = [...getTurnState().subagents]
+    let newlyCreated = false
+
+    for (const [id, { patch, payload: p }] of updates) {
+      const index = nextSubagents.findIndex(item => item.id === id)
+
+      if (index >= 0) {
+        nextSubagents[index] = this.buildSubagentNext(nextSubagents[index]!, p, patch)
+      } else {
+        // Handle batched creation
+        const created: SubagentProgress = {
+          depth: p.depth ?? 0,
+          goal: p.goal,
+          id,
+          index: p.task_index,
+          model: p.model,
+          notes: [],
+          parentId: p.parent_id ?? null,
+          startedAt: Date.now(),
+          status: 'running',
+          taskCount: p.task_count ?? 1,
+          thinking: [],
+          toolCount: p.tool_count ?? 0,
+          tools: [],
+          toolsets: p.toolsets,
+          outputTail: []
+        }
+        nextSubagents.push(this.buildSubagentNext(created, p, patch))
+        newlyCreated = true
+      }
+    }
+
+    if (newlyCreated) {
+      nextSubagents.sort((a, b) => a.depth - b.depth || a.index - b.index)
+    }
+
+    return nextSubagents
+  }
+
+  private buildSubagentNext(
+    base: SubagentProgress,
+    p: SubagentEventPayload,
+    patch: (current: SubagentProgress) => Partial<SubagentProgress>
+  ): SubagentProgress {
+    const outputTail = p.output_tail
+      ? p.output_tail.map(e => ({
+          isError: Boolean(e.is_error),
+          preview: String(e.preview ?? ''),
+          tool: String(e.tool ?? 'tool')
+        }))
+      : base.outputTail
+
+    return {
+      ...base,
+      apiCalls: p.api_calls ?? base.apiCalls,
+      costUsd: p.cost_usd ?? base.costUsd,
+      depth: p.depth ?? base.depth,
+      filesRead: p.files_read ?? base.filesRead,
+      filesWritten: p.files_written ?? base.filesWritten,
+      goal: p.goal || base.goal,
+      inputTokens: p.input_tokens ?? base.inputTokens,
+      iteration: p.iteration ?? base.iteration,
+      model: p.model ?? base.model,
+      outputTail,
+      outputTokens: p.output_tokens ?? base.outputTokens,
+      parentId: p.parent_id ?? base.parentId,
+      reasoningTokens: p.reasoning_tokens ?? base.reasoningTokens,
+      taskCount: p.task_count ?? base.taskCount,
+      toolCount: p.tool_count ?? base.toolCount,
+      toolsets: p.toolsets ?? base.toolsets,
+      ...patch(base)
+    }
   }
 }
 
