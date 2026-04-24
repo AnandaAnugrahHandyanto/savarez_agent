@@ -864,7 +864,10 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                     return GeminiNativeClient(api_key=api_key, base_url=base_url), model
             extra = {}
             if base_url_host_matches(base_url, "api.kimi.com"):
-                extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
+                extra["default_headers"] = {
+                    "User-Agent": "claude-code/0.1.0",
+                    "X-Client-Name": "kimi-cli",
+                }
             elif base_url_host_matches(base_url, "api.githubcopilot.com"):
                 from hermes_cli.models import copilot_default_headers
 
@@ -890,7 +893,10 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 return GeminiNativeClient(api_key=api_key, base_url=base_url), model
         extra = {}
         if base_url_host_matches(base_url, "api.kimi.com"):
-            extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
+            extra["default_headers"] = {
+                "User-Agent": "claude-code/0.1.0",
+                "X-Client-Name": "kimi-cli",
+            }
         elif base_url_host_matches(base_url, "api.githubcopilot.com"):
             from hermes_cli.models import copilot_default_headers
 
@@ -1594,7 +1600,10 @@ def _to_async_client(sync_client, model: str):
 
         async_kwargs["default_headers"] = copilot_default_headers()
     elif base_url_host_matches(sync_base_url, "api.kimi.com"):
-        async_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
+        async_kwargs["default_headers"] = {
+            "User-Agent": "claude-code/0.1.0",
+            "X-Client-Name": "kimi-cli",
+        }
     return AsyncOpenAI(**async_kwargs), model
 
 
@@ -1783,7 +1792,10 @@ def resolve_provider_client(
             )
             extra = {}
             if base_url_host_matches(custom_base, "api.kimi.com"):
-                extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
+                extra["default_headers"] = {
+                    "User-Agent": "claude-code/0.1.0",
+                    "X-Client-Name": "kimi-cli",
+                }
             elif base_url_host_matches(custom_base, "api.githubcopilot.com"):
                 from hermes_cli.models import copilot_default_headers
                 extra["default_headers"] = copilot_default_headers()
@@ -1926,6 +1938,7 @@ def resolve_provider_client(
         headers = {}
         if base_url_host_matches(base_url, "api.kimi.com"):
             headers["User-Agent"] = "claude-code/0.1.0"
+            headers["X-Client-Name"] = "kimi-cli"
         elif base_url_host_matches(base_url, "api.githubcopilot.com"):
             from hermes_cli.models import copilot_default_headers
 
