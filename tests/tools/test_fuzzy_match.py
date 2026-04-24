@@ -52,6 +52,47 @@ class TestIndentDifference:
         assert "bar" in new
 
 
+
+
+class TestIndentationFlexible:
+    """Tests for the indentation_flexible strategy ordering fix (Issue #14781)."""
+
+    def test_indentation_flexible_strategy_used(self):
+        """When only indentation differs, indentation_flexible should be the matching strategy."""
+        content = "    def foo():\n        pass\n"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, "def foo():\n    pass", "def bar():\n    return 1"
+        )
+        assert count == 1
+        assert strategy == "indentation_flexible", (
+            f"Expected indentation_flexible for indentation-only difference, "
+            f"but got {strategy}"
+        )
+        assert "bar" in new
+
+    def test_indentation_flexible_with_tabs(self):
+        """Tabs vs spaces should use indentation_flexible strategy."""
+        content = "\tdef foo():\n\t\tpass\n"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, "def foo():\n    pass", "def bar():\n    return 1"
+        )
+        assert count == 1
+        assert strategy == "indentation_flexible", (
+            f"Expected indentation_flexible for tabs-vs-spaces, but got {strategy}"
+        )
+
+    def test_line_trimmed_for_trailing_whitespace(self):
+        """When trailing whitespace differs, line_trimmed should be used."""
+        content = "def foo(): \n    pass \n"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, "def foo():\n    pass", "def bar():\n    return 1"
+        )
+        assert count == 1
+        assert strategy == "line_trimmed", (
+            f"Expected line_trimmed for trailing whitespace difference, "
+            f"but got {strategy}"
+        )
+
 class TestReplaceAll:
     def test_multiple_matches_without_flag_errors(self):
         content = "aaa bbb aaa"

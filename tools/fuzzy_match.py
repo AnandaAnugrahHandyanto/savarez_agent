@@ -8,9 +8,9 @@ in LLM-generated code.
 
 The 8-strategy chain (inspired by OpenCode), tried in order:
 1. Exact match - Direct string comparison
-2. Line-trimmed - Strip leading/trailing whitespace per line
-3. Whitespace normalized - Collapse multiple spaces/tabs to single space
-4. Indentation flexible - Ignore indentation differences entirely
+2. Indentation flexible - Ignore indentation differences entirely
+3. Line-trimmed - Strip leading/trailing whitespace per line
+4. Whitespace normalized - Collapse multiple spaces/tabs to single space
 5. Escape normalized - Convert \\n literals to actual newlines
 6. Trimmed boundary - Trim first/last line whitespace only
 7. Block anchor - Match first+last lines, use similarity for middle
@@ -72,9 +72,9 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
     # Try each matching strategy in order
     strategies: List[Tuple[str, Callable]] = [
         ("exact", _strategy_exact),
+        ("indentation_flexible", _strategy_indentation_flexible),
         ("line_trimmed", _strategy_line_trimmed),
         ("whitespace_normalized", _strategy_whitespace_normalized),
-        ("indentation_flexible", _strategy_indentation_flexible),
         ("escape_normalized", _strategy_escape_normalized),
         ("trimmed_boundary", _strategy_trimmed_boundary),
         ("unicode_normalized", _strategy_unicode_normalized),
