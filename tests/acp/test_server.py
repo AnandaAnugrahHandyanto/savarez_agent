@@ -952,7 +952,41 @@ class TestPrompt:
         assert result_event["tool"]["success"] is False
         assert result_event["tool"]["pipeline_stage"] == "moa"
         assert "approved" not in result_event["tool"]
+        assert result_event["tool"]["error"] == "Error in MoA processing: timeout"
+        assert result_event["tool"]["moa_failure_preview"].startswith("MoA processing failed.")
+        assert "\"success\": false" in result_event["tool"]["raw_output_preview"]
         assert result_event["tool"]["models_used"]["aggregator_model"] == "xiaomi/mimo-v2-pro"
+
+    @pytest.mark.asyncio
+    async def test_prompt_force_moa_spar_logs_preview_for_thin_moa_failure_payload(self, agent, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.mode = "force-moa-spar"
+        state.agent.run_conversation = MagicMock()
+
+        with patch(
+            "tools.mixture_of_agents_tool.mixture_of_agents_tool",
+            AsyncMock(return_value=json.dumps({"success": False})),
+        ) as mock_moa, patch(
+            "tools.spar_tool.spar_tool",
+            AsyncMock(),
+        ) as mock_spar:
+            await agent.prompt(
+                prompt=[TextContentBlock(type="text", text="review this long brief")],
+                session_id=new_resp.session_id,
+            )
+
+        mock_moa.assert_awaited_once()
+        mock_spar.assert_not_awaited()
+
+        forensic_path = tmp_path / ".hermes" / "logs" / "route_forensics.jsonl"
+        events = [json.loads(line) for line in forensic_path.read_text().splitlines()]
+        result_event = next(event for event in events if event["event"] == "route_result")
+        assert result_event["tool"]["success"] is False
+        assert result_event["tool"]["pipeline_stage"] == "moa"
+        assert result_event["tool"]["raw_output_preview"] == "{\"success\": false}"
+        assert "moa_failure_preview" not in result_event["tool"]
 
     @pytest.mark.asyncio
     async def test_prompt_force_moa_spar_falls_back_to_moa_answer_when_spar_times_out(self, agent, monkeypatch, tmp_path):

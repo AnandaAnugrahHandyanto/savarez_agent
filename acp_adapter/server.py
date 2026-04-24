@@ -243,6 +243,7 @@ def _summarize_routed_payload(prompt_route: str, raw_output: str) -> dict[str, A
     has_spar_review = any(
         key in payload for key in ("approved", "disagreement", "judge_verdict", "final_response", "issues")
     )
+    raw_preview = str(raw_output or "").strip().replace("\n", "\\n")[:500]
     summary: dict[str, Any] = {
         "success": bool(payload.get("success")),
         "models_used": payload.get("models_used"),
@@ -284,6 +285,12 @@ def _summarize_routed_payload(prompt_route: str, raw_output: str) -> dict[str, A
         moa_candidate_response = str(payload.get("moa_candidate_response") or "").strip()
         if moa_candidate_response:
             summary["moa_candidate_response"] = moa_candidate_response
+        if not summary["success"]:
+            moa_failure_preview = str(payload.get("response") or "").strip()
+            if moa_failure_preview:
+                summary["moa_failure_preview"] = moa_failure_preview[:500]
+            if raw_preview:
+                summary["raw_output_preview"] = raw_preview
     error = str(payload.get("error") or "").strip()
     if error:
         summary["error"] = error[:500]
