@@ -151,7 +151,7 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
 # differs from their main chat model, map it here.  The vision auto-detect
 # "exotic provider" branch checks this before falling back to the main model.
 _PROVIDER_VISION_MODELS: Dict[str, str] = {
-    "xiaomi": "mimo-v2-omni",
+    "xiaomi": "mimo-v2.5",
     "zai": "glm-5v-turbo",
 }
 
@@ -188,10 +188,9 @@ _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
 _AUTH_JSON_PATH = get_hermes_home() / "auth.json"
 
 # Codex fallback: uses the Responses API (the only endpoint the Codex
-# OAuth token can access) with a fast model for auxiliary tasks.
-# ChatGPT-backed Codex accounts currently reject gpt-5.3-codex for these
-# auxiliary flows, while gpt-5.2-codex remains broadly available and supports
-# vision via Responses.
+# OAuth token can access). Runtime fallback must choose a model from the live
+# account catalog; this legacy constant is retained only as a preference when
+# it is explicitly present in that live catalog.
 _CODEX_AUX_MODEL = "gpt-5.2-codex"
 _CODEX_AUX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 
@@ -810,6 +809,80 @@ def _read_codex_access_token() -> Optional[str]:
         return None
 
 
+def _select_codex_aux_model(
+    access_token: str,
+    *,
+    requested_model: Optional[str] = None,
+) -> Optional[str]:
+    """Select a Codex auxiliary model from the live account catalog only.
+
+    Runtime fallback must not guess from hardcoded Codex defaults: stale model
+    slugs produce provider-side 400s and look like confusing model switches.
+    """
+    try:
+        from hermes_cli.codex_models import get_live_codex_model_ids
+
+        live_models = get_live_codex_model_ids(access_token)
+    except Exception as exc:
+        logger.warning(
+            "Auxiliary client: live Codex model catalog is unavailable (%s); "
+            "skipping Codex auxiliary fallback instead of guessing a stale model",
+            exc,
+        )
+        return None
+
+    ordered_live: List[str] = []
+    for model_id in live_models or []:
+        model_id = str(model_id or "").strip()
+        if model_id and model_id not in ordered_live:
+            ordered_live.append(model_id)
+
+    if not ordered_live:
+        logger.warning(
+            "Auxiliary client: live Codex model catalog is unavailable; "
+            "skipping Codex auxiliary fallback instead of guessing a stale model"
+        )
+        return None
+
+    live_set = set(ordered_live)
+    candidates: List[tuple[str, str]] = []
+
+    def _add_candidate(label: str, model_name: Optional[str]) -> None:
+        normalized = _normalize_resolved_model(model_name, "openai-codex")
+        normalized = str(normalized or "").strip()
+        if normalized and (label, normalized) not in candidates:
+            candidates.append((label, normalized))
+
+    _add_candidate("requested", requested_model)
+    if _read_main_provider() == "openai-codex":
+        _add_candidate("main", _read_main_model())
+    _add_candidate("legacy auxiliary default", _CODEX_AUX_MODEL)
+
+    for label, candidate in candidates:
+        if candidate in live_set:
+            logger.info(
+                "Auxiliary client: Codex OAuth (%s via Responses API; "
+                "%s model from live Codex catalog)",
+                candidate,
+                label,
+            )
+            return candidate
+        logger.warning(
+            "Auxiliary client: Codex %s model %s is not in the live Codex "
+            "catalog; not using it",
+            label,
+            candidate,
+        )
+
+    selected = ordered_live[0]
+    logger.info(
+        "Auxiliary client: Codex OAuth (%s via Responses API; selected from "
+        "live Codex catalog)",
+        selected,
+    )
+    return selected
+
+
 def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
     """Try each API-key provider in PROVIDER_REGISTRY order.
 
@@ -914,6 +987,19 @@ def _try_openrouter() -> Tuple[Optional[OpenAI], Optional[str]]:
     logger.debug("Auxiliary client: OpenRouter")
     return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL,
                    default_headers=_OR_HEADERS), _OPENROUTER_MODEL
+
+
+def _describe_openrouter_unavailable() -> str:
+    """Return a more precise OpenRouter auth failure reason for logs."""
+    pool_present, entry = _select_pool_entry("openrouter")
+    if pool_present:
+        if entry is None:
+            return "OpenRouter credential pool has no usable entries (credentials may be exhausted)"
+        if not _pool_runtime_api_key(entry):
+            return "OpenRouter credential pool entry is missing a runtime API key"
+    if not str(os.getenv("OPENROUTER_API_KEY") or "").strip():
+        return "OPENROUTER_API_KEY not set"
+    return "no usable OpenRouter credentials found"
 
 
 def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
@@ -1160,7 +1246,7 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
     return OpenAI(api_key=custom_key, base_url=custom_base), model
 
 
-def _try_codex() -> Tuple[Optional[Any], Optional[str]]:
+def _try_codex(requested_model: Optional[str] = None) -> Tuple[Optional[Any], Optional[str]]:
     pool_present, entry = _select_pool_entry("openai-codex")
     if pool_present:
         codex_token = _pool_runtime_api_key(entry)
@@ -1176,13 +1262,15 @@ def _try_codex() -> Tuple[Optional[Any], Optional[str]]:
         if not codex_token:
             return None, None
         base_url = _CODEX_AUX_BASE_URL
-    logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", _CODEX_AUX_MODEL)
+    model = _select_codex_aux_model(codex_token, requested_model=requested_model)
+    if not model:
+        return None, None
     real_client = OpenAI(
         api_key=codex_token,
         base_url=base_url,
         default_headers=_codex_cloudflare_headers(codex_token),
     )
-    return CodexAuxiliaryClient(real_client, _CODEX_AUX_MODEL), _CODEX_AUX_MODEL
+    return CodexAuxiliaryClient(real_client, model), model
 
 
 def _try_anthropic() -> Tuple[Optional[Any], Optional[str]]:
@@ -1376,7 +1464,10 @@ def _try_payment_fallback(
     return None, None, ""
 
 
-def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Optional[OpenAI], Optional[str]]:
+def _resolve_auto(
+    main_runtime: Optional[Dict[str, Any]] = None,
+    requested_model: Optional[str] = None,
+) -> Tuple[Optional[OpenAI], Optional[str]]:
     """Full auto-detection chain.
 
     Priority:
@@ -1451,7 +1542,10 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
     # ── Step 2: aggregator / fallback chain ──────────────────────────────
     tried = []
     for label, try_fn in _get_provider_chain():
-        client, model = try_fn()
+        if label == "openai-codex":
+            client, model = _try_codex(requested_model=requested_model)
+        else:
+            client, model = try_fn()
         if client is not None:
             if tried:
                 logger.info("Auxiliary auto-detect: using %s (%s) — skipped: %s",
@@ -1607,19 +1701,14 @@ def resolve_provider_client(
 
     # ── Auto: try all providers in priority order ────────────────────
     if provider == "auto":
-        client, resolved = _resolve_auto(main_runtime=main_runtime)
+        client, resolved = _resolve_auto(main_runtime=main_runtime, requested_model=model)
         if client is None:
             return None, None
-        # When auto-detection lands on a non-OpenRouter provider (e.g. a
-        # local server), an OpenRouter-formatted model override like
-        # "google/gemini-3-flash-preview" won't work.  Drop it and use
-        # the provider's own default model instead.
-        if model and "/" in model and resolved and "/" not in resolved:
-            logger.debug(
-                "Dropping OpenRouter-format model %r for non-OpenRouter "
-                "auxiliary provider (using %r instead)", model, resolved)
-            model = None
-        final_model = model or resolved
+        # Cache-compatible clients such as Codex may have selected a live-safe
+        # model that differs from the caller's override. Re-apply compatibility
+        # checks on the auto path too so a stale override cannot leak back into
+        # request-time model selection.
+        final_model = _compat_model(client, model, resolved)
         return (_to_async_client(client, final_model) if async_mode
                 else (client, final_model))
 
@@ -1627,8 +1716,10 @@ def resolve_provider_client(
     if provider == "openrouter":
         client, default = _try_openrouter()
         if client is None:
-            logger.warning("resolve_provider_client: openrouter requested "
-                           "but OPENROUTER_API_KEY not set")
+            logger.warning(
+                "resolve_provider_client: openrouter requested but %s",
+                _describe_openrouter_unavailable(),
+            )
             return None, None
         final_model = _normalize_resolved_model(model or default, provider)
         return (_to_async_client(client, final_model) if async_mode
@@ -1661,7 +1752,13 @@ def resolve_provider_client(
                 logger.warning("resolve_provider_client: openai-codex requested "
                                "but no Codex OAuth token found (run: hermes model)")
                 return None, None
-            final_model = _normalize_resolved_model(model or _CODEX_AUX_MODEL, provider)
+            final_model = _select_codex_aux_model(codex_token, requested_model=model)
+            if not final_model:
+                logger.warning(
+                    "resolve_provider_client: openai-codex requested but no "
+                    "live-supported Codex model was available"
+                )
+                return None, None
             raw_client = OpenAI(
                 api_key=codex_token,
                 base_url=_CODEX_AUX_BASE_URL,
@@ -1669,12 +1766,12 @@ def resolve_provider_client(
             )
             return (raw_client, final_model)
         # Standard path: wrap in CodexAuxiliaryClient adapter
-        client, default = _try_codex()
+        client, default = _try_codex(requested_model=model)
         if client is None:
             logger.warning("resolve_provider_client: openai-codex requested "
-                           "but no Codex OAuth token found (run: hermes model)")
+                           "but no Codex OAuth token or live-supported model found (run: hermes model)")
             return None, None
-        final_model = _normalize_resolved_model(model or default, provider)
+        final_model = _normalize_resolved_model(default, provider)
         return (_to_async_client(client, final_model) if async_mode
                 else (client, final_model))
 
@@ -2317,11 +2414,26 @@ def _is_openrouter_client(client: Any) -> bool:
     return False
 
 
-def _compat_model(client: Any, model: Optional[str], cached_default: Optional[str]) -> Optional[str]:
-    """Drop OpenRouter-format model slugs (with '/') for non-OpenRouter clients.
+def _is_codex_auxiliary_client(client: Any) -> bool:
+    return isinstance(client, (CodexAuxiliaryClient, AsyncCodexAuxiliaryClient))
 
-    Mirrors the guard in resolve_provider_client() which is skipped on cache hits.
+
+def _compat_model(client: Any, model: Optional[str], cached_default: Optional[str]) -> Optional[str]:
+    """Return the safe effective model for a cached auxiliary client.
+
+    Cache keys intentionally omit the requested model so compatible clients can
+    be reused. That means provider-specific safety checks must run on both cache
+    hits and cold-cache returns.
     """
+    if _is_codex_auxiliary_client(client):
+        if model and cached_default and model != cached_default:
+            logger.warning(
+                "Auxiliary client: ignoring Codex model override %s; using "
+                "live-selected %s",
+                model,
+                cached_default,
+            )
+        return cached_default or model
     if model and "/" in model and not _is_openrouter_client(client):
         return cached_default
     return model or cached_default
@@ -2418,7 +2530,7 @@ def _get_cached_client(
                 _client_cache[cache_key] = (client, default_model, bound_loop)
             else:
                 client, default_model, _ = _client_cache[cache_key]
-    return client, model or default_model
+    return client, _compat_model(client, model, default_model)
 
 
 def _resolve_task_provider_model(

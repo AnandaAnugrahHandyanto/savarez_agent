@@ -248,10 +248,14 @@ class TestAnthropicOAuthFlag:
 
 
 class TestTryCodex:
-    def test_pool_without_selected_entry_falls_back_to_auth_store(self):
+    def test_pool_without_selected_entry_uses_live_catalog_model(self, caplog):
+        caplog.set_level(logging.INFO, logger="agent.auxiliary_client")
         with (
             patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)),
             patch("agent.auxiliary_client._read_codex_access_token", return_value="codex-auth-token"),
+            patch("agent.auxiliary_client._read_main_provider", return_value="openai-codex"),
+            patch("agent.auxiliary_client._read_main_model", return_value="gpt-5.5"),
+            patch("hermes_cli.codex_models.get_live_codex_model_ids", return_value=["gpt-5.5"]),
             patch("agent.auxiliary_client.OpenAI") as mock_openai,
         ):
             mock_openai.return_value = MagicMock()
@@ -260,9 +264,121 @@ class TestTryCodex:
             client, model = _try_codex()
 
         assert client is not None
-        assert model == "gpt-5.2-codex"
+        assert model == "gpt-5.5"
+        assert "live Codex catalog" in caplog.text
+        assert "gpt-5.5" in caplog.text
         assert mock_openai.call_args.kwargs["api_key"] == "codex-auth-token"
         assert mock_openai.call_args.kwargs["base_url"] == "https://chatgpt.com/backend-api/codex"
+
+    def test_codex_aux_skips_codex_when_live_catalog_unavailable(self, caplog):
+        caplog.set_level(logging.WARNING, logger="agent.auxiliary_client")
+        with (
+            patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)),
+            patch("agent.auxiliary_client._read_codex_access_token", return_value="codex-auth-token"),
+            patch("hermes_cli.codex_models.get_live_codex_model_ids", return_value=[]),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            from agent.auxiliary_client import _try_codex
+
+            client, model = _try_codex()
+
+        assert client is None
+        assert model is None
+        mock_openai.assert_not_called()
+        assert "live Codex model catalog is unavailable" in caplog.text
+
+    def test_raw_codex_client_uses_live_catalog_model(self):
+        with (
+            patch("agent.auxiliary_client._read_codex_access_token", return_value="codex-auth-token"),
+            patch("hermes_cli.codex_models.get_live_codex_model_ids", return_value=["gpt-5.5"]),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            raw_client = MagicMock()
+            mock_openai.return_value = raw_client
+
+            client, model = resolve_provider_client(
+                "openai-codex",
+                "gpt-5.5",
+                raw_codex=True,
+            )
+
+        assert client is raw_client
+        assert model == "gpt-5.5"
+
+    def test_auto_codex_fallback_ignores_unsupported_requested_model(self, caplog):
+        caplog.set_level(logging.WARNING, logger="agent.auxiliary_client")
+        with (
+            patch("agent.auxiliary_client._read_main_provider", return_value=""),
+            patch("agent.auxiliary_client._read_main_model", return_value=""),
+            patch("agent.auxiliary_client._try_openrouter", return_value=(None, None)),
+            patch("agent.auxiliary_client._try_nous", return_value=(None, None)),
+            patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)),
+            patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)),
+            patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)),
+            patch("agent.auxiliary_client._read_codex_access_token", return_value="codex-auth-token"),
+            patch("hermes_cli.codex_models.get_live_codex_model_ids", return_value=["gpt-5.5"]),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            mock_openai.return_value = MagicMock()
+
+            client, model = resolve_provider_client("auto", "gpt-5.2-codex")
+
+        assert client is not None
+        assert model == "gpt-5.5"
+        assert "ignoring Codex model override gpt-5.2-codex" in caplog.text
+
+    def test_auto_codex_fallback_uses_supported_requested_model(self):
+        with (
+            patch("agent.auxiliary_client._read_main_provider", return_value=""),
+            patch("agent.auxiliary_client._read_main_model", return_value=""),
+            patch("agent.auxiliary_client._try_openrouter", return_value=(None, None)),
+            patch("agent.auxiliary_client._try_nous", return_value=(None, None)),
+            patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)),
+            patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)),
+            patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)),
+            patch("agent.auxiliary_client._read_codex_access_token", return_value="codex-auth-token"),
+            patch("hermes_cli.codex_models.get_live_codex_model_ids", return_value=["gpt-5.2-codex", "gpt-5.5"]),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            mock_openai.return_value = MagicMock()
+
+            client, model = resolve_provider_client("auto", "gpt-5.2-codex")
+
+        assert client is not None
+        assert model == "gpt-5.2-codex"
+
+    def test_cached_codex_client_ignores_unsupported_requested_model(self, caplog):
+        caplog.set_level(logging.WARNING, logger="agent.auxiliary_client")
+        from agent.auxiliary_client import _client_cache, _client_cache_lock, _get_cached_client
+
+        with _client_cache_lock:
+            _client_cache.clear()
+        try:
+            with (
+                patch("agent.auxiliary_client._read_codex_access_token", return_value="codex-auth-token"),
+                patch("hermes_cli.codex_models.get_live_codex_model_ids", return_value=["gpt-5.5"]),
+                patch("agent.auxiliary_client.OpenAI") as mock_openai,
+            ):
+                mock_openai.return_value = MagicMock()
+
+                client, cold_model = _get_cached_client(
+                    "openai-codex",
+                    "gpt-5.2-codex",
+                )
+                cached_client, cached_model = _get_cached_client(
+                    "openai-codex",
+                    "gpt-5.2-codex",
+                )
+
+            assert client is not None
+            assert cached_client is client
+            assert cold_model == "gpt-5.5"
+            assert cached_model == "gpt-5.5"
+            mock_openai.assert_called_once()
+            assert "ignoring Codex model override gpt-5.2-codex" in caplog.text
+        finally:
+            with _client_cache_lock:
+                _client_cache.clear()
 
 
 class TestExpiredCodexFallback:
@@ -447,6 +563,34 @@ class TestExplicitProviderRouting:
             adapter = client.chat.completions
             assert adapter._is_oauth is False
 
+    def test_explicit_openrouter_pool_exhausted_logs_precise_warning(self, monkeypatch, caplog):
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)):
+            with caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+                client, model = resolve_provider_client("openrouter")
+        assert client is None
+        assert model is None
+        assert any(
+            "credential pool has no usable entries" in record.message
+            for record in caplog.records
+        )
+        assert not any(
+            "OPENROUTER_API_KEY not set" in record.message
+            for record in caplog.records
+        )
+
+    def test_explicit_openrouter_missing_env_keeps_not_set_warning(self, monkeypatch, caplog):
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+            with caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+                client, model = resolve_provider_client("openrouter")
+        assert client is None
+        assert model is None
+        assert any(
+            "OPENROUTER_API_KEY not set" in record.message
+            for record in caplog.records
+        )
+
 class TestGetTextAuxiliaryClient:
     """Test the full resolution chain for get_text_auxiliary_client."""
 
@@ -464,6 +608,7 @@ class TestGetTextAuxiliaryClient:
 
         with (
             patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
+            patch("hermes_cli.codex_models.get_live_codex_model_ids", return_value=["gpt-5.5"]),
             patch("agent.auxiliary_client.OpenAI"),
             patch("hermes_cli.auth._read_codex_tokens", side_effect=AssertionError("legacy codex store should not run")),
         ):
@@ -474,7 +619,7 @@ class TestGetTextAuxiliaryClient:
         from agent.auxiliary_client import CodexAuxiliaryClient
 
         assert isinstance(client, CodexAuxiliaryClient)
-        assert model == "gpt-5.2-codex"
+        assert model == "gpt-5.5"
 
 
 class TestNousAuxiliaryRefresh:

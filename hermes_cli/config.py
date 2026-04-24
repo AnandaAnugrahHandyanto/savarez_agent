@@ -17,6 +17,7 @@ import logging
 import os
 import platform
 import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -113,9 +114,111 @@ def get_managed_update_command() -> Optional[str]:
     return None
 
 
+_PROTECTED_UPDATE_BYPASS_ENV = "HERMES_ALLOW_PROTECTED_BRANCH_UPDATE"
+_PROTECTED_UPDATE_DEFAULT_BRANCH = "local/dashboard-kinni-custom"
+
+
+def get_protected_update_context(project_root: Optional[Path] = None) -> Optional[Dict[str, str]]:
+    """Return local protected-update workflow details for this install, if active.
+
+    This is intentionally narrow and only activates for the user's local
+    ``~/.hermes/hermes-agent`` checkout when the protected branch workflow is
+    installed and the protected branch still exists locally.
+    """
+    raw_bypass = os.getenv(_PROTECTED_UPDATE_BYPASS_ENV, "").strip().lower()
+    if raw_bypass in _MANAGED_TRUE_VALUES:
+        return None
+
+    hermes_home = get_hermes_home()
+    repo = (project_root or get_project_root()).expanduser().resolve()
+    protected_repo = (hermes_home / "hermes-agent").expanduser().resolve()
+    if repo != protected_repo:
+        return None
+
+    helper_path = (hermes_home / "scripts" / "hermes_protected_auto_update.py").expanduser().resolve()
+    if not helper_path.is_file():
+        return None
+
+    helper_rebase_path = (hermes_home / "scripts" / "hermes_dashboard_rebase_helper.py").expanduser().resolve()
+    protected_branch = os.getenv("HERMES_PROTECTED_UPDATE_BRANCH", "").strip() or _PROTECTED_UPDATE_DEFAULT_BRANCH
+
+    try:
+        branch_check = subprocess.run(
+            ["git", "rev-parse", "--verify", f"refs/heads/{protected_branch}"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+        )
+        if branch_check.returncode != 0:
+            return None
+    except Exception:
+        return None
+
+    current_branch = None
+    try:
+        current = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+        )
+        if current.returncode == 0:
+            current_branch = current.stdout.strip() or None
+    except Exception:
+        current_branch = None
+
+    command = (
+        f"python3 {shlex.quote(str(helper_path))} "
+        f"--repo {shlex.quote(str(repo))} "
+        f"--branch {shlex.quote(protected_branch)}"
+    )
+    helper_command = (
+        f"python3 {shlex.quote(str(helper_rebase_path))} --run --verify --force"
+        if helper_rebase_path.is_file()
+        else ""
+    )
+    return {
+        "repo": str(repo),
+        "protected_branch": protected_branch,
+        "current_branch": current_branch or "unknown",
+        "command": command,
+        "helper_path": str(helper_path),
+        "helper_command": helper_command,
+    }
+
+
+def format_protected_update_message(
+    context: Dict[str, str],
+    action: str = "update Hermes Agent",
+) -> str:
+    """Build a user-facing error for protected local-branch update workflows."""
+    protected_branch = context.get("protected_branch", _PROTECTED_UPDATE_DEFAULT_BRANCH)
+    current_branch = context.get("current_branch", "unknown")
+    command = context.get("command", "")
+    helper_command = context.get("helper_command", "")
+    lines = [
+        f"Cannot {action} with raw 'hermes update': this repo uses a protected branch workflow.",
+        f"Protected branch: {protected_branch}",
+        f"Current branch: {current_branch}",
+        "Raw update switches to main and can clobber local dashboard customizations.",
+    ]
+    if command:
+        lines.extend(["Use instead:", f"  {command}"])
+    if helper_command:
+        lines.extend(["Manual rebase helper:", f"  {helper_command}"])
+    lines.append(
+        f"Set {_PROTECTED_UPDATE_BYPASS_ENV}=1 only if you intentionally want to bypass this guard."
+    )
+    return "\n".join(lines)
+
+
 def recommended_update_command() -> str:
     """Return the best update command for the current installation."""
-    return get_managed_update_command() or "hermes update"
+    return (
+        get_managed_update_command()
+        or (get_protected_update_context() or {}).get("command")
+        or "hermes update"
+    )
 
 
 def format_managed_message(action: str = "modify this Hermes installation") -> str:
