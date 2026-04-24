@@ -610,9 +610,9 @@ class TestSchemas:
 
     def test_get_tool_schemas_returns_both(self, provider):
         schemas = provider.get_tool_schemas()
-        assert len(schemas) == 1
+        assert len(schemas) == 2
         names = {s["name"] for s in schemas}
-        assert names == {"mem0_oss_search"}
+        assert names == {"mem0_oss_search", "mem0_oss_add"}
 
 
 # ---------------------------------------------------------------------------
@@ -836,6 +836,7 @@ class TestSystemPromptBlock:
     def test_mentions_tool_names(self, provider):
         block = provider.system_prompt_block()
         assert "mem0_oss_search" in block
+        assert "mem0_oss_add" in block
 
     def test_mentions_long_term_memory(self, provider):
         block = provider.system_prompt_block()
@@ -881,6 +882,39 @@ class TestConfigSchema:
         schema = provider.get_config_schema()
         key_entry = next(f for f in schema if f["key"] == "openai_api_key")
         assert key_entry.get("secret") is True
+
+
+# ---------------------------------------------------------------------------
+# Pre-initialization safety (__init__ defaults)
+# ---------------------------------------------------------------------------
+
+
+class TestPreInit:
+    """Provider must be safe to inspect before initialize() is called."""
+
+    def test_name_before_init(self):
+        p = Mem0OSSMemoryProvider()
+        assert p.name == "mem0_oss"
+
+    def test_lock_exists_before_init(self):
+        """_lock must exist from __init__ so circuit-breaker methods don't crash."""
+        p = Mem0OSSMemoryProvider()
+        assert hasattr(p, "_lock")
+        import threading
+        assert isinstance(p._lock, type(threading.Lock()))
+
+    def test_fail_count_zero_before_init(self):
+        p = Mem0OSSMemoryProvider()
+        assert p._fail_count == 0
+
+    def test_threads_none_before_init(self):
+        p = Mem0OSSMemoryProvider()
+        assert p._sync_thread is None
+        assert p._prefetch_thread is None
+
+    def test_prefetch_result_empty_before_init(self):
+        p = Mem0OSSMemoryProvider()
+        assert p._prefetch_result == ""
 
 
 # ---------------------------------------------------------------------------
