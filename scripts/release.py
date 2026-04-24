@@ -70,6 +70,7 @@ AUTHOR_MAP = {
     "255305877+ismell0992-afk@users.noreply.github.com": "ismell0992-afk",
     "valdi.jorge@gmail.com": "jvcl",
     "q19dcp@gmail.com": "aj-nt",
+    "ebukau84@gmail.com": "UgwujaGeorge",
     "francip@gmail.com": "francip",
     "omni@comelse.com": "omnissiah-comelse",
     "oussama.redcode@gmail.com": "mavrickdeveloper",
