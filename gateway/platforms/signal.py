@@ -601,7 +601,7 @@ class SignalAdapter(BasePlatformAdapter):
             if cached:
                 return cached
 
-            contacts = await self._rpc("listContacts", {
+            contacts, _ = await self._rpc("listContacts", {
                 "account": self.account,
                 "allRecipients": True,
             })
@@ -620,7 +620,7 @@ class SignalAdapter(BasePlatformAdapter):
 
     async def _fetch_attachment(self, attachment_id: str) -> tuple:
         """Fetch an attachment via JSON-RPC and cache it. Returns (path, ext)."""
-        result = await self._rpc("getAttachment", {
+        result, _ = await self._rpc("getAttachment", {
             "account": self.account,
             "id": attachment_id,
         })
@@ -659,8 +659,12 @@ class SignalAdapter(BasePlatformAdapter):
         rpc_id: str = None,
         *,
         log_failures: bool = True,
-    ) -> Any:
+    ) -> tuple[Any, Optional[Any]]:
         """Send a JSON-RPC 2.0 request to signal-cli daemon.
+
+        Returns (result, error_data). On success result is the RPC response
+        body and error_data is None. On failure result is None and error_data
+        is the structured error payload (dict) or an exception message string.
 
         When ``log_failures=False``, error and exception paths log at DEBUG
         instead of WARNING — used by the typing-indicator path to silence
@@ -670,7 +674,7 @@ class SignalAdapter(BasePlatformAdapter):
         """
         if not self.client:
             logger.warning("Signal: RPC called but client not connected")
-            return None
+            return None, None
 
         if rpc_id is None:
             rpc_id = f"{method}_{int(time.time() * 1000)}"
@@ -692,24 +696,42 @@ class SignalAdapter(BasePlatformAdapter):
             data = resp.json()
 
             if "error" in data:
+                err_data = data["error"]
                 if log_failures:
-                    logger.warning("Signal RPC error (%s): %s", method, data["error"])
+                    logger.warning("Signal RPC error (%s): %s", method, err_data)
                 else:
-                    logger.debug("Signal RPC error (%s): %s", method, data["error"])
-                return None
+                    logger.debug("Signal RPC error (%s): %s", method, err_data)
+                return None, err_data
 
-            return data.get("result")
+            return data.get("result"), None
 
         except Exception as e:
             if log_failures:
                 logger.warning("Signal RPC %s failed: %s", method, e)
             else:
                 logger.debug("Signal RPC %s failed: %s", method, e)
-            return None
+            return None, str(e)
 
     # ------------------------------------------------------------------
     # Sending
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _rpc_error_str(error_data: Optional[Any], fallback: str) -> str:
+        """Build a SendResult error string that includes the RPC payload.
+
+        Embedding the raw error data (signal-cli JSON-RPC response or httpx
+        exception) lets base.py's ``_is_retryable_error`` and
+        ``_is_timeout_error`` pattern match against it naturally — same
+        approach used by discord, whatsapp, matrix, etc.
+        """
+        if error_data is None:
+            return fallback
+        # str(error_data) on a dict produces "{'code': -1, 'message': ...}"
+        # which contains keywords like NETWORK_FAILURE for pattern matching
+        if isinstance(error_data, str):
+            return f"{fallback}: {error_data}"
+        return f"{fallback}: {error_data}"
 
     async def send(
         self,
@@ -731,7 +753,7 @@ class SignalAdapter(BasePlatformAdapter):
         else:
             params["recipient"] = [await self._resolve_recipient(chat_id)]
 
-        result = await self._rpc("send", params)
+        result, error_data = await self._rpc("send", params)
 
         if result is not None:
             self._track_sent_timestamp(result)
@@ -740,7 +762,8 @@ class SignalAdapter(BasePlatformAdapter):
             # needs a truthy value to follow its edit→fallback path correctly.
             _msg_id = str(result.get("timestamp", "")) if isinstance(result, dict) else None
             return SendResult(success=True, message_id=_msg_id or None)
-        return SendResult(success=False, error="RPC send failed")
+
+        return SendResult(success=False, error=self._rpc_error_str(error_data, "RPC send failed"))
 
     def _track_sent_timestamp(self, rpc_result) -> None:
         """Record outbound message timestamp for echo-back filtering."""
@@ -783,7 +806,7 @@ class SignalAdapter(BasePlatformAdapter):
             params["recipient"] = [await self._resolve_recipient(chat_id)]
 
         fails = self._typing_failures.get(chat_id, 0)
-        result = await self._rpc(
+        result, _ = await self._rpc(
             "sendTyping",
             params,
             rpc_id="typing",
@@ -843,11 +866,12 @@ class SignalAdapter(BasePlatformAdapter):
         else:
             params["recipient"] = [await self._resolve_recipient(chat_id)]
 
-        result = await self._rpc("send", params)
+        result, error_data = await self._rpc("send", params)
         if result is not None:
             self._track_sent_timestamp(result)
             return SendResult(success=True)
-        return SendResult(success=False, error="RPC send with attachment failed")
+
+        return SendResult(success=False, error=self._rpc_error_str(error_data, "RPC send with attachment failed"))
 
     async def _send_attachment(
         self,
@@ -882,11 +906,12 @@ class SignalAdapter(BasePlatformAdapter):
         else:
             params["recipient"] = [await self._resolve_recipient(chat_id)]
 
-        result = await self._rpc("send", params)
+        result, error_data = await self._rpc("send", params)
         if result is not None:
             self._track_sent_timestamp(result)
             return SendResult(success=True)
-        return SendResult(success=False, error=f"RPC send {media_label.lower()} failed")
+
+        return SendResult(success=False, error=self._rpc_error_str(error_data, f"RPC send {media_label.lower()} failed"))
 
     async def send_document(
         self,
@@ -977,7 +1002,7 @@ class SignalAdapter(BasePlatformAdapter):
             }
 
         # Try to resolve contact name
-        result = await self._rpc("getContact", {
+        result, _ = await self._rpc("getContact", {
             "account": self.account,
             "contactAddress": chat_id,
         })

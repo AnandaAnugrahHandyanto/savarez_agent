@@ -27,13 +27,16 @@ def _make_signal_adapter(monkeypatch, account="+15551234567", **extra):
     return SignalAdapter(config)
 
 
-def _stub_rpc(return_value):
-    """Return an async mock for SignalAdapter._rpc that captures call params."""
+def _stub_rpc(return_value, error_data=None):
+    """Return an async mock for SignalAdapter._rpc that captures call params.
+
+    Returns (result, error_data) tuple to match the adapter's RPC interface.
+    """
     captured = []
 
-    async def mock_rpc(method, params, rpc_id=None):
+    async def mock_rpc(method, params, rpc_id=None, **kwargs):
         captured.append({"method": method, "params": dict(params)})
-        return return_value
+        return return_value, error_data
 
     return mock_rpc, captured
 
@@ -478,7 +481,7 @@ class TestSignalRecipientResolution:
 
         async def mock_rpc(method, params, rpc_id=None, **kwargs):
             captured.append({"method": method, "params": dict(params)})
-            return {"timestamp": 1234567890}
+            return {"timestamp": 1234567890}, None
 
         adapter._rpc = mock_rpc
 
@@ -503,10 +506,10 @@ class TestSignalRecipientResolution:
                     "number": "+15551230000",
                     "uuid": "68680952-6d86-45bc-85e0-1a4d186d53ee",
                     "isRegistered": True,
-                }]
+                }], None
             if method == "send":
-                return {"timestamp": 1234567890}
-            return None
+                return {"timestamp": 1234567890}, None
+            return None, None
 
         adapter._rpc = mock_rpc
 
@@ -527,10 +530,10 @@ class TestSignalRecipientResolution:
         async def mock_rpc(method, params, rpc_id=None, **kwargs):
             captured.append({"method": method, "params": dict(params)})
             if method == "listContacts":
-                return []
+                return [], None
             if method == "send":
-                return {"timestamp": 1234567890}
-            return None
+                return {"timestamp": 1234567890}, None
+            return None, None
 
         adapter._rpc = mock_rpc
 
@@ -548,7 +551,7 @@ class TestSignalRecipientResolution:
 
         async def mock_rpc(method, params, rpc_id=None, **kwargs):
             captured.append({"method": method, "params": dict(params), "rpc_id": rpc_id})
-            return {}
+            return {}, None
 
         adapter._rpc = mock_rpc
 
@@ -887,7 +890,7 @@ class TestSignalTypingBackoff:
 
         async def _fake_rpc(method, params, rpc_id=None, *, log_failures=True):
             calls.append({"log_failures": log_failures})
-            return None  # simulate NETWORK_FAILURE
+            return None, None  # simulate NETWORK_FAILURE (None result)
 
         adapter._rpc = _fake_rpc
 
@@ -907,7 +910,7 @@ class TestSignalTypingBackoff:
 
         async def _fake_rpc(method, params, rpc_id=None, *, log_failures=True):
             call_count["n"] += 1
-            return None
+            return None, None  # simulate failure (None result)
 
         adapter._rpc = _fake_rpc
 
@@ -931,7 +934,7 @@ class TestSignalTypingBackoff:
 
         async def _fake_rpc(method, params, rpc_id=None, *, log_failures=True):
             call_log.append(params.get("recipient") or params.get("groupId"))
-            return None
+            return None, None  # simulate failure
 
         adapter._rpc = _fake_rpc
 
@@ -957,7 +960,8 @@ class TestSignalTypingBackoff:
 
         async def _fake_rpc(method, params, rpc_id=None, *, log_failures=True):
             call_log.append(log_failures)
-            return result_queue.pop(0)
+            val = result_queue.pop(0)
+            return val, None  # include error_data in tuple
 
         adapter._rpc = _fake_rpc
 
@@ -971,7 +975,7 @@ class TestSignalTypingBackoff:
         # Next failure after recovery logs at WARNING again (fresh counter).
         async def _fail(method, params, rpc_id=None, *, log_failures=True):
             call_log.append(log_failures)
-            return None
+            return None, None  # simulate failure (None result)
 
         adapter._rpc = _fail
         await adapter.send_typing("+155****4567")
@@ -984,7 +988,7 @@ class TestSignalTypingBackoff:
         adapter = _make_signal_adapter(monkeypatch)
 
         async def _fail(method, params, rpc_id=None, *, log_failures=True):
-            return None
+            return None, None  # simulate failure (None result)
 
         adapter._rpc = _fail
 
