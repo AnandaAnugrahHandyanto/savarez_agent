@@ -124,8 +124,11 @@ def finalize_turn(
     # Determine if conversation completed successfully
     completed = (
         final_response is not None
-        and api_call_count < agent.max_iterations
         and not failed
+        and (
+            _turn_exit_reason == "plugin_short_circuit"
+            or api_call_count < agent.max_iterations
+        )
     )
 
     # Save trajectory if enabled.  ``user_message`` may be a multimodal
