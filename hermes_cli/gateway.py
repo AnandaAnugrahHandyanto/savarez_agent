@@ -4212,3 +4212,107 @@ def _gateway_command_inner(args):
             print("Legacy unit migration only applies to systemd-based Linux hosts.")
             return
         remove_legacy_hermes_units(interactive=not yes, dry_run=dry_run)
+
+
+# ── Windows Task Scheduler implementation ───────────────────────────────────
+
+def windows_install(force: bool = False):
+    """Install the gateway as a Windows Task Scheduler task."""
+    import subprocess
+    import os
+    from pathlib import Path
+
+    task_name = "HermesGateway"
+
+    # Check if exists
+    result = subprocess.run(["schtasks", "/Query", "/TN", task_name], capture_output=True, text=True)
+    if result.returncode == 0 and not force:
+        print(f"Service {task_name} is already installed.")
+        print(f"Use 'hermes gateway install --force' to overwrite.")
+        sys.exit(1)
+
+    python_exe = sys.executable
+    # Let's run `pythonw.exe -m hermes_cli.main gateway run` if pythonw exists, else python
+    pythonw = python_exe.replace("python.exe", "pythonw.exe")
+    if not os.path.exists(pythonw):
+        pythonw = python_exe
+
+    cmd = f'"{pythonw}" -m hermes_cli.main gateway run'
+
+    # Delete if forcing
+    if force and result.returncode == 0:
+        subprocess.run(["schtasks", "/Delete", "/TN", task_name, "/F"], capture_output=True)
+
+    print(f"Installing {task_name} task to run on logon...")
+    install_result = subprocess.run([
+        "schtasks", "/Create",
+        "/TN", task_name,
+        "/TR", cmd,
+        "/SC", "ONLOGON",
+        "/F",          # Force overwrite if needed
+        "/IT"          # Interactive Token
+    ], capture_output=True, text=True)
+
+    if install_result.returncode != 0:
+        print(f"Failed to create task: {install_result.stderr}")
+        sys.exit(1)
+
+    print(f"✓ Installed {task_name}.")
+    print("  The gateway will start automatically when you log in.")
+    print("  You can start it now with: hermes gateway start")
+
+def windows_uninstall():
+    """Remove the Windows Task Scheduler task."""
+    import subprocess
+    task_name = "HermesGateway"
+    result = subprocess.run(["schtasks", "/Query", "/TN", task_name], capture_output=True)
+    if result.returncode != 0:
+        print(f"Service {task_name} is not installed.")
+        return
+
+    print(f"Removing {task_name}...")
+    subprocess.run(["schtasks", "/Delete", "/TN", task_name, "/F"], capture_output=True)
+    print(f"✓ Removed {task_name}.")
+
+def windows_start():
+    import subprocess
+    import sys
+    task_name = "HermesGateway"
+    result = subprocess.run(["schtasks", "/Run", "/TN", task_name], capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"Failed to start {task_name}. Is it installed? (hermes gateway install)")
+        sys.exit(1)
+    print(f"✓ Started {task_name}.")
+
+def windows_stop():
+    import subprocess
+    task_name = "HermesGateway"
+    result = subprocess.run(["schtasks", "/End", "/TN", task_name], capture_output=True)
+    if result.returncode != 0:
+        print(f"Could not stop {task_name} (it may not be running).")
+    else:
+        print(f"✓ Stopped {task_name}.")
+
+def windows_status(deep: bool = False, full: bool = False):
+    import subprocess
+    from gateway.status import get_gateway_runtime_snapshot, _print_gateway_process_mismatch
+    task_name = "HermesGateway"
+    result = subprocess.run(["schtasks", "/Query", "/TN", task_name, "/V", "/FO", "LIST"], capture_output=True, text=True)
+    if result.returncode != 0:
+        print("Service status: NOT INSTALLED")
+        return
+
+    status = "UNKNOWN"
+    for line in result.stdout.splitlines():
+        if line.startswith("Status:"):
+            status = line.split(":", 1)[1].strip()
+
+    print(f"Service status: INSTALLED (Status: {status})")
+
+    # We still print process status
+    snapshot = get_gateway_runtime_snapshot()
+    _print_gateway_process_mismatch(snapshot)
+    if snapshot.gateway_pids:
+        print(f"Process status: RUNNING (PID: {snapshot.gateway_pids[0]})")
+    else:
+        print("Process status: STOPPED")
