@@ -35,6 +35,9 @@ from tools.web_tools import (
     check_web_api_key,
     check_auxiliary_model,
     _get_backend,
+    _get_exa_config,
+    _exa_search,
+    _exa_search_with_fallback,
 )
 
 
@@ -510,19 +513,207 @@ class WebToolsTester:
                     import traceback
                     print(f"    Traceback:")
                     print("    " + "\n    ".join(traceback.format_exc().split("\n")))
-    
+
+    def test_exa_config(self):
+        """Test Exa configuration loading"""
+        print_section("Test 5: Exa Configuration")
+
+        try:
+            config = _get_exa_config()
+
+            # Check default values
+            required_keys = ["highlights_max_characters", "highlights_enabled", "full_text_fallback"]
+            missing = [k for k in required_keys if k not in config]
+
+            if missing:
+                self.log_result("Exa Config", "failed", f"Missing keys: {missing}")
+                return
+
+            # Validate types and defaults
+            if not isinstance(config["highlights_max_characters"], int):
+                self.log_result("Exa Config", "failed", "highlights_max_characters should be int")
+                return
+
+            if not isinstance(config["highlights_enabled"], bool):
+                self.log_result("Exa Config", "failed", "highlights_enabled should be bool")
+                return
+
+            if not isinstance(config["full_text_fallback"], bool):
+                self.log_result("Exa Config", "failed", "full_text_fallback should be bool")
+                return
+
+            if self.verbose:
+                print(f"  Exa config loaded:")
+                print(f"    highlights_max_characters: {config['highlights_max_characters']}")
+                print(f"    highlights_enabled: {config['highlights_enabled']}")
+                print(f"    full_text_fallback: {config['full_text_fallback']}")
+
+            self.log_result("Exa Config", "passed", f"Defaults: max_chars={config['highlights_max_characters']}")
+
+        except Exception as e:
+            self.log_result("Exa Config", "failed", f"Exception: {type(e).__name__}: {str(e)}")
+
+    def test_exa_highlights_structure(self):
+        """Test that Exa search returns proper highlights structure"""
+        print_section("Test 6: Exa Highlights Structure")
+
+        # Skip if not using Exa backend
+        backend = _get_backend()
+        if backend != "exa":
+            self.log_result("Exa Highlights", "skipped", f"Backend is '{backend}', not 'exa'")
+            return
+
+        if not os.getenv("EXA_API_KEY"):
+            self.log_result("Exa Highlights", "skipped", "EXA_API_KEY not set")
+            return
+
+        try:
+            query = "Python programming language features"
+            result = _exa_search(query, limit=3)
+
+            if not result.get("success"):
+                self.log_result("Exa Highlights", "failed", f"Search failed: {result.get('error')}")
+                return
+
+            web_results = result.get("data", {}).get("web", [])
+
+            if not web_results:
+                self.log_result("Exa Highlights", "failed", "No results returned")
+                return
+
+            # Validate structure of each result
+            valid_count = 0
+            issues = []
+
+            for i, r in enumerate(web_results):
+                # Check required fields
+                if "url" not in r or "title" not in r:
+                    issues.append(f"Result {i+1}: missing url or title")
+                    continue
+
+                # Check new fields
+                if "highlights" not in r:
+                    issues.append(f"Result {i+1}: missing 'highlights' field")
+                    continue
+
+                if not isinstance(r["highlights"], list):
+                    issues.append(f"Result {i+1}: 'highlights' should be a list")
+                    continue
+
+                # Check that highlights are strings
+                for j, h in enumerate(r["highlights"]):
+                    if not isinstance(h, str):
+                        issues.append(f"Result {i+1}, highlight {j+1}: not a string")
+                        break
+
+                # Check published_date field exists (can be None)
+                if "published_date" not in r:
+                    issues.append(f"Result {i+1}: missing 'published_date' field (can be null)")
+                    continue
+
+                valid_count += 1
+
+                if self.verbose:
+                    print(f"  Result {i+1}: ✓ {r['title'][:50]}...")
+                    print(f"    URL: {r['url'][:60]}...")
+                    print(f"    Highlights: {len(r['highlights'])} segments")
+                    total_chars = sum(len(h) for h in r["highlights"])
+                    print(f"    Total highlight chars: {total_chars}")
+                    if r.get("published_date"):
+                        print(f"    Published: {r['published_date']}")
+
+            if valid_count == len(web_results):
+                self.log_result(
+                    "Exa Highlights",
+                    "passed",
+                    f"All {valid_count} results have proper highlights structure"
+                )
+            else:
+                self.log_result(
+                    "Exa Highlights",
+                    "failed",
+                    f"Only {valid_count}/{len(web_results)} valid. Issues: {'; '.join(issues[:3])}"
+                )
+
+        except Exception as e:
+            self.log_result("Exa Highlights", "failed", f"Exception: {type(e).__name__}: {str(e)}")
+            if self.verbose:
+                import traceback
+                print(f"    Traceback: {traceback.format_exc()}")
+
+    def test_exa_fallback(self):
+        """Test Exa search with full-text fallback"""
+        print_section("Test 7: Exa Fallback Extraction")
+
+        # Skip if not using Exa backend
+        backend = _get_backend()
+        if backend != "exa":
+            self.log_result("Exa Fallback", "skipped", f"Backend is '{backend}', not 'exa'")
+            return
+
+        if not os.getenv("EXA_API_KEY"):
+            self.log_result("Exa Fallback", "skipped", "EXA_API_KEY not set")
+            return
+
+        try:
+            query = "machine learning tutorial"
+            # Test fallback with explicit URL (fallback triggers on empty highlights or explicit URLs)
+            result = _exa_search_with_fallback(query, limit=2)
+
+            if not result.get("success"):
+                self.log_result("Exa Fallback", "failed", f"Search failed: {result.get('error')}")
+                return
+
+            web_results = result.get("data", {}).get("web", [])
+
+            if not web_results:
+                self.log_result("Exa Fallback", "failed", "No results returned")
+                return
+
+            # Check if results have expected structure (may or may not have full_text depending on highlights)
+            # Fallback only triggers for empty highlights or explicit URLs
+            has_highlights = any(r.get("highlights") for r in web_results)
+            results_with_full_text = sum(1 for r in web_results if r.get("full_text"))
+
+            if self.verbose:
+                print(f"  Results: {len(web_results)}")
+                print(f"  Results with full_text fallback: {results_with_full_text}")
+                for i, r in enumerate(web_results):
+                    has_full = bool(r.get("full_text"))
+                    hl_chars = sum(len(h) for h in r.get("highlights", []))
+                    print(f"  Result {i+1}: highlights={hl_chars} chars, full_text={'✓' if has_full else '✗'}")
+
+            self.log_result(
+                "Exa Fallback",
+                "passed",
+                f"Search with fallback completed, {results_with_full_text}/{len(web_results)} have full_text"
+            )
+
+        except Exception as e:
+            self.log_result("Exa Fallback", "failed", f"Exception: {type(e).__name__}: {str(e)}")
+            if self.verbose:
+                import traceback
+                print(f"    Traceback: {traceback.format_exc()}")
+
     async def run_all_tests(self):
         """Run all tests"""
         self.start_time = datetime.now()
-        
+
         print_header("WEB TOOLS TEST SUITE")
         print(f"Started at: {self.start_time.strftime('%Y-%m-%d %H:%M:%S')}")
-        
+
         # Test environment
         if not self.test_environment():
             print_error("\nCannot proceed without required API keys!")
             return False
-        
+
+        # Test Exa config (works regardless of backend)
+        self.test_exa_config()
+
+        # Test Exa-specific features (only when Exa is backend)
+        self.test_exa_highlights_structure()
+        self.test_exa_fallback()
+
         # Test search and collect URLs
         urls = self.test_web_search()
         
@@ -577,6 +768,8 @@ class WebToolsTester:
                 "web_backend": _get_backend() if check_web_api_key() else None,
                 "firecrawl_api_key": check_firecrawl_api_key(),
                 "parallel_api_key": bool(os.getenv("PARALLEL_API_KEY")),
+                "exa_api_key": bool(os.getenv("EXA_API_KEY")),
+                "tavily_api_key": bool(os.getenv("TAVILY_API_KEY")),
                 "auxiliary_model": check_auxiliary_model(),
             }
         }

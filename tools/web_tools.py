@@ -45,6 +45,7 @@ import logging
 import os
 import re
 import asyncio
+import time
 from typing import List, Dict, Any, Optional
 import httpx
 from firecrawl import Firecrawl
@@ -118,6 +119,45 @@ def _is_backend_available(backend: str) -> bool:
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
     return False
+
+
+def _get_exa_config() -> dict:
+    """Load Exa-specific configuration from web.exa section in config.yaml.
+
+    Returns dict with:
+        - highlights_max_characters: int (default 2000) - max chars per highlight
+        - highlights_enabled: bool (default True) - use highlights as primary content
+        - full_text_fallback: bool (default True) - allow falling back to full text
+    """
+    web_config = _load_web_config()
+    exa_config = web_config.get("exa", {})
+
+    # Helper to coerce values to bool (handles strings like "false", "true")
+    def _to_bool(val, default: bool) -> bool:
+        if val is None:
+            return default
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, str):
+            return val.lower() not in ("false", "0", "no", "off", "")
+        return bool(val)
+
+    # Helper to coerce to int with clamping
+    def _to_int(val, default: int, min_val: int = 100, max_val: int = 10000) -> int:
+        if val is None:
+            return default
+        try:
+            int_val = int(val)
+            return max(min_val, min(max_val, int_val))
+        except (ValueError, TypeError):
+            return default
+
+    return {
+        "highlights_max_characters": _to_int(exa_config.get("highlights_max_characters"), 2000),
+        "highlights_enabled": _to_bool(exa_config.get("highlights_enabled"), True),
+        "full_text_fallback": _to_bool(exa_config.get("full_text_fallback"), True),
+    }
+
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
 
@@ -897,29 +937,103 @@ def _get_exa_client():
 # ─── Exa Search & Extract Helpers ─────────────────────────────────────────────
 
 def _exa_search(query: str, limit: int = 10) -> dict:
-    """Search using the Exa SDK and return results as a dict."""
+    """Search using the Exa SDK search() with query-specific highlights.
+
+    Uses the modern Exa highlights API (via contents={"highlights": {...}}) to return
+    compact, query-relevant excerpts as the default context. Highlights are
+    query-specific and provide better relevance than full page text for agent reasoning.
+
+    The response includes:
+        - title: Page title
+        - url: Result URL
+        - description: Concatenated highlights for backward compatibility
+        - highlights: List of individual highlight strings (query-relevant)
+        - published_date: Publication date when available (ISO format)
+        - position: Result ranking position
+    """
     from tools.interrupt import is_interrupted
     if is_interrupted():
         return {"error": "Interrupted", "success": False}
 
-    logger.info("Exa search: '%s' (limit=%d)", query, limit)
-    response = _get_exa_client().search(
-        query,
-        num_results=limit,
-        contents={
-            "highlights": True,
-        },
-    )
+    config = _get_exa_config()
+    max_chars = config["highlights_max_characters"]
+    highlights_enabled = config["highlights_enabled"]
+    
+    # Track timing for latency monitoring (Exa highlights complete in <100ms typically)
+    start_time = time.time()
+
+    logger.info("Exa search: '%s' (limit=%d, highlights=%s, max_chars=%d)", 
+                query, limit, "enabled" if highlights_enabled else "disabled", max_chars)
+
+    # Use search() with contents - highlights if enabled, otherwise basic text
+    if highlights_enabled:
+        # Modern Exa API with query-specific highlights
+        response = _get_exa_client().search(
+            query,
+            num_results=limit,
+            contents={
+                "highlights": {
+                    "max_characters": max_chars,
+                    "query": query,
+                },
+            },
+        )
+    else:
+        # Fallback to basic text extraction when highlights disabled
+        response = _get_exa_client().search(
+            query,
+            num_results=limit,
+            contents={
+                "text": {"max_characters": max_chars},
+            },
+        )
+    
+    # Log latency (Exa highlights typically complete in ~1000-1500ms, warn if >2000ms)
+    elapsed_ms = (time.time() - start_time) * 1000
+    if elapsed_ms > 2000:
+        logger.warning("Exa highlights slow: %.1fms for query: %s", elapsed_ms, query[:50])
+    else:
+        logger.debug("Exa highlights latency: %.1fms", elapsed_ms)
 
     web_results = []
     for i, result in enumerate(response.results or []):
-        highlights = result.highlights or []
-        web_results.append({
+        # Build structured result with all available metadata
+        web_result = {
             "url": result.url or "",
             "title": result.title or "",
-            "description": " ".join(highlights) if highlights else "",
             "position": i + 1,
-        })
+        }
+        
+        if highlights_enabled:
+            # Highlights are returned as a top-level attribute on result
+            highlights = getattr(result, "highlights", None) or []
+            # Defensive: ensure highlights is a list (handle SDK variations)
+            if not isinstance(highlights, list):
+                highlights = [highlights] if highlights else []
+            # Defensive: ensure all items are strings
+            highlights = [str(h) if h is not None else "" for h in highlights]
+            highlights = [h for h in highlights if h]  # Filter empty strings
+            # Concatenated highlights for backward compatibility with existing consumers
+            web_result["description"] = "\n\n".join(highlights) if highlights else ""
+            # Structured highlights for new consumers who want granular access
+            web_result["highlights"] = highlights
+            
+            # Include highlight_scores if available
+            highlight_scores = getattr(result, "highlight_scores", None)
+            if highlight_scores:
+                web_result["highlight_scores"] = highlight_scores
+        else:
+            # Text mode - use extracted text as description
+            text = getattr(result, "text", None) or ""
+            web_result["description"] = text
+            web_result["highlights"] = []  # Empty highlights in text mode
+        
+        # Include published date when available
+        published_date = getattr(result, "published_date", None)
+        if published_date:
+            web_result["published_date"] = published_date
+
+        web_results.append(web_result)
 
     return {"success": True, "data": {"web": web_results}}
 
@@ -954,6 +1068,106 @@ def _exa_extract(urls: List[str]) -> List[Dict[str, Any]]:
         })
 
     return results
+
+
+def _exa_search_with_fallback(
+    query: str,
+    limit: int = 10,
+    urls_to_fallback: Optional[List[str]] = None
+) -> dict:
+    """Search with Exa highlights, falling back to full text only for empty highlights or explicit URLs.
+
+    This is a deep-research helper that keeps highlights as the primary content,
+    only fetching full text when:
+    1. A result has completely empty highlights (not just short ones)
+    2. Specific URLs are explicitly requested for full text via urls_to_fallback
+
+    Per Exa research: 500 chars of highlights ≈ 8000 chars of full text accuracy.
+    Short highlights should NOT trigger fallback - they're still efficient and relevant.
+
+    Args:
+        query: The search query
+        limit: Maximum number of results to return
+        urls_to_fallback: Specific URLs to fetch full text for regardless of highlight content
+
+    Returns:
+        Same format as _exa_search but with optional full_text field added where applicable.
+        The description field always contains highlights (not replaced with full text).
+    """
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return {"error": "Interrupted", "success": False}
+
+    config = _get_exa_config()
+    if not config["full_text_fallback"]:
+        # Fallback disabled, use standard highlights-only search
+        return _exa_search(query, limit)
+
+    # If highlights are disabled, don't try to fallback (text mode has full content already)
+    if not config["highlights_enabled"]:
+        return _exa_search(query, limit)
+
+    # First, get search results with highlights
+    result = _exa_search(query, limit)
+    if not result.get("success"):
+        return result
+
+    web_results = result.get("data", {}).get("web", [])
+    if not web_results:
+        return result
+
+    # Identify results needing full text fallback:
+    # 1. Explicit URLs requested by caller (must be non-empty and safe)
+    # 2. Results with completely empty highlights (not just short ones)
+    urls_for_fallback = set()
+    
+    # Validate explicit URLs: non-empty and safe
+    for url in (urls_to_fallback or []):
+        if url and url.strip() and is_safe_url(url):
+            urls_for_fallback.add(url.strip())
+        elif url and not is_safe_url(url):
+            logger.debug("Skipping unsafe fallback URL: %s", url[:60])
+
+    for r in web_results:
+        url = r.get("url", "").strip()
+        # Skip empty URLs
+        if not url:
+            continue
+        # Skip unsafe URLs
+        if not is_safe_url(url):
+            logger.debug("Skipping unsafe URL in fallback: %s", url[:60])
+            continue
+        highlights = r.get("highlights", [])
+        # Only fallback for completely empty highlights
+        if not highlights or all(not h.strip() for h in highlights):
+            urls_for_fallback.add(url)
+            logger.debug("Empty highlights for %s - will fetch full text", url[:60])
+
+    if not urls_for_fallback:
+        # All results have highlights
+        return result
+
+    logger.info("Exa fallback: fetching full text for %d URL(s)", len(urls_for_fallback))
+
+    # Fetch full text for identified URLs
+    try:
+        full_text_results = _exa_extract(list(urls_for_fallback))
+        full_text_by_url = {r["url"]: r for r in full_text_results}
+
+        # Add full_text field without replacing description
+        for r in web_results:
+            url = r["url"]
+            if url in full_text_by_url:
+                full_text = full_text_by_url[url]["content"]
+                if full_text:
+                    # Add full_text as separate field - description stays as highlights
+                    r["full_text"] = full_text
+
+    except Exception as e:
+        logger.warning("Exa fallback extraction failed: %s", e)
+        # Continue with highlight-only results
+
+    return result
 
 
 # ─── Parallel Search & Extract Helpers ────────────────────────────────────────
@@ -1094,7 +1308,12 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             return result_json
 
         if backend == "exa":
-            response_data = _exa_search(query, limit)
+            # Use fallback-enhanced search when configured, otherwise use basic highlights search
+            exa_config = _get_exa_config()
+            if exa_config["full_text_fallback"]:
+                response_data = _exa_search_with_fallback(query, limit)
+            else:
+                response_data = _exa_search(query, limit)
             debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
             result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
             debug_call_data["final_response_size"] = len(result_json)

@@ -171,3 +171,116 @@ If a command needs sudo, you'll be prompted for your password (cached for the se
 :::warning
 On messaging platforms, if sudo fails, the output includes a tip to add `SUDO_PASSWORD` to `~/.hermes/.env`.
 :::
+
+## Web Backend Configuration
+
+Hermes supports multiple web search backends: **Exa**, **Firecrawl**, **Parallel**, and **Tavily**. Configure your preferred backend with `hermes tools` or directly in `~/.hermes/config.yaml`.
+
+```yaml
+# Web backend configuration
+web:
+  backend: exa  # Options: exa, firecrawl, parallel, tavily
+```
+
+### Exa (Recommended for Agent Search)
+
+[Exa.ai](https://exa.ai) provides **query-specific highlights** — AI-generated excerpts that are directly relevant to your search query, perfect for agent reasoning.
+
+```bash
+# Set your API key
+export EXA_API_KEY="your-api-key"
+```
+
+#### Exa Highlights
+
+Exa's highlights are query-specific rather than generic page snippets. This means when you search for "Python async patterns", the highlights contain relevant async programming content, not just the first 200 characters of the page.
+
+```yaml
+# Exa-specific configuration
+web:
+  backend: exa
+  exa:
+    highlights_max_characters: 2000  # Max chars per highlight (default: 2000)
+    highlights_enabled: true       # Use highlights as primary content (default: true)
+    full_text_fallback: true       # Fall back to full text when needed (default: true)
+```
+
+#### Search Result Structure
+
+When using Exa, search results include structured highlights:
+
+```json
+{
+  "success": true,
+  "data": {
+    "web": [
+      {
+        "url": "https://example.com/article",
+        "title": "Article Title",
+        "description": "Concatenated highlights for backward compatibility",
+        "highlights": [
+          "First relevant excerpt from the page...",
+          "Second relevant excerpt..."
+        ],
+        "published_date": "2024-01-15",
+        "position": 1
+      }
+    ]
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `url` | Result URL |
+| `title` | Page title |
+| `description` | Concatenated highlights (backward compatible) |
+| `highlights` | **Query-specific excerpts** as a list |
+| `published_date` | Publication date when available |
+| `position` | Ranking position |
+
+#### Full-Text Fallback
+
+When highlights are completely empty (rare), Exa can fetch full page content as a fallback. The `_exa_search_with_fallback()` function automatically detects empty highlights and fetches full text only when needed.
+
+```python
+# Example: Search with fallback for empty highlights
+from tools.web_tools import _exa_search_with_fallback
+
+result = _exa_search_with_fallback(
+    "machine learning tutorial",
+    limit=5
+)
+```
+
+Results with full-text fallback include a `full_text` field alongside `highlights` and `description`. Note: Per Exa research, short highlights should NOT trigger fallback—they remain efficient and relevant even at 500 characters.
+
+### Firecrawl
+
+[Firecrawl](https://firecrawl.dev) provides comprehensive web scraping and crawling.
+
+```bash
+export FIRECRAWL_API_KEY="your-api-key"
+```
+
+With a Nous subscription, Firecrawl can be accessed through the Tool Gateway:
+
+```bash
+hermes model  # Enable Nous Tool Gateway
+```
+
+### Parallel
+
+[Parallel](https://parallel.ai) provides fast, agentic search with multiple modes.
+
+```bash
+export PARALLEL_API_KEY="your-api-key"
+```
+
+### Tavily
+
+[Tavily](https://tavily.com) provides AI-optimized search for LLM applications.
+
+```bash
+export TAVILY_API_KEY="your-api-key"
+```

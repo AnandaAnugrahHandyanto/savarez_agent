@@ -476,6 +476,284 @@ class TestWebSearchErrorHandling:
         assert "traceback" not in result
 
 
+class TestExaConfig:
+    """Test suite for Exa client configuration and highlights."""
+
+    _ENV_KEYS = (
+        "EXA_API_KEY",
+    )
+
+    def setup_method(self):
+        """Reset client and env vars before each test."""
+        import tools.web_tools
+        tools.web_tools._exa_client = None
+        for key in self._ENV_KEYS:
+            os.environ.pop(key, None)
+
+    def teardown_method(self):
+        """Reset client after each test."""
+        import tools.web_tools
+        tools.web_tools._exa_client = None
+        for key in self._ENV_KEYS:
+            os.environ.pop(key, None)
+
+    def test_get_exa_config_defaults(self):
+        """_get_exa_config() returns correct default values."""
+        from tools.web_tools import _get_exa_config
+
+        config = _get_exa_config()
+
+        assert isinstance(config["highlights_max_characters"], int)
+        assert config["highlights_max_characters"] == 2000  # Default per PRD
+        assert isinstance(config["highlights_enabled"], bool)
+        assert config["highlights_enabled"] is True
+        assert isinstance(config["full_text_fallback"], bool)
+        assert config["full_text_fallback"] is True
+
+    def test_get_exa_config_from_config_yaml(self):
+        """_get_exa_config() reads from web.exa in config.yaml."""
+        from tools.web_tools import _get_exa_config
+
+        with patch("tools.web_tools._load_web_config", return_value={
+            "exa": {
+                "highlights_max_characters": 1500,
+                "highlights_enabled": False,
+                "full_text_fallback": False,
+            }
+        }):
+            config = _get_exa_config()
+            assert config["highlights_max_characters"] == 1500
+            assert config["highlights_enabled"] is False
+            assert config["full_text_fallback"] is False
+
+    def test_exa_client_no_key_raises(self):
+        """No EXA_API_KEY → ValueError with guidance."""
+        from tools.web_tools import _get_exa_client
+
+        with pytest.raises(ValueError, match="EXA_API_KEY"):
+            _get_exa_client()
+
+    def test_exa_client_creates_with_key(self):
+        """EXA_API_KEY set → creates Exa client."""
+        with patch.dict(os.environ, {"EXA_API_KEY": "exa-test-key"}):
+            with patch("exa_py.Exa") as mock_exa:
+                from tools.web_tools import _get_exa_client
+
+                client = _get_exa_client()
+
+                mock_exa.assert_called_once_with(api_key="exa-test-key")
+                assert client is mock_exa.return_value
+
+    def test_exa_search_result_structure(self):
+        """_exa_search returns proper result structure with highlights."""
+        from tools.web_tools import _exa_search
+
+        # Mock Exa client and response
+        mock_response = MagicMock()
+        mock_result = MagicMock()
+        mock_result.url = "https://example.com/article"
+        mock_result.title = "Test Article"
+        mock_result.highlights = ["Highlight 1 content", "Highlight 2 content"]
+        mock_result.published_date = "2024-01-15"
+        mock_response.results = [mock_result]
+
+        with patch.dict(os.environ, {"EXA_API_KEY": "exa-test-key"}):
+            with patch("tools.web_tools._get_exa_client") as mock_get_client:
+                mock_client = MagicMock()
+                mock_client.search.return_value = mock_response
+                mock_get_client.return_value = mock_client
+
+                result = _exa_search("test query", limit=1)
+
+                assert result["success"] is True
+                assert "data" in result
+                assert "web" in result["data"]
+                assert len(result["data"]["web"]) == 1
+
+                web_result = result["data"]["web"][0]
+                assert web_result["url"] == "https://example.com/article"
+                assert web_result["title"] == "Test Article"
+                assert web_result["description"] == "Highlight 1 content\n\nHighlight 2 content"
+                assert web_result["highlights"] == ["Highlight 1 content", "Highlight 2 content"]
+                assert web_result["published_date"] == "2024-01-15"
+                assert web_result["position"] == 1
+
+    def test_exa_search_uses_search_api(self):
+        """_exa_search uses search() with contents.highlights - the modern Exa API."""
+        from tools.web_tools import _exa_search
+
+        mock_response = MagicMock()
+        mock_response.results = []
+
+        with patch.dict(os.environ, {"EXA_API_KEY": "exa-test-key"}):
+            with patch("tools.web_tools._get_exa_client") as mock_get_client:
+                mock_client = MagicMock()
+                mock_client.search.return_value = mock_response
+                mock_get_client.return_value = mock_client
+
+                _exa_search("python async patterns", limit=5)
+
+                # Verify search was called (not deprecated search_and_contents)
+                mock_client.search.assert_called_once()
+                call_args = mock_client.search.call_args
+
+                # Verify query and limit
+                assert call_args[0][0] == "python async patterns"
+                assert call_args[1]["num_results"] == 5
+
+                # Verify contents wrapper with highlights nested
+                assert "contents" in call_args[1]
+                contents = call_args[1]["contents"]
+                assert "highlights" in contents
+                assert contents["highlights"]["max_characters"] == 2000  # default
+                assert contents["highlights"]["query"] == "python async patterns"
+                # num_highlights should NOT be present (deprecated parameter)
+                assert "num_highlights" not in contents["highlights"]
+                # search_and_contents should not be called
+                mock_client.search_and_contents.assert_not_called()
+
+    def test_exa_search_with_fallback_disabled(self):
+        """_exa_search_with_fallback respects config to disable fallback."""
+        from tools.web_tools import _exa_search_with_fallback
+
+        with patch("tools.web_tools._get_exa_config", return_value={
+            "highlights_max_characters": 2000,
+            "highlights_enabled": True,
+            "full_text_fallback": False,  # Disabled
+        }):
+            with patch("tools.web_tools._exa_search", return_value={
+                "success": True,
+                "data": {"web": [{"url": "https://example.com", "title": "Test", "highlights": [], "position": 1}]}
+            }):
+                result = _exa_search_with_fallback("test", limit=1)
+
+                # Should use _exa_search directly since fallback is disabled
+                assert result["success"] is True
+
+    def test_exa_search_with_fallback_empty_highlights(self):
+        """_exa_search_with_fallback fetches full text only for empty highlights."""
+        from tools.web_tools import _exa_search_with_fallback
+
+        # Mock search results with EMPTY highlights (should trigger fallback)
+        mock_search_response = {
+            "success": True,
+            "data": {
+                "web": [
+                    {
+                        "url": "https://example.com",
+                        "title": "Test",
+                        "highlights": [],  # Empty - should trigger fallback
+                        "position": 1,
+                    }
+                ]
+            }
+        }
+
+        mock_extract_result = {
+            "url": "https://example.com",
+            "title": "Test",
+            "content": "Full page content here...",
+        }
+
+        with patch("tools.web_tools._get_exa_config", return_value={
+            "highlights_max_characters": 2000,
+            "highlights_enabled": True,
+            "full_text_fallback": True,  # Enabled
+        }):
+            with patch("tools.web_tools._exa_search", return_value=mock_search_response):
+                with patch("tools.web_tools._exa_extract", return_value=[mock_extract_result]):
+                    result = _exa_search_with_fallback("test", limit=1)
+
+                    assert result["success"] is True
+                    web_results = result["data"]["web"]
+                    assert len(web_results) == 1
+                    # Should have full_text field added for empty highlights
+                    assert "full_text" in web_results[0]
+                    assert web_results[0]["full_text"] == "Full page content here..."
+                    # Description should NOT be replaced with full text
+                    assert web_results[0].get("description", "") != "Full page content here..."
+
+    def test_exa_search_with_fallback_short_highlights_not_triggered(self):
+        """_exa_search_with_fallback does NOT fetch full text for short highlights."""
+        from tools.web_tools import _exa_search_with_fallback
+
+        # Mock search results with SHORT but non-empty highlights
+        # Per Exa research, short highlights are still efficient - don't fall back
+        mock_search_response = {
+            "success": True,
+            "data": {
+                "web": [
+                    {
+                        "url": "https://example.com",
+                        "title": "Test",
+                        "highlights": ["short highlight"],  # Short but NOT empty
+                        "position": 1,
+                    }
+                ]
+            }
+        }
+
+        with patch("tools.web_tools._get_exa_config", return_value={
+            "highlights_max_characters": 2000,
+            "highlights_enabled": True,
+            "full_text_fallback": True,  # Enabled
+        }):
+            with patch("tools.web_tools._exa_search", return_value=mock_search_response):
+                with patch("tools.web_tools._exa_extract") as mock_extract:
+                    result = _exa_search_with_fallback("test", limit=1)
+
+                    assert result["success"] is True
+                    web_results = result["data"]["web"]
+                    assert len(web_results) == 1
+                    # Should NOT have fetched full text for short highlights
+                    mock_extract.assert_not_called()
+                    # Should NOT have full_text field
+                    assert "full_text" not in web_results[0]
+
+    def test_exa_search_with_fallback_explicit_urls(self):
+        """_exa_search_with_fallback fetches full text for explicitly requested URLs."""
+        from tools.web_tools import _exa_search_with_fallback
+
+        mock_search_response = {
+            "success": True,
+            "data": {
+                "web": [
+                    {
+                        "url": "https://example.com",
+                        "title": "Test",
+                        "highlights": ["normal highlight content"],
+                        "position": 1,
+                    }
+                ]
+            }
+        }
+
+        mock_extract_result = {
+            "url": "https://example.com",
+            "title": "Test",
+            "content": "Explicitly requested full text...",
+        }
+
+        with patch("tools.web_tools._get_exa_config", return_value={
+            "highlights_max_characters": 2000,
+            "highlights_enabled": True,
+            "full_text_fallback": True,
+        }):
+            with patch("tools.web_tools._exa_search", return_value=mock_search_response):
+                with patch("tools.web_tools._exa_extract", return_value=[mock_extract_result]) as mock_extract:
+                    result = _exa_search_with_fallback(
+                        "test",
+                        limit=1,
+                        urls_to_fallback=["https://example.com"]  # Explicit request
+                    )
+
+                    assert result["success"] is True
+                    # Should have fetched full text for explicitly requested URL
+                    mock_extract.assert_called_once()
+                    web_results = result["data"]["web"]
+                    assert "full_text" in web_results[0]
+
+
 class TestCheckWebApiKey:
     """Test suite for check_web_api_key() unified availability check."""
 
@@ -577,3 +855,5 @@ def test_web_requires_env_includes_exa_key():
     from tools.web_tools import _web_requires_env
 
     assert "EXA_API_KEY" in _web_requires_env()
+
+
