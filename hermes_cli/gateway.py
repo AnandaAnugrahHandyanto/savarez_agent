@@ -3933,6 +3933,10 @@ def _gateway_command_inner(args):
             print()
             print("To run the gateway: hermes gateway run")
             sys.exit(0)
+        elif is_windows():
+            windows_uninstall()
+        elif is_windows():
+            windows_uninstall()
         else:
             print("Service installation not supported on this platform.")
             print("Run manually: hermes gateway run")

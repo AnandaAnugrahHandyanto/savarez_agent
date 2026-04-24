@@ -70,6 +70,19 @@ if (!(Test-Path "$RgDir\rg.exe")) {
     Write-Output "ripgrep is already installed."
 }
 
+
+# 6. Generate hermes.cmd wrapper
+Write-Output "Generating hermes.cmd wrapper..."
+$ScriptsDir = "$ProjectRoot\venv\Scripts"
+$HermesCmd = "$ScriptsDir\hermes.cmd"
+$WrapperContent = @"
+@echo off
+rem Hermes Agent CLI Wrapper
+"%~dp0python.exe" -m hermes_cli.main %*
+"@
+Set-Content -Path $HermesCmd -Value $WrapperContent -Encoding ASCII
+Write-Output "Wrapper generated at $HermesCmd."
+
 Write-Output "============================================================"
 Write-Output "Installation Complete!"
 Write-Output "To start the agent, run:"
