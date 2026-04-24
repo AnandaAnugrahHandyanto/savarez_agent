@@ -100,7 +100,7 @@ Scoped to the Feishu document-comment handler. Drives comment read/write operati
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `image_generate` | Generate high-quality images from text prompts using FAL.ai. The underlying model is user-configured (default: FLUX 2 Klein 9B, sub-1s generation) and is not selectable by the agent. Returns a single image URL. Display it using… | FAL_KEY |
+| `image_generate` | Generate high-quality images from text prompts using the currently configured image backend. This PR adds WaveSpeed as an additional supported backend; the underlying model remains user-configured rather than agent-selected. | `WAVESPEED_API_KEY` or backend-specific credentials |
 
 ## `memory` toolset
 
