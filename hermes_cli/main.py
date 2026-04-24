@@ -6409,30 +6409,12 @@ For more help on a command:
         help="Preload one or more skills for the session (repeat flag or comma-separate)",
     )
     chat_parser.add_argument(
-        "--provider",
-        choices=[
-            "auto",
-            "openrouter",
-            "nous",
-            "openai-codex",
-            "copilot-acp",
-            "copilot",
-            "anthropic",
-            "gemini",
-            "xai",
-            "ollama-cloud",
-            "huggingface",
-            "zai",
-            "kimi-coding",
-            "kimi-coding-cn",
-            "minimax",
-            "minimax-cn",
-            "kilocode",
-            "xiaomi",
-            "arcee",
-            "nvidia",
-        ],
-        default=None,
+    choices=list(hermes_cli.config.load_config().get("providers", {}).keys()) + [
+            "auto", "openrouter", "nous", "openai-codex", "copilot-acp", 
+            "copilot", "anthropic", "gemini", "xai", "ollama-cloud", 
+            "huggingface", "zai", "kimi-coding", "kimi-coding-cn", 
+            "stepfun", "minimax"
+        ],        default=None,
         help="Inference provider (default: auto)",
     )
     chat_parser.add_argument(
