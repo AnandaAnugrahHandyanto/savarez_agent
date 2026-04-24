@@ -57,6 +57,14 @@ MAX_REQUEST_BYTES = 1_000_000  # 1 MB default limit for POST bodies
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+# Conservative per-field caps for Responses SSE. They are intentionally much
+# lower than aiohttp's 128 KiB line limit because JSON escaping and envelope
+# overhead can expand the serialized byte size beyond the raw Python string
+# length.
+RESPONSES_SSE_ARGUMENTS_CHAR_LIMIT = 4_096
+RESPONSES_SSE_TOOL_OUTPUT_CHAR_LIMIT = 8_192
+RESPONSES_SSE_FINAL_TEXT_CHAR_LIMIT = 8_192
+RESPONSES_SSE_TRUNCATION_MARKER = "...[truncated for SSE stream]..."
 
 
 def _normalize_chat_content(
@@ -242,6 +250,30 @@ def _normalize_multimodal_content(content: Any) -> Any:
         return "\n".join(p["text"] for p in normalized_parts if p.get("text"))
 
     return normalized_parts
+
+
+def _truncate_responses_sse_text(value: str, limit: int) -> str:
+    """Keep Responses SSE payload fields comfortably below common client line limits."""
+    if not isinstance(value, str):
+        value = str(value)
+    if limit <= 0 or len(value) <= limit:
+        return value
+    marker = RESPONSES_SSE_TRUNCATION_MARKER
+    if limit <= len(marker):
+        return marker[:limit]
+    keep = limit - len(marker)
+    head = keep // 2
+    tail = keep - head
+    return f"{value[:head]}{marker}{value[-tail:]}"
+
+
+def _chunk_responses_sse_text(value: str, limit: int) -> List[str]:
+    """Split streamed text deltas so a single SSE event never carries an oversized line."""
+    if not isinstance(value, str):
+        value = str(value)
+    if limit <= 0 or len(value) <= limit:
+        return [value]
+    return [value[i:i + limit] for i in range(0, len(value), limit)]
 
 
 def _content_has_visible_payload(content: Any) -> bool:
@@ -1230,9 +1262,11 @@ class APIServerAdapter(BasePlatformAdapter):
         # Track open function_call items by name so we can emit a matching
         # ``done`` event when the tool completes.  Order preserved.
         pending_tool_calls: List[Dict[str, Any]] = []
-        # Output items we've emitted so far (used to build the terminal
-        # response.completed payload).  Kept in the order they appeared.
-        emitted_items: List[Dict[str, Any]] = []
+        # Output items emitted into the SSE stream (truncated as needed to stay
+        # within client line limits) and the full-fidelity copies persisted for
+        # GET /v1/responses/{id}. Kept in the order they appeared.
+        streamed_items: List[Dict[str, Any]] = []
+        stored_items: List[Dict[str, Any]] = []
         # Monotonic counter for output_index (spec requires it).
         output_index = 0
         # Monotonic counter for call_id generation if the agent doesn't
@@ -1253,8 +1287,9 @@ class APIServerAdapter(BasePlatformAdapter):
             if "sequence_number" not in data:
                 data["sequence_number"] = sequence_number
             sequence_number += 1
-            payload = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
-            await response.write(payload.encode())
+            payload_json = json.dumps(data, ensure_ascii=False)
+            payload = f"event: {event_type}\ndata: {payload_json}\n\n"
+            await response.write(payload.encode("utf-8"))
 
         def _envelope(status: str) -> Dict[str, Any]:
             env: Dict[str, Any] = {
@@ -1304,15 +1339,19 @@ class APIServerAdapter(BasePlatformAdapter):
 
             async def _emit_text_delta(delta_text: str) -> None:
                 await _open_message_item()
-                final_text_parts.append(delta_text)
-                await _write_event("response.output_text.delta", {
-                    "type": "response.output_text.delta",
-                    "item_id": message_item_id,
-                    "output_index": message_output_index,
-                    "content_index": 0,
-                    "delta": delta_text,
-                    "logprobs": [],
-                })
+                for delta_chunk in _chunk_responses_sse_text(
+                    delta_text,
+                    RESPONSES_SSE_FINAL_TEXT_CHAR_LIMIT,
+                ):
+                    final_text_parts.append(delta_chunk)
+                    await _write_event("response.output_text.delta", {
+                        "type": "response.output_text.delta",
+                        "item_id": message_item_id,
+                        "output_index": message_output_index,
+                        "content_index": 0,
+                        "delta": delta_chunk,
+                        "logprobs": [],
+                    })
 
             async def _emit_tool_started(payload: Dict[str, Any]) -> str:
                 """Emit response.output_item.added for a function_call.
@@ -1327,30 +1366,41 @@ class APIServerAdapter(BasePlatformAdapter):
                 call_id = payload.get("tool_call_id") or f"call_{response_id[5:]}_{call_counter}"
                 args = payload.get("arguments", {})
                 if isinstance(args, dict):
-                    arguments_str = json.dumps(args)
+                    raw_arguments_str = json.dumps(args)
                 else:
-                    arguments_str = str(args)
+                    raw_arguments_str = str(args)
+                streamed_arguments_str = _truncate_responses_sse_text(
+                    raw_arguments_str,
+                    RESPONSES_SSE_ARGUMENTS_CHAR_LIMIT,
+                )
                 item = {
                     "id": f"fc_{uuid.uuid4().hex[:24]}",
                     "type": "function_call",
                     "status": "in_progress",
                     "name": payload.get("name", ""),
                     "call_id": call_id,
-                    "arguments": arguments_str,
+                    "arguments": streamed_arguments_str,
                 }
                 idx = output_index
                 output_index += 1
                 pending_tool_calls.append({
                     "call_id": call_id,
                     "name": payload.get("name", ""),
-                    "arguments": arguments_str,
+                    "streamed_arguments": streamed_arguments_str,
+                    "stored_arguments": raw_arguments_str,
                     "item_id": item["id"],
                     "output_index": idx,
                 })
-                emitted_items.append({
+                streamed_items.append({
                     "type": "function_call",
                     "name": payload.get("name", ""),
-                    "arguments": arguments_str,
+                    "arguments": streamed_arguments_str,
+                    "call_id": call_id,
+                })
+                stored_items.append({
+                    "type": "function_call",
+                    "name": payload.get("name", ""),
+                    "arguments": raw_arguments_str,
                     "call_id": call_id,
                 })
                 await _write_event("response.output_item.added", {
@@ -1384,7 +1434,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "status": "completed",
                     "name": pending["name"],
                     "call_id": pending["call_id"],
-                    "arguments": pending["arguments"],
+                    "arguments": pending["streamed_arguments"],
                 }
                 await _write_event("response.output_item.done", {
                     "type": "response.output_item.done",
@@ -1393,21 +1443,31 @@ class APIServerAdapter(BasePlatformAdapter):
                 })
 
                 # function_call_output added (result)
-                result_str = result if isinstance(result, str) else json.dumps(result)
-                output_parts = [{"type": "input_text", "text": result_str}]
+                raw_result_str = result if isinstance(result, str) else json.dumps(result)
+                streamed_result_str = _truncate_responses_sse_text(
+                    raw_result_str,
+                    RESPONSES_SSE_TOOL_OUTPUT_CHAR_LIMIT,
+                )
+                streamed_output_parts = [{"type": "input_text", "text": streamed_result_str}]
+                stored_output_parts = [{"type": "input_text", "text": raw_result_str}]
                 output_item = {
                     "id": f"fco_{uuid.uuid4().hex[:24]}",
                     "type": "function_call_output",
                     "call_id": pending["call_id"],
-                    "output": output_parts,
+                    "output": streamed_output_parts,
                     "status": "completed",
                 }
                 idx = output_index
                 output_index += 1
-                emitted_items.append({
+                streamed_items.append({
                     "type": "function_call_output",
                     "call_id": pending["call_id"],
-                    "output": output_parts,
+                    "output": streamed_output_parts,
+                })
+                stored_items.append({
+                    "type": "function_call_output",
+                    "call_id": pending["call_id"],
+                    "output": stored_output_parts,
                 })
                 await _write_event("response.output_item.added", {
                     "type": "response.output_item.added",
@@ -1488,13 +1548,17 @@ class APIServerAdapter(BasePlatformAdapter):
 
             # Close the message item if it was opened
             final_response_text = "".join(final_text_parts) or final_response_text
+            streamed_final_text = _truncate_responses_sse_text(
+                final_response_text,
+                RESPONSES_SSE_FINAL_TEXT_CHAR_LIMIT,
+            )
             if message_opened:
                 await _write_event("response.output_text.done", {
                     "type": "response.output_text.done",
                     "item_id": message_item_id,
                     "output_index": message_output_index,
                     "content_index": 0,
-                    "text": final_response_text,
+                    "text": streamed_final_text,
                     "logprobs": [],
                 })
                 msg_done_item = {
@@ -1503,7 +1567,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "status": "completed",
                     "role": "assistant",
                     "content": [
-                        {"type": "output_text", "text": final_response_text}
+                        {"type": "output_text", "text": streamed_final_text}
                     ],
                 }
                 await _write_event("response.output_item.done", {
@@ -1516,12 +1580,29 @@ class APIServerAdapter(BasePlatformAdapter):
             # response envelope so clients that only parse the terminal
             # payload still see the assistant text.  This mirrors the
             # shape produced by _extract_output_items in the batch path.
-            final_items: List[Dict[str, Any]] = list(emitted_items)
+            final_items: List[Dict[str, Any]] = list(streamed_items)
             final_items.append({
                 "type": "message",
                 "role": "assistant",
                 "content": [
-                    {"type": "output_text", "text": final_response_text or (agent_error or "")}
+                    {
+                        "type": "output_text",
+                        "text": streamed_final_text or _truncate_responses_sse_text(
+                            agent_error or "",
+                            RESPONSES_SSE_FINAL_TEXT_CHAR_LIMIT,
+                        ),
+                    }
+                ],
+            })
+            stored_final_items: List[Dict[str, Any]] = list(stored_items)
+            stored_final_items.append({
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": final_response_text or (agent_error or ""),
+                    }
                 ],
             })
 
@@ -1560,8 +1641,15 @@ class APIServerAdapter(BasePlatformAdapter):
                         full_history.extend(result["messages"])
                     else:
                         full_history.append({"role": "assistant", "content": final_response_text})
+                    stored_completed_env = _envelope("completed")
+                    stored_completed_env["output"] = stored_final_items
+                    stored_completed_env["usage"] = {
+                        "input_tokens": usage.get("input_tokens", 0),
+                        "output_tokens": usage.get("output_tokens", 0),
+                        "total_tokens": usage.get("total_tokens", 0),
+                    }
                     self._response_store.put(response_id, {
-                        "response": completed_env,
+                        "response": stored_completed_env,
                         "conversation_history": full_history,
                         "instructions": instructions,
                         "session_id": session_id,
