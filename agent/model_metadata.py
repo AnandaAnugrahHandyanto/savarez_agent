@@ -106,8 +106,13 @@ _endpoint_model_metadata_cache_time: Dict[str, float] = {}
 _ENDPOINT_MODEL_CACHE_TTL = 300
 
 # Descending tiers for context length probing when the model is unknown.
-# We start at 128K (a safe default for most modern models) and step down
-# on context-length errors until one works.
+# Unknown models default to 128K (safe for most modern models), but when a
+# known long-context model overruns at runtime we step down through modern
+# high-context tiers before falling back to 128K.
+HIGH_CONTEXT_PROBE_TIERS = [
+    400_000,
+    200_000,
+]
 CONTEXT_PROBE_TIERS = [
     128_000,
     64_000,
@@ -755,7 +760,7 @@ def _invalidate_cached_context_length(model: str, base_url: str) -> None:
 
 def get_next_probe_tier(current_length: int) -> Optional[int]:
     """Return the next lower probe tier, or None if already at minimum."""
-    for tier in CONTEXT_PROBE_TIERS:
+    for tier in [*HIGH_CONTEXT_PROBE_TIERS, *CONTEXT_PROBE_TIERS]:
         if tier < current_length:
             return tier
     return None

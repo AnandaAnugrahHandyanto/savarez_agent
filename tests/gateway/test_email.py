@@ -1039,5 +1039,54 @@ class TestImapConnectionCleanup(unittest.TestCase):
         mock_imap.logout.assert_called_once()
 
 
+class TestEmailDiagnostics(unittest.TestCase):
+    """Test current-start diagnostics for email polling health."""
+
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret-password",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_IMAP_PORT": "993",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "EMAIL_SMTP_PORT": "587",
+            "EMAIL_POLL_INTERVAL": "15",
+        }, clear=False):
+            from gateway.platforms.email import EmailAdapter
+            return EmailAdapter(PlatformConfig(enabled=True))
+
+    def test_diagnostics_are_sanitized_and_persisted(self):
+        adapter = self._make_adapter()
+        adapter._running = True
+        adapter._seen_uids = {b"1", b"2"}
+
+        with patch.object(adapter, "_update_platform_diagnostics") as update:
+            adapter._write_runtime_diagnostics(
+                last_check_status="ok",
+                last_fetch_count=5,
+                last_error_code=None,
+            )
+
+        update.assert_called_once()
+        diagnostics = update.call_args.args[0]
+        self.assertEqual(diagnostics, {
+            "imap_host_configured": True,
+            "imap_port": 993,
+            "smtp_host_configured": True,
+            "smtp_port": 587,
+            "poll_interval_seconds": 15,
+            "poll_task_active": False,
+            "running": True,
+            "seen_uid_count": 2,
+            "seen_uid_max": 2000,
+            "last_check_status": "ok",
+            "last_fetch_count": 5,
+            "last_error_code": None,
+        })
+        self.assertNotIn("secret-password", repr(diagnostics))
+        self.assertNotIn("hermes@test.com", repr(diagnostics))
+
+
 if __name__ == "__main__":
     unittest.main()

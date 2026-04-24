@@ -17,6 +17,7 @@ fallback IPs in order, then "stick" to whichever IP works.
 
 import httpx
 import pytest
+from unittest.mock import patch
 
 from gateway.platforms import telegram_network as tnet
 
@@ -70,6 +71,50 @@ def _fake_transport_factory(calls, behavior):
 
 def _telegram_request(path="/botTOKEN/getMe"):
     return httpx.Request("GET", f"https://api.telegram.org{path}")
+
+
+class TestTelegramRuntimeDiagnostics:
+    def test_diagnostics_are_current_start_and_sanitized(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.telegram import TelegramAdapter
+
+        adapter = TelegramAdapter(PlatformConfig(
+            enabled=True,
+            token="secret-token",
+            extra={
+                "base_url": "https://api.telegram.org/botsecret-token",
+                "fallback_ips": ["149.154.167.220", "149.154.167.221"],
+            },
+        ))
+        adapter._webhook_mode = False
+        adapter._polling_conflict_count = 3
+        adapter._polling_network_error_count = 4
+        adapter._polling_error_task = None
+        adapter._polling_error_callback_ref = object()
+
+        with patch.object(adapter, "_update_platform_diagnostics") as update:
+            adapter._write_runtime_diagnostics(
+                fallback_ips=["149.154.167.220", "149.154.167.221"],
+                proxy_configured=True,
+                fallback_disabled=True,
+                custom_base_url=True,
+            )
+
+        update.assert_called_once()
+        diagnostics = update.call_args.args[0]
+        assert diagnostics == {
+            "mode": "polling",
+            "polling_conflict_count": 3,
+            "polling_network_error_count": 4,
+            "polling_error_task_active": False,
+            "polling_error_callback_registered": True,
+            "proxy_configured": True,
+            "fallback_ip_count": 2,
+            "fallback_disabled": True,
+            "custom_base_url": True,
+        }
+        assert "secret-token" not in repr(diagnostics)
+        assert "149.154.167.220" not in repr(diagnostics)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

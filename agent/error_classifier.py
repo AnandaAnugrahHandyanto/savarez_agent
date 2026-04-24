@@ -193,6 +193,8 @@ _MODEL_NOT_FOUND_PATTERNS = [
     "no such model",
     "unknown model",
     "unsupported model",
+    "model is not supported",
+    "model not supported",
 ]
 
 # OpenRouter aggregator policy-block patterns.
@@ -671,15 +673,11 @@ def _classify_400(
 ) -> ClassifiedError:
     """Classify 400 Bad Request — context overflow, format error, or generic."""
 
-    # Context overflow from 400
-    if any(p in error_msg for p in _CONTEXT_OVERFLOW_PATTERNS):
-        return result_fn(
-            FailoverReason.context_overflow,
-            retryable=True,
-            should_compress=True,
-        )
-
-    # Some providers return model-not-found as 400 instead of 404 (e.g. OpenRouter).
+    # Some providers return model-not-found / unsupported-model as 400 instead
+    # of 404 (e.g. OpenRouter/Codex). Policy-block messages are distinct: the
+    # model exists, but the account/request data policy blocks all endpoints.
+    # Check these before the generic-large-session context heuristic so a clear
+    # model/config problem does not shrink context.
     if any(p in error_msg for p in _PROVIDER_POLICY_BLOCKED_PATTERNS):
         return result_fn(
             FailoverReason.provider_policy_blocked,
@@ -691,6 +689,14 @@ def _classify_400(
             FailoverReason.model_not_found,
             retryable=False,
             should_fallback=True,
+        )
+
+    # Context overflow from 400
+    if any(p in error_msg for p in _CONTEXT_OVERFLOW_PATTERNS):
+        return result_fn(
+            FailoverReason.context_overflow,
+            retryable=True,
+            should_compress=True,
         )
 
     # Some providers return rate limit / billing errors as 400 instead of 429/402.

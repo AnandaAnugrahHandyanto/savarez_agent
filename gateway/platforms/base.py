@@ -958,6 +958,14 @@ class BasePlatformAdapter(ABC):
         except Exception:
             pass
 
+    def _update_platform_diagnostics(self, diagnostics: Dict[str, Any]) -> None:
+        """Persist best-effort current-start diagnostics for this platform."""
+        try:
+            from gateway.status import write_runtime_status
+            write_runtime_status(platform=self.platform.value, diagnostics=diagnostics)
+        except Exception:
+            pass
+
     def _mark_disconnected(self) -> None:
         self._running = False
         if self.has_fatal_error:

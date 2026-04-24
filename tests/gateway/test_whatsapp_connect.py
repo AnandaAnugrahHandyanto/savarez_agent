@@ -82,6 +82,42 @@ def _mock_aiohttp(status=200, json_data=None, json_side_effect=None):
     return MagicMock(return_value=_AsyncCM(mock_session))
 
 
+def test_bridge_health_diagnostics_are_sanitized_and_persisted():
+    adapter = _make_adapter()
+
+    with patch.object(adapter, "_update_platform_diagnostics") as update:
+        adapter._write_bridge_health_diagnostics({
+            "status": "connected",
+            "sessionPath": "/tmp/test-wa-session",
+            "hasCreds": True,
+            "connecting": False,
+            "reconnectScheduled": False,
+            "reconnectCount": 2,
+            "lastDisconnectReason": "connection_lost",
+            "lastDisconnectAt": "2026-04-23T12:00:00Z",
+            "lastConnectedAt": "2026-04-23T12:01:00Z",
+            "token": "must-not-leak",
+        })
+
+    update.assert_called_once()
+    diagnostics = update.call_args.args[0]
+    assert diagnostics == {
+        "bridge_port": 19876,
+        "bridge_managed_by_gateway": False,
+        "configured_session_path": str(Path("/tmp/test-wa-session").resolve()),
+        "bridge_status": "connected",
+        "bridge_session_path": "/tmp/test-wa-session",
+        "has_creds": True,
+        "connecting": False,
+        "reconnect_scheduled": False,
+        "reconnect_count": 2,
+        "last_disconnect_reason": "connection_lost",
+        "last_disconnect_at": "2026-04-23T12:00:00Z",
+        "last_connected_at": "2026-04-23T12:01:00Z",
+    }
+    assert "token" not in diagnostics
+
+
 def _connect_patches(mock_proc, mock_fh, mock_client_cls=None):
     """Return a dict of common patches needed to reach the health-check loop."""
     patches = {

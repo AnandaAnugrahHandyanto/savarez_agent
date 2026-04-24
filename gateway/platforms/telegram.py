@@ -252,6 +252,29 @@ class TelegramAdapter(BasePlatformAdapter):
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
 
+    def _write_runtime_diagnostics(
+        self,
+        *,
+        fallback_ips: Optional[List[str]] = None,
+        proxy_configured: Optional[bool] = None,
+        fallback_disabled: Optional[bool] = None,
+        custom_base_url: Optional[bool] = None,
+    ) -> None:
+        """Persist safe current-start Telegram health counters for audit tooling."""
+        task = getattr(self, "_polling_error_task", None)
+        diagnostics: Dict[str, Any] = {
+            "mode": "webhook" if getattr(self, "_webhook_mode", False) else "polling",
+            "polling_conflict_count": getattr(self, "_polling_conflict_count", 0),
+            "polling_network_error_count": getattr(self, "_polling_network_error_count", 0),
+            "polling_error_task_active": bool(task and not task.done()),
+            "polling_error_callback_registered": getattr(self, "_polling_error_callback_ref", None) is not None,
+            "proxy_configured": bool(proxy_configured) if proxy_configured is not None else bool(resolve_proxy_url("TELEGRAM_PROXY")),
+            "fallback_ip_count": len(fallback_ips if fallback_ips is not None else self._fallback_ips()),
+            "fallback_disabled": bool(fallback_disabled) if fallback_disabled is not None else bool(self.config.extra.get("disable_fallback")),
+            "custom_base_url": bool(custom_base_url) if custom_base_url is not None else bool(self.config.extra.get("base_url")),
+        }
+        self._update_platform_diagnostics(diagnostics)
+
     @staticmethod
     def _is_callback_user_authorized(user_id: str) -> bool:
         """Return whether a Telegram inline-button caller may perform gated actions."""
@@ -355,6 +378,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         self._polling_network_error_count += 1
         attempt = self._polling_network_error_count
+        self._write_runtime_diagnostics()
 
         if attempt > MAX_NETWORK_RETRIES:
             message = (
@@ -390,6 +414,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, attempt,
             )
             self._polling_network_error_count = 0
+            self._write_runtime_diagnostics()
         except Exception as retry_err:
             logger.warning("[%s] Telegram polling reconnect failed: %s", self.name, retry_err)
             # start_polling failed — polling is dead and no further error
@@ -410,6 +435,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # systemd Restart=on-failure respawns).  Retry a few times before
         # giving up, so the old session has time to expire.
         self._polling_conflict_count += 1
+        self._write_runtime_diagnostics()
 
         MAX_CONFLICT_RETRIES = 3
         RETRY_DELAY = 10  # seconds
@@ -434,6 +460,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 logger.info("[%s] Telegram polling resumed after conflict retry %d", self.name, self._polling_conflict_count)
                 self._polling_conflict_count = 0  # reset on success
+                self._write_runtime_diagnostics()
                 return
             except Exception as retry_err:
                 logger.warning("[%s] Telegram polling retry failed: %s", self.name, retry_err)
@@ -890,6 +917,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             
             self._mark_connected()
+            self._write_runtime_diagnostics(
+                fallback_ips=fallback_ips,
+                proxy_configured=bool(proxy_url),
+                fallback_disabled=disable_fallback,
+                custom_base_url=bool(custom_base_url),
+            )
             mode = "webhook" if self._webhook_mode else "polling"
             logger.info("[%s] Connected to Telegram (%s mode)", self.name, mode)
 

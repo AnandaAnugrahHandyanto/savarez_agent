@@ -217,6 +217,28 @@ class WhatsAppAdapter(BasePlatformAdapter):
         actual = self._bridge_health_session_path(data)
         return str(actual) if actual is not None else "unknown-session"
 
+    def _write_bridge_health_diagnostics(self, data: Dict[str, Any]) -> None:
+        """Persist current bridge health fields for live status/audit tooling."""
+        diagnostics: Dict[str, Any] = {
+            "bridge_port": self._bridge_port,
+            "bridge_managed_by_gateway": self._bridge_process is not None,
+            "configured_session_path": str(self._normalized_session_path(self._session_path) or self._session_path),
+        }
+        for source_key, target_key in (
+            ("status", "bridge_status"),
+            ("sessionPath", "bridge_session_path"),
+            ("hasCreds", "has_creds"),
+            ("connecting", "connecting"),
+            ("reconnectScheduled", "reconnect_scheduled"),
+            ("reconnectCount", "reconnect_count"),
+            ("lastDisconnectReason", "last_disconnect_reason"),
+            ("lastDisconnectAt", "last_disconnect_at"),
+            ("lastConnectedAt", "last_connected_at"),
+        ):
+            if source_key in data:
+                diagnostics[target_key] = data.get(source_key)
+        self._update_platform_diagnostics(diagnostics)
+
     def _whatsapp_require_mention(self) -> bool:
         configured = self.config.extra.get("require_mention")
         if configured is not None:
@@ -438,6 +460,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                     ) as resp:
                         if resp.status == 200:
                             data = await resp.json()
+                            self._write_bridge_health_diagnostics(data)
                             bridge_status = data.get("status", "unknown")
                             if bridge_status == "connected":
                                 if self._bridge_health_matches_configured_session(data):
@@ -511,6 +534,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                             if resp.status == 200:
                                 http_ready = True
                                 data = await resp.json()
+                                self._write_bridge_health_diagnostics(data)
                                 if data.get("status") == "connected":
                                     print(f"[{self.name}] Bridge ready (status: connected)")
                                     break
@@ -542,6 +566,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                             ) as resp:
                                 if resp.status == 200:
                                     data = await resp.json()
+                                    self._write_bridge_health_diagnostics(data)
                                     if data.get("status") == "connected":
                                         print(f"[{self.name}] Bridge ready (status: connected)")
                                         break
