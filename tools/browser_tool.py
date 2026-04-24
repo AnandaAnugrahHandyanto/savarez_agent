@@ -863,7 +863,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_click",
-        "description": "Click on an element identified by its ref ID from the snapshot (e.g., '@e5'). The ref IDs are shown in square brackets in the snapshot output. Requires browser_navigate and browser_snapshot to be called first.",
+        "description": "Click on an element identified by its ref ID from the snapshot (e.g., '@e5'). The ref IDs are shown in square brackets in the snapshot output. Requires browser_navigate and browser_snapshot to be called first. On success, returns an updated compact snapshot so you can decide the next action without an extra browser_snapshot call.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -877,7 +877,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_type",
-        "description": "Type text into an input field identified by its ref ID. Clears the field first, then types the new text. Requires browser_navigate and browser_snapshot to be called first.",
+        "description": "Type text into an input field identified by its ref ID. Clears the field first, then types the new text. Requires browser_navigate and browser_snapshot to be called first. On success, returns an updated compact snapshot so you can verify the field/page state without an extra browser_snapshot call.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -895,7 +895,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_scroll",
-        "description": "Scroll the page in a direction. Use this to reveal more content that may be below or above the current viewport. Requires browser_navigate to be called first.",
+        "description": "Scroll the page in a direction. Use this to reveal more content that may be below or above the current viewport. Requires browser_navigate to be called first. On success, returns an updated compact snapshot of the newly visible area.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -910,7 +910,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_back",
-        "description": "Navigate back to the previous page in browser history. Requires browser_navigate to be called first.",
+        "description": "Navigate back to the previous page in browser history. Requires browser_navigate to be called first. On success, returns an updated compact snapshot.",
         "parameters": {
             "type": "object",
             "properties": {},
@@ -919,7 +919,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_press",
-        "description": "Press a keyboard key. Useful for submitting forms (Enter), navigating (Tab), or keyboard shortcuts. Requires browser_navigate to be called first.",
+        "description": "Press a keyboard key. Useful for submitting forms (Enter), navigating (Tab), or keyboard shortcuts. Requires browser_navigate to be called first. On success, returns an updated compact snapshot so you can inspect what changed.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -1489,6 +1489,39 @@ def _truncate_snapshot(snapshot_text: str, max_chars: int = 8000) -> str:
     return '\n'.join(result)
 
 
+def _compact_snapshot_payload(
+    task_id: str,
+    *,
+    max_chars: int = 8000,
+) -> Dict[str, Any]:
+    """Return a compact snapshot payload for chaining browser actions.
+
+    The browser tools are often used by smaller/non-GPT models that do better
+    when every state-changing action returns the next observable page state.
+    Keep this helper best-effort and side-effect free: interaction success must
+    not become failure merely because the follow-up snapshot failed.
+    """
+    try:
+        snap_result = _run_browser_command(task_id, "snapshot", ["-c"])
+        if not snap_result.get("success"):
+            return {
+                "snapshot_error": snap_result.get("error", "Failed to get updated snapshot"),
+            }
+
+        snap_data = snap_result.get("data", {})
+        snapshot_text = snap_data.get("snapshot", "") or ""
+        refs = snap_data.get("refs", {}) or {}
+        if len(snapshot_text) > max_chars:
+            snapshot_text = _truncate_snapshot(snapshot_text, max_chars=max_chars)
+        return {
+            "snapshot": snapshot_text,
+            "element_count": len(refs),
+        }
+    except Exception as exc:
+        logger.debug("Compact snapshot after browser action failed: %s", exc)
+        return {"snapshot_error": str(exc)}
+
+
 # ============================================================================
 # Browser Tool Functions
 # ============================================================================
@@ -1723,10 +1756,12 @@ def browser_click(ref: str, task_id: Optional[str] = None) -> str:
     result = _run_browser_command(effective_task_id, "click", [ref])
     
     if result.get("success"):
-        return json.dumps({
+        response = {
             "success": True,
             "clicked": ref
-        }, ensure_ascii=False)
+        }
+        response.update(_compact_snapshot_payload(effective_task_id))
+        return json.dumps(response, ensure_ascii=False)
     else:
         return json.dumps({
             "success": False,
@@ -1760,11 +1795,13 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
     result = _run_browser_command(effective_task_id, "fill", [ref, text])
     
     if result.get("success"):
-        return json.dumps({
+        response = {
             "success": True,
             "typed": text,
             "element": ref
-        }, ensure_ascii=False)
+        }
+        response.update(_compact_snapshot_payload(effective_task_id))
+        return json.dumps(response, ensure_ascii=False)
     else:
         return json.dumps({
             "success": False,
@@ -1813,10 +1850,12 @@ def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
             "error": result.get("error", f"Failed to scroll {direction}")
         }, ensure_ascii=False)
 
-    return json.dumps({
+    response = {
         "success": True,
         "scrolled": direction
-    }, ensure_ascii=False)
+    }
+    response.update(_compact_snapshot_payload(effective_task_id))
+    return json.dumps(response, ensure_ascii=False)
 
 
 def browser_back(task_id: Optional[str] = None) -> str:
@@ -1838,10 +1877,12 @@ def browser_back(task_id: Optional[str] = None) -> str:
     
     if result.get("success"):
         data = result.get("data", {})
-        return json.dumps({
+        response = {
             "success": True,
             "url": data.get("url", "")
-        }, ensure_ascii=False)
+        }
+        response.update(_compact_snapshot_payload(effective_task_id))
+        return json.dumps(response, ensure_ascii=False)
     else:
         return json.dumps({
             "success": False,
@@ -1868,10 +1909,12 @@ def browser_press(key: str, task_id: Optional[str] = None) -> str:
     result = _run_browser_command(effective_task_id, "press", [key])
     
     if result.get("success"):
-        return json.dumps({
+        response = {
             "success": True,
             "pressed": key
-        }, ensure_ascii=False)
+        }
+        response.update(_compact_snapshot_payload(effective_task_id))
+        return json.dumps(response, ensure_ascii=False)
     else:
         return json.dumps({
             "success": False,

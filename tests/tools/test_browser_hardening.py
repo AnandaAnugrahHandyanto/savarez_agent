@@ -231,6 +231,28 @@ class TestScrollOptimization:
 
 
 # ---------------------------------------------------------------------------
+# Model-agnostic browser action feedback
+# ---------------------------------------------------------------------------
+
+class TestBrowserActionFeedback:
+
+    def test_state_changing_actions_request_followup_snapshot(self):
+        """State-changing actions should return page state for smaller models."""
+        import tools.browser_tool as bt
+        for fn_name in ("browser_click", "browser_type", "browser_scroll", "browser_back", "browser_press"):
+            src = inspect.getsource(getattr(bt, fn_name))
+            assert "_compact_snapshot_payload" in src, \
+                f"{fn_name} should include an updated compact snapshot on success"
+
+    def test_compact_snapshot_payload_is_best_effort(self):
+        import tools.browser_tool as bt
+        from unittest.mock import patch
+        with patch.object(bt, "_run_browser_command", return_value={"success": False, "error": "boom"}):
+            payload = bt._compact_snapshot_payload("test-task")
+        assert payload == {"snapshot_error": "boom"}
+
+
+# ---------------------------------------------------------------------------
 # Empty stdout = failure
 # ---------------------------------------------------------------------------
 
