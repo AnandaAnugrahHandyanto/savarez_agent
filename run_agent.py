@@ -7527,6 +7527,16 @@ class AIAgent:
         )
         if kimi_requires_reasoning and source_msg.get("tool_calls"):
             api_msg["reasoning_content"] = ""
+            return
+
+        # То же самое для DeepSeek thinking-моделей через kilo gateway:
+        # если у assistant есть tool_calls, но reasoning_content отсутствует
+        # (например, сессия приехала с Codex API, где reasoning хранился в
+        # зашифрованном codex_reasoning_items и был срезан на пути к kilo),
+        # DeepSeek ответит 400. Пустая строка "" DeepSeek не устраивает
+        # (falsy — gateway игнорирует поле), поэтому подставляем один символ.
+        if self._needs_deepseek_thinking_tool_merge() and source_msg.get("tool_calls"):
+            api_msg["reasoning_content"] = "."
 
     @staticmethod
     def _sanitize_tool_calls_for_strict_api(api_msg: dict) -> dict:
@@ -7568,6 +7578,103 @@ class AIAgent:
             bool: True if sanitization is needed (non-Codex API), False otherwise.
         """
         return self.api_mode != "codex_responses"
+
+    def _needs_deepseek_thinking_tool_merge(self) -> bool:
+        """Определяет, нужен ли обход бага kilo gateway для DeepSeek thinking-моделей.
+
+        Kilo gateway срезает `reasoning_content` / `reasoning` / `reasoning_details`
+        при форварде в upstream-провайдер DeepSeek (см.
+        Kilo-Org/cloud/apps/web/src/lib/ai-gateway/providers/openrouter/request-helpers.ts:
+        `removeChatCompletionsReasoning`).  В результате DeepSeek thinking-моделям
+        (v3.2+, включая v4-pro/flash, deepseek-reasoner) в истории диалога после
+        пары [assistant+tool_calls → tool_result] не хватает `reasoning_content`,
+        и любое последующее user-сообщение вызывает 400
+        "reasoning_content in the thinking mode must be passed back to the API".
+
+        Обход (как в Roo Code, опция `mergeToolResultText`): сливать любой текст,
+        идущий после последнего tool-результата, прямо в его content, чтобы
+        user-сообщение после tool не возникало.
+        """
+        try:
+            if not base_url_host_matches(self.base_url, "api.kilo.ai"):
+                return False
+        except Exception:
+            return False
+        model = (self.model or "").lower()
+        if "deepseek" not in model:
+            return False
+        # deepseek-chat — non-thinking, проблема не проявляется
+        if "deepseek-chat" in model:
+            return False
+        return True
+
+    @staticmethod
+    def _extract_text_from_content(content) -> str:
+        """Достаёт плоский текст из content (строки или списка blocks)."""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for p in content:
+                if isinstance(p, dict):
+                    if p.get("type") == "text" and isinstance(p.get("text"), str):
+                        parts.append(p["text"])
+            return "\n".join(parts)
+        return ""
+
+    @classmethod
+    def _merge_post_tool_text_into_tool(cls, api_messages: list) -> list:
+        """Сливает user/assistant-text сообщения, идущие после ПОСЛЕДНЕГО tool-результата,
+        прямо в content этого tool-результата, и удаляет их из списка.
+
+        Только если после последнего tool нет новых assistant+tool_calls (то есть нет
+        ещё одного tool-round). Иначе возвращает список без изменений, чтобы не
+        портить структуру.
+
+        Возвращает новый список (копию). Входной список не мутирует.
+        """
+        if not api_messages:
+            return api_messages
+
+        last_tool_idx = None
+        for i in range(len(api_messages) - 1, -1, -1):
+            if api_messages[i].get("role") == "tool":
+                last_tool_idx = i
+                break
+        if last_tool_idx is None:
+            return api_messages
+
+        trailing = api_messages[last_tool_idx + 1:]
+        if not trailing:
+            return api_messages
+
+        # Не трогаем, если после последнего tool есть ещё один tool-round.
+        for m in trailing:
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                return api_messages
+            if m.get("role") == "tool":
+                return api_messages
+
+        merge_chunks = []
+        for m in trailing:
+            role = m.get("role")
+            text = cls._extract_text_from_content(m.get("content"))
+            if not text:
+                continue
+            prefix = "[user]" if role == "user" else "[assistant]" if role == "assistant" else f"[{role}]"
+            merge_chunks.append(f"{prefix}\n{text}")
+
+        if not merge_chunks:
+            # Нечего сливать, но всё равно обрезаем trailing — они пустые
+            return api_messages[: last_tool_idx + 1]
+
+        result = [m.copy() for m in api_messages[: last_tool_idx + 1]]
+        tool_msg = result[last_tool_idx]
+        base = tool_msg.get("content")
+        base_text = cls._extract_text_from_content(base) if base else ""
+        merged_text = (base_text + "\n\n" if base_text else "") + "\n\n".join(merge_chunks)
+        tool_msg["content"] = merged_text
+        return result
 
     def flush_memories(self, messages: list = None, min_turns: int = None):
         """Give the model one turn to persist memories before context is lost.
@@ -7619,6 +7726,10 @@ class AIAgent:
                 if _needs_sanitize:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
                 api_messages.append(api_msg)
+
+            # Тот же обход, что и в основном пути — для flush-вызова через kilo+DeepSeek thinking.
+            if self._needs_deepseek_thinking_tool_merge():
+                api_messages = self._merge_post_tool_text_into_tool(api_messages)
 
             if self._cached_system_prompt:
                 api_messages = [{"role": "system", "content": self._cached_system_prompt}] + api_messages
@@ -9397,6 +9508,13 @@ class AIAgent:
                 # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
                 # The signature field helps maintain reasoning continuity
                 api_messages.append(api_msg)
+
+            # Обход бага kilo gateway для DeepSeek thinking-моделей (v3.2+).
+            # Сливаем любой user/assistant-text, идущий после последнего tool,
+            # прямо в его content — иначе DeepSeek отдаёт 400
+            # "reasoning_content in the thinking mode must be passed back to the API".
+            if self._needs_deepseek_thinking_tool_merge():
+                api_messages = self._merge_post_tool_text_into_tool(api_messages)
 
             # Build the final system message: cached prompt + ephemeral system prompt.
             # Ephemeral additions are API-call-time only (not persisted to session DB).
