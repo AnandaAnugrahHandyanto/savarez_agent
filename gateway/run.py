@@ -726,6 +726,137 @@ class GatewayRunner:
 
     # -----------------------------------------------------------------
 
+    def _researchos_scripts_dir(self) -> Path:
+        override = os.getenv("WOROS_WEEKLY_JOURNAL_ROOT")
+        if override:
+            return Path(override).expanduser() / "scripts"
+        canonical = Path("/Users/michael.wu/.hermes/docs/woros/weekly-journal/scripts")
+        if canonical.exists():
+            return canonical
+        return Path.home() / ".hermes/docs/woros/weekly-journal/scripts"
+
+    async def _run_researchos_script(self, script_name: str, *args: str) -> tuple[int, str, str]:
+        script_path = self._researchos_scripts_dir() / script_name
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            str(script_path),
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        return proc.returncode, (stdout or b"").decode().strip(), (stderr or b"").decode().strip()
+
+    async def _get_researchos_status_snapshot(self) -> Dict[str, Any]:
+        code, stdout, stderr = await self._run_researchos_script("workflow_status.py", "--print-json")
+        if code != 0:
+            raise RuntimeError(stderr or stdout or "workflow_status.py failed")
+        return json.loads(stdout)
+
+    def _render_researchos_status_plain(self, snapshot: Dict[str, Any], *, prefix: Optional[str] = None) -> str:
+        lines = []
+        if prefix:
+            lines.append(prefix)
+            lines.append("")
+        lines.extend([
+            f"ResearchOS status — {snapshot.get('week_id')}",
+            f"Lifecycle: {snapshot.get('lifecycle_state')}",
+            f"Prep gate: {snapshot.get('gates', {}).get('prep_gate_passed')}",
+            f"Live gate: {snapshot.get('gates', {}).get('live_gate_passed')}",
+            f"Follow-up gate: {snapshot.get('gates', {}).get('followup_gate_passed')}",
+            f"Prep status: {snapshot.get('prep', {}).get('status')}",
+            f"Live status: {snapshot.get('live_session', {}).get('status')}",
+            f"Follow-up status: {snapshot.get('followup', {}).get('status')}",
+            f"Rescheduled to: {snapshot.get('schedule', {}).get('rescheduled_to')}",
+            f"Follow-up target: {snapshot.get('schedule', {}).get('target_followup_time')}",
+        ])
+        return "\n".join(lines)
+
+    def _is_researchos_dm(self, event: MessageEvent) -> bool:
+        source = event.source
+        return bool(source and source.platform == Platform.TELEGRAM and source.chat_type == "dm")
+
+    async def _handle_researchos_command(self, event: MessageEvent) -> str:
+        if not self._is_researchos_dm(event):
+            return "ResearchOS commands are only available in Telegram DM."
+
+        args = event.get_command_args().strip()
+        if not args or args.lower() == "status":
+            snapshot = await self._get_researchos_status_snapshot()
+            return self._render_researchos_status_plain(snapshot)
+
+        parts = args.split(maxsplit=1)
+        subcommand = parts[0].strip().lower().replace("-", "_")
+        remainder = parts[1].strip() if len(parts) > 1 else ""
+        normalized_action = {
+            "journal_ready": "journal_ready",
+            "complete": "complete",
+            "start": "start",
+            "pause": "pause",
+            "resume": "resume",
+            "finish": "finish",
+            "cancel": "cancel",
+            "reschedule": "reschedule",
+        }.get(subcommand)
+        if not normalized_action:
+            return (
+                "Unknown ResearchOS action. Use /researchos status, start, pause, resume, "
+                "finish, cancel, journal_ready, complete, or reschedule <time>."
+            )
+
+        if normalized_action == "reschedule":
+            if not remainder:
+                return "Usage: /researchos reschedule <ISO time or phrase like 'tomorrow 4pm'>"
+            code, stdout, stderr = await self._run_researchos_script(
+                "mark_session_state.py",
+                "--text",
+                f"reschedule to {remainder}",
+                "--actor",
+                "gateway_telegram",
+            )
+        else:
+            code, stdout, stderr = await self._run_researchos_script(
+                "mark_session_state.py",
+                normalized_action,
+                "--actor",
+                "gateway_telegram",
+            )
+        if code != 0:
+            return stderr or stdout or f"ResearchOS action failed: {normalized_action}"
+
+        snapshot = await self._get_researchos_status_snapshot()
+        return self._render_researchos_status_plain(snapshot, prefix=f"Recorded ResearchOS action: {normalized_action}")
+
+    async def _maybe_handle_researchos_message(self, event: MessageEvent) -> Optional[str]:
+        if not self._is_researchos_dm(event):
+            return None
+        text = (event.text or "").strip()
+        if not text or len(text) > 120:
+            return None
+        reply_text = (event.reply_to_text or "").lower()
+        contextual_reply = any(token in reply_text for token in ("weekly research", "weekly journal", "research session", "journal session"))
+        if not contextual_reply:
+            return None
+        code, stdout, stderr = await self._run_researchos_script("parse_session_intent.py", text)
+        if code != 0 and not stdout:
+            return None
+        try:
+            parsed = json.loads(stdout)
+        except Exception:
+            return None
+        intent = parsed.get("intent")
+        confidence = parsed.get("confidence")
+        if not intent or confidence not in {"high", "medium"}:
+            return None
+        if intent == "reschedule" and not parsed.get("resolved_timestamp"):
+            return "I recognized a ResearchOS reschedule request, but I still need an explicit time. Try: /researchos reschedule 2026-04-21T16:00:00+08:00"
+        mark_args = ["mark_session_state.py", "--text", text, "--actor", "gateway_telegram_reply"]
+        code, stdout, stderr = await self._run_researchos_script(*mark_args)
+        if code != 0:
+            return stderr or stdout or "ResearchOS action failed."
+        snapshot = await self._get_researchos_status_snapshot()
+        return self._render_researchos_status_plain(snapshot, prefix=f"Recorded ResearchOS action from chat: {intent}")
+
     def _flush_memories_for_session(
         self,
         old_session_id: str,
@@ -3019,6 +3150,9 @@ class GatewayRunner:
         if canonical == "status":
             return await self._handle_status_command(event)
 
+        if canonical == "researchos":
+            return await self._handle_researchos_command(event)
+
         if canonical == "restart":
             return await self._handle_restart_command(event)
         
@@ -3131,6 +3265,9 @@ class GatewayRunner:
             return await self._handle_voice_command(event)
 
         if event.message_type == MessageType.TEXT and not command:
+            researchos_result = await self._maybe_handle_researchos_message(event)
+            if researchos_result is not None:
+                return researchos_result
             people_result = await self._maybe_handle_people_manager_message(event)
             if people_result is not None:
                 return people_result
