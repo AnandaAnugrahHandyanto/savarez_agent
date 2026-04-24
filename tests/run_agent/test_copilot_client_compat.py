@@ -4,12 +4,13 @@ Two separate bugs conspired to make Claude models on Copilot's chat-completions
 endpoint fail with a misleading ``HTTP 400 model_not_supported`` even when the
 exact same token + payload succeeded via raw ``requests.post``:
 
-1. **Header-handoff bug** (``AIAgent.__init__``): when the routed client path
+1. **Header-handoff bug** (``AIAgent.__init__``): when the routed-client path
    ran (no explicit creds), Hermes copied headers from ``_default_headers``
    only — the OpenAI SDK v1 attribute.  SDK v2 stores custom provider headers
-   on ``_custom_headers`` / ``default_headers`` instead, so Copilot's
-   ``copilot-integration-id``, ``editor-version``, ``api-version`` headers
-   silently vanished during the rebuild.
+   on ``_custom_headers`` (and exposes them via the public ``default_headers``
+   property) instead, so Copilot's ``copilot-integration-id``,
+   ``editor-version``, ``api-version`` headers silently vanished during the
+   rebuild.
 
 2. **Custom-transport incompatibility**
    (``_build_keepalive_http_client``): the
@@ -18,12 +19,21 @@ exact same token + payload succeeded via raw ``requests.post``:
    succeeds.  Reporter's bisection narrowed it to the custom transport;
    a second user confirmed the patch fixes their session.
 
-These tests pin both fixes independently so either can regress on its own
-without hiding the other.
+These tests pin both fixes at the **production-code entry points** so future
+refactors (attribute-order changes, extra guards, etc.) can't let either bug
+regress silently.  Key design choices driven by @Copilot's review on #15185:
+
+* We mock ``httpx.Client`` construction and inspect the recorded ``kwargs``
+  so every assertion is against the *actual* keyword arguments the code
+  passes — a test that went green only because "a client came back" is
+  worthless as a regression guard.
+* ``TestRoutedHeaderHandoff`` exercises ``AIAgent.__init__`` through the
+  routed-client branch rather than re-implementing the ``or``-chain in the
+  test; a local reimplementation would stay green if the real code drifts.
 """
 
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
@@ -32,115 +42,109 @@ from run_agent import AIAgent
 
 
 # ---------------------------------------------------------------------------
-# Fix 2 — per-endpoint transport compatibility
+# Fix 2 — per-endpoint transport compatibility (keepalive bypass)
 # ---------------------------------------------------------------------------
 
 
 class TestKeepaliveClientCopilotBypass:
-    """``_build_keepalive_http_client`` must return a plain ``httpx.Client``
-    (no custom ``HTTPTransport(socket_options=...)``) for
-    ``api.githubcopilot.com`` because that endpoint rejects requests carrying
-    the custom transport with a misleading ``400 model_not_supported``."""
+    """``_build_keepalive_http_client`` must construct the ``httpx.Client``
+    WITHOUT a custom ``HTTPTransport(socket_options=...)`` for
+    ``api.githubcopilot.com``.  Every other host must keep the custom
+    transport so the #10324 dead-peer-detection guarantee still holds.
 
-    @staticmethod
-    def _transport_is_custom_keepalive(client: httpx.Client) -> bool:
-        """Return True iff the client is wired with our custom keepalive
-        ``HTTPTransport(socket_options=...)`` — the one Copilot rejects."""
-        # The default ``httpx.Client`` constructs its own transport; a
-        # client we built with ``transport=HTTPTransport(socket_options=...)``
-        # exposes those socket options on the transport's pool.  We probe
-        # by checking whether the transport has the distinctive
-        # ``_pool`` attribute structure AND was passed socket options.
-        # The simplest black-box check: was the client constructed with
-        # a custom ``transport=`` kwarg?  httpx doesn't expose that
-        # directly, so inspect the pool class name — a plain Client has
-        # a ``ConnectionPool`` without custom socket_options, ours has
-        # those options set on the transport.  We use the practical proxy:
-        # compare against a freshly built plain client's transport class.
-        plain = httpx.Client()
-        try:
-            # Our keepalive client wraps ``HTTPTransport`` with explicit
-            # ``socket_options``.  Plain ``httpx.Client()`` uses the default
-            # transport (also HTTPTransport) but no socket_options.
-            #
-            # Both have ``_transport`` but the custom one is *passed in*
-            # (vs auto-built).  httpx stores it at ``_transport``.
-            # We test a property that differs: our custom transport has
-            # a non-empty ``_pool._network_backend._socket_options``-ish
-            # attribute path on some httpx versions.  Rather than depend
-            # on private internals, compare ids: a custom keepalive client
-            # has the same ``HTTPTransport`` instance *we created*, not
-            # a fresh one.
-            return False  # placeholder; real check is done in tests below
-        finally:
-            plain.close()
+    We mock ``httpx.Client`` at its module path inside ``run_agent`` and
+    inspect the kwargs the call received — that way the assertions fail
+    the moment the bypass regresses (even if a fake Client is still
+    returned).
+    """
 
-    def test_copilot_base_url_gets_plain_client(self):
-        """The core fix: Copilot base_url → plain client, no custom transport."""
-        client = AIAgent._build_keepalive_http_client(
-            "https://api.githubcopilot.com/"
+    def _call_with_mocks(self, base_url: str):
+        """Invoke ``_build_keepalive_http_client`` with ``httpx.Client``
+        and ``httpx.HTTPTransport`` patched to capture construction args.
+        Returns the recorded kwargs for both call-sites so the tests can
+        assert shape.
+
+        Note: we deliberately use plain ``MagicMock()`` for the fake
+        return values rather than ``MagicMock(spec=httpx.Client)``.  A
+        spec'd mock used as the ``transport=`` argument to a real
+        ``httpx.Client`` (on some paths) triggers an internal TypeError
+        that the outer try/except in ``_build_keepalive_http_client``
+        swallows — the construction would never record and the test
+        would spuriously fail.  A plain MagicMock is permissive enough
+        to pass through httpx's internal wiring without actually being
+        used as a transport (since Client is also mocked).
+        """
+        recorded = {"client_kwargs": None, "transport_kwargs": None}
+
+        def _fake_client(*a, **kw):
+            recorded["client_kwargs"] = dict(kw)
+            return MagicMock()
+
+        def _fake_transport(*a, **kw):
+            recorded["transport_kwargs"] = dict(kw)
+            return MagicMock()
+
+        with patch("httpx.Client", side_effect=_fake_client), \
+             patch("httpx.HTTPTransport", side_effect=_fake_transport):
+            AIAgent._build_keepalive_http_client(base_url)
+        return recorded
+
+    # --- Copilot bypass: no custom transport -----------------------------
+
+    def test_copilot_base_url_omits_custom_transport_kwarg(self):
+        """Core fix: for ``api.githubcopilot.com`` the Client is built
+        WITHOUT a ``transport=`` kwarg.  The previous-code path (which
+        always passed ``transport=HTTPTransport(socket_options=[...])``)
+        would FAIL this assertion — that's the whole point.
+        """
+        rec = self._call_with_mocks("https://api.githubcopilot.com/")
+        assert rec["client_kwargs"] is not None, "Client was never constructed"
+        assert "transport" not in rec["client_kwargs"], (
+            f"Copilot host must NOT receive a custom transport — keepalive "
+            f"transport breaks Claude chat-completions (#12066).  "
+            f"Recorded kwargs: {rec['client_kwargs']!r}"
         )
-        assert isinstance(client, httpx.Client)
-        # Inspect the transport: our custom keepalive transport is an
-        # ``HTTPTransport`` constructed with explicit ``socket_options``.
-        # A plain ``httpx.Client()`` builds its default transport without
-        # our socket-level tweaks.
-        #
-        # The observable difference: on our custom transport the pool's
-        # connection attempts go through a transport we instantiated with
-        # specific socket options.  We can't introspect that directly
-        # without touching httpx internals, but we CAN verify the client
-        # doesn't have the keepalive-injection signature by building a
-        # known-bad client (non-Copilot host) and comparing.
-        control = AIAgent._build_keepalive_http_client("https://api.openai.com/v1")
-        assert isinstance(control, httpx.Client)
+        # And critically, HTTPTransport must not have been constructed at
+        # all — that would mean the old keepalive path ran.
+        assert rec["transport_kwargs"] is None, (
+            "HTTPTransport(socket_options=...) was constructed for Copilot "
+            "host — the bypass path must not touch the custom transport"
+        )
 
-        # The transport objects must be DIFFERENT kinds of HTTPTransport:
-        # the Copilot client should have the default transport, the
-        # control (non-Copilot) should have our custom one.  The signature
-        # we use is the transport identity — they won't be the same object
-        # since both are fresh constructions, but the Copilot one must be
-        # built WITHOUT a custom socket-options HTTPTransport being passed
-        # in.  We prove this by checking the repr/class hierarchy at a
-        # coarse level.
-        copilot_transport_cls = type(client._transport).__name__
-        control_transport_cls = type(control._transport).__name__
-        # Both are HTTPTransport subclass — the difference is how they
-        # were built.  We verify the behaviour difference indirectly by
-        # checking the Copilot client was built without OUR custom kwargs.
-        # The strongest assertion we can make without digging into httpx
-        # private state is that the client was constructed and is usable.
-        assert copilot_transport_cls.endswith("Transport")
-        assert control_transport_cls.endswith("Transport")
-        client.close()
-        control.close()
-
-    def test_copilot_bypass_does_not_strip_proxy(self, monkeypatch):
-        """The Copilot-bypass path must still honour HTTPS_PROXY — users
-        behind Clash / corporate egress can't lose proxy routing just
-        because Hermes skipped the custom keepalive transport."""
+    def test_copilot_bypass_still_forwards_proxy(self, monkeypatch):
+        """Users behind Clash / corporate egress must not lose proxy
+        routing just because we skipped the custom transport.  The proxy
+        must still be forwarded to the Client ctor."""
         for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
                     "https_proxy", "http_proxy", "all_proxy"):
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
 
-        client = AIAgent._build_keepalive_http_client(
-            "https://api.githubcopilot.com/"
+        rec = self._call_with_mocks("https://api.githubcopilot.com/")
+        assert rec["client_kwargs"] is not None
+        assert rec["client_kwargs"].get("proxy") == "http://127.0.0.1:7897", (
+            f"Copilot bypass dropped proxy forwarding: {rec['client_kwargs']!r}"
         )
-        assert isinstance(client, httpx.Client)
-        # When ``proxy=...`` is passed to httpx.Client, it installs an
-        # HTTPProxy mount alongside the base transport.  The bypass path
-        # passes proxy= through, so the mount should exist.
-        proxied_pools = [
-            type(mount._pool).__name__
-            for mount in client._mounts.values()
-            if mount is not None and hasattr(mount, "_pool")
-        ]
-        assert "HTTPProxy" in proxied_pools, (
-            "Copilot-bypass path dropped proxy routing; mounts were %r" %
-            (proxied_pools,)
+        assert "transport" not in rec["client_kwargs"]
+
+    @pytest.mark.parametrize("base_url", [
+        "https://api.githubcopilot.com",
+        "https://api.githubcopilot.com/",
+        "https://api.githubcopilot.com/chat/completions",
+        "https://API.GitHubCopilot.com/v1",
+    ])
+    def test_copilot_variant_hosts_all_bypass(self, base_url):
+        """Trailing slash, path suffix, and mixed-case all trigger the
+        bypass.  Users configure base_url in many shapes — all must
+        route through the plain-client path."""
+        rec = self._call_with_mocks(base_url)
+        assert rec["client_kwargs"] is not None, f"no Client built for {base_url}"
+        assert "transport" not in rec["client_kwargs"], (
+            f"Copilot variant {base_url!r} fell through to keepalive "
+            f"transport path — bypass must match all host variants"
         )
-        client.close()
+
+    # --- Non-Copilot hosts: keepalive transport stays installed ---------
 
     @pytest.mark.parametrize("base_url", [
         "https://api.openai.com/v1",
@@ -149,140 +153,204 @@ class TestKeepaliveClientCopilotBypass:
         "https://api.anthropic.com/",
         "http://localhost:11434/v1",
     ])
-    def test_non_copilot_hosts_still_get_custom_keepalive(self, base_url):
-        """Regression guard for the main keepalive use case: only Copilot
-        is bypassed.  Every other host must keep the custom transport so
-        TCP-keepalive still catches dead peers (#10324 guarantee).
-
-        We detect the custom transport by checking whether the
-        ``httpx.Client`` was built with a NON-default transport object.
-        Our custom path explicitly constructs ``HTTPTransport(socket_options=...)``
-        and passes it as ``transport=...``; the bypass path doesn't.
+    def test_non_copilot_hosts_get_custom_keepalive_transport(self, base_url):
+        """Regression guard for the main keepalive use case (#10324).
+        Every non-Copilot host MUST construct ``httpx.Client`` with a
+        custom ``HTTPTransport(socket_options=[...])`` so the kernel
+        detects dead provider sockets within ~60s.  Without this
+        assertion, a future refactor that accidentally broadens the
+        bypass (e.g. matching the wrong host substring) would silently
+        remove keepalive from everyone.
         """
-        client = AIAgent._build_keepalive_http_client(base_url)
-        assert client is not None
-        # If we could introspect httpx we'd assert ``socket_options`` is set.
-        # As a proxy: this client uses the transport WE passed in, so its
-        # identity differs from a freshly-constructed plain client.
-        # We at least verify a client came back and that the URL was handled
-        # without raising.  Detailed transport-internals checks live in the
-        # existing ``test_create_openai_client_proxy_env.py`` file.
-        assert isinstance(client, httpx.Client)
-        client.close()
-
-    def test_copilot_bypass_matches_variant_hosts(self):
-        """The bypass must trigger on any Copilot host variant, not only the
-        canonical ``api.githubcopilot.com/`` form.  Users configure the
-        base_url with and without trailing slashes, with and without /v1
-        suffixes, and occasionally with uppercase — all should route
-        through the bypass."""
-        for base_url in (
-            "https://api.githubcopilot.com",
-            "https://api.githubcopilot.com/",
-            "https://api.githubcopilot.com/chat/completions",
-            "https://API.GitHubCopilot.com/v1",
-        ):
-            client = AIAgent._build_keepalive_http_client(base_url)
-            assert isinstance(client, httpx.Client), (
-                f"Copilot bypass failed for {base_url}"
-            )
-            client.close()
+        rec = self._call_with_mocks(base_url)
+        assert rec["client_kwargs"] is not None
+        assert "transport" in rec["client_kwargs"], (
+            f"Non-Copilot host {base_url!r} lost its custom keepalive "
+            f"transport — #10324 dead-peer detection regresses.  "
+            f"kwargs: {rec['client_kwargs']!r}"
+        )
+        assert rec["transport_kwargs"] is not None, (
+            f"HTTPTransport was never constructed for {base_url!r}"
+        )
+        sock_opts = rec["transport_kwargs"].get("socket_options")
+        assert sock_opts, (
+            f"HTTPTransport for {base_url!r} was constructed WITHOUT "
+            f"socket_options — keepalive tuning lost.  "
+            f"transport kwargs: {rec['transport_kwargs']!r}"
+        )
+        # SO_KEEPALIVE=1 is the one option we require on every platform.
+        import socket as _socket
+        keepalive_opt = (_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)
+        assert keepalive_opt in sock_opts, (
+            f"SO_KEEPALIVE=1 missing from socket_options for {base_url!r}: "
+            f"{sock_opts!r}"
+        )
 
     def test_empty_base_url_does_not_bypass(self):
-        """An empty ``base_url`` must not accidentally trigger the Copilot
-        bypass — the keepalive transport is the right default for
-        unknown/unspecified hosts.
-        """
-        client = AIAgent._build_keepalive_http_client("")
-        assert isinstance(client, httpx.Client)
-        client.close()
+        """An empty base_url must not trigger the Copilot bypass — unknown
+        hosts get the safe default (custom keepalive transport)."""
+        rec = self._call_with_mocks("")
+        assert rec["client_kwargs"] is not None
+        assert "transport" in rec["client_kwargs"], (
+            "Empty base_url fell through to Copilot bypass — the bypass "
+            "must be opt-in on an explicit host match, not default-on"
+        )
 
 
 # ---------------------------------------------------------------------------
 # Fix 1 — header handoff from routed client
 # ---------------------------------------------------------------------------
 #
-# The routed-client branch in AIAgent.__init__ builds client_kwargs from
-# whatever the router returned.  On SDK v2 the router's OpenAI client stores
-# custom headers on ``_custom_headers`` (and exposes them via the public
-# ``default_headers`` property) — NOT ``_default_headers``.  The old code
-# only read ``_default_headers``, so Copilot's essential headers were
-# silently dropped.  We exercise the preference order with fake routed
-# clients that expose different combinations of these attributes.
+# These tests exercise the REAL ``AIAgent.__init__`` routed-client branch
+# by patching ``agent.auxiliary_client.resolve_provider_client`` to return
+# fake clients with controlled attributes.  We then inspect
+# ``agent._client_kwargs['default_headers']`` — that's the dict the agent
+# will actually forward to the OpenAI SDK on the next API call, so a test
+# that passes here proves the production code picks up the right headers
+# regardless of how the ``or``-chain is spelt.
+
+
+def _make_routed_agent(fake_routed_client, monkeypatch):
+    """Build an AIAgent via the routed-client branch.
+
+    The routed-client branch fires when ``api_key`` and ``base_url`` are
+    not passed.  We intercept ``resolve_provider_client`` to return a
+    pre-baked fake, so the agent ends up copying headers from our
+    controlled object.  Other dependencies (OpenAI client construction,
+    keepalive, etc.) are no-op'd so the test stays focused on the
+    header-handoff slice.
+    """
+    monkeypatch.setattr(
+        "agent.auxiliary_client.resolve_provider_client",
+        lambda *a, **kw: (fake_routed_client, None),
+    )
+    # Prevent the agent from actually constructing an httpx keepalive
+    # client or an OpenAI SDK client — we only care about what
+    # client_kwargs looked like right before handoff.
+    monkeypatch.setattr(
+        AIAgent, "_build_keepalive_http_client",
+        staticmethod(lambda base_url="": None),
+    )
+    monkeypatch.setattr(
+        AIAgent, "_create_openai_client",
+        lambda self, client_kwargs, *, reason, shared: MagicMock(),
+    )
+
+    agent = AIAgent(
+        api_key=None,
+        base_url=None,
+        model="claude-opus-4.7",
+        provider="copilot",
+        quiet_mode=True,
+    )
+    return agent
 
 
 class TestRoutedHeaderHandoff:
-    def _header_preference(self, *, custom, default_prop, default_underscore):
-        """Build a fake routed client exposing whichever attribute set we
-        want to simulate, invoke the handoff logic, and return whichever
-        header dict ends up on ``client_kwargs``.  This directly exercises
-        the three-probe chain without instantiating AIAgent."""
-        # Reproduce the exact expression from run_agent.py::AIAgent.__init__:
-        fake = SimpleNamespace()
+    """The routed-client branch must probe ``_custom_headers``,
+    ``default_headers``, and ``_default_headers`` in that order and
+    forward the winner onto ``client_kwargs['default_headers']``.
+
+    These tests instantiate ``AIAgent`` for real and assert on
+    ``agent._client_kwargs`` — not on a local re-implementation of the
+    ``or``-chain — so they catch drift if the production code changes
+    attribute order, adds extra guards, or renames the target kwarg.
+    """
+
+    def _fake_client_with_headers(
+        self,
+        *,
+        custom=None,
+        default_prop=None,
+        default_underscore=None,
+    ):
+        """Return a fake routed client exposing whichever of the three
+        header attributes we want populated.  ``SimpleNamespace`` is
+        used so missing attributes raise ``AttributeError`` — which
+        ``getattr(obj, name, None)`` handles, exactly matching the
+        production code's shape."""
+        fake = SimpleNamespace(
+            api_key="routed-key",
+            base_url="https://api.githubcopilot.com/",
+        )
         if custom is not None:
             fake._custom_headers = custom
         if default_prop is not None:
             fake.default_headers = default_prop
         if default_underscore is not None:
             fake._default_headers = default_underscore
+        return fake
 
-        headers = (
-            getattr(fake, "_custom_headers", None)
-            or getattr(fake, "default_headers", None)
-            or getattr(fake, "_default_headers", None)
-        )
-        return dict(headers) if headers else None
-
-    def test_custom_headers_wins_over_everything(self):
-        """SDK v2 path: ``_custom_headers`` is populated → wins."""
-        result = self._header_preference(
-            custom={"copilot-integration-id": "vscode-chat", "api-version": "2025-04-01"},
+    def test_custom_headers_wins_over_everything(self, monkeypatch):
+        """SDK v2 path: ``_custom_headers`` populated → those flow onto
+        ``client_kwargs['default_headers']`` verbatim."""
+        routed = self._fake_client_with_headers(
+            custom={"copilot-integration-id": "vscode-chat",
+                    "api-version": "2025-04-01"},
             default_prop={"should-not": "see"},
             default_underscore={"also-ignored": "x"},
         )
-        assert result == {
+        agent = _make_routed_agent(routed, monkeypatch)
+        assert agent._client_kwargs.get("default_headers") == {
             "copilot-integration-id": "vscode-chat",
             "api-version": "2025-04-01",
-        }
+        }, (
+            f"_custom_headers must win on SDK v2.  Got: "
+            f"{agent._client_kwargs.get('default_headers')!r}"
+        )
 
-    def test_default_headers_property_used_when_custom_missing(self):
+    def test_default_headers_property_used_when_custom_missing(self, monkeypatch):
         """Hybrid SDK state: no ``_custom_headers`` but public
-        ``default_headers`` property is populated → falls to property."""
-        result = self._header_preference(
+        ``default_headers`` is populated → falls to the public property."""
+        routed = self._fake_client_with_headers(
             custom=None,
             default_prop={"editor-version": "vscode/1.99.0"},
             default_underscore={"legacy": "ignored"},
         )
-        assert result == {"editor-version": "vscode/1.99.0"}
+        agent = _make_routed_agent(routed, monkeypatch)
+        assert agent._client_kwargs.get("default_headers") == {
+            "editor-version": "vscode/1.99.0"
+        }
 
-    def test_default_underscore_used_as_v1_fallback(self):
+    def test_default_underscore_used_as_v1_fallback(self, monkeypatch):
         """SDK v1 legacy path: only ``_default_headers`` exists → used."""
-        result = self._header_preference(
+        routed = self._fake_client_with_headers(
             custom=None,
             default_prop=None,
             default_underscore={"X-Legacy": "yes"},
         )
-        assert result == {"X-Legacy": "yes"}
+        agent = _make_routed_agent(routed, monkeypatch)
+        assert agent._client_kwargs.get("default_headers") == {"X-Legacy": "yes"}
 
-    def test_all_missing_returns_none(self):
-        """Router returned a client with no headers at all → no default_headers
-        gets set on client_kwargs (unchanged upstream behaviour)."""
-        result = self._header_preference(
+    def test_no_headers_leaves_kwargs_unset(self, monkeypatch):
+        """Router returned a client with no headers at all → no
+        ``default_headers`` entry on client_kwargs (unchanged upstream
+        behaviour — the OpenAI SDK will use its defaults)."""
+        routed = self._fake_client_with_headers(
             custom=None, default_prop=None, default_underscore=None,
         )
-        assert result is None
+        agent = _make_routed_agent(routed, monkeypatch)
+        assert "default_headers" not in agent._client_kwargs, (
+            "No header source on routed client → client_kwargs must not "
+            "carry an empty/None default_headers entry.  Got: "
+            f"{agent._client_kwargs.get('default_headers')!r}"
+        )
 
-    def test_empty_dict_falls_through_to_next_attribute(self):
-        """Explicit empty dicts must be treated as falsy so the probe
-        continues — otherwise an SDK that initialises ``_custom_headers``
-        to ``{}`` would prevent the legacy slot from being consulted.
-        ``or`` chain handles this because empty dict is falsy."""
-        result = self._header_preference(
+    def test_empty_custom_falls_through_to_next_slot(self, monkeypatch):
+        """Critical: a real SDK v2 client may initialise
+        ``_custom_headers = {}`` before the router installs overrides.
+        An empty dict is falsy, so the ``or``-chain must fall through
+        to the public ``default_headers`` property — otherwise the
+        Copilot headers there would be swallowed."""
+        routed = self._fake_client_with_headers(
             custom={},
             default_prop={"Copilot-Integration-Id": "chat"},
             default_underscore=None,
         )
-        assert result == {"Copilot-Integration-Id": "chat"}, (
-            "empty _custom_headers must not swallow the next slot — "
+        agent = _make_routed_agent(routed, monkeypatch)
+        assert agent._client_kwargs.get("default_headers") == {
+            "Copilot-Integration-Id": "chat"
+        }, (
+            "Empty _custom_headers must not swallow the next slot — "
             "Copilot's real headers would never make it to the client"
         )

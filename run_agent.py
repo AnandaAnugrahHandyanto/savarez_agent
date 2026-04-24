@@ -5420,9 +5420,10 @@ class AIAgent:
             # with a misleading ``400 model_not_supported`` even though the
             # same token + model + payload succeed on a plain client
             # (confirmed by reporter and independently by a second user on
-            # #12066).  For this host we skip the custom transport entirely
-            # and let the OpenAI SDK construct its default client — the
-            # keepalive optimisation isn't worth breaking Copilot Claude.
+            # #12066).  For this host we return a plain ``httpx.Client``
+            # with httpx's default transport (no socket_options tweaks)
+            # while still forwarding proxy settings — the keepalive
+            # optimisation isn't worth breaking Copilot Claude.
             if base_url_host_matches(base_url, "api.githubcopilot.com"):
                 _proxy = _get_proxy_for_base_url(base_url)
                 return _httpx.Client(proxy=_proxy)
