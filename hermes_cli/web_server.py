@@ -2837,6 +2837,203 @@ def _ws_send_sync(loop, ws, msg: dict) -> None:
     asyncio.run_coroutine_threadsafe(ws.send_json(msg), loop)
 
 
+def _normalize_colon_syntax(raw_args: str) -> str:
+    """Convert provider:model syntax to --provider flag syntax.
+
+    Handles "zai:glm-5.1" → "glm-5.1 --provider zai" etc., while
+    preserving OpenRouter variant suffixes (:free, :extended, :fast)
+    and leaving existing --provider flags untouched.
+    """
+    if "--provider" in raw_args:
+        return raw_args
+
+    known_prefixes = {
+        "zai", "z-ai", "z.ai", "glm", "zhipu",
+        "xai", "x-ai", "x.ai", "grok",
+        "anthropic", "openai", "google", "gemini",
+        "deepseek", "minimax", "nvidia", "nim",
+        "openrouter", "nous", "ollama",
+        "copilot", "github-copilot",
+        "moonshot", "kimi", "kimi-coding",
+        "stepfun", "step",
+        "xiaomi", "mimo",
+        "arcee", "trinity",
+    }
+    variant_suffixes = {"free", "extended", "fast"}
+
+    parts = raw_args.split()
+    if not parts:
+        return raw_args
+
+    first = parts[0]
+    if ":" in first:
+        colon_pos = first.index(":")
+        left = first[:colon_pos].lower()
+        right = first[colon_pos + 1:]
+
+        if left in known_prefixes and right.lower() not in variant_suffixes:
+            parts[0] = right
+            parts.extend(["--provider", left])
+            return " ".join(parts)
+
+    return raw_args
+
+
+def _handle_web_model_command(
+    cmd_args: str,
+    session_override: dict,
+    agent_ref: list,
+) -> str:
+    """Handle /model command for the web chat interface.
+
+    Returns confirmation/error text.  Mutates *session_override* in-place.
+    """
+    from hermes_cli.model_switch import (
+        parse_model_flags,
+        switch_model as _switch_model,
+        list_authenticated_providers,
+    )
+    from hermes_cli.providers import get_label
+    from gateway.run import _load_gateway_config
+
+    cmd_args = _normalize_colon_syntax(cmd_args)
+    model_input, explicit_provider, persist_global = parse_model_flags(cmd_args)
+
+    cfg = _load_gateway_config()
+    model_cfg = cfg.get("model", {})
+    current_model = ""
+    current_provider = "openrouter"
+    current_base_url = ""
+    current_api_key = ""
+    if isinstance(model_cfg, dict):
+        current_model = model_cfg.get("default", "")
+        current_provider = model_cfg.get("provider", current_provider)
+        current_base_url = model_cfg.get("base_url", "")
+    user_provs = cfg.get("providers")
+    custom_provs = None
+    try:
+        from hermes_cli.config import get_compatible_custom_providers
+        custom_provs = get_compatible_custom_providers(cfg)
+    except Exception:
+        custom_provs = cfg.get("custom_providers")
+
+    if session_override:
+        current_model = session_override.get("model", current_model)
+        current_provider = session_override.get("provider", current_provider)
+        current_base_url = session_override.get("base_url", current_base_url)
+        current_api_key = session_override.get("api_key", current_api_key)
+
+    # No args: show current model info
+    if not model_input and not explicit_provider:
+        provider_label = get_label(current_provider)
+        lines = [f"Current: `{current_model or 'unknown'}` on {provider_label}", ""]
+        try:
+            providers = list_authenticated_providers(
+                current_provider=current_provider,
+                current_base_url=current_base_url,
+                user_providers=user_provs,
+                custom_providers=custom_provs,
+                max_models=5,
+            )
+            for p in providers:
+                tag = " (current)" if p["is_current"] else ""
+                lines.append(f"**{p['name']}** `--provider {p['slug']}`{tag}:")
+                if p["models"]:
+                    model_strs = ", ".join(f"`{m}`" for m in p["models"])
+                    extra = (f" (+{p['total_models'] - len(p['models'])} more)"
+                             if p['total_models'] > len(p['models']) else "")
+                    lines.append(f"  {model_strs}{extra}")
+                lines.append("")
+        except Exception:
+            pass
+        lines.append("`/model <name>` - switch model")
+        lines.append("`/model <name> --provider <slug>` - switch provider")
+        lines.append("`/model provider:model` - shorthand (e.g., `/model zai:glm-5.1`)")
+        lines.append("`/model <name> --global` - persist to config")
+        return "\n".join(lines)
+
+    # Perform the switch
+    result = _switch_model(
+        raw_input=model_input,
+        current_provider=current_provider,
+        current_model=current_model,
+        current_base_url=current_base_url,
+        current_api_key=current_api_key,
+        is_global=persist_global,
+        explicit_provider=explicit_provider,
+        user_providers=user_provs,
+        custom_providers=custom_provs,
+    )
+
+    if not result.success:
+        return f"Error: {result.error_message}"
+
+    # Update live agent in-place if one is running
+    agent = agent_ref[0]
+    if agent is not None:
+        try:
+            agent.switch_model(
+                new_model=result.new_model,
+                new_provider=result.target_provider,
+                api_key=result.api_key,
+                base_url=result.base_url,
+                api_mode=result.api_mode,
+            )
+        except Exception as exc:
+            _log.warning("In-place model switch failed for web agent: %s", exc)
+
+    # Store session override
+    session_override.update({
+        "model": result.new_model,
+        "provider": result.target_provider,
+        "api_key": result.api_key,
+        "base_url": result.base_url,
+        "api_mode": result.api_mode,
+    })
+
+    # Persist to config if --global
+    if persist_global:
+        try:
+            import yaml
+            from pathlib import Path
+            config_path = Path.home() / ".hermes" / "config.yaml"
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    cfg_disk = yaml.safe_load(f) or {}
+            else:
+                cfg_disk = {}
+            mc = cfg_disk.setdefault("model", {})
+            mc["default"] = result.new_model
+            mc["provider"] = result.target_provider
+            if result.base_url:
+                mc["base_url"] = result.base_url
+            from hermes_cli.config import save_config
+            save_config(cfg_disk)
+        except Exception as e:
+            _log.warning("Failed to persist model switch: %s", e)
+
+    # Build confirmation
+    provider_label = result.provider_label or result.target_provider
+    lines = [f"Model switched to `{result.new_model}`"]
+    lines.append(f"Provider: {provider_label}")
+    mi = result.model_info
+    if mi:
+        if mi.context_window:
+            lines.append(f"Context: {mi.context_window:,} tokens")
+        if mi.max_output:
+            lines.append(f"Max output: {mi.max_output:,} tokens")
+        if mi.has_cost_data():
+            lines.append(f"Cost: {mi.format_cost()}")
+        lines.append(f"Capabilities: {mi.format_capabilities()}")
+    if result.warning_message:
+        lines.append(f"Warning: {result.warning_message}")
+    if persist_global:
+        lines.append("Saved to config.yaml (`--global`)")
+    else:
+        lines.append("_(session only - add `--global` to persist)_")
+    return "\n".join(lines)
+
+
 @app.websocket("/ws/tui-gateway")
 async def tui_gateway_ws(websocket: WebSocket):
     """WebSocket endpoint for the built-in dashboard chat."""
@@ -2855,6 +3052,7 @@ async def tui_gateway_ws(websocket: WebSocket):
     loop = asyncio.get_running_loop()
     session_id: Optional[str] = None
     agent_ref: List[Any] = [None]   # mutable container so interrupt() can reach the agent
+    session_model_override: dict = {}  # per-connection model override from /model command
 
     def _notify(method: str, params: dict) -> None:
         _ws_send_sync(loop, websocket, {"jsonrpc": "2.0", "method": method, "params": params})
@@ -2899,6 +3097,25 @@ async def tui_gateway_ws(websocket: WebSocket):
                     session_id = str(uuid.uuid4())
                     _notify("session.created", {"session_id": session_id})
 
+                # --- Slash command interception ---
+                if message.startswith("/"):
+                    from hermes_cli.commands import resolve_command
+                    _cmd_parts = message[1:].split(None, 1)
+                    _cmd_name = _cmd_parts[0].lower() if _cmd_parts else ""
+                    _cmd_args = _cmd_parts[1].strip() if len(_cmd_parts) > 1 else ""
+                    _cmd_def = resolve_command(_cmd_name)
+
+                    if _cmd_def and _cmd_def.name == "model":
+                        reply_text = _handle_web_model_command(
+                            cmd_args=_cmd_args,
+                            session_override=session_model_override,
+                            agent_ref=agent_ref,
+                        )
+                        _notify("assistant.delta", {"text": reply_text})
+                        _notify("assistant.done", {"text": reply_text})
+                        _reply(rpc_id, {"ok": True})
+                        continue
+
                 def _on_delta(delta):
                     if delta is None:
                         return
@@ -2938,6 +3155,17 @@ async def tui_gateway_ws(websocket: WebSocket):
 
                         runtime_kwargs = _resolve_runtime_agent_kwargs()
                         model = _resolve_gateway_model()
+
+                        # Apply per-session model override from /model command
+                        if session_model_override:
+                            _om = session_model_override.get("model")
+                            if _om:
+                                model = _om
+                            for _k in ("provider", "api_key", "base_url", "api_mode"):
+                                _ov = session_model_override.get(_k)
+                                if _ov:
+                                    runtime_kwargs[_k] = _ov
+
                         user_config = _load_gateway_config()
                         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
 
