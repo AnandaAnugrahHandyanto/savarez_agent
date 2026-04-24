@@ -1,5 +1,6 @@
 """Tests for hermes_cli.gateway."""
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch, call
 
@@ -164,6 +165,33 @@ def test_systemd_install_checks_linger_status(monkeypatch, tmp_path, capsys):
     ]
     assert helper_calls == [True]
     assert "User service installed and enabled" in out
+
+
+def test_systemd_install_user_scope_uses_profile_alias_in_next_steps(monkeypatch, tmp_path, capsys):
+    profile_dir = tmp_path / ".hermes" / "profiles" / "johndoe"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+
+    wrapper_dir = tmp_path / ".local" / "bin"
+    wrapper_dir.mkdir(parents=True, exist_ok=True)
+    (wrapper_dir / "johndoe").write_text("#!/bin/sh\nexec hermes -p johndoe \"$@\"\n")
+
+    unit_path = tmp_path / "systemd" / "user" / "hermes-gateway-johndoe.service"
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+    monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
+    monkeypatch.setattr(gateway, "_ensure_linger_enabled", lambda: None)
+    monkeypatch.setattr(
+        gateway.subprocess,
+        "run",
+        lambda cmd, check=False, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+
+    gateway.systemd_install(force=False)
+
+    out = capsys.readouterr().out
+    assert "johndoe gateway start" in out
+    assert "johndoe gateway status" in out
 
 
 def test_systemd_install_system_scope_skips_linger_and_uses_systemctl(monkeypatch, tmp_path, capsys):

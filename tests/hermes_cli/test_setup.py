@@ -2,6 +2,7 @@
 import json
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
@@ -527,3 +528,26 @@ def test_offer_launch_chat_manual_fallback_when_unresolvable(monkeypatch, capsys
 
     captured = capsys.readouterr()
     assert "Run 'hermes chat' manually" in captured.out
+
+
+def test_print_setup_summary_uses_profile_command_for_profile_with_alias(
+    tmp_path, monkeypatch, capsys
+):
+    """Setup summary prints commands using a profile's wrapper alias when available."""
+    profile_dir = tmp_path / ".hermes" / "profiles" / "johndoe"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+
+    wrapper_dir = tmp_path / ".local" / "bin"
+    wrapper_dir.mkdir(parents=True, exist_ok=True)
+    (wrapper_dir / "johndoe").write_text("#!/bin/sh\nexec hermes -p johndoe \"$@\"\n")
+
+    from hermes_cli.setup import _print_setup_summary
+
+    _print_setup_summary(load_config(), profile_dir)
+
+    out = capsys.readouterr().out
+    assert "johndoe setup gateway" in out
+    assert "johndoe gateway" in out
+    assert "johndoe doctor" in out
