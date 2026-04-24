@@ -424,6 +424,8 @@ print('Migration: all OK')
 ```
 風險：無
 
+⚠️ 警告：嚴禁跳過 STEP 5 驗證。驗證失敗卻繼續執行會累積錯誤到 Horizon 3 才爆發，此時回滾成本極高。
+
 ---
 
 ### 4.2 Horizon 2：Soon（1-2 週）— 技能庫與記憶庫整合 + OpenClaw 配置
@@ -433,6 +435,15 @@ print('Migration: all OK')
 │                    Horizon 2：Soon（1-2 週）                                 │
 │  核心目標：建立技能索引，完善記憶-知識介面，配置 OpenClaw 熱備份             │
 └─────────────────────────────────────────────────────────────────────────────┘
+
+⚠️ 前置相依：STEP 1-5（Horizon 1）全部完成後才能開始 Horizon 2。
+   跳過 Horizon 1 直接執行 Horizon 2 會導致所有路徑假設失效。
+
+⚠️ 節點確認：執行前先 `hostname` 確認在 Cloud Ubuntu（不是 MacBook）。
+   MacBook 路徑 ~/hermes 內容與 Cloud 不同，執行錯誤機器會導致檔案丟失。
+
+⚠️ STEP 6 和 7 可在 Horizon 1 完成後並行執行（兩者只依賴 Horizon 1 結果）。
+   STEP 8 → STEP 9 必須順序執行。
 
 【OpenClaw 配置須知】
 系統拓撲中 OpenClaw 承擔熱備份/故障轉移職責，但目前狀態為「待配置」。
@@ -565,6 +576,9 @@ trust_level = "experimental"
    原因：兩者都操作 agent/ 目錄下的文件。STEP 9 完成後，
    agent/context_coordinator.py 與 STEP 10 的 anthropic_adapter 拆分不會衝突。
    嚴禁並發執行 STEP 9 和 STEP 10。
+
+⚠️ 磁碟空間：執行前必須確認 `df -h /home/ubuntu` 剩餘空間 > 500MB。
+   拆分需要 2x 磁碟空間（舊檔 + 新檔），空間不足會損壞原檔。
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ STEP 10：Agent Core 拆分（高風險，需謹慎）                                   │
@@ -776,11 +790,11 @@ cd /home/ubuntu/.hermes/hermes-agent
 rm -f skills/.index.toml
 rm -f agent/knowledge_memory_interface.py
 rm -f agent/builtin_memory_provider.py
+rm -f agent/context_coordinator.py
 
 # 恢復修改的代碼文件
 git checkout -- agent/skill_commands.py
 git checkout -- agent/memory_manager.py
-git checkout -- agent/context_engine.py
 
 echo "回滾完成"
 ```
