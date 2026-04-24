@@ -186,6 +186,12 @@ TOOLSETS = {
         "tools": ["execute_code"],
         "includes": []
     },
+
+    "code_intel": {
+        "description": "Bounded semantic code-intelligence tools for safe refactors and symbol operations",
+        "tools": ["lsp_rename"],
+        "includes": []
+    },
     
     "delegation": {
         "description": "Spawn subagents with isolated context for complex subtasks",
@@ -254,6 +260,7 @@ TOOLSETS = {
             "web_search", "web_extract",
             "terminal", "process",
             "read_file", "write_file", "patch", "search_files",
+            "lsp_rename",
             "vision_analyze",
             "skills_list", "skill_view", "skill_manage",
             "browser_navigate", "browser_snapshot", "browser_click",
@@ -291,6 +298,8 @@ TOOLSETS = {
             "session_search",
             # Code execution + delegation
             "execute_code", "delegate_task",
+            # Code intelligence
+            "lsp_rename",
             # Cronjob management
             "cronjob",
             # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
@@ -302,7 +311,7 @@ TOOLSETS = {
     
     "hermes-cli": {
         "description": "Full interactive CLI toolset - all default tools plus cronjob management",
-        "tools": _HERMES_CORE_TOOLS,
+        "tools": _HERMES_CORE_TOOLS + ["lsp_rename"],
         "includes": []
     },
 

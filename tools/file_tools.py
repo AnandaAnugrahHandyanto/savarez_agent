@@ -2,9 +2,11 @@
 """File Tools Module - LLM agent file manipulation tools."""
 
 import errno
+import hashlib
 import json
 import logging
 import os
+import re
 import threading
 from pathlib import Path
 from typing import Optional
@@ -15,6 +17,8 @@ from tools.file_operations import (
     ShellFileOperations,
     normalize_read_pagination,
     normalize_search_pagination,
+    _hashline_edit_enabled,
+    _contains_hashline_prefix,
 )
 from tools import file_state
 from agent.redact import redact_sensitive_text
@@ -77,6 +81,25 @@ _BLOCKED_DEVICE_PATHS = frozenset({
     # fd aliases
     "/dev/fd/0", "/dev/fd/1", "/dev/fd/2",
 })
+
+_HASHLINE_PREFIX_RE = re.compile(r"^(?P<number>\s*\d+)#[0-9a-fA-F]{8}\|(?P<content>.*)$")
+
+
+def _degrade_hashlines_to_line_numbers(content: str) -> str:
+    """Strip hash anchors while preserving line-numbered content.
+
+    If redaction changes a hashlined read, the hashes no longer describe the
+    exact visible text shown to the model. Keep the read useful but remove the
+    anchors so a later edit cannot fail as a false stale hashline edit.
+    """
+    lines = []
+    for line in content.splitlines():
+        match = _HASHLINE_PREFIX_RE.match(line)
+        if match:
+            lines.append(f"{match.group('number')}|{match.group('content')}")
+        else:
+            lines.append(line)
+    return "\n".join(lines)
 
 
 def _resolve_path(filepath: str, task_id: str = "default") -> Path:
@@ -208,6 +231,7 @@ _read_tracker: dict = {}
 _READ_HISTORY_CAP = 500       # set; used only by get_read_files_summary
 _DEDUP_CAP = 1000             # dict; skip-identical-reread guard
 _READ_TIMESTAMPS_CAP = 1000   # dict; external-edit detection for write/patch
+_READ_FINGERPRINTS_CAP = 1000 # dict; strict CAS/full-read authorization
 
 
 def _cap_read_tracker_data(task_data: dict) -> None:
@@ -248,6 +272,15 @@ def _cap_read_tracker_data(task_data: dict) -> None:
         for _ in range(excess):
             try:
                 ts.pop(next(iter(ts)))
+            except (StopIteration, KeyError):
+                break
+
+    fps = task_data.get("read_fingerprints")
+    if fps is not None and len(fps) > _READ_FINGERPRINTS_CAP:
+        excess = len(fps) - _READ_FINGERPRINTS_CAP
+        for _ in range(excess):
+            try:
+                fps.pop(next(iter(fps)))
             except (StopIteration, KeyError):
                 break
 
@@ -429,13 +462,23 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             task_data = _read_tracker.setdefault(task_id, {
                 "last_key": None, "consecutive": 0,
                 "read_history": set(), "dedup": {},
+                "hashline_anchors": {},
             })
             cached_mtime = task_data.get("dedup", {}).get(dedup_key)
 
         if cached_mtime is not None:
             try:
-                current_mtime = os.path.getmtime(resolved_str)
-                if current_mtime == cached_mtime:
+                current_fp = _get_live_file_fingerprint(resolved_str)
+                cached_hash = None
+                cached_mtime_value = cached_mtime
+                if isinstance(cached_mtime, dict):
+                    cached_hash = cached_mtime.get("hash")
+                    cached_mtime_value = cached_mtime.get("mtime")
+                if (
+                    current_fp is not None
+                    and current_fp.get("mtime") == cached_mtime_value
+                    and (cached_hash is None or current_fp.get("hash") == cached_hash)
+                ):
                     return json.dumps({
                         "content": (
                             "File unchanged since last read. The content from "
@@ -449,6 +492,11 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 pass  # stat failed — fall through to full read
 
         # ── Perform the read ──────────────────────────────────────────
+        # Capture a pre-read fingerprint and compare it with the post-read
+        # fingerprint below.  If the file changes during the read window,
+        # strict stale-edit mode must not treat the later on-disk content as
+        # the content the model actually saw.
+        _pre_read_fp = _get_live_file_fingerprint(resolved_str)
         file_ops = _get_file_ops(task_id)
         result = file_ops.read_file(path, offset, limit)
         result_dict = result.to_dict()
@@ -479,7 +527,15 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         # ── Redact secrets (after guard check to skip oversized content) ──
         if result.content:
-            result.content = redact_sensitive_text(result.content)
+            original_content = result.content
+            redacted_content = redact_sensitive_text(original_content)
+            if (
+                redacted_content != original_content
+                and _hashline_edit_enabled()
+                and _contains_hashline_prefix(original_content)
+            ):
+                redacted_content = _degrade_hashlines_to_line_numbers(redacted_content)
+            result.content = redacted_content
             result_dict["content"] = result.content
 
         # Large-file hint: if the file is big and the caller didn't ask
@@ -495,10 +551,32 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         # ── Track for consecutive-loop detection ──────────────────────
         read_key = ("read", path, offset, limit)
+        actual_start = result_dict.get("returned_start_line")
+        actual_end = result_dict.get("returned_end_line")
+        total_lines = result_dict.get("total_lines")
+        if isinstance(actual_start, int) and isinstance(actual_end, int) and isinstance(total_lines, int):
+            _partial = actual_start > 1 or actual_end < total_lines
+        else:
+            _partial = (offset > 1) or bool(result_dict.get("truncated"))
+        _post_read_fp = None if _partial else _get_live_file_fingerprint(resolved_str)
+        _read_raced = (
+            not _partial
+            and _pre_read_fp is not None
+            and _post_read_fp is not None
+            and (
+                _pre_read_fp.get("mtime") != _post_read_fp.get("mtime")
+                or _pre_read_fp.get("hash") != _post_read_fp.get("hash")
+            )
+        )
+        _track_fp = _pre_read_fp if (_post_read_fp is not None and not _read_raced) else None
         with _read_tracker_lock:
-            # Ensure "dedup" key exists (backward compat with old tracker state)
+            # Ensure tracker keys exist (backward compat with old tracker state)
             if "dedup" not in task_data:
                 task_data["dedup"] = {}
+            if "read_fingerprints" not in task_data:
+                task_data["read_fingerprints"] = {}
+            if "hashline_anchors" not in task_data:
+                task_data["hashline_anchors"] = {}
             task_data["read_history"].add((path, offset, limit))
             if task_data["last_key"] == read_key:
                 task_data["consecutive"] += 1
@@ -512,9 +590,24 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             # 2. Staleness: warn on write/patch if the file changed since
             #    the agent last read it (external edit, concurrent agent, etc.).
             try:
-                _mtime_now = os.path.getmtime(resolved_str)
-                task_data["dedup"][dedup_key] = _mtime_now
-                task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
+                if _post_read_fp is not None and not _read_raced:
+                    task_data["dedup"][dedup_key] = {
+                        "mtime": _post_read_fp["mtime"],
+                        "hash": _post_read_fp["hash"],
+                    }
+                    task_data.setdefault("read_timestamps", {})[resolved_str] = _post_read_fp["mtime"]
+                task_data["read_fingerprints"][resolved_str] = {
+                    "mtime": None if _track_fp is None else _track_fp["mtime"],
+                    "hash": None if _track_fp is None else _track_fp["hash"],
+                    "partial": _partial or _read_raced or _track_fp is None,
+                    "read_raced": _read_raced,
+                }
+                if _hashline_edit_enabled() and isinstance(result_dict.get("content"), str):
+                    task_data["hashline_anchors"][resolved_str] = {
+                        "offset": offset,
+                        "limit": limit,
+                        "content": result_dict["content"],
+                    }
             except OSError:
                 pass  # Can't stat — skip tracking for this entry
 
@@ -530,7 +623,6 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # Outside the _read_tracker_lock so the registry's own locking
         # isn't nested under ours.
         try:
-            _partial = (offset > 1) or bool(result_dict.get("truncated"))
             file_state.record_read(task_id, resolved_str, partial=_partial)
         except Exception:
             logger.debug("file_state.record_read failed", exc_info=True)
@@ -598,31 +690,58 @@ def notify_other_tool_call(task_id: str = "default"):
             task_data["consecutive"] = 0
 
 
-def _update_read_timestamp(filepath: str, task_id: str) -> None:
-    """Record the file's current modification time after a successful write.
+def _get_stale_edit_mode() -> str:
+    """Return stale-edit enforcement mode: 'warn' (default) or 'strict'."""
+    mode = os.environ.get("HERMES_STALE_EDIT_MODE", "warn").strip().lower()
+    return "strict" if mode == "strict" else "warn"
 
-    Called after write_file and patch so that consecutive edits by the
-    same task don't trigger false staleness warnings — each write
-    refreshes the stored timestamp to match the file's new state.
-    """
+
+def _compute_file_hash(resolved: str) -> str:
+    """Return SHA-256 for the current on-disk file bytes."""
+    digest = hashlib.sha256()
+    with open(resolved, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _get_live_file_fingerprint(resolved: str) -> dict | None:
+    """Return current {mtime, hash} for a resolved path, or None if unavailable."""
+    try:
+        return {
+            "mtime": os.path.getmtime(resolved),
+            "hash": _compute_file_hash(resolved),
+        }
+    except OSError:
+        return None
+
+
+def _update_read_timestamp(filepath: str, task_id: str) -> None:
+    """Refresh per-task timestamps/fingerprints after a successful own write."""
     try:
         resolved = str(_resolve_path_for_task(filepath, task_id))
-        current_mtime = os.path.getmtime(resolved)
+        live = _get_live_file_fingerprint(resolved)
     except (OSError, ValueError):
+        return
+    if live is None:
         return
     with _read_tracker_lock:
         task_data = _read_tracker.get(task_id)
         if task_data is not None:
-            task_data.setdefault("read_timestamps", {})[resolved] = current_mtime
+            task_data.setdefault("read_timestamps", {})[resolved] = live["mtime"]
+            task_data.setdefault("read_fingerprints", {})[resolved] = {
+                "mtime": live["mtime"],
+                "hash": live["hash"],
+                "partial": False,
+            }
             _cap_read_tracker_data(task_data)
 
 
 def _check_file_staleness(filepath: str, task_id: str) -> str | None:
     """Check whether a file was modified since the agent last read it.
 
-    Returns a warning string if the file is stale (mtime changed since
-    the last read_file call for this task), or None if the file is fresh
-    or was never read.  Does not block — the write still proceeds.
+    Returns a warning string if the file is stale, or None if the file is
+    fresh or was never read. Warn-mode compatibility helper only.
     """
     try:
         resolved = str(_resolve_path_for_task(filepath, task_id))
@@ -633,17 +752,69 @@ def _check_file_staleness(filepath: str, task_id: str) -> str | None:
         if not task_data:
             return None
         read_mtime = task_data.get("read_timestamps", {}).get(resolved)
-    if read_mtime is None:
-        return None  # File was never read — nothing to compare against
-    try:
-        current_mtime = os.path.getmtime(resolved)
-    except OSError:
-        return None  # Can't stat — file may have been deleted, let write handle it
-    if current_mtime != read_mtime:
+        read_fp = task_data.get("read_fingerprints", {}).get(resolved)
+    if read_mtime is None and read_fp is None:
+        return None  # File was never read — warn mode preserves legacy behavior
+    live = _get_live_file_fingerprint(resolved)
+    if live is None:
+        return None  # Can't stat/read — file may have been deleted, let write handle it
+    if read_fp and not read_fp.get("partial"):
+        if live["mtime"] != read_fp.get("mtime") or live["hash"] != read_fp.get("hash"):
+            return (
+                f"Warning: {filepath} was modified since you last read it "
+                "(external edit or concurrent agent). The content you read may be "
+                "stale. Consider re-reading the file to verify before writing."
+            )
+        return None
+    if read_mtime is not None and live["mtime"] != read_mtime:
         return (
             f"Warning: {filepath} was modified since you last read it "
             "(external edit or concurrent agent). The content you read may be "
             "stale. Consider re-reading the file to verify before writing."
+        )
+    return None
+
+
+def _strict_stale_error(filepath: str, task_id: str, *, cross_warning: str | None = None) -> str | None:
+    """Return a hard error message in strict stale-edit mode, if any."""
+    try:
+        resolved = str(_resolve_path(filepath))
+    except (OSError, ValueError):
+        return None
+
+    if not os.path.exists(resolved):
+        return None  # brand-new file creation is allowed in strict mode
+
+    if cross_warning:
+        return cross_warning
+
+    with _read_tracker_lock:
+        task_data = _read_tracker.get(task_id)
+        read_fp = (task_data or {}).get("read_fingerprints", {}).get(resolved)
+
+    if read_fp is None:
+        return (
+            f"{filepath} exists but was never read by this task. "
+            "Read the file fully before writing in strict stale-edit mode."
+        )
+    if read_fp.get("read_raced"):
+        return (
+            f"{filepath} changed while it was being read by this task. "
+            "Re-read the whole file before writing in strict stale-edit mode."
+        )
+    if read_fp.get("partial"):
+        return (
+            f"{filepath} was only partially read by this task. "
+            "Re-read the whole file before writing in strict stale-edit mode."
+        )
+
+    live = _get_live_file_fingerprint(resolved)
+    if live is None:
+        return None
+    if live["mtime"] != read_fp.get("mtime") or live["hash"] != read_fp.get("hash"):
+        return (
+            f"{filepath} was modified since you last read it. "
+            "Strict stale-edit mode blocked this write; re-read the file and retry."
         )
     return None
 
@@ -653,6 +824,11 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
     sensitive_err = _check_sensitive_path(path, task_id)
     if sensitive_err:
         return tool_error(sensitive_err)
+    if _hashline_edit_enabled() and _contains_hashline_prefix(content):
+        return tool_error(
+            "Hashline-prefixed content is only valid for anchored edits. "
+            "Re-read the file and write plain content without LINE#HASH| prefixes."
+        )
     try:
         # Resolve once for the registry lock + stale check.  Failures here
         # fall back to the legacy path — write proceeds, per-task staleness
@@ -664,6 +840,9 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
 
         if _resolved is None:
             stale_warning = _check_file_staleness(path, task_id)
+            strict_error = _strict_stale_error(path, task_id) if _get_stale_edit_mode() == "strict" else None
+            if strict_error:
+                return tool_error(strict_error)
             file_ops = _get_file_ops(task_id)
             result = file_ops.write_file(path, content)
             result_dict = result.to_dict()
@@ -680,6 +859,9 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
             # fire — its message names the sibling subagent.
             cross_warning = file_state.check_stale(task_id, _resolved)
             stale_warning = _check_file_staleness(path, task_id)
+            strict_error = _strict_stale_error(path, task_id, cross_warning=cross_warning) if _get_stale_edit_mode() == "strict" else None
+            if strict_error:
+                return tool_error(strict_error)
             file_ops = _get_file_ops(task_id)
             result = file_ops.write_file(path, content)
             result_dict = result.to_dict()
@@ -743,6 +925,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             # Collect warnings — cross-agent registry first (names sibling),
             # then per-task tracker as a fallback.
             stale_warnings: list[str] = []
+            strict_errors: list[str] = []
             _path_to_resolved: dict[str, str] = {}
             for _p in _paths_to_check:
                 try:
@@ -754,6 +937,13 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 _sw = _cross or _check_file_staleness(_p, task_id)
                 if _sw:
                     stale_warnings.append(_sw)
+                if _get_stale_edit_mode() == "strict":
+                    _strict = _strict_stale_error(_p, task_id, cross_warning=_cross)
+                    if _strict:
+                        strict_errors.append(_strict)
+
+            if strict_errors:
+                return tool_error(strict_errors[0] if len(strict_errors) == 1 else " | ".join(strict_errors))
 
             file_ops = _get_file_ops(task_id)
 
@@ -788,8 +978,8 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         if result_dict.get("error") and "Could not find" in str(result_dict["error"]):
             if "Did you mean one of these sections?" not in str(result_dict["error"]):
                 result_dict["_hint"] = (
-                    "old_string not found. Use read_file to verify the current "
-                    "content, or search_files to locate the text."
+                    "[Hint: old_string not found. Use read_file to verify the current "
+                    "content, or search_files to locate the text.]"
                 )
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
