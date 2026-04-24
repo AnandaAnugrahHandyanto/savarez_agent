@@ -328,10 +328,15 @@ def normalize_read_pagination(offset: Any = DEFAULT_READ_OFFSET,
     Tool schemas declare minimum/maximum values, but not every caller or
     provider enforces schemas before dispatch. Clamp here so invalid values
     cannot leak into sed ranges like ``0,-1p``.
+
+    The upper bound on ``limit`` comes from ``tool_output.max_lines`` in
+    config.yaml (defaults to the module-level ``MAX_LINES`` constant).
     """
+    from tools.tool_output_limits import get_max_lines
+    max_lines = get_max_lines()
     normalized_offset = max(1, _coerce_int(offset, DEFAULT_READ_OFFSET))
     normalized_limit = _coerce_int(limit, DEFAULT_READ_LIMIT)
-    normalized_limit = max(1, min(normalized_limit, MAX_LINES))
+    normalized_limit = max(1, min(normalized_limit, max_lines))
     return normalized_offset, normalized_limit
 
 
@@ -450,10 +455,14 @@ class ShellFileOperations(FileOperations):
     
     def _add_line_numbers(self, content: str, start_line: int = 1) -> str:
         """Add line numbers to content in LINE_NUM|CONTENT format."""
+        from tools.tool_output_limits import get_max_line_length
+        max_line_length = get_max_line_length()
         lines = content.splitlines()
         numbered = []
         for i, line in enumerate(lines, start=start_line):
-            visible_line = _visible_line_content(line)
+            visible_line = line
+            if len(visible_line) > max_line_length:
+                visible_line = visible_line[:max_line_length] + "... [truncated]"
             if _hashline_edit_enabled():
                 numbered.append(f"{i:6d}#{_hashline_anchor_for_content(line)}|{visible_line}")
             else:
