@@ -493,7 +493,18 @@ def get_pricing_entry(
         )
         if entry:
             return entry
-    return _lookup_official_docs_pricing(route)
+    entry = _lookup_official_docs_pricing(route)
+    if entry:
+        return entry
+    # Fall back to cached OpenRouter pricing (fetched once per session if stale)
+    try:
+        from agent.pricing_cache import get_cached_pricing_entry
+        cache_entry = get_cached_pricing_entry(route.model)
+        if cache_entry:
+            return cache_entry
+    except Exception:
+        pass
+    return None
 
 
 def normalize_usage(

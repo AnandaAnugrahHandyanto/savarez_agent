@@ -8822,6 +8822,7 @@ class HermesCLI:
                 print(f"Title:          {session_title}")
             print(f"Duration:       {duration_str}")
             print(f"Messages:       {msg_count} ({user_msgs} user, {tool_calls} tool calls)")
+            self._update_ledger_on_exit(session_title)
         else:
             try:
                 from hermes_cli.skin_engine import get_active_goodbye
@@ -8829,6 +8830,77 @@ class HermesCLI:
             except Exception:
                 goodbye = "Goodbye! ⚕"
             print(goodbye)
+
+    def _update_ledger_on_exit(self, session_title: Optional[str] = None) -> None:
+        """Append token/cost/time data to the Agent Ledger and Events on exit.
+
+        Pulls real numbers from the active agent or the session DB — no more
+        "unknown" tokens/cost in the ledger.
+        """
+        if not hasattr(self, "agent") or self.agent is None:
+            return
+
+        try:
+            from agent.usage_pricing import estimate_usage_cost, CanonicalUsage
+            from hermes_constants import get_hermes_home
+        except ImportError:
+            return
+
+        agent = self.agent
+        input_t = getattr(agent, "session_input_tokens", 0) or 0
+        output_t = getattr(agent, "session_output_tokens", 0) or 0
+        cache_read = getattr(agent, "session_cache_read_tokens", 0) or 0
+        cache_write = getattr(agent, "session_cache_write_tokens", 0) or 0
+        reasoning = getattr(agent, "session_reasoning_tokens", 0) or 0
+        model = getattr(agent, "model", "unknown") or "unknown"
+        provider = getattr(agent, "provider", "unknown") or "unknown"
+
+        cost_result = estimate_usage_cost(
+            model,
+            CanonicalUsage(input_tokens=input_t, output_tokens=output_t,
+                          cache_read_tokens=cache_read, cache_write_tokens=cache_write,
+                          reasoning_tokens=reasoning),
+            provider=provider, base_url=getattr(agent, "base_url", None),
+        )
+        cost = float(cost_result.amount_usd) if cost_result.amount_usd is not None else 0.0
+        elapsed_min = round((datetime.now() - self.session_start).total_seconds() / 60, 1)
+        now_iso = datetime.now().isoformat(timespec="seconds")
+        hermes_home = get_hermes_home()
+
+        # Ledger row
+        row = (f"{now_iso} | {session_title or self.session_id[:16]} | {model} | "
+               f"{input_t:,} in / {output_t:,} out | "
+               f"cost: ${cost:.4f} | time: {elapsed_min}m")
+        ledger_path = Path(hermes_home) / "Hermes Agent Ledger.md"
+        try:
+            if ledger_path.exists():
+                txt = ledger_path.read_text(encoding="utf-8")
+                ledger_path.write_text(txt + row + "\n", encoding="utf-8")
+            else:
+                ledger_path.write_text(
+                    "# Hermes Agent Ledger\n\n"
+                    "| updated_at | session | model | tokens | cost | time | notes |\n"
+                    "|---|---|---|---|---:|---:|---|\n"
+                    f"{row}\n", encoding="utf-8",
+                )
+        except Exception:
+            pass
+
+        # Events append
+        from utils import atomic_jsonl_append
+        event = {
+            "ts": now_iso,
+            "event_type": "session_complete",
+            "session_id": self.session_id,
+            "model": model, "provider": provider,
+            "input_tokens": input_t, "output_tokens": output_t,
+            "cost_usd": round(cost, 4), "time_min": elapsed_min,
+        }
+        try:
+            events = Path(hermes_home) / "Hermes Agent Events.jsonl"
+            atomic_jsonl_append(events, event)
+        except Exception:
+            pass
 
     def _get_tui_prompt_symbols(self) -> tuple[str, str]:
         """Return ``(normal_prompt, state_suffix)`` for the active skin.
