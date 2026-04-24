@@ -4487,6 +4487,40 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
     return default
 
 
+def _web_ui_build_needed(web_dir: Path) -> bool:
+    """Return True if the web UI dist is missing or stale.
+
+    Mirrors the staleness logic used by ``_tui_build_needed()`` for the TUI.
+    Uses the Vite manifest as the sentinel because it is written last and
+    therefore has the newest mtime of any build output.
+    """
+    sentinel = web_dir / "dist" / ".vite" / "manifest.json"
+    if not sentinel.exists():
+        sentinel = web_dir / "dist" / "index.html"
+    if not sentinel.exists():
+        return True
+    dist_mtime = sentinel.stat().st_mtime
+    skip = frozenset({"node_modules", "dist"})
+    for dirpath, dirnames, filenames in os.walk(web_dir, topdown=True):
+        dirnames[:] = [d for d in dirnames if d not in skip]
+        for fn in filenames:
+            if fn.endswith((".ts", ".tsx", ".js", ".jsx", ".css", ".html", ".vue")):
+                if os.path.getmtime(os.path.join(dirpath, fn)) > dist_mtime:
+                    return True
+    for meta in (
+        "package.json",
+        "package-lock.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "vite.config.ts",
+        "vite.config.js",
+    ):
+        mp = web_dir / meta
+        if mp.exists() and mp.stat().st_mtime > dist_mtime:
+            return True
+    return False
+
+
 def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     """Build the web UI frontend if npm is available.
 
@@ -4498,6 +4532,9 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     Returns True if the build succeeded or was skipped (no package.json).
     """
     if not (web_dir / "package.json").exists():
+        return True
+
+    if not _web_ui_build_needed(web_dir):
         return True
 
     npm = shutil.which("npm")
