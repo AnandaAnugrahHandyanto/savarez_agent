@@ -4480,12 +4480,23 @@ class AIAgent:
                 _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPALIVE, 30))
             # When a custom transport is provided, httpx won't auto-read proxy
             # from env vars (allow_env_proxies = trust_env and transport is None).
-            # Explicitly read proxy settings to ensure HTTP_PROXY/HTTPS_PROXY work.
+            # Use mounts= so NO_PROXY hosts get a direct transport (proxy= ignores NO_PROXY).
             _proxy = _get_proxy_from_env()
-            return _httpx.Client(
-                transport=_httpx.HTTPTransport(socket_options=_sock_opts),
-                proxy=_proxy,
-            )
+            if not _proxy:
+                return _httpx.Client(
+                    transport=_httpx.HTTPTransport(socket_options=_sock_opts),
+                )
+            import os as _os
+            _no_proxy = _os.environ.get('NO_PROXY', _os.environ.get('no_proxy', ''))
+            _no_proxy_hosts = [h.strip() for h in _no_proxy.split(',') if h.strip()]
+            _mounts: dict = {}
+            for _host in _no_proxy_hosts:
+                _direct = _httpx.HTTPTransport(socket_options=_sock_opts)
+                _mounts[f'http://{_host}'] = _direct
+                _mounts[f'https://{_host}'] = _direct
+            _mounts['http://'] = _httpx.HTTPTransport(proxy=_httpx.Proxy(_proxy))
+            _mounts['https://'] = _httpx.HTTPTransport(proxy=_httpx.Proxy(_proxy))
+            return _httpx.Client(mounts=_mounts)
         except Exception:
             return None
 
