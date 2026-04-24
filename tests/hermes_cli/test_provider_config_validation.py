@@ -4,12 +4,13 @@ Covers Issue #9332: camelCase keys silently ignored, non-URL strings
 accepted as base_url, and unknown keys go unreported.
 """
 
-import logging
 from unittest.mock import patch
 
-import pytest
-
 from hermes_cli.config import _normalize_custom_provider_entry
+
+
+def _warning_formats(warning_mock):
+    return [str(call.args[0]).lower() for call in warning_mock.call_args_list if call.args]
 
 
 class TestNormalizeCustomProviderEntry:
@@ -78,7 +79,7 @@ class TestNormalizeCustomProviderEntry:
         assert result is not None
         assert result["base_url"] == "https://correct.example.com/v1"
 
-    def test_unknown_keys_logged(self, caplog):
+    def test_unknown_keys_logged(self):
         """Unknown config keys should produce a warning."""
         entry = {
             "base_url": "https://api.example.com/v1",
@@ -86,21 +87,24 @@ class TestNormalizeCustomProviderEntry:
             "unknownField": "value",
             "anotherBad": 42,
         }
-        with caplog.at_level(logging.WARNING):
+        with patch("hermes_cli.config.logger.warning") as warn:
             result = _normalize_custom_provider_entry(entry, provider_key="test")
         assert result is not None
-        assert any("unknown config keys" in r.message.lower() for r in caplog.records)
+        assert any("unknown config keys" in msg for msg in _warning_formats(warn))
 
-    def test_camel_case_warning_logged(self, caplog):
+    def test_camel_case_warning_logged(self):
         """camelCase alias mapping should produce a warning."""
         entry = {
             "baseUrl": "https://api.example.com/v1",
             "apiKey": "sk-test-key",
         }
-        with caplog.at_level(logging.WARNING):
+        with patch("hermes_cli.config.logger.warning") as warn:
             result = _normalize_custom_provider_entry(entry, provider_key="test")
         assert result is not None
-        camel_warnings = [r for r in caplog.records if "camelcase" in r.message.lower() or "auto-mapped" in r.message.lower()]
+        camel_warnings = [
+            msg for msg in _warning_formats(warn)
+            if "camelcase" in msg or "auto-mapped" in msg
+        ]
         assert len(camel_warnings) >= 1
 
     def test_snake_case_takes_precedence_over_camel(self):

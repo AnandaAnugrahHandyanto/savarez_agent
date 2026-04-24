@@ -25,6 +25,7 @@ import unittest
 
 from tools import file_state
 from tools.file_tools import (
+    clear_file_ops_cache,
     read_file_tool,
     write_file_tool,
     patch_tool,
@@ -214,14 +215,41 @@ class FileToolsIntegrationTests(unittest.TestCase):
     write_file_tool / patch_tool → check_stale + lock_path + note_write.
     """
 
+    _TASK_IDS = ("agentA", "agentB", "agentC", "agentX")
+
     def setUp(self) -> None:
         file_state.get_registry().clear()
-        self._tmpdir = tempfile.mkdtemp(prefix="hermes_file_state_int_")
+        self._env_backup = {
+            key: os.environ.get(key)
+            for key in ("TERMINAL_ENV", "HERMES_WRITE_SAFE_ROOT")
+        }
+        os.environ["TERMINAL_ENV"] = "local"
+        # Keep integration-test writes inside the repo checkout so they are
+        # unaffected by macOS /private/var path guarding or external safe roots.
+        self._tmpdir = tempfile.mkdtemp(
+            prefix="hermes_file_state_int_",
+            dir=os.getcwd(),
+        )
+        os.environ["HERMES_WRITE_SAFE_ROOT"] = self._tmpdir
+        self._cleanup_task_state()
 
     def tearDown(self) -> None:
         import shutil
+        self._cleanup_task_state()
         shutil.rmtree(self._tmpdir, ignore_errors=True)
         file_state.get_registry().clear()
+        for key, value in self._env_backup.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    def _cleanup_task_state(self) -> None:
+        from tools.terminal_tool import cleanup_vm
+
+        for task_id in self._TASK_IDS:
+            cleanup_vm(task_id)
+        clear_file_ops_cache()
 
     def _write_seed(self, name: str, content: str = "seed\n") -> str:
         p = os.path.join(self._tmpdir, name)

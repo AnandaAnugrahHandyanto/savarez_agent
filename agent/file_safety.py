@@ -19,6 +19,7 @@ def _hermes_home_path() -> Path:
 def build_write_denied_paths(home: str) -> set[str]:
     """Return exact sensitive paths that must never be written."""
     hermes_home = _hermes_home_path()
+    default_hermes_home = Path(home) / ".hermes"
     return {
         os.path.realpath(p)
         for p in [
@@ -27,6 +28,7 @@ def build_write_denied_paths(home: str) -> set[str]:
             os.path.join(home, ".ssh", "id_ed25519"),
             os.path.join(home, ".ssh", "config"),
             str(hermes_home / ".env"),
+            str(default_hermes_home / ".env"),
             os.path.join(home, ".bashrc"),
             os.path.join(home, ".zshrc"),
             os.path.join(home, ".profile"),
