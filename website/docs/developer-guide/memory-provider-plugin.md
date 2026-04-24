@@ -28,7 +28,7 @@ plugins/memory/my-provider/
 Your plugin implements the `MemoryProvider` abstract base class from `agent/memory_provider.py`:
 
 ```python
-from agent.memory_provider import MemoryProvider
+from hermes_agent.agent.memory_provider import MemoryProvider
 
 class MyMemoryProvider(MemoryProvider):
     @property
@@ -173,7 +173,7 @@ All storage paths **must** use the `hermes_home` kwarg from `initialize()`, not 
 
 ```python
 # CORRECT — profile-scoped
-from hermes_constants import get_hermes_home
+from hermes_agent.providers.hermes_constants import get_hermes_home
 data_dir = get_hermes_home() / "my-provider"
 
 # WRONG — shared across all profiles
@@ -185,7 +185,7 @@ data_dir = Path("~/.hermes/my-provider").expanduser()
 See `tests/agent/test_memory_plugin_e2e.py` for the complete E2E testing pattern using a real SQLite provider.
 
 ```python
-from agent.memory_manager import MemoryManager
+from hermes_agent.agent.memory_manager import MemoryManager
 
 mgr = MemoryManager()
 mgr.add_provider(my_provider)

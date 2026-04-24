@@ -154,7 +154,7 @@ class TestCamofoxAnnotationRedaction:
 
     def test_annotation_context_secrets_redacted(self):
         """Secrets in accessibility tree annotation should be masked."""
-        from agent.redact import redact_sensitive_text
+        from hermes_agent.agent.redact import redact_sensitive_text
 
         fake_token = "ghp_" + "FAKEGITHUBTOKEN12345678901234"
         annotation = (
@@ -170,7 +170,7 @@ class TestCamofoxAnnotationRedaction:
 
     def test_annotation_env_dump_redacted(self):
         """Env var dump in annotation context should be redacted."""
-        from agent.redact import redact_sensitive_text
+        from hermes_agent.agent.redact import redact_sensitive_text
 
         fake_anth = "sk-" + "ant" + "-" + "ANTHROPICFAKEKEY123456789ABC"
         fake_oai = "sk-" + "proj" + "-" + "OPENAIFAKEKEY99887766554433"

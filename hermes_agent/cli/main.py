@@ -116,7 +116,7 @@ def _apply_profile_override() -> None:
     # 2. If no flag, check active_profile in the hermes root
     if profile_name is None:
         try:
-            from hermes_constants import get_default_hermes_root
+            from hermes_agent.providers.hermes_constants import get_default_hermes_root
 
             active_path = get_default_hermes_root() / "active_profile"
             if active_path.exists():
@@ -169,7 +169,7 @@ load_hermes_dotenv(project_env=PROJECT_ROOT / ".env")
 # Initialize centralized file logging early — all `hermes` subcommands
 # (chat, setup, gateway, config, etc.) write to agent.log + errors.log.
 try:
-    from hermes_logging import setup_logging as _setup_logging
+    from hermes_agent.providers.hermes_logging import setup_logging as _setup_logging
 
     _setup_logging(mode="cli")
 except Exception:
@@ -178,7 +178,7 @@ except Exception:
 # Apply IPv4 preference early, before any HTTP clients are created.
 try:
     from hermes_agent.cli.config import load_config as _load_config_early
-    from hermes_constants import apply_ipv4_preference as _apply_ipv4
+    from hermes_agent.providers.hermes_constants import apply_ipv4_preference as _apply_ipv4
 
     _early_cfg = _load_config_early()
     _net = _early_cfg.get("network", {})
@@ -193,7 +193,7 @@ import time as _time
 from datetime import datetime
 
 from hermes_agent.cli import __version__, __release_date__
-from hermes_constants import AI_GATEWAY_BASE_URL, OPENROUTER_BASE_URL
+from hermes_agent.providers.hermes_constants import AI_GATEWAY_BASE_URL, OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
 
@@ -314,7 +314,7 @@ def _has_any_provider_configured() -> bool:
     # being installed doesn't mean the user wants Hermes to use their tokens.
     if _has_hermes_config:
         try:
-            from agent.anthropic_adapter import (
+            from hermes_agent.agent.anthropic_adapter import (
                 read_claude_code_credentials,
                 is_claude_code_token_valid,
             )
@@ -576,7 +576,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
 def _resolve_last_session(source: str = "cli") -> Optional[str]:
     """Look up the most recent session ID for a source."""
     try:
-        from hermes_state import SessionDB
+        from hermes_agent.providers.hermes_state import SessionDB
 
         db = SessionDB()
         sessions = db.search_sessions(source=source, limit=1)
@@ -711,7 +711,7 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
       resumed at the live tip instead of a stale parent with no messages.
     """
     try:
-        from hermes_state import SessionDB
+        from hermes_agent.providers.hermes_state import SessionDB
 
         db = SessionDB()
 
@@ -747,7 +747,7 @@ def _print_tui_exit_summary(session_id: Optional[str]) -> None:
 
     db = None
     try:
-        from hermes_state import SessionDB
+        from hermes_agent.providers.hermes_state import SessionDB
 
         db = SessionDB()
         session = db.get_session(target)
@@ -1156,7 +1156,7 @@ def cmd_chat(args):
         )
 
     # Import and run the CLI
-    from cli import main as cli_main
+    from hermes_agent.cli import main as cli_main
 
     # Build kwargs from args
     kwargs = {
@@ -2440,7 +2440,7 @@ def _model_flow_google_gemini_cli(_config, current_model=""):
     status = get_gemini_oauth_auth_status()
     if not status.get("logged_in"):
         try:
-            from agent.google_oauth import resolve_project_id_from_env, start_oauth_flow
+            from hermes_agent.agent.google_oauth import resolve_project_id_from_env, start_oauth_flow
 
             env_project = resolve_project_id_from_env()
             start_oauth_flow(force_relogin=True, project_id=env_project)
@@ -3719,7 +3719,7 @@ def _model_flow_bedrock(config, current_model=""):
 
     # 1. Check for AWS credentials
     try:
-        from agent.bedrock_adapter import (
+        from hermes_agent.agent.bedrock_adapter import (
             has_aws_credentials,
             resolve_aws_auth_env_var,
             resolve_bedrock_region,
@@ -3977,7 +3977,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         # Try models.dev first — returns tool-capable models, filtered for noise
         mdev_models: list = []
         try:
-            from agent.models_dev import list_agentic_models
+            from hermes_agent.agent.models_dev import list_agentic_models
 
             mdev_models = list_agentic_models(provider_id)
         except Exception:
@@ -4062,7 +4062,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
 
 def _run_anthropic_oauth_flow(save_env_value):
     """Run the Claude OAuth setup-token flow. Returns True if credentials were saved."""
-    from agent.anthropic_adapter import (
+    from hermes_agent.agent.anthropic_adapter import (
         run_oauth_setup_token,
         read_claude_code_credentials,
         is_claude_code_token_valid,
@@ -4082,7 +4082,7 @@ def _run_anthropic_oauth_flow(save_env_value):
         ):
             use_anthropic_claude_code_credentials(save_fn=save_env_value)
             print("  ✓ Claude Code credentials linked.")
-            from hermes_constants import display_hermes_home as _dhh_fn
+            from hermes_agent.providers.hermes_constants import display_hermes_home as _dhh_fn
 
             print(
                 f"    Hermes will use Claude's credential store directly instead of copying a setup-token into {_dhh_fn()}/.env."
@@ -4174,7 +4174,7 @@ def _model_flow_anthropic(config, current_model=""):
     existing_key = get_anthropic_key()
     cc_available = False
     try:
-        from agent.anthropic_adapter import (
+        from hermes_agent.agent.anthropic_adapter import (
             read_claude_code_credentials,
             is_claude_code_token_valid,
         )
@@ -4460,7 +4460,7 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
     """
     import json as _json
     import uuid as _uuid
-    from hermes_constants import get_hermes_home
+    from hermes_agent.providers.hermes_constants import get_hermes_home
 
     home = get_hermes_home()
     prompt_path = home / ".update_prompt.json"
@@ -4955,7 +4955,7 @@ def _count_commits_between(git_cmd: list[str], cwd: Path, base: str, head: str) 
 
 def _should_skip_upstream_prompt() -> bool:
     """Check if user previously declined to add upstream."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.providers.hermes_constants import get_hermes_home
 
     return (get_hermes_home() / SKIP_UPSTREAM_PROMPT_FILE).exists()
 
@@ -4963,7 +4963,7 @@ def _should_skip_upstream_prompt() -> bool:
 def _mark_skip_upstream_prompt():
     """Create marker file to skip future upstream prompts."""
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.providers.hermes_constants import get_hermes_home
 
         (get_hermes_home() / SKIP_UPSTREAM_PROMPT_FILE).touch()
     except Exception:
@@ -5110,7 +5110,7 @@ def _invalidate_update_cache():
     """
     homes = []
     # Default profile home (Docker-aware — uses /opt/data in Docker)
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.providers.hermes_constants import get_default_hermes_root
 
     default_home = get_default_hermes_root()
     homes.append(default_home)
@@ -5716,7 +5716,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # attributes like display_hermes_home() added since the last release.
         try:
             import importlib
-            import hermes_constants as _hc
+            import hermes_agent.providers.hermes_constants as _hc
 
             importlib.reload(_hc)
         except Exception:
@@ -5905,7 +5905,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # systemd units without SIGUSR1 wiring this wait just times out
             # and we fall back to ``systemctl restart`` (the old behaviour).
             try:
-                from hermes_constants import (
+                from hermes_agent.providers.hermes_constants import (
                     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT as _DEFAULT_DRAIN,
                 )
             except Exception:
@@ -6277,7 +6277,7 @@ def cmd_profile(args):
         _is_wrapper_dir_in_path,
         _get_wrapper_dir,
     )
-    from hermes_constants import display_hermes_home
+    from hermes_agent.providers.hermes_constants import display_hermes_home
 
     action = getattr(args, "profile_action", None)
 
@@ -8006,7 +8006,7 @@ Examples:
             print("\n  ✓ Memory provider: built-in only")
             print("  Saved to config.yaml\n")
         elif sub == "reset":
-            from hermes_constants import get_hermes_home, display_hermes_home
+            from hermes_agent.providers.hermes_constants import get_hermes_home, display_hermes_home
 
             mem_dir = get_hermes_home() / "memories"
             target = getattr(args, "target", "all")
@@ -8285,7 +8285,7 @@ Examples:
         import json as _json
 
         try:
-            from hermes_state import SessionDB
+            from hermes_agent.providers.hermes_state import SessionDB
 
             db = SessionDB()
         except Exception as e:
@@ -8467,8 +8467,8 @@ Examples:
 
     def cmd_insights(args):
         try:
-            from hermes_state import SessionDB
-            from agent.insights import InsightsEngine
+            from hermes_agent.providers.hermes_state import SessionDB
+            from hermes_agent.agent.insights import InsightsEngine
 
             db = SessionDB()
             engine = InsightsEngine(db)
@@ -8910,7 +8910,7 @@ Examples:
             )
         try:
             from hermes_agent.cli.config import load_config
-            from agent.shell_hooks import register_from_config
+            from hermes_agent.agent.shell_hooks import register_from_config
             register_from_config(load_config(), accept_hooks=_accept_hooks)
         except Exception:
             logger.debug(

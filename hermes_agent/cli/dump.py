@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 from hermes_agent.cli.config import get_hermes_home, get_env_path, get_project_root, load_config
-from hermes_constants import display_hermes_home
+from hermes_agent.providers.hermes_constants import display_hermes_home
 
 
 def _get_git_commit(project_root: Path) -> str:

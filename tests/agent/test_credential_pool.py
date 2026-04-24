@@ -49,7 +49,7 @@ def test_fill_first_selection_skips_recently_exhausted_entry(tmp_path, monkeypat
         },
     )
 
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     pool = load_pool("anthropic")
     entry = pool.select()
@@ -83,7 +83,7 @@ def test_select_clears_expired_exhaustion(tmp_path, monkeypatch):
         },
     )
 
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     pool = load_pool("anthropic")
     entry = pool.select()
@@ -123,7 +123,7 @@ def test_round_robin_strategy_rotates_priorities(tmp_path, monkeypatch):
     config_path = tmp_path / "hermes" / "config.yaml"
     config_path.write_text("credential_pool_strategies:\n  openrouter: round_robin\n")
 
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     pool = load_pool("openrouter")
     first = pool.select()
@@ -170,7 +170,7 @@ def test_random_strategy_uses_random_choice(tmp_path, monkeypatch):
 
     monkeypatch.setattr("agent.credential_pool.random.choice", lambda entries: entries[-1])
 
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     pool = load_pool("openrouter")
     selected = pool.select()
@@ -204,7 +204,7 @@ def test_exhausted_entry_resets_after_ttl(tmp_path, monkeypatch):
         },
     )
 
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     pool = load_pool("openrouter")
     entry = pool.select()
@@ -240,7 +240,7 @@ def test_exhausted_402_entry_resets_after_one_hour(tmp_path, monkeypatch):
         },
     )
 
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     pool = load_pool("openrouter")
     entry = pool.select()
@@ -281,7 +281,7 @@ def test_explicit_reset_timestamp_overrides_default_429_ttl(tmp_path, monkeypatc
         },
     )
 
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     pool = load_pool("openai-codex")
     assert pool.has_available() is False
@@ -317,7 +317,7 @@ def test_mark_exhausted_and_rotate_persists_status(tmp_path, monkeypatch):
         },
     )
 
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     pool = load_pool("anthropic")
     assert pool.select().id == "cred-1"
@@ -338,7 +338,7 @@ def test_load_pool_seeds_env_api_key(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-seeded")
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})
 
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     pool = load_pool("openrouter")
     entry = pool.select()
@@ -371,7 +371,7 @@ def test_load_pool_removes_stale_seeded_env_entry(tmp_path, monkeypatch):
         },
     )
 
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     pool = load_pool("openrouter")
 
@@ -405,7 +405,7 @@ def test_load_pool_migrates_nous_provider_state(tmp_path, monkeypatch):
         },
     )
 
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     pool = load_pool("nous")
     entry = pool.select()
@@ -451,7 +451,7 @@ def test_load_pool_removes_stale_file_backed_singleton_entry(tmp_path, monkeypat
         lambda: None,
     )
 
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     pool = load_pool("anthropic")
 
@@ -489,7 +489,7 @@ def test_load_pool_migrates_nous_provider_state_preserves_tls(tmp_path, monkeypa
         },
     )
 
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     pool = load_pool("nous")
     entry = pool.select()
@@ -547,7 +547,7 @@ def test_singleton_seed_does_not_clobber_manual_oauth_entry(tmp_path, monkeypatc
         lambda: None,
     )
 
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     pool = load_pool("anthropic")
     entries = pool.entries()
@@ -576,7 +576,7 @@ def test_load_pool_prefers_anthropic_env_token_over_file_backed_oauth(tmp_path, 
         lambda: None,
     )
 
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     pool = load_pool("anthropic")
     entry = pool.select()
@@ -639,7 +639,7 @@ def test_least_used_strategy_selects_lowest_count(tmp_path, monkeypatch):
         },
     )
 
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     pool = load_pool("openrouter")
     entry = pool.select()
@@ -685,7 +685,7 @@ def test_thread_safety_concurrent_select(tmp_path, monkeypatch):
         },
     )
 
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     pool = load_pool("openrouter")
     results = []
@@ -747,7 +747,7 @@ def test_custom_endpoint_pool_keyed_by_name(tmp_path, monkeypatch):
         },
     )
 
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     pool = load_pool("custom:together.ai")
     assert pool.has_credentials()
@@ -780,7 +780,7 @@ def test_custom_endpoint_pool_seeds_from_config(tmp_path, monkeypatch):
         ]
     }))
 
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     pool = load_pool("custom:together.ai")
     assert pool.has_credentials()
@@ -811,7 +811,7 @@ def test_custom_endpoint_pool_seeds_from_model_config(tmp_path, monkeypatch):
         },
     }))
 
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     pool = load_pool("custom:together.ai")
     assert pool.has_credentials()
@@ -828,7 +828,7 @@ def test_custom_pool_does_not_break_existing_providers(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})
 
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     pool = load_pool("openrouter")
     entry = pool.select()
@@ -857,7 +857,7 @@ def test_get_custom_provider_pool_key(tmp_path, monkeypatch):
         ]
     }))
 
-    from agent.credential_pool import get_custom_provider_pool_key
+    from hermes_agent.agent.credential_pool import get_custom_provider_pool_key
 
     assert get_custom_provider_pool_key("https://api.together.ai/v1") == "custom:together.ai"
     assert get_custom_provider_pool_key("https://api.together.ai/v1/") == "custom:together.ai"
@@ -909,7 +909,7 @@ def test_list_custom_pool_providers(tmp_path, monkeypatch):
         },
     )
 
-    from agent.credential_pool import list_custom_pool_providers
+    from hermes_agent.agent.credential_pool import list_custom_pool_providers
 
     result = list_custom_pool_providers()
     assert result == ["custom:fireworks", "custom:together.ai"]
@@ -946,7 +946,7 @@ def test_acquire_lease_prefers_unleased_entry(tmp_path, monkeypatch):
         },
     )
 
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     pool = load_pool("openrouter")
     first = pool.acquire_lease()
@@ -980,7 +980,7 @@ def test_release_lease_decrements_counter(tmp_path, monkeypatch):
         },
     )
 
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     pool = load_pool("openrouter")
     leased = pool.acquire_lease()
@@ -1011,7 +1011,7 @@ def test_load_pool_does_not_seed_claude_code_when_anthropic_not_configured(tmp_p
         lambda pid: pid == "kimi-coding",
     )
 
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
     pool = load_pool("anthropic")
 
     # Should NOT have seeded the claude_code entry
@@ -1028,7 +1028,7 @@ def test_load_pool_seeds_copilot_via_gh_auth_token(tmp_path, monkeypatch):
         lambda: ("gho_fake_token_abc123", "gh auth token"),
     )
 
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
     pool = load_pool("copilot")
 
     assert pool.has_credentials()
@@ -1049,7 +1049,7 @@ def test_load_pool_does_not_seed_copilot_when_no_token(tmp_path, monkeypatch):
         lambda: ("", ""),
     )
 
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
     pool = load_pool("copilot")
 
     assert not pool.has_credentials()
@@ -1073,7 +1073,7 @@ def test_load_pool_seeds_qwen_oauth_via_cli_tokens(tmp_path, monkeypatch):
         },
     )
 
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
     pool = load_pool("qwen-oauth")
 
     assert pool.has_credentials()
@@ -1097,7 +1097,7 @@ def test_load_pool_does_not_seed_qwen_oauth_when_no_token(tmp_path, monkeypatch)
         ),
     )
 
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
     pool = load_pool("qwen-oauth")
 
     assert not pool.has_credentials()

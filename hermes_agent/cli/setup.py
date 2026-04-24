@@ -22,8 +22,8 @@ from typing import Optional, Dict, Any
 
 from hermes_agent.cli.nous_subscription import get_nous_subscription_features
 from hermes_agent.tools.tool_backend_helpers import managed_nous_tools_enabled
-from utils import base_url_hostname
-from hermes_constants import get_optional_skills_dir
+from hermes_agent.providers.utils import base_url_hostname
+from hermes_agent.providers.hermes_constants import get_optional_skills_dir
 
 logger = logging.getLogger(__name__)
 
@@ -353,7 +353,7 @@ def _print_setup_summary(config: dict, hermes_home):
 
     # Vision — use the same runtime resolver as the actual vision tools
     try:
-        from agent.auxiliary_client import get_available_vision_backends
+        from hermes_agent.agent.auxiliary_client import get_available_vision_backends
 
         _vision_backends = get_available_vision_backends()
     except Exception:
@@ -420,7 +420,7 @@ def _print_setup_summary(config: dict, hermes_home):
         # setups don't show as "missing FAL_KEY".
         _img_backend = None
         try:
-            from agent.image_gen_registry import list_providers
+            from hermes_agent.agent.image_gen_registry import list_providers
             from hermes_agent.cli.plugins import _ensure_plugins_discovered
 
             _ensure_plugins_discovered()
@@ -537,7 +537,7 @@ def _print_setup_summary(config: dict, hermes_home):
         print_warning(
             "Some tools are disabled. Run 'hermes setup tools' to configure them,"
         )
-        from hermes_constants import display_hermes_home as _dhh
+        from hermes_agent.providers.hermes_constants import display_hermes_home as _dhh
         print_warning(f"or edit {_dhh()}/.env directly to add the missing API keys.")
         print()
 
@@ -561,7 +561,7 @@ def _print_setup_summary(config: dict, hermes_home):
     print()
 
     # Show file locations prominently
-    from hermes_constants import display_hermes_home as _dhh
+    from hermes_agent.providers.hermes_constants import display_hermes_home as _dhh
     print(color(f"📁 All your files are in {_dhh()}/:", Colors.CYAN, Colors.BOLD))
     print()
     print(f"   {color('Settings:', Colors.YELLOW)}  {get_config_path()}")
@@ -709,7 +709,7 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     if not quick and _supports_same_provider_pool_setup(selected_provider):
         try:
             from types import SimpleNamespace
-            from agent.credential_pool import load_pool
+            from hermes_agent.agent.credential_pool import load_pool
             from hermes_agent.cli.auth_commands import auth_add_command
 
             pool = load_pool(selected_provider)
@@ -787,7 +787,7 @@ def setup_model_provider(config: dict, *, quick: bool = False):
         _vision_needs_setup = False
     else:
         try:
-            from agent.auxiliary_client import get_available_vision_backends
+            from hermes_agent.agent.auxiliary_client import get_available_vision_backends
             _vision_backends = set(get_available_vision_backends())
         except Exception:
             _vision_backends = set()
@@ -1077,7 +1077,7 @@ def _setup_tts_provider(config: dict):
                 save_env_value("XAI_API_KEY", api_key)
                 print_success("xAI TTS API key saved")
             else:
-                from hermes_constants import display_hermes_home as _dhh
+                from hermes_agent.providers.hermes_constants import display_hermes_home as _dhh
                 print_warning(
                     "No xAI API key provided for TTS. Configure XAI_API_KEY via "
                     f"hermes setup model or {_dhh()}/.env to use xAI TTS. "
@@ -2196,7 +2196,7 @@ def _setup_webhooks():
     save_env_value("WEBHOOK_ENABLED", "true")
     print()
     print_success("Webhooks enabled! Next steps:")
-    from hermes_constants import display_hermes_home as _dhh
+    from hermes_agent.providers.hermes_constants import display_hermes_home as _dhh
     print_info(f"   1. Define webhook routes in {_dhh()}/config.yaml")
     print_info("   2. Point your service (GitHub, GitLab, etc.) at:")
     print_info("      http://your-server:8644/webhooks/<route-name>")
@@ -2413,7 +2413,7 @@ def setup_gateway(config: dict):
                     print_info("  Or as a boot-time service: sudo hermes gateway install --system")
                 print_info("  Or run in foreground:  hermes gateway")
         else:
-            from hermes_constants import is_container
+            from hermes_agent.providers.hermes_constants import is_container
             if is_container():
                 print_info("Start the gateway to bring your bots online:")
                 print_info("   hermes gateway run          # Run as container main process")

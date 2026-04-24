@@ -2,8 +2,8 @@
 
 from unittest.mock import MagicMock, patch
 
-from agent.skill_commands import scan_skill_commands
-from cli import HermesCLI
+from hermes_agent.agent.skill_commands import scan_skill_commands
+from hermes_agent.cli import HermesCLI
 
 
 def _make_cli():

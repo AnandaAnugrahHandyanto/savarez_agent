@@ -77,8 +77,8 @@ async def test_compress_command_reports_noop_without_success_banner():
     with (
         patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
         patch("hermes_agent.gateway.run._resolve_gateway_model", return_value="test-model"),
-        patch("run_agent.AIAgent", return_value=agent_instance),
-        patch("agent.model_metadata.estimate_messages_tokens_rough", side_effect=_estimate),
+        patch("hermes_agent.run_agent.AIAgent", return_value=agent_instance),
+        patch("hermes_agent.agent.model_metadata.estimate_messages_tokens_rough", side_effect=_estimate),
     ):
         result = await runner._handle_compress_command(_make_event())
 
@@ -117,8 +117,8 @@ async def test_compress_command_explains_when_token_estimate_rises():
     with (
         patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
         patch("hermes_agent.gateway.run._resolve_gateway_model", return_value="test-model"),
-        patch("run_agent.AIAgent", return_value=agent_instance),
-        patch("agent.model_metadata.estimate_messages_tokens_rough", side_effect=_estimate),
+        patch("hermes_agent.run_agent.AIAgent", return_value=agent_instance),
+        patch("hermes_agent.agent.model_metadata.estimate_messages_tokens_rough", side_effect=_estimate),
     ):
         result = await runner._handle_compress_command(_make_event())
 

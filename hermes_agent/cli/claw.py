@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 
 from hermes_agent.cli.config import get_hermes_home, get_config_path, load_config, save_config
-from hermes_constants import get_optional_skills_dir
+from hermes_agent.providers.hermes_constants import get_optional_skills_dir
 from hermes_agent.cli.setup import (
     Colors,
     color,

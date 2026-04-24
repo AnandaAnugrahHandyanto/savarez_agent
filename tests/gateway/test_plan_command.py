@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent.skill_commands import scan_skill_commands
+from hermes_agent.agent.skill_commands import scan_skill_commands
 from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 from hermes_agent.gateway.platforms.base import MessageEvent
 from hermes_agent.gateway.session import SessionEntry, SessionSource

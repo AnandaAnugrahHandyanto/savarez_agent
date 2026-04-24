@@ -245,7 +245,7 @@ Backend routes can import from the hermes-agent codebase:
 
 ```python
 from fastapi import APIRouter
-from hermes_state import SessionDB
+from hermes_agent.providers.hermes_state import SessionDB
 from hermes_agent.cli.config import load_config
 
 router = APIRouter()

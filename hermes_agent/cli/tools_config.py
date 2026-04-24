@@ -25,7 +25,7 @@ from hermes_agent.cli.nous_subscription import (
     get_nous_subscription_features,
 )
 from hermes_agent.tools.tool_backend_helpers import fal_key_is_configured, managed_nous_tools_enabled
-from utils import base_url_hostname
+from hermes_agent.providers.utils import base_url_hostname
 
 logger = logging.getLogger(__name__)
 
@@ -404,7 +404,7 @@ def _run_post_setup(post_setup_key: str):
             if result.returncode == 0:
                 _print_success("    Node.js dependencies installed")
             else:
-                from hermes_constants import display_hermes_home
+                from hermes_agent.providers.hermes_constants import display_hermes_home
                 _print_warning(f"    npm install failed - run manually: cd {display_hermes_home()}/hermes-agent && npm install")
         elif not node_modules.exists():
             _print_warning("    Node.js not found - browser tools require: npm install (in hermes-agent directory)")
@@ -696,7 +696,7 @@ def _toolset_has_keys(ts_key: str, config: dict = None) -> bool:
 
     if ts_key == "vision":
         try:
-            from agent.auxiliary_client import resolve_vision_provider_client
+            from hermes_agent.agent.auxiliary_client import resolve_vision_provider_client
 
             _provider, client, _model = resolve_vision_provider_client()
             return client is not None
@@ -861,7 +861,7 @@ def _plugin_image_gen_providers() -> list[dict]:
     function surfaces it alongside OpenAI automatically.
     """
     try:
-        from agent.image_gen_registry import list_providers
+        from hermes_agent.agent.image_gen_registry import list_providers
         from hermes_agent.cli.plugins import _ensure_plugins_discovered
 
         _ensure_plugins_discovered()
@@ -932,7 +932,7 @@ def _toolset_needs_configuration_prompt(ts_key: str, config: dict) -> bool:
         if fal_key_is_configured():
             return False
         try:
-            from agent.image_gen_registry import list_providers
+            from hermes_agent.agent.image_gen_registry import list_providers
             from hermes_agent.cli.plugins import _ensure_plugins_discovered
 
             _ensure_plugins_discovered()
@@ -1194,7 +1194,7 @@ def _plugin_image_gen_catalog(plugin_name: str):
     ``({}, None)`` if the provider isn't registered or has no models.
     """
     try:
-        from agent.image_gen_registry import get_provider
+        from hermes_agent.agent.image_gen_registry import get_provider
         from hermes_agent.cli.plugins import _ensure_plugins_discovered
 
         _ensure_plugins_discovered()
@@ -1884,7 +1884,7 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
         platform_choices[idx] = f"Configure {pinfo['label']}  ({new_count}/{total} enabled)"
 
     print()
-    from hermes_constants import display_hermes_home
+    from hermes_agent.providers.hermes_constants import display_hermes_home
     print(color(f"  Tool configuration saved to {display_hermes_home()}/config.yaml", Colors.DIM))
     print(color("  Changes take effect on next 'hermes' or gateway restart.", Colors.DIM))
     print()

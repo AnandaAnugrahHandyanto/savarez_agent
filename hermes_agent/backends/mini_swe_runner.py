@@ -53,7 +53,7 @@ def _effective_temperature_for_model(
     callers must omit the ``temperature`` kwarg entirely in that case.
     """
     try:
-        from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE
+        from hermes_agent.agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE
     except Exception:
         return None
     result = _fixed_temperature_for_model(model, base_url)
@@ -219,7 +219,7 @@ class MiniSWERunner:
             }
             self.client = OpenAI(**client_kwargs)
         else:
-            from agent.auxiliary_client import resolve_provider_client
+            from hermes_agent.agent.auxiliary_client import resolve_provider_client
             self.client, _ = resolve_provider_client("openrouter", model=model)
             if self.client is None:
                 # Fallback: try auto-detection

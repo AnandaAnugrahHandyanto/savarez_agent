@@ -860,7 +860,7 @@ def _execute_remote(
     stdout_text = strip_ansi(stdout_text)
 
     # Redact secrets
-    from agent.redact import redact_sensitive_text
+    from hermes_agent.agent.redact import redact_sensitive_text
     stdout_text = redact_sensitive_text(stdout_text)
 
     # Build response
@@ -1044,7 +1044,7 @@ def execute_code(
 
         # Per-profile HOME isolation: redirect system tool configs into
         # {HERMES_HOME}/home/ when that directory exists.
-        from hermes_constants import get_subprocess_home
+        from hermes_agent.providers.hermes_constants import get_subprocess_home
         _profile_home = get_subprocess_home()
         if _profile_home:
             child_env["HOME"] = _profile_home
@@ -1205,7 +1205,7 @@ def execute_code(
         # The sandbox env-var filter (lines 434-454) blocks os.environ access,
         # but scripts can still read secrets from disk (e.g. open('~/.hermes/.env')).
         # This ensures leaked secrets never enter the model context.
-        from agent.redact import redact_sensitive_text
+        from hermes_agent.agent.redact import redact_sensitive_text
         stdout_text = redact_sensitive_text(stdout_text)
         stderr_text = redact_sensitive_text(stderr_text)
 
@@ -1310,7 +1310,7 @@ def _kill_process_group(proc, escalate: bool = False):
 def _load_config() -> dict:
     """Load code_execution config from CLI_CONFIG if available."""
     try:
-        from cli import CLI_CONFIG
+        from hermes_agent.cli import CLI_CONFIG
         return CLI_CONFIG.get("code_execution", {})
     except Exception:
         return {}

@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent import shell_hooks
+from hermes_agent.agent import shell_hooks
 from hermes_agent.cli import hooks as hooks_cli
 
 
@@ -218,7 +218,7 @@ class TestHooksDoctor:
         script = _hook_script(tmp_path, "#!/usr/bin/env bash\nprintf '{}\\n'\n")
 
         # Manually stash an allowlist entry with an old mtime
-        from agent.shell_hooks import allowlist_path
+        from hermes_agent.agent.shell_hooks import allowlist_path
         allowlist_path().parent.mkdir(parents=True, exist_ok=True)
         allowlist_path().write_text(json.dumps({
             "approvals": [

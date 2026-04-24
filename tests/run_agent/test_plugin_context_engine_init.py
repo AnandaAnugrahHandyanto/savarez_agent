@@ -6,7 +6,7 @@ context_length, causing the CLI status bar to show 'ctx --'.
 
 from unittest.mock import MagicMock, patch
 
-from agent.context_engine import ContextEngine
+from hermes_agent.agent.context_engine import ContextEngine
 
 
 class _StubEngine(ContextEngine):
@@ -36,12 +36,12 @@ def test_plugin_engine_gets_context_length_on_init():
     with (
         patch("hermes_agent.cli.config.load_config", return_value=cfg),
         patch("hermes_agent.plugins.context_engine.load_context_engine", return_value=engine),
-        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
-        patch("run_agent.get_tool_definitions", return_value=[]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("hermes_agent.run_agent.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.run_agent.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.run_agent.OpenAI"),
     ):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key-1234567890",
@@ -66,12 +66,12 @@ def test_plugin_engine_update_model_args():
     with (
         patch("hermes_agent.cli.config.load_config", return_value=cfg),
         patch("hermes_agent.plugins.context_engine.load_context_engine", return_value=engine),
-        patch("agent.model_metadata.get_model_context_length", return_value=131_072),
-        patch("run_agent.get_tool_definitions", return_value=[]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=131_072),
+        patch("hermes_agent.run_agent.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.run_agent.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.run_agent.OpenAI"),
     ):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             model="openrouter/auto",

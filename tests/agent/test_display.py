@@ -4,7 +4,7 @@ import os
 import pytest
 from unittest.mock import MagicMock, patch
 
-from agent.display import (
+from hermes_agent.agent.display import (
     build_tool_preview,
     capture_local_edit_snapshot,
     extract_edit_diff,

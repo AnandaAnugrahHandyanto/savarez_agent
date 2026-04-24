@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import hermes_agent.tools.skills_tool as skills_tool_module
-from agent.skill_commands import (
+from hermes_agent.agent.skill_commands import (
     build_plan_path,
     build_preloaded_skills_prompt,
     build_skill_invocation_message,
@@ -67,7 +67,7 @@ class TestScanSkillCommands:
         """macOS-only skills should not register slash commands on Linux."""
         with (
             patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("agent.skill_utils.sys") as mock_sys,
+            patch("hermes_agent.agent.skill_utils.sys") as mock_sys,
         ):
             mock_sys.platform = "linux"
             _make_skill(tmp_path, "imessage", frontmatter_extra="platforms: [macos]\n")
@@ -80,7 +80,7 @@ class TestScanSkillCommands:
         """macOS-only skills should register slash commands on macOS."""
         with (
             patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("agent.skill_utils.sys") as mock_sys,
+            patch("hermes_agent.agent.skill_utils.sys") as mock_sys,
         ):
             mock_sys.platform = "darwin"
             _make_skill(tmp_path, "imessage", frontmatter_extra="platforms: [macos]\n")
@@ -91,7 +91,7 @@ class TestScanSkillCommands:
         """Skills without platforms field should register on any platform."""
         with (
             patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("agent.skill_utils.sys") as mock_sys,
+            patch("hermes_agent.agent.skill_utils.sys") as mock_sys,
         ):
             mock_sys.platform = "win32"
             _make_skill(tmp_path, "generic-tool")

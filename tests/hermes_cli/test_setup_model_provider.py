@@ -149,8 +149,8 @@ def test_setup_same_provider_rotation_strategy_saved_for_multi_credential_pool(t
     # Patch directly on the module objects to ensure local imports pick them up.
     import hermes_agent.cli.main as _main_mod
     import hermes_agent.cli.setup as _setup_mod
-    import agent.credential_pool as _pool_mod
-    import agent.auxiliary_client as _aux_mod
+    import hermes_agent.agent.credential_pool as _pool_mod
+    import hermes_agent.agent.auxiliary_client as _aux_mod
 
     monkeypatch.setattr(_main_mod, "select_provider_and_model", fake_select)
     # NOTE: _stub_tts overwrites prompt_choice, so set our mock AFTER it.

@@ -45,7 +45,7 @@ class _FakeClient:
 
 
 def test_tool_call_validation_accepts_dict_arguments(monkeypatch):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     monkeypatch.setattr("run_agent.OpenAI", lambda **kwargs: _FakeClient())
     monkeypatch.setattr(

@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from hermes_constants import get_hermes_home
+from hermes_agent.providers.hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -174,7 +174,7 @@ def _prompt_plugin_env_vars(manifest: dict, console) -> None:
         return
 
     from hermes_agent.cli.config import get_env_value, save_env_value  # noqa: F811
-    from hermes_constants import display_hermes_home
+    from hermes_agent.providers.hermes_constants import display_hermes_home
 
     # Normalise to list-of-dicts
     env_specs: list[dict] = []

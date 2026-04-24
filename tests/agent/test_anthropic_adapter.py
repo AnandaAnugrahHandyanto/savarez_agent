@@ -7,8 +7,8 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from agent.prompt_caching import apply_anthropic_cache_control
-from agent.anthropic_adapter import (
+from hermes_agent.agent.prompt_caching import apply_anthropic_cache_control
+from hermes_agent.agent.anthropic_adapter import (
     _is_oauth_token,
     _refresh_oauth_token,
     _to_plain_data,
@@ -23,7 +23,7 @@ from agent.anthropic_adapter import (
     resolve_anthropic_token,
     run_oauth_setup_token,
 )
-from agent.transports import get_transport
+from hermes_agent.agent.transports import get_transport
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +57,7 @@ class TestIsOAuthToken:
 
 class TestBuildAnthropicClient:
     def test_setup_token_uses_auth_token(self):
-        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+        with patch("hermes_agent.agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
             build_anthropic_client("sk-ant-oat01-" + "x" * 60)
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert "auth_token" in kwargs
@@ -69,7 +69,7 @@ class TestBuildAnthropicClient:
             assert "api_key" not in kwargs
 
     def test_api_key_uses_api_key(self):
-        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+        with patch("hermes_agent.agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
             build_anthropic_client("sk-ant-api03-something")
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["api_key"] == "sk-ant-api03-something"
@@ -81,7 +81,7 @@ class TestBuildAnthropicClient:
             assert "claude-code-20250219" not in betas  # OAuth-only beta NOT present
 
     def test_custom_base_url(self):
-        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+        with patch("hermes_agent.agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
             build_anthropic_client("sk-ant-api03-x", base_url="https://custom.api.com")
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["base_url"] == "https://custom.api.com"
@@ -90,7 +90,7 @@ class TestBuildAnthropicClient:
             }
 
     def test_minimax_anthropic_endpoint_uses_bearer_auth_for_regular_api_keys(self):
-        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+        with patch("hermes_agent.agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
             build_anthropic_client(
                 "minimax-secret-123",
                 base_url="https://api.minimax.io/anthropic",
@@ -103,7 +103,7 @@ class TestBuildAnthropicClient:
             }
 
     def test_minimax_cn_anthropic_endpoint_omits_tool_streaming_beta(self):
-        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+        with patch("hermes_agent.agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
             build_anthropic_client(
                 "minimax-cn-secret-123",
                 base_url="https://api.minimaxi.com/anthropic",
@@ -358,7 +358,7 @@ class TestResolveWithRefresh:
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
 
         # Mock refresh to succeed
-        with patch("agent.anthropic_adapter._refresh_oauth_token", return_value="refreshed-token"):
+        with patch("hermes_agent.agent.anthropic_adapter._refresh_oauth_token", return_value="refreshed-token"):
             result = resolve_anthropic_token()
 
         assert result == "refreshed-token"
@@ -379,7 +379,7 @@ class TestResolveWithRefresh:
         }))
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
 
-        with patch("agent.anthropic_adapter._refresh_oauth_token", return_value="refreshed-token"):
+        with patch("hermes_agent.agent.anthropic_adapter._refresh_oauth_token", return_value="refreshed-token"):
             result = resolve_anthropic_token()
 
         assert result == "refreshed-token"
@@ -1019,7 +1019,7 @@ class TestBuildAnthropicKwargs:
         # Because build_anthropic_kwargs doesn't currently accept sampling
         # params through its signature, we exercise the strip behavior by
         # calling the internal predicate directly.
-        from agent.anthropic_adapter import _forbids_sampling_params
+        from hermes_agent.agent.anthropic_adapter import _forbids_sampling_params
         assert _forbids_sampling_params("claude-opus-4-7") is True
         assert _forbids_sampling_params("claude-opus-4-6") is False
         assert _forbids_sampling_params("claude-sonnet-4-5") is False
@@ -1140,36 +1140,36 @@ class TestBuildAnthropicKwargs:
 
 class TestGetAnthropicMaxOutput:
     def test_opus_4_6(self):
-        from agent.anthropic_adapter import _get_anthropic_max_output
+        from hermes_agent.agent.anthropic_adapter import _get_anthropic_max_output
         assert _get_anthropic_max_output("claude-opus-4-6") == 128_000
 
     def test_opus_4_6_variant(self):
-        from agent.anthropic_adapter import _get_anthropic_max_output
+        from hermes_agent.agent.anthropic_adapter import _get_anthropic_max_output
         assert _get_anthropic_max_output("claude-opus-4-6:1m:fast") == 128_000
 
     def test_sonnet_4_6(self):
-        from agent.anthropic_adapter import _get_anthropic_max_output
+        from hermes_agent.agent.anthropic_adapter import _get_anthropic_max_output
         assert _get_anthropic_max_output("claude-sonnet-4-6") == 64_000
 
     def test_sonnet_4_date_stamped(self):
-        from agent.anthropic_adapter import _get_anthropic_max_output
+        from hermes_agent.agent.anthropic_adapter import _get_anthropic_max_output
         assert _get_anthropic_max_output("claude-sonnet-4-20250514") == 64_000
 
     def test_claude_3_5_sonnet(self):
-        from agent.anthropic_adapter import _get_anthropic_max_output
+        from hermes_agent.agent.anthropic_adapter import _get_anthropic_max_output
         assert _get_anthropic_max_output("claude-3-5-sonnet-20241022") == 8_192
 
     def test_claude_3_opus(self):
-        from agent.anthropic_adapter import _get_anthropic_max_output
+        from hermes_agent.agent.anthropic_adapter import _get_anthropic_max_output
         assert _get_anthropic_max_output("claude-3-opus-20240229") == 4_096
 
     def test_unknown_future_model(self):
-        from agent.anthropic_adapter import _get_anthropic_max_output
+        from hermes_agent.agent.anthropic_adapter import _get_anthropic_max_output
         assert _get_anthropic_max_output("claude-ultra-5-20260101") == 128_000
 
     def test_longest_prefix_wins(self):
         """'claude-3-5-sonnet' should match before 'claude-3-5'."""
-        from agent.anthropic_adapter import _get_anthropic_max_output
+        from hermes_agent.agent.anthropic_adapter import _get_anthropic_max_output
         # claude-3-5-sonnet (8192) should win over a hypothetical shorter match
         assert _get_anthropic_max_output("claude-3-5-sonnet-20241022") == 8_192
 
@@ -1666,7 +1666,7 @@ class TestToolChoice:
 # max_tokens resolver — openclaw/openclaw#66664 port
 # ---------------------------------------------------------------------------
 
-from agent.anthropic_adapter import (
+from hermes_agent.agent.anthropic_adapter import (
     _resolve_positive_anthropic_max_tokens,
     _resolve_anthropic_messages_max_tokens,
 )

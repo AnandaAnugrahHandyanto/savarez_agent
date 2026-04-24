@@ -16,7 +16,7 @@ from typing import Any, Dict
 
 import pytest
 
-from agent import shell_hooks
+from hermes_agent.agent import shell_hooks
 
 
 # ── helpers ───────────────────────────────────────────────────────────────

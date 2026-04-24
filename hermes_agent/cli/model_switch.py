@@ -35,7 +35,7 @@ from hermes_agent.cli.providers import (
 from hermes_agent.cli.model_normalize import (
     normalize_model_for_provider,
 )
-from agent.models_dev import (
+from hermes_agent.agent.models_dev import (
     ModelCapabilities,
     ModelInfo,
     get_model_capabilities,
@@ -928,7 +928,7 @@ def list_authenticated_providers(
     Only includes providers that have API keys set or are user-defined endpoints.
     """
     import os
-    from agent.models_dev import (
+    from hermes_agent.agent.models_dev import (
         PROVIDER_TO_MODELS_DEV,
         fetch_models_dev,
         get_provider_info as _mdev_pinfo,
@@ -1066,7 +1066,7 @@ def list_authenticated_providers(
         # imports on demand but aren't in the raw auth.json yet.
         if not has_creds:
             try:
-                from agent.credential_pool import load_pool
+                from hermes_agent.agent.credential_pool import load_pool
                 pool = load_pool(hermes_slug)
                 if pool.has_credentials():
                     has_creds = True
@@ -1081,7 +1081,7 @@ def list_authenticated_providers(
         # configured.
         if not has_creds and hermes_slug == "anthropic":
             try:
-                from agent.anthropic_adapter import (
+                from hermes_agent.agent.anthropic_adapter import (
                     read_claude_code_credentials,
                     read_hermes_oauth_credentials,
                 )
@@ -1149,7 +1149,7 @@ def list_authenticated_providers(
                 pass
         if not _cp_has_creds:
             try:
-                from agent.credential_pool import load_pool
+                from hermes_agent.agent.credential_pool import load_pool
                 _cp_pool = load_pool(_cp.slug)
                 if _cp_pool.has_credentials():
                     _cp_has_creds = True

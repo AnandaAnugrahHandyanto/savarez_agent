@@ -14,7 +14,7 @@ import threading
 from pathlib import Path
 from typing import Any, Optional
 
-from hermes_constants import get_hermes_home
+from hermes_agent.providers.hermes_constants import get_hermes_home
 from hermes_agent.tools.environments.base import (
     BaseEnvironment,
     _ThreadedProcessHandle,

@@ -240,11 +240,11 @@ class TestErrorClassifierBedrock:
     """Verify Bedrock error patterns are in the global error classifier."""
 
     def test_throttling_in_rate_limit_patterns(self):
-        from agent.error_classifier import _RATE_LIMIT_PATTERNS
+        from hermes_agent.agent.error_classifier import _RATE_LIMIT_PATTERNS
         assert "throttlingexception" in _RATE_LIMIT_PATTERNS
 
     def test_context_overflow_patterns(self):
-        from agent.error_classifier import _CONTEXT_OVERFLOW_PATTERNS
+        from hermes_agent.agent.error_classifier import _CONTEXT_OVERFLOW_PATTERNS
         assert "input is too long" in _CONTEXT_OVERFLOW_PATTERNS
 
 
@@ -300,7 +300,7 @@ class TestBedrockPreserveDotsFlag:
     def test_bedrock_provider_preserves_dots(self):
         from types import SimpleNamespace
         agent = SimpleNamespace(provider="bedrock", base_url="")
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         assert AIAgent._anthropic_preserve_dots(agent) is True
 
     def test_bedrock_runtime_us_east_1_url_preserves_dots(self):
@@ -312,7 +312,7 @@ class TestBedrockPreserveDotsFlag:
             provider="custom",
             base_url="https://bedrock-runtime.us-east-1.amazonaws.com",
         )
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         assert AIAgent._anthropic_preserve_dots(agent) is True
 
     def test_bedrock_runtime_ap_northeast_2_url_preserves_dots(self):
@@ -323,7 +323,7 @@ class TestBedrockPreserveDotsFlag:
             provider="custom",
             base_url="https://bedrock-runtime.ap-northeast-2.amazonaws.com",
         )
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         assert AIAgent._anthropic_preserve_dots(agent) is True
 
     def test_non_bedrock_aws_url_does_not_preserve_dots(self):
@@ -336,7 +336,7 @@ class TestBedrockPreserveDotsFlag:
             provider="custom",
             base_url="https://s3.us-east-1.amazonaws.com",
         )
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         assert AIAgent._anthropic_preserve_dots(agent) is False
 
     def test_anthropic_native_still_does_not_preserve_dots(self):
@@ -345,7 +345,7 @@ class TestBedrockPreserveDotsFlag:
         becomes ``claude-sonnet-4-6`` for the Anthropic API."""
         from types import SimpleNamespace
         agent = SimpleNamespace(provider="anthropic", base_url="https://api.anthropic.com")
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         assert AIAgent._anthropic_preserve_dots(agent) is False
 
 
@@ -356,14 +356,14 @@ class TestBedrockModelNameNormalization:
 
     def test_global_anthropic_inference_profile_preserved(self):
         """The reporter's exact model ID."""
-        from agent.anthropic_adapter import normalize_model_name
+        from hermes_agent.agent.anthropic_adapter import normalize_model_name
         assert normalize_model_name(
             "global.anthropic.claude-opus-4-7", preserve_dots=True
         ) == "global.anthropic.claude-opus-4-7"
 
     def test_us_anthropic_dated_inference_profile_preserved(self):
         """Regional + dated Sonnet inference profile."""
-        from agent.anthropic_adapter import normalize_model_name
+        from hermes_agent.agent.anthropic_adapter import normalize_model_name
         assert normalize_model_name(
             "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
             preserve_dots=True,
@@ -371,7 +371,7 @@ class TestBedrockModelNameNormalization:
 
     def test_apac_anthropic_haiku_inference_profile_preserved(self):
         """APAC inference profile — same structural-dot shape."""
-        from agent.anthropic_adapter import normalize_model_name
+        from hermes_agent.agent.anthropic_adapter import normalize_model_name
         assert normalize_model_name(
             "apac.anthropic.claude-haiku-4-5", preserve_dots=True
         ) == "apac.anthropic.claude-haiku-4-5"
@@ -383,7 +383,7 @@ class TestBedrockModelNameNormalization:
         locks in the existing behaviour of ``normalize_model_name`` so a
         future refactor doesn't accidentally decouple the knob from its
         effect."""
-        from agent.anthropic_adapter import normalize_model_name
+        from hermes_agent.agent.anthropic_adapter import normalize_model_name
         assert normalize_model_name(
             "global.anthropic.claude-opus-4-7", preserve_dots=False
         ) == "global-anthropic-claude-opus-4-7"
@@ -393,7 +393,7 @@ class TestBedrockModelNameNormalization:
         (e.g. ``anthropic.claude-3-5-sonnet-20241022-v2:0``) use dots as
         vendor separators and must also survive intact under
         ``preserve_dots=True``."""
-        from agent.anthropic_adapter import normalize_model_name
+        from hermes_agent.agent.anthropic_adapter import normalize_model_name
         assert normalize_model_name(
             "anthropic.claude-3-5-sonnet-20241022-v2:0",
             preserve_dots=True,
@@ -408,7 +408,7 @@ class TestBedrockBuildAnthropicKwargsEndToEnd:
     regression for the reporter's HTTP 400."""
 
     def test_bedrock_inference_profile_survives_build_kwargs(self):
-        from agent.anthropic_adapter import build_anthropic_kwargs
+        from hermes_agent.agent.anthropic_adapter import build_anthropic_kwargs
         kwargs = build_anthropic_kwargs(
             model="global.anthropic.claude-opus-4-7",
             messages=[{"role": "user", "content": "hi"}],
@@ -428,7 +428,7 @@ class TestBedrockBuildAnthropicKwargsEndToEnd:
         ``_anthropic_preserve_dots`` is the load-bearing piece that
         wires ``preserve_dots=True`` through to this builder for the
         Bedrock case."""
-        from agent.anthropic_adapter import build_anthropic_kwargs
+        from hermes_agent.agent.anthropic_adapter import build_anthropic_kwargs
         kwargs = build_anthropic_kwargs(
             model="global.anthropic.claude-opus-4-7",
             messages=[{"role": "user", "content": "hi"}],

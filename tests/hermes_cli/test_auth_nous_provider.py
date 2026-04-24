@@ -162,7 +162,7 @@ def test_get_nous_auth_status_checks_credential_pool(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
     # Seed the credential pool with a Nous entry
-    from agent.credential_pool import PooledCredential, load_pool
+    from hermes_agent.agent.credential_pool import PooledCredential, load_pool
     pool = load_pool("nous")
     entry = PooledCredential.from_dict("nous", {
         "access_token": "test-access-token",
@@ -683,7 +683,7 @@ def test_persist_nous_credentials_custom_label_survives_reseed(tmp_path, monkeyp
     user-chosen label instead of clobbering it with label_from_token output.
     """
     from hermes_agent.cli.auth import persist_nous_credentials
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)

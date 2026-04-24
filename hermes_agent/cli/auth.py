@@ -39,7 +39,7 @@ import httpx
 import yaml
 
 from hermes_agent.cli.config import get_hermes_home, get_config_path, read_raw_config
-from hermes_constants import OPENROUTER_BASE_URL
+from hermes_agent.providers.hermes_constants import OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
 
@@ -1094,7 +1094,7 @@ def resolve_provider(
     # AWS Bedrock — detect via boto3 credential chain (IAM roles, SSO, env vars).
     # This runs after API-key providers so explicit keys always win.
     try:
-        from agent.bedrock_adapter import has_aws_credentials
+        from hermes_agent.agent.bedrock_adapter import has_aws_credentials
         if has_aws_credentials():
             return "bedrock"
     except ImportError:
@@ -1357,7 +1357,7 @@ def resolve_gemini_oauth_runtime_credentials(
 ) -> Dict[str, Any]:
     """Resolve runtime OAuth creds for google-gemini-cli."""
     try:
-        from agent.google_oauth import (
+        from hermes_agent.agent.google_oauth import (
             GoogleOAuthError,
             _credentials_path,
             get_valid_access_token,
@@ -1396,7 +1396,7 @@ def resolve_gemini_oauth_runtime_credentials(
 def get_gemini_oauth_auth_status() -> Dict[str, Any]:
     """Return a status dict for `hermes auth list` / `hermes status`."""
     try:
-        from agent.google_oauth import _credentials_path, load_credentials
+        from hermes_agent.agent.google_oauth import _credentials_path, load_credentials
     except ImportError:
         return {"logged_in": False, "error": "agent.google_oauth unavailable"}
     auth_path = _credentials_path()
@@ -2185,7 +2185,7 @@ def persist_nous_credentials(
     Returns the upserted :class:`PooledCredential` entry (or ``None`` if
     seeding somehow produced no match — shouldn't happen).
     """
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     state = dict(creds)
     if label and str(label).strip():
@@ -2466,7 +2466,7 @@ def get_nous_auth_status() -> Dict[str, Any]:
     # Check credential pool first — the dashboard device-code flow saves
     # here but may not have written to the auth store yet.
     try:
-        from agent.credential_pool import load_pool
+        from hermes_agent.agent.credential_pool import load_pool
         pool = load_pool("nous")
         if pool and pool.has_credentials():
             entry = pool.select()
@@ -2520,7 +2520,7 @@ def get_codex_auth_status() -> Dict[str, Any]:
     # Check credential pool first — this is where `hermes auth` and
     # `hermes model` store device_code tokens.
     try:
-        from agent.credential_pool import load_pool
+        from hermes_agent.agent.credential_pool import load_pool
         pool = load_pool("openai-codex")
         if pool and pool.has_credentials():
             entry = pool.select()
@@ -2641,7 +2641,7 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
     # AWS SDK providers (Bedrock) — check via boto3 credential chain
     if pconfig and pconfig.auth_type == "aws_sdk":
         try:
-            from agent.bedrock_adapter import has_aws_credentials
+            from hermes_agent.agent.bedrock_adapter import has_aws_credentials
             return {"logged_in": has_aws_credentials(), "provider": target}
         except ImportError:
             return {"logged_in": False, "provider": target, "error": "boto3 not installed"}
@@ -3076,7 +3076,7 @@ def _login_openai_codex(args, pconfig: ProviderConfig) -> None:
     config_path = _update_config_for_provider("openai-codex", creds.get("base_url", DEFAULT_CODEX_BASE_URL))
     print()
     print("Login successful!")
-    from hermes_constants import display_hermes_home as _dhh
+    from hermes_agent.providers.hermes_constants import display_hermes_home as _dhh
     print(f"  Auth state: {_dhh()}/auth.json")
     print(f"  Config updated: {config_path} (model.provider=openai-codex)")
 

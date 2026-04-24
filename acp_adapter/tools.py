@@ -243,7 +243,7 @@ def _build_tool_complete_content(
 
     if tool_name in {"write_file", "patch", "skill_manage"}:
         try:
-            from agent.display import extract_edit_diff
+            from hermes_agent.agent.display import extract_edit_diff
 
             diff_text = extract_edit_diff(
                 tool_name,

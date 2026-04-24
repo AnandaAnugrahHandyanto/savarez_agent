@@ -745,7 +745,7 @@ class TestTelegramMenuCommands:
             },
         }
         with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("hermes_agent.agent.skill_commands.get_skill_commands", return_value=fake_cmds),
             patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
         ):
             (tmp_path / "skills").mkdir(exist_ok=True)
@@ -778,7 +778,7 @@ class TestTelegramMenuCommands:
             },
         }
         with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("hermes_agent.agent.skill_commands.get_skill_commands", return_value=fake_cmds),
             patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
         ):
             (tmp_path / "skills").mkdir(exist_ok=True)
@@ -811,7 +811,7 @@ class TestTelegramMenuCommands:
             },
         }
         with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("hermes_agent.agent.skill_commands.get_skill_commands", return_value=fake_cmds),
             patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
         ):
             (tmp_path / "skills").mkdir(exist_ok=True)
@@ -867,7 +867,7 @@ class TestDiscordSkillCommands:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "skills").mkdir(exist_ok=True)
         with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("hermes_agent.agent.skill_commands.get_skill_commands", return_value=fake_cmds),
             patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
         ):
             entries, hidden = discord_skill_commands(
@@ -899,7 +899,7 @@ class TestDiscordSkillCommands:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "skills").mkdir(exist_ok=True)
         with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("hermes_agent.agent.skill_commands.get_skill_commands", return_value=fake_cmds),
             patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
         ):
             entries, _ = discord_skill_commands(
@@ -925,7 +925,7 @@ class TestDiscordSkillCommands:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "skills").mkdir(exist_ok=True)
         with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("hermes_agent.agent.skill_commands.get_skill_commands", return_value=fake_cmds),
             patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
         ):
             entries, hidden = discord_skill_commands(
@@ -965,7 +965,7 @@ class TestDiscordSkillCommands:
         }
         (tmp_path / "skills").mkdir(exist_ok=True)
         with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("hermes_agent.agent.skill_commands.get_skill_commands", return_value=fake_cmds),
             patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
         ):
             entries, _ = discord_skill_commands(
@@ -992,7 +992,7 @@ class TestDiscordSkillCommands:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "skills").mkdir(exist_ok=True)
         with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("hermes_agent.agent.skill_commands.get_skill_commands", return_value=fake_cmds),
             patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
         ):
             entries, _ = discord_skill_commands(
@@ -1019,7 +1019,7 @@ class TestDiscordSkillCommands:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "skills").mkdir(exist_ok=True)
         with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("hermes_agent.agent.skill_commands.get_skill_commands", return_value=fake_cmds),
             patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
         ):
             entries, _ = discord_skill_commands(
@@ -1046,7 +1046,7 @@ class TestDiscordSkillCommands:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "skills").mkdir(exist_ok=True)
         with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("hermes_agent.agent.skill_commands.get_skill_commands", return_value=fake_cmds),
             patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
         ):
             entries, _ = discord_skill_commands(
@@ -1102,7 +1102,7 @@ class TestDiscordSkillCommandsByCategory:
         }
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("hermes_agent.agent.skill_commands.get_skill_commands", return_value=fake_cmds),
             patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
         ):
             categories, uncategorized, hidden = discord_skill_commands_by_category(
@@ -1133,7 +1133,7 @@ class TestDiscordSkillCommandsByCategory:
         }
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("hermes_agent.agent.skill_commands.get_skill_commands", return_value=fake_cmds),
             patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
         ):
             categories, uncategorized, hidden = discord_skill_commands_by_category(
@@ -1161,7 +1161,7 @@ class TestDiscordSkillCommandsByCategory:
         }
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("hermes_agent.agent.skill_commands.get_skill_commands", return_value=fake_cmds),
             patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
         ):
             categories, uncategorized, hidden = discord_skill_commands_by_category(
@@ -1195,7 +1195,7 @@ class TestDiscordSkillCommandsByCategory:
         }
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("hermes_agent.agent.skill_commands.get_skill_commands", return_value=fake_cmds),
             patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
         ):
             categories, uncategorized, hidden = discord_skill_commands_by_category(

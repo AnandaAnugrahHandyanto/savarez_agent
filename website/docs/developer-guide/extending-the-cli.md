@@ -28,7 +28,7 @@ The first three are new protected hooks. The last two already existed.
 #!/usr/bin/env python3
 """my_cli.py — Example wrapper CLI that extends Hermes."""
 
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 from prompt_toolkit.layout import FormattedTextControl, Window
 from prompt_toolkit.filters import Condition
 

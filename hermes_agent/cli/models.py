@@ -925,7 +925,7 @@ def fetch_ai_gateway_models(
     if _ai_gateway_catalog_cache is not None and not force_refresh:
         return list(_ai_gateway_catalog_cache)
 
-    from hermes_constants import AI_GATEWAY_BASE_URL
+    from hermes_agent.providers.hermes_constants import AI_GATEWAY_BASE_URL
 
     fallback = list(VERCEL_AI_GATEWAY_MODELS)
     preferred_ids = [mid for mid, _ in fallback]
@@ -1146,7 +1146,7 @@ def fetch_ai_gateway_pricing(
     ``prompt`` / ``completion``. This translates. Cache read/write field names
     already match.
     """
-    from hermes_constants import AI_GATEWAY_BASE_URL
+    from hermes_agent.providers.hermes_constants import AI_GATEWAY_BASE_URL
 
     cache_key = AI_GATEWAY_BASE_URL.rstrip("/")
     if not force_refresh and cache_key in _pricing_cache:
@@ -1427,7 +1427,7 @@ def detect_provider_for_model(
         # Claude Code tokens, and other non-env-var credentials (#10300).
         if not has_creds:
             try:
-                from agent.credential_pool import load_pool
+                from hermes_agent.agent.credential_pool import load_pool
                 pool = load_pool(direct_match)
                 if pool.has_credentials():
                     has_creds = True
@@ -1637,7 +1637,7 @@ def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
     returned unchanged — this is the offline/CI fallback path.
     """
     try:
-        from agent.models_dev import list_agentic_models
+        from hermes_agent.agent.models_dev import list_agentic_models
         mdev = list_agentic_models(provider)
     except Exception:
         mdev = []
@@ -1761,7 +1761,7 @@ def _fetch_anthropic_models(timeout: float = 5.0) -> Optional[list[str]]:
     Claude Code auto-discovery).  Returns sorted model IDs or None.
     """
     try:
-        from agent.anthropic_adapter import resolve_anthropic_token, _is_oauth_token
+        from hermes_agent.agent.anthropic_adapter import resolve_anthropic_token, _is_oauth_token
     except ImportError:
         return None
 
@@ -1772,7 +1772,7 @@ def _fetch_anthropic_models(timeout: float = 5.0) -> Optional[list[str]]:
     headers: dict[str, str] = {"anthropic-version": "2023-06-01"}
     if _is_oauth_token(token):
         headers["Authorization"] = f"Bearer {token}"
-        from agent.anthropic_adapter import _COMMON_BETAS, _OAUTH_ONLY_BETAS
+        from hermes_agent.agent.anthropic_adapter import _COMMON_BETAS, _OAUTH_ONLY_BETAS
         headers["anthropic-beta"] = ",".join(_COMMON_BETAS + _OAUTH_ONLY_BETAS)
     else:
         headers["x-api-key"] = token
@@ -2231,7 +2231,7 @@ def _fetch_ai_gateway_models(timeout: float = 5.0) -> Optional[list[str]]:
         return None
     base_url = os.getenv("AI_GATEWAY_BASE_URL", "").strip()
     if not base_url:
-        from hermes_constants import AI_GATEWAY_BASE_URL
+        from hermes_agent.providers.hermes_constants import AI_GATEWAY_BASE_URL
         base_url = AI_GATEWAY_BASE_URL
 
     url = base_url.rstrip("/") + "/models"
@@ -2275,7 +2275,7 @@ _OLLAMA_CLOUD_CACHE_TTL = 3600  # 1 hour
 
 def _ollama_cloud_cache_path() -> Path:
     """Return the path for the Ollama Cloud model cache."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.providers.hermes_constants import get_hermes_home
     return get_hermes_home() / "ollama_cloud_models_cache.json"
 
 
@@ -2309,7 +2309,7 @@ def _load_ollama_cloud_cache(*, ignore_ttl: bool = False) -> Optional[dict]:
 def _save_ollama_cloud_cache(models: list[str]) -> None:
     """Persist the merged Ollama Cloud model list to disk."""
     try:
-        from utils import atomic_json_write
+        from hermes_agent.providers.utils import atomic_json_write
         cache_path = _ollama_cloud_cache_path()
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         atomic_json_write(cache_path, {"models": models, "cached_at": time.time()}, indent=None)
@@ -2354,7 +2354,7 @@ def fetch_ollama_cloud_models(
     # 3. models.dev registry
     mdev_models: list[str] = []
     try:
-        from agent.models_dev import list_agentic_models
+        from hermes_agent.agent.models_dev import list_agentic_models
         mdev_models = list_agentic_models("ollama-cloud")
     except Exception:
         pass
@@ -2624,7 +2624,7 @@ def validate_requested_model(
     # AWS SDK control plane (ListFoundationModels + ListInferenceProfiles).
     if normalized == "bedrock":
         try:
-            from agent.bedrock_adapter import discover_bedrock_models, resolve_bedrock_region
+            from hermes_agent.agent.bedrock_adapter import discover_bedrock_models, resolve_bedrock_region
             region = resolve_bedrock_region()
             discovered = discover_bedrock_models(region)
             discovered_ids = {m["id"] for m in discovered}

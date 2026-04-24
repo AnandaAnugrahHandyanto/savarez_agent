@@ -9,8 +9,8 @@ import os
 import pytest
 from unittest.mock import MagicMock, patch
 
-from agent.memory_provider import MemoryProvider
-from agent.memory_manager import MemoryManager
+from hermes_agent.agent.memory_provider import MemoryProvider
+from hermes_agent.agent.memory_manager import MemoryManager
 
 
 # ---------------------------------------------------------------------------
@@ -343,7 +343,7 @@ class TestAIAgentUserIdPropagation:
     def test_user_id_stored_on_agent(self):
         """AIAgent should store user_id as instance attribute."""
         with patch.dict(os.environ, {"HERMES_HOME": "/tmp/test_hermes"}):
-            from run_agent import AIAgent
+            from hermes_agent.run_agent import AIAgent
             agent = object.__new__(AIAgent)
             # Manually set the attribute as __init__ does
             agent._user_id = "test_user_42"
@@ -352,7 +352,7 @@ class TestAIAgentUserIdPropagation:
     def test_user_id_none_by_default(self):
         """AIAgent should have None user_id when not provided (CLI mode)."""
         with patch.dict(os.environ, {"HERMES_HOME": "/tmp/test_hermes"}):
-            from run_agent import AIAgent
+            from hermes_agent.run_agent import AIAgent
             agent = object.__new__(AIAgent)
             agent._user_id = None
             assert agent._user_id is None

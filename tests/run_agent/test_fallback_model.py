@@ -10,8 +10,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from run_agent import AIAgent
-import run_agent
+from hermes_agent.run_agent import AIAgent
+import hermes_agent.run_agent
 
 
 @pytest.fixture(autouse=True)
@@ -40,9 +40,9 @@ def _make_tool_defs(*names: str) -> list:
 def _make_agent(fallback_model=None):
     """Create a minimal AIAgent with optional fallback config."""
     with (
-        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("hermes_agent.run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("hermes_agent.run_agent.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.run_agent.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key",

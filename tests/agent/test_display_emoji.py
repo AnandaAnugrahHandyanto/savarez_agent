@@ -2,7 +2,7 @@
 
 from unittest.mock import patch as mock_patch, MagicMock
 
-from agent.display import get_tool_emoji
+from hermes_agent.agent.display import get_tool_emoji
 
 
 class TestGetToolEmoji:
@@ -12,12 +12,12 @@ class TestGetToolEmoji:
         """Registry-registered emoji is used when no skin is active."""
         mock_registry = MagicMock()
         mock_registry.get_emoji.return_value = "🎨"
-        with mock_patch("agent.display._get_skin", return_value=None), \
-             mock_patch("agent.display.registry", mock_registry, create=True):
+        with mock_patch("hermes_agent.agent.display._get_skin", return_value=None), \
+             mock_patch("hermes_agent.agent.display.registry", mock_registry, create=True):
             # Need to patch the import inside get_tool_emoji
             pass
         # Direct test: patch the lazy import path
-        with mock_patch("agent.display._get_skin", return_value=None):
+        with mock_patch("hermes_agent.agent.display._get_skin", return_value=None):
             # get_tool_emoji will try to import registry — mock that
             mock_reg = MagicMock()
             mock_reg.get_emoji.return_value = "📖"
@@ -34,7 +34,7 @@ class TestGetToolEmoji:
         """Skin tool_emojis override registry defaults."""
         skin = MagicMock()
         skin.tool_emojis = {"terminal": "⚔"}
-        with mock_patch("agent.display._get_skin", return_value=skin):
+        with mock_patch("hermes_agent.agent.display._get_skin", return_value=skin):
             result = get_tool_emoji("terminal")
             assert result == "⚔"
 
@@ -47,7 +47,7 @@ class TestGetToolEmoji:
         import sys
         mock_module = MagicMock()
         mock_module.registry = mock_reg
-        with mock_patch("agent.display._get_skin", return_value=skin), \
+        with mock_patch("hermes_agent.agent.display._get_skin", return_value=skin), \
              mock_patch.dict(sys.modules, {"tools.registry": mock_module}):
             result = get_tool_emoji("terminal")
             assert result == "💻"
@@ -61,14 +61,14 @@ class TestGetToolEmoji:
         import sys
         mock_module = MagicMock()
         mock_module.registry = mock_reg
-        with mock_patch("agent.display._get_skin", return_value=skin), \
+        with mock_patch("hermes_agent.agent.display._get_skin", return_value=skin), \
              mock_patch.dict(sys.modules, {"tools.registry": mock_module}):
             result = get_tool_emoji("unknown_tool")
             assert result == "⚡"
 
     def test_custom_default(self):
         """Custom default is returned when nothing matches."""
-        with mock_patch("agent.display._get_skin", return_value=None):
+        with mock_patch("hermes_agent.agent.display._get_skin", return_value=None):
             mock_reg = MagicMock()
             mock_reg.get_emoji.return_value = ""
             import sys
@@ -87,7 +87,7 @@ class TestGetToolEmoji:
         import sys
         mock_module = MagicMock()
         mock_module.registry = mock_reg
-        with mock_patch("agent.display._get_skin", return_value=skin), \
+        with mock_patch("hermes_agent.agent.display._get_skin", return_value=skin), \
              mock_patch.dict(sys.modules, {"tools.registry": mock_module}):
             assert get_tool_emoji("terminal") == "⚔"  # skin override
             assert get_tool_emoji("web_search") == "🔍"  # registry fallback

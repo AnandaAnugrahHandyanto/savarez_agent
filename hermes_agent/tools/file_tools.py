@@ -9,7 +9,7 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-from agent.file_safety import get_read_block_error
+from hermes_agent.agent.file_safety import get_read_block_error
 from hermes_agent.tools.binary_extensions import has_binary_extension
 from hermes_agent.tools.file_operations import (
     ShellFileOperations,
@@ -17,7 +17,7 @@ from hermes_agent.tools.file_operations import (
     normalize_search_pagination,
 )
 from hermes_agent.tools import file_state
-from agent.redact import redact_sensitive_text
+from hermes_agent.agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
 

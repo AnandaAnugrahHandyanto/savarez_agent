@@ -41,7 +41,7 @@ The same environment variables used by the CLI are required when using Hermes as
 The simplest way to use Hermes is the `chat()` method — pass a message, get a string back:
 
 ```python
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 agent = AIAgent(
     model="anthropic/claude-sonnet-4",
@@ -196,7 +196,7 @@ Each prompt gets its own `task_id` and isolated environment. If you need custom 
 
 ```python
 import concurrent.futures
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 prompts = [
     "Explain recursion",
@@ -233,7 +233,7 @@ Always create a **new `AIAgent` instance per thread or task**. The agent maintai
 ```python
 from fastapi import FastAPI
 from pydantic import BaseModel
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 app = FastAPI()
 
@@ -257,7 +257,7 @@ async def chat(request: ChatRequest):
 
 ```python
 import discord
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 client = discord.Client(intents=discord.Intents.default())
 
@@ -286,7 +286,7 @@ client.run("YOUR_DISCORD_TOKEN")
 #!/usr/bin/env python3
 """CI step: auto-review a PR diff."""
 import subprocess
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 diff = subprocess.check_output(["git", "diff", "main...HEAD"]).decode()
 

@@ -30,7 +30,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List
 
-from agent.account_usage import fetch_account_usage, render_account_usage_lines
+from hermes_agent.agent.account_usage import fetch_account_usage, render_account_usage_lines
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -87,8 +87,8 @@ _ensure_ssl_certs()
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
-from hermes_constants import get_hermes_home
-from utils import atomic_yaml_write, base_url_host_matches, is_truthy_value
+from hermes_agent.providers.hermes_constants import get_hermes_home
+from hermes_agent.providers.utils import atomic_yaml_write, base_url_host_matches, is_truthy_value
 _hermes_home = get_hermes_home()
 
 # Load environment variables from ~/.hermes/.env first.
@@ -232,7 +232,7 @@ if _config_path.exists():
 
 # Apply IPv4 preference if configured (before any HTTP clients are created).
 try:
-    from hermes_constants import apply_ipv4_preference
+    from hermes_agent.providers.hermes_constants import apply_ipv4_preference
     _network_cfg = (_cfg if '_cfg' in dir() else {}).get("network", {})
     if isinstance(_network_cfg, dict) and _network_cfg.get("force_ipv4"):
         apply_ipv4_preference(force=True)
@@ -442,7 +442,7 @@ def _check_unavailable_skill(command_name: str) -> str | None:
     normalized = command_name.lower().replace("_", "-")
     try:
         from hermes_agent.tools.skills_tool import _get_disabled_skill_names
-        from agent.skill_utils import get_all_skills_dirs
+        from hermes_agent.agent.skill_utils import get_all_skills_dirs
         disabled = _get_disabled_skill_names()
 
         # Check disabled skills across all dirs (local + external)
@@ -460,7 +460,7 @@ def _check_unavailable_skill(command_name: str) -> str | None:
                     )
 
         # Check optional skills (shipped with repo but not installed)
-        from hermes_constants import get_optional_skills_dir
+        from hermes_agent.providers.hermes_constants import get_optional_skills_dir
         repo_root = Path(__file__).resolve().parent.parent
         optional_dir = get_optional_skills_dir(repo_root / "optional-skills")
         if optional_dir.exists():
@@ -706,7 +706,7 @@ class GatewayRunner:
         # Initialize session database for session_search tool support
         self._session_db = None
         try:
-            from hermes_state import SessionDB
+            from hermes_agent.providers.hermes_state import SessionDB
             self._session_db = SessionDB()
         except Exception as e:
             logger.debug("SQLite session store not available: %s", e)
@@ -915,7 +915,7 @@ class GatewayRunner:
             if not history or len(history) < 4:
                 return
 
-            from run_agent import AIAgent
+            from hermes_agent.run_agent import AIAgent
             model, runtime_kwargs = self._resolve_session_agent_runtime(
                 session_key=session_key,
             )
@@ -1347,7 +1347,7 @@ class GatewayRunner:
         "minimal", "low", "medium", "high", "xhigh". Returns None to use
         default (medium).
         """
-        from hermes_constants import parse_reasoning_effort
+        from hermes_agent.providers.hermes_constants import parse_reasoning_effort
         effort = ""
         try:
             import yaml as _y
@@ -2008,7 +2008,7 @@ class GatewayRunner:
         # Failures are logged but must never block gateway startup.
         try:
             from hermes_agent.cli.config import load_config
-            from agent.shell_hooks import register_from_config
+            from hermes_agent.agent.shell_hooks import register_from_config
             register_from_config(load_config(), accept_hooks=False)
         except Exception:
             logger.debug(
@@ -3637,7 +3637,7 @@ class GatewayRunner:
 
         if canonical == "plan":
             try:
-                from agent.skill_commands import build_plan_path, build_skill_invocation_message
+                from hermes_agent.agent.skill_commands import build_plan_path, build_skill_invocation_message
 
                 user_instruction = event.get_command_args().strip()
                 plan_path = build_plan_path(user_instruction)
@@ -3794,7 +3794,7 @@ class GatewayRunner:
         # to the claude-code skill.
         if command:
             try:
-                from agent.skill_commands import (
+                from hermes_agent.agent.skill_commands import (
                     get_skill_commands,
                     build_skill_invocation_message,
                     resolve_skill_command_key,
@@ -3809,7 +3809,7 @@ class GatewayRunner:
                     _skill_name = skill_cmds[cmd_key].get("name", "")
                     _plat = source.platform.value if source.platform else None
                     if _plat and _skill_name:
-                        from agent.skill_utils import get_disabled_skill_names as _get_plat_disabled
+                        from hermes_agent.agent.skill_utils import get_disabled_skill_names as _get_plat_disabled
                         if _skill_name in _get_plat_disabled(platform=_plat):
                             return (
                                 f"The **{_skill_name}** skill is disabled for {_plat}.\n"
@@ -4005,8 +4005,8 @@ class GatewayRunner:
 
         if "@" in message_text:
             try:
-                from agent.context_references import preprocess_context_references_async
-                from agent.model_metadata import get_model_context_length
+                from hermes_agent.agent.context_references import preprocess_context_references_async
+                from hermes_agent.agent.model_metadata import get_model_context_length
 
                 _msg_cwd = os.environ.get("TERMINAL_CWD", os.path.expanduser("~"))
                 _msg_runtime = _resolve_runtime_agent_kwargs()
@@ -4155,7 +4155,7 @@ class GatewayRunner:
         if _is_new_session and _auto:
             _skill_names = [_auto] if isinstance(_auto, str) else list(_auto)
             try:
-                from agent.skill_commands import _load_skill_payload, _build_skill_message
+                from hermes_agent.agent.skill_commands import _load_skill_payload, _build_skill_message
                 _combined_parts: list[str] = []
                 _loaded_names: list[str] = []
                 for _sname in _skill_names:
@@ -4202,7 +4202,7 @@ class GatewayRunner:
         #    means hygiene fires a bit early — safe and harmless.
         # -----------------------------------------------------------------
         if history and len(history) >= 4:
-            from agent.model_metadata import (
+            from hermes_agent.agent.model_metadata import (
                 estimate_messages_tokens_rough,
                 get_model_context_length,
             )
@@ -4357,7 +4357,7 @@ class GatewayRunner:
                     _hyg_meta = {"thread_id": source.thread_id} if source.thread_id else None
 
                     try:
-                        from run_agent import AIAgent
+                        from hermes_agent.run_agent import AIAgent
 
                         _hyg_model, _hyg_runtime = self._resolve_session_agent_runtime(
                             source=source,
@@ -4885,7 +4885,7 @@ class GatewayRunner:
         users can immediately see if context detection went wrong (e.g.
         local models falling to the 128K default).
         """
-        from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
+        from hermes_agent.agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
 
         model = _resolve_gateway_model()
         config_context_length = None
@@ -5071,7 +5071,7 @@ class GatewayRunner:
     
     async def _handle_profile_command(self, event: MessageEvent) -> str:
         """Handle /profile — show active profile name and home directory."""
-        from hermes_constants import display_hermes_home
+        from hermes_agent.providers.hermes_constants import display_hermes_home
         from hermes_agent.cli.profiles import get_active_profile_name
 
         display = display_hermes_home()
@@ -5383,7 +5383,7 @@ class GatewayRunner:
             *gateway_help_lines(),
         ]
         try:
-            from agent.skill_commands import get_skill_commands
+            from hermes_agent.agent.skill_commands import get_skill_commands
             skill_cmds = get_skill_commands()
             if skill_cmds:
                 lines.append(f"\n⚡ **Skill Commands** ({len(skill_cmds)} active):")
@@ -5413,7 +5413,7 @@ class GatewayRunner:
         # Build combined entry list: built-in commands + skill commands
         entries = list(gateway_help_lines())
         try:
-            from agent.skill_commands import get_skill_commands
+            from hermes_agent.agent.skill_commands import get_skill_commands
             skill_cmds = get_skill_commands()
             if skill_cmds:
                 entries.append("")
@@ -5750,7 +5750,7 @@ class GatewayRunner:
             lines.append(f"Capabilities: {mi.format_capabilities()}")
         else:
             try:
-                from agent.model_metadata import get_model_context_length
+                from hermes_agent.agent.model_metadata import get_model_context_length
                 ctx = get_model_context_length(
                     result.new_model,
                     base_url=result.base_url or current_base_url,
@@ -5839,7 +5839,7 @@ class GatewayRunner:
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality command - list or set a personality."""
         import yaml
-        from hermes_constants import display_hermes_home
+        from hermes_agent.providers.hermes_constants import display_hermes_home
 
         args = event.get_command_args().strip().lower()
         config_path = _hermes_home / 'config.yaml'
@@ -6515,7 +6515,7 @@ class GatewayRunner:
         self, prompt: str, source: "SessionSource", task_id: str
     ) -> None:
         """Execute a background agent task and deliver the result to the chat."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         adapter = self.adapters.get(source.platform)
         if not adapter:
@@ -6693,7 +6693,7 @@ class GatewayRunner:
         self, question: str, source, session_key: str, task_id: str,
     ) -> None:
         """Execute an ephemeral /btw side question and deliver the answer."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         adapter = self.adapters.get(source.platform)
         if not adapter:
@@ -7069,9 +7069,9 @@ class GatewayRunner:
         focus_topic = (event.get_command_args() or "").strip() or None
 
         try:
-            from run_agent import AIAgent
-            from agent.manual_compression_feedback import summarize_manual_compression
-            from agent.model_metadata import estimate_messages_tokens_rough
+            from hermes_agent.run_agent import AIAgent
+            from hermes_agent.agent.manual_compression_feedback import summarize_manual_compression
+            from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough
 
             session_key = self._session_key_for_source(source)
             model, runtime_kwargs = self._resolve_session_agent_runtime(
@@ -7424,7 +7424,7 @@ class GatewayRunner:
             # Rate limits (when available from provider headers)
             rl_state = agent.get_rate_limit_state()
             if rl_state and rl_state.has_data:
-                from agent.rate_limit_tracker import format_rate_limit_compact
+                from hermes_agent.agent.rate_limit_tracker import format_rate_limit_compact
                 lines.append(f"⏱️ **Rate Limits:** {format_rate_limit_compact(rl_state)}")
                 lines.append("")
 
@@ -7447,7 +7447,7 @@ class GatewayRunner:
 
             # Cost estimation
             try:
-                from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
+                from hermes_agent.agent.usage_pricing import CanonicalUsage, estimate_usage_cost
                 cost_result = estimate_usage_cost(
                     agent.model,
                     CanonicalUsage(
@@ -7485,7 +7485,7 @@ class GatewayRunner:
         session_entry = self.session_store.get_or_create_session(source)
         history = self.session_store.load_transcript(session_entry.session_id)
         if history:
-            from agent.model_metadata import estimate_messages_tokens_rough
+            from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough
             msgs = [m for m in history if m.get("role") in ("user", "assistant") and m.get("content")]
             approx = estimate_messages_tokens_rough(msgs)
             lines = [
@@ -7533,8 +7533,8 @@ class GatewayRunner:
                     i += 1
 
         try:
-            from hermes_state import SessionDB
-            from agent.insights import InsightsEngine
+            from hermes_agent.providers.hermes_state import SessionDB
+            from hermes_agent.agent.insights import InsightsEngine
 
             loop = asyncio.get_running_loop()
 
@@ -9331,7 +9331,7 @@ class GatewayRunner:
                 event_message_id=event_message_id,
             )
 
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         import queue
 
         def _run_still_current() -> bool:
@@ -9356,7 +9356,7 @@ class GatewayRunner:
 
         # Apply tool preview length config (0 = no limit)
         try:
-            from agent.display import set_tool_preview_max_len
+            from hermes_agent.agent.display import set_tool_preview_max_len
             _tpl = resolve_display_setting(user_config, platform_key, "tool_preview_length", 0)
             set_tool_preview_max_len(int(_tpl) if _tpl else 0)
         except Exception:
@@ -9405,13 +9405,13 @@ class GatewayRunner:
             last_tool[0] = tool_name
             
             # Build progress message with primary argument preview
-            from agent.display import get_tool_emoji
+            from hermes_agent.agent.display import get_tool_emoji
             emoji = get_tool_emoji(tool_name, default="⚙️")
             
             # Verbose mode: show detailed arguments, respects tool_preview_length
             if progress_mode == "verbose":
                 if args:
-                    from agent.display import get_tool_preview_max_len
+                    from hermes_agent.agent.display import get_tool_preview_max_len
                     _pl = get_tool_preview_max_len()
                     args_str = json.dumps(args, ensure_ascii=False, default=str)
                     # When tool_preview_length is 0 (default), don't truncate
@@ -9431,7 +9431,7 @@ class GatewayRunner:
             # config (defaults to 40 chars when unset to keep gateway messages
             # compact — unlike CLI spinners, these persist as permanent messages).
             if preview:
-                from agent.display import get_tool_preview_max_len
+                from hermes_agent.agent.display import get_tool_preview_max_len
                 _pl = get_tool_preview_max_len()
                 _cap = _pl if _pl > 0 else 40
                 if len(preview) > _cap:
@@ -10251,7 +10251,7 @@ class GatewayRunner:
             # Auto-generate session title after first exchange (non-blocking)
             if final_response and self._session_db:
                 try:
-                    from agent.title_generator import maybe_auto_title
+                    from hermes_agent.agent.title_generator import maybe_auto_title
                     all_msgs = result_holder[0].get("messages", []) if result_holder[0] else []
                     maybe_auto_title(
                         self._session_db,
@@ -11066,7 +11066,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # Centralized logging — agent.log (INFO+), errors.log (WARNING+),
     # and gateway.log (INFO+, gateway-component records only).
     # Idempotent, so repeated calls from AIAgent.__init__ won't duplicate.
-    from hermes_logging import setup_logging
+    from hermes_agent.providers.hermes_logging import setup_logging
     setup_logging(hermes_home=_hermes_home, mode="gateway")
 
     # Optional stderr handler — level driven by -v/-q flags on the CLI.
@@ -11075,7 +11075,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # verbosity=1    (-v):         INFO and above
     # verbosity=2+   (-vv/-vvv):   DEBUG
     if verbosity is not None:
-        from agent.redact import RedactingFormatter
+        from hermes_agent.agent.redact import RedactingFormatter
 
         _stderr_level = {0: logging.WARNING, 1: logging.INFO}.get(verbosity, logging.DEBUG)
         _stderr_handler = logging.StreamHandler()

@@ -8,7 +8,7 @@ for tool-call tag coverage."""
 
 import pytest
 
-from cli import _strip_reasoning_tags
+from hermes_agent.cli import _strip_reasoning_tags
 
 
 class TestToolCallStripping:

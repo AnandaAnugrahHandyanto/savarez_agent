@@ -7,8 +7,8 @@ from unittest.mock import patch, MagicMock
 from hermes_agent.cli.auth import PROVIDER_REGISTRY, resolve_provider, resolve_api_key_provider_credentials
 from hermes_agent.cli.models import _PROVIDER_MODELS, _PROVIDER_LABELS, _PROVIDER_ALIASES, normalize_provider
 from hermes_agent.cli.model_normalize import normalize_model_for_provider
-from agent.model_metadata import _URL_TO_PROVIDER, _PROVIDER_PREFIXES
-from agent.models_dev import PROVIDER_TO_MODELS_DEV, list_agentic_models
+from hermes_agent.agent.model_metadata import _URL_TO_PROVIDER, _PROVIDER_PREFIXES
+from hermes_agent.agent.models_dev import PROVIDER_TO_MODELS_DEV, list_agentic_models
 
 
 # ── Provider Registry ──
@@ -130,7 +130,7 @@ class TestOllamaCloudModelCatalog:
             }
         }
         with patch("hermes_agent.cli.models.fetch_api_models", return_value=["qwen3.5:397b"]), \
-             patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
+             patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value=mock_mdev):
             result = provider_model_ids("ollama-cloud", force_refresh=True)
 
         assert len(result) > 0
@@ -156,7 +156,7 @@ class TestOllamaCloudModelPicker:
             }
         }
         with patch("hermes_agent.cli.models.fetch_api_models", return_value=["qwen3.5:397b"]), \
-             patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
+             patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value=mock_mdev):
             providers = list_authenticated_providers(current_provider="ollama-cloud")
 
         ollama = next((p for p in providers if p["slug"] == "ollama-cloud"), None)
@@ -194,7 +194,7 @@ class TestOllamaCloudMergedDiscovery:
             }
         }
         with patch("hermes_agent.cli.models.fetch_api_models", return_value=["qwen3.5:397b", "glm-5"]), \
-             patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
+             patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value=mock_mdev):
             result = fetch_ollama_cloud_models(force_refresh=True)
 
         # Live models first, then models.dev additions (deduped)
@@ -218,7 +218,7 @@ class TestOllamaCloudMergedDiscovery:
                 }
             }
         }
-        with patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
+        with patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value=mock_mdev):
             result = fetch_ollama_cloud_models(force_refresh=True)
 
         assert result == ["glm-5"]
@@ -231,7 +231,7 @@ class TestOllamaCloudMergedDiscovery:
         monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
 
         with patch("hermes_agent.cli.models.fetch_api_models", return_value=["model-a"]) as mock_api, \
-             patch("agent.models_dev.fetch_models_dev", return_value={}):
+             patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value={}):
             first = fetch_ollama_cloud_models(force_refresh=True)
             assert first == ["model-a"]
             assert mock_api.call_count == 1
@@ -249,7 +249,7 @@ class TestOllamaCloudMergedDiscovery:
         monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
 
         with patch("hermes_agent.cli.models.fetch_api_models", return_value=["model-a"]) as mock_api, \
-             patch("agent.models_dev.fetch_models_dev", return_value={}):
+             patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value={}):
             fetch_ollama_cloud_models(force_refresh=True)
             fetch_ollama_cloud_models(force_refresh=True)
             assert mock_api.call_count == 2
@@ -274,7 +274,7 @@ class TestOllamaCloudMergedDiscovery:
             json.dump(data, f)
 
         with patch("hermes_agent.cli.models.fetch_api_models", return_value=None), \
-             patch("agent.models_dev.fetch_models_dev", return_value={}):
+             patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value={}):
             result = fetch_ollama_cloud_models(force_refresh=True)
 
         assert result == ["stale-model"]
@@ -286,7 +286,7 @@ class TestOllamaCloudMergedDiscovery:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
 
-        with patch("agent.models_dev.fetch_models_dev", return_value={}):
+        with patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value={}):
             result = fetch_ollama_cloud_models(force_refresh=True)
 
         assert result == []
@@ -337,7 +337,7 @@ class TestOllamaCloudModelsDev:
                 }
             }
         }
-        with patch("agent.models_dev.fetch_models_dev", return_value=mock_data):
+        with patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value=mock_data):
             result = list_agentic_models("ollama-cloud")
         assert "qwen3.5:397b" in result
         assert "glm-5" in result
@@ -351,15 +351,15 @@ class TestOllamaCloudAgentInit:
     def test_agent_imports_without_error(self):
         """Verify run_agent.py has no SyntaxError."""
         import importlib
-        import run_agent
+        import hermes_agent.run_agent
         importlib.reload(run_agent)
 
     def test_ollama_cloud_agent_uses_chat_completions(self, monkeypatch):
         """Ollama Cloud falls through to chat_completions — no special elif needed."""
         monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
-        with patch("run_agent.OpenAI") as mock_openai:
+        with patch("hermes_agent.run_agent.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
-            from run_agent import AIAgent
+            from hermes_agent.run_agent import AIAgent
             agent = AIAgent(
                 model="qwen3.5:397b",
                 provider="ollama-cloud",
@@ -405,6 +405,6 @@ class TestOllamaCloudProvidersNew:
 
 class TestOllamaCloudAuxiliary:
     def test_aux_model_defined(self):
-        from agent.auxiliary_client import _API_KEY_PROVIDER_AUX_MODELS
+        from hermes_agent.agent.auxiliary_client import _API_KEY_PROVIDER_AUX_MODELS
         assert "ollama-cloud" in _API_KEY_PROVIDER_AUX_MODELS
         assert _API_KEY_PROVIDER_AUX_MODELS["ollama-cloud"] == "nemotron-3-nano:30b"

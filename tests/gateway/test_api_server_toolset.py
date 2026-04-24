@@ -79,7 +79,7 @@ class TestApiServerAdapterToolset:
         with patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs") as mock_kwargs, \
              patch("hermes_agent.gateway.run._resolve_gateway_model") as mock_model, \
              patch("hermes_agent.gateway.run._load_gateway_config") as mock_config, \
-             patch("run_agent.AIAgent") as mock_agent_cls:
+             patch("hermes_agent.run_agent.AIAgent") as mock_agent_cls:
 
             mock_kwargs.return_value = {"api_key": "test-key", "base_url": None,
                                         "provider": None, "api_mode": None,
@@ -109,7 +109,7 @@ class TestApiServerAdapterToolset:
         with patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs") as mock_kwargs, \
              patch("hermes_agent.gateway.run._resolve_gateway_model") as mock_model, \
              patch("hermes_agent.gateway.run._load_gateway_config") as mock_config, \
-             patch("run_agent.AIAgent") as mock_agent_cls:
+             patch("hermes_agent.run_agent.AIAgent") as mock_agent_cls:
 
             mock_kwargs.return_value = {"api_key": "test-key", "base_url": None,
                                         "provider": None, "api_mode": None,

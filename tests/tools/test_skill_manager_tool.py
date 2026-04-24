@@ -32,7 +32,7 @@ def _skill_dir(tmp_path):
     """Patch both SKILLS_DIR and get_all_skills_dirs so _find_skill searches
     only the temp directory — not the real ~/.hermes/skills/."""
     with patch("hermes_agent.tools.skill_manager_tool.SKILLS_DIR", tmp_path), \
-         patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]):
+         patch("hermes_agent.agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]):
         yield
 
 
@@ -225,7 +225,7 @@ class TestCreateSkill:
         skills_dir.mkdir()
 
         with patch("hermes_agent.tools.skill_manager_tool.SKILLS_DIR", skills_dir), \
-             patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_dir]):
+             patch("hermes_agent.agent.skill_utils.get_all_skills_dirs", return_value=[skills_dir]):
             result = _create_skill("my-skill", VALID_SKILL_CONTENT, category="../escape")
 
         assert result["success"] is False
@@ -238,7 +238,7 @@ class TestCreateSkill:
         outside = tmp_path / "outside"
 
         with patch("hermes_agent.tools.skill_manager_tool.SKILLS_DIR", skills_dir), \
-             patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_dir]):
+             patch("hermes_agent.agent.skill_utils.get_all_skills_dirs", return_value=[skills_dir]):
             result = _create_skill("my-skill", VALID_SKILL_CONTENT, category=str(outside))
 
         assert result["success"] is False

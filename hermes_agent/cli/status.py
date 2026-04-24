@@ -17,7 +17,7 @@ from hermes_agent.cli.config import get_env_path, get_env_value, get_hermes_home
 from hermes_agent.cli.models import provider_label
 from hermes_agent.cli.nous_subscription import get_nous_subscription_features
 from hermes_agent.cli.runtime_provider import resolve_requested_provider
-from hermes_constants import OPENROUTER_MODELS_URL
+from hermes_agent.providers.hermes_constants import OPENROUTER_MODELS_URL
 from hermes_agent.tools.tool_backend_helpers import managed_nous_tools_enabled
 
 def check_mark(ok: bool) -> str:
@@ -79,7 +79,7 @@ def _effective_provider_label() -> str:
     return provider_label(effective)
 
 
-from hermes_constants import is_termux as _is_termux
+from hermes_agent.providers.hermes_constants import is_termux as _is_termux
 
 
 def show_status(args):

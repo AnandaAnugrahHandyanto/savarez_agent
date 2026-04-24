@@ -43,8 +43,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Union
 
-from hermes_constants import get_hermes_home
-from utils import env_var_enabled
+from hermes_agent.providers.hermes_constants import get_hermes_home
+from hermes_agent.providers.utils import env_var_enabled
 
 try:
     import yaml
@@ -381,7 +381,7 @@ class PluginContext:
             )
             return
         # Defer the import to avoid circular deps at module level
-        from agent.context_engine import ContextEngine
+        from hermes_agent.agent.context_engine import ContextEngine
         if not isinstance(engine, ContextEngine):
             logger.warning(
                 "Plugin '%s' tried to register a context engine that does not "
@@ -406,8 +406,8 @@ class PluginContext:
         ``config.yaml`` matches against when routing ``image_generate``
         tool calls.
         """
-        from agent.image_gen_provider import ImageGenProvider
-        from agent.image_gen_registry import register_provider
+        from hermes_agent.agent.image_gen_provider import ImageGenProvider
+        from hermes_agent.agent.image_gen_registry import register_provider
 
         if not isinstance(provider, ImageGenProvider):
             logger.warning(
@@ -461,7 +461,7 @@ class PluginContext:
             ValueError: if *name* contains ``':'`` or invalid characters.
             FileNotFoundError: if *path* does not exist.
         """
-        from agent.skill_utils import _NAMESPACE_RE
+        from hermes_agent.agent.skill_utils import _NAMESPACE_RE
 
         if ":" in name:
             raise ValueError(

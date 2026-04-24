@@ -15,7 +15,7 @@ import threading
 import pytest
 from unittest.mock import MagicMock, patch
 
-from agent.display import KawaiiSpinner
+from hermes_agent.agent.display import KawaiiSpinner
 from hermes_agent.tools.delegate_tool import _build_child_progress_callback
 
 

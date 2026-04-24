@@ -163,7 +163,7 @@ class TestGetDisabledSkillNames:
         monkeypatch.delenv("HERMES_PLATFORM", raising=False)
         monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
 
-        from agent.skill_utils import get_disabled_skill_names
+        from hermes_agent.agent.skill_utils import get_disabled_skill_names
         result = get_disabled_skill_names(platform="telegram")
         assert result == {"tg-only-skill"}
 
@@ -182,7 +182,7 @@ class TestGetDisabledSkillNames:
         monkeypatch.delenv("HERMES_PLATFORM", raising=False)
         monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
 
-        from agent.skill_utils import get_disabled_skill_names
+        from hermes_agent.agent.skill_utils import get_disabled_skill_names
         result = get_disabled_skill_names()
         assert result == {"discord-skill"}
 
@@ -201,7 +201,7 @@ class TestGetDisabledSkillNames:
         monkeypatch.setenv("HERMES_PLATFORM", "telegram")
         monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
 
-        from agent.skill_utils import get_disabled_skill_names
+        from hermes_agent.agent.skill_utils import get_disabled_skill_names
         result = get_disabled_skill_names()
         assert result == {"tg-skill"}
 
@@ -220,7 +220,7 @@ class TestGetDisabledSkillNames:
         monkeypatch.setenv("HERMES_PLATFORM", "telegram")
         monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
 
-        from agent.skill_utils import get_disabled_skill_names
+        from hermes_agent.agent.skill_utils import get_disabled_skill_names
         result = get_disabled_skill_names(platform="slack")
         assert result == {"slack-skill"}
 
@@ -239,7 +239,7 @@ class TestGetDisabledSkillNames:
         monkeypatch.delenv("HERMES_PLATFORM", raising=False)
         monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
 
-        from agent.skill_utils import get_disabled_skill_names
+        from hermes_agent.agent.skill_utils import get_disabled_skill_names
         result = get_disabled_skill_names()
         assert result == {"global-skill"}
 

@@ -116,17 +116,14 @@ all = [
 
 [project.scripts]
 hermes = "hermes_agent.cli.main:main"
-hermes-agent = "run_agent:main"
+hermes-agent = "hermes_agent.run_agent:main"
 hermes-acp = "acp_adapter.entry:main"
-
-[tool.setuptools]
-py-modules = ["run_agent", "trajectory_compressor", "cli", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "rl_cli", "utils"]
 
 [tool.setuptools.package-data]
 hermes_agent.cli = ["web_dist/**/*"]
 
 [tool.setuptools.packages.find]
-include = ["hermes_agent", "hermes_agent.*", "agent", "agent.*", "tui_gateway", "tui_gateway.*", "acp_adapter"]
+include = ["hermes_agent", "hermes_agent.*", "tui_gateway", "tui_gateway.*", "acp_adapter"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

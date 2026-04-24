@@ -69,7 +69,7 @@ Usage:
 import json
 import logging
 
-from hermes_constants import get_hermes_home, display_hermes_home
+from hermes_agent.providers.hermes_constants import get_hermes_home, display_hermes_home
 import os
 import re
 from enum import Enum
@@ -151,7 +151,7 @@ def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
     Delegates to ``agent.skill_utils.skill_matches_platform`` — kept here
     as a public re-export so existing callers don't need updating.
     """
-    from agent.skill_utils import skill_matches_platform as _impl
+    from hermes_agent.agent.skill_utils import skill_matches_platform as _impl
     return _impl(frontmatter)
 
 
@@ -436,7 +436,7 @@ def _parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     Delegates to ``agent.skill_utils.parse_frontmatter`` — kept here
     as a public re-export so existing callers don't need updating.
     """
-    from agent.skill_utils import parse_frontmatter
+    from hermes_agent.agent.skill_utils import parse_frontmatter
     return parse_frontmatter(content)
 
 
@@ -451,7 +451,7 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
     # then fall back to external dirs from config.
     dirs_to_check = [SKILLS_DIR]
     try:
-        from agent.skill_utils import get_external_skills_dirs
+        from hermes_agent.agent.skill_utils import get_external_skills_dirs
         dirs_to_check.extend(get_external_skills_dirs())
     except Exception:
         pass
@@ -503,7 +503,7 @@ def _get_disabled_skill_names() -> Set[str]:
     Delegates to ``agent.skill_utils.get_disabled_skill_names`` — kept here
     as a public re-export so existing callers don't need updating.
     """
-    from agent.skill_utils import get_disabled_skill_names
+    from hermes_agent.agent.skill_utils import get_disabled_skill_names
     return get_disabled_skill_names()
 
 
@@ -554,7 +554,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     Returns:
         List of skill metadata dicts (name, description, category).
     """
-    from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+    from hermes_agent.agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
 
     skills = []
     seen_names: set = set()
@@ -843,7 +843,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         # Names containing ':' are routed to the plugin skill registry.
         # Bare names fall through to the existing flat-tree scan below.
         if ":" in name:
-            from agent.skill_utils import is_valid_namespace, parse_qualified_name
+            from hermes_agent.agent.skill_utils import is_valid_namespace, parse_qualified_name
             from hermes_agent.cli.plugins import discover_plugins, get_plugin_manager
 
             namespace, bare = parse_qualified_name(name)
@@ -896,7 +896,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
             # Plugin itself not found — fall through to flat-tree scan
             # which will return a normal "not found" with suggestions.
 
-        from agent.skill_utils import get_external_skills_dirs
+        from hermes_agent.agent.skill_utils import get_external_skills_dirs
 
         # Build list of all skill directories to search
         all_dirs = []
@@ -931,7 +931,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         # Search by directory name across all dirs
         if not skill_md:
             for search_dir in all_dirs:
-                from agent.skill_utils import iter_skill_index_files
+                from hermes_agent.agent.skill_utils import iter_skill_index_files
 
                 for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
                     if found_skill_md.parent.name == name:

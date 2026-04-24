@@ -9,7 +9,7 @@ import time
 from types import SimpleNamespace
 import uuid
 
-from agent.credential_pool import (
+from hermes_agent.agent.credential_pool import (
     AUTH_TYPE_API_KEY,
     AUTH_TYPE_OAUTH,
     CUSTOM_POOL_PREFIX,
@@ -29,7 +29,7 @@ from agent.credential_pool import (
 )
 import hermes_agent.cli.auth as auth_mod
 from hermes_agent.cli.auth import PROVIDER_REGISTRY
-from hermes_constants import OPENROUTER_BASE_URL
+from hermes_agent.providers.hermes_constants import OPENROUTER_BASE_URL
 
 
 # Providers that support OAuth login in addition to API keys.
@@ -88,7 +88,7 @@ def _provider_base_url(provider: str) -> str:
     if provider == "openrouter":
         return OPENROUTER_BASE_URL
     if provider.startswith(CUSTOM_POOL_PREFIX):
-        from agent.credential_pool import _get_custom_provider_config
+        from hermes_agent.agent.credential_pool import _get_custom_provider_config
 
         cp_config = _get_custom_provider_config(provider)
         if cp_config:
@@ -197,7 +197,7 @@ def auth_add_command(args) -> None:
         return
 
     if provider == "anthropic":
-        from agent import anthropic_adapter as anthropic_mod
+        from hermes_agent.agent import anthropic_adapter as anthropic_mod
 
         creds = anthropic_mod.run_hermes_oauth_login_pure()
         if not creds:
@@ -271,7 +271,7 @@ def auth_add_command(args) -> None:
         return
 
     if provider == "google-gemini-cli":
-        from agent.google_oauth import run_gemini_oauth_login_pure
+        from hermes_agent.agent.google_oauth import run_gemini_oauth_login_pure
 
         creds = run_gemini_oauth_login_pure()
         label = (getattr(args, "label", None) or "").strip() or (
@@ -361,7 +361,7 @@ def auth_remove_command(args) -> None:
     # handles its source-specific cleanup and we centralise suppression +
     # user-facing output here so every source behaves identically from
     # the user's perspective.
-    from agent.credential_sources import find_removal_step
+    from hermes_agent.agent.credential_sources import find_removal_step
     from hermes_agent.cli.auth import suppress_credential_source
 
     step = find_removal_step(provider, removed.source)
@@ -396,7 +396,7 @@ def _interactive_auth() -> None:
 
     # Show AWS Bedrock credential status (not in the pool — uses boto3 chain)
     try:
-        from agent.bedrock_adapter import has_aws_credentials, resolve_aws_auth_env_var, resolve_bedrock_region
+        from hermes_agent.agent.bedrock_adapter import has_aws_credentials, resolve_aws_auth_env_var, resolve_bedrock_region
         if has_aws_credentials():
             auth_source = resolve_aws_auth_env_var() or "unknown"
             region = resolve_bedrock_region()

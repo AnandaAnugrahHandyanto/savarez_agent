@@ -182,7 +182,7 @@ class TestFlushAgentSilenced:
 
     def test_kawaii_spinner_respects_print_fn(self):
         """KawaiiSpinner must route all output through print_fn when supplied."""
-        from agent.display import KawaiiSpinner
+        from hermes_agent.agent.display import KawaiiSpinner
 
         written = []
         spinner = KawaiiSpinner("test", print_fn=lambda *a, **kw: written.append(a))

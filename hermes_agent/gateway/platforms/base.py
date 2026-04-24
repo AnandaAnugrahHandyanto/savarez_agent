@@ -19,7 +19,7 @@ import uuid
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
-from utils import normalize_proxy_url
+from hermes_agent.providers.utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
 
@@ -244,7 +244,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from hermes_agent.gateway.config import Platform, PlatformConfig
 from hermes_agent.gateway.session import SessionSource, build_session_key
-from hermes_constants import get_hermes_dir
+from hermes_agent.providers.hermes_constants import get_hermes_dir
 
 
 GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (

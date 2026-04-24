@@ -23,7 +23,7 @@ from hermes_agent.cli.config import (
     get_hermes_home,  # noqa: F401 — used by test mocks
 )
 from hermes_agent.cli.colors import Colors, color
-from hermes_constants import display_hermes_home
+from hermes_agent.providers.hermes_constants import display_hermes_home
 
 logger = logging.getLogger(__name__)
 

@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 from hermes_agent.cli import auth as auth_mod
-from agent.credential_pool import CredentialPool, PooledCredential, get_custom_provider_pool_key, load_pool
+from hermes_agent.agent.credential_pool import CredentialPool, PooledCredential, get_custom_provider_pool_key, load_pool
 from hermes_agent.cli.auth import (
     AuthError,
     DEFAULT_CODEX_BASE_URL,
@@ -28,8 +28,8 @@ from hermes_agent.cli.auth import (
     has_usable_secret,
 )
 from hermes_agent.cli.config import get_compatible_custom_providers, load_config
-from hermes_constants import OPENROUTER_BASE_URL
-from utils import base_url_host_matches, base_url_hostname
+from hermes_agent.providers.hermes_constants import OPENROUTER_BASE_URL
+from hermes_agent.providers.utils import base_url_host_matches, base_url_hostname
 
 
 def _normalize_custom_provider_name(value: str) -> str:
@@ -567,7 +567,7 @@ def _resolve_explicit_runtime(
         base_url = explicit_base_url or cfg_base_url or "https://api.anthropic.com"
         api_key = explicit_api_key
         if not api_key:
-            from agent.anthropic_adapter import resolve_anthropic_token
+            from hermes_agent.agent.anthropic_adapter import resolve_anthropic_token
 
             api_key = resolve_anthropic_token()
             if not api_key:
@@ -870,7 +870,7 @@ def resolve_runtime_provider(
 
     # Anthropic (native Messages API)
     if provider == "anthropic":
-        from agent.anthropic_adapter import resolve_anthropic_token
+        from hermes_agent.agent.anthropic_adapter import resolve_anthropic_token
         token = resolve_anthropic_token()
         if not token:
             raise AuthError(
@@ -896,7 +896,7 @@ def resolve_runtime_provider(
 
     # AWS Bedrock (native Converse API via boto3)
     if provider == "bedrock":
-        from agent.bedrock_adapter import (
+        from hermes_agent.agent.bedrock_adapter import (
             has_aws_credentials,
             resolve_aws_auth_env_var,
             resolve_bedrock_region,

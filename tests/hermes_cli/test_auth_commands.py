@@ -701,7 +701,7 @@ def test_auth_remove_env_seeded_does_not_resurrect(tmp_path, monkeypatch):
     auth_remove_command(_Args())
 
     # Now reload the pool — the entry should NOT come back
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
     pool = load_pool("openrouter")
     assert not pool.has_credentials()
 
@@ -998,7 +998,7 @@ def test_seed_from_singletons_respects_codex_suppression(tmp_path, monkeypatch):
 
     monkeypatch.setattr("hermes_cli.auth._import_codex_cli_tokens", _fake_import)
 
-    from agent.credential_pool import _seed_from_singletons
+    from hermes_agent.agent.credential_pool import _seed_from_singletons
 
     entries = []
     changed, active_sources = _seed_from_singletons("openai-codex", entries)
@@ -1060,7 +1060,7 @@ def test_auth_remove_env_seeded_suppresses_shell_exported_var(tmp_path, monkeypa
 
     # Fresh simulation: shell re-exports, reload pool
     monkeypatch.setenv("XAI_API_KEY", "sk-xai-shell-export")
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
     pool = load_pool("xai")
     assert not pool.has_credentials(), "pool must stay empty — env:XAI_API_KEY suppressed"
 
@@ -1154,7 +1154,7 @@ def test_seed_from_env_respects_env_suppression(tmp_path, monkeypatch):
         "suppressed_sources": {"xai": ["env:XAI_API_KEY"]},
     }))
 
-    from agent.credential_pool import _seed_from_env
+    from hermes_agent.agent.credential_pool import _seed_from_env
 
     entries = []
     changed, active = _seed_from_env("xai", entries)
@@ -1178,7 +1178,7 @@ def test_seed_from_env_respects_openrouter_suppression(tmp_path, monkeypatch):
         "suppressed_sources": {"openrouter": ["env:OPENROUTER_API_KEY"]},
     }))
 
-    from agent.credential_pool import _seed_from_env
+    from hermes_agent.agent.credential_pool import _seed_from_env
 
     entries = []
     changed, active = _seed_from_env("openrouter", entries)
@@ -1207,7 +1207,7 @@ def test_seed_from_singletons_respects_nous_suppression(tmp_path, monkeypatch):
         "suppressed_sources": {"nous": ["device_code"]},
     }))
 
-    from agent.credential_pool import _seed_from_singletons
+    from hermes_agent.agent.credential_pool import _seed_from_singletons
     entries = []
     changed, active = _seed_from_singletons("nous", entries)
     assert changed is False
@@ -1231,7 +1231,7 @@ def test_seed_from_singletons_respects_copilot_suppression(tmp_path, monkeypatch
     import hermes_agent.cli.copilot_auth as ca
     monkeypatch.setattr(ca, "resolve_copilot_token", lambda: ("ghp_fake", "gh auth token"))
 
-    from agent.credential_pool import _seed_from_singletons
+    from hermes_agent.agent.credential_pool import _seed_from_singletons
     entries = []
     changed, active = _seed_from_singletons("copilot", entries)
     assert changed is False
@@ -1256,7 +1256,7 @@ def test_seed_from_singletons_respects_qwen_suppression(tmp_path, monkeypatch):
         "api_key": "tok", "source": "qwen-cli", "base_url": "https://q",
     })
 
-    from agent.credential_pool import _seed_from_singletons
+    from hermes_agent.agent.credential_pool import _seed_from_singletons
     entries = []
     changed, active = _seed_from_singletons("qwen-oauth", entries)
     assert changed is False
@@ -1279,13 +1279,13 @@ def test_seed_from_singletons_respects_hermes_pkce_suppression(tmp_path, monkeyp
     }))
 
     # Stub the readers so only hermes_pkce is "available"; claude_code returns None
-    import agent.anthropic_adapter as aa
+    import hermes_agent.agent.anthropic_adapter as aa
     monkeypatch.setattr(aa, "read_hermes_oauth_credentials", lambda: {
         "accessToken": "tok", "refreshToken": "r", "expiresAt": 9999999999000,
     })
     monkeypatch.setattr(aa, "read_claude_code_credentials", lambda: None)
 
-    from agent.credential_pool import _seed_from_singletons
+    from hermes_agent.agent.credential_pool import _seed_from_singletons
     entries = []
     changed, active = _seed_from_singletons("anthropic", entries)
     # hermes_pkce suppressed, claude_code returns None → nothing should be seeded
@@ -1307,7 +1307,7 @@ def test_seed_custom_pool_respects_config_suppression(tmp_path, monkeypatch):
         ],
     }))
 
-    from agent.credential_pool import _seed_custom_pool, get_custom_provider_pool_key
+    from hermes_agent.agent.credential_pool import _seed_custom_pool, get_custom_provider_pool_key
     pool_key = get_custom_provider_pool_key("https://c.example.com")
 
     (hermes_home / "auth.json").write_text(json.dumps({
@@ -1329,7 +1329,7 @@ def test_credential_sources_registry_has_expected_steps():
     Guards against accidentally dropping a step during future refactors.
     If you add a new credential source, add it to the expected set below.
     """
-    from agent.credential_sources import _REGISTRY
+    from hermes_agent.agent.credential_sources import _REGISTRY
 
     descriptions = {step.description for step in _REGISTRY}
     expected = {
@@ -1347,7 +1347,7 @@ def test_credential_sources_registry_has_expected_steps():
 
 def test_credential_sources_find_step_returns_none_for_manual():
     """Manual entries have nothing external to clean up — no step registered."""
-    from agent.credential_sources import find_removal_step
+    from hermes_agent.agent.credential_sources import find_removal_step
     assert find_removal_step("openrouter", "manual") is None
     assert find_removal_step("xai", "manual") is None
 
@@ -1358,7 +1358,7 @@ def test_credential_sources_find_step_copilot_before_generic_env(tmp_path, monke
     problem (same token seeded as both gh_cli and env:<VAR>); the generic
     env step would only suppress one of the variants.
     """
-    from agent.credential_sources import find_removal_step
+    from hermes_agent.agent.credential_sources import find_removal_step
 
     step = find_removal_step("copilot", "env:GH_TOKEN")
     assert step is not None

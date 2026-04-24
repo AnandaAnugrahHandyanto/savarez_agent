@@ -1053,7 +1053,7 @@ def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
 
     Returns the agent's final response text, or empty string on failure.
     """
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     logger.info("[Feishu-Comment] _run_comment_agent: injecting lark client into tool thread-locals")
     from hermes_agent.tools.feishu_doc_tool import set_client as set_doc_client

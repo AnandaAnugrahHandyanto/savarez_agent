@@ -17,7 +17,7 @@ import asyncio
 import logging
 import sys
 from pathlib import Path
-from hermes_constants import get_hermes_home
+from hermes_agent.providers.hermes_constants import get_hermes_home
 
 
 # Methods clients send as periodic liveness probes. They are not part of the

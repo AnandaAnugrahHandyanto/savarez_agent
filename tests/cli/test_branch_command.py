@@ -23,7 +23,7 @@ def session_db(tmp_path):
     """Create a real SessionDB for testing."""
     os.environ["HERMES_HOME"] = str(tmp_path / ".hermes")
     os.makedirs(tmp_path / ".hermes", exist_ok=True)
-    from hermes_state import SessionDB
+    from hermes_agent.providers.hermes_state import SessionDB
     db = SessionDB(db_path=tmp_path / ".hermes" / "test_sessions.db")
     yield db
     db.close()
@@ -68,7 +68,7 @@ class TestBranchCommandCLI:
 
     def test_branch_creates_new_session(self, cli_instance, session_db):
         """Branching should create a new session in the DB."""
-        from cli import HermesCLI
+        from hermes_agent.cli import HermesCLI
 
         # Call the real method on the mock, using the real implementation
         HermesCLI._handle_branch_command(cli_instance, "/branch")
@@ -80,7 +80,7 @@ class TestBranchCommandCLI:
 
     def test_branch_copies_history(self, cli_instance, session_db):
         """Branching should copy all messages to the new session."""
-        from cli import HermesCLI
+        from hermes_agent.cli import HermesCLI
 
         HermesCLI._handle_branch_command(cli_instance, "/branch")
 
@@ -89,7 +89,7 @@ class TestBranchCommandCLI:
 
     def test_branch_preserves_parent_link(self, cli_instance, session_db):
         """The new session should reference the original as parent."""
-        from cli import HermesCLI
+        from hermes_agent.cli import HermesCLI
         original_id = cli_instance.session_id
 
         HermesCLI._handle_branch_command(cli_instance, "/branch")
@@ -99,7 +99,7 @@ class TestBranchCommandCLI:
 
     def test_branch_ends_original_session(self, cli_instance, session_db):
         """The original session should be marked as ended with 'branched' reason."""
-        from cli import HermesCLI
+        from hermes_agent.cli import HermesCLI
         original_id = cli_instance.session_id
 
         HermesCLI._handle_branch_command(cli_instance, "/branch")
@@ -109,7 +109,7 @@ class TestBranchCommandCLI:
 
     def test_branch_with_custom_name(self, cli_instance, session_db):
         """Custom branch name should be used as the title."""
-        from cli import HermesCLI
+        from hermes_agent.cli import HermesCLI
 
         HermesCLI._handle_branch_command(cli_instance, "/branch refactor approach")
 
@@ -118,7 +118,7 @@ class TestBranchCommandCLI:
 
     def test_branch_auto_title_lineage(self, cli_instance, session_db):
         """Without a name, branch should auto-generate a title from the parent's title."""
-        from cli import HermesCLI
+        from hermes_agent.cli import HermesCLI
 
         HermesCLI._handle_branch_command(cli_instance, "/branch")
 
@@ -127,7 +127,7 @@ class TestBranchCommandCLI:
 
     def test_branch_empty_conversation(self, cli_instance, session_db):
         """Branching with no history should show an error."""
-        from cli import HermesCLI
+        from hermes_agent.cli import HermesCLI
         cli_instance.conversation_history = []
 
         HermesCLI._handle_branch_command(cli_instance, "/branch")
@@ -137,7 +137,7 @@ class TestBranchCommandCLI:
 
     def test_branch_no_session_db(self, cli_instance):
         """Branching without a session DB should show an error."""
-        from cli import HermesCLI
+        from hermes_agent.cli import HermesCLI
         cli_instance._session_db = None
 
         HermesCLI._handle_branch_command(cli_instance, "/branch")
@@ -147,7 +147,7 @@ class TestBranchCommandCLI:
 
     def test_branch_syncs_agent(self, cli_instance, session_db):
         """If an agent is active, branch should sync it to the new session."""
-        from cli import HermesCLI
+        from hermes_agent.cli import HermesCLI
 
         agent = MagicMock()
         agent._last_flushed_db_idx = 0
@@ -162,7 +162,7 @@ class TestBranchCommandCLI:
 
     def test_branch_sets_resumed_flag(self, cli_instance, session_db):
         """Branch should set _resumed=True to prevent auto-title generation."""
-        from cli import HermesCLI
+        from hermes_agent.cli import HermesCLI
 
         HermesCLI._handle_branch_command(cli_instance, "/branch")
 

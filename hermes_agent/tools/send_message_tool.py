@@ -14,7 +14,7 @@ from typing import Dict, Optional
 import ssl
 import time
 
-from agent.redact import redact_sensitive_text
+from hermes_agent.agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
 

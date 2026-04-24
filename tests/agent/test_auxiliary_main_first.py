@@ -40,7 +40,7 @@ class TestResolveAutoMainFirst:
             mock_client = MagicMock()
             mock_resolve.return_value = (mock_client, "anthropic/claude-sonnet-4.6")
 
-            from agent.auxiliary_client import _resolve_auto
+            from hermes_agent.agent.auxiliary_client import _resolve_auto
 
             client, model = _resolve_auto()
 
@@ -66,7 +66,7 @@ class TestResolveAutoMainFirst:
             mock_client = MagicMock()
             mock_resolve.return_value = (mock_client, "anthropic/claude-opus-4.6")
 
-            from agent.auxiliary_client import _resolve_auto
+            from hermes_agent.agent.auxiliary_client import _resolve_auto
 
             client, model = _resolve_auto()
 
@@ -88,7 +88,7 @@ class TestResolveAutoMainFirst:
             mock_client = MagicMock()
             mock_resolve.return_value = (mock_client, "deepseek-chat")
 
-            from agent.auxiliary_client import _resolve_auto
+            from hermes_agent.agent.auxiliary_client import _resolve_auto
 
             client, model = _resolve_auto()
 
@@ -112,7 +112,7 @@ class TestResolveAutoMainFirst:
             "agent.auxiliary_client._try_openrouter",
             return_value=(chain_client, "google/gemini-3-flash-preview"),
         ):
-            from agent.auxiliary_client import _resolve_auto
+            from hermes_agent.agent.auxiliary_client import _resolve_auto
 
             client, model = _resolve_auto()
 
@@ -130,7 +130,7 @@ class TestResolveAutoMainFirst:
             "agent.auxiliary_client._try_openrouter",
             return_value=(chain_client, "google/gemini-3-flash-preview"),
         ):
-            from agent.auxiliary_client import _resolve_auto
+            from hermes_agent.agent.auxiliary_client import _resolve_auto
 
             client, model = _resolve_auto()
 
@@ -148,7 +148,7 @@ class TestResolveAutoMainFirst:
         ) as mock_resolve:
             mock_resolve.return_value = (MagicMock(), "runtime-model")
 
-            from agent.auxiliary_client import _resolve_auto
+            from hermes_agent.agent.auxiliary_client import _resolve_auto
 
             _resolve_auto(main_runtime={
                 "provider": "anthropic",
@@ -187,7 +187,7 @@ class TestResolveVisionMainFirst:
             mock_client = MagicMock()
             mock_resolve.return_value = (mock_client, "anthropic/claude-sonnet-4.6")
 
-            from agent.auxiliary_client import resolve_vision_provider_client
+            from hermes_agent.agent.auxiliary_client import resolve_vision_provider_client
 
             provider, client, model = resolve_vision_provider_client()
 
@@ -214,7 +214,7 @@ class TestResolveVisionMainFirst:
             "agent.auxiliary_client._resolve_strict_vision_backend",
             return_value=(MagicMock(), "google/gemini-3-flash-preview"),
         ):
-            from agent.auxiliary_client import resolve_vision_provider_client
+            from hermes_agent.agent.auxiliary_client import resolve_vision_provider_client
 
             provider, client, model = resolve_vision_provider_client()
 
@@ -236,7 +236,7 @@ class TestResolveVisionMainFirst:
             "agent.auxiliary_client._resolve_strict_vision_backend",
             return_value=(MagicMock(), "xiaomi/mimo-v2-omni"),
         ):
-            from agent.auxiliary_client import resolve_vision_provider_client
+            from hermes_agent.agent.auxiliary_client import resolve_vision_provider_client
 
             provider, client, model = resolve_vision_provider_client()
 
@@ -259,7 +259,7 @@ class TestResolveVisionMainFirst:
         ):
             mock_resolve.return_value = (MagicMock(), "mimo-v2.5")
 
-            from agent.auxiliary_client import resolve_vision_provider_client
+            from hermes_agent.agent.auxiliary_client import resolve_vision_provider_client
 
             provider, client, model = resolve_vision_provider_client()
 
@@ -284,7 +284,7 @@ class TestResolveVisionMainFirst:
             "agent.auxiliary_client._resolve_task_provider_model",
             return_value=("auto", None, None, None, None),
         ):
-            from agent.auxiliary_client import resolve_vision_provider_client
+            from hermes_agent.agent.auxiliary_client import resolve_vision_provider_client
 
             provider, client, model = resolve_vision_provider_client()
 
@@ -306,7 +306,7 @@ class TestResolveVisionMainFirst:
         ) as mock_strict:
             mock_strict.return_value = (MagicMock(), "nous-default-model")
 
-            from agent.auxiliary_client import resolve_vision_provider_client
+            from hermes_agent.agent.auxiliary_client import resolve_vision_provider_client
 
             provider, client, model = resolve_vision_provider_client()
 
@@ -323,7 +323,7 @@ def test_aggregator_providers_constant_removed():
 
     Removed when the main-first policy made the aggregator-skip guard obsolete.
     """
-    import agent.auxiliary_client as aux_mod
+    import hermes_agent.agent.auxiliary_client as aux_mod
 
     assert not hasattr(aux_mod, "_AGGREGATOR_PROVIDERS"), (
         "_AGGREGATOR_PROVIDERS was removed when _resolve_auto stopped "

@@ -34,7 +34,7 @@ def _install_anthropic_adapter_mocks():
 
 def test_custom_endpoint_anthropic_messages_builds_anthropic_wrapper():
     """api_mode=anthropic_messages → returns AnthropicAuxiliaryClient, not OpenAI."""
-    from agent.auxiliary_client import _try_custom_endpoint, AnthropicAuxiliaryClient
+    from hermes_agent.agent.auxiliary_client import _try_custom_endpoint, AnthropicAuxiliaryClient
 
     with patch(
         "agent.auxiliary_client._resolve_custom_runtime",
@@ -64,7 +64,7 @@ def test_custom_endpoint_anthropic_messages_builds_anthropic_wrapper():
 
 def test_custom_endpoint_anthropic_messages_falls_back_when_sdk_missing():
     """Graceful degradation when anthropic SDK is unavailable."""
-    from agent.auxiliary_client import _try_custom_endpoint
+    from hermes_agent.agent.auxiliary_client import _try_custom_endpoint
 
     import_error = ImportError("anthropic package not installed")
 
@@ -85,13 +85,13 @@ def test_custom_endpoint_anthropic_messages_falls_back_when_sdk_missing():
     assert client is not None
     assert model == "claude-sonnet-4-6"
     # OpenAI client, not AnthropicAuxiliaryClient.
-    from agent.auxiliary_client import AnthropicAuxiliaryClient
+    from hermes_agent.agent.auxiliary_client import AnthropicAuxiliaryClient
     assert not isinstance(client, AnthropicAuxiliaryClient)
 
 
 def test_custom_endpoint_chat_completions_still_uses_openai_wire():
     """Regression: default path (no api_mode) must remain OpenAI client."""
-    from agent.auxiliary_client import _try_custom_endpoint, AnthropicAuxiliaryClient
+    from hermes_agent.agent.auxiliary_client import _try_custom_endpoint, AnthropicAuxiliaryClient
 
     with patch(
         "agent.auxiliary_client._resolve_custom_runtime",

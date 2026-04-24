@@ -5,7 +5,7 @@ from unittest.mock import patch, MagicMock
 
 def test_vision_call_uses_resolved_provider_args():
     """Resolved provider/model/key/url from config must reach resolve_vision_provider_client."""
-    from agent.auxiliary_client import call_llm
+    from hermes_agent.agent.auxiliary_client import call_llm
 
     fake_client = MagicMock()
     fake_client.chat.completions.create.return_value = MagicMock(

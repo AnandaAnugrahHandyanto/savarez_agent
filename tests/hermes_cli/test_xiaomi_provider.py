@@ -132,7 +132,7 @@ class TestXiaomiModelCatalog:
     """Xiaomi uses dynamic model discovery via models.dev."""
 
     def test_models_dev_mapping(self):
-        from agent.models_dev import PROVIDER_TO_MODELS_DEV
+        from hermes_agent.agent.models_dev import PROVIDER_TO_MODELS_DEV
         assert PROVIDER_TO_MODELS_DEV["xiaomi"] == "xiaomi"
 
     def test_static_model_list_fallback(self):
@@ -148,7 +148,7 @@ class TestXiaomiModelCatalog:
 
     def test_list_agentic_models_mock(self, monkeypatch):
         """When models.dev returns Xiaomi data, list_agentic_models should return models."""
-        from agent import models_dev as md
+        from hermes_agent.agent import models_dev as md
 
         fake_data = {
             "xiaomi": {
@@ -215,22 +215,22 @@ class TestXiaomiURLMapping:
     """Test URL → provider inference for Xiaomi endpoints."""
 
     def test_url_to_provider(self):
-        from agent.model_metadata import _URL_TO_PROVIDER
+        from hermes_agent.agent.model_metadata import _URL_TO_PROVIDER
         assert _URL_TO_PROVIDER.get("api.xiaomimimo.com") == "xiaomi"
 
     def test_provider_prefixes(self):
-        from agent.model_metadata import _PROVIDER_PREFIXES
+        from hermes_agent.agent.model_metadata import _PROVIDER_PREFIXES
         assert "xiaomi" in _PROVIDER_PREFIXES
         assert "mimo" in _PROVIDER_PREFIXES
         assert "xiaomi-mimo" in _PROVIDER_PREFIXES
 
     def test_infer_from_url(self):
-        from agent.model_metadata import _infer_provider_from_url
+        from hermes_agent.agent.model_metadata import _infer_provider_from_url
         assert _infer_provider_from_url("https://api.xiaomimimo.com/v1") == "xiaomi"
 
     def test_infer_from_regional_urls(self):
         """Regional token-plan endpoints should also resolve to xiaomi."""
-        from agent.model_metadata import _infer_provider_from_url
+        from hermes_agent.agent.model_metadata import _infer_provider_from_url
         assert _infer_provider_from_url("https://token-plan-ams.xiaomimimo.com/v1") == "xiaomi"
         assert _infer_provider_from_url("https://token-plan-cn.xiaomimimo.com/v1") == "xiaomi"
         assert _infer_provider_from_url("https://token-plan-sgp.xiaomimimo.com/v1") == "xiaomi"
@@ -283,12 +283,12 @@ class TestXiaomiAuxiliary:
 
     def test_no_flash_in_aux_models(self):
         """mimo-v2-flash must NEVER be used for automatic aux routing."""
-        from agent.auxiliary_client import _API_KEY_PROVIDER_AUX_MODELS
+        from hermes_agent.agent.auxiliary_client import _API_KEY_PROVIDER_AUX_MODELS
         assert "xiaomi" not in _API_KEY_PROVIDER_AUX_MODELS
 
     def test_vision_model_override(self):
         """Xiaomi vision tasks should use mimo-v2.5 (multimodal), not the main model."""
-        from agent.auxiliary_client import _PROVIDER_VISION_MODELS
+        from hermes_agent.agent.auxiliary_client import _PROVIDER_VISION_MODELS
         assert "xiaomi" in _PROVIDER_VISION_MODELS
         assert _PROVIDER_VISION_MODELS["xiaomi"] == "mimo-v2.5"
 

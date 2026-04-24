@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from agent.usage_pricing import (
+from hermes_agent.agent.usage_pricing import (
     CanonicalUsage,
     estimate_usage_cost,
     get_pricing_entry,

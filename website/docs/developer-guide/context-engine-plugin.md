@@ -39,7 +39,7 @@ plugins/context_engine/lcm/
 Your engine must implement these **required** methods:
 
 ```python
-from agent.context_engine import ContextEngine
+from hermes_agent.agent.context_engine import ContextEngine
 
 class LCMEngine(ContextEngine):
 
@@ -165,7 +165,7 @@ The `compression` config block (`compression.threshold`, `compression.protect_la
 ## Testing
 
 ```python
-from agent.context_engine import ContextEngine
+from hermes_agent.agent.context_engine import ContextEngine
 
 def test_engine_satisfies_abc():
     engine = YourEngine(context_length=200000)

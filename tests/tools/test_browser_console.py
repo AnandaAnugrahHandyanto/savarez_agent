@@ -213,7 +213,7 @@ class TestBrowserVisionConfig:
         mock_response.choices = [mock_choice]
 
         with (
-            patch("hermes_constants.get_hermes_dir", return_value=shots_dir),
+            patch("hermes_agent.providers.hermes_constants.get_hermes_dir", return_value=shots_dir),
             patch("hermes_agent.tools.browser_tool._cleanup_old_screenshots"),
             patch("hermes_agent.tools.browser_tool._run_browser_command", return_value={"success": True, "data": {"path": str(screenshot)}}),
             patch("hermes_agent.tools.browser_tool._get_vision_model", return_value="test-model"),
@@ -237,7 +237,7 @@ class TestBrowserVisionConfig:
         mock_response.choices = [mock_choice]
 
         with (
-            patch("hermes_constants.get_hermes_dir", return_value=shots_dir),
+            patch("hermes_agent.providers.hermes_constants.get_hermes_dir", return_value=shots_dir),
             patch("hermes_agent.tools.browser_tool._cleanup_old_screenshots"),
             patch("hermes_agent.tools.browser_tool._run_browser_command", return_value={"success": True, "data": {"path": str(screenshot)}}),
             patch("hermes_agent.tools.browser_tool._get_vision_model", return_value="test-model"),

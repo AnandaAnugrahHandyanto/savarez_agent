@@ -11,7 +11,7 @@ import shutil
 from pathlib import Path
 
 from hermes_agent.cli.config import get_project_root, get_hermes_home, get_env_path
-from hermes_constants import display_hermes_home
+from hermes_agent.providers.hermes_constants import display_hermes_home
 
 PROJECT_ROOT = get_project_root()
 HERMES_HOME = get_hermes_home()
@@ -29,8 +29,8 @@ if _env_path.exists():
 load_dotenv(PROJECT_ROOT / ".env", override=False, encoding="utf-8")
 
 from hermes_agent.cli.colors import Colors, color
-from hermes_constants import OPENROUTER_MODELS_URL
-from utils import base_url_host_matches
+from hermes_agent.providers.hermes_constants import OPENROUTER_MODELS_URL
+from hermes_agent.providers.utils import base_url_host_matches
 
 
 _PROVIDER_ENV_HINTS = (
@@ -58,7 +58,7 @@ _PROVIDER_ENV_HINTS = (
 )
 
 
-from hermes_constants import is_termux as _is_termux
+from hermes_agent.providers.hermes_constants import is_termux as _is_termux
 
 
 def _python_install_cmd() -> str:
@@ -419,7 +419,7 @@ def run_doctor(args):
                             model_section[k] = raw_config.pop(k)
                         else:
                             raw_config.pop(k)
-                    from utils import atomic_yaml_write
+                    from hermes_agent.providers.utils import atomic_yaml_write
                     atomic_yaml_write(config_path, raw_config)
                     check_ok("Migrated stale root-level keys into model section")
                     fixed_count += 1
@@ -883,7 +883,7 @@ def run_doctor(args):
         print("  Checking Anthropic API...", end="", flush=True)
         try:
             import httpx
-            from agent.anthropic_adapter import _is_oauth_token, _COMMON_BETAS, _OAUTH_ONLY_BETAS
+            from hermes_agent.agent.anthropic_adapter import _is_oauth_token, _COMMON_BETAS, _OAUTH_ONLY_BETAS
 
             headers = {"anthropic-version": "2023-06-01"}
             if _is_oauth_token(anthropic_key):
@@ -952,7 +952,7 @@ def run_doctor(args):
                 # with no /v1) don't support /models.  Rewrite to the OpenAI-compat
                 # /v1 surface for health checks.
                 if _base and _base.rstrip("/").endswith("/anthropic"):
-                    from agent.auxiliary_client import _to_openai_base_url
+                    from hermes_agent.agent.auxiliary_client import _to_openai_base_url
                     _base = _to_openai_base_url(_base)
                 if base_url_host_matches(_base, "api.kimi.com") and _base.rstrip("/").endswith("/coding"):
                     _base = _base.rstrip("/") + "/v1"
@@ -978,7 +978,7 @@ def run_doctor(args):
     # -- AWS Bedrock --
     # Bedrock uses the AWS SDK credential chain, not API keys.
     try:
-        from agent.bedrock_adapter import has_aws_credentials, resolve_aws_auth_env_var, resolve_bedrock_region
+        from hermes_agent.agent.bedrock_adapter import has_aws_credentials, resolve_aws_auth_env_var, resolve_bedrock_region
         if has_aws_credentials():
             _auth_var = resolve_aws_auth_env_var()
             _region = resolve_bedrock_region()

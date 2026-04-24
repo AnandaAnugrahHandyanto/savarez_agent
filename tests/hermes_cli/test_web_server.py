@@ -108,8 +108,8 @@ class TestWebServerEndpoints:
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
 
-        import hermes_state
-        from hermes_constants import get_hermes_home
+        import hermes_agent.providers.hermes_state
+        from hermes_agent.providers.hermes_constants import get_hermes_home
         from hermes_agent.cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
         monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
@@ -555,8 +555,8 @@ class TestNewEndpoints:
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
 
-        import hermes_state
-        from hermes_constants import get_hermes_home
+        import hermes_agent.providers.hermes_state
+        from hermes_agent.providers.hermes_constants import get_hermes_home
         from hermes_agent.cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
         monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
@@ -751,7 +751,7 @@ class TestNewEndpoints:
         }
 
     def test_analytics_usage_includes_skill_breakdown(self):
-        from hermes_state import SessionDB
+        from hermes_agent.providers.hermes_state import SessionDB
 
         db = SessionDB()
         try:
@@ -1004,7 +1004,7 @@ class TestModelInfoEndpoint:
             }
         })
 
-        with patch("agent.model_metadata.get_model_context_length", return_value=200000):
+        with patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=200000):
             resp = self.client.get("/api/model/info")
 
         data = resp.json()
@@ -1021,7 +1021,7 @@ class TestModelInfoEndpoint:
             "model": {"default": "anthropic/claude-opus-4.6", "provider": "openrouter"}
         })
 
-        with patch("agent.model_metadata.get_model_context_length", return_value=200000):
+        with patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=200000):
             resp = self.client.get("/api/model/info")
 
         data = resp.json()
@@ -1046,7 +1046,7 @@ class TestModelInfoEndpoint:
             "model": "anthropic/claude-sonnet-4"
         })
 
-        with patch("agent.model_metadata.get_model_context_length", return_value=200000):
+        with patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=200000):
             resp = self.client.get("/api/model/info")
 
         data = resp.json()
@@ -1070,8 +1070,8 @@ class TestModelInfoEndpoint:
         mock_caps.max_output_tokens = 32000
         mock_caps.model_family = "claude-opus"
 
-        with patch("agent.model_metadata.get_model_context_length", return_value=200000), \
-             patch("agent.models_dev.get_model_capabilities", return_value=mock_caps):
+        with patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=200000), \
+             patch("hermes_agent.agent.models_dev.get_model_capabilities", return_value=mock_caps):
             resp = self.client.get("/api/model/info")
 
         caps = resp.json()["capabilities"]
@@ -1089,7 +1089,7 @@ class TestModelInfoEndpoint:
             "model": "some/obscure-model"
         })
 
-        with patch("agent.model_metadata.get_model_context_length", side_effect=Exception("boom")):
+        with patch("hermes_agent.agent.model_metadata.get_model_context_length", side_effect=Exception("boom")):
             resp = self.client.get("/api/model/info")
 
         assert resp.status_code == 200

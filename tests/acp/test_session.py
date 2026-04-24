@@ -9,7 +9,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from acp_adapter.session import SessionManager, SessionState
-from hermes_state import SessionDB
+from hermes_agent.providers.hermes_state import SessionDB
 
 
 def _mock_agent():
@@ -375,7 +375,7 @@ class TestPersistence:
         )
         db = SessionDB(tmp_path / "state.db")
 
-        with patch("run_agent.AIAgent", side_effect=fake_agent):
+        with patch("hermes_agent.run_agent.AIAgent", side_effect=fake_agent):
             manager = SessionManager(db=db)
             state = manager.create_session(cwd="/work")
             manager.save_session(state.session_id)
@@ -415,7 +415,7 @@ class TestPersistence:
         )
         db = SessionDB(tmp_path / "state.db")
 
-        with patch("run_agent.AIAgent", side_effect=fake_agent):
+        with patch("hermes_agent.run_agent.AIAgent", side_effect=fake_agent):
             manager = SessionManager(db=db)
             state = manager.create_session(cwd="/work")
 

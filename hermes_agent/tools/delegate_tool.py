@@ -33,7 +33,7 @@ from typing import Any, Dict, List, Optional
 
 from hermes_agent.backends.toolsets import TOOLSETS
 from hermes_agent.tools import file_state
-from utils import base_url_hostname, is_truthy_value
+from hermes_agent.providers.utils import base_url_hostname, is_truthy_value
 
 
 # Tools that children must never have access to
@@ -730,7 +730,7 @@ def _build_child_progress_callback(
                 if preview and len(preview) > 35
                 else (preview or "")
             )
-            from agent.display import get_tool_emoji
+            from hermes_agent.agent.display import get_tool_emoji
 
             emoji = get_tool_emoji(tool_name or "")
             line = f" {prefix}├─ {emoji} {tool_name}"
@@ -791,7 +791,7 @@ def _build_child_agent(
     routing subagents to a different provider:model pair (e.g. cheap/fast
     model on OpenRouter while the parent runs on Nous Portal).
     """
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     import uuid as _uuid
 
     # ── Role resolution ─────────────────────────────────────────────────
@@ -934,7 +934,7 @@ def _build_child_agent(
     try:
         delegation_effort = str(delegation_cfg.get("reasoning_effort") or "").strip()
         if delegation_effort:
-            from hermes_constants import parse_reasoning_effort
+            from hermes_agent.providers.hermes_constants import parse_reasoning_effort
 
             parsed = parse_reasoning_effort(delegation_effort)
             if parsed is not None:
@@ -1868,7 +1868,7 @@ def _resolve_child_credential_pool(effective_provider: Optional[str], parent_age
         return parent_pool
 
     try:
-        from agent.credential_pool import load_pool
+        from hermes_agent.agent.credential_pool import load_pool
 
         pool = load_pool(effective_provider)
         if pool is not None and pool.has_credentials():
@@ -1984,7 +1984,7 @@ def _load_config() -> dict:
     of the entry point (CLI, gateway, cron).
     """
     try:
-        from cli import CLI_CONFIG
+        from hermes_agent.cli import CLI_CONFIG
 
         cfg = CLI_CONFIG.get("delegation", {})
         if cfg:

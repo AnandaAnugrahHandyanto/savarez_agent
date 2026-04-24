@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from agent.prompt_builder import (
+from hermes_agent.agent.prompt_builder import (
     _scan_context_content,
     _truncate_content,
     _parse_skill_file,
@@ -200,7 +200,7 @@ class TestParseSkillFile:
         )
         from unittest.mock import patch
 
-        with patch("agent.skill_utils.sys") as mock_sys:
+        with patch("hermes_agent.agent.skill_utils.sys") as mock_sys:
             mock_sys.platform = "linux"
             is_compat, _, _ = _parse_skill_file(skill_file)
         assert is_compat is False
@@ -244,7 +244,7 @@ class TestBuildSkillsSystemPrompt:
     @pytest.fixture(autouse=True)
     def _clear_skills_cache(self):
         """Ensure the in-process skills prompt cache doesn't leak between tests."""
-        from agent.prompt_builder import clear_skills_system_prompt_cache
+        from hermes_agent.agent.prompt_builder import clear_skills_system_prompt_cache
         clear_skills_system_prompt_cache(clear_snapshot=True)
         yield
         clear_skills_system_prompt_cache(clear_snapshot=True)
@@ -299,7 +299,7 @@ class TestBuildSkillsSystemPrompt:
 
         from unittest.mock import patch
 
-        with patch("agent.skill_utils.sys") as mock_sys:
+        with patch("hermes_agent.agent.skill_utils.sys") as mock_sys:
             mock_sys.platform = "linux"
             result = build_skills_system_prompt()
 
@@ -318,7 +318,7 @@ class TestBuildSkillsSystemPrompt:
 
         from unittest.mock import patch
 
-        with patch("agent.skill_utils.sys") as mock_sys:
+        with patch("hermes_agent.agent.skill_utils.sys") as mock_sys:
             mock_sys.platform = "darwin"
             result = build_skills_system_prompt()
 
@@ -836,14 +836,14 @@ class TestEnvironmentHints:
         assert "WSL" in WSL_ENVIRONMENT_HINT
 
     def test_build_environment_hints_on_wsl(self, monkeypatch):
-        import agent.prompt_builder as _pb
+        import hermes_agent.agent.prompt_builder as _pb
         monkeypatch.setattr(_pb, "is_wsl", lambda: True)
         result = _pb.build_environment_hints()
         assert "/mnt/" in result
         assert "WSL" in result
 
     def test_build_environment_hints_not_wsl(self, monkeypatch):
-        import agent.prompt_builder as _pb
+        import hermes_agent.agent.prompt_builder as _pb
         monkeypatch.setattr(_pb, "is_wsl", lambda: False)
         result = _pb.build_environment_hints()
         assert result == ""
@@ -908,7 +908,7 @@ class TestSkillShouldShow:
 class TestBuildSkillsSystemPromptConditional:
     @pytest.fixture(autouse=True)
     def _clear_skills_cache(self):
-        from agent.prompt_builder import clear_skills_system_prompt_cache
+        from hermes_agent.agent.prompt_builder import clear_skills_system_prompt_cache
         clear_skills_system_prompt_cache(clear_snapshot=True)
         yield
         clear_skills_system_prompt_cache(clear_snapshot=True)

@@ -12,7 +12,7 @@ import getpass
 
 from hermes_agent.cli.banner import cprint, _DIM, _RST
 from hermes_agent.cli.config import save_env_value_secure
-from hermes_constants import display_hermes_home
+from hermes_agent.providers.hermes_constants import display_hermes_home
 
 
 def clarify_callback(cli, question, choices):
@@ -21,7 +21,7 @@ def clarify_callback(cli, question, choices):
     Sets up the interactive selection UI, then blocks until the user
     responds. Returns the user's choice or a timeout message.
     """
-    from cli import CLI_CONFIG
+    from hermes_agent.cli import CLI_CONFIG
 
     timeout = CLI_CONFIG.get("clarify", {}).get("timeout", 120)
     response_queue = queue.Queue()
@@ -200,7 +200,7 @@ def approval_callback(cli, command: str, description: str) -> str:
         lock = cli._approval_lock
 
     with lock:
-        from cli import CLI_CONFIG
+        from hermes_agent.cli import CLI_CONFIG
         timeout = CLI_CONFIG.get("approvals", {}).get("timeout", 60)
         response_queue = queue.Queue()
         choices = ["once", "session", "always", "deny"]

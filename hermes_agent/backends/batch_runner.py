@@ -35,7 +35,7 @@ from rich.console import Console
 logger = logging.getLogger(__name__)
 import fire
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 from hermes_agent.backends.toolset_distributions import (
     list_distributions, 
     sample_toolsets_from_distribution,
@@ -708,7 +708,7 @@ class BatchRunner:
         """
         checkpoint_data["last_updated"] = datetime.now().isoformat()
 
-        from utils import atomic_json_write
+        from hermes_agent.providers.utils import atomic_json_write
         if lock:
             with lock:
                 atomic_json_write(self.checkpoint_file, checkpoint_data)

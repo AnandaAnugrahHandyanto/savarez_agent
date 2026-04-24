@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock, patch, call
 
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 def _make_cli(enabled_toolsets=None):

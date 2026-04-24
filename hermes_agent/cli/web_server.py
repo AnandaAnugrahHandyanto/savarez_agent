@@ -549,7 +549,7 @@ async def get_status():
 
     active_sessions = 0
     try:
-        from hermes_state import SessionDB
+        from hermes_agent.providers.hermes_state import SessionDB
         db = SessionDB()
         try:
             sessions = db.list_sessions_rich(limit=50)
@@ -718,7 +718,7 @@ async def get_action_status(name: str, lines: int = 200):
 @app.get("/api/sessions")
 async def get_sessions(limit: int = 20, offset: int = 0):
     try:
-        from hermes_state import SessionDB
+        from hermes_agent.providers.hermes_state import SessionDB
         db = SessionDB()
         try:
             sessions = db.list_sessions_rich(limit=limit, offset=offset)
@@ -743,7 +743,7 @@ async def search_sessions(q: str = "", limit: int = 20):
     if not q or not q.strip():
         return {"results": []}
     try:
-        from hermes_state import SessionDB
+        from hermes_agent.providers.hermes_state import SessionDB
         db = SessionDB()
         try:
             # Auto-add prefix wildcards so partial words match
@@ -859,7 +859,7 @@ def get_model_info():
         # Resolve auto-detected context length (pass config_ctx=None to get
         # purely auto-detected value, then separately report the override)
         try:
-            from agent.model_metadata import get_model_context_length
+            from hermes_agent.agent.model_metadata import get_model_context_length
             auto_ctx = get_model_context_length(
                 model=model_name,
                 base_url=base_url,
@@ -879,7 +879,7 @@ def get_model_info():
         # Try to get model capabilities from models.dev
         caps = {}
         try:
-            from agent.models_dev import get_model_capabilities
+            from hermes_agent.agent.models_dev import get_model_capabilities
             mc = get_model_capabilities(provider=provider, model=model_name)
             if mc is not None:
                 caps = {
@@ -1083,7 +1083,7 @@ def _anthropic_oauth_status() -> Dict[str, Any]:
     The dashboard reports the highest-priority source that's actually present.
     """
     try:
-        from agent.anthropic_adapter import (
+        from hermes_agent.agent.anthropic_adapter import (
             read_hermes_oauth_credentials,
             read_claude_code_credentials,
             _HERMES_OAUTH_FILE,
@@ -1146,7 +1146,7 @@ def _claude_code_only_status() -> Dict[str, Any]:
     when they also have a separate Hermes-managed PKCE login.
     """
     try:
-        from agent.anthropic_adapter import read_claude_code_credentials
+        from hermes_agent.agent.anthropic_adapter import read_claude_code_credentials
         creds = read_claude_code_credentials()
     except Exception:
         creds = None
@@ -1309,7 +1309,7 @@ async def disconnect_oauth_provider(provider_id: str, request: Request):
     # want to undo a disconnect.
     if provider_id in ("anthropic", "claude-code"):
         try:
-            from agent.anthropic_adapter import _HERMES_OAUTH_FILE
+            from hermes_agent.agent.anthropic_adapter import _HERMES_OAUTH_FILE
             if _HERMES_OAUTH_FILE.exists():
                 _HERMES_OAUTH_FILE.unlink()
         except Exception:
@@ -1377,7 +1377,7 @@ _oauth_sessions_lock = threading.Lock()
 # Guarded so hermes web still starts if anthropic_adapter is unavailable;
 # Phase 2 endpoints will return 501 in that case.
 try:
-    from agent.anthropic_adapter import (
+    from hermes_agent.agent.anthropic_adapter import (
         _OAUTH_CLIENT_ID as _ANTHROPIC_OAUTH_CLIENT_ID,
         _OAUTH_TOKEN_URL as _ANTHROPIC_OAUTH_TOKEN_URL,
         _OAUTH_REDIRECT_URI as _ANTHROPIC_OAUTH_REDIRECT_URI,
@@ -1421,7 +1421,7 @@ def _save_anthropic_oauth_creds(access_token: str, refresh_token: str, expires_a
     Mirrors what auth_commands.add_command does so the dashboard flow leaves
     the system in the same state as ``hermes auth add anthropic``.
     """
-    from agent.anthropic_adapter import _HERMES_OAUTH_FILE
+    from hermes_agent.agent.anthropic_adapter import _HERMES_OAUTH_FILE
     payload = {
         "accessToken": access_token,
         "refreshToken": refresh_token,
@@ -1433,7 +1433,7 @@ def _save_anthropic_oauth_creds(access_token: str, refresh_token: str, expires_a
     # the file write — pool registration only matters for the rotation
     # strategy, not for runtime credential resolution.
     try:
-        from agent.credential_pool import (
+        from hermes_agent.agent.credential_pool import (
             PooledCredential,
             load_pool,
             AUTH_TYPE_OAUTH,
@@ -1796,7 +1796,7 @@ def _codex_full_login_worker(session_id: str) -> None:
             raise RuntimeError("token exchange did not return access_token")
 
         # Persist via credential pool — same shape as auth_commands.add_command
-        from agent.credential_pool import (
+        from hermes_agent.agent.credential_pool import (
             PooledCredential,
             load_pool,
             AUTH_TYPE_OAUTH,
@@ -1910,7 +1910,7 @@ async def cancel_oauth_session(session_id: str, request: Request):
 
 @app.get("/api/sessions/{session_id}")
 async def get_session_detail(session_id: str):
-    from hermes_state import SessionDB
+    from hermes_agent.providers.hermes_state import SessionDB
     db = SessionDB()
     try:
         sid = db.resolve_session_id(session_id)
@@ -1924,7 +1924,7 @@ async def get_session_detail(session_id: str):
 
 @app.get("/api/sessions/{session_id}/messages")
 async def get_session_messages(session_id: str):
-    from hermes_state import SessionDB
+    from hermes_agent.providers.hermes_state import SessionDB
     db = SessionDB()
     try:
         sid = db.resolve_session_id(session_id)
@@ -1938,7 +1938,7 @@ async def get_session_messages(session_id: str):
 
 @app.delete("/api/sessions/{session_id}")
 async def delete_session_endpoint(session_id: str):
-    from hermes_state import SessionDB
+    from hermes_agent.providers.hermes_state import SessionDB
     db = SessionDB()
     try:
         if not db.delete_session(session_id):
@@ -1971,7 +1971,7 @@ async def get_logs(
         return {"file": file, "lines": []}
 
     try:
-        from hermes_logging import COMPONENT_PREFIXES
+        from hermes_agent.providers.hermes_logging import COMPONENT_PREFIXES
     except ImportError:
         COMPONENT_PREFIXES = {}
 
@@ -2196,8 +2196,8 @@ async def update_config_raw(body: RawConfigUpdate):
 
 @app.get("/api/analytics/usage")
 async def get_usage_analytics(days: int = 30):
-    from hermes_state import SessionDB
-    from agent.insights import InsightsEngine
+    from hermes_agent.providers.hermes_state import SessionDB
+    from hermes_agent.agent.insights import InsightsEngine
 
     db = SessionDB()
     try:

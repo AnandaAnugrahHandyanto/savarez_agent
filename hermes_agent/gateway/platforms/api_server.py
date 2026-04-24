@@ -691,7 +691,7 @@ class APIServerAdapter(BasePlatformAdapter):
         """
         if self._session_db is None:
             try:
-                from hermes_state import SessionDB
+                from hermes_agent.providers.hermes_state import SessionDB
                 self._session_db = SessionDB()
             except Exception as e:
                 logger.debug("SessionDB unavailable for API server: %s", e)
@@ -718,7 +718,7 @@ class APIServerAdapter(BasePlatformAdapter):
         from config.yaml platform_toolsets.api_server (same as all other
         gateway platforms), falling back to the hermes-api-server default.
         """
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         from hermes_agent.gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config
         from hermes_agent.cli.tools_config import _get_platform_tools
 
@@ -950,7 +950,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     return
                 if name.startswith("_"):
                     return
-                from agent.display import get_tool_emoji
+                from hermes_agent.agent.display import get_tool_emoji
                 emoji = get_tool_emoji(name)
                 label = preview or name
                 _stream_q.put(("__tool_progress__", {

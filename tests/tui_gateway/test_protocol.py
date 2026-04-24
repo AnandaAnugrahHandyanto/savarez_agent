@@ -249,7 +249,7 @@ def test_slash_exec_rejects_skill_commands(server):
     # Mock scan_skill_commands to return a known skill
     fake_skills = {"/hermes-agent-dev": {"name": "hermes-agent-dev", "description": "Dev workflow"}}
 
-    with patch("agent.skill_commands.get_skill_commands", return_value=fake_skills):
+    with patch("hermes_agent.agent.skill_commands.get_skill_commands", return_value=fake_skills):
         resp = server.handle_request({
             "id": "r1",
             "method": "slash.exec",
@@ -420,8 +420,8 @@ def test_command_dispatch_returns_skill_payload(server):
     fake_skills = {"/hermes-agent-dev": {"name": "hermes-agent-dev", "description": "Dev workflow"}}
     fake_msg = "Loaded skill content here"
 
-    with patch("agent.skill_commands.scan_skill_commands", return_value=fake_skills), \
-         patch("agent.skill_commands.build_skill_invocation_message", return_value=fake_msg):
+    with patch("hermes_agent.agent.skill_commands.scan_skill_commands", return_value=fake_skills), \
+         patch("hermes_agent.agent.skill_commands.build_skill_invocation_message", return_value=fake_msg):
         resp = server.handle_request({
             "id": "r2",
             "method": "command.dispatch",

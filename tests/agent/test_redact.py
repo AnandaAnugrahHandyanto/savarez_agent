@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-from agent.redact import redact_sensitive_text, RedactingFormatter
+from hermes_agent.agent.redact import redact_sensitive_text, RedactingFormatter
 
 
 @pytest.fixture(autouse=True)

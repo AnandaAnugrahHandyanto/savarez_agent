@@ -618,7 +618,7 @@ class HermesACPAgent(acp.Agent):
         final_response = result.get("final_response", "")
         if final_response:
             try:
-                from agent.title_generator import maybe_auto_title
+                from hermes_agent.agent.title_generator import maybe_auto_title
 
                 maybe_auto_title(
                     self.session_manager._get_db(),
@@ -804,7 +804,7 @@ class HermesACPAgent(acp.Agent):
             if not hasattr(agent, "_compress_context"):
                 return "Context compression not available for this agent."
 
-            from agent.model_metadata import estimate_messages_tokens_rough
+            from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough
 
             original_count = len(state.history)
             approx_tokens = estimate_messages_tokens_rough(state.history)

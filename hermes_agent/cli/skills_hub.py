@@ -21,7 +21,7 @@ from rich.table import Table
 
 # Lazy imports to avoid circular dependencies and slow startup.
 # tools.skills_hub and tools.skills_guard are imported inside functions.
-from hermes_constants import display_hermes_home
+from hermes_agent.providers.hermes_constants import display_hermes_home
 
 _console = Console()
 
@@ -456,7 +456,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     if invalidate_cache:
         # Invalidate the skills prompt cache so the new skill appears immediately
         try:
-            from agent.prompt_builder import clear_skills_system_prompt_cache
+            from hermes_agent.agent.prompt_builder import clear_skills_system_prompt_cache
             clear_skills_system_prompt_cache(clear_snapshot=True)
         except Exception:
             pass
@@ -757,7 +757,7 @@ def do_uninstall(name: str, console: Optional[Console] = None,
         c.print(f"[bold green]{msg}[/]\n")
         if invalidate_cache:
             try:
-                from agent.prompt_builder import clear_skills_system_prompt_cache
+                from hermes_agent.agent.prompt_builder import clear_skills_system_prompt_cache
                 clear_skills_system_prompt_cache(clear_snapshot=True)
             except Exception:
                 pass
@@ -804,7 +804,7 @@ def do_reset(name: str, restore: bool = False,
 
     if invalidate_cache:
         try:
-            from agent.prompt_builder import clear_skills_system_prompt_cache
+            from hermes_agent.agent.prompt_builder import clear_skills_system_prompt_cache
             clear_skills_system_prompt_cache(clear_snapshot=True)
         except Exception:
             pass

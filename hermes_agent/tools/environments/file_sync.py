@@ -24,7 +24,7 @@ except ImportError:
 from pathlib import Path
 from typing import Callable
 
-from hermes_constants import get_hermes_home
+from hermes_agent.providers.hermes_constants import get_hermes_home
 from hermes_agent.tools.environments.base import _file_mtime_key
 
 logger = logging.getLogger(__name__)

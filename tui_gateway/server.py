@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from hermes_constants import get_hermes_home
+from hermes_agent.providers.hermes_constants import get_hermes_home
 from hermes_agent.cli.env_loader import load_hermes_dotenv
 
 logger = logging.getLogger(__name__)
@@ -245,7 +245,7 @@ atexit.register(
 def _get_db():
     global _db, _db_error
     if _db is None:
-        from hermes_state import SessionDB
+        from hermes_agent.providers.hermes_state import SessionDB
 
         try:
             _db = SessionDB()
@@ -554,7 +554,7 @@ def _coerce_statusbar(raw) -> str:
 
 
 def _load_reasoning_config() -> dict | None:
-    from hermes_constants import parse_reasoning_effort
+    from hermes_agent.providers.hermes_constants import parse_reasoning_effort
 
     effort = str(_load_cfg().get("agent", {}).get("reasoning_effort", "") or "").strip()
     return parse_reasoning_effort(effort)
@@ -699,7 +699,7 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
 def _compress_session_history(
     session: dict, focus_topic: str | None = None
 ) -> tuple[int, dict]:
-    from agent.model_metadata import estimate_messages_tokens_rough
+    from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough
 
     agent = session["agent"]
     history = list(session.get("history", []))
@@ -740,7 +740,7 @@ def _get_usage(agent) -> dict:
             usage["context_percent"] = max(0, min(100, round(ctx_used / ctx_max * 100)))
         usage["compressions"] = getattr(comp, "compression_count", 0) or 0
     try:
-        from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
+        from hermes_agent.agent.usage_pricing import CanonicalUsage, estimate_usage_cost
 
         cost = estimate_usage_cost(
             usage["model"],
@@ -827,7 +827,7 @@ def _session_info(agent) -> dict:
 
 def _tool_ctx(name: str, args: dict) -> str:
     try:
-        from agent.display import build_tool_preview
+        from hermes_agent.agent.display import build_tool_preview
 
         return build_tool_preview(name, args, max_len=80) or ""
     except Exception:
@@ -881,7 +881,7 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
     session = _sessions.get(sid)
     if session is not None:
         try:
-            from agent.display import capture_local_edit_snapshot
+            from hermes_agent.agent.display import capture_local_edit_snapshot
 
             snapshot = capture_local_edit_snapshot(name, args)
             if snapshot is not None:
@@ -912,7 +912,7 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
     if summary:
         payload["summary"] = summary
     try:
-        from agent.display import render_edit_diff_with_delta
+        from hermes_agent.agent.display import render_edit_diff_with_delta
 
         rendered: list[str] = []
         if render_edit_diff_with_delta(
@@ -1065,7 +1065,7 @@ def _resolve_personality_prompt(cfg: dict) -> str:
     if not name or name in ("default", "none", "neutral"):
         return ""
     try:
-        from cli import load_cli_config
+        from hermes_agent.cli import load_cli_config
 
         personalities = load_cli_config().get("agent", {}).get("personalities", {})
     except Exception:
@@ -1094,7 +1094,7 @@ def _render_personality_prompt(value) -> str:
 
 def _available_personalities(cfg: dict | None = None) -> dict:
     try:
-        from cli import load_cli_config
+        from hermes_agent.cli import load_cli_config
 
         return load_cli_config().get("agent", {}).get("personalities", {}) or {}
     except Exception:
@@ -1210,7 +1210,7 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
 
 
 def _make_agent(sid: str, key: str, session_id: str | None = None):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from hermes_agent.cli.runtime_provider import resolve_runtime_provider
 
     cfg = _load_cfg()
@@ -1865,7 +1865,7 @@ def _(rid, params: dict) -> dict:
 
 def _spawn_trees_root():
     from pathlib import Path as _P
-    from hermes_constants import get_hermes_home
+    from hermes_agent.providers.hermes_constants import get_hermes_home
 
     root = get_hermes_home() / "spawn-trees"
     root.mkdir(parents=True, exist_ok=True)
@@ -2105,8 +2105,8 @@ def _(rid, params: dict) -> dict:
             prompt = text
 
             if isinstance(prompt, str) and "@" in prompt:
-                from agent.context_references import preprocess_context_references
-                from agent.model_metadata import get_model_context_length
+                from hermes_agent.agent.context_references import preprocess_context_references
+                from hermes_agent.agent.model_metadata import get_model_context_length
 
                 ctx_len = get_model_context_length(
                     getattr(agent, "model", "") or _resolve_model(),
@@ -2296,7 +2296,7 @@ def _(rid, params: dict) -> dict:
     if not raw:
         return _err(rid, 4015, "path required")
     try:
-        from cli import (
+        from hermes_agent.cli import (
             _IMAGE_EXTENSIONS,
             _detect_file_drop,
             _resolve_attachment_path,
@@ -2336,7 +2336,7 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     try:
-        from cli import _detect_file_drop
+        from hermes_agent.cli import _detect_file_drop
 
         raw = str(params.get("text", "") or "")
         dropped = _detect_file_drop(raw)
@@ -2390,7 +2390,7 @@ def _(rid, params: dict) -> dict:
     def run():
         session_tokens = _set_session_context(task_id)
         try:
-            from run_agent import AIAgent
+            from hermes_agent.run_agent import AIAgent
 
             result = AIAgent(
                 **_background_agent_kwargs(session["agent"], task_id)
@@ -2436,7 +2436,7 @@ def _(rid, params: dict) -> dict:
     def run():
         session_tokens = _set_session_context(session["session_key"])
         try:
-            from run_agent import AIAgent
+            from hermes_agent.run_agent import AIAgent
 
             result = AIAgent(
                 model=_resolve_model(),
@@ -2610,7 +2610,7 @@ def _(rid, params: dict) -> dict:
 
     if key == "reasoning":
         try:
-            from hermes_constants import parse_reasoning_effort
+            from hermes_agent.providers.hermes_constants import parse_reasoning_effort
 
             arg = str(value or "").strip().lower()
             if arg in ("show", "on"):
@@ -2747,7 +2747,7 @@ def _(rid, params: dict) -> dict:
         except Exception as e:
             return _err(rid, 5013, str(e))
     if key == "profile":
-        from hermes_constants import display_hermes_home
+        from hermes_agent.providers.hermes_constants import display_hermes_home
 
         return _ok(rid, {"home": str(_hermes_home), "display": display_hermes_home()})
     if key == "full":
@@ -2963,7 +2963,7 @@ def _(rid, params: dict) -> dict:
 
         skill_count = 0
         try:
-            from agent.skill_commands import scan_skill_commands
+            from hermes_agent.agent.skill_commands import scan_skill_commands
 
             for k, info in sorted(scan_skill_commands().items()):
                 d = str(info.get("description", "Skill"))
@@ -3110,7 +3110,7 @@ def _(rid, params: dict) -> dict:
         pass
 
     try:
-        from agent.skill_commands import (
+        from hermes_agent.agent.skill_commands import (
             scan_skill_commands,
             build_skill_invocation_message,
         )
@@ -3198,7 +3198,7 @@ def _(rid, params: dict) -> dict:
 
     if name == "plan":
         try:
-            from agent.skill_commands import (
+            from hermes_agent.agent.skill_commands import (
                 build_skill_invocation_message as _bsim,
                 build_plan_path,
             )
@@ -3550,7 +3550,7 @@ def _(rid, params: dict) -> dict:
         from prompt_toolkit.document import Document
         from prompt_toolkit.formatted_text import to_plain_text
 
-        from agent.skill_commands import get_skill_commands
+        from hermes_agent.agent.skill_commands import get_skill_commands
 
         completer = SlashCommandCompleter(
             skill_commands_provider=lambda: get_skill_commands()
@@ -3712,7 +3712,7 @@ def _(rid, params: dict) -> dict:
         )
 
     try:
-        from agent.skill_commands import get_skill_commands
+        from hermes_agent.agent.skill_commands import get_skill_commands
 
         _cmd_key = f"/{_cmd_base}"
         if _cmd_key in get_skill_commands():

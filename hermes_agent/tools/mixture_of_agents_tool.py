@@ -52,7 +52,7 @@ import asyncio
 import datetime
 from typing import Dict, Any, List, Optional
 from hermes_agent.tools.openrouter_client import get_async_client as _get_openrouter_client, check_api_key as check_openrouter_api_key
-from agent.auxiliary_client import extract_content_or_reasoning
+from hermes_agent.agent.auxiliary_client import extract_content_or_reasoning
 from hermes_agent.tools.debug_helpers import DebugSession
 
 logger = logging.getLogger(__name__)

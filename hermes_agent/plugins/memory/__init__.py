@@ -40,7 +40,7 @@ _MEMORY_PLUGINS_DIR = Path(__file__).parent
 def _get_user_plugins_dir() -> Optional[Path]:
     """Return ``$HERMES_HOME/plugins/`` or None if unavailable."""
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.providers.hermes_constants import get_hermes_home
         d = get_hermes_home() / "plugins"
         return d if d.is_dir() else None
     except Exception:
@@ -271,7 +271,7 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional["MemoryProvider"]:
             logger.debug("register() failed for %s: %s", name, e)
 
     # Fallback: find a MemoryProvider subclass and instantiate it
-    from agent.memory_provider import MemoryProvider
+    from hermes_agent.agent.memory_provider import MemoryProvider
     for attr_name in dir(mod):
         attr = getattr(mod, attr_name, None)
         if (isinstance(attr, type) and issubclass(attr, MemoryProvider)
