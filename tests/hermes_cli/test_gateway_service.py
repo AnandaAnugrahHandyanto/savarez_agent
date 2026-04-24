@@ -100,6 +100,13 @@ class TestGeneratedSystemdUnits:
         # (tool subprocess kill, adapter disconnect) runs — issue #8202.
         assert "TimeoutStopSec=90" in unit
 
+    def test_user_unit_preserves_ld_library_path_when_present(self, monkeypatch):
+        monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/cuda/lib64:/usr/local/cuda/lib64")
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert 'Environment="LD_LIBRARY_PATH=/opt/cuda/lib64:/usr/local/cuda/lib64"' in unit
+
     def test_user_unit_includes_resolved_node_directory_in_path(self, monkeypatch):
         monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: "/home/test/.nvm/versions/node/v24.14.0/bin/node" if cmd == "node" else None)
 
@@ -119,6 +126,13 @@ class TestGeneratedSystemdUnits:
         # (tool subprocess kill, adapter disconnect) runs — issue #8202.
         assert "TimeoutStopSec=90" in unit
         assert "WantedBy=multi-user.target" in unit
+
+    def test_system_unit_preserves_ld_library_path_when_present(self, monkeypatch):
+        monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/cuda/lib64")
+
+        unit = gateway_cli.generate_systemd_unit(system=True)
+
+        assert 'Environment="LD_LIBRARY_PATH=/opt/cuda/lib64"' in unit
 
 
 class TestGatewayStopCleanup:

@@ -1523,6 +1523,10 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
             path_entries.append(resolved_node_dir)
 
     common_bin_paths = ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"]
+    ld_library_path = os.environ.get("LD_LIBRARY_PATH")
+    ld_library_env = (
+        f'Environment="LD_LIBRARY_PATH={ld_library_path}"\n' if ld_library_path else ""
+    )
     # systemd's TimeoutStopSec must exceed the gateway's drain_timeout so
     # there's budget left for post-interrupt cleanup (tool subprocess kill,
     # adapter disconnect, session DB close) before systemd escalates to
@@ -1567,7 +1571,7 @@ Environment="LOGNAME={username}"
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
-Restart=on-failure
+{ld_library_env}Restart=on-failure
 RestartSec=30
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
@@ -1599,7 +1603,7 @@ WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
-Restart=on-failure
+{ld_library_env}Restart=on-failure
 RestartSec=30
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
