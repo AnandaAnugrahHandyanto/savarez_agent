@@ -142,6 +142,21 @@ def _normalize_for_dedup(content: str) -> str:
     return re.sub(r"\s+", " ", content).strip().lower()
 
 
+def _render_memory_block(facts: list[dict[str, Any]]) -> str:
+    """Format facts as a `<memory>` tag block suitable for system prompt.
+
+    Format mirrors DeerFlow's convention so it's recognizable to the model.
+    """
+    lines = ["<memory>"]
+    for f in facts:
+        content = (f.get("content") or "").strip()
+        category = f.get("category") or "context"
+        conf = f.get("confidence", 0.0)
+        lines.append(f"- [{category}] {content} (confidence={conf:.2f})")
+    lines.append("</memory>")
+    return "\n".join(lines)
+
+
 # -------- Extractors --------
 def heuristic_extract(messages: list[dict[str, Any]]) -> list[Fact]:
     """Simple heuristic fallback when LLM extractor is off.
@@ -188,6 +203,65 @@ class MemoryExtractionMiddleware(BaseMiddleware):
         )
 
     # -------- Hooks --------
+    def before_model(self, ctx: MiddlewareContext) -> MiddlewareContext:
+        """Prepend top-N auto-memory facts into the system prompt.
+
+        Only fires when HERMES_AUTO_MEMORY_INJECT=on (default on).
+        Safe against duplicate injection by tagging the injected system
+        message with `_auto_memory_inject=True`; subsequent before_model
+        calls replace the tagged message rather than stacking.
+        """
+        if os.environ.get("HERMES_AUTO_MEMORY_INJECT", "on").lower() == "off":
+            return ctx
+
+        facts = self._load_top_facts()
+        if not facts:
+            return ctx
+
+        inject_block = _render_memory_block(facts)
+        # Remove any stale auto-memory inject before re-adding (idempotent)
+        ctx.messages = [m for m in ctx.messages if not m.get("_auto_memory_inject")]
+        inject_msg = {
+            "role": "system",
+            "content": inject_block,
+            "_auto_memory_inject": True,
+            "_fact_count": len(facts),
+        }
+        # Insert at position 0 (or right after existing system msg if any)
+        if ctx.messages and ctx.messages[0].get("role") == "system":
+            ctx.messages.insert(1, inject_msg)
+        else:
+            ctx.messages.insert(0, inject_msg)
+
+        ctx.record(
+            self.name, "before_model", "injected",
+            f"facts={len(facts)} tokens_est={len(inject_block) // 4}",
+        )
+        return ctx
+
+    def _load_top_facts(self) -> list[dict[str, Any]]:
+        """Read memory-auto.json and return top-N by (confidence, recency)."""
+        path = Path(os.environ.get(
+            "HERMES_AUTO_MEMORY_PATH", str(DEFAULT_STORAGE),
+        )).expanduser()
+        if not path.exists():
+            return []
+        try:
+            import json as _json
+            data = _json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+        facts = data.get("facts", []) or []
+        top_n = int(os.environ.get("HERMES_AUTO_MEMORY_INJECT_TOP_N", "15"))
+        min_conf = float(os.environ.get("HERMES_AUTO_MEMORY_INJECT_MIN_CONFIDENCE", "0.6"))
+        filtered = [f for f in facts if f.get("confidence", 0.0) >= min_conf]
+        # Sort: confidence desc, then recency desc
+        filtered.sort(
+            key=lambda f: (f.get("confidence", 0.0), f.get("created_at", 0.0)),
+            reverse=True,
+        )
+        return filtered[:top_n]
+
     def after_model(self, ctx: MiddlewareContext) -> MiddlewareContext:
         if not ctx.messages or not ctx.thread_id:
             return ctx
@@ -294,37 +368,20 @@ class MemoryExtractionMiddleware(BaseMiddleware):
         return []
 
 
-# ---- Backend: Codex CLI ----
+# ---- Backend: Codex CLI (via centralized throttle+stats) ----
 def _extract_via_codex(prompt: str) -> tuple[str, str]:
-    """Call `codex exec --sandbox read-only` with the prompt. Uses user's
-    codex subscription — no API key, no per-call cost.
+    """Call codex through agent_bus.codex_call.invoke_codex() so §9 throttle
+    and stats are applied automatically.
     """
-    import shutil as _shutil
-    import subprocess as _sp
-
-    if not _shutil.which("codex"):
-        logger.debug("codex CLI not on PATH — skipping codex backend")
-        return "", ""
+    from agent_bus.codex_call import invoke_codex
 
     model = os.environ.get("HERMES_AUTO_MEMORY_MODEL", "gpt-5")
     timeout_sec = int(os.environ.get("HERMES_AUTO_MEMORY_TIMEOUT", "60"))
-    try:
-        proc = _sp.run(
-            ["codex", "exec", "--skip-git-repo-check", "--sandbox", "read-only", prompt],
-            capture_output=True, text=True, timeout=timeout_sec,
-        )
-    except _sp.TimeoutExpired:
-        logger.warning("codex extract timed out after %ss", timeout_sec)
+    result = invoke_codex(prompt, attempt="memory-extract", timeout_sec=timeout_sec)
+    if not result.ok:
+        logger.debug("codex extract skipped: %s", result.error)
         return "", ""
-    except Exception as exc:
-        logger.warning("codex extract subprocess failed: %s", exc)
-        return "", ""
-
-    if proc.returncode != 0:
-        logger.debug("codex returncode=%d stderr=%s", proc.returncode, (proc.stderr or "")[:200])
-        return "", ""
-
-    return proc.stdout or "", f"codex:{model}"
+    return result.stdout, f"codex:{model}"
 
 
 # ---- Backend: Anthropic SDK ----

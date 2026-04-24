@@ -2032,6 +2032,16 @@ async def dispatch_bus_task(req: DispatchRequest, force: bool = False):
         return {"ok": False, "error": str(exc)}
 
 
+@app.get("/api/dual-agent/codex-stats")
+async def get_codex_stats(hours: int = 24):
+    """Codex CLI invocation stats (count / latency / errors) in last N hours."""
+    try:
+        from agent_bus.codex_call import summarize_stats
+        return summarize_stats(window_hours=hours)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 @app.get("/api/dual-agent/traces")
 async def get_dual_agent_traces(limit: int = 200, thread_id: Optional[str] = None):
     """Return recent trace spans from ~/.hermes/traces.jsonl (S10)."""

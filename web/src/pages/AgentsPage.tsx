@@ -209,6 +209,19 @@ interface SandboxesData {
   threads: SandboxThread[];
 }
 
+interface CodexStats {
+  exists: boolean;
+  window_hours?: number;
+  total?: number;
+  ok?: number;
+  fail?: number;
+  avg_ms?: number | null;
+  p95_ms?: number | null;
+  by_attempt?: Record<string, number>;
+  by_error?: Record<string, number>;
+  error?: string;
+}
+
 // -------- Helpers --------
 function statusBadgeVariant(status: string): "success" | "warning" | "destructive" | "outline" {
   if (status === "done") return "success";
@@ -250,6 +263,7 @@ export default function AgentsPage() {
   const [autoMemory, setAutoMemory] = useState<AutoMemoryData | null>(null);
   const [traces, setTraces] = useState<TracesData | null>(null);
   const [sandboxes, setSandboxes] = useState<SandboxesData | null>(null);
+  const [codexStats, setCodexStats] = useState<CodexStats | null>(null);
   const [showCoaching, setShowCoaching] = useState(false);
 
   function flashToast(msg: string) {
@@ -264,7 +278,7 @@ export default function AgentsPage() {
   useEffect(() => {
     const load = async () => {
       try {
-        const [s, b, h, a, sn, th, mw, am, tr, sx] = await Promise.all([
+        const [s, b, h, a, sn, th, mw, am, tr, sx, cs] = await Promise.all([
           fetch("/api/dual-agent/status").then((r) => r.json()),
           fetch("/api/dual-agent/bus").then((r) => r.json()),
           fetch("/api/dual-agent/handoffs").then((r) => r.json()),
@@ -275,6 +289,7 @@ export default function AgentsPage() {
           fetch("/api/dual-agent/auto-memory").then((r) => r.json()),
           fetch("/api/dual-agent/traces?limit=80").then((r) => r.json()),
           fetch("/api/dual-agent/sandboxes").then((r) => r.json()),
+          fetch("/api/dual-agent/codex-stats?hours=24").then((r) => r.json()),
         ]);
         if (s.error) setErr(s.error);
         else setStatus(s as DualAgentStatus);
@@ -287,6 +302,7 @@ export default function AgentsPage() {
         setAutoMemory(am as AutoMemoryData);
         setTraces(tr as TracesData);
         setSandboxes(sx as SandboxesData);
+        setCodexStats(cs as CodexStats);
         setLoading(false);
       } catch (e) {
         setErr(String(e));
@@ -609,6 +625,82 @@ export default function AgentsPage() {
                 ))}
               </div>
             )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* -------- Codex CLI stats -------- */}
+      {codexStats && codexStats.exists && (codexStats.total || 0) > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Zap className="h-4 w-4" /> Codex CLI 調用統計（24h）
+              <Badge variant={(codexStats.fail || 0) === 0 ? "success" : "warning"}>
+                {codexStats.ok}/{codexStats.total} ok
+              </Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex flex-wrap gap-6 text-sm">
+              <div>
+                <div className="text-xs text-muted-foreground">Total</div>
+                <div className="text-2xl font-bold">{codexStats.total}</div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">Avg latency</div>
+                <div className="text-2xl font-bold">
+                  {codexStats.avg_ms != null
+                    ? `${(codexStats.avg_ms / 1000).toFixed(1)}s`
+                    : "—"}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">p95</div>
+                <div className="text-2xl font-bold">
+                  {codexStats.p95_ms != null
+                    ? `${(codexStats.p95_ms / 1000).toFixed(1)}s`
+                    : "—"}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">Fail</div>
+                <div className="text-2xl font-bold">{codexStats.fail}</div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">Cost proxy</div>
+                <div className="text-2xl font-bold text-green-500">$0</div>
+                <div className="text-xs text-muted-foreground">(codex subscription)</div>
+              </div>
+            </div>
+            <div className="mt-3 grid gap-2 md:grid-cols-2">
+              <div>
+                <div className="text-xs text-muted-foreground mb-1">By attempt</div>
+                <div className="space-y-1 text-xs">
+                  {Object.entries(codexStats.by_attempt || {}).map(([k, v]) => (
+                    <div key={k} className="flex justify-between font-mono">
+                      <span>{k}</span>
+                      <span>{v}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              {Object.keys(codexStats.by_error || {}).length > 0 && (
+                <div>
+                  <div className="text-xs text-muted-foreground mb-1">Errors</div>
+                  <div className="space-y-1 text-xs">
+                    {Object.entries(codexStats.by_error || {}).map(([k, v]) => (
+                      <div
+                        key={k}
+                        className="flex justify-between font-mono text-destructive/80"
+                      >
+                        <span>{k}</span>
+                        <span>{v}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
           </CardContent>
         </Card>
       )}

@@ -150,12 +150,18 @@ class ToolRegistry:
         """Execute a tool handler by name.
 
         * Async handlers are bridged automatically via ``_run_async()``.
-        * All exceptions are caught and returned as ``{"error": "..."}``
-          for consistent error format.
+        * Virtual paths (``/mnt/user-data/*``, ``/mnt/skills/*``) in args are
+          translated to real host paths when HERMES_SANDBOX_WIRE=on and a
+          task_id is provided. This is the S7 wire-in point — all tools go
+          through dispatch, so hooking here covers the whole tool surface
+          without per-tool edits.
+        * All exceptions are caught and returned as ``{"error": "..."}``.
         """
         entry = self._tools.get(name)
         if not entry:
             return json.dumps({"error": f"Unknown tool: {name}"})
+        # S7 sandbox wire — translate virtual paths before handler sees them
+        args = _maybe_translate_sandbox_paths(args, kwargs.get("task_id"))
         try:
             if entry.is_async:
                 from model_tools import _run_async
@@ -333,3 +339,44 @@ def tool_result(data=None, **kwargs) -> str:
     if data is not None:
         return json.dumps(data, ensure_ascii=False)
     return json.dumps(kwargs, ensure_ascii=False)
+
+
+# -----------------------------------------------------------------------
+# S7 sandbox wire — virtual path translation at dispatch time.
+# See agent_bus/sandbox/ for the per-thread substrate. When a tool handler
+# receives a `path` arg like "/mnt/user-data/workspace/foo.md", we swap it
+# for the real host path under ~/.hermes/threads/{task_id}/...
+#
+# Controlled by HERMES_SANDBOX_WIRE env var (default off — opt-in until we
+# validate the translation doesn't break existing tool callers that happen
+# to pass "/mnt/..." as a literal host path).
+# -----------------------------------------------------------------------
+_PATH_ARG_KEYS = ("path", "filepath", "file_path", "source", "destination", "target")
+
+
+def _maybe_translate_sandbox_paths(args: dict, task_id) -> dict:
+    import os as _os
+    if _os.environ.get("HERMES_SANDBOX_WIRE", "off").lower() != "on":
+        return args
+    if not task_id or not isinstance(args, dict):
+        return args
+    try:
+        from agent_bus.sandbox.virtual_path import translate_virtual_path
+    except Exception:
+        return args
+    translated: dict = dict(args)
+    touched = False
+    for key in _PATH_ARG_KEYS:
+        val = translated.get(key)
+        if isinstance(val, str) and val.startswith("/mnt/"):
+            try:
+                real = translate_virtual_path(val, str(task_id))
+                translated[key] = str(real)
+                touched = True
+            except ValueError:
+                pass  # leave unchanged — may be a literal path that just happens to start with /mnt/
+    if touched:
+        logger.debug(
+            "sandbox-wire: translated args for tool dispatch (task_id=%s)", task_id
+        )
+    return translated
