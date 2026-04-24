@@ -383,15 +383,35 @@ class RocketchatAdapter(BasePlatformAdapter):
     async def send_typing(
         self, chat_id: str, metadata: Optional[Dict[str, Any]] = None
     ) -> None:
-        """Send a typing indicator via DDP stream-notify-room."""
+        """Notify that the bot is typing.
+
+        Rocket.Chat 6.x+ replaced the legacy ``/typing`` stream with
+        ``/user-activity``, and 8.x expects the activity string ``"user-typing"``
+        (not ``"typing"``) plus a trailing empty object that the web client
+        reserves for extension payloads. The server accepts the older shapes
+        without error but no client-side UI is wired to render them, so the
+        indicator silently fails to appear. Verified by subscribing to the
+        user-activity stream on a Rocket.Chat 8.2 instance and capturing what
+        the official web client sends when a real user types.
+        """
         if not self._ws or self._ws.closed:
             return
         if not self._bot_username:
             return
-        # Rocket.Chat's typing stream is a method call, not a sub.
         await self._ddp_method(
             "stream-notify-room",
-            [f"{chat_id}/typing", self._bot_username, True],
+            [f"{chat_id}/user-activity", self._bot_username, ["user-typing"], {}],
+        )
+
+    async def stop_typing(self, chat_id: str) -> None:
+        """Clear the typing indicator (empty user-activity list)."""
+        if not self._ws or self._ws.closed:
+            return
+        if not self._bot_username:
+            return
+        await self._ddp_method(
+            "stream-notify-room",
+            [f"{chat_id}/user-activity", self._bot_username, [], {}],
         )
 
     async def edit_message(
