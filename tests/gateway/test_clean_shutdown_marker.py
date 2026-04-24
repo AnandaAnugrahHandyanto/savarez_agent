@@ -191,6 +191,63 @@ class TestCleanShutdownMarker:
         assert sum(1 for e in entries if e.resume_pending) == 1
         assert entries[0].resume_reason == "unexpected_restart"
 
+
+    def test_unclean_exit_marks_old_in_flight_session_for_auto_resume(self, tmp_path, monkeypatch):
+        """Long-running in-flight sessions auto-resume even when updated_at is old."""
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        marker = tmp_path / ".clean_shutdown"
+        assert not marker.exists()
+
+        store = _make_store(tmp_path)
+        source = _make_source()
+        entry = store.get_or_create_session(source)
+        with store._lock:
+            entry.updated_at = datetime.now() - timedelta(hours=2)
+            store._save()
+
+        assert store.mark_in_flight(entry.session_key)
+
+        in_flight = store.mark_in_flight_resume_pending(reason="unexpected_restart")
+        recent = store.mark_recently_active_resume_pending(reason="unexpected_restart")
+
+        with store._lock:
+            store._ensure_loaded_locked()
+            refreshed = store._entries[entry.session_key]
+
+        assert in_flight == 1
+        assert recent == 0
+        assert refreshed.resume_pending
+        assert refreshed.resume_reason == "unexpected_restart"
+        assert not refreshed.in_flight
+
+    def test_clean_marker_clears_stale_in_flight_without_auto_resume(self, tmp_path, monkeypatch):
+        """Clean shutdown should discard harmless stale in-flight markers."""
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        marker = tmp_path / ".clean_shutdown"
+        marker.touch()
+
+        store = _make_store(tmp_path)
+        source = _make_source()
+        entry = store.get_or_create_session(source)
+        assert store.mark_in_flight(entry.session_key)
+
+        if marker.exists():
+            cleared = store.clear_all_in_flight()
+            marker.unlink()
+        else:
+            cleared = 0
+            store.mark_in_flight_resume_pending(reason="unexpected_restart")
+            store.mark_recently_active_resume_pending(reason="unexpected_restart")
+
+        with store._lock:
+            store._ensure_loaded_locked()
+            refreshed = store._entries[entry.session_key]
+
+        assert cleared == 1
+        assert not refreshed.in_flight
+        assert not refreshed.resume_pending
+        assert not marker.exists()
+
     def test_marker_written_on_restart_stop(self, tmp_path, monkeypatch):
         """stop(restart=True) should also write the marker."""
         monkeypatch.setattr("gateway.run._hermes_home", tmp_path)

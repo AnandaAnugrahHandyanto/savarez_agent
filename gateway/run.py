@@ -2039,18 +2039,30 @@ class GatewayRunner:
         if _clean_marker.exists():
             logger.info("Previous gateway exited cleanly — skipping in-flight session auto-resume marking")
             try:
+                cleared = self.session_store.clear_all_in_flight()
+                if cleared:
+                    logger.info("Cleared %d stale in-flight marker(s) after clean shutdown", cleared)
+            except Exception as e:
+                logger.debug("Clean-shutdown in-flight cleanup failed: %s", e)
+            try:
                 _clean_marker.unlink()
             except Exception:
                 pass
         else:
             try:
-                resumable = self.session_store.mark_recently_active_resume_pending(
-                    reason="unexpected_restart"
-                )
+                in_flight = self.session_store.mark_in_flight_resume_pending(
+                    reason="unexpected_restart")
+                recent = self.session_store.mark_recently_active_resume_pending(
+                    reason="unexpected_restart")
+                resumable = in_flight + recent
                 if resumable:
-                    logger.info("Marked %d in-flight session(s) for automatic resume", resumable)
+                    logger.info(
+                        "Marked %d in-flight session(s) for automatic resume (%d persisted in-flight, %d recent)",
+                        resumable, in_flight, recent,
+                    )
             except Exception as e:
                 logger.warning("Session auto-resume marking on startup failed: %s", e)
+
 
         # Stuck-loop detection (#7536): if a session has been active across
         # 3+ consecutive restarts, it's probably stuck in a loop (the same
@@ -4020,6 +4032,10 @@ class GatewayRunner:
         # Get or create session
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
+        try:
+            self.session_store.mark_in_flight(session_key)
+        except Exception as _e:
+            logger.debug("mark_in_flight failed for %s: %s", session_key[:20], _e)
         
         # Emit session:start for new or auto-reset sessions
         _is_new_session = (
@@ -4845,6 +4861,18 @@ class GatewayRunner:
                 "Try again or use /reset to start a fresh session."
             )
         finally:
+            # Preserve in-flight markers while the gateway is draining: if the
+            # process is killed before a clean marker is written, startup will
+            # auto-resume the interrupted turn.  Clean shutdown startup clears
+            # any harmless stale markers.
+            try:
+                if 'session_key' in locals() and not self._draining:
+                    self.session_store.clear_in_flight(session_key)
+            except Exception as _e:
+                try:
+                    logger.debug("clear_in_flight failed for %s: %s", session_key[:20], _e)
+                except Exception:
+                    pass
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
     
