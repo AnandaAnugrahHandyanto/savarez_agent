@@ -266,6 +266,22 @@ class TestSchemaConversion:
 
         assert schema["properties"]["items"]["items"]["properties"] == {}
 
+    def test_string_additional_properties_is_coerced_to_schema_object(self):
+        """Broken MCP schemas that emit additionalProperties='object' are repaired."""
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "payload": {
+                    "type": "object",
+                    "additionalProperties": "object",
+                },
+            },
+        })
+
+        assert schema["properties"]["payload"]["additionalProperties"] == {"type": "object", "properties": {}}
+
     def test_convert_mcp_schema_survives_missing_inputschema_attribute(self):
         """A Tool object without .inputSchema must not crash registration."""
         import types

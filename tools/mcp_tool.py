@@ -2066,6 +2066,15 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
 
         repaired = {k: _repair_object_shape(v) for k, v in node.items()}
 
+        # Some MCP servers emit ``additionalProperties": "object"`` (or
+        # another scalar type string) instead of a schema object / boolean.
+        # OpenAI-compatible APIs reject that with:
+        #   'object' is not of type 'object', 'boolean'
+        # Coerce the shorthand string into a real schema node before the
+        # object-shape repair below runs.
+        if isinstance(repaired.get("additionalProperties"), str) and repaired.get("additionalProperties"):
+            repaired["additionalProperties"] = _repair_object_shape({"type": repaired["additionalProperties"]})
+
         # Coerce missing / null type when the shape is clearly an object
         # (has properties or required but no type).
         if not repaired.get("type") and (
