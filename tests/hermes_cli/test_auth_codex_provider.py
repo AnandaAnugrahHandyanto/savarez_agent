@@ -214,6 +214,47 @@ def test_read_codex_tokens_empty_pool_raises_auth_error(tmp_path, monkeypatch):
     assert exc.value.code == "codex_auth_missing"
 
 
+def test_read_codex_tokens_survives_non_dict_credential_pool(tmp_path, monkeypatch):
+    """Defensive-typing guard flagged by Copilot on #15173: a corrupted
+    ``auth.json`` where ``credential_pool`` ended up as a list or scalar
+    (copy-paste accident, hand-edit, migration bug, ...) must not crash
+    this reader with ``AttributeError`` — fall through to the clean
+    ``codex_auth_missing`` error so the user gets a re-auth hint."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    # credential_pool is a LIST, not a dict — the truthiness check
+    # ``pool_map or {}`` wouldn't catch this.
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {},
+        "credential_pool": ["not-a-dict-at-all"],
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    with pytest.raises(AuthError) as exc:
+        _read_codex_tokens()
+    assert exc.value.code == "codex_auth_missing"
+
+
+def test_read_codex_tokens_survives_non_list_provider_entries(tmp_path, monkeypatch):
+    """Companion to the previous test: the per-provider slot under
+    ``credential_pool["openai-codex"]`` is supposed to be a list but a
+    corrupt store could hand us a dict or string.  Same invariant — the
+    reader must not crash, it must raise ``codex_auth_missing``."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {},
+        "credential_pool": {"openai-codex": "not-a-list"},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    with pytest.raises(AuthError) as exc:
+        _read_codex_tokens()
+    assert exc.value.code == "codex_auth_missing"
+
+
 def test_resolve_codex_runtime_credentials_missing_access_token(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     _setup_hermes_auth(hermes_home, access_token="")

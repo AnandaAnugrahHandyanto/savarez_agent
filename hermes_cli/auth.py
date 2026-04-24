@@ -2108,9 +2108,11 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
 
     The pool fallback picks the first entry with ``auth_type == "oauth"``
     that carries an access_token, and projects it onto the same
-    ``{"tokens": {...}, "last_refresh": ..., "base_url": ...}`` shape the
-    legacy slot returns so the rest of this module doesn't need to know
-    where the credential came from.
+    ``{"tokens": {...}, "last_refresh": ...}`` shape the legacy slot
+    returns so the rest of this module doesn't need to know where the
+    credential came from.  (Base URL lives on ``_resolve_custom_runtime``
+    /``resolve_codex_runtime_credentials``, not on this reader — same as
+    the legacy slot.)
     """
     if _lock:
         with _auth_store_lock():
@@ -2119,7 +2121,16 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
         auth_store = _load_auth_store()
     state = _load_provider_state(auth_store, "openai-codex")
     if not state:
-        pool_entries = (auth_store.get("credential_pool") or {}).get("openai-codex") or []
+        # Mirror ``read_credential_pool()``'s defensive typing: a corrupted
+        # ``auth.json`` where ``credential_pool`` is present but not a dict
+        # (or per-provider entries aren't a list) must not crash this
+        # reader with ``AttributeError`` — fall through to the existing
+        # ``codex_auth_missing`` path so the user gets a clean re-auth hint.
+        pool_map = auth_store.get("credential_pool")
+        if not isinstance(pool_map, dict):
+            pool_map = {}
+        raw_entries = pool_map.get("openai-codex")
+        pool_entries = raw_entries if isinstance(raw_entries, list) else []
         oauth_entry = next(
             (
                 e for e in pool_entries
