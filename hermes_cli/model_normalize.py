@@ -12,8 +12,11 @@ Different LLM providers expect model identifiers in different formats:
   model IDs, but Claude still uses hyphenated native names like
   ``claude-sonnet-4-6``.
 - **OpenCode Go** preserves dots in model names: ``minimax-m2.7``.
-- **DeepSeek** only accepts two model identifiers:
-  ``deepseek-chat`` and ``deepseek-reasoner``.
+- **DeepSeek** native API accepts ``deepseek-v4-flash`` and
+  ``deepseek-v4-pro``. The legacy identifiers ``deepseek-chat`` and
+  ``deepseek-reasoner`` remain accepted for backwards compatibility and
+  map server-side to the non-thinking and thinking modes of
+  ``deepseek-v4-flash`` respectively; they will be deprecated.
 - **Custom** and remaining providers pass the name through as-is.
 
 This module centralises that translation so callers can simply write::
@@ -103,8 +106,11 @@ _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
 # ---------------------------------------------------------------------------
 # DeepSeek special handling
 # ---------------------------------------------------------------------------
-# DeepSeek's API only recognises exactly two model identifiers.  We map
-# common aliases and patterns to the canonical names.
+# DeepSeek's native API accepts the V4 identifiers (``deepseek-v4-flash``
+# and ``deepseek-v4-pro``) plus the legacy aliases ``deepseek-chat`` and
+# ``deepseek-reasoner``. The legacy aliases will be deprecated and
+# correspond server-side to the non-thinking and thinking modes of
+# ``deepseek-v4-flash``.
 
 _DEEPSEEK_REASONER_KEYWORDS: frozenset[str] = frozenset({
     "reasoner",
@@ -115,25 +121,27 @@ _DEEPSEEK_REASONER_KEYWORDS: frozenset[str] = frozenset({
 })
 
 _DEEPSEEK_CANONICAL_MODELS: frozenset[str] = frozenset({
+    "deepseek-v4-flash",
+    "deepseek-v4-pro",
     "deepseek-chat",
     "deepseek-reasoner",
 })
 
 
 def _normalize_for_deepseek(model_name: str) -> str:
-    """Map any model input to one of DeepSeek's two accepted identifiers.
+    """Map a DeepSeek model input to an accepted API identifier.
 
     Rules:
-    - Already ``deepseek-chat`` or ``deepseek-reasoner`` -> pass through.
+    - Canonical V4 ids and legacy aliases pass through unchanged.
     - Contains any reasoner keyword (r1, think, reasoning, cot, reasoner)
-      -> ``deepseek-reasoner``.
-    - Everything else -> ``deepseek-chat``.
+      -> ``deepseek-reasoner`` (legacy thinking-mode alias).
+    - Everything else -> ``deepseek-chat`` (legacy non-thinking alias).
 
     Args:
         model_name: The bare model name (vendor prefix already stripped).
 
     Returns:
-        One of ``"deepseek-chat"`` or ``"deepseek-reasoner"``.
+        A DeepSeek API model identifier.
     """
     bare = _strip_vendor_prefix(model_name).lower()
 

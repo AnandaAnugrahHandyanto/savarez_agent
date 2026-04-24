@@ -164,6 +164,27 @@ class TestAggregatorProviders:
         assert result == "anthropic/claude-sonnet-4.6"
 
 
+class TestDeepSeekV4Normalization:
+    """DeepSeek native API accepts V4 ids plus legacy aliases.
+
+    Legacy aliases (deepseek-chat / deepseek-reasoner) will be deprecated
+    and map server-side to non-thinking / thinking modes of
+    deepseek-v4-flash respectively.
+    """
+
+    @pytest.mark.parametrize("model,expected", [
+        ("deepseek-v4-flash", "deepseek-v4-flash"),
+        ("deepseek-v4-pro", "deepseek-v4-pro"),
+        ("deepseek/deepseek-v4-flash", "deepseek-v4-flash"),
+        ("deepseek/deepseek-v4-pro", "deepseek-v4-pro"),
+        ("deepseek-chat", "deepseek-chat"),
+        ("deepseek-reasoner", "deepseek-reasoner"),
+        ("deepseek-r1", "deepseek-reasoner"),
+    ])
+    def test_deepseek_v4_and_legacy_aliases(self, model, expected):
+        assert normalize_model_for_provider(model, "deepseek") == expected
+
+
 class TestIssue6211NativeProviderPrefixNormalization:
     @pytest.mark.parametrize("model,target_provider,expected", [
         ("zai/glm-5.1", "zai", "glm-5.1"),
