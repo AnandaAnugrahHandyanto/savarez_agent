@@ -4327,7 +4327,6 @@ def windows_stop():
 
 def windows_status(deep: bool = False, full: bool = False):
     import subprocess
-    from gateway.status import get_gateway_runtime_snapshot, _print_gateway_process_mismatch
     task_name = "HermesGateway"
     result = subprocess.run(["schtasks", "/Query", "/TN", task_name, "/V", "/FO", "LIST"], capture_output=True, text=True)
     if result.returncode != 0:
