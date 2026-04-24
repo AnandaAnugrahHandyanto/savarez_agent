@@ -51,6 +51,13 @@ export type CommandDispatchResponse =
 
 // ── Config ───────────────────────────────────────────────────────────
 
+export interface StatusBarFieldConfig {
+  fields?: string[]
+  fields_left?: string[]
+  fields_right?: string[]
+  separator?: string
+}
+
 export interface ConfigDisplayConfig {
   bell_on_complete?: boolean
   details_mode?: string
@@ -61,7 +68,10 @@ export interface ConfigDisplayConfig {
   streaming?: boolean
   thinking_mode?: string
   tui_compact?: boolean
-  tui_statusbar?: 'bottom' | 'off' | 'on' | 'top' | boolean
+  tui_statusbar?: 'bottom' | 'off' | 'on' | 'top' | boolean | Record<string, unknown>
+  tui_statusbar_fields_left?: string[]
+  tui_statusbar_fields_right?: string[]
+  tui_statusbar_separator?: string
 }
 
 export interface ConfigFullResponse {

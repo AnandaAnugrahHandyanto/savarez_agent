@@ -220,6 +220,8 @@ Newline-delimited JSON-RPC over stdio. Requests from Ink, events from Python. Se
 | Slash commands | Local handler + fallthrough | `slash.exec` → `_SlashWorker`, `command.dispatch` |
 | Completions | `useCompletion` hook | `complete.slash`, `complete.path` |
 | Theming | `theme.ts` + `branding.tsx` | `gateway.ready` with skin data |
+| Status bar fields | `appChrome.tsx` → `StatusRule` | `config.set` (statusbar_fields_left/right/separator) |
+| Status bar picker | `statusFieldPicker.tsx` | Overlay (`fieldPicker` in `OverlayState`) |
 
 ### Slash Command Flow
 
@@ -379,6 +381,10 @@ hermes_cli/skin_engine.py    # SkinConfig dataclass, built-in skins, YAML loader
 | Welcome message | `branding.welcome` | `cli.py` |
 | Response box label | `branding.response_label` | `cli.py` |
 | Prompt symbol | `branding.prompt_symbol` | `cli.py` |
+| Status bar background | `colors.status_bar_bg` | `appChrome.tsx` → `StatusRule` |
+| Status bar foreground | `colors.status_bar_fg` | `appChrome.tsx` → `StatusRule` |
+| Status bar bad state | `colors.status_bad` | `appChrome.tsx` → `StatusRule` |
+| Status bar critical state | `colors.status_critical` | `appChrome.tsx` → `StatusRule` |
 
 ### Built-in skins
 

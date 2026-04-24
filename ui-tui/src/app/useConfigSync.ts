@@ -40,6 +40,13 @@ const quietRpc = async <T extends Record<string, any> = Record<string, any>>(
 
 export const applyDisplay = (cfg: ConfigFullResponse | null, setBell: (v: boolean) => void) => {
   const d = cfg?.config?.display ?? {}
+  // Backward compat: if tui_statusbar was stored as a dict, extract fields from it
+  const statusBarRaw = d.tui_statusbar
+  const statusBarObj = typeof statusBarRaw === 'object' && statusBarRaw !== null ? statusBarRaw as Record<string, unknown> : null
+  const statusBarSep = statusBarObj?.separator ? String(statusBarObj.separator) : (d.tui_statusbar_separator as string | undefined) ?? ' │ '
+  // Prefer dedicated config keys; fallback to dict fields for backward compat
+  const statusBarFieldsLeft = (d.tui_statusbar_fields_left as string[] | undefined) ?? statusBarObj?.fields_left as string[] | undefined ?? statusBarObj?.fields as string[] | undefined
+  const statusBarFieldsRight = (d.tui_statusbar_fields_right as string[] | undefined) ?? statusBarObj?.fields_right as string[] | undefined
 
   setBell(!!d.bell_on_complete)
   patchUiState({
@@ -50,6 +57,9 @@ export const applyDisplay = (cfg: ConfigFullResponse | null, setBell: (v: boolea
     showCost: !!d.show_cost,
     showReasoning: !!d.show_reasoning,
     statusBar: normalizeStatusBar(d.tui_statusbar),
+    statusBarFieldsLeft,
+    statusBarFieldsRight,
+    statusBarSeparator: statusBarSep,
     streaming: d.streaming !== false
   })
 }

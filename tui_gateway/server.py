@@ -2789,6 +2789,18 @@ def _(rid, params: dict) -> dict:
         _write_config_key("display.tui_statusbar", nv)
         return _ok(rid, {"key": key, "value": nv})
 
+    if key in ("statusbar_fields", "statusbar_fields_left", "statusbar_fields_right", "statusbar_separator"):
+        cfg0 = _load_cfg()
+        d0 = cfg0.get("display") if isinstance(cfg0.get("display"), dict) else {}
+        # Store fields/separator as separate display.* keys (not inside tui_statusbar)
+        sub_key = key.replace("statusbar_", "tui_statusbar_", 1)  # tui_statusbar_fields_left etc.
+        if value is None:
+            # Remove the key by writing empty
+            _write_config_key(f"display.{sub_key}", "")
+        else:
+            _write_config_key(f"display.{sub_key}", value)
+        return _ok(rid, {"key": key, "value": value})
+
     if key in ("prompt", "personality", "skin"):
         try:
             cfg = _load_cfg()

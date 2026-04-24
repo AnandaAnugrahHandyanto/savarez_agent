@@ -1,6 +1,6 @@
 import { Box, type ScrollBoxHandle, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
-import { type ReactNode, type RefObject, useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
+import { Fragment, type ReactNode, type RefObject, useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 
 import { $delegationState } from '../app/delegationStore.js'
 import { $turnState } from '../app/turnStore.js'
@@ -64,6 +64,8 @@ function ctxBar(pct: number | undefined, w = 10) {
   return '█'.repeat(filled) + '░'.repeat(w - filled)
 }
 
+// ── Fields mode ──────────────────────────────────────────────────
+
 function SpawnHud({ t }: { t: Theme }) {
   // Tight HUD that only appears when the session is actually fanning out.
   // Colour escalates to warn/error as depth or concurrency approaches the cap.
@@ -119,7 +121,7 @@ function SpawnHud({ t }: { t: Theme }) {
 
   return (
     <Text color={color}>
-      {atCap ? ' │ ⚠ ' : ' │ '}
+      {atCap ? '⚠ ' : ''}
       {pieces.join(' ')}
     </Text>
   )
@@ -176,7 +178,10 @@ export function StatusRule({
   showCost,
   turnStartedAt,
   voiceLabel,
-  t
+  t,
+  fieldsLeft,
+  fieldsRight,
+  separator,
 }: StatusRuleProps) {
   const pct = usage.context_percent
   const barColor = ctxBarColor(pct, t)
@@ -188,56 +193,100 @@ export function StatusRule({
       : ''
 
   const bar = usage.context_max ? ctxBar(pct) : ''
-  const leftWidth = Math.max(12, cols - cwdLabel.length - 3)
+
+  const sep = separator ?? ' │ '
+  // Default: left fields + right fields
+  const defaultLeft = ['status', 'model', 'context', 'context_bar', 'duration', 'agents', 'voice', 'bg', 'cost']
+  const defaultRight = ['cwd']
+  const leftOrder = fieldsLeft?.length ? fieldsLeft : defaultLeft
+  const rightOrder = fieldsRight?.length ? fieldsRight : defaultRight
+
+  // Pre-compute field renderers (null = field has no data to show)
+  const fieldRenderers: Record<string, ReactNode> = {
+    status: busy ? <FaceTicker color={statusColor} startedAt={turnStartedAt} /> : <Text color={statusColor}>{status}</Text>,
+    model: <Text color={t.color.dim}>{model}</Text>,
+    context: ctxLabel ? <Text color={t.color.dim}>{ctxLabel}</Text> : null,
+    context_bar: bar ? (
+      <Text color={t.color.dim}>
+        <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pct != null ? `${pct}%` : ''}</Text>
+      </Text>
+    ) : null,
+    duration: sessionStartedAt ? (
+      <Text color={t.color.dim}>
+        <SessionDuration startedAt={sessionStartedAt} />
+      </Text>
+    ) : null,
+    voice: voiceLabel ? <Text color={t.color.dim}>{voiceLabel}</Text> : null,
+    bg: bgCount > 0 ? <Text color={t.color.dim}>{bgCount} bg</Text> : null,
+    cost: showCost && typeof usage.cost_usd === 'number' ? <Text color={t.color.dim}>${usage.cost_usd.toFixed(4)}</Text> : null,
+    cwd: <Text color={t.color.label}>{cwdLabel}</Text>,
+    agents: <SpawnHud t={t} />,
+  }
+
+  const renderFieldList = (list: string[]): ReactNode[] => {
+    const result: ReactNode[] = []
+
+    for (let i = 0; i < list.length; i++) {
+      const id = list[i]!
+
+      if (!fieldRenderers[id]) {continue}
+
+      if (result.length > 0) {result.push(<Text color={t.color.dim} key={`sep-${i}`}>{sep}</Text>)}
+      result.push(<Fragment key={id}>{fieldRenderers[id]}</Fragment>)
+    }
+
+    return result
+  }
+
+  const leftVisible = leftOrder.filter(f => fieldRenderers[f])
+  const rightVisible = rightOrder.filter(f => fieldRenderers[f])
+
+  // Split cwdLabel into path and branch for independent rendering
+  // Format: "~/proj (branch)" → path="~/proj", branch="branch"
+  const branchMatch = cwdLabel.match(/^(.*?) \(([^)]*)\)$/)
+  const cwdPath = branchMatch ? branchMatch[1]! : cwdLabel
+  const cwdBranch = branchMatch?.[2] ?? null
+
+  // Override cwd renderer: always single line, branch in dim color
+  if (fieldRenderers.cwd) {
+    fieldRenderers.cwd = cwdBranch
+      ? <Text color={t.color.label}>{cwdPath} <Text color={t.color.dim}>({cwdBranch})</Text></Text>
+      : <Text color={t.color.label}>{cwdLabel}</Text>
+  }
+
+  // Estimate right side width from actual rendered text content
+  const fieldTextLen: Record<string, number> = {
+    status: busy ? 20 : status.length,
+    model: model.length,
+    context: ctxLabel.length,
+    context_bar: bar.length + (pct != null ? `${pct}%`.length : 0) + 3,
+    duration: sessionStartedAt ? 8 : 0,
+    voice: voiceLabel?.length ?? 0,
+    bg: bgCount > 0 ? 5 : 0,
+    cost: showCost && typeof usage.cost_usd === 'number' ? 10 : 0,
+    cwd: cwdLabel.length,
+    agents: 0,
+  }
+
+  const sepLen = sep.length
+  const rightTextLen = rightVisible.reduce((sum, f, i) => sum + (fieldTextLen[f] ?? 0) + (i > 0 ? sepLen : 0), 0)
+  const rightWidth = rightVisible.length > 0 ? rightTextLen + 3 : 0  // +3 for " ─ " divider
+  const leftWidth = Math.max(12, cols - rightWidth)
 
   return (
     <Box height={1}>
       <Box flexShrink={1} width={leftWidth}>
         <Text color={t.color.bronze} wrap="truncate-end">
           {'─ '}
-          {busy ? (
-            <FaceTicker color={statusColor} startedAt={turnStartedAt} />
-          ) : (
-            <Text color={statusColor}>{status}</Text>
-          )}
-          <Text color={t.color.dim}> │ {model}</Text>
-          {ctxLabel ? <Text color={t.color.dim}> │ {ctxLabel}</Text> : null}
-          {bar ? (
-            <Text color={t.color.dim}>
-              {' │ '}
-              <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pct != null ? `${pct}%` : ''}</Text>
-            </Text>
-          ) : null}
-          {sessionStartedAt ? (
-            <Text color={t.color.dim}>
-              {' │ '}
-              <SessionDuration startedAt={sessionStartedAt} />
-            </Text>
-          ) : null}
-          <SpawnHud t={t} />
-          {voiceLabel ? (
-            <Text
-              color={
-                voiceLabel.startsWith('●')
-                  ? t.color.error
-                  : voiceLabel.startsWith('◉')
-                    ? t.color.warn
-                    : t.color.dim
-              }
-            >
-              {' │ '}
-              {voiceLabel}
-            </Text>
-          ) : null}
-          {bgCount > 0 ? <Text color={t.color.dim}> │ {bgCount} bg</Text> : null}
-          {showCost && typeof usage.cost_usd === 'number' ? (
-            <Text color={t.color.dim}> │ ${usage.cost_usd.toFixed(4)}</Text>
-          ) : null}
+          {renderFieldList(leftVisible)}
         </Text>
       </Box>
-
-      <Text color={t.color.bronze}> ─ </Text>
-      <Text color={t.color.label}>{cwdLabel}</Text>
+      {rightVisible.length > 0 && <Text color={t.color.bronze}> ─ </Text>}
+      {rightVisible.length > 0 && (
+        <Box width={rightWidth - 3}>
+          <Text wrap="truncate-end">{renderFieldList(rightVisible)}</Text>
+        </Box>
+      )}
     </Box>
   )
 }
@@ -373,7 +422,10 @@ interface StatusRuleProps {
   busy: boolean
   cols: number
   cwdLabel: string
+  fieldsLeft?: string[]
+  fieldsRight?: string[]
   model: string
+  separator?: string
   sessionStartedAt?: null | number
   showCost: boolean
   status: string
