@@ -61,18 +61,6 @@ hermes-agent/
 `gateway.log` when running the gateway. Profile-aware via `get_hermes_home()`.
 Browse with `hermes logs [--follow] [--level ...] [--session ...]`.
 
-## Execution standard
-- When a task can be researched and verified with tools, run it end-to-end before stopping.
-- Avoid half-step confirmation prompts when the next best action is already knowable from repo/wiki/tool state.
-- For low-risk and medium-risk work, do expert review / research first, then decide and execute directly instead of pausing for routine confirmation.
-- High-risk / high-impact work must first be reviewed by the strongest available model, then executed through completion when the path is safe: destructive deletes/resets, secret or credential handling, signing or permission-sensitive changes, and actions that could directly alter release or submission state.
-- For these high-impact tasks, use the strongest available model for both review and execution when available; do not leave them half-finished on a smaller model if the task is already in progress.
-- Do not stop after implementation alone; finish verification and code review, clear blocking issues, and explicitly list any deferred non-blocking optimization.
-- Start with read-only inventory and root-cause understanding, then make the smallest complete change that solves the real problem.
-- Treat build-ready, upload-ready, and release-ready as different gates; do not collapse them into a single success claim.
-- Prefer the official Apple / Xcode / App Store path for shipping work unless there is a verified reason not to.
-- For App Store and release workflows, normalize the rule into shared wiki pages instead of leaving it tied to one product family.
-
 ## File Dependency Chain
 
 ```
