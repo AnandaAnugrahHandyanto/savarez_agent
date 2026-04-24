@@ -174,6 +174,34 @@ class TestRunJobScript:
         parsed = json.loads(output)
         assert parsed["new_prs"][0]["number"] == 42
 
+    def test_executable_shell_script_honors_shebang(self, cron_env):
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "hello.sh"
+        script.write_text(textwrap.dedent("""\
+            #!/usr/bin/env bash
+            echo "hello from shell"
+        """))
+        script.chmod(script.stat().st_mode | stat.S_IXUSR)
+
+        success, output = _run_job_script(str(script))
+        assert success is True
+        assert output == "hello from shell"
+
+    def test_non_executable_shell_script_falls_back_to_bash(self, cron_env):
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "fallback.sh"
+        script.write_text(textwrap.dedent("""\
+            #!/usr/bin/env bash
+            echo "shell fallback works"
+        """))
+        script.chmod(0o644)
+
+        success, output = _run_job_script(str(script))
+        assert success is True
+        assert output == "shell fallback works"
+
 
 class TestBuildJobPromptWithScript:
     """Test that script output is injected into the prompt."""

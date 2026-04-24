@@ -502,6 +502,32 @@ class TestCustomProviderCompatibility:
         assert compatible[0]["provider_key"] == "openai-direct"
         assert compatible[0]["api_mode"] == "codex_responses"
 
+    def test_provider_timeout_knobs_are_accepted_without_unknown_key_warning(self, tmp_path, caplog):
+        """Provider-level timeout knobs are runtime config, not unknown keys."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 17,
+                    "providers": {
+                        "openai-codex": {
+                            "api": "https://chatgpt.com/backend-api/codex",
+                            "name": "OpenAI Codex",
+                            "request_timeout_seconds": 3600,
+                            "stale_timeout_seconds": 1200,
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            compatible = get_compatible_custom_providers()
+
+        assert len(compatible) == 1
+        assert "unknown config keys ignored" not in caplog.text
+
     def test_compatible_custom_providers_prefers_base_url_then_url_then_api(self, tmp_path):
         """URL field precedence is base_url > url > api (PR #9332)."""
         config_path = tmp_path / "config.yaml"

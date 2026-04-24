@@ -390,6 +390,15 @@ class SessionEntry:
     resume_reason: Optional[str] = None  # e.g. "restart_timeout"
     last_resume_marked_at: Optional[datetime] = None
 
+    # Persisted marker for a turn that is actively running inside the gateway.
+    # ``updated_at`` only changes when a session is created/accessed or after a
+    # completed turn.  A long-running turn can therefore be much older than the
+    # startup "recently active" window by the time systemd kills/restarts the
+    # gateway.  This flag is set at turn start and cleared on normal completion
+    # so unclean exits can resume truly in-flight work regardless of age.
+    in_flight: bool = False
+    in_flight_started_at: Optional[datetime] = None
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "session_key": self.session_key,
@@ -414,6 +423,12 @@ class SessionEntry:
             "last_resume_marked_at": (
                 self.last_resume_marked_at.isoformat()
                 if self.last_resume_marked_at
+                else None
+            ),
+            "in_flight": self.in_flight,
+            "in_flight_started_at": (
+                self.in_flight_started_at.isoformat()
+                if self.in_flight_started_at
                 else None
             ),
         }
@@ -442,6 +457,14 @@ class SessionEntry:
             except (TypeError, ValueError):
                 last_resume_marked_at = None
 
+        in_flight_started_at = None
+        _ifsa = data.get("in_flight_started_at")
+        if _ifsa:
+            try:
+                in_flight_started_at = datetime.fromisoformat(_ifsa)
+            except (TypeError, ValueError):
+                in_flight_started_at = None
+
         return cls(
             session_key=data["session_key"],
             session_id=data["session_id"],
@@ -464,6 +487,8 @@ class SessionEntry:
             resume_pending=data.get("resume_pending", False),
             resume_reason=data.get("resume_reason"),
             last_resume_marked_at=last_resume_marked_at,
+            in_flight=data.get("in_flight", False),
+            in_flight_started_at=in_flight_started_at,
         )
 
 
@@ -916,6 +941,44 @@ class SessionStore:
             self._save()
             return True
 
+    def mark_in_flight(self, session_key: str) -> bool:
+        """Persist that a gateway turn is actively running for this session."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return False
+            entry.in_flight = True
+            entry.in_flight_started_at = _now()
+            self._save()
+            return True
+
+    def clear_in_flight(self, session_key: str) -> bool:
+        """Clear the active-turn marker after normal completion."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None or not entry.in_flight:
+                return False
+            entry.in_flight = False
+            entry.in_flight_started_at = None
+            self._save()
+            return True
+
+    def clear_all_in_flight(self) -> int:
+        """Clear stale in-flight markers after a clean shutdown marker."""
+        count = 0
+        with self._lock:
+            self._ensure_loaded_locked()
+            for entry in self._entries.values():
+                if entry.in_flight:
+                    entry.in_flight = False
+                    entry.in_flight_started_at = None
+                    count += 1
+            if count:
+                self._save()
+        return count
+
     def prune_old_entries(self, max_age_days: int) -> int:
         """Drop SessionEntry records older than max_age_days.
 
@@ -1000,6 +1063,69 @@ class SessionStore:
                 if not entry.suspended and entry.updated_at >= cutoff:
                     entry.suspended = True
                     count += 1
+            if count:
+                self._save()
+        return count
+
+    def mark_recently_active_resume_pending(
+        self,
+        max_age_seconds: int = 120,
+        reason: str = "unexpected_restart",
+    ) -> int:
+        """Mark recently-active sessions for automatic resume on startup.
+
+        Called after an unclean gateway exit. A session updated shortly
+        before the previous process disappeared was likely in-flight; instead
+        of forcing a fresh session, preserve its transcript and let the
+        gateway auto-inject a continuation turn after adapters reconnect.
+
+        Explicitly suspended sessions are skipped so /stop and stuck-loop
+        escalation still win.
+        """
+        from datetime import timedelta
+
+        cutoff = _now() - timedelta(seconds=max_age_seconds)
+        count = 0
+        with self._lock:
+            self._ensure_loaded_locked()
+            for entry in self._entries.values():
+                if entry.suspended:
+                    continue
+                if entry.updated_at >= cutoff and not entry.resume_pending:
+                    entry.resume_pending = True
+                    entry.resume_reason = reason
+                    entry.last_resume_marked_at = _now()
+                    count += 1
+            if count:
+                self._save()
+        return count
+
+    def mark_in_flight_resume_pending(
+        self,
+        reason: str = "unexpected_restart",
+    ) -> int:
+        """Convert persisted in-flight markers into resume-pending sessions.
+
+        This is crash/restart recovery for long-running turns.  It does not
+        depend on ``updated_at`` recency, because ``updated_at`` can be stale
+        for tasks that ran longer than the startup recency window before the
+        gateway was killed by systemd or the server rebooted.
+        """
+        count = 0
+        with self._lock:
+            self._ensure_loaded_locked()
+            for entry in self._entries.values():
+                if not entry.in_flight:
+                    continue
+                if entry.suspended:
+                    continue
+                if not entry.resume_pending:
+                    entry.resume_pending = True
+                    entry.resume_reason = reason
+                    entry.last_resume_marked_at = _now()
+                    count += 1
+                entry.in_flight = False
+                entry.in_flight_started_at = None
             if count:
                 self._save()
         return count

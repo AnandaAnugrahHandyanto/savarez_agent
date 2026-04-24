@@ -1,10 +1,12 @@
-"""Tests for the clean shutdown marker that prevents unwanted session auto-resets.
+"""Tests for the clean shutdown marker and restart auto-resume.
 
 When the gateway shuts down gracefully (hermes update, gateway restart, /restart),
-it writes a .clean_shutdown marker.  On the next startup, if the marker exists,
-suspend_recently_active() is skipped so users don't lose their sessions.
+it writes a .clean_shutdown marker. On the next startup, if the marker exists,
+recent sessions are not marked for auto-resume because no turn was interrupted.
 
-After a crash (no marker), suspension still fires as a safety net for stuck sessions.
+After an unclean exit (no marker), recent sessions are marked resume_pending so
+the gateway can automatically continue them after adapters reconnect. Stuck-loop
+escalation can still suspend repeatedly failing sessions.
 """
 
 import os
@@ -132,8 +134,8 @@ class TestCleanShutdownMarker:
 
         assert marker.exists(), ".clean_shutdown marker should exist after graceful stop"
 
-    def test_marker_skips_suspension_on_startup(self, tmp_path, monkeypatch):
-        """If .clean_shutdown exists, suspend_recently_active should NOT be called."""
+    def test_marker_skips_auto_resume_marking_on_startup(self, tmp_path, monkeypatch):
+        """If .clean_shutdown exists, recent sessions should NOT be marked for resume."""
         monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
 
         # Create the marker
@@ -149,20 +151,21 @@ class TestCleanShutdownMarker:
         # Simulate what start() does:
         if marker.exists():
             marker.unlink()
-            # Should NOT call suspend_recently_active
+            # Should NOT call mark_recently_active_resume_pending
         else:
-            store.suspend_recently_active()
+            store.mark_recently_active_resume_pending()
 
-        # Session should NOT be suspended
+        # Session should NOT be suspended or marked for resume
         with store._lock:
             store._ensure_loaded_locked()
             for e in store._entries.values():
                 assert not e.suspended, "Session should NOT be suspended after clean shutdown"
+                assert not e.resume_pending, "Session should NOT auto-resume after clean shutdown"
 
         assert not marker.exists(), "Marker should be cleaned up"
 
-    def test_no_marker_triggers_suspension(self, tmp_path, monkeypatch):
-        """Without .clean_shutdown marker (crash), suspension should fire."""
+    def test_no_marker_marks_recent_session_for_auto_resume(self, tmp_path, monkeypatch):
+        """Without .clean_shutdown marker (unclean exit), recent sessions auto-resume."""
         monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
 
         marker = tmp_path / ".clean_shutdown"
@@ -178,13 +181,72 @@ class TestCleanShutdownMarker:
         if marker.exists():
             marker.unlink()
         else:
-            store.suspend_recently_active()
+            store.mark_recently_active_resume_pending(reason="unexpected_restart")
 
-        # Session SHOULD be suspended (crash recovery)
+        # Session SHOULD be marked resume_pending, not suspended.
         with store._lock:
             store._ensure_loaded_locked()
-            suspended_count = sum(1 for e in store._entries.values() if e.suspended)
-        assert suspended_count == 1, "Session should be suspended after crash (no marker)"
+            entries = list(store._entries.values())
+        assert sum(1 for e in entries if e.suspended) == 0
+        assert sum(1 for e in entries if e.resume_pending) == 1
+        assert entries[0].resume_reason == "unexpected_restart"
+
+
+    def test_unclean_exit_marks_old_in_flight_session_for_auto_resume(self, tmp_path, monkeypatch):
+        """Long-running in-flight sessions auto-resume even when updated_at is old."""
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        marker = tmp_path / ".clean_shutdown"
+        assert not marker.exists()
+
+        store = _make_store(tmp_path)
+        source = _make_source()
+        entry = store.get_or_create_session(source)
+        with store._lock:
+            entry.updated_at = datetime.now() - timedelta(hours=2)
+            store._save()
+
+        assert store.mark_in_flight(entry.session_key)
+
+        in_flight = store.mark_in_flight_resume_pending(reason="unexpected_restart")
+        recent = store.mark_recently_active_resume_pending(reason="unexpected_restart")
+
+        with store._lock:
+            store._ensure_loaded_locked()
+            refreshed = store._entries[entry.session_key]
+
+        assert in_flight == 1
+        assert recent == 0
+        assert refreshed.resume_pending
+        assert refreshed.resume_reason == "unexpected_restart"
+        assert not refreshed.in_flight
+
+    def test_clean_marker_clears_stale_in_flight_without_auto_resume(self, tmp_path, monkeypatch):
+        """Clean shutdown should discard harmless stale in-flight markers."""
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        marker = tmp_path / ".clean_shutdown"
+        marker.touch()
+
+        store = _make_store(tmp_path)
+        source = _make_source()
+        entry = store.get_or_create_session(source)
+        assert store.mark_in_flight(entry.session_key)
+
+        if marker.exists():
+            cleared = store.clear_all_in_flight()
+            marker.unlink()
+        else:
+            cleared = 0
+            store.mark_in_flight_resume_pending(reason="unexpected_restart")
+            store.mark_recently_active_resume_pending(reason="unexpected_restart")
+
+        with store._lock:
+            store._ensure_loaded_locked()
+            refreshed = store._entries[entry.session_key]
+
+        assert cleared == 1
+        assert not refreshed.in_flight
+        assert not refreshed.resume_pending
+        assert not marker.exists()
 
     def test_marker_written_on_restart_stop(self, tmp_path, monkeypatch):
         """stop(restart=True) should also write the marker."""
