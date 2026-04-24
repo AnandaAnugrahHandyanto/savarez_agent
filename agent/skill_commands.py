@@ -16,6 +16,9 @@ from hermes_constants import display_hermes_home
 logger = logging.getLogger(__name__)
 
 _skill_commands: Dict[str, Dict[str, Any]] = {}
+# Per-platform cache — prevents disabled-skill views from one platform
+# leaking into another when the gateway serves multiple adapters (#14536).
+_skill_commands_by_platform: Dict[str, Dict[str, Dict[str, Any]]] = {}
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
@@ -376,11 +379,23 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     return _skill_commands
 
 
-def get_skill_commands() -> Dict[str, Dict[str, Any]]:
-    """Return the current skill commands mapping (scan first if empty)."""
+def get_skill_commands(platform: str = "") -> Dict[str, Dict[str, Any]]:
+    """Return the current skill commands mapping (scan first if empty).
+
+    When *platform* is provided, returns a platform-specific view that
+    may exclude skills disabled for that platform.  The base (unfiltered)
+    scan result is cached globally; per-platform views are cached
+    separately to prevent cross-platform cache leakage (#14536).
+    """
     if not _skill_commands:
         scan_skill_commands()
-    return _skill_commands
+    if not platform:
+        return _skill_commands
+    if platform in _skill_commands_by_platform:
+        return _skill_commands_by_platform[platform]
+    # Build per-platform view — callers can filter further
+    _skill_commands_by_platform[platform] = dict(_skill_commands)
+    return _skill_commands_by_platform[platform]
 
 
 def resolve_skill_command_key(command: str) -> Optional[str]:
