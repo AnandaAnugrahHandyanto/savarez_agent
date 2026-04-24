@@ -213,6 +213,28 @@ class TestExtractText:
         assert reply_text == "quoted"
 
 
+class TestNormalizeLeadingMentionsForCommand:
+    def test_strips_group_wake_prefix_before_command(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        assert (
+            WeComAdapter._normalize_leading_mentions_for_command("@电商开发三 openclaw /new")
+            == "/new"
+        )
+
+    def test_preserves_plain_text_requests(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        text = "@电商开发三 openclaw 帮我看下这个问题"
+        assert WeComAdapter._normalize_leading_mentions_for_command(text) == text
+
+    def test_preserves_non_command_paths(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        text = "@电商开发三 openclaw /root/demo.txt"
+        assert WeComAdapter._normalize_leading_mentions_for_command(text) == text
+
+
 class TestCallbackDispatch:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("cmd", ["aibot_msg_callback", "aibot_callback"])
@@ -566,6 +588,34 @@ class TestInboundMessages:
         assert event.reply_to_message_id == "quote:msg-1"
 
     @pytest.mark.asyncio
+    async def test_on_message_normalizes_group_command_prefix(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._text_batch_delay_seconds = 0
+        adapter.handle_message = AsyncMock()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+
+        payload = {
+            "cmd": "aibot_msg_callback",
+            "headers": {"req_id": "req-1"},
+            "body": {
+                "msgid": "msg-1",
+                "chatid": "group-1",
+                "chattype": "group",
+                "from": {"userid": "user-1"},
+                "msgtype": "text",
+                "text": {"content": "@电商开发三 openclaw /new"},
+            },
+        }
+
+        await adapter._on_message(payload)
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text == "/new"
+        assert event.is_command() is True
+
+    @pytest.mark.asyncio
     async def test_on_message_respects_group_policy(self):
         from gateway.platforms.wecom import WeComAdapter
 
@@ -783,4 +833,3 @@ class TestWeComZombieSessionFix:
         adapter._send_request.assert_awaited_once()
         cmd = adapter._send_request.await_args.args[0]
         assert cmd == APP_CMD_SEND
-

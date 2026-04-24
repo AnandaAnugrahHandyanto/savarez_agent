@@ -508,6 +508,7 @@ class WeComAdapter(BasePlatformAdapter):
         self._remember_chat_req_id(chat_id, self._payload_req_id(payload))
 
         text, reply_text = self._extract_text(body)
+        text = self._normalize_leading_mentions_for_command(text)
         media_urls, media_types = await self._extract_media(body)
         message_type = self._derive_message_type(body, text, media_types)
         has_reply_context = bool(reply_text and (text or media_urls))
@@ -666,6 +667,36 @@ class WeComAdapter(BasePlatformAdapter):
             reply_text = str(quote_voice.get("content") or "").strip() or None
 
         return "\n".join(part for part in text_parts if part).strip(), reply_text
+
+    @staticmethod
+    def _normalize_leading_mentions_for_command(text: str) -> str:
+        """Strip WeCom wake-word prefixes when they precede a slash command.
+
+        In group chats WeCom may deliver literal text like
+        ``@TeamBot openclaw /new``. The command router only treats messages
+        starting with ``/`` as commands, so normalize this specific shape back
+        to ``/new`` while leaving ordinary prose unchanged.
+        """
+        normalized = str(text or "").strip()
+        if not normalized or normalized.startswith("/"):
+            return normalized
+
+        match = re.search(r"/[A-Za-z][\w-]*(?:@[A-Za-z0-9_.-]+)?(?:\s|$)", normalized)
+        if not match:
+            return normalized
+
+        prefix = normalized[:match.start()].strip()
+        if not prefix:
+            return normalized
+
+        prefix_tokens = prefix.split()
+        if not prefix_tokens or not any(token.startswith("@") for token in prefix_tokens):
+            return normalized
+
+        if not all(token.startswith("@") or re.fullmatch(r"[A-Za-z0-9_.-]+", token) for token in prefix_tokens):
+            return normalized
+
+        return normalized[match.start():].lstrip()
 
     async def _extract_media(self, body: Dict[str, Any]) -> Tuple[List[str], List[str]]:
         """Best-effort extraction of inbound media to local cache paths."""
