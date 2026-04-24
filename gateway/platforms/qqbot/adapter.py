@@ -543,16 +543,52 @@ class QQAdapter(BasePlatformAdapter):
                 if not self._running:
                     return
                 logger.warning("[%s] WebSocket error: %s", self._log_tag, exc)
+
+                # Quick disconnect detection — mirrors the QQCloseError handler
+                duration = time.monotonic() - connect_time
+                if duration < QUICK_DISCONNECT_THRESHOLD and connect_time > 0:
+                    quick_disconnect_count += 1
+                    logger.info(
+                        "[%s] Quick disconnect (%.1fs), count: %d",
+                        self._log_tag,
+                        duration,
+                        quick_disconnect_count,
+                    )
+                    if quick_disconnect_count >= MAX_QUICK_DISCONNECT_COUNT:
+                        logger.error(
+                            "[%s] Too many quick disconnects. "
+                            "Check: 1) AppID/Secret correct 2) Bot permissions "
+                            "3) Network / firewall stability",
+                            self._log_tag,
+                        )
+                        self._set_fatal_error(
+                            "qq_quick_disconnect",
+                            "Too many quick disconnects — check bot permissions or network",
+                            retryable=True,
+                        )
+                        return
+                else:
+                    quick_disconnect_count = 0
+
                 self._mark_disconnected()
                 self._fail_pending("Connection interrupted")
 
                 if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
                     logger.error("[%s] Max reconnect attempts reached", self._log_tag)
+                    self._set_fatal_error(
+                        "qq_reconnect_exhausted",
+                        "Max reconnect attempts reached",
+                        retryable=True,
+                    )
                     return
 
                 if await self._reconnect(backoff_idx):
                     backoff_idx = 0
-                    quick_disconnect_count = 0
+                    # Intentionally NOT resetting quick_disconnect_count here.
+                    # When reconnection succeeds but the WS immediately closes
+                    # (e.g. "WebSocket closed" RuntimeError loop), keeping the
+                    # counter lets MAX_QUICK_DISCONNECT_COUNT bound the retries
+                    # instead of looping forever.
                 else:
                     backoff_idx += 1
 
