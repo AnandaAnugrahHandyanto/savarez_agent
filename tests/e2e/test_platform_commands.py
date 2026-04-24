@@ -83,6 +83,22 @@ class TestSlashCommands:
         assert "verbose" in response_text.lower() or "tool_progress" in response_text
 
     @pytest.mark.asyncio
+    async def test_footer_responds(self, adapter, platform, tmp_path, monkeypatch):
+        import gateway.run as gateway_run
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("display: {}\n", encoding="utf-8")
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+        send = await send_and_capture(adapter, "/footer status", platform)
+
+        send.assert_called_once()
+        response_text = send.call_args[1].get("content") or send.call_args[0][1]
+        assert "footer" in response_text.lower()
+        assert "telegram" in response_text.lower() or "discord" in response_text.lower() or "slack" in response_text.lower()
+
+    @pytest.mark.asyncio
     async def test_personality_lists_options(self, adapter, platform):
         send = await send_and_capture(adapter, "/personality", platform)
 

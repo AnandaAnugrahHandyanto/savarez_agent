@@ -126,6 +126,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, args_hint="[name]"),
     CommandDef("voice", "Toggle voice mode", "Configuration",
                args_hint="[on|off|tts|status]", subcommands=("on", "off", "tts", "status")),
+    CommandDef("footer", "Toggle per-platform response footer (model / reasoning / tokens)", "Configuration",
+               gateway_only=True, args_hint="[on|off|status]",
+               subcommands=("on", "off", "status")),
 
     # Tools & Skills
     CommandDef("tools", "Manage tools: /tools [list|disable|enable] [name...]", "Tools & Skills",
