@@ -145,6 +145,7 @@ _ROUTED_HISTORY_MAX_MESSAGES = 8
 # the force-routed tool's own output inside the downstream model budget.
 _ROUTED_HISTORY_MAX_CHARS = 6000
 _ROUTE_FORENSICS_LOG = "route_forensics.jsonl"
+_MOA_FORENSIC_ENV = "HERMES_MOA_FORENSIC_ANALYSIS"
 
 
 def _extract_text(
@@ -185,6 +186,10 @@ def _select_prompt_route(mode_id: str, user_text: str) -> str:
     if any(token in lowered for token in _MOA_AUTO_HINTS):
         return "force-moa"
     return "standard"
+
+
+def _moa_forensic_analysis_enabled() -> bool:
+    return os.getenv(_MOA_FORENSIC_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _parse_tool_json(raw_text: str) -> dict[str, Any]:
@@ -897,7 +902,7 @@ class HermesACPAgent(acp.Agent):
 
                     raw_output = await mixture_of_agents_tool(
                         user_prompt=routed_prompt,
-                        enable_forensic_analysis=True,
+                        enable_forensic_analysis=_moa_forensic_analysis_enabled(),
                     )
                     final_text = _format_moa_output(raw_output)
                 _log_route_forensics(

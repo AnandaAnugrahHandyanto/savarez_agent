@@ -180,6 +180,86 @@ def test_fallback_forensic_analysis_uses_raw_outputs():
     assert result["aggregator_influence_log"]["kept_from_models"]["minimax/MiniMax-M2.7-highspeed"][0] == "AKG"
 
 
+def test_extract_json_object_handles_trailing_duplicate_payloads():
+    payload = moa._extract_json_object(
+        '```json\n{"decision_trace":{"model_proposals":{},"overlap":[],"conflicts":[],"final_candidates":[],"synthesis_summary":"ok"},"aggregator_influence_log":{"kept_from_models":{},"discarded_or_deprioritized":[],"resolution_notes":[],"influence_summary":"ok"}}\n```\n{"ignored":true}'
+    )
+
+    assert payload["decision_trace"]["synthesis_summary"] == "ok"
+    assert payload["aggregator_influence_log"]["influence_summary"] == "ok"
+
+
+def test_forensic_analysis_empty_detector_flags_blank_schema():
+    assert moa._forensic_analysis_is_empty(moa._empty_forensic_analysis()) is True
+
+
+@pytest.mark.asyncio
+async def test_moa_forensic_analysis_retries_invalid_reply_once(monkeypatch):
+    valid_json = json.dumps({
+        "decision_trace": {
+            "model_proposals": {"minimax/MiniMax-M2.7-highspeed": ["akg"]},
+            "overlap": ["akg"],
+            "conflicts": [],
+            "final_candidates": ["akg"],
+            "synthesis_summary": "kept overlap",
+        },
+        "aggregator_influence_log": {
+            "kept_from_models": {"minimax/MiniMax-M2.7-highspeed": ["akg"]},
+            "discarded_or_deprioritized": ["lithium"],
+            "resolution_notes": ["used overlap"],
+            "influence_summary": "clean",
+        },
+    })
+    llm = AsyncMock(side_effect=["no json here", valid_json])
+    monkeypatch.setattr(moa, "async_call_llm", llm)
+    monkeypatch.setattr(moa, "extract_content_or_reasoning", lambda response: response)
+
+    parsed, metrics = await moa._run_moa_forensic_analysis(
+        {"provider": "xiaomi", "model": "mimo-v2-pro"},
+        "compare compounds",
+        {"minimax/MiniMax-M2.7-highspeed": "AKG"},
+        "Final answer: AKG",
+    )
+
+    assert llm.await_count == 2
+    assert parsed["decision_trace"]["final_candidates"] == ["akg"]
+    assert parsed["aggregator_influence_log"]["influence_summary"] == "clean"
+    assert metrics["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_moa_forensic_analysis_retries_empty_schema_once(monkeypatch):
+    valid_json = json.dumps({
+        "decision_trace": {
+            "model_proposals": {"deepseek/deepseek-reasoner": ["refuse"]},
+            "overlap": [],
+            "conflicts": ["minimax picked B"],
+            "final_candidates": ["B"],
+            "synthesis_summary": "picked B",
+        },
+        "aggregator_influence_log": {
+            "kept_from_models": {"minimax/MiniMax-M2.7-highspeed": ["B"]},
+            "discarded_or_deprioritized": ["A"],
+            "resolution_notes": ["preferred upside"],
+            "influence_summary": "clean",
+        },
+    })
+    llm = AsyncMock(side_effect=[json.dumps(moa._empty_forensic_analysis()), valid_json])
+    monkeypatch.setattr(moa, "async_call_llm", llm)
+    monkeypatch.setattr(moa, "extract_content_or_reasoning", lambda response: response)
+
+    parsed, metrics = await moa._run_moa_forensic_analysis(
+        {"provider": "xiaomi", "model": "mimo-v2-pro"},
+        "compare compounds",
+        {"minimax/MiniMax-M2.7-highspeed": "B"},
+        "Final answer: B",
+    )
+
+    assert llm.await_count == 2
+    assert parsed["decision_trace"]["final_candidates"] == ["B"]
+    assert metrics["success"] is True
+
+
 @pytest.mark.asyncio
 async def test_moa_returns_full_reference_forensics(monkeypatch):
     monkeypatch.setattr(

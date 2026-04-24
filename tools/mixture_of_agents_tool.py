@@ -52,6 +52,7 @@ import logging
 import asyncio
 import datetime
 import time
+import re
 from typing import Dict, Any, List, Optional, Sequence, Tuple
 
 from agent.auxiliary_client import (
@@ -107,26 +108,37 @@ Responses from models:"""
 MOA_FORENSIC_SYSTEM_PROMPT = """You are analyzing a mixture-of-agents run. Return JSON only with this exact top-level structure:
 {
   "decision_trace": {
-    "model_proposals": {"actual_model_name": ["concrete proposal"]},
-    "overlap": ["concrete shared idea"],
-    "conflicts": ["concrete disagreement"],
-    "final_candidates": ["concrete final pick"],
-    "synthesis_summary": "concrete summary"
+    "model_proposals": {},
+    "overlap": [],
+    "conflicts": [],
+    "final_candidates": [],
+    "synthesis_summary": ""
   },
   "aggregator_influence_log": {
-    "kept_from_models": {"actual_model_name": ["concrete kept point"]},
-    "discarded_or_deprioritized": ["concrete discarded point"],
-    "resolution_notes": ["concrete resolution note"],
-    "influence_summary": "concrete summary"
+    "kept_from_models": {},
+    "discarded_or_deprioritized": [],
+    "resolution_notes": [],
+    "influence_summary": ""
   }
 }
 
 Rules:
 - JSON only, no markdown fences.
 - Use concise strings.
+- In model_proposals and kept_from_models, use the exact model labels from the supplied reference outputs as keys.
+- Fill arrays/strings only with concrete content from this run.
 - Use empty arrays/objects instead of inventing unsupported facts.
 - Never echo template placeholders like model_label, concrete proposal, concrete summary, or "...".
 - Base the analysis only on the supplied reference outputs and final answer."""
+
+MOA_FORENSIC_REPAIR_PROMPT = """Your previous reply was invalid for one of these reasons:
+- it was not valid JSON
+- it included extra prose or duplicate JSON objects
+- it echoed template placeholders instead of concrete values
+
+Return exactly one valid JSON object only.
+No prose. No markdown fences. No duplicate object.
+Use the real model keys exactly as supplied."""
 
 _debug = DebugSession("moa_tools", env_var="MOA_TOOLS_DEBUG")
 
@@ -308,18 +320,25 @@ def _preview_reference_response(content: str, limit: int = 180) -> str:
 
 def _extract_json_object(raw_text: str) -> Dict[str, Any]:
     text = str(raw_text or "").strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        if len(lines) >= 3:
-            text = "\n".join(lines[1:-1]).strip()
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end <= start:
+    if not text:
         raise ValueError("No JSON object found in forensic analysis response")
-    payload = json.loads(text[start:end + 1])
-    if not isinstance(payload, dict):
-        raise ValueError("Forensic analysis payload must be a JSON object")
-    return payload
+
+    fenced = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
+    if fenced:
+        text = fenced.group(1).strip()
+
+    decoder = json.JSONDecoder()
+    for idx, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            payload, _ = decoder.raw_decode(text[idx:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+
+    raise ValueError("No JSON object found in forensic analysis response")
 
 
 def _string_list(value: Any) -> List[str]:
@@ -410,6 +429,22 @@ def _forensic_analysis_has_placeholders(payload: Dict[str, Any]) -> bool:
         return bool(text) and text in blocked
 
     return _contains(payload)
+
+
+def _forensic_analysis_is_empty(payload: Dict[str, Any]) -> bool:
+    decision = payload.get("decision_trace", {})
+    influence = payload.get("aggregator_influence_log", {})
+    return not any([
+        decision.get("model_proposals"),
+        decision.get("overlap"),
+        decision.get("conflicts"),
+        decision.get("final_candidates"),
+        decision.get("synthesis_summary"),
+        influence.get("kept_from_models"),
+        influence.get("discarded_or_deprioritized"),
+        influence.get("resolution_notes"),
+        influence.get("influence_summary"),
+    ])
 
 
 def _extract_forensic_proposals(text: str, max_items: int = 3) -> List[str]:
@@ -686,34 +721,55 @@ async def _run_moa_forensic_analysis(
 
     analysis_prompt = (
         f"User prompt:\n{user_prompt}\n\n"
+        f"Reference model labels:\n{json.dumps(list(reference_outputs.keys()), ensure_ascii=False)}\n\n"
         f"Reference outputs by model:\n{json.dumps(reference_outputs, ensure_ascii=False, indent=2)}\n\n"
         f"Final aggregated response:\n{final_response}"
     )
 
+    messages = [
+        {"role": "system", "content": MOA_FORENSIC_SYSTEM_PROMPT},
+        {"role": "user", "content": analysis_prompt},
+    ]
+
     try:
-        response = await async_call_llm(
-            task="moa",
-            provider=route.get("provider"),
-            model=route.get("model"),
-            base_url=route.get("base_url"),
-            api_key=route.get("api_key"),
-            messages=[
-                {"role": "system", "content": MOA_FORENSIC_SYSTEM_PROMPT},
-                {"role": "user", "content": analysis_prompt},
-            ],
-            temperature=0.1,
-            max_tokens=max_tokens,
-        )
-        content = extract_content_or_reasoning(response)
-        metrics["latency_seconds"] = round(time.monotonic() - started, 3)
-        metrics["output_chars"] = len(content or "")
-        parsed = _normalize_forensic_analysis(_extract_json_object(content or ""))
-        if _forensic_analysis_has_placeholders(parsed):
-            raise ValueError("Forensic analysis returned placeholder content")
-        metrics["success"] = True
-        return parsed, metrics
+        content = ""
+        last_exc: Exception | None = None
+        for attempt in range(2):
+            response = await async_call_llm(
+                task="moa",
+                provider=route.get("provider"),
+                model=route.get("model"),
+                base_url=route.get("base_url"),
+                api_key=route.get("api_key"),
+                messages=messages,
+                temperature=0.1,
+                max_tokens=max_tokens,
+            )
+            content = extract_content_or_reasoning(response) or ""
+            try:
+                parsed = _normalize_forensic_analysis(_extract_json_object(content))
+                if _forensic_analysis_has_placeholders(parsed):
+                    raise ValueError("Forensic analysis returned placeholder content")
+                if _forensic_analysis_is_empty(parsed):
+                    raise ValueError("Forensic analysis returned empty content")
+                metrics["latency_seconds"] = round(time.monotonic() - started, 3)
+                metrics["output_chars"] = len(content)
+                metrics["success"] = True
+                return parsed, metrics
+            except Exception as exc:
+                last_exc = exc
+                if attempt == 1:
+                    raise
+                messages.extend([
+                    {"role": "assistant", "content": content},
+                    {"role": "user", "content": MOA_FORENSIC_REPAIR_PROMPT},
+                ])
+        if last_exc is not None:
+            raise last_exc
+        raise ValueError("Forensic analysis returned no content")
     except Exception as exc:
         metrics["latency_seconds"] = round(time.monotonic() - started, 3)
+        metrics["output_chars"] = len(content or "")
         metrics["error"] = str(exc)
         logger.warning("MoA forensic analysis failed: %s", exc)
         return _fallback_forensic_analysis(reference_outputs, final_response), metrics
