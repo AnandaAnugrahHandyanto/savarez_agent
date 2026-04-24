@@ -352,7 +352,13 @@ class TestDelegateTask(unittest.TestCase):
         mock_run_child,
     ):
         mock_load_full_config.return_value = {
-            "delegation": {"max_iterations": 50},
+            "delegation": {
+                "max_iterations": 50,
+                "model": "root-model",
+                "route_categories": {
+                    "quick": {"model": "quick-model"},
+                },
+            },
             "agents": {
                 "writer": {
                     "archetype": "implementer",
@@ -361,6 +367,7 @@ class TestDelegateTask(unittest.TestCase):
                     "blocked_tools": ["terminal"],
                     "model": "writer-model",
                     "provider": "writer-provider",
+                    "fallback_models": ["writer-fallback", {"model": "writer-fallback-2"}],
                 },
                 "reviewer": {
                     "archetype": "verifier",
@@ -369,6 +376,7 @@ class TestDelegateTask(unittest.TestCase):
                     "blocked_tools": ["search_files"],
                     "model": "review-model",
                     "provider": "review-provider",
+                    "fallback_models": ["review-fallback"],
                 },
             },
         }
@@ -411,6 +419,29 @@ class TestDelegateTask(unittest.TestCase):
         self.assertEqual(writer_call["enabled_tools"], ["read_file", "search_files"])
         self.assertEqual(writer_call["model"], "writer-model")
         self.assertEqual(writer_call["override_provider"], "writer-provider")
+        self.assertEqual(
+            writer_call["fallback_model"],
+            [
+                {
+                    "model": "writer-fallback",
+                    "provider": "writer-provider",
+                    "base_url": "https://writer-provider.example/v1",
+                    "api_key": "key-for-writer-provider",
+                },
+                {
+                    "model": "writer-fallback-2",
+                    "provider": "writer-provider",
+                    "base_url": "https://writer-provider.example/v1",
+                    "api_key": "key-for-writer-provider",
+                },
+                {
+                    "model": "quick-model",
+                    "provider": "writer-provider",
+                    "base_url": "https://writer-provider.example/v1",
+                    "api_key": "key-for-writer-provider",
+                },
+            ],
+        )
         self.assertEqual(writer_call["delegate_resolution"]["archetype"], "implementer")
         self.assertEqual(writer_call["delegate_resolution"]["route_category"], "deep")
         self.assertEqual(writer_call["delegate_resolution"]["agent"], "writer")
@@ -419,9 +450,157 @@ class TestDelegateTask(unittest.TestCase):
         self.assertEqual(reviewer_call["enabled_tools"], ["read_file", "terminal"])
         self.assertEqual(reviewer_call["model"], "review-model")
         self.assertEqual(reviewer_call["override_provider"], "review-provider")
+        self.assertEqual(
+            reviewer_call["fallback_model"],
+            [
+                {
+                    "model": "review-fallback",
+                    "provider": "review-provider",
+                    "base_url": "https://review-provider.example/v1",
+                    "api_key": "key-for-review-provider",
+                },
+                {
+                    "model": "root-model",
+                    "provider": "review-provider",
+                    "base_url": "https://review-provider.example/v1",
+                    "api_key": "key-for-review-provider",
+                },
+            ],
+        )
         self.assertEqual(reviewer_call["delegate_resolution"]["archetype"], "verifier")
         self.assertEqual(reviewer_call["delegate_resolution"]["route_category"], "quick")
         self.assertEqual(reviewer_call["delegate_resolution"]["agent"], "reviewer")
+
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._load_full_config")
+    def test_named_agent_fallback_models_precede_and_dedupe_route_category_chain(
+        self,
+        mock_load_full_config,
+        mock_resolve_creds,
+        mock_build_child,
+        mock_run_child,
+    ):
+        mock_load_full_config.return_value = {
+            "delegation": {
+                "max_iterations": 50,
+                "model": "root-model",
+                "provider": "test-provider",
+                "base_url": "https://test-provider.example/v1",
+                "api_key": "test-key",
+                "route_categories": {
+                    "quick": {"model": "quick-model"},
+                },
+            },
+            "agents": {
+                "writer": {
+                    "route_category": "deep",
+                    "fallback_models": [
+                        "named-fallback",
+                        {"model": "quick-model"},
+                        "named-fallback",
+                    ],
+                },
+            },
+        }
+        mock_resolve_creds.side_effect = lambda cfg, _parent_agent: {
+            "model": cfg.get("model"),
+            "provider": cfg.get("provider"),
+            "base_url": cfg.get("base_url"),
+            "api_key": cfg.get("api_key"),
+            "api_mode": None,
+        }
+        mock_build_child.return_value = MagicMock()
+        mock_run_child.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "Done Draft changelog",
+            "api_calls": 1,
+            "duration_seconds": 0.1,
+        }
+
+        result = json.loads(delegate_task(goal="Draft changelog", agent="writer", parent_agent=_make_mock_parent()))
+
+        self.assertIn("results", result)
+        build_call = mock_build_child.call_args.kwargs
+        self.assertEqual(
+            build_call["fallback_model"],
+            [
+                {
+                    "model": "named-fallback",
+                    "provider": "test-provider",
+                    "base_url": "https://test-provider.example/v1",
+                    "api_key": "test-key",
+                },
+                {
+                    "model": "quick-model",
+                    "provider": "test-provider",
+                    "base_url": "https://test-provider.example/v1",
+                    "api_key": "test-key",
+                },
+            ],
+        )
+
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._load_full_config")
+    def test_route_category_fallback_models_still_flow_without_named_agent_fallbacks(
+        self,
+        mock_load_full_config,
+        mock_resolve_creds,
+        mock_build_child,
+        mock_run_child,
+    ):
+        mock_load_full_config.return_value = {
+            "delegation": {
+                "max_iterations": 50,
+                "model": "root-model",
+                "provider": "test-provider",
+                "base_url": "https://test-provider.example/v1",
+                "api_key": "test-key",
+                "route_categories": {
+                    "quick": {"model": "quick-model"},
+                },
+            },
+            "agents": {
+                "writer": {
+                    "route_category": "deep",
+                },
+            },
+        }
+        mock_resolve_creds.side_effect = lambda cfg, _parent_agent: {
+            "model": cfg.get("model"),
+            "provider": cfg.get("provider"),
+            "base_url": cfg.get("base_url"),
+            "api_key": cfg.get("api_key"),
+            "api_mode": None,
+        }
+        mock_build_child.return_value = MagicMock()
+        mock_run_child.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "Done Draft changelog",
+            "api_calls": 1,
+            "duration_seconds": 0.1,
+        }
+
+        result = json.loads(delegate_task(goal="Draft changelog", agent="writer", parent_agent=_make_mock_parent()))
+
+        self.assertIn("results", result)
+        build_call = mock_build_child.call_args.kwargs
+        self.assertEqual(
+            build_call["fallback_model"],
+            [
+                {
+                    "model": "quick-model",
+                    "provider": "test-provider",
+                    "base_url": "https://test-provider.example/v1",
+                    "api_key": "test-key",
+                },
+            ],
+        )
 
     @patch("tools.delegate_tool._resolve_delegation_credentials")
     @patch("tools.delegate_tool._load_full_config")

@@ -185,6 +185,12 @@ TOOLSETS = {
         "tools": ["execute_code"],
         "includes": []
     },
+
+    "code_intel": {
+        "description": "Bounded semantic code-intelligence tools for safe refactors and symbol operations",
+        "tools": ["lsp_rename"],
+        "includes": []
+    },
     
     "delegation": {
         "description": "Spawn subagents with isolated context for complex subtasks",
@@ -244,6 +250,7 @@ TOOLSETS = {
             "web_search", "web_extract",
             "terminal", "process",
             "read_file", "write_file", "patch", "search_files",
+            "lsp_rename",
             "vision_analyze",
             "skills_list", "skill_view", "skill_manage",
             "browser_navigate", "browser_snapshot", "browser_click",

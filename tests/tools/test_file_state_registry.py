@@ -275,6 +275,40 @@ class FileToolsIntegrationTests(unittest.TestCase):
         if warn:
             self.assertIn("agentB", warn)
 
+    def test_strict_mode_blocks_sibling_stale_write(self):
+        p = self._write_seed("strict_shared.txt")
+        with unittest.mock.patch.dict(os.environ, {"HERMES_STALE_EDIT_MODE": "strict"}, clear=False):
+            json.loads(read_file_tool(path=p, task_id="agentStrictA"))
+            json.loads(read_file_tool(path=p, task_id="agentStrictB"))
+            w_b = json.loads(write_file_tool(path=p, content="B wrote\n", task_id="agentStrictB"))
+            self.assertNotIn("error", w_b)
+            w_a = json.loads(write_file_tool(path=p, content="A stale\n", task_id="agentStrictA"))
+        self.assertIn("error", w_a)
+        self.assertIn("agentStrictB", w_a["error"])
+        self.assertIn("sibling", w_a["error"].lower())
+
+    def test_strict_mode_blocks_unread_existing_file(self):
+        p = self._write_seed("strict_unread.txt")
+        with unittest.mock.patch.dict(os.environ, {"HERMES_STALE_EDIT_MODE": "strict"}, clear=False):
+            w = json.loads(write_file_tool(path=p, content="overwrite\n", task_id="agentUnread"))
+        self.assertIn("error", w)
+        self.assertIn("read", w["error"].lower())
+
+    def test_strict_mode_allows_net_new_file(self):
+        p = os.path.join(self._tmpdir, "strict_brand_new.txt")
+        with unittest.mock.patch.dict(os.environ, {"HERMES_STALE_EDIT_MODE": "strict"}, clear=False):
+            w = json.loads(write_file_tool(path=p, content="hi\n", task_id="agentNew"))
+        self.assertNotIn("error", w)
+
+    def test_strict_mode_allows_same_agent_consecutive_writes(self):
+        p = self._write_seed("strict_own.txt")
+        with unittest.mock.patch.dict(os.environ, {"HERMES_STALE_EDIT_MODE": "strict"}, clear=False):
+            json.loads(read_file_tool(path=p, task_id="agentOwn"))
+            w1 = json.loads(write_file_tool(path=p, content="one\n", task_id="agentOwn"))
+            w2 = json.loads(write_file_tool(path=p, content="two\n", task_id="agentOwn"))
+        self.assertNotIn("error", w1)
+        self.assertNotIn("error", w2)
+
     def test_net_new_file_no_warning(self):
         p = os.path.join(self._tmpdir, "brand_new.txt")
         # Nobody has read or written this before.

@@ -555,7 +555,29 @@ def handle_function_call(
         except Exception:
             pass
 
-        return result
+        transformed_result = result
+        try:
+            from hermes_cli.plugins import invoke_hook
+            hook_results = invoke_hook(
+                "transform_tool_result",
+                tool_name=function_name,
+                args=function_args,
+                result=result,
+                task_id=task_id or "",
+                session_id=session_id or "",
+                tool_call_id=tool_call_id or "",
+            )
+            if isinstance(hook_results, str):
+                transformed_result = hook_results
+            elif isinstance(hook_results, list):
+                for hook_result in hook_results:
+                    if isinstance(hook_result, str):
+                        transformed_result = hook_result
+                        break
+        except Exception:
+            pass
+
+        return transformed_result
 
     except Exception as e:
         error_msg = f"Error executing {function_name}: {str(e)}"

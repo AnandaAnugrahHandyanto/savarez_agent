@@ -90,6 +90,10 @@ class TestResolveToolset:
         tools = resolve_toolset("*")
         assert len(tools) > 10
 
+    def test_code_intel_toolset_resolves_lsp_rename(self):
+        tools = resolve_toolset("code_intel")
+        assert "lsp_rename" in tools
+
 
 class TestResolveMultipleToolsets:
     def test_combines_and_deduplicates(self):

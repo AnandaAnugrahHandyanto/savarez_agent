@@ -603,13 +603,9 @@ DEFAULT_CONFIG = {
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
         "protected_tools": [
-            "task",
-            "todoread",
-            "todowrite",
-            "lsp_rename",
+            "delegate_task",
+            "todo",
             "session_search",
-            "session_read",
-            "session_write",
         ],
 
     },

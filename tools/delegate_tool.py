@@ -1099,6 +1099,123 @@ def _resolve_route_category_fallback_models(
     return fallback_chain
 
 
+def _resolve_named_agent_fallback_models(
+    cfg: Dict[str, Any],
+    named_agent: Optional[Dict[str, Any]],
+    parent_agent,
+) -> List[Dict[str, Any]]:
+    if not isinstance(named_agent, dict):
+        return []
+
+    configured_fallbacks = named_agent.get("fallback_models")
+    if not isinstance(configured_fallbacks, list) or not configured_fallbacks:
+        return []
+
+    fallback_chain: List[Dict[str, Any]] = []
+    seen_targets: set[tuple[Optional[str], Optional[str], Optional[str], Optional[str]]] = set()
+
+    for entry in configured_fallbacks:
+        if isinstance(entry, str):
+            model = entry.strip()
+            if not model:
+                continue
+            entry = {"model": model}
+        if not isinstance(entry, dict):
+            continue
+
+        fallback_cfg = dict(cfg or {})
+        for key in ("model", "provider", "base_url", "api_key"):
+            value = entry.get(key)
+            if value not in (None, ""):
+                fallback_cfg[key] = value
+
+        try:
+            fallback_creds = _resolve_delegation_credentials(fallback_cfg, parent_agent)
+        except ValueError:
+            continue
+
+        target = (
+            fallback_creds.get("provider"),
+            fallback_creds.get("model"),
+            fallback_creds.get("base_url"),
+            fallback_creds.get("api_key"),
+        )
+        if target in seen_targets or not any(target[:3]):
+            continue
+        seen_targets.add(target)
+        fallback_chain.append({
+            key: value
+            for key, value in fallback_creds.items()
+            if key in {"provider", "model", "base_url", "api_key"} and value
+        })
+
+    return fallback_chain
+
+
+def _ensure_fallback_entries_runtime_compatible(
+    fallback_chain: Optional[List[Dict[str, Any]]],
+    *,
+    primary_creds: Dict[str, Any],
+    inherited_creds: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Fill model-only fallback entries with the active child provider credentials.
+
+    ``AIAgent`` intentionally ignores fallback entries that lack both provider
+    and model.  Route-category fallbacks often specify only a model because
+    they are meant to inherit the child provider.  Normalize that inheritance
+    here so the delegate fallback chain is execution-real, including persisted
+    replay specs.
+    """
+    normalized: List[Dict[str, Any]] = []
+    for entry in fallback_chain or []:
+        if not isinstance(entry, dict):
+            continue
+        model = entry.get("model")
+        if not model:
+            continue
+        provider = entry.get("provider") or primary_creds.get("provider") or inherited_creds.get("provider")
+        if not provider:
+            continue
+        fixed = dict(entry)
+        fixed["provider"] = provider
+        for key in ("base_url", "api_key"):
+            if not fixed.get(key):
+                fixed[key] = primary_creds.get(key) or inherited_creds.get(key)
+        normalized.append({key: value for key, value in fixed.items() if key in {"provider", "model", "base_url", "api_key"} and value})
+    return _merge_fallback_model_chains(normalized)
+
+
+def _merge_fallback_model_chains(*chains: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    merged: List[Dict[str, Any]] = []
+    seen_targets: set[tuple[Optional[str], Optional[str], Optional[str], Optional[str]]] = set()
+
+    for chain in chains:
+        if not isinstance(chain, list):
+            continue
+        for entry in chain:
+            if not isinstance(entry, dict):
+                continue
+            normalized_entry = {
+                key: value
+                for key, value in entry.items()
+                if key in {"provider", "model", "base_url", "api_key"} and value
+            }
+            if not normalized_entry:
+                continue
+            target = (
+                normalized_entry.get("provider"),
+                normalized_entry.get("model"),
+                normalized_entry.get("base_url"),
+                normalized_entry.get("api_key"),
+            )
+            if target in seen_targets:
+                continue
+            seen_targets.add(target)
+            merged.append(normalized_entry)
+
+    return merged
+
+
 def _enforce_category_concurrency(
     task_list: List[Dict[str, Any]],
     cfg: Dict[str, Any],
@@ -2189,10 +2306,26 @@ def delegate_task(
                     if value not in (None, ""):
                         named_agent_cred_cfg[key] = value
                 category_creds = _resolve_delegation_credentials(named_agent_cred_cfg, parent_agent)
+            else:
+                named_agent_cred_cfg = dict(merged_cfg)
+            named_agent_fallback_models = _resolve_named_agent_fallback_models(
+                named_agent_cred_cfg,
+                resolved_named_agent,
+                parent_agent,
+            )
             route_category_fallback_models = _resolve_route_category_fallback_models(
                 cfg,
                 resolved_inputs.get("route_category"),
                 parent_agent,
+            )
+            fallback_model_chain = _merge_fallback_model_chains(
+                named_agent_fallback_models,
+                route_category_fallback_models,
+            )
+            fallback_model_chain = _ensure_fallback_entries_runtime_compatible(
+                fallback_model_chain,
+                primary_creds=category_creds,
+                inherited_creds=creds,
             )
             contract_tool_policy = _resolve_contract_tool_requirements(
                 resolved_inputs.get("task_contract"),
@@ -2237,7 +2370,7 @@ def delegate_task(
             child = _build_child_agent(
                 task_index=i, goal=task["goal"], context=task.get("context"),
                 toolsets=task_toolsets, enabled_tools=task_enabled_tools, model=category_creds["model"] or creds["model"],
-                fallback_model=route_category_fallback_models or None,
+                fallback_model=fallback_model_chain or None,
                 max_iterations=task_max_iter, task_count=n_tasks, task=task, parent_agent=parent_agent,
                 override_provider=category_creds["provider"] or creds["provider"], override_base_url=category_creds["base_url"] or creds["base_url"],
                 override_api_key=category_creds["api_key"] or creds["api_key"],
@@ -2249,7 +2382,7 @@ def delegate_task(
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
-            children.append((i, task, child, task_max_iter, task_overlay_prompt))
+            children.append((i, task, child, task_max_iter, task_overlay_prompt, fallback_model_chain))
     finally:
         # Authoritative restore: reset global to parent's tool names after all children built
         _model_tools._last_resolved_tool_names = _parent_tool_names
@@ -2257,7 +2390,7 @@ def delegate_task(
     if persistent or background:
         if n_tasks != 1:
             return tool_error("Persistent/background delegation currently supports exactly one task.")
-        _i, _t, child, task_max_iter, task_overlay_prompt = children[0]
+        _i, _t, child, task_max_iter, task_overlay_prompt, task_fallback_model_chain = children[0]
         delegate_resolution = dict(getattr(child, "_delegate_resolution", {}) or {})
         resolved_hints = dict(delegate_resolution.get("orchestration_hints") or {})
         launch_spec = _build_persistent_launch_spec(
@@ -2278,7 +2411,7 @@ def delegate_task(
             acp_command=getattr(child, "acp_command", None),
             acp_args=getattr(child, "acp_args", None),
             wave1_overlay_prompt=task_overlay_prompt,
-            fallback_model=route_category_fallback_models or None,
+            fallback_model=task_fallback_model_chain or None,
         )
         store = TaskStore()
         record = store.create_task(
@@ -2357,7 +2490,7 @@ def delegate_task(
 
     if n_tasks == 1:
         # Single task -- run directly (no thread pool overhead)
-        _i, _t, child, _task_max_iter, _task_overlay_prompt = children[0]
+        _i, _t, child, _task_max_iter, _task_overlay_prompt, _task_fallback_model_chain = children[0]
         result = _run_single_child(0, _t["goal"], child, parent_agent)
         results.append(result)
     else:
@@ -2367,7 +2500,7 @@ def delegate_task(
 
         with ThreadPoolExecutor(max_workers=min(max_children, n_tasks)) as executor:
             futures = {}
-            for i, t, child, _task_max_iter, _task_overlay_prompt in children:
+            for i, t, child, _task_max_iter, _task_overlay_prompt, _task_fallback_model_chain in children:
                 future = executor.submit(
                     _run_single_child,
                     task_index=i,
