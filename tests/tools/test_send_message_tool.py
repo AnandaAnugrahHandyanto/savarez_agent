@@ -194,6 +194,40 @@ class TestSendMessageTool:
         assert leaked not in result["error"]
         assert "access_token=***" in result["error"]
 
+    def test_slack_channel_id_sends_without_directory_resolution(self):
+        slack_cfg = SimpleNamespace(enabled=True, token="***", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.SLACK: slack_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("gateway.channel_directory.resolve_channel_name") as resolve_mock, \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "slack:C123ABC456",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        resolve_mock.assert_not_called()
+        send_mock.assert_awaited_once_with(
+            Platform.SLACK,
+            slack_cfg,
+            "C123ABC456",
+            "hello",
+            thread_id=None,
+            media_files=[],
+        )
+
 
 class TestSendTelegramMediaDelivery:
     def test_sends_text_then_photo_for_media_tag(self, tmp_path, monkeypatch):
@@ -768,6 +802,30 @@ class TestParseTargetRefMatrix:
 
         chat_id, _, is_explicit = _parse_target_ref("discord", "@someone")
         assert is_explicit is False
+
+
+class TestParseTargetRefSlack:
+    """_parse_target_ref correctly handles Slack channel, DM, and private channel IDs."""
+
+    def test_slack_channel_id_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("slack", "C123ABC456")
+        assert chat_id == "C123ABC456"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_slack_dm_id_is_explicit(self):
+        chat_id, _, is_explicit = _parse_target_ref("slack", "D123ABC456")
+        assert chat_id == "D123ABC456"
+        assert is_explicit is True
+
+    def test_slack_private_channel_id_is_explicit(self):
+        chat_id, _, is_explicit = _parse_target_ref("slack", "G123ABC456")
+        assert chat_id == "G123ABC456"
+        assert is_explicit is True
+
+    def test_slack_id_prefix_only_matches_slack_platform(self):
+        assert _parse_target_ref("telegram", "C123ABC456")[2] is False
+        assert _parse_target_ref("discord", "D123ABC456")[2] is False
 
 
 class TestParseTargetRefE164:
