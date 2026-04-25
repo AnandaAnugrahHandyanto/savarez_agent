@@ -62,14 +62,14 @@ DEFAULT_BUILDER_ROUTE = {
 
 DEFAULT_REVIEWER_ROUTE = {
     "provider": "openrouter",
-    "model": "nvidia/nemotron-3-super-120b-a12b",
-    "label": "nvidia/nemotron-3-super-120b-a12b",
+    "model": "google/gemma-4-31b-it",
+    "label": "google/gemma-4-31b-it",
 }
 
 DEFAULT_JUDGE_ROUTE = {
-    "provider": "xiaomi",
-    "model": "mimo-v2.5-pro",
-    "label": "xiaomi/mimo-v2.5-pro",
+    "provider": "openrouter",
+    "model": "mistralai/mistral-small-2603",
+    "label": "mistralai/mistral-small-2603",
 }
 
 SPAR_CALL_TIMEOUT_SECONDS = 90.0
@@ -562,11 +562,11 @@ SPAR_SCHEMA = {
             },
             "reviewer_model": {
                 "type": "string",
-                "description": "Optional Spar reviewer model route. Defaults to nvidia/nemotron-3-super-120b-a12b.",
+                "description": "Optional Spar reviewer model route. Defaults to google/gemma-4-31b-it.",
             },
             "judge_model": {
                 "type": "string",
-                "description": "Optional judge model route. Defaults to xiaomi/mimo-v2.5-pro.",
+                "description": "Optional judge model route. Defaults to mistralai/mistral-small-2603.",
             },
             "judge_enabled": {
                 "type": "boolean",

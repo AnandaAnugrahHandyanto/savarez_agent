@@ -543,13 +543,13 @@ DEFAULT_CONFIG = {
             "reference_models": [
                 {
                     "provider": "openrouter",
-                    "model": "nvidia/nemotron-3-super-120b-a12b",
-                    "label": "nvidia/nemotron-3-super-120b-a12b",
+                    "model": "google/gemma-4-31b-it",
+                    "label": "google/gemma-4-31b-it",
                 },
                 {
                     "provider": "openrouter",
-                    "model": "google/gemma-4-31b-it",
-                    "label": "google/gemma-4-31b-it",
+                    "model": "mistralai/mistral-small-2603",
+                    "label": "mistralai/mistral-small-2603",
                 },
             ],
             "aggregator_model": {

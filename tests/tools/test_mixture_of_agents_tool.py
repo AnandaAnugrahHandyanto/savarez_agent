@@ -21,8 +21,8 @@ def _llm_text(text: str):
 
 def test_moa_defaults_track_current_direct_provider_stack():
     assert moa.REFERENCE_MODELS == [
-        "nvidia/nemotron-3-super-120b-a12b",
         "google/gemma-4-31b-it",
+        "mistralai/mistral-small-2603",
     ]
     assert moa.AGGREGATOR_MODEL == "xiaomi/mimo-v2.5-pro"
 
@@ -149,8 +149,8 @@ async def test_moa_top_level_error_logs_single_traceback_on_aggregator_failure(m
 def test_check_moa_requirements_accepts_direct_provider_stack(monkeypatch):
     available = {
         "xiaomi/mimo-v2.5-pro",
-        "nvidia/nemotron-3-super-120b-a12b",
         "google/gemma-4-31b-it",
+        "mistralai/mistral-small-2603",
     }
 
     monkeypatch.setattr(
@@ -208,8 +208,8 @@ def test_legacy_moa_reference_config_upgrades_to_current_defaults(monkeypatch, r
     config = moa.get_moa_configuration()
 
     assert config["reference_models"] == [
-        "nvidia/nemotron-3-super-120b-a12b",
         "google/gemma-4-31b-it",
+        "mistralai/mistral-small-2603",
     ]
 
 
