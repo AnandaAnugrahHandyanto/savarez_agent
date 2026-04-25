@@ -4949,6 +4949,7 @@ class GatewayRunner:
         provider = None
         base_url = None
         api_key = None
+        data = {}
 
         try:
             cfg_path = _hermes_home / "config.yaml"
@@ -4967,7 +4968,7 @@ class GatewayRunner:
                     provider = model_cfg.get("provider") or None
                     base_url = model_cfg.get("base_url") or None
         except Exception:
-            pass
+            data = {}
 
         # Resolve runtime credentials for probing
         try:
@@ -4977,6 +4978,31 @@ class GatewayRunner:
             api_key = runtime.get("api_key")
         except Exception:
             pass
+
+        if config_context_length is None and base_url:
+            try:
+                from hermes_cli.config import get_compatible_custom_providers as _gw_gcp
+                custom_providers = _gw_gcp(data)
+            except Exception:
+                custom_providers = data.get("custom_providers")
+                if not isinstance(custom_providers, list):
+                    custom_providers = []
+            try:
+                for cp in custom_providers:
+                    if not isinstance(cp, dict):
+                        continue
+                    cp_url = (cp.get("base_url") or "").rstrip("/")
+                    if cp_url and cp_url == base_url.rstrip("/"):
+                        cp_models = cp.get("models", {})
+                        if isinstance(cp_models, dict):
+                            cp_model_cfg = cp_models.get(model, {})
+                            if isinstance(cp_model_cfg, dict):
+                                cp_ctx = cp_model_cfg.get("context_length")
+                                if cp_ctx is not None:
+                                    config_context_length = int(cp_ctx)
+                        break
+            except (TypeError, ValueError):
+                pass
 
         context_length = get_model_context_length(
             model,
