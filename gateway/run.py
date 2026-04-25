@@ -276,14 +276,16 @@ from gateway.config import (
     load_gateway_config,
 )
 from gateway.session import (
-    SessionStore,
-    SessionSource,
     SessionContext,
+    SessionSource,
+    SessionStore,
     build_session_context,
     build_session_context_prompt,
     build_session_key,
     is_shared_multi_user_session,
 )
+from gateway.topic_resume import build_topic_resume_context, build_topic_resume_prompt
+
 from gateway.delivery import DeliveryRouter
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -4139,12 +4141,33 @@ class GatewayRunner:
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
+
+        _topic_resume_ctx = None
+        try:
+            _topic_resume_ctx = build_topic_resume_context(
+                source=source,
+                session_store=self.session_store,
+                session_entry=session_entry,
+                config=getattr(self.config, "topic_resume", None),
+                hermes_home=_hermes_home,
+                is_new_session=_is_new_session,
+            )
+        except Exception as e:
+            logger.debug("Topic resume context assembly failed (non-fatal): %s", e, exc_info=True)
+            _topic_resume_ctx = None
         
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
         if getattr(session_entry, 'was_auto_reset', False):
             reset_reason = getattr(session_entry, 'auto_reset_reason', None) or 'idle'
-            if reset_reason == "suspended":
+            if _topic_resume_ctx:
+                if reset_reason == "suspended":
+                    context_note = "[System note: The user's previous session was stopped and suspended, but topic continuity context was restored from the topic workspace and recent topic messages.]"
+                elif reset_reason == "daily":
+                    context_note = "[System note: The user's session was automatically reset by the daily schedule, but topic continuity context was restored from the topic workspace and recent topic messages.]"
+                else:
+                    context_note = "[System note: The user's previous session expired due to inactivity, but topic continuity context was restored from the topic workspace and recent topic messages.]"
+            elif reset_reason == "suspended":
                 context_note = "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]"
             elif reset_reason == "daily":
                 context_note = "[System note: The user's session was automatically reset by the daily schedule. This is a fresh conversation with no prior context.]"
@@ -4203,6 +4226,9 @@ class GatewayRunner:
 
             session_entry.was_auto_reset = False
             session_entry.auto_reset_reason = None
+
+        if _topic_resume_ctx:
+            context_prompt += "\n\n" + build_topic_resume_prompt(_topic_resume_ctx)
 
         # Auto-load skill(s) for topic/channel bindings (Telegram DM Topics,
         # Discord channel_skill_bindings).  Supports a single name or ordered list.
@@ -8650,6 +8676,7 @@ class GatewayRunner:
         runtime: dict,
         enabled_toolsets: list,
         ephemeral_prompt: str,
+        session_id: str,
     ) -> str:
         """Compute a stable string key from agent config values.
 
@@ -8678,6 +8705,7 @@ class GatewayRunner:
                 # reasoning_config excluded — it's set per-message on the
                 # cached agent and doesn't affect system prompt or tools.
                 ephemeral_prompt or "",
+                session_id or "",
             ],
             sort_keys=True,
             default=str,
@@ -9822,6 +9850,7 @@ class GatewayRunner:
                 turn_route["runtime"],
                 enabled_toolsets,
                 combined_ephemeral,
+                session_id,
             )
             agent = None
             _cache_lock = getattr(self, "_agent_cache_lock", None)

@@ -382,6 +382,7 @@ class SessionEntry:
     was_auto_reset: bool = False
     auto_reset_reason: Optional[str] = None  # "idle" or "daily"
     reset_had_activity: bool = False  # whether the expired session had any messages
+    previous_session_id: Optional[str] = None  # expired session used for recency hydration
     
     # Set by the background expiry watcher after it successfully flushes
     # memories for this session.  Persisted to sessions.json so the flag
@@ -423,6 +424,7 @@ class SessionEntry:
             "last_prompt_tokens": self.last_prompt_tokens,
             "estimated_cost_usd": self.estimated_cost_usd,
             "cost_status": self.cost_status,
+            "previous_session_id": self.previous_session_id,
             "memory_flushed": self.memory_flushed,
             "suspended": self.suspended,
             "resume_pending": self.resume_pending,
@@ -475,6 +477,7 @@ class SessionEntry:
             last_prompt_tokens=data.get("last_prompt_tokens", 0),
             estimated_cost_usd=data.get("estimated_cost_usd", 0.0),
             cost_status=data.get("cost_status", "unknown"),
+            previous_session_id=data.get("previous_session_id"),
             memory_flushed=data.get("memory_flushed", False),
             suspended=data.get("suspended", False),
             resume_pending=data.get("resume_pending", False),
@@ -815,11 +818,13 @@ class SessionStore:
                     auto_reset_reason = reset_reason
                     # Track whether the expired session had any real conversation
                     reset_had_activity = entry.total_tokens > 0
+                    previous_session_id = entry.session_id
                     db_end_session_id = entry.session_id
             else:
                 was_auto_reset = False
                 auto_reset_reason = None
                 reset_had_activity = False
+                previous_session_id = None
 
             # Create new session
             session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
@@ -836,6 +841,7 @@ class SessionStore:
                 was_auto_reset=was_auto_reset,
                 auto_reset_reason=auto_reset_reason,
                 reset_had_activity=reset_had_activity,
+                previous_session_id=previous_session_id,
             )
 
             self._entries[session_key] = entry
@@ -1056,6 +1062,7 @@ class SessionStore:
                 display_name=old_entry.display_name,
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
+                previous_session_id=old_entry.session_id,
             )
 
             self._entries[session_key] = new_entry
