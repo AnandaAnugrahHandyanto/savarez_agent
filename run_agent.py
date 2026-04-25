@@ -7765,12 +7765,17 @@ class AIAgent:
             return
 
         # Providers that require an echoed reasoning_content on every
-        # assistant tool-call turn. Detection logic lives in the per-provider
+        # assistant turn. Detection logic lives in the per-provider
         # helpers so both the creation path (_build_assistant_message) and
         # this replay path stay in sync.
-        if source_msg.get("tool_calls") and (
-            self._needs_kimi_tool_reasoning()
-            or self._needs_deepseek_tool_reasoning()
+        #
+        # DeepSeek V4 thinking mode: ALL assistant messages need
+        # reasoning_content — not just tool-call ones. Without it, the
+        # API rejects the replay with HTTP 400 (refs #15250, #16658).
+        # Kimi/Moonshot: only tool-call messages need it.
+        if self._needs_deepseek_tool_reasoning() or (
+            source_msg.get("tool_calls")
+            and self._needs_kimi_tool_reasoning()
         ):
             api_msg["reasoning_content"] = ""
 
