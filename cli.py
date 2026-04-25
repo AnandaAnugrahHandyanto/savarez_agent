@@ -30,7 +30,7 @@ from urllib.parse import unquote, urlparse
 from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -235,94 +235,6 @@ def _parse_service_tier_config(raw: str) -> str | None:
         return "priority"
     logger.warning("Unknown service_tier '%s', ignoring", raw)
     return None
-
-
-_DEFAULT_VOICE_RECORD_KEY = "ctrl+b"
-
-
-def _format_voice_record_key_display(raw_key: Any) -> str:
-    """Render a config-style voice hotkey as a user-facing label."""
-    value = str(raw_key or _DEFAULT_VOICE_RECORD_KEY).strip().lower()
-    if not value:
-        value = _DEFAULT_VOICE_RECORD_KEY
-
-    prefix = ""
-    key_name = value
-    if value.startswith("ctrl+"):
-        prefix = "Ctrl+"
-        key_name = value[len("ctrl+"):]
-    elif value.startswith("shift+"):
-        prefix = "Shift+"
-        key_name = value[len("shift+"):]
-
-    specials = {
-        "space": "Space",
-        "enter": "Enter",
-        "tab": "Tab",
-        "escape": "Escape",
-        "backspace": "Backspace",
-    }
-    label = specials.get(key_name, key_name.upper() if len(key_name) == 1 else key_name)
-    return f"{prefix}{label}" if prefix else label
-
-
-def _validate_voice_record_key_binding(binding: str) -> None:
-    """Ask prompt_toolkit to validate a key binding without registering it."""
-    probe = KeyBindings()
-
-    def _noop(_event):
-        return None
-
-    probe.add(binding)(_noop)
-
-
-def _normalize_voice_record_key(
-    raw_key: Any,
-    *,
-    validator: Optional[Callable[[str], None]] = None,
-) -> tuple[str, str]:
-    """Translate config values like ctrl+b into prompt_toolkit bindings."""
-    value = str(raw_key or _DEFAULT_VOICE_RECORD_KEY).strip().lower()
-    if not value:
-        value = _DEFAULT_VOICE_RECORD_KEY
-    if "alt+" in value:
-        raise ValueError("Alt modifier is not supported for voice.record_key")
-
-    binding = value
-    if value.startswith("ctrl+"):
-        binding = f"c-{value[len('ctrl+'):]}"
-    elif value.startswith("shift+"):
-        binding = f"s-{value[len('shift+'):]}"
-
-    (validator or _validate_voice_record_key_binding)(binding)
-    return binding, _format_voice_record_key_display(value)
-
-
-def _get_voice_record_key_binding(
-    *,
-    load_config_fn: Optional[Callable[[], dict]] = None,
-    validator: Optional[Callable[[str], None]] = None,
-) -> tuple[str, str]:
-    """Load, validate, and sanitize the configured voice push-to-talk key."""
-    if load_config_fn is None:
-        from hermes_cli.config import load_config as load_config_fn
-
-    try:
-        config = load_config_fn() or {}
-        raw_key = config.get("voice", {}).get("record_key", _DEFAULT_VOICE_RECORD_KEY)
-    except Exception:
-        raw_key = _DEFAULT_VOICE_RECORD_KEY
-
-    try:
-        return _normalize_voice_record_key(raw_key, validator=validator)
-    except Exception as exc:
-        logger.warning(
-            "Invalid voice.record_key %r; falling back to %s: %s",
-            raw_key,
-            _DEFAULT_VOICE_RECORD_KEY,
-            exc,
-        )
-        return _normalize_voice_record_key(_DEFAULT_VOICE_RECORD_KEY, validator=validator)
 
 
 
@@ -7900,7 +7812,8 @@ class HermesCLI:
         # _voice_message_prefix property and its usage in _process_message().
 
         tts_status = " (TTS enabled)" if self._voice_tts else ""
-        _ptt_display = _get_voice_record_key_binding()[1]
+        from hermes_cli.voice_record_key import resolve as _resolve_ptt
+        _ptt_display = _resolve_ptt()[1]
         _cprint(f"\n{_ACCENT}Voice mode enabled{tts_status}{_RST}")
         _cprint(f"  {_DIM}{_ptt_display} to start/stop recording{_RST}")
         _cprint(f"  {_DIM}/voice tts  to toggle speech output{_RST}")
@@ -7966,7 +7879,8 @@ class HermesCLI:
         _cprint(f"  Mode:      {'ON' if self._voice_mode else 'OFF'}")
         _cprint(f"  TTS:       {'ON' if self._voice_tts else 'OFF'}")
         _cprint(f"  Recording: {'YES' if self._voice_recording else 'no'}")
-        _display_key = _get_voice_record_key_binding()[1]
+        from hermes_cli.voice_record_key import resolve as _resolve_ptt
+        _display_key = _resolve_ptt()[1]
         _cprint(f"  Record key: {_display_key}")
         _cprint(f"\n  {_BOLD}Requirements:{_RST}")
         for line in reqs["details"].split("\n"):
@@ -9694,9 +9608,16 @@ class HermesCLI:
             run_in_terminal(_suspend)
 
         # Voice push-to-talk key: configurable via config.yaml (voice.record_key)
-        # Default: Ctrl+B (avoids conflict with Ctrl+R readline reverse-search)
-        # Config uses "ctrl+b" format; prompt_toolkit expects "c-b" format.
-        _voice_key, _voice_display = _get_voice_record_key_binding()
+        # Default: Ctrl+B (avoids conflict with Ctrl+R readline reverse-search).
+        # Config uses "ctrl+b" / "alt+space" form; prompt_toolkit wants
+        # "c-b" or an ("escape", key) sequence — the helper handles the
+        # translation and the alt+ → escape-prefix dance.
+        from hermes_cli.voice_record_key import (
+            DEFAULT as _DEFAULT_VOICE_RECORD_KEY,
+            parse as _parse_voice_record_key,
+            resolve as _resolve_voice_record_key,
+        )
+        _voice_keys, _voice_display = _resolve_voice_record_key()
 
         def handle_voice_record(event):
             """Toggle voice recording when voice mode is active.
@@ -9758,7 +9679,7 @@ class HermesCLI:
                 event.app.invalidate()
 
         try:
-            kb.add(_voice_key)(handle_voice_record)
+            kb.add(*_voice_keys)(handle_voice_record)
         except Exception as exc:
             logger.warning(
                 "Failed to register voice.record_key %r; falling back to %s: %s",
@@ -9766,7 +9687,7 @@ class HermesCLI:
                 _DEFAULT_VOICE_RECORD_KEY,
                 exc,
             )
-            kb.add("c-b")(handle_voice_record)
+            kb.add(*_parse_voice_record_key(_DEFAULT_VOICE_RECORD_KEY)[0])(handle_voice_record)
 
         from prompt_toolkit.keys import Keys
 
