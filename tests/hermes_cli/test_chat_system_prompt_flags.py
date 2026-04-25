@@ -83,3 +83,44 @@ def test_chat_rejects_mutually_exclusive_system_prompt_flags(monkeypatch, capsys
 
     assert raised
     assert "mutually exclusive" in capsys.readouterr().out
+
+
+def test_chat_rejects_prompt_flags_in_tui_mode(monkeypatch, capsys):
+    import hermes_cli.main as main_mod
+
+    monkeypatch.setattr(main_mod, "_has_any_provider_configured", lambda: True)
+
+    args = argparse.Namespace(
+        yolo=False,
+        ignore_user_config=False,
+        ignore_rules=False,
+        source=None,
+        system_prompt="inline override",
+        system_prompt_file=None,
+        append_system_prompt=None,
+        model=None,
+        provider=None,
+        toolsets=None,
+        skills=None,
+        verbose=False,
+        quiet=True,
+        query="hi",
+        image=None,
+        resume=None,
+        worktree=False,
+        checkpoints=False,
+        pass_session_id=False,
+        max_turns=None,
+        tui=True,
+        tui_dev=False,
+    )
+
+    try:
+        main_mod.cmd_chat(args)
+        raised = False
+    except SystemExit as exc:
+        raised = True
+        assert exc.code == 2
+
+    assert raised
+    assert "not yet supported with --tui" in capsys.readouterr().out

@@ -2122,6 +2122,20 @@ class HermesCLI:
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
 
+    def _clear_turn_prompt_controls(self) -> None:
+        """Clear one-turn prompt overrides/addenda after a completed turn.
+
+        ``self.system_prompt`` is the durable CLI/session overlay (for example
+        from personalities). The operator flags introduced in #15597 are
+        intentionally one-turn controls, so after a turn completes we clear the
+        transient fields and reset the live agent back to the durable overlay.
+        """
+        self.system_prompt_override = None
+        self.append_system_prompt = None
+        if self.agent:
+            self.agent.ephemeral_system_prompt_override = None
+            self.agent.ephemeral_system_prompt = self.system_prompt if self.system_prompt else None
+
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
         now = time.monotonic()
@@ -8613,6 +8627,8 @@ class HermesCLI:
                 # but guard against edge cases.
                 agent_thread.join(timeout=30)
 
+            self._clear_turn_prompt_controls()
+
             # Freeze per-prompt elapsed timer once the agent thread has
             # exited (or been abandoned as a daemon after interrupt).
             if self._prompt_start_time is not None:
@@ -11108,6 +11124,7 @@ def main(
                         user_message=effective_query,
                         conversation_history=cli.conversation_history,
                     )
+                    cli._clear_turn_prompt_controls()
                     # Sync session_id if mid-run compression created a
                     # continuation session. The exit line below reports
                     # session_id to stderr for automation wrappers; without

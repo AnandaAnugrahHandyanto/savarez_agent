@@ -1190,6 +1190,12 @@ def cmd_chat(args):
     _append_sys_prompt = getattr(args, "append_system_prompt", None)
 
     if use_tui:
+        if _sys_prompt_override or _append_sys_prompt:
+            print(
+                "Error: --system-prompt, --system-prompt-file, and --append-system-prompt are not yet supported with --tui. "
+                "Use classic CLI mode for now."
+            )
+            sys.exit(2)
         _launch_tui(
             getattr(args, "resume", None),
             tui_dev=getattr(args, "tui_dev", False),
@@ -8617,6 +8623,8 @@ Examples:
             if args.dry_run:
                 count = db.prune_sessions(older_than_days=days, source=args.source, dry_run=True)
                 print(f"Would prune {count} session(s){source_msg} older than {days} days.")
+                if args.vacuum:
+                    print("Note: --vacuum is ignored during --dry-run.")
                 return
             if not args.yes:
                 if not _confirm_prompt(

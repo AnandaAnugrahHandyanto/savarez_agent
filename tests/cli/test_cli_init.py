@@ -159,6 +159,22 @@ class TestSingleQueryState:
         assert hasattr(cli, "_interrupt_queue")
         assert hasattr(cli, "_pending_input")
 
+    def test_clear_turn_prompt_controls_preserves_durable_system_prompt(self):
+        cli = _make_cli()
+        cli.system_prompt = "durable overlay"
+        cli.system_prompt_override = "override"
+        cli.append_system_prompt = "append"
+        cli.agent = MagicMock()
+        cli.agent.ephemeral_system_prompt_override = "override"
+        cli.agent.ephemeral_system_prompt = "override\n\nappend"
+
+        cli._clear_turn_prompt_controls()
+
+        assert cli.system_prompt_override is None
+        assert cli.append_system_prompt is None
+        assert cli.agent.ephemeral_system_prompt_override is None
+        assert cli.agent.ephemeral_system_prompt == "durable overlay"
+
 
 class TestHistoryDisplay:
     def test_history_numbers_only_visible_messages_and_summarizes_tools(self, capsys):
