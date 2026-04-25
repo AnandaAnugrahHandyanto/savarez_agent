@@ -7265,6 +7265,46 @@ class GatewayRunner:
         # Clear any running agent for this session key
         self._release_running_agent_state(session_key)
 
+        # Session boundaries must also clear cached runtime state keyed by the
+        # stable chat session_key. Otherwise /resume can inherit the previous
+        # session's cached agent/session_id or /model override.
+        _cache_lock = getattr(self, "_agent_cache_lock", None)
+        if _cache_lock is not None:
+            with _cache_lock:
+                _cached = self._agent_cache.get(session_key)
+                _old_agent = _cached[0] if isinstance(_cached, tuple) else _cached if _cached else None
+            if _old_agent is not None:
+                try:
+                    if hasattr(_old_agent, "shutdown_memory_provider"):
+                        _old_agent.shutdown_memory_provider()
+                except Exception:
+                    pass
+                try:
+                    if hasattr(_old_agent, "close"):
+                        _old_agent.close()
+                except Exception:
+                    pass
+        self._evict_cached_agent(session_key)
+
+        try:
+            from tools.env_passthrough import clear_env_passthrough
+            clear_env_passthrough()
+        except Exception:
+            pass
+
+        try:
+            from tools.credential_files import clear_credential_files
+            clear_credential_files()
+        except Exception:
+            pass
+
+        _session_model_overrides = getattr(self, "_session_model_overrides", None)
+        if _session_model_overrides is not None:
+            _session_model_overrides.pop(session_key, None)
+        _pending_model_notes = getattr(self, "_pending_model_notes", None)
+        if _pending_model_notes is not None:
+            _pending_model_notes.pop(session_key, None)
+
         # Switch the session entry to point at the old session
         new_entry = self.session_store.switch_session(session_key, target_id)
         if not new_entry:

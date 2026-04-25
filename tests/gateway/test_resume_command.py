@@ -4,6 +4,7 @@ Tests the _handle_resume_command handler (switch to a previously-named session)
 across gateway messenger platforms.
 """
 
+import threading
 from unittest.mock import MagicMock, AsyncMock
 
 import pytest
@@ -55,6 +56,11 @@ def _make_runner(session_db=None, current_session_id="current_session_001",
 
     # Stub out memory flushing
     runner._async_flush_memories = AsyncMock()
+    runner._background_tasks = set()
+    runner._agent_cache = {}
+    runner._agent_cache_lock = threading.Lock()
+    runner._session_model_overrides = {}
+    runner._pending_model_notes = {}
 
     return runner
 
@@ -257,4 +263,69 @@ class TestHandleResumeCommand:
             "current_session_001",
             "agent:main:telegram:dm:67890",
         )
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_evicts_cached_agent(self, tmp_path):
+        """Resume must evict cached AIAgent state keyed by the chat session key."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("old_session", "telegram")
+        db.set_session_title("old_session", "Old Work")
+        db.create_session("current_session_001", "telegram")
+
+        event = _make_event(text="/resume Old Work")
+        runner = _make_runner(
+            session_db=db,
+            current_session_id="current_session_001",
+            event=event,
+        )
+        real_key = _session_key_for_event(event)
+        cached_agent = MagicMock()
+        with runner._agent_cache_lock:
+            runner._agent_cache[real_key] = (cached_agent, "sig123")
+
+        await runner._handle_resume_command(event)
+
+        with runner._agent_cache_lock:
+            assert real_key not in runner._agent_cache
+        cached_agent.shutdown_memory_provider.assert_called_once()
+        cached_agent.close.assert_called_once()
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_clears_session_model_state(self, tmp_path):
+        """Resume must not carry session-scoped model state into the restored session."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("old_session", "telegram")
+        db.set_session_title("old_session", "Old Work")
+        db.create_session("current_session_001", "telegram")
+
+        event = _make_event(text="/resume Old Work")
+        runner = _make_runner(
+            session_db=db,
+            current_session_id="current_session_001",
+            event=event,
+        )
+        real_key = _session_key_for_event(event)
+        runner._session_model_overrides[real_key] = {
+            "model": "gpt-5",
+            "provider": "openai",
+            "api_key": "sk-test",
+            "base_url": "",
+            "api_mode": "codex_responses",
+        }
+        runner._pending_model_notes[real_key] = "[Note: switched]"
+        runner._session_model_overrides["other"] = {"model": "keep-me"}
+        runner._pending_model_notes["other"] = "[Note: keep-me]"
+
+        await runner._handle_resume_command(event)
+
+        assert real_key not in runner._session_model_overrides
+        assert real_key not in runner._pending_model_notes
+        assert "other" in runner._session_model_overrides
+        assert "other" in runner._pending_model_notes
         db.close()
