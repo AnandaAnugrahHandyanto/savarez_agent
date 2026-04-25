@@ -30,6 +30,8 @@ from hermes_cli.profiles import (
     import_profile,
     generate_bash_completion,
     generate_zsh_completion,
+    create_wrapper_script,
+    remove_wrapper_script,
     _get_profiles_root,
     _get_default_hermes_home,
 )
@@ -968,3 +970,39 @@ class TestEdgeCases:
             delete_profile("coder", yes=True)
 
         assert get_active_profile() == "default"
+
+
+# ===================================================================
+# TestWrapperScriptContent (#15698)
+# ===================================================================
+
+class TestWrapperScriptContent:
+    """Wrapper scripts must set HERMES_CLI_NAME so --help shows the alias."""
+
+    def test_wrapper_contains_hermes_cli_name(self, profile_env, tmp_path):
+        wrapper_dir = tmp_path / ".local" / "bin"
+        with patch("hermes_cli.profiles._get_wrapper_dir", return_value=wrapper_dir):
+            path = create_wrapper_script("june")
+
+        assert path is not None
+        content = path.read_text()
+        assert 'HERMES_CLI_NAME="$(basename "$0")"' in content
+        assert 'exec hermes -p june' in content
+
+    def test_wrapper_is_self_aware_for_remove(self, profile_env, tmp_path):
+        """remove_wrapper_script must still identify wrappers created by the new template."""
+        wrapper_dir = tmp_path / ".local" / "bin"
+        with patch("hermes_cli.profiles._get_wrapper_dir", return_value=wrapper_dir):
+            path = create_wrapper_script("luna")
+            assert path is not None
+            removed = remove_wrapper_script("luna")
+
+        assert removed is True
+        assert not path.exists()
+
+    def test_wrapper_shebang_is_sh(self, profile_env, tmp_path):
+        wrapper_dir = tmp_path / ".local" / "bin"
+        with patch("hermes_cli.profiles._get_wrapper_dir", return_value=wrapper_dir):
+            path = create_wrapper_script("cid")
+
+        assert path.read_text().startswith("#!/bin/sh\n")
