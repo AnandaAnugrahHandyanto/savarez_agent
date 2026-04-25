@@ -7031,6 +7031,7 @@ class AIAgent:
         deepseek_requires_reasoning = (
             self.provider == "deepseek"
             or base_url_host_matches(self.base_url, "api.deepseek.com")
+            or "deepseek" in (self.model or "").lower()
         )
 
         if _rc is not None:
@@ -7131,6 +7132,7 @@ class AIAgent:
         deepseek_requires_reasoning = (
             self.provider == "deepseek"
             or base_url_host_matches(self.base_url, "api.deepseek.com")
+            or "deepseek" in (self.model or "").lower()
         )
         
         # DeepSeek and Kimi must inject an empty string if reasoning_content is missing
