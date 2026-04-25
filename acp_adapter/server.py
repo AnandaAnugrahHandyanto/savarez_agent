@@ -301,6 +301,7 @@ def _summarize_routed_payload(prompt_route: str, raw_output: str) -> dict[str, A
         # route_result means Spar executed; approval is tracked separately.
         summary["success"] = bool(payload.get("success", True))
         summary["approved"] = bool(payload.get("approved"))
+        summary["gate_passed"] = bool(payload.get("gate_passed", payload.get("approved")))
         summary["disagreement"] = bool(payload.get("disagreement"))
         judge_verdict = payload.get("judge_verdict")
         if isinstance(judge_verdict, dict):
@@ -457,8 +458,9 @@ def _merge_moa_spar_payload(
     moa_payload: dict[str, Any],
     spar_payload: dict[str, Any],
 ) -> dict[str, Any]:
+    approved = bool(spar_payload.get("approved"))
     return {
-        "success": True,
+        "success": approved,
         "response": str(spar_payload.get("final_response") or moa_payload.get("response") or "").strip(),
         "models_used": moa_payload.get("models_used"),
         "failed_models": moa_payload.get("failed_models") or [],
@@ -469,14 +471,19 @@ def _merge_moa_spar_payload(
         "decision_trace": moa_payload.get("decision_trace") or {},
         "aggregator_influence_log": moa_payload.get("aggregator_influence_log") or {},
         "moa_candidate_response": str(moa_payload.get("response") or "").strip(),
-        "approved": bool(spar_payload.get("approved")),
+        "approved": approved,
+        "gate_passed": approved,
         "summary": spar_payload.get("summary") or "",
         "issues": spar_payload.get("issues") or [],
         "fix": spar_payload.get("fix") or "",
         "final_response": str(spar_payload.get("final_response") or "").strip(),
         "judge_verdict": spar_payload.get("judge_verdict"),
         "disagreement": bool(spar_payload.get("disagreement")),
-        "pipeline": {"candidate_source": "moa", "review_gate": "spar"},
+        "pipeline": {
+            "candidate_source": "moa",
+            "review_gate": "spar",
+            "review_status": "approved" if approved else "rejected",
+        },
     }
 
 
@@ -497,6 +504,7 @@ def _build_moa_spar_fallback_payload(
         "aggregator_influence_log": moa_payload.get("aggregator_influence_log") or {},
         "moa_candidate_response": str(moa_payload.get("response") or "").strip(),
         "review_error": str(exc).strip(),
+        "gate_passed": False,
         "pipeline": {
             "candidate_source": "moa",
             "review_gate": "spar",
@@ -1047,10 +1055,16 @@ class HermesACPAgent(acp.Agent):
                             raw_output = json.dumps(fallback_payload, indent=2, ensure_ascii=False)
                             moa_candidate = str(moa_payload.get("response") or "").strip()
                             review_note = f"Spar review failed: {spar_exc}"
-                            final_text = (
-                                f"{moa_candidate}\n\n{review_note}".strip()
-                                if moa_candidate
-                                else review_note
+                            final_text = "\n".join(
+                                line
+                                for line in [
+                                    "MoA + Spar did not return an approved answer.",
+                                    review_note,
+                                    "",
+                                    "Latest MoA draft (not approved):" if moa_candidate else "",
+                                    moa_candidate,
+                                ]
+                                if line
                             )
                 _log_route_forensics(
                     event_type="route_result",
