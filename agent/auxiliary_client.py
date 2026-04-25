@@ -42,6 +42,7 @@ import time
 from pathlib import Path  # noqa: F401 — used by test mocks
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from openai import OpenAI
 
@@ -117,6 +118,15 @@ def _is_kimi_model(model: Optional[str]) -> bool:
     return bare.startswith("kimi-") or bare == "kimi"
 
 
+def _is_codex_backend(base_url: Optional[str]) -> bool:
+    """True for ChatGPT Codex backend endpoints that reject sampling params."""
+    url = str(base_url or "").strip().lower().rstrip("/")
+    path = urlparse(url).path.rstrip("/")
+    return base_url_hostname(url) == "chatgpt.com" and (
+        path == "/backend-api/codex" or path.startswith("/backend-api/codex/")
+    )
+
+
 def _fixed_temperature_for_model(
     model: Optional[str],
     base_url: Optional[str] = None,
@@ -126,13 +136,18 @@ def _fixed_temperature_for_model(
     Returns:
         ``OMIT_TEMPERATURE`` — caller must remove the ``temperature`` key so the
             provider chooses its own default.  Used for all Kimi / Moonshot
-            models whose gateway selects temperature server-side.
+            models whose gateway selects temperature server-side, and for the
+            ChatGPT Codex backend whose Responses endpoint rejects sampling
+            parameters such as ``temperature``.
         ``float`` — a specific value the caller must use (reserved for future
             models with fixed-temperature contracts).
         ``None`` — no override; caller should use its own default.
     """
     if _is_kimi_model(model):
         logger.debug("Omitting temperature for Kimi model %r (server-managed)", model)
+        return OMIT_TEMPERATURE
+    if _is_codex_backend(base_url):
+        logger.debug("Omitting temperature for Codex backend model %r", model)
         return OMIT_TEMPERATURE
     return None
 

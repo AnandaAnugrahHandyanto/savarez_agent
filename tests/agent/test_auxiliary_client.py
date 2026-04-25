@@ -22,6 +22,7 @@ from agent.auxiliary_client import (
     _normalize_aux_provider,
     _try_payment_fallback,
     _resolve_auto,
+    _build_call_kwargs,
 )
 
 
@@ -64,6 +65,32 @@ class TestNormalizeAuxProvider:
     def test_maps_github_copilot_acp_aliases(self):
         assert _normalize_aux_provider("github-copilot-acp") == "copilot-acp"
         assert _normalize_aux_provider("copilot-acp-agent") == "copilot-acp"
+
+
+class TestTemperatureOmission:
+    def test_codex_backend_omits_temperature_even_when_caller_sets_it(self):
+        kwargs = _build_call_kwargs(
+            provider="auto",
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "remember useful facts"}],
+            temperature=0.3,
+            max_tokens=512,
+            base_url="https://chatgpt.com/backend-api/codex/",
+        )
+
+        assert "temperature" not in kwargs
+
+    def test_non_codex_chatgpt_path_keeps_temperature(self):
+        kwargs = _build_call_kwargs(
+            provider="auto",
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "remember useful facts"}],
+            temperature=0.3,
+            max_tokens=512,
+            base_url="https://chatgpt.com/not-codex?next=/backend-api/codex",
+        )
+
+        assert kwargs["temperature"] == 0.3
 
 
 class TestReadCodexAccessToken:
