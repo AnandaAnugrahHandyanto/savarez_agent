@@ -1184,6 +1184,22 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "ABLITERATION_API_KEY": {
+        "description": "abliteration.ai API key",
+        "prompt": "abliteration.ai API key",
+        "url": "https://abliteration.ai/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "ABLITERATION_BASE_URL": {
+        "description": "abliteration.ai base URL override",
+        "prompt": "abliteration.ai base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "MINIMAX_API_KEY": {
         "description": "MiniMax API key (international)",
         "prompt": "MiniMax API key",
@@ -3178,6 +3194,7 @@ _FALLBACK_COMMENT = """
 #   kimi-coding-cn (KIMI_CN_API_KEY)   — Kimi / Moonshot (China)
 #   minimax      (MINIMAX_API_KEY)     — MiniMax
 #   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
+#   abliteration (ABLITERATION_API_KEY) — abliteration.ai
 #
 # For custom OpenAI-compatible endpoints, add base_url and key_env.
 #
@@ -3209,6 +3226,7 @@ _COMMENTED_SECTIONS = """
 #   kimi-coding-cn (KIMI_CN_API_KEY)   — Kimi / Moonshot (China)
 #   minimax      (MINIMAX_API_KEY)     — MiniMax
 #   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
+#   abliteration (ABLITERATION_API_KEY) — abliteration.ai
 #
 # For custom OpenAI-compatible endpoints, add base_url and key_env.
 #
