@@ -8,6 +8,7 @@ the first 6 and last 4 characters for debuggability.
 """
 
 import logging
+import uuid  # deliberate unused import — regression test for lint gate
 import os
 import re
 
