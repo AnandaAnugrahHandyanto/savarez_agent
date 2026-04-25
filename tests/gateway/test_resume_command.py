@@ -211,6 +211,45 @@ class TestHandleResumeCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_resume_follows_latest_multi_hop_compression_tip(self, tmp_path):
+        """Gateway /resume should follow compression chains to the newest tip."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("compressed_root", "telegram")
+        db.set_session_title("compressed_root", "Compressed Work")
+        db.append_message("compressed_root", "user", "old root message")
+        db.end_session("compressed_root", "compression")
+
+        db.create_session("compressed_child", "telegram", parent_session_id="compressed_root")
+        db.append_message("compressed_child", "user", "middle continuation")
+        db.end_session("compressed_child", "compression")
+
+        db.create_session("compressed_grandchild", "telegram", parent_session_id="compressed_child")
+        db.append_message("compressed_grandchild", "user", "latest continuation")
+        db.create_session("current_session_001", "telegram")
+
+        event = _make_event(text="/resume Compressed Work")
+        runner = _make_runner(
+            session_db=db,
+            current_session_id="current_session_001",
+            event=event,
+        )
+        runner.session_store.load_transcript.side_effect = (
+            lambda session_id: [{"role": "user", "content": "latest continuation"}]
+            if session_id == "compressed_grandchild"
+            else [{"role": "user", "content": "not-latest"}]
+        )
+
+        result = await runner._handle_resume_command(event)
+
+        assert "Resumed session" in result
+        call_args = runner.session_store.switch_session.call_args
+        assert call_args[0][1] == "compressed_grandchild"
+        runner.session_store.load_transcript.assert_called_with("compressed_grandchild")
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_resume_clears_running_agent(self, tmp_path):
         """Switching sessions clears any cached running agent."""
         from hermes_state import SessionDB
