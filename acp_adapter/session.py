@@ -418,13 +418,17 @@ class SessionManager:
             # Replace stored messages with current history.
             db.clear_messages(state.session_id)
             for msg in state.history:
+                route_turn_id = str(msg.get("route_turn_id") or "").strip()
+                tool_call_id = msg.get("tool_call_id")
+                if route_turn_id and not tool_call_id:
+                    tool_call_id = f"route:{route_turn_id}"
                 db.append_message(
                     session_id=state.session_id,
                     role=msg.get("role", "user"),
                     content=msg.get("content"),
                     tool_name=msg.get("tool_name") or msg.get("name"),
                     tool_calls=msg.get("tool_calls"),
-                    tool_call_id=msg.get("tool_call_id"),
+                    tool_call_id=tool_call_id,
                 )
         except Exception:
             logger.warning("Failed to persist ACP session %s", state.session_id, exc_info=True)

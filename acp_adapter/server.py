@@ -8,8 +8,10 @@ import logging
 import os
 import re
 import time
+import uuid
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
+from hashlib import sha256
 from typing import Any, Deque, Optional
 
 import acp
@@ -151,7 +153,9 @@ _ROUTED_HISTORY_MAX_MESSAGES = 8
 # the force-routed tool's own output inside the downstream model budget.
 _ROUTED_HISTORY_MAX_CHARS = 6000
 _ROUTE_FORENSICS_LOG = "route_forensics.jsonl"
+_ROUTE_FORENSICS_MAX_BYTES = 10 * 1024 * 1024
 _MOA_FORENSIC_ENV = "HERMES_MOA_FORENSIC_ANALYSIS"
+_MOA_FULL_FORENSICS_ENV = "HERMES_MOA_FULL_FORENSICS"
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)```", re.IGNORECASE)
 
 
@@ -199,6 +203,19 @@ def _moa_forensic_analysis_enabled() -> bool:
     return os.getenv(_MOA_FORENSIC_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _moa_full_forensics_enabled() -> bool:
+    return os.getenv(_MOA_FULL_FORENSICS_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _text_hash(text: str) -> str:
+    return sha256(text.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+
+def _route_turn_id_from_kwargs(kwargs: dict[str, Any]) -> str:
+    supplied = kwargs.get("message_id") or kwargs.get("messageId")
+    return str(supplied or uuid.uuid4()).strip()
+
+
 def _extract_json_object(raw_text: str) -> dict[str, Any]:
     text = str(raw_text or "").strip()
     if not text:
@@ -232,6 +249,10 @@ def _append_route_forensics(event: dict[str, Any]) -> None:
     try:
         path = get_hermes_home() / "logs" / _ROUTE_FORENSICS_LOG
         path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and path.stat().st_size >= _ROUTE_FORENSICS_MAX_BYTES:
+            rotated = path.with_name(f"{path.name}.1")
+            rotated.unlink(missing_ok=True)
+            path.replace(rotated)
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(event, ensure_ascii=False) + "\n")
     except Exception:
@@ -268,11 +289,18 @@ def _summarize_routed_payload(prompt_route: str, raw_output: str) -> dict[str, A
             }
         reference_outputs = payload.get("reference_outputs")
         if isinstance(reference_outputs, dict):
-            summary["reference_outputs"] = {
+            clean_outputs = {
                 str(model).strip(): str(output)
                 for model, output in reference_outputs.items()
                 if str(model).strip() and str(output).strip()
             }
+            if _moa_full_forensics_enabled():
+                summary["reference_outputs"] = clean_outputs
+            elif clean_outputs:
+                summary["reference_output_hashes"] = {
+                    model: {"sha256_16": _text_hash(output), "chars": len(output)}
+                    for model, output in clean_outputs.items()
+                }
         per_model_metrics = payload.get("per_model_metrics")
         if isinstance(per_model_metrics, dict):
             summary["per_model_metrics"] = per_model_metrics
@@ -328,6 +356,7 @@ def _log_route_forensics(
     user_text: str,
     routed_prompt: str,
     history_messages: int,
+    route_turn_id: str | None = None,
     raw_output: str | None = None,
     final_text: str | None = None,
     error: Exception | None = None,
@@ -343,6 +372,8 @@ def _log_route_forensics(
         "user_text_preview": user_text[:200],
         "routed_prompt_chars": len(routed_prompt),
     }
+    if route_turn_id:
+        event["route_turn_id"] = route_turn_id
     if raw_output is not None:
         try:
             event["tool"] = _summarize_routed_payload(prompt_route, raw_output)
@@ -995,6 +1026,7 @@ class HermesACPAgent(acp.Agent):
                 selected_mode,
                 user_text[:100],
             )
+            route_turn_id = _route_turn_id_from_kwargs(kwargs)
             routed_prompt = _build_routed_prompt(user_text, state.history)
             _log_route_forensics(
                 event_type="route_start",
@@ -1004,6 +1036,7 @@ class HermesACPAgent(acp.Agent):
                 user_text=user_text,
                 routed_prompt=routed_prompt,
                 history_messages=len(state.history),
+                route_turn_id=route_turn_id,
             )
             try:
                 await _send_forced_mode_thought(conn, session_id, prompt_route)
@@ -1074,6 +1107,7 @@ class HermesACPAgent(acp.Agent):
                     user_text=user_text,
                     routed_prompt=routed_prompt,
                     history_messages=len(state.history),
+                    route_turn_id=route_turn_id,
                     raw_output=raw_output,
                     final_text=final_text,
                 )
@@ -1082,7 +1116,7 @@ class HermesACPAgent(acp.Agent):
                     "messages": [
                         *state.history,
                         {"role": "user", "content": user_text},
-                        {"role": "assistant", "content": final_text},
+                        {"role": "assistant", "content": final_text, "route_turn_id": route_turn_id},
                     ],
                 }
             except Exception as exc:
@@ -1096,6 +1130,7 @@ class HermesACPAgent(acp.Agent):
                     user_text=user_text,
                     routed_prompt=routed_prompt,
                     history_messages=len(state.history),
+                    route_turn_id=route_turn_id,
                     error=exc,
                 )
                 result = {
@@ -1103,7 +1138,7 @@ class HermesACPAgent(acp.Agent):
                     "messages": [
                         *state.history,
                         {"role": "user", "content": user_text},
-                        {"role": "assistant", "content": error_text},
+                        {"role": "assistant", "content": error_text, "route_turn_id": route_turn_id},
                     ],
                 }
         else:

@@ -1231,7 +1231,11 @@ class SessionDB:
         for row in rows:
             msg = {"role": row["role"], "content": row["content"]}
             if row["tool_call_id"]:
-                msg["tool_call_id"] = row["tool_call_id"]
+                tool_call_id = str(row["tool_call_id"])
+                if tool_call_id.startswith("route:"):
+                    msg["route_turn_id"] = tool_call_id.removeprefix("route:")
+                else:
+                    msg["tool_call_id"] = tool_call_id
             if row["tool_name"]:
                 msg["tool_name"] = row["tool_name"]
             if row["tool_calls"]:

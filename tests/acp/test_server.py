@@ -30,7 +30,15 @@ from acp.schema import (
     TextContentBlock,
     Usage,
 )
-from acp_adapter.server import HermesACPAgent, HERMES_VERSION, _build_routed_prompt, _parse_tool_json
+from acp_adapter.server import (
+    HermesACPAgent,
+    HERMES_VERSION,
+    _ROUTE_FORENSICS_LOG,
+    _append_route_forensics,
+    _build_routed_prompt,
+    _parse_tool_json,
+    _route_turn_id_from_kwargs,
+)
 from acp_adapter.session import SessionManager
 from hermes_state import SessionDB
 
@@ -351,6 +359,23 @@ class TestSessionConfiguration:
 
         assert payload["success"] is True
         assert payload["response"] == "ok"
+
+    def test_route_turn_id_accepts_acp_and_python_param_names(self):
+        assert _route_turn_id_from_kwargs({"messageId": "camel"}) == "camel"
+        assert _route_turn_id_from_kwargs({"message_id": "snake"}) == "snake"
+        assert _route_turn_id_from_kwargs({}) != ""
+
+    def test_route_forensics_rotates_when_size_cap_is_reached(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        monkeypatch.setattr("acp_adapter.server._ROUTE_FORENSICS_MAX_BYTES", 40)
+
+        _append_route_forensics({"event": "old", "payload": "x" * 80})
+        _append_route_forensics({"event": "new"})
+
+        forensic_path = tmp_path / ".hermes" / "logs" / _ROUTE_FORENSICS_LOG
+        rotated_path = forensic_path.with_name(f"{forensic_path.name}.1")
+        assert json.loads(rotated_path.read_text().splitlines()[0])["event"] == "old"
+        assert json.loads(forensic_path.read_text().splitlines()[0])["event"] == "new"
 
     @pytest.mark.asyncio
     async def test_set_session_mode_returns_response(self, agent):
@@ -820,12 +845,70 @@ class TestPrompt:
         assert result_event["tool"]["reference_previews"] == {
             "minimax/MiniMax-M2.7-highspeed": "moa answer"
         }
-        assert result_event["tool"]["reference_outputs"] == {
-            "minimax/MiniMax-M2.7-highspeed": "full minimax output"
+        assert "reference_outputs" not in result_event["tool"]
+        assert result_event["tool"]["reference_output_hashes"] == {
+            "minimax/MiniMax-M2.7-highspeed": {"sha256_16": "2e718f248d8ca032", "chars": 19}
         }
         assert result_event["tool"]["per_model_metrics"]["aggregator"]["model"] == "xiaomi/mimo-v2-pro"
         assert result_event["tool"]["decision_trace"]["final_candidates"] == ["akg", "lithium"]
         assert result_event["tool"]["aggregator_influence_log"]["influence_summary"] == "mimo used both references but weighted overlap most"
+
+    @pytest.mark.asyncio
+    async def test_prompt_force_moa_can_opt_into_full_raw_forensics(self, agent, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        monkeypatch.setenv("HERMES_MOA_FULL_FORENSICS", "1")
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.mode = "force-moa"
+        state.agent.run_conversation = MagicMock()
+
+        with patch(
+            "tools.mixture_of_agents_tool.mixture_of_agents_tool",
+            AsyncMock(
+                return_value='{"success": true, "response": "moa answer", "models_used": {"reference_models": ["minimax/MiniMax-M2.7-highspeed"], "aggregator_model": "xiaomi/mimo-v2-pro"}, "reference_outputs": {"minimax/MiniMax-M2.7-highspeed": "full minimax output"}}'
+            ),
+        ):
+            await agent.prompt(
+                prompt=[TextContentBlock(type="text", text="analyze this hard problem")],
+                session_id=new_resp.session_id,
+            )
+
+        forensic_path = tmp_path / ".hermes" / "logs" / "route_forensics.jsonl"
+        events = [json.loads(line) for line in forensic_path.read_text().splitlines()]
+        result_event = next(event for event in events if event["event"] == "route_result")
+        assert result_event["tool"]["reference_outputs"] == {
+            "minimax/MiniMax-M2.7-highspeed": "full minimax output"
+        }
+        assert "reference_output_hashes" not in result_event["tool"]
+
+    @pytest.mark.asyncio
+    async def test_router_prompt_message_id_becomes_route_turn_id(self, agent, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.mode = "force-moa"
+        state.agent.run_conversation = MagicMock()
+        router = build_agent_router(agent)
+
+        with patch(
+            "tools.mixture_of_agents_tool.mixture_of_agents_tool",
+            AsyncMock(
+                return_value='{"success": true, "response": "moa answer", "models_used": {"reference_models": [], "aggregator_model": "xiaomi/mimo-v2-pro"}}'
+            ),
+        ):
+            await router(
+                "session/prompt",
+                {
+                    "sessionId": new_resp.session_id,
+                    "messageId": "router-turn-1",
+                    "prompt": [{"type": "text", "text": "analyze this"}],
+                },
+                False,
+            )
+
+        forensic_path = tmp_path / ".hermes" / "logs" / "route_forensics.jsonl"
+        events = [json.loads(line) for line in forensic_path.read_text().splitlines()]
+        assert {event["route_turn_id"] for event in events} == {"router-turn-1"}
 
     @pytest.mark.asyncio
     async def test_prompt_force_moa_spar_writes_combined_forensics_log(self, agent, monkeypatch, tmp_path):
@@ -893,12 +976,69 @@ class TestPrompt:
         assert result_event["route"] == "force-moa-spar"
         assert result_event["tool"]["success"] is True
         assert result_event["tool"]["approved"] is True
+        assert result_event["tool"]["gate_passed"] is True
         assert result_event["tool"]["judge_verdict"] == {"approved": True, "summary": "judge ok"}
         assert result_event["tool"]["models_used"]["aggregator_model"] == "xiaomi/mimo-v2-pro"
-        assert result_event["tool"]["reference_outputs"] == {
-            "minimax/MiniMax-M2.7-highspeed": "full minimax output"
+        assert result_event["tool"]["reference_output_hashes"] == {
+            "minimax/MiniMax-M2.7-highspeed": {"sha256_16": "2e718f248d8ca032", "chars": 19}
         }
         assert result_event["tool"]["moa_candidate_response"] == "moa draft"
+
+    @pytest.mark.asyncio
+    async def test_prompt_force_moa_spar_rejected_review_blocks_gate(self, agent, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.mode = "force-moa-spar"
+        state.agent.run_conversation = MagicMock()
+
+        with patch(
+            "tools.mixture_of_agents_tool.mixture_of_agents_tool",
+            AsyncMock(
+                return_value=json.dumps(
+                    {
+                        "success": True,
+                        "response": "moa draft",
+                        "models_used": {"reference_models": [], "aggregator_model": "xiaomi/mimo-v2-pro"},
+                    }
+                )
+            ),
+        ), patch(
+            "tools.spar_tool.spar_tool",
+            AsyncMock(
+                return_value=json.dumps(
+                    {
+                        "approved": False,
+                        "summary": "missing evidence",
+                        "issues": ["Needs citations"],
+                        "final_response": "moa draft",
+                        "disagreement": False,
+                    }
+                )
+            ),
+        ):
+            await agent.prompt(
+                prompt=[TextContentBlock(type="text", text="review this long brief")],
+                session_id=new_resp.session_id,
+                message_id="turn-123",
+            )
+
+        assert state.history[-1]["route_turn_id"] == "turn-123"
+        assert state.history[-1]["content"].startswith("Spar review rejected")
+        assert "Latest draft (not approved):" in state.history[-1]["content"]
+        stored_messages = agent.session_manager._get_db().get_messages(new_resp.session_id)
+        assert stored_messages[-1]["tool_call_id"] == "route:turn-123"
+        restored_history = agent.session_manager._get_db().get_messages_as_conversation(new_resp.session_id)
+        assert restored_history[-1]["route_turn_id"] == "turn-123"
+        assert "tool_call_id" not in restored_history[-1]
+
+        forensic_path = tmp_path / ".hermes" / "logs" / "route_forensics.jsonl"
+        events = [json.loads(line) for line in forensic_path.read_text().splitlines()]
+        result_event = next(event for event in events if event["event"] == "route_result")
+        assert result_event["route_turn_id"] == "turn-123"
+        assert result_event["tool"]["success"] is False
+        assert result_event["tool"]["approved"] is False
+        assert result_event["tool"]["gate_passed"] is False
 
     @pytest.mark.asyncio
     async def test_prompt_force_moa_spar_preserves_moa_failure_without_fake_spar_success(self, agent, monkeypatch, tmp_path):
@@ -1031,7 +1171,9 @@ class TestPrompt:
 
         mock_moa.assert_awaited_once()
         mock_spar.assert_awaited_once()
-        assert state.history[-1]["content"] == "moa draft\n\nSpar review failed: Request timed out."
+        assert state.history[-1]["content"].startswith("MoA + Spar did not return an approved answer.")
+        assert "Spar review failed: Request timed out." in state.history[-1]["content"]
+        assert "Latest MoA draft (not approved):" in state.history[-1]["content"]
 
         forensic_path = tmp_path / ".hermes" / "logs" / "route_forensics.jsonl"
         events = [json.loads(line) for line in forensic_path.read_text().splitlines()]
