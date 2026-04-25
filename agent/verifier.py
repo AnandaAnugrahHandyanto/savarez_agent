@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from collections import Counter
 from typing import Any, Literal, Mapping, Sequence
 import re
+import shlex
 
 FindingSeverity = Literal["info", "warning", "error"]
 
@@ -57,6 +58,10 @@ _HERMES_KILL_RE = re.compile(
 )
 _SELF_UPDATE_RE = re.compile(
     r"\b(?:claude|hermes)\s+(?:update|upgrade|self-update)\b|\bself-update\b",
+    re.IGNORECASE,
+)
+_TERMINAL_FILE_MUTATION_RE = re.compile(
+    r"(?:^|[;&|\s])(?:cp|mv|tee|touch|install|chmod|chown)\b|>{1,2}",
     re.IGNORECASE,
 )
 
@@ -145,7 +150,41 @@ def _evaluate_terminal_command(command: Any, tool_name: str) -> tuple[VerifierFi
             "Terminal command appears to run a Hermes/Claude self-update; report-only finding.",
             tool_name,
         ))
+    findings.extend(_evaluate_terminal_file_targets(command_text, tool_name))
     return tuple(findings)
+
+
+def _evaluate_terminal_file_targets(
+    command_text: str,
+    tool_name: str,
+) -> tuple[VerifierFinding, ...]:
+    if not _TERMINAL_FILE_MUTATION_RE.search(command_text):
+        return ()
+
+    findings: list[VerifierFinding] = []
+    seen_codes: set[str] = set()
+    for candidate in _extract_command_path_candidates(command_text):
+        for finding in _evaluate_mutating_path(candidate, tool_name):
+            if finding.code in seen_codes:
+                continue
+            seen_codes.add(finding.code)
+            findings.append(finding)
+    return tuple(findings)
+
+
+def _extract_command_path_candidates(command_text: str) -> tuple[str, ...]:
+    try:
+        raw_tokens = shlex.split(command_text)
+    except ValueError:
+        raw_tokens = command_text.split()
+
+    candidates: list[str] = []
+    for token in raw_tokens:
+        candidate = token.strip("'\"` ,;()[]{}")
+        if not candidate or candidate.startswith("-") or candidate in {">", ">>"}:
+            continue
+        candidates.append(candidate)
+    return tuple(candidates)
 
 
 def _evaluate_mutating_path(path: Any, tool_name: str) -> tuple[VerifierFinding, ...]:

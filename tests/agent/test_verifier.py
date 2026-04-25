@@ -26,6 +26,8 @@ def test_clean_turn_has_no_findings():
         ("hermes gateway run --replace", "gateway_restart_command"),
         ("pkill -f hermes", "hermes_process_kill_command"),
         ("claude update", "self_update_command"),
+        ("python3 -m pip install foo > .env.local", "sensitive_config_write"),
+        ("cp new_adapter.py gateway/slack_adapter.py", "gateway_adapter_write"),
     ],
 )
 def test_terminal_dangerous_commands_are_reported_without_blocking(command, expected_code):
