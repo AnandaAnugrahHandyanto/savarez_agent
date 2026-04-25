@@ -41,34 +41,67 @@ def _make_agent_with_compressor(config_context_length=None) -> AIAgent:
 
 
 @patch("agent.model_metadata.get_model_context_length", return_value=131_072)
-def test_switch_model_preserves_config_context_length(mock_ctx_len):
-    """When switching models, config_context_length should be passed to get_model_context_length."""
+def test_switch_model_uses_custom_provider_context_length(mock_ctx_len):
+    """When switching to a model with a custom_providers entry, that entry's context_length
+    must be passed to get_model_context_length — not the startup value from the old model."""
     agent = _make_agent_with_compressor(config_context_length=32_768)
 
     assert agent.context_compressor.model == "primary-model"
-    assert agent.context_compressor.context_length == 32_768  # From config override
+    assert agent.context_compressor.context_length == 32_768
 
-    # Switch model
-    agent.switch_model("new-model", "openrouter", api_key="sk-new", base_url="https://openrouter.ai/api/v1")
+    _custom_providers = [
+        {
+            "base_url": "https://openrouter.ai/api/v1",
+            "models": {"new-model": {"context_length": 200_000}},
+        }
+    ]
+    with patch(
+        "hermes_cli.config.get_compatible_custom_providers",
+        return_value=_custom_providers,
+    ):
+        agent.switch_model(
+            "new-model", "openrouter", api_key="sk-new", base_url="https://openrouter.ai/api/v1"
+        )
 
-    # Verify get_model_context_length was called with config_context_length
     mock_ctx_len.assert_called_once()
     call_kwargs = mock_ctx_len.call_args.kwargs
-    assert call_kwargs.get("config_context_length") == 32_768
+    assert call_kwargs.get("config_context_length") == 200_000
 
-    # Verify compressor was updated
     assert agent.context_compressor.model == "new-model"
 
 
 def test_switch_model_without_config_context_length():
-    """When switching models without config override, config_context_length should be None."""
+    """When switching to a model with no custom_providers entry, config_context_length is None."""
     agent = _make_agent_with_compressor(config_context_length=None)
 
-    with patch("agent.model_metadata.get_model_context_length", return_value=128_000) as mock_ctx_len:
-        # Switch model
+    with (
+        patch("agent.model_metadata.get_model_context_length", return_value=128_000) as mock_ctx_len,
+        patch("hermes_cli.config.get_compatible_custom_providers", return_value=[]),
+    ):
         agent.switch_model("new-model", "openrouter", api_key="sk-new", base_url="https://openrouter.ai/api/v1")
 
-        # Verify get_model_context_length was called with None
         mock_ctx_len.assert_called_once()
         call_kwargs = mock_ctx_len.call_args.kwargs
         assert call_kwargs.get("config_context_length") is None
+
+
+def test_switch_model_resets_stale_custom_provider_limit():
+    """Switching away from a custom provider to one with no entry must reset to None.
+
+    Old behavior (bug): the startup _config_context_length from provider A was
+    carried over to provider B, potentially capping context at A's limit.
+    """
+    agent = _make_agent_with_compressor(config_context_length=500_000)
+
+    with (
+        patch("agent.model_metadata.get_model_context_length", return_value=128_000) as mock_ctx_len,
+        patch("hermes_cli.config.get_compatible_custom_providers", return_value=[]),
+    ):
+        agent.switch_model(
+            "new-model", "openrouter", api_key="sk-new", base_url="https://openrouter.ai/api/v1"
+        )
+
+    mock_ctx_len.assert_called_once()
+    call_kwargs = mock_ctx_len.call_args.kwargs
+    assert call_kwargs.get("config_context_length") is None
+    assert agent._config_context_length is None

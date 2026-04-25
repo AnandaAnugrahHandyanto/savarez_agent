@@ -18,9 +18,7 @@ called by both paths.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import patch, MagicMock
-
-import pytest
+from unittest.mock import patch
 
 from hermes_cli.model_switch import (
     _lookup_custom_provider_context_length,
@@ -149,6 +147,86 @@ class TestLookupCustomProviderContextLength:
                 "gpt-4o", "https://example.invalid/v1"
             )
         assert result == 128_000
+
+    def test_multiple_providers_same_base_url_second_has_model(self):
+        """Two providers share base_url; first lacks the model, second has it.
+
+        Previously a `break` on first-url-match prevented finding the second entry.
+        """
+        providers = [
+            {
+                "name": "p1",
+                "base_url": "https://shared.invalid/v1",
+                "models": {"other-model": {"context_length": 4_096}},
+            },
+            {
+                "name": "p2",
+                "base_url": "https://shared.invalid/v1",
+                "models": {"target-model": {"context_length": 200_000}},
+            },
+        ]
+        with _patch_providers(providers):
+            result = _lookup_custom_provider_context_length(
+                "target-model", "https://shared.invalid/v1"
+            )
+        assert result == 200_000
+
+    def test_boolean_context_length_returns_none(self):
+        """Edge: boolean True/False must be rejected (bool is subclass of int)."""
+        for val in (True, False):
+            providers = [
+                {
+                    "base_url": "https://bool.invalid/v1",
+                    "models": {"model-x": {"context_length": val}},
+                }
+            ]
+            with _patch_providers(providers):
+                result = _lookup_custom_provider_context_length(
+                    "model-x", "https://bool.invalid/v1"
+                )
+            assert result is None, f"expected None for boolean {val!r}"
+
+    def test_negative_int_context_length_returns_none(self):
+        """Edge: negative integer context_length is rejected."""
+        providers = [
+            {
+                "base_url": "https://neg.invalid/v1",
+                "models": {"model-x": {"context_length": -1}},
+            }
+        ]
+        with _patch_providers(providers):
+            result = _lookup_custom_provider_context_length(
+                "model-x", "https://neg.invalid/v1"
+            )
+        assert result is None
+
+    def test_digit_string_context_length_is_accepted(self):
+        """Edge: digit-only string (e.g. '4096') should be parsed and returned."""
+        providers = [
+            {
+                "base_url": "https://strnum.invalid/v1",
+                "models": {"model-x": {"context_length": "4096"}},
+            }
+        ]
+        with _patch_providers(providers):
+            result = _lookup_custom_provider_context_length(
+                "model-x", "https://strnum.invalid/v1"
+            )
+        assert result == 4_096
+
+    def test_float_string_context_length_returns_none(self):
+        """Edge: float-like string (e.g. '1.5') is not digit-only → None."""
+        providers = [
+            {
+                "base_url": "https://floatstr.invalid/v1",
+                "models": {"model-x": {"context_length": "1.5"}},
+            }
+        ]
+        with _patch_providers(providers):
+            result = _lookup_custom_provider_context_length(
+                "model-x", "https://floatstr.invalid/v1"
+            )
+        assert result is None
 
 
 # ---------------------------------------------------------------------------

@@ -553,11 +553,17 @@ def _lookup_custom_provider_context_length(model: str, base_url: str) -> Optiona
                 if isinstance(model_cfg, dict):
                     ctx = model_cfg.get("context_length")
                     if ctx is not None:
-                        try:
-                            return int(ctx)
-                        except (TypeError, ValueError):
+                        # Reject booleans (bool is a subclass of int in Python)
+                        if isinstance(ctx, bool):
                             return None
-            break
+                        if isinstance(ctx, int) and ctx > 0:
+                            return ctx
+                        if isinstance(ctx, str) and ctx.isdigit():
+                            v = int(ctx)
+                            if v > 0:
+                                return v
+                        return None
+            # No break: multiple providers may share the same base_url; scan all
     return None
 
 
