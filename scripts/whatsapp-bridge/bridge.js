@@ -119,74 +119,132 @@ const MAX_RECENT_IDS = 50;
 
 let sock = null;
 let connectionState = 'disconnected';
+let connecting = false;
+let reconnectTimer = null;
+let socketGeneration = 0;
+let reconnectCount = 0;
+let lastDisconnectReason = null;
+let lastDisconnectAt = null;
+let lastConnectedAt = null;
+
+function timestampOrNull(value) {
+  return value ? new Date(value).toISOString() : null;
+}
+
+function isCurrentSocket(candidate, generation) {
+  return generation === socketGeneration && candidate === sock;
+}
+
+function scheduleReconnect(reason) {
+  const delay = reason === 515 ? 1000 : 3000;
+  if (reconnectTimer) {
+    if (WHATSAPP_DEBUG) {
+      try { console.log(JSON.stringify({ event: 'reconnect_suppressed', reason, delay })); } catch {}
+    }
+    return;
+  }
+
+  if (reason === 515) {
+    console.log('↻ WhatsApp requested restart (code 515). Reconnecting...');
+  } else {
+    console.log(`⚠️  Connection closed (reason: ${reason}). Reconnecting in ${delay / 1000}s...`);
+  }
+
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    startSocket().catch((err) => {
+      lastDisconnectReason = 'start_error';
+      lastDisconnectAt = Date.now();
+      console.error('[bridge] Failed to start WhatsApp socket:', err?.message || err);
+      scheduleReconnect('start_error');
+    });
+  }, delay);
+}
 
 async function startSocket() {
-  const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
-  const { version } = await fetchLatestBaileysVersion();
-
-  sock = makeWASocket({
-    version,
-    auth: state,
-    logger,
-    printQRInTerminal: false,
-    browser: ['Hermes Agent', 'Chrome', '120.0'],
-    syncFullHistory: false,
-    markOnlineOnConnect: false,
-    // Required for Baileys 7.x: without this, incoming messages that need
-    // E2EE session re-establishment are silently dropped (msg.message === null)
-    getMessage: async (key) => {
-      // We don't maintain a message store, so return a placeholder.
-      // This is enough for Baileys to complete the retry handshake.
-      return { conversation: '' };
-    },
-  });
-
-  sock.ev.on('creds.update', () => { saveCreds(); lidToPhone = buildLidMap(); });
-
-  sock.ev.on('connection.update', (update) => {
-    const { connection, lastDisconnect, qr } = update;
-
-    if (qr) {
-      console.log('\n📱 Scan this QR code with WhatsApp on your phone:\n');
-      qrcode.generate(qr, { small: true });
-      console.log('\nWaiting for scan...\n');
+  if (connecting) {
+    if (WHATSAPP_DEBUG) {
+      try { console.log(JSON.stringify({ event: 'connect_suppressed', reason: 'already_connecting' })); } catch {}
     }
+    return;
+  }
 
-    if (connection === 'close') {
-      const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
-      connectionState = 'disconnected';
+  connecting = true;
+  const generation = ++socketGeneration;
 
-      if (reason === DisconnectReason.loggedOut) {
-        console.log('❌ Logged out. Delete session and restart to re-authenticate.');
-        process.exit(1);
-      } else {
-        // 515 = restart requested (common after pairing). Always reconnect.
-        if (reason === 515) {
-          console.log('↻ WhatsApp requested restart (code 515). Reconnecting...');
+  try {
+    const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
+    const { version } = await fetchLatestBaileysVersion();
+
+    const currentSock = makeWASocket({
+      version,
+      auth: state,
+      logger,
+      printQRInTerminal: false,
+      browser: ['Hermes Agent', 'Chrome', '120.0'],
+      syncFullHistory: false,
+      markOnlineOnConnect: false,
+      // Required for Baileys 7.x: without this, incoming messages that need
+      // E2EE session re-establishment are silently dropped (msg.message === null)
+      getMessage: async (key) => {
+        // We don't maintain a message store, so return a placeholder.
+        // This is enough for Baileys to complete the retry handshake.
+        return { conversation: '' };
+      },
+    });
+    sock = currentSock;
+
+    currentSock.ev.on('creds.update', () => {
+      if (!isCurrentSocket(currentSock, generation)) return;
+      saveCreds();
+      lidToPhone = buildLidMap();
+    });
+
+    currentSock.ev.on('connection.update', (update) => {
+      if (!isCurrentSocket(currentSock, generation)) return;
+      const { connection, lastDisconnect, qr } = update;
+
+      if (qr) {
+        console.log('\n📱 Scan this QR code with WhatsApp on your phone:\n');
+        qrcode.generate(qr, { small: true });
+        console.log('\nWaiting for scan...\n');
+      }
+
+      if (connection === 'close') {
+        const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
+        connectionState = 'disconnected';
+        reconnectCount += 1;
+        lastDisconnectReason = reason ?? 'unknown';
+        lastDisconnectAt = Date.now();
+        sock = null;
+
+        if (reason === DisconnectReason.loggedOut) {
+          console.log('❌ Logged out. Delete session and restart to re-authenticate.');
+          process.exit(1);
         } else {
-          console.log(`⚠️  Connection closed (reason: ${reason}). Reconnecting in 3s...`);
+          scheduleReconnect(reason);
         }
-        setTimeout(startSocket, reason === 515 ? 1000 : 3000);
+      } else if (connection === 'open') {
+        connectionState = 'connected';
+        lastConnectedAt = Date.now();
+        console.log('✅ WhatsApp connected!');
+        if (PAIR_ONLY) {
+          console.log('✅ Pairing complete. Credentials saved.');
+          // Give Baileys a moment to flush creds, then exit cleanly
+          setTimeout(() => process.exit(0), 2000);
+        }
       }
-    } else if (connection === 'open') {
-      connectionState = 'connected';
-      console.log('✅ WhatsApp connected!');
-      if (PAIR_ONLY) {
-        console.log('✅ Pairing complete. Credentials saved.');
-        // Give Baileys a moment to flush creds, then exit cleanly
-        setTimeout(() => process.exit(0), 2000);
-      }
-    }
-  });
+    });
 
-  sock.ev.on('messages.upsert', async ({ messages, type }) => {
+    currentSock.ev.on('messages.upsert', async ({ messages, type }) => {
+      if (!isCurrentSocket(currentSock, generation)) return;
     // In self-chat mode, your own messages commonly arrive as 'append' rather
     // than 'notify'. Accept both and filter agent echo-backs below.
     if (type !== 'notify' && type !== 'append') return;
 
     const botIds = Array.from(new Set([
-      normalizeWhatsAppId(sock.user?.id),
-      normalizeWhatsAppId(sock.user?.lid),
+      normalizeWhatsAppId(currentSock.user?.id),
+      normalizeWhatsAppId(currentSock.user?.lid),
     ].filter(Boolean)));
 
     for (const msg of messages) {
@@ -219,9 +277,9 @@ async function startSocket() {
         // Self-chat mode: only allow messages in the user's own self-chat
         // WhatsApp now uses LID (Linked Identity Device) format: 67427329167522@lid
         // AND classic format: 34652029134@s.whatsapp.net
-        // sock.user has both: { id: "number:10@s.whatsapp.net", lid: "lid_number:10@lid" }
-        const myNumber = (sock.user?.id || '').replace(/:.*@/, '@').replace(/@.*/, '');
-        const myLid = (sock.user?.lid || '').replace(/:.*@/, '@').replace(/@.*/, '');
+        // currentSock.user has both: { id: "number:10@s.whatsapp.net", lid: "lid_number:10@lid" }
+        const myNumber = (currentSock.user?.id || '').replace(/:.*@/, '@').replace(/@.*/, '');
+        const myLid = (currentSock.user?.lid || '').replace(/:.*@/, '@').replace(/@.*/, '');
         const chatNumber = chatId.replace(/@.*/, '');
         const isSelfChat = (myNumber && chatNumber === myNumber) || (myLid && chatNumber === myLid);
         if (!isSelfChat) continue;
@@ -229,14 +287,6 @@ async function startSocket() {
 
       // Check allowlist for messages from others (resolve LID ↔ phone aliases)
       if (!msg.key.fromMe && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
-        try {
-          console.log(JSON.stringify({
-            event: 'ignored',
-            reason: 'allowlist_mismatch',
-            chatId,
-            senderId,
-          }));
-        } catch {}
         continue;
       }
 
@@ -260,7 +310,7 @@ async function startSocket() {
         hasMedia = true;
         mediaType = 'image';
         try {
-          const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
+          const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: currentSock.updateMediaMessage });
           const mime = messageContent.imageMessage.mimetype || 'image/jpeg';
           const extMap = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/gif': '.gif' };
           const ext = extMap[mime] || '.jpg';
@@ -276,7 +326,7 @@ async function startSocket() {
         hasMedia = true;
         mediaType = 'video';
         try {
-          const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
+          const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: currentSock.updateMediaMessage });
           const mime = messageContent.videoMessage.mimetype || 'video/mp4';
           const ext = mime.includes('mp4') ? '.mp4' : '.mkv';
           mkdirSync(DOCUMENT_CACHE_DIR, { recursive: true });
@@ -291,7 +341,7 @@ async function startSocket() {
         mediaType = messageContent.pttMessage ? 'ptt' : 'audio';
         try {
           const audioMsg = messageContent.pttMessage || messageContent.audioMessage;
-          const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
+          const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: currentSock.updateMediaMessage });
           const mime = audioMsg.mimetype || 'audio/ogg';
           const ext = mime.includes('ogg') ? '.ogg' : mime.includes('mp4') ? '.m4a' : '.ogg';
           mkdirSync(AUDIO_CACHE_DIR, { recursive: true });
@@ -307,7 +357,7 @@ async function startSocket() {
         mediaType = 'document';
         const fileName = messageContent.documentMessage.fileName || 'document';
         try {
-          const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
+          const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: currentSock.updateMediaMessage });
           mkdirSync(DOCUMENT_CACHE_DIR, { recursive: true });
           const safeFileName = path.basename(fileName).replace(/[^a-zA-Z0-9._-]/g, '_');
           const filePath = path.join(DOCUMENT_CACHE_DIR, `doc_${randomBytes(6).toString('hex')}_${safeFileName}`);
@@ -366,6 +416,20 @@ async function startSocket() {
       }
     }
   });
+  } catch (err) {
+    if (generation === socketGeneration) {
+      connectionState = 'disconnected';
+      lastDisconnectReason = 'start_error';
+      lastDisconnectAt = Date.now();
+      sock = null;
+      console.error('[bridge] Failed to start WhatsApp socket:', err?.message || err);
+      scheduleReconnect('start_error');
+    }
+  } finally {
+    if (generation === socketGeneration) {
+      connecting = false;
+    }
+  }
 }
 
 // HTTP server
@@ -584,6 +648,17 @@ app.get('/health', (req, res) => {
     status: connectionState,
     queueLength: messageQueue.length,
     uptime: process.uptime(),
+    pid: process.pid,
+    ppid: process.ppid,
+    managedByGateway: process.env.HERMES_GATEWAY_MANAGED === '1',
+    sessionPath: SESSION_DIR,
+    hasCreds: existsSync(path.join(SESSION_DIR, 'creds.json')),
+    connecting,
+    reconnectScheduled: Boolean(reconnectTimer),
+    reconnectCount,
+    lastDisconnectReason,
+    lastDisconnectAt: timestampOrNull(lastDisconnectAt),
+    lastConnectedAt: timestampOrNull(lastConnectedAt),
   });
 });
 

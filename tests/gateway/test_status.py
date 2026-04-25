@@ -289,6 +289,28 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["discord"]["error_code"] is None
         assert payload["platforms"]["discord"]["error_message"] is None
 
+    def test_write_runtime_status_records_platform_diagnostics_without_clobbering_state(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(
+            platform="telegram",
+            platform_state="connected",
+            diagnostics={"network_error_count": 0, "transport": "primary"},
+        )
+        status.write_runtime_status(
+            platform="telegram",
+            diagnostics={"network_error_count": 2, "last_network_error": "TimedOut"},
+        )
+
+        payload = status.read_runtime_status()
+        telegram = payload["platforms"]["telegram"]
+        assert telegram["state"] == "connected"
+        assert telegram["diagnostics"] == {
+            "network_error_count": 2,
+            "transport": "primary",
+            "last_network_error": "TimedOut",
+        }
+
 
 class TestTerminatePid:
     def test_force_uses_taskkill_on_windows(self, monkeypatch):

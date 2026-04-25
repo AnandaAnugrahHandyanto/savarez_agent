@@ -362,6 +362,25 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.model_not_found
         assert result.should_fallback is True
 
+    def test_400_codex_unsupported_model_is_not_context_overflow(self):
+        """A clear model-support 400 must not trigger context shrink/compression."""
+        e = MockAPIError(
+            "HTTP 400: Error code: 400 - {'detail': \"The 'gpt-5.4-nano' model is not supported when using Codex with a ChatGPT account.\"}",
+            status_code=400,
+            body={"detail": "The 'gpt-5.4-nano' model is not supported when using Codex with a ChatGPT account."},
+        )
+        result = classify_api_error(
+            e,
+            provider="openai-codex",
+            model="gpt-5.4-nano",
+            approx_tokens=55228,
+            context_length=400000,
+            num_messages=124,
+        )
+        assert result.reason == FailoverReason.model_not_found
+        assert result.should_fallback is True
+        assert result.should_compress is False
+
     # ── Payload too large ──
 
     def test_413_payload_too_large(self):

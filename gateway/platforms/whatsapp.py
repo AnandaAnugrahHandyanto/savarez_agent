@@ -186,6 +186,68 @@ class WhatsAppAdapter(BasePlatformAdapter):
         self._poll_task: Optional[asyncio.Task] = None
         self._http_session: Optional["aiohttp.ClientSession"] = None
 
+    def _normalized_session_path(self, value: Any) -> Optional[Path]:
+        """Normalize a session path value from config or bridge health payload."""
+        if value is None:
+            return None
+        raw = str(value).strip()
+        if not raw:
+            return None
+        try:
+            return Path(raw).expanduser().resolve()
+        except Exception:
+            return None
+
+    def _bridge_health_session_path(self, data: Dict[str, Any]) -> Optional[Path]:
+        """Return the bridge-reported session path from a health payload, if any."""
+        for key in ("sessionPath", "session_path", "sessionDir", "session_dir"):
+            normalized = self._normalized_session_path(data.get(key))
+            if normalized is not None:
+                return normalized
+        return None
+
+    def _bridge_health_matches_configured_session(self, data: Dict[str, Any]) -> bool:
+        """Whether a bridge health payload belongs to this adapter's session path."""
+        expected = self._normalized_session_path(self._session_path)
+        actual = self._bridge_health_session_path(data)
+        return expected is not None and actual is not None and actual == expected
+
+    def _bridge_health_session_label(self, data: Dict[str, Any]) -> str:
+        """Human-readable session path from a bridge health payload for diagnostics."""
+        actual = self._bridge_health_session_path(data)
+        return str(actual) if actual is not None else "unknown-session"
+
+    def _bridge_health_belongs_to_current_gateway(self, data: Dict[str, Any]) -> bool:
+        """Return True only when bridge health proves current gateway ownership."""
+        if data.get("managedByGateway") is not True:
+            return False
+        try:
+            return int(data.get("ppid")) == os.getpid()
+        except (TypeError, ValueError):
+            return False
+
+    def _write_bridge_health_diagnostics(self, data: Dict[str, Any]) -> None:
+        """Persist current bridge health fields for live status/audit tooling."""
+        diagnostics: Dict[str, Any] = {
+            "bridge_port": self._bridge_port,
+            "bridge_managed_by_gateway": self._bridge_process is not None,
+            "configured_session_path": str(self._normalized_session_path(self._session_path) or self._session_path),
+        }
+        for source_key, target_key in (
+            ("status", "bridge_status"),
+            ("sessionPath", "bridge_session_path"),
+            ("hasCreds", "has_creds"),
+            ("connecting", "connecting"),
+            ("reconnectScheduled", "reconnect_scheduled"),
+            ("reconnectCount", "reconnect_count"),
+            ("lastDisconnectReason", "last_disconnect_reason"),
+            ("lastDisconnectAt", "last_disconnect_at"),
+            ("lastConnectedAt", "last_connected_at"),
+        ):
+            if source_key in data:
+                diagnostics[target_key] = data.get(source_key)
+        self._update_platform_diagnostics(diagnostics)
+
     def _whatsapp_require_mention(self) -> bool:
         configured = self.config.extra.get("require_mention")
         if configured is not None:
@@ -407,14 +469,23 @@ class WhatsAppAdapter(BasePlatformAdapter):
                     ) as resp:
                         if resp.status == 200:
                             data = await resp.json()
+                            self._write_bridge_health_diagnostics(data)
                             bridge_status = data.get("status", "unknown")
                             if bridge_status == "connected":
-                                print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
-                                self._mark_connected()
-                                self._bridge_process = None  # Not managed by us
-                                self._http_session = aiohttp.ClientSession()
-                                self._poll_task = asyncio.create_task(self._poll_messages())
-                                return True
+                                if (
+                                    self._bridge_health_matches_configured_session(data)
+                                    and self._bridge_health_belongs_to_current_gateway(data)
+                                ):
+                                    print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
+                                    self._mark_connected()
+                                    self._bridge_process = None  # Managed by this gateway, but not spawned by this connect() call
+                                    self._http_session = aiohttp.ClientSession()
+                                    self._poll_task = asyncio.create_task(self._poll_messages())
+                                    return True
+                                print(
+                                    f"[{self.name}] Bridge found connected but not owned by this gateway "
+                                    f"({self._bridge_health_session_label(data)}), restarting"
+                                )
                             else:
                                 print(f"[{self.name}] Bridge found but not connected (status: {bridge_status}), restarting")
             except Exception:
@@ -436,6 +507,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
             # Pass WHATSAPP_REPLY_PREFIX from config.yaml so the Node bridge
             # can use it without the user needing to set a separate env var.
             bridge_env = os.environ.copy()
+            bridge_env["HERMES_GATEWAY_MANAGED"] = "1"
+            bridge_env["HERMES_GATEWAY_PID"] = str(os.getpid())
             if self._reply_prefix is not None:
                 bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
 
@@ -475,6 +548,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                             if resp.status == 200:
                                 http_ready = True
                                 data = await resp.json()
+                                self._write_bridge_health_diagnostics(data)
                                 if data.get("status") == "connected":
                                     print(f"[{self.name}] Bridge ready (status: connected)")
                                     break
@@ -506,6 +580,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                             ) as resp:
                                 if resp.status == 200:
                                     data = await resp.json()
+                                    self._write_bridge_health_diagnostics(data)
                                     if data.get("status") == "connected":
                                         print(f"[{self.name}] Bridge ready (status: connected)")
                                         break

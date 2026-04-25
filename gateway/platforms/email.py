@@ -249,6 +249,31 @@ class EmailAdapter(BasePlatformAdapter):
 
         logger.info("[Email] Adapter initialized for %s", self._address)
 
+    def _write_runtime_diagnostics(
+        self,
+        *,
+        last_check_status: Optional[str] = None,
+        last_fetch_count: Optional[int] = None,
+        last_error_code: Optional[str] = None,
+    ) -> None:
+        """Persist safe current-start email polling diagnostics for audit tooling."""
+        task = getattr(self, "_poll_task", None)
+        diagnostics: Dict[str, Any] = {
+            "imap_host_configured": bool(self._imap_host),
+            "imap_port": self._imap_port,
+            "smtp_host_configured": bool(self._smtp_host),
+            "smtp_port": self._smtp_port,
+            "poll_interval_seconds": self._poll_interval,
+            "poll_task_active": bool(task and not task.done()),
+            "running": bool(getattr(self, "_running", False)),
+            "seen_uid_count": len(getattr(self, "_seen_uids", set())),
+            "seen_uid_max": self._seen_uids_max,
+            "last_check_status": last_check_status,
+            "last_fetch_count": last_fetch_count,
+            "last_error_code": last_error_code,
+        }
+        self._update_platform_diagnostics(diagnostics)
+
     def _trim_seen_uids(self) -> None:
         """Keep only the most recent UIDs to prevent unbounded memory growth.
 
@@ -287,6 +312,10 @@ class EmailAdapter(BasePlatformAdapter):
             logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
         except Exception as e:
             logger.error("[Email] IMAP connection failed: %s", e)
+            self._write_runtime_diagnostics(
+                last_check_status="error",
+                last_error_code="imap_connect_error",
+            )
             return False
 
         try:
@@ -298,10 +327,15 @@ class EmailAdapter(BasePlatformAdapter):
             logger.info("[Email] SMTP connection test passed.")
         except Exception as e:
             logger.error("[Email] SMTP connection failed: %s", e)
+            self._write_runtime_diagnostics(
+                last_check_status="error",
+                last_error_code="smtp_connect_error",
+            )
             return False
 
         self._running = True
         self._poll_task = asyncio.create_task(self._poll_loop())
+        self._write_runtime_diagnostics(last_check_status="connected")
         print(f"[Email] Connected as {self._address}")
         return True
 
@@ -315,6 +349,7 @@ class EmailAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
             self._poll_task = None
+        self._write_runtime_diagnostics(last_check_status="disconnected")
         logger.info("[Email] Disconnected.")
 
     async def _poll_loop(self) -> None:
@@ -326,6 +361,10 @@ class EmailAdapter(BasePlatformAdapter):
                 break
             except Exception as e:
                 logger.error("[Email] Poll error: %s", e)
+                self._write_runtime_diagnostics(
+                    last_check_status="error",
+                    last_error_code="poll_error",
+                )
             await asyncio.sleep(self._poll_interval)
 
     async def _check_inbox(self) -> None:
@@ -333,6 +372,10 @@ class EmailAdapter(BasePlatformAdapter):
         # Run IMAP operations in a thread to avoid blocking the event loop
         loop = asyncio.get_running_loop()
         messages = await loop.run_in_executor(None, self._fetch_new_messages)
+        self._write_runtime_diagnostics(
+            last_check_status="ok",
+            last_fetch_count=len(messages),
+        )
         for msg_data in messages:
             await self._dispatch_message(msg_data)
 
@@ -400,6 +443,10 @@ class EmailAdapter(BasePlatformAdapter):
                     pass
         except Exception as e:
             logger.error("[Email] IMAP fetch error: %s", e)
+            self._write_runtime_diagnostics(
+                last_check_status="error",
+                last_error_code="imap_fetch_error",
+            )
         return results
 
     async def _dispatch_message(self, msg_data: Dict[str, Any]) -> None:

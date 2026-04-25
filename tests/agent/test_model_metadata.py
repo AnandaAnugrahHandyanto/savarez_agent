@@ -840,9 +840,15 @@ class TestGetNextProbeTier:
     def test_from_arbitrary_value(self):
         assert get_next_probe_tier(100_000) == 64_000
 
-    def test_above_max_tier(self):
-        """Value above 128K should return 128K."""
-        assert get_next_probe_tier(500_000) == 128_000
+    def test_from_1m_steps_to_400k_not_128k(self):
+        """Long-context models should degrade through modern tiers before 128K."""
+        assert get_next_probe_tier(1_050_000) == 400_000
+
+    def test_from_500k_steps_to_400k(self):
+        assert get_next_probe_tier(500_000) == 400_000
+
+    def test_from_400k_steps_to_200k(self):
+        assert get_next_probe_tier(400_000) == 200_000
 
     def test_zero_returns_none(self):
         assert get_next_probe_tier(0) is None
