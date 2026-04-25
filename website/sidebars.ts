@@ -83,7 +83,6 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/web-dashboard',
             'user-guide/features/extending-the-dashboard',
             'user-guide/features/kanban',
-            'user-guide/features/dashboard-plugins',
           ],
         },
         {
