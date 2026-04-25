@@ -2455,14 +2455,25 @@ class APIServerAdapter(BasePlatformAdapter):
                     return r, u
 
                 result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
-                final_response = result.get("final_response", "") if isinstance(result, dict) else ""
-                q.put_nowait({
-                    "event": "run.completed",
-                    "run_id": run_id,
-                    "timestamp": time.time(),
-                    "output": final_response,
-                    "usage": usage,
-                })
+                # Check for structured failure (non-retryable client errors like
+                # 401/400 return failed=True instead of raising, so the except
+                # block below never fires — issue #15561).
+                if isinstance(result, dict) and result.get("failed"):
+                    q.put_nowait({
+                        "event": "run.failed",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                        "error": result.get("error") or "agent run failed",
+                    })
+                else:
+                    final_response = result.get("final_response", "") if isinstance(result, dict) else ""
+                    q.put_nowait({
+                        "event": "run.completed",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                        "output": final_response,
+                        "usage": usage,
+                    })
             except Exception as exc:
                 logger.exception("[api_server] run %s failed", run_id)
                 try:
