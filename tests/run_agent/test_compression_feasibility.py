@@ -183,6 +183,54 @@ def test_feasibility_check_passes_config_context_length(mock_get_client, mock_ct
     )
 
 
+def test_feasibility_check_uses_custom_provider_model_context_length():
+    """custom_providers[].models[aux_model].context_length should be used
+    for the compression model when auxiliary.compression.context_length is not
+    set. This prevents false 128K fallback warnings for custom endpoints whose
+    /models payload omits context metadata."""
+    agent = _make_agent(main_context=400_000, threshold_percent=0.95)
+    agent.provider = "custom"
+    agent.base_url = "https://example.test/v1"
+    agent.model = "gpt-5.5"
+
+    mock_client = MagicMock()
+    mock_client.base_url = "https://example.test/v1/"
+    mock_client.api_key = "sk-custom"
+    cfg = {
+        "custom_providers": [
+            {
+                "name": "Example",
+                "base_url": "https://example.test/v1",
+                "api_key": "sk-custom",
+                "model": "gpt-5.5",
+                "models": {
+                    "gpt-5.5": {"context_length": 400_000},
+                    "gpt-5.5-openai-compact": {"context_length": 400_000},
+                },
+            }
+        ]
+    }
+
+    def _ctx_len(*args, **kwargs):
+        return kwargs.get("config_context_length") or 128_000
+
+    messages = []
+    agent._emit_status = lambda msg: messages.append(msg)
+    with patch("hermes_cli.config.load_config", return_value=cfg), \
+         patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(mock_client, "gpt-5.5")), \
+         patch("agent.model_metadata.get_model_context_length", side_effect=_ctx_len) as mock_ctx_len:
+        agent._check_compression_model_feasibility()
+
+    assert messages == []
+    assert agent.context_compressor.threshold_tokens == 380_000
+    mock_ctx_len.assert_called_once_with(
+        "gpt-5.5",
+        base_url="https://example.test/v1/",
+        api_key="sk-custom",
+        config_context_length=400_000,
+    )
+
+
 @patch("agent.model_metadata.get_model_context_length", return_value=128_000)
 @patch("agent.auxiliary_client.get_text_auxiliary_client")
 def test_feasibility_check_ignores_invalid_context_length(mock_get_client, mock_ctx_len):
