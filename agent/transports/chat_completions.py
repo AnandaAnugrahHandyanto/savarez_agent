@@ -265,13 +265,27 @@ class ChatCompletionsTransport(ProviderTransport):
             options["num_ctx"] = ollama_ctx
             extra_body["options"] = options
 
-        # Ollama/custom think=false
+        # Ollama/custom: disable provider-side chain-of-thought when requested.
+        # - "think": False is honored by Ollama's native /api/chat path.
+        # - "reasoning": {"effort":"none","enabled":False} is honored by
+        #   Ollama's OAI-compatible /v1/chat/completions path. Some local-OAI
+        #   models (e.g. gemma4:26b-a4b-it-q4_K_M) emit chain-of-thought into
+        #   `message.reasoning` and leave `message.content` empty unless the
+        #   reasoning controls are passed; "think" is silently ignored on the
+        #   OAI route. Sending both keys keeps native + OAI paths covered.
+        # Paperclip LIF-276 (2026-04-25): without this, HermesAgent on local
+        # gemma4 burned `num_predict` on CoT, returned empty content, and timed
+        # out every heartbeat.
         if params.get("is_custom_provider", False):
             if reasoning_config and isinstance(reasoning_config, dict):
                 _effort = (reasoning_config.get("effort") or "").strip().lower()
                 _enabled = reasoning_config.get("enabled", True)
                 if _effort == "none" or _enabled is False:
                     extra_body["think"] = False
+                    extra_body["reasoning"] = {
+                        "effort": "none",
+                        "enabled": False,
+                    }
 
         if is_qwen:
             extra_body["vl_high_resolution_images"] = True
