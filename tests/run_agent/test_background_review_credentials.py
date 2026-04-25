@@ -44,7 +44,7 @@ def _make_parent(
         _MEMORY_REVIEW_PROMPT="review-memory",
         _SKILL_REVIEW_PROMPT="review-skills",
         _COMBINED_REVIEW_PROMPT="review-both",
-        _summarize_background_review_actions=staticmethod(lambda msgs, snap: []),
+        _summarize_background_review_actions=lambda msgs, snap: [],
         _emit_auxiliary_failure=lambda *a: None,
     )
 
@@ -71,7 +71,7 @@ def _run_and_capture(parent, *, review_memory=True, review_skills=False):
             review_memory=review_memory,
             review_skills=review_skills,
         )
-        done.wait(timeout=5)
+        assert done.wait(timeout=5), "background thread did not call AIAgent within 5 s"
 
     return captured
 
