@@ -228,7 +228,7 @@ class NotionAgentAdapter(BasePlatformAdapter):
             text=content,
         )
 
-    async def send_typing(self, chat_id: str) -> SendResult:
+    async def send_typing(self, chat_id: str, metadata=None) -> SendResult:
         return SendResult(success=True)
 
     async def send_image(
