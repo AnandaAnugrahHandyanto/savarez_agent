@@ -2,7 +2,7 @@
 
 import pytest
 
-from agent.verifier import ToolCallRecord, evaluate_turn
+from agent.verifier import ToolCallRecord, evaluate_turn, format_report_summary
 
 
 def finding_codes(report):
@@ -92,3 +92,32 @@ def test_report_only_verifier_does_not_raise_for_malformed_records():
 
     assert report.enabled is True
     assert isinstance(report.findings, tuple)
+
+
+def test_format_report_summary_redacts_arguments_and_counts_findings():
+    records = [
+        ToolCallRecord(name="terminal", args={"command": "pkill -f hermes"}, status="ok"),
+        ToolCallRecord(name="write_file", args={"path": ".env.local", "content": "SECRET"}, status="error"),
+    ]
+    report = evaluate_turn(records)
+
+    summary = format_report_summary(report, records)
+
+    assert "tools=2" in summary
+    assert "findings=2" in summary
+    assert "statuses=error:1,ok:1" in summary
+    assert "codes=hermes_process_kill_command:1,sensitive_config_write:1" in summary
+    assert "terminal" in summary
+    assert "write_file" in summary
+    assert "pkill" not in summary
+    assert ".env" not in summary
+    assert "SECRET" not in summary
+
+
+def test_format_report_summary_handles_clean_turn():
+    records = [ToolCallRecord(name="read_file", args={"path": "run_agent.py"}, status="ok")]
+    report = evaluate_turn(records)
+
+    summary = format_report_summary(report, records)
+
+    assert summary == "safe orchestration verifier summary: tools=1 findings=0 statuses=ok:1 tools_seen=read_file"

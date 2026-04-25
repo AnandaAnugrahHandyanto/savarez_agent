@@ -109,7 +109,7 @@ from agent.prompt_builder import (
     TOOL_USE_ENFORCEMENT_MODELS,
 )
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
-from agent.verifier import ToolCallRecord, evaluate_turn
+from agent.verifier import ToolCallRecord, evaluate_turn, format_report_summary
 from agent.codex_responses_adapter import (
     _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
     _deterministic_call_id as _codex_deterministic_call_id,
@@ -7898,6 +7898,7 @@ class AIAgent:
             return
         try:
             report = evaluate_turn(tool_records)
+            summary = format_report_summary(report, tool_records)
         except Exception as verifier_error:
             logger.warning(
                 "safe orchestration verifier failed; continuing tool execution: %s",
@@ -7905,6 +7906,11 @@ class AIAgent:
                 exc_info=True,
             )
             return
+
+        if report.findings:
+            logger.warning(summary)
+        else:
+            logger.info(summary)
 
         for finding in report.findings:
             logger.warning(

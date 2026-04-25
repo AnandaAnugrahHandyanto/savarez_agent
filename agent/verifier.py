@@ -8,6 +8,7 @@ raises for policy violations, mutates tool results, or talks to the gateway.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections import Counter
 from typing import Any, Literal, Mapping, Sequence
 import re
 
@@ -91,6 +92,34 @@ def evaluate_turn(tool_calls: Sequence[ToolCallRecord]) -> VerifierReport:
     return VerifierReport(enabled=True, findings=tuple(findings))
 
 
+def format_report_summary(
+    report: VerifierReport,
+    tool_calls: Sequence[ToolCallRecord],
+) -> str:
+    """Return a compact, argument-free verifier summary for safe logging.
+
+    The summary intentionally includes only counts, finding codes, statuses, and
+    tool names. It never includes tool arguments, command text, paths, or file
+    contents, so it is safe for logs that may be inspected during operations.
+    """
+
+    records = list(tool_calls)
+    finding_counts = Counter(finding.code for finding in report.findings)
+    status_counts = Counter(_safe_status(getattr(record, "status", None)) for record in records)
+    tool_names = sorted({_safe_str(getattr(record, "name", "")) or "unknown" for record in records})
+
+    parts = [
+        "safe orchestration verifier summary:",
+        f"tools={len(records)}",
+        f"findings={len(report.findings)}",
+        f"statuses={_format_counter(status_counts)}",
+        f"tools_seen={','.join(tool_names) if tool_names else 'none'}",
+    ]
+    if finding_counts:
+        parts.append(f"codes={_format_counter(finding_counts)}")
+    return " ".join(parts)
+
+
 def _evaluate_terminal_command(command: Any, tool_name: str) -> tuple[VerifierFinding, ...]:
     command_text = _safe_str(command)
     if not command_text:
@@ -171,6 +200,18 @@ def _warning(code: str, message: str, tool_name: str) -> VerifierFinding:
         message=message,
         tool_name=tool_name,
     )
+
+
+def _safe_status(value: Any) -> str:
+    if isinstance(value, str) and value:
+        return value
+    return "unknown"
+
+
+def _format_counter(counter: Counter[str]) -> str:
+    if not counter:
+        return "none"
+    return ",".join(f"{key}:{counter[key]}" for key in sorted(counter))
 
 
 def _safe_str(value: Any) -> str:

@@ -1446,6 +1446,10 @@ class TestSafeOrchestrationVerifierHook:
         with (
             patch("run_agent.handle_function_call", return_value="ok"),
             patch("run_agent.evaluate_turn", return_value=report) as mock_evaluate,
+            patch(
+                "run_agent.format_report_summary",
+                return_value="safe orchestration verifier summary: tools=1 findings=1",
+            ) as mock_summary,
             caplog.at_level(logging.WARNING, logger="run_agent"),
         ):
             agent._execute_tool_calls_sequential(
@@ -1460,8 +1464,10 @@ class TestSafeOrchestrationVerifierHook:
         assert records[0].name == "terminal"
         assert records[0].args == {"command": "pkill -f hermes"}
         assert records[0].status == "ok"
+        mock_summary.assert_called_once_with(report, records)
         assert messages[-1]["content"] == "ok"
         assert "safe orchestration verifier finding" in caplog.text
+        assert "safe orchestration verifier summary" in caplog.text
 
     def test_verifier_hook_never_raises_into_tool_execution(
         self,
