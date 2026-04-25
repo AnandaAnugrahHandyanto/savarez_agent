@@ -154,7 +154,7 @@ unknown-argument = "warn"
 redundant-cast = "ignore"
 
 [tool.ty.src]
-exclude = ["**"]
+include = ["agent", "tools/path_security.py"]
 
 [[tool.ty.overrides]]
 include = ["**"]
@@ -166,7 +166,49 @@ invalid-assignment = "ignore"
 not-iterable = "ignore"
 
 [tool.ruff]
-exclude = ["*"]
+target-version = "py311"
+line-length = 88
+src = ["agent", "tools", "hermes_cli", "gateway", "tui_gateway", "cron", "acp_adapter", "plugins"]
+exclude = [
+  "tests",
+  "tests/**",
+  "skills",
+  "skills/**",
+  "optional-skills",
+  "optional-skills/**",
+  "scripts",
+  "scripts/**",
+  "docs",
+  "docs/**",
+  "web",
+  "web/**",
+  "website",
+  "website/**",
+  "ui-tui",
+  "ui-tui/**",
+  "environments",
+  "environments/**",
+  "docker",
+  "docker/**",
+  "nix",
+  "nix/**",
+  "packaging",
+  "packaging/**",
+  "acp_registry",
+  "acp_registry/**",
+  "tinker-atropos",
+  "tinker-atropos/**",
+  "*.py",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = false
 
 [tool.uv]
 exclude-newer = "7 days"
