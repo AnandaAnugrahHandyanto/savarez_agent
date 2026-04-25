@@ -44,6 +44,13 @@ RUN cd web && npm run build
 # ---------- Python virtualenv ----------
 RUN chown hermes:hermes /opt/hermes
 USER hermes
+# UV_CACHE_DIR redirected outside HERMES_HOME (/opt/data, which is the
+# hermes user's $HOME and is later declared as a VOLUME). Some build
+# backends (notably kaniko under microk8s with --use-new-run) snapshot
+# the user's home directory in a way that leaves the parent
+# unwritable for the build USER, breaking uv's default cache at
+# $HOME/.cache/uv. /tmp is always writable and discarded after build.
+ENV UV_CACHE_DIR=/tmp/uv-cache
 RUN uv venv && \
     uv pip install --no-cache-dir -e ".[all]"
 
