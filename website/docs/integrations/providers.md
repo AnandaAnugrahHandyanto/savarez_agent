@@ -216,6 +216,18 @@ The Copilot API does **not** support classic Personal Access Tokens (`ghp_*`). S
 If your `gh auth token` returns a `ghp_*` token, use `hermes model` to authenticate via OAuth instead.
 :::
 
+:::info Copilot auth behavior in Hermes
+Hermes sends a supported GitHub token (`gho_*`, `github_pat_*`, or `ghu_*`) directly to `api.githubcopilot.com` and includes Copilot-specific headers (`Editor-Version`, `Copilot-Integration-Id`, `Openai-Intent`, `x-initiator`).
+
+On HTTP 401, Hermes now performs a one-shot credential recovery before fallback:
+
+1. Re-resolve token via the normal priority chain (`COPILOT_GITHUB_TOKEN` → `GH_TOKEN` → `GITHUB_TOKEN` → `gh auth token`)
+2. Rebuild the shared OpenAI client with refreshed headers
+3. Retry the request once
+
+Some older community proxies use `api.github.com/copilot_internal/v2/token` exchange flows. That endpoint can be unavailable for some account types (returns 404). Hermes therefore keeps direct-token auth as the primary path and relies on runtime credential refresh + retry for robustness.
+:::
+
 **API routing**: GPT-5+ models (except `gpt-5-mini`) automatically use the Responses API. All other models (GPT-4o, Claude, Gemini, etc.) use Chat Completions. Models are auto-detected from the live Copilot catalog.
 
 **`copilot-acp` — Copilot ACP agent backend**. Spawns the local Copilot CLI as a subprocess:
@@ -965,6 +977,7 @@ Any service with an OpenAI-compatible API works. Some popular options:
 | [Groq](https://groq.com) | `https://api.groq.com/openai/v1` | Ultra-fast inference |
 | [DeepSeek](https://deepseek.com) | `https://api.deepseek.com/v1` | DeepSeek models |
 | [Fireworks AI](https://fireworks.ai) | `https://api.fireworks.ai/inference/v1` | Fast open model hosting |
+| [GMI Cloud](https://www.gmicloud.ai/) | `https://api.gmi-serving.com/v1` | Managed OpenAI-compatible inference |
 | [Cerebras](https://cerebras.ai) | `https://api.cerebras.ai/v1` | Wafer-scale chip inference |
 | [Mistral AI](https://mistral.ai) | `https://api.mistral.ai/v1` | Mistral models |
 | [OpenAI](https://openai.com) | `https://api.openai.com/v1` | Direct OpenAI access |
@@ -1069,6 +1082,113 @@ Switch between them mid-session with the triple syntax:
 ```
 
 You can also select named custom providers from the interactive `hermes model` menu.
+
+---
+
+### Cookbook: Together AI, Groq, Perplexity
+
+The cloud providers listed in [Other Compatible Providers](#other-compatible-providers) all speak OpenAI's REST dialect, so they wire up the same way under `custom_providers:`. Three worked recipes follow. Each drops into `~/.hermes/config.yaml` and the matching API key goes in `~/.hermes/.env`.
+
+#### Together AI
+
+Hosts open-weight models (Llama, MiniMax, Gemma, DeepSeek, Qwen) at prices significantly below first-party APIs. Good default for multi-model fleets.
+
+```yaml
+# ~/.hermes/config.yaml
+custom_providers:
+  - name: together
+    base_url: https://api.together.xyz/v1
+    key_env: TOGETHER_API_KEY
+    # api_mode: chat_completions  # default — no need to set
+
+model:
+  default: MiniMaxAI/MiniMax-M2.7   # or any model from together.ai/models
+  provider: custom:together
+```
+
+```bash
+# ~/.hermes/.env
+TOGETHER_API_KEY=your-together-key
+```
+
+Switch models mid-session:
+
+```
+/model custom:together:meta-llama/Llama-3.3-70B-Instruct-Turbo
+/model custom:together:google/gemma-4-31b-it
+/model custom:together:deepseek-ai/DeepSeek-V3
+```
+
+Together's `/v1/models` endpoint works, so `hermes model` can auto-discover available models.
+
+#### Groq
+
+Ultra-fast inference (~500 tok/s on Llama-3.3-70B). Small catalog but strong for latency-sensitive interactive use.
+
+```yaml
+# ~/.hermes/config.yaml
+custom_providers:
+  - name: groq
+    base_url: https://api.groq.com/openai/v1
+    key_env: GROQ_API_KEY
+
+model:
+  default: llama-3.3-70b-versatile
+  provider: custom:groq
+```
+
+```bash
+# ~/.hermes/.env
+GROQ_API_KEY=your-groq-key
+```
+
+#### Perplexity
+
+Useful when you want a model that does live web search and citation automatically. Strict about which models are available — check [perplexity.ai/settings/api](https://www.perplexity.ai/settings/api) for the current list.
+
+```yaml
+# ~/.hermes/config.yaml
+custom_providers:
+  - name: perplexity
+    base_url: https://api.perplexity.ai
+    key_env: PERPLEXITY_API_KEY
+
+model:
+  default: sonar
+  provider: custom:perplexity
+```
+
+```bash
+# ~/.hermes/.env
+PERPLEXITY_API_KEY=your-perplexity-key
+```
+
+#### Multiple providers in one config
+
+The three recipes compose — use all of them together and switch per turn with `/model custom:<name>:<model>`:
+
+```yaml
+custom_providers:
+  - name: together
+    base_url: https://api.together.xyz/v1
+    key_env: TOGETHER_API_KEY
+  - name: groq
+    base_url: https://api.groq.com/openai/v1
+    key_env: GROQ_API_KEY
+  - name: perplexity
+    base_url: https://api.perplexity.ai
+    key_env: PERPLEXITY_API_KEY
+
+model:
+  default: MiniMaxAI/MiniMax-M2.7
+  provider: custom:together      # boot to Together; switch freely after
+```
+
+:::tip Troubleshooting
+- `hermes doctor` should print no `Unknown provider` warnings for any of these names after the CLI validator fixes in #15083.
+- If a provider's `/v1/models` endpoint is unreachable (Perplexity is the common one), `hermes model` will persist the model with a warning rather than hard-reject — see #15136.
+- To skip `custom_providers:` entirely and use bare `provider: custom` with `CUSTOM_BASE_URL` env var, see #15103.
+:::
 
 ---
 
