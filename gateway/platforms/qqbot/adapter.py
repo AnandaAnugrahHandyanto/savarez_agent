@@ -657,7 +657,9 @@ class QQAdapter(BasePlatformAdapter):
         and force a close to trigger reconnection.
         """
         heartbeat_fail_count = 0
+        heartbeat_success_count = 0
         MAX_HEARTBEAT_FAILS = 3
+        HEARTBEAT_LOG_INTERVAL = 5  # Log every 5th successful heartbeat (~5 min)
         try:
             while self._running:
                 await asyncio.sleep(self._heartbeat_interval)
@@ -667,6 +669,13 @@ class QQAdapter(BasePlatformAdapter):
                     # d should be the latest sequence number received, or null
                     await self._ws.send_json({"op": 1, "d": self._last_seq})
                     heartbeat_fail_count = 0  # Reset on success
+                    heartbeat_success_count += 1
+                    if heartbeat_success_count % HEARTBEAT_LOG_INTERVAL == 0:
+                        logger.info(
+                            "[%s] Heartbeat OK (count=%d)",
+                            self._log_tag,
+                            heartbeat_success_count,
+                        )
                 except Exception as exc:
                     heartbeat_fail_count += 1
                     logger.warning(
