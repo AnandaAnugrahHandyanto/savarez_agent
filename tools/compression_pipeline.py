@@ -41,6 +41,19 @@ from tools.tty_detector import should_skip_compression
 
 logger = logging.getLogger(__name__)
 
+# -------------------------------------------------------------------\# Caveman NL compression (Layer 0 — optional)
+# -------------------------------------------------------------------
+
+_CAVEMAN_AVAILABLE = False
+try:
+    import sys as _sys
+    import os as _os
+    _sys.path.insert(0, _os.path.expanduser("~/.hermes/projects/caveman-compression/src"))
+    from rtk_integration import compress_nl_input
+    _CAVEMAN_AVAILABLE = True
+except Exception:
+    pass  # Degraded mode — caveman not available, skip Layer 0
+
 # -------------------------------------------------------------------
 # Configuration
 # -------------------------------------------------------------------
@@ -196,6 +209,7 @@ def compress_tool_output(
         If all compression layers fail, returns original stdout.
 
     Compression layers (in order):
+        0. Caveman NL compression (natural-language prose, optional)
         1. RTK binary (if HERMES_COMPRESS=1 and RTK installed)
         2. Native Python compressor (if command matches)
         3. LLM summarization (if output > COMPRESSION_THRESHOLD_TOKENS)
@@ -215,6 +229,16 @@ def compress_tool_output(
     raw_tokens = _estimate_tokens(stdout)
     if raw_tokens < 20:
         return stdout
+
+    # --- Layer 0: Caveman NL compression (for natural-language prose) ---
+    if _CAVEMAN_AVAILABLE:
+        try:
+            nl_compressed = compress_nl_input(stdout, level="lite")
+            if nl_compressed and nl_compressed != stdout:
+                _record_savings(command, raw_tokens, _estimate_tokens(nl_compressed))
+                return nl_compressed
+        except Exception as e:
+            logger.debug("Caveman Layer 0 compression failed (non-fatal): %s", e)
 
     registry = registry or DEFAULT_COMPRESSORS
 
