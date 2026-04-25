@@ -557,11 +557,26 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
         updated = _apply_skill_fields({**job, **updates})
         schedule_changed = "schedule" in updates
+        repeat_changed = "repeat" in updates
 
         if "skills" in updates or "skill" in updates:
             normalized_skills = _normalize_skill_list(updated.get("skill"), updated.get("skills"))
             updated["skills"] = normalized_skills
             updated["skill"] = normalized_skills[0] if normalized_skills else None
+
+        if repeat_changed:
+            # The API may pass repeat as a raw integer (e.g. {"repeat": 2})
+            # instead of a pre-parsed dict. Normalize it to dict format
+            # matching create_job() behavior: {"times": n, "completed": count}
+            updated_repeat = updated["repeat"]
+            if isinstance(updated_repeat, int):
+                # Normalize non-positive values to None (matches create_job behavior)
+                if updated_repeat <= 0:
+                    updated["repeat"] = None
+                else:
+                    # Preserve existing completed count if job already has repeat data
+                    existing_completed = job.get("repeat", {}).get("completed", 0)
+                    updated["repeat"] = {"times": updated_repeat, "completed": existing_completed}
 
         if schedule_changed:
             updated_schedule = updated["schedule"]
