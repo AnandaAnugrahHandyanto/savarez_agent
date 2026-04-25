@@ -1779,7 +1779,18 @@ def terminal_tool(
             # Extract output
             output = result.get("output", "")
             returncode = result.get("returncode", 0)
-            
+
+            # Strip leaked environment declarations (declare -x / export)
+            # that may appear when sourcing the session snapshot on macOS
+            # (bash 3.2 and certain Homebrew builds echo declare -x to
+            # stdout).  Only strip contiguous blocks at the start of output
+            # or after the CWD marker extraction, never mid-output where a
+            # user command might legitimately print "declare -x".
+            import re
+            output = re.sub(
+                r'^(?:declare -x [^\n]*\n)+', '', output,
+            )
+
             # Add helpful message for sudo failures in messaging context
             output = _handle_sudo_failure(output, env_type)
 
