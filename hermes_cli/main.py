@@ -6915,6 +6915,24 @@ For more help on a command:
         help="Skip auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills",
     )
     parser.add_argument(
+        "--system-prompt",
+        default=None,
+        metavar="TEXT",
+        help="Per-turn system prompt override for chat mode (no-subcommand path supported)",
+    )
+    parser.add_argument(
+        "--system-prompt-file",
+        default=None,
+        metavar="PATH",
+        help="Read per-turn system prompt override from PATH for chat mode",
+    )
+    parser.add_argument(
+        "--append-system-prompt",
+        default=None,
+        metavar="TEXT",
+        help="Per-turn system prompt addendum for chat mode",
+    )
+    parser.add_argument(
         "--tui",
         action="store_true",
         default=False,
@@ -7073,7 +7091,7 @@ For more help on a command:
     chat_parser.add_argument(
         "--system-prompt",
         dest="system_prompt",
-        default=None,
+        default=argparse.SUPPRESS,
         metavar="TEXT",
         help=(
             "Per-turn system prompt override. Replaces the cached base system prompt "
@@ -7084,7 +7102,7 @@ For more help on a command:
     chat_parser.add_argument(
         "--system-prompt-file",
         dest="system_prompt_file",
-        default=None,
+        default=argparse.SUPPRESS,
         metavar="PATH",
         help=(
             "Per-turn system prompt override read from PATH. Same isolation guarantees "
@@ -7094,7 +7112,7 @@ For more help on a command:
     chat_parser.add_argument(
         "--append-system-prompt",
         dest="append_system_prompt",
-        default=None,
+        default=argparse.SUPPRESS,
         metavar="TEXT",
         help=(
             "Per-turn system prompt addendum. Appended to the cached base system prompt "

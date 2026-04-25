@@ -124,3 +124,20 @@ def test_chat_rejects_prompt_flags_in_tui_mode(monkeypatch, capsys):
 
     assert raised
     assert "not yet supported with --tui" in capsys.readouterr().out
+
+
+def test_top_level_chat_path_accepts_system_prompt_flags(monkeypatch):
+    import hermes_cli.main as main_mod
+
+    captured = {}
+    monkeypatch.setattr(main_mod, "_has_any_provider_configured", lambda: True)
+    monkeypatch.setitem(sys.modules, "cli", type("C", (), {"main": lambda **kwargs: captured.update(kwargs)}))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hermes", "--system-prompt", "top level override", "chat", "-q", "hi", "-Q"],
+    )
+
+    main_mod.main()
+
+    assert captured["system_prompt_override"] == "top level override"
