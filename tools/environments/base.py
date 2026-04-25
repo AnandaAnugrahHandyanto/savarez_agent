@@ -373,9 +373,13 @@ class BaseEnvironment(ABC):
 
         parts = []
 
-        # Source snapshot (env vars from previous commands)
+        # Source snapshot (env vars from previous commands).
+        # Redirect stdout to /dev/null because on macOS, sourcing a file
+        # that contains `declare -x` statements prints each declaration to
+        # stdout, leaking 60+ lines of env vars into the LLM context.
+        # On Linux this is silent, but the redirect is harmless there.
         if self._snapshot_ready:
-            parts.append(f"source {self._snapshot_path} 2>/dev/null || true")
+            parts.append(f"source {self._snapshot_path} > /dev/null 2>&1 || true")
 
         # cd to working directory — let bash expand ~ natively
         quoted_cwd = (
@@ -458,9 +462,6 @@ class BaseEnvironment(ABC):
         }
 
         # --- Debug tracing (opt-in via HERMES_DEBUG_INTERRUPT=1) -------------
-        # Captures loop entry/exit, interrupt state changes, and periodic
-        # heartbeats so we can diagnose "agent never sees the interrupt"
-        # reports without reproducing locally.
         _tid = threading.current_thread().ident
         _pid = getattr(proc, "pid", None)
         _iter_count = 0
@@ -512,9 +513,6 @@ class BaseEnvironment(ABC):
                 # Periodic activity touch so the gateway knows we're alive
                 touch_activity_if_due(_activity_state, "terminal command running")
 
-                # Heartbeat every ~30s: proves the loop is alive and reports
-                # the activity-callback state (thread-local, can get clobbered
-                # by nested tool calls or executor thread reuse).
                 if _DEBUG_INTERRUPT and time.monotonic() - _last_heartbeat >= 30.0:
                     _cb_now_none = _get_activity_callback() is None
                     logger.info(
@@ -532,13 +530,6 @@ class BaseEnvironment(ABC):
 
                 time.sleep(0.2)
         except (KeyboardInterrupt, SystemExit):
-            # Signal arrived (SIGTERM/SIGHUP/SIGINT) or sys.exit() was called
-            # while we were polling.  The local backend spawns subprocesses
-            # with os.setsid, which puts them in their own process group — so
-            # if we let the interrupt propagate without killing the child,
-            # python exits and the child is reparented to init (PPID=1) and
-            # keeps running as an orphan.  Killing the process group here
-            # guarantees the tool's side effects stop when the agent stops.
             if _DEBUG_INTERRUPT:
                 logger.info(
                     "[interrupt-debug] _wait_for_process EXCEPTION_EXIT "
@@ -609,9 +600,6 @@ class BaseEnvironment(ABC):
             self.cwd = cwd_path
 
         # Strip the marker line AND the \n we injected before it.
-        # The wrapper emits: printf '\n__MARKER__%s__MARKER__\n'
-        # So the output looks like: <cmd output>\n__MARKER__path__MARKER__\n
-        # We want to remove everything from the injected \n onwards.
         line_start = output.rfind("\n", 0, first)
         if line_start == -1:
             line_start = first
@@ -625,13 +613,7 @@ class BaseEnvironment(ABC):
     # ------------------------------------------------------------------
 
     def _before_execute(self) -> None:
-        """Hook called before each command execution.
-
-        Remote backends (SSH, Modal, Daytona) override this to trigger
-        their FileSyncManager.  Bind-mount backends (Docker, Singularity)
-        and Local don't need file sync — the host filesystem is directly
-        visible inside the container/process.
-        """
+        """Hook called before each command execution."""
         pass
 
     # ------------------------------------------------------------------
@@ -698,4 +680,3 @@ class BaseEnvironment(ABC):
         from tools.terminal_tool import _transform_sudo_command
 
         return _transform_sudo_command(command)
-
