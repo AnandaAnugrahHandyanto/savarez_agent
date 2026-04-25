@@ -56,20 +56,20 @@ SPAR_FIX_CONTRACT = [
 
 DEFAULT_BUILDER_ROUTE = {
     "provider": "xiaomi",
-    "model": "mimo-v2-pro",
-    "label": "xiaomi/mimo-v2-pro",
+    "model": "mimo-v2.5-pro",
+    "label": "xiaomi/mimo-v2.5-pro",
 }
 
 DEFAULT_REVIEWER_ROUTE = {
     "provider": "openrouter",
-    "model": "nvidia/nemotron-3-super-120b-a12b:free",
-    "label": "nvidia/nemotron-3-super-120b-a12b:free",
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "label": "nvidia/nemotron-3-super-120b-a12b",
 }
 
 DEFAULT_JUDGE_ROUTE = {
     "provider": "openrouter",
-    "model": "google/gemma-4-31b-it:free",
-    "label": "google/gemma-4-31b-it:free",
+    "model": "deepseek/deepseek-v4-flash",
+    "label": "deepseek/deepseek-v4-flash",
 }
 
 
@@ -538,15 +538,15 @@ SPAR_SCHEMA = {
             },
             "builder_model": {
                 "type": "string",
-                "description": "Optional builder model route like 'xiaomi/mimo-v2-pro'. Defaults to the current main model.",
+                "description": "Optional builder model route like 'xiaomi/mimo-v2.5-pro'. Defaults to the current main model.",
             },
             "reviewer_model": {
                 "type": "string",
-                "description": "Optional Spar reviewer model route. Defaults to nvidia/nemotron-3-super-120b-a12b:free.",
+                "description": "Optional Spar reviewer model route. Defaults to nvidia/nemotron-3-super-120b-a12b.",
             },
             "judge_model": {
                 "type": "string",
-                "description": "Optional judge model route. Defaults to google/gemma-4-31b-it:free.",
+                "description": "Optional judge model route. Defaults to deepseek/deepseek-v4-flash.",
             },
             "judge_enabled": {
                 "type": "boolean",

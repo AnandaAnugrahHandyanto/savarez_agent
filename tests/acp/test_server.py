@@ -605,7 +605,7 @@ class TestPrompt:
         with patch(
             "tools.mixture_of_agents_tool.mixture_of_agents_tool",
             AsyncMock(
-                return_value='{"success": true, "response": "moa answer", "models_used": {"reference_models": [], "aggregator_model": "xiaomi/mimo-v2-pro"}}'
+                return_value='{"success": true, "response": "moa answer", "models_used": {"reference_models": [], "aggregator_model": "xiaomi/mimo-v2.5-pro"}}'
             ),
         ) as mock_moa:
             resp = await agent.prompt(
@@ -642,11 +642,11 @@ class TestPrompt:
                         "response": "moa draft",
                         "models_used": {
                             "reference_models": [
-                                "xiaomi/mimo-v2-pro (self-draft)",
+                                "xiaomi/mimo-v2.5-pro (self-draft)",
                                 "minimax/MiniMax-M2.7-highspeed",
                                 "deepseek/deepseek-reasoner",
                             ],
-                            "aggregator_model": "xiaomi/mimo-v2-pro",
+                            "aggregator_model": "xiaomi/mimo-v2.5-pro",
                         },
                         "failed_models": [],
                         "failed_model_errors": {},
@@ -658,7 +658,7 @@ class TestPrompt:
                         },
                         "per_model_metrics": {
                             "reference_models": {},
-                            "aggregator": {"model": "xiaomi/mimo-v2-pro", "success": True},
+                            "aggregator": {"model": "xiaomi/mimo-v2.5-pro", "success": True},
                             "forensic_analysis": {"skipped": True, "success": False},
                         },
                         "decision_trace": {"final_candidates": ["plan-a", "plan-b"]},
@@ -693,7 +693,7 @@ class TestPrompt:
         assert routed_prompt.endswith("User: which plan is safer?")
         assert mock_spar.await_args.kwargs["user_prompt"] == routed_prompt
         assert mock_spar.await_args.kwargs["candidate_response"] == "moa draft"
-        assert mock_spar.await_args.kwargs["builder_model"] == "xiaomi/mimo-v2-pro"
+        assert mock_spar.await_args.kwargs["builder_model"] == "xiaomi/mimo-v2.5-pro"
 
     @pytest.mark.asyncio
     async def test_prompt_force_moa_spar_accepts_wrapped_tool_json(self, agent):
@@ -710,11 +710,11 @@ class TestPrompt:
                     "response": "wrapped moa draft",
                     "models_used": {
                         "reference_models": [
-                            "xiaomi/mimo-v2-pro (self-draft)",
+                            "xiaomi/mimo-v2.5-pro (self-draft)",
                             "minimax/MiniMax-M2.7-highspeed",
                             "deepseek/deepseek-reasoner",
                         ],
-                        "aggregator_model": "xiaomi/mimo-v2-pro",
+                        "aggregator_model": "xiaomi/mimo-v2.5-pro",
                     },
                     "failed_models": [],
                     "failed_model_errors": {},
@@ -722,7 +722,7 @@ class TestPrompt:
                     "reference_outputs": {},
                     "per_model_metrics": {
                         "reference_models": {},
-                        "aggregator": {"model": "xiaomi/mimo-v2-pro", "success": True},
+                        "aggregator": {"model": "xiaomi/mimo-v2.5-pro", "success": True},
                         "forensic_analysis": {"skipped": True, "success": False},
                     },
                     "decision_trace": {},
@@ -773,7 +773,7 @@ class TestPrompt:
         with patch(
             "tools.mixture_of_agents_tool.mixture_of_agents_tool",
             AsyncMock(
-                return_value='{"success": true, "response": "moa answer", "models_used": {"reference_models": [], "aggregator_model": "xiaomi/mimo-v2-pro"}}'
+                return_value='{"success": true, "response": "moa answer", "models_used": {"reference_models": [], "aggregator_model": "xiaomi/mimo-v2.5-pro"}}'
             ),
         ) as mock_moa:
             await agent.prompt(
@@ -797,7 +797,7 @@ class TestPrompt:
         with patch(
             "tools.mixture_of_agents_tool.mixture_of_agents_tool",
             AsyncMock(
-                return_value='{"success": true, "response": "moa answer", "models_used": {"reference_models": [], "aggregator_model": "xiaomi/mimo-v2-pro"}}'
+                return_value='{"success": true, "response": "moa answer", "models_used": {"reference_models": [], "aggregator_model": "xiaomi/mimo-v2.5-pro"}}'
             ),
         ):
             await agent.prompt(
@@ -822,7 +822,7 @@ class TestPrompt:
         with patch(
             "tools.mixture_of_agents_tool.mixture_of_agents_tool",
             AsyncMock(
-                return_value='{"success": true, "response": "moa answer", "models_used": {"reference_models": ["minimax/MiniMax-M2.7-highspeed", "deepseek/deepseek-reasoner"], "aggregator_model": "xiaomi/mimo-v2-pro"}, "failed_models": [], "failed_model_errors": {}, "reference_previews": {"minimax/MiniMax-M2.7-highspeed": "moa answer"}, "reference_outputs": {"minimax/MiniMax-M2.7-highspeed": "full minimax output"}, "per_model_metrics": {"reference_models": {"minimax/MiniMax-M2.7-highspeed": {"attempts": 1, "latency_seconds": 1.2, "success": true}}, "aggregator": {"model": "xiaomi/mimo-v2-pro", "latency_seconds": 2.4, "success": true}, "forensic_analysis": {"model": "xiaomi/mimo-v2-pro", "latency_seconds": 0.7, "success": true}}, "decision_trace": {"model_proposals": {"minimax/MiniMax-M2.7-highspeed": ["akg", "lithium"]}, "overlap": ["akg"], "conflicts": ["deepseek preferred another stack"], "final_candidates": ["akg", "lithium"], "synthesis_summary": "mimo narrowed to the strongest overlap"}, "aggregator_influence_log": {"kept_from_models": {"minimax/MiniMax-M2.7-highspeed": ["akg"]}, "discarded_or_deprioritized": ["metformin"], "resolution_notes": ["mimo preferred overlap plus safety"], "influence_summary": "mimo used both references but weighted overlap most"}}'
+                return_value='{"success": true, "response": "moa answer", "models_used": {"reference_models": ["minimax/MiniMax-M2.7-highspeed", "deepseek/deepseek-reasoner"], "aggregator_model": "xiaomi/mimo-v2.5-pro"}, "failed_models": [], "failed_model_errors": {}, "reference_previews": {"minimax/MiniMax-M2.7-highspeed": "moa answer"}, "reference_outputs": {"minimax/MiniMax-M2.7-highspeed": "full minimax output"}, "per_model_metrics": {"reference_models": {"minimax/MiniMax-M2.7-highspeed": {"attempts": 1, "latency_seconds": 1.2, "success": true}}, "aggregator": {"model": "xiaomi/mimo-v2.5-pro", "latency_seconds": 2.4, "success": true}, "forensic_analysis": {"model": "xiaomi/mimo-v2.5-pro", "latency_seconds": 0.7, "success": true}}, "decision_trace": {"model_proposals": {"minimax/MiniMax-M2.7-highspeed": ["akg", "lithium"]}, "overlap": ["akg"], "conflicts": ["deepseek preferred another stack"], "final_candidates": ["akg", "lithium"], "synthesis_summary": "mimo narrowed to the strongest overlap"}, "aggregator_influence_log": {"kept_from_models": {"minimax/MiniMax-M2.7-highspeed": ["akg"]}, "discarded_or_deprioritized": ["metformin"], "resolution_notes": ["mimo preferred overlap plus safety"], "influence_summary": "mimo used both references but weighted overlap most"}}'
             ),
         ):
             await agent.prompt(
@@ -835,7 +835,7 @@ class TestPrompt:
         result_event = next(event for event in events if event["event"] == "route_result")
         assert result_event["session_id"] == new_resp.session_id
         assert result_event["route"] == "force-moa"
-        assert result_event["tool"]["models_used"]["aggregator_model"] == "xiaomi/mimo-v2-pro"
+        assert result_event["tool"]["models_used"]["aggregator_model"] == "xiaomi/mimo-v2.5-pro"
         assert result_event["tool"]["models_used"]["reference_models"] == [
             "minimax/MiniMax-M2.7-highspeed",
             "deepseek/deepseek-reasoner",
@@ -849,7 +849,7 @@ class TestPrompt:
         assert result_event["tool"]["reference_output_hashes"] == {
             "minimax/MiniMax-M2.7-highspeed": {"sha256_16": "2e718f248d8ca032", "chars": 19}
         }
-        assert result_event["tool"]["per_model_metrics"]["aggregator"]["model"] == "xiaomi/mimo-v2-pro"
+        assert result_event["tool"]["per_model_metrics"]["aggregator"]["model"] == "xiaomi/mimo-v2.5-pro"
         assert result_event["tool"]["decision_trace"]["final_candidates"] == ["akg", "lithium"]
         assert result_event["tool"]["aggregator_influence_log"]["influence_summary"] == "mimo used both references but weighted overlap most"
 
@@ -865,7 +865,7 @@ class TestPrompt:
         with patch(
             "tools.mixture_of_agents_tool.mixture_of_agents_tool",
             AsyncMock(
-                return_value='{"success": true, "response": "moa answer", "models_used": {"reference_models": ["minimax/MiniMax-M2.7-highspeed"], "aggregator_model": "xiaomi/mimo-v2-pro"}, "reference_outputs": {"minimax/MiniMax-M2.7-highspeed": "full minimax output"}}'
+                return_value='{"success": true, "response": "moa answer", "models_used": {"reference_models": ["minimax/MiniMax-M2.7-highspeed"], "aggregator_model": "xiaomi/mimo-v2.5-pro"}, "reference_outputs": {"minimax/MiniMax-M2.7-highspeed": "full minimax output"}}'
             ),
         ):
             await agent.prompt(
@@ -893,7 +893,7 @@ class TestPrompt:
         with patch(
             "tools.mixture_of_agents_tool.mixture_of_agents_tool",
             AsyncMock(
-                return_value='{"success": true, "response": "moa answer", "models_used": {"reference_models": [], "aggregator_model": "xiaomi/mimo-v2-pro"}}'
+                return_value='{"success": true, "response": "moa answer", "models_used": {"reference_models": [], "aggregator_model": "xiaomi/mimo-v2.5-pro"}}'
             ),
         ):
             await router(
@@ -927,10 +927,10 @@ class TestPrompt:
                         "response": "moa draft",
                         "models_used": {
                             "reference_models": [
-                                "xiaomi/mimo-v2-pro (self-draft)",
+                                "xiaomi/mimo-v2.5-pro (self-draft)",
                                 "minimax/MiniMax-M2.7-highspeed",
                             ],
-                            "aggregator_model": "xiaomi/mimo-v2-pro",
+                            "aggregator_model": "xiaomi/mimo-v2.5-pro",
                         },
                         "failed_models": [],
                         "failed_model_errors": {},
@@ -942,8 +942,8 @@ class TestPrompt:
                         },
                         "per_model_metrics": {
                             "reference_models": {"minimax/MiniMax-M2.7-highspeed": {"attempts": 1, "latency_seconds": 1.2, "success": True}},
-                            "aggregator": {"model": "xiaomi/mimo-v2-pro", "latency_seconds": 2.4, "success": True},
-                            "forensic_analysis": {"model": "xiaomi/mimo-v2-pro", "latency_seconds": 0.0, "success": False, "skipped": True},
+                            "aggregator": {"model": "xiaomi/mimo-v2.5-pro", "latency_seconds": 2.4, "success": True},
+                            "forensic_analysis": {"model": "xiaomi/mimo-v2.5-pro", "latency_seconds": 0.0, "success": False, "skipped": True},
                         },
                         "decision_trace": {"final_candidates": ["akg", "lithium"]},
                         "aggregator_influence_log": {"influence_summary": "mimo used overlap"},
@@ -978,7 +978,7 @@ class TestPrompt:
         assert result_event["tool"]["approved"] is True
         assert result_event["tool"]["gate_passed"] is True
         assert result_event["tool"]["judge_verdict"] == {"approved": True, "summary": "judge ok"}
-        assert result_event["tool"]["models_used"]["aggregator_model"] == "xiaomi/mimo-v2-pro"
+        assert result_event["tool"]["models_used"]["aggregator_model"] == "xiaomi/mimo-v2.5-pro"
         assert result_event["tool"]["reference_output_hashes"] == {
             "minimax/MiniMax-M2.7-highspeed": {"sha256_16": "2e718f248d8ca032", "chars": 19}
         }
@@ -999,7 +999,7 @@ class TestPrompt:
                     {
                         "success": True,
                         "response": "moa draft",
-                        "models_used": {"reference_models": [], "aggregator_model": "xiaomi/mimo-v2-pro"},
+                        "models_used": {"reference_models": [], "aggregator_model": "xiaomi/mimo-v2.5-pro"},
                     }
                 )
             ),
@@ -1057,10 +1057,10 @@ class TestPrompt:
                         "response": "MoA processing failed. Please try again or use a single model for this query.",
                         "models_used": {
                             "reference_models": [
-                                "xiaomi/mimo-v2-pro (self-draft)",
+                                "xiaomi/mimo-v2.5-pro (self-draft)",
                                 "minimax/MiniMax-M2.7-highspeed",
                             ],
-                            "aggregator_model": "xiaomi/mimo-v2-pro",
+                            "aggregator_model": "xiaomi/mimo-v2.5-pro",
                         },
                         "failed_models": ["deepseek/deepseek-reasoner"],
                         "failed_model_errors": {"deepseek/deepseek-reasoner": "timeout"},
@@ -1095,7 +1095,7 @@ class TestPrompt:
         assert result_event["tool"]["error"] == "Error in MoA processing: timeout"
         assert result_event["tool"]["moa_failure_preview"].startswith("MoA processing failed.")
         assert "\"success\": false" in result_event["tool"]["raw_output_preview"]
-        assert result_event["tool"]["models_used"]["aggregator_model"] == "xiaomi/mimo-v2-pro"
+        assert result_event["tool"]["models_used"]["aggregator_model"] == "xiaomi/mimo-v2.5-pro"
 
     @pytest.mark.asyncio
     async def test_prompt_force_moa_spar_logs_preview_for_thin_moa_failure_payload(self, agent, monkeypatch, tmp_path):
@@ -1145,10 +1145,10 @@ class TestPrompt:
                         "response": "moa draft",
                         "models_used": {
                             "reference_models": [
-                                "xiaomi/mimo-v2-pro (self-draft)",
+                                "xiaomi/mimo-v2.5-pro (self-draft)",
                                 "minimax/MiniMax-M2.7-highspeed",
                             ],
-                            "aggregator_model": "xiaomi/mimo-v2-pro",
+                            "aggregator_model": "xiaomi/mimo-v2.5-pro",
                         },
                         "failed_models": [],
                         "failed_model_errors": {},

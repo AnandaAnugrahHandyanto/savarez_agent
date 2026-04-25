@@ -25,8 +25,8 @@ Architecture:
 3. Multiple layers can be used for iterative refinement (future enhancement)
 
 Default Models Used:
-- Reference Models: NVIDIA Nemotron 3 Super, Google Gemma 4 31B via OpenRouter free tier
-- Aggregator Model: Xiaomi MiMo v2 Pro
+- Reference Models: DeepSeek V4 Flash and NVIDIA Nemotron 3 Super via OpenRouter
+- Aggregator Model: Xiaomi MiMo V2.5 Pro
 
 Legacy OpenRouter-style model slugs still work when passed explicitly.
 
@@ -71,21 +71,21 @@ ModelRoute = Dict[str, Any]
 DEFAULT_REFERENCE_ROUTES: List[ModelRoute] = [
     {
         "provider": "openrouter",
-        "model": "nvidia/nemotron-3-super-120b-a12b:free",
-        "label": "nvidia/nemotron-3-super-120b-a12b:free",
+        "model": "nvidia/nemotron-3-super-120b-a12b",
+        "label": "nvidia/nemotron-3-super-120b-a12b",
     },
     {
         "provider": "openrouter",
-        "model": "google/gemma-4-31b-it:free",
-        "label": "google/gemma-4-31b-it:free",
+        "model": "deepseek/deepseek-v4-flash",
+        "label": "deepseek/deepseek-v4-flash",
     },
 ]
 
 # Aggregator model - synthesizes reference responses into final output.
 DEFAULT_AGGREGATOR_ROUTE: ModelRoute = {
     "provider": "xiaomi",
-    "model": "mimo-v2-pro",
-    "label": "xiaomi/mimo-v2-pro",
+    "model": "mimo-v2.5-pro",
+    "label": "xiaomi/mimo-v2.5-pro",
 }
 
 # Legacy exports kept for compatibility with existing tests/callers.
@@ -100,10 +100,11 @@ AGGREGATOR_TEMPERATURE = 0.4  # Focused synthesis for consistency
 MIN_SUCCESSFUL_REFERENCES = 1  # Minimum successful reference models needed to proceed
 SELF_DRAFT_SUFFIX = " (self-draft)"
 _MOA_FORENSIC_REPAIR_ATTEMPTS = 2
-_LEGACY_PAID_REFERENCE_LABELS = {
-    "minimax/MiniMax-M2.7-highspeed",
-    "deepseek/deepseek-reasoner",
-}
+_LEGACY_REFERENCE_LABEL_SETS = (
+    frozenset({"minimax/MiniMax-M2.7-highspeed", "deepseek/deepseek-reasoner"}),
+    frozenset({"nvidia/nemotron-3-super-120b-a12b:free", "google/gemma-4-31b-it:free"}),
+)
+_LEGACY_AGGREGATOR_LABELS = {"xiaomi/mimo-v2-pro"}
 
 # System prompt for the aggregator model (from the research paper)
 AGGREGATOR_SYSTEM_PROMPT = """You have been provided with a set of responses from various open-source models to the latest user query. Your task is to synthesize these responses into a single, high-quality response. It is crucial to critically evaluate the information provided in these responses, recognizing that some of it may be biased or incorrect. Your response should not simply replicate the given answers but should offer a refined, accurate, and comprehensive reply to the instruction. Ensure your response is well-structured, coherent, and adheres to the highest standards of accuracy and reliability.
@@ -256,10 +257,10 @@ def _resolve_moa_routes(
     )
     if not isinstance(raw_references, list) or not raw_references:
         raw_references = DEFAULT_REFERENCE_ROUTES
-    elif {
+    elif frozenset({
         _route_label(_normalize_model_route(spec, "reference_model"))
         for spec in raw_references
-    } == _LEGACY_PAID_REFERENCE_LABELS:
+    }) in _LEGACY_REFERENCE_LABEL_SETS:
         raw_references = DEFAULT_REFERENCE_ROUTES
 
     raw_aggregator = (
@@ -269,6 +270,10 @@ def _resolve_moa_routes(
     )
     if raw_aggregator in (None, "", {}):
         raw_aggregator = DEFAULT_AGGREGATOR_ROUTE
+    else:
+        normalized_aggregator = _normalize_model_route(raw_aggregator, "aggregator_model")
+        if _route_label(normalized_aggregator) in _LEGACY_AGGREGATOR_LABELS:
+            raw_aggregator = DEFAULT_AGGREGATOR_ROUTE
 
     return (
         [
@@ -1170,7 +1175,7 @@ from tools.registry import registry
 
 MOA_SCHEMA = {
     "name": "mixture_of_agents",
-    "description": "Route a hard problem through multiple LLMs collaboratively. By default Hermes uses Xiaomi MiMo v2 Pro as the aggregator with OpenRouter free Nemotron and Gemma reference models. Requires Xiaomi plus OPENROUTER_API_KEY. Use sparingly for genuinely difficult problems: complex math, advanced algorithms, and multi-step analytical reasoning.",
+    "description": "Route a hard problem through multiple LLMs collaboratively. By default Hermes uses Xiaomi MiMo V2.5 Pro as the aggregator with OpenRouter DeepSeek V4 Flash and Nemotron reference models. Requires Xiaomi plus OPENROUTER_API_KEY. Use sparingly for genuinely difficult problems: complex math, advanced algorithms, and multi-step analytical reasoning.",
     "parameters": {
         "type": "object",
         "properties": {

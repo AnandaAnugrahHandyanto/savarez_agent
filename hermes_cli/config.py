@@ -543,19 +543,19 @@ DEFAULT_CONFIG = {
             "reference_models": [
                 {
                     "provider": "openrouter",
-                    "model": "nvidia/nemotron-3-super-120b-a12b:free",
-                    "label": "nvidia/nemotron-3-super-120b-a12b:free",
+                    "model": "nvidia/nemotron-3-super-120b-a12b",
+                    "label": "nvidia/nemotron-3-super-120b-a12b",
                 },
                 {
                     "provider": "openrouter",
-                    "model": "google/gemma-4-31b-it:free",
-                    "label": "google/gemma-4-31b-it:free",
+                    "model": "deepseek/deepseek-v4-flash",
+                    "label": "deepseek/deepseek-v4-flash",
                 },
             ],
             "aggregator_model": {
                 "provider": "xiaomi",
-                "model": "mimo-v2-pro",
-                "label": "xiaomi/mimo-v2-pro",
+                "model": "mimo-v2.5-pro",
+                "label": "xiaomi/mimo-v2.5-pro",
             },
         },
         "skills_hub": {
@@ -1260,7 +1260,7 @@ OPTIONAL_ENV_VARS = {
         "advanced": True,
     },
     "XIAOMI_API_KEY": {
-        "description": "Xiaomi MiMo API key for MiMo models (mimo-v2-pro, mimo-v2-omni, mimo-v2-flash)",
+        "description": "Xiaomi MiMo API key for MiMo models (mimo-v2.5-pro, mimo-v2-omni, mimo-v2-flash)",
         "prompt": "Xiaomi MiMo API Key",
         "url": "https://platform.xiaomimimo.com",
         "password": True,

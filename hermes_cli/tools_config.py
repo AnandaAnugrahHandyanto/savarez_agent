@@ -1433,7 +1433,7 @@ def _configure_simple_requirements(ts_key: str):
         if _toolset_has_keys("moa"):
             return
         print()
-        print(color("  Mixture of Agents uses a Xiaomi MiMo v2 Pro aggregator plus at least one reference provider (MiniMax or DeepSeek):", Colors.YELLOW))
+        print(color("  Mixture of Agents uses Xiaomi MiMo V2.5 Pro plus OpenRouter reference providers:", Colors.YELLOW))
         for var, url in TOOLSET_ENV_REQUIREMENTS.get("moa", []):
             if get_env_value(var):
                 continue

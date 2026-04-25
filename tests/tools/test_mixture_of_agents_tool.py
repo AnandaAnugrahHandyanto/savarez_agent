@@ -10,10 +10,10 @@ moa = importlib.import_module("tools.mixture_of_agents_tool")
 
 def test_moa_defaults_track_current_direct_provider_stack():
     assert moa.REFERENCE_MODELS == [
-        "nvidia/nemotron-3-super-120b-a12b:free",
-        "google/gemma-4-31b-it:free",
+        "nvidia/nemotron-3-super-120b-a12b",
+        "deepseek/deepseek-v4-flash",
     ]
-    assert moa.AGGREGATOR_MODEL == "xiaomi/mimo-v2-pro"
+    assert moa.AGGREGATOR_MODEL == "xiaomi/mimo-v2.5-pro"
 
 
 def test_moa_registry_requires_current_provider_keys():
@@ -27,12 +27,12 @@ def test_construct_aggregator_prompt_keeps_model_labels():
     prompt = moa._construct_aggregator_prompt(
         "Base",
         [
-            ("xiaomi/mimo-v2-pro (self-draft)", "MiMo first pass"),
+            ("xiaomi/mimo-v2.5-pro (self-draft)", "MiMo first pass"),
             ("minimax/MiniMax-M2.7-highspeed", "MiniMax pass"),
         ],
     )
 
-    assert "[xiaomi/mimo-v2-pro (self-draft)]" in prompt
+    assert "[xiaomi/mimo-v2.5-pro (self-draft)]" in prompt
     assert "[minimax/MiniMax-M2.7-highspeed]" in prompt
     assert "MiMo first pass" in prompt
     assert "MiniMax pass" in prompt
@@ -121,8 +121,8 @@ async def test_moa_top_level_error_logs_single_traceback_on_aggregator_failure(m
 
 def test_check_moa_requirements_accepts_direct_provider_stack(monkeypatch):
     available = {
-        "xiaomi/mimo-v2-pro",
-        "nvidia/nemotron-3-super-120b-a12b:free",
+        "xiaomi/mimo-v2.5-pro",
+        "nvidia/nemotron-3-super-120b-a12b",
     }
 
     monkeypatch.setattr(
@@ -155,24 +155,48 @@ def test_get_moa_configuration_reads_configured_route_overrides(monkeypatch):
     assert config["aggregator_model"] == "xiaomi/mimo-v2-flash"
 
 
-def test_legacy_paid_moa_config_upgrades_to_free_defaults(monkeypatch):
+@pytest.mark.parametrize(
+    "reference_models",
+    [
+        [
+            {"provider": "minimax", "model": "MiniMax-M2.7-highspeed"},
+            {"provider": "deepseek", "model": "deepseek-reasoner"},
+        ],
+        [
+            {"provider": "openrouter", "model": "nvidia/nemotron-3-super-120b-a12b:free"},
+            {"provider": "openrouter", "model": "google/gemma-4-31b-it:free"},
+        ],
+    ],
+)
+def test_legacy_moa_reference_config_upgrades_to_current_defaults(monkeypatch, reference_models):
     monkeypatch.setattr(
         moa,
         "_load_moa_task_config",
         lambda: {
-            "reference_models": [
-                {"provider": "minimax", "model": "MiniMax-M2.7-highspeed"},
-                {"provider": "deepseek", "model": "deepseek-reasoner"},
-            ],
+            "reference_models": reference_models,
         },
     )
 
     config = moa.get_moa_configuration()
 
     assert config["reference_models"] == [
-        "nvidia/nemotron-3-super-120b-a12b:free",
-        "google/gemma-4-31b-it:free",
+        "nvidia/nemotron-3-super-120b-a12b",
+        "deepseek/deepseek-v4-flash",
     ]
+
+
+def test_legacy_moa_aggregator_config_upgrades_to_current_default(monkeypatch):
+    monkeypatch.setattr(
+        moa,
+        "_load_moa_task_config",
+        lambda: {
+            "aggregator_model": {"provider": "xiaomi", "model": "mimo-v2-pro"},
+        },
+    )
+
+    config = moa.get_moa_configuration()
+
+    assert config["aggregator_model"] == "xiaomi/mimo-v2.5-pro"
 
 
 def test_forensic_analysis_placeholder_detector_flags_template_echo():
@@ -242,7 +266,7 @@ async def test_moa_forensic_analysis_retries_invalid_reply_once(monkeypatch):
     monkeypatch.setattr(moa, "extract_content_or_reasoning", lambda response: response)
 
     parsed, metrics = await moa._run_moa_forensic_analysis(
-        {"provider": "xiaomi", "model": "mimo-v2-pro"},
+        {"provider": "xiaomi", "model": "mimo-v2.5-pro"},
         "compare compounds",
         {"minimax/MiniMax-M2.7-highspeed": "AKG"},
         "Final answer: AKG",
@@ -276,7 +300,7 @@ async def test_moa_forensic_analysis_retries_empty_schema_once(monkeypatch):
     monkeypatch.setattr(moa, "extract_content_or_reasoning", lambda response: response)
 
     parsed, metrics = await moa._run_moa_forensic_analysis(
-        {"provider": "xiaomi", "model": "mimo-v2-pro"},
+        {"provider": "xiaomi", "model": "mimo-v2.5-pro"},
         "compare compounds",
         {"minimax/MiniMax-M2.7-highspeed": "B"},
         "Final answer: B",
@@ -294,7 +318,7 @@ async def test_moa_returns_full_reference_forensics(monkeypatch):
         "_run_reference_model_detailed",
         AsyncMock(side_effect=[
             {
-                "model": "xiaomi/mimo-v2-pro (self-draft)",
+                "model": "xiaomi/mimo-v2.5-pro (self-draft)",
                 "provider": "xiaomi",
                 "success": True,
                 "content": "MiMo self-draft says crypto has the clearest asymmetric upside.",
@@ -354,7 +378,7 @@ async def test_moa_returns_full_reference_forensics(monkeypatch):
                 },
             },
             {
-                "model": "xiaomi/mimo-v2-pro",
+                "model": "xiaomi/mimo-v2.5-pro",
                 "provider": "xiaomi",
                 "success": True,
                 "latency_seconds": 0.8,
@@ -374,23 +398,23 @@ async def test_moa_returns_full_reference_forensics(monkeypatch):
 
     assert result["success"] is True
     assert result["models_used"]["reference_models"] == [
-        "xiaomi/mimo-v2-pro (self-draft)",
+        "xiaomi/mimo-v2.5-pro (self-draft)",
         "minimax/MiniMax-M2.7-highspeed",
     ]
     assert result["failed_models"] == ["deepseek/deepseek-reasoner"]
     assert result["failed_model_errors"] == {"deepseek/deepseek-reasoner": "deepseek failed"}
     assert result["reference_previews"] == {
-        "xiaomi/mimo-v2-pro (self-draft)": "MiMo self-draft says crypto has the clearest asymmetric upside.",
+        "xiaomi/mimo-v2.5-pro (self-draft)": "MiMo self-draft says crypto has the clearest asymmetric upside.",
         "minimax/MiniMax-M2.7-highspeed": "MiniMax says choose crypto because momentum is higher right now."
     }
     assert result["reference_outputs"] == {
-        "xiaomi/mimo-v2-pro (self-draft)": "MiMo self-draft says crypto has the clearest asymmetric upside.",
+        "xiaomi/mimo-v2.5-pro (self-draft)": "MiMo self-draft says crypto has the clearest asymmetric upside.",
         "minimax/MiniMax-M2.7-highspeed": "MiniMax says choose crypto because momentum is higher right now."
     }
-    assert result["per_model_metrics"]["reference_models"]["xiaomi/mimo-v2-pro (self-draft)"]["provider"] == "xiaomi"
+    assert result["per_model_metrics"]["reference_models"]["xiaomi/mimo-v2.5-pro (self-draft)"]["provider"] == "xiaomi"
     assert result["per_model_metrics"]["reference_models"]["minimax/MiniMax-M2.7-highspeed"]["attempts"] == 1
     assert result["per_model_metrics"]["reference_models"]["deepseek/deepseek-reasoner"]["error"] == "deepseek failed"
-    assert result["per_model_metrics"]["aggregator"]["model"] == "xiaomi/mimo-v2-pro"
+    assert result["per_model_metrics"]["aggregator"]["model"] == "xiaomi/mimo-v2.5-pro"
     assert result["per_model_metrics"]["forensic_analysis"]["success"] is True
     assert result["decision_trace"]["final_candidates"] == ["crypto"]
     assert result["aggregator_influence_log"]["kept_from_models"] == {
@@ -405,7 +429,7 @@ async def test_moa_v2_requires_successful_external_reference(monkeypatch):
         "_run_reference_model_detailed",
         AsyncMock(side_effect=[
             {
-                "model": "xiaomi/mimo-v2-pro (self-draft)",
+                "model": "xiaomi/mimo-v2.5-pro (self-draft)",
                 "provider": "xiaomi",
                 "success": True,
                 "content": "MiMo self-draft",
@@ -458,7 +482,7 @@ async def test_moa_v2_requires_successful_external_reference(monkeypatch):
     assert result["success"] is False
     assert "Insufficient successful external reference models" in result["error"]
     assert result["reference_outputs"] == {
-        "xiaomi/mimo-v2-pro (self-draft)": "MiMo self-draft"
+        "xiaomi/mimo-v2.5-pro (self-draft)": "MiMo self-draft"
     }
 
 
@@ -469,7 +493,7 @@ async def test_moa_skips_extra_forensic_llm_call_by_default(monkeypatch):
         "_run_reference_model_detailed",
         AsyncMock(side_effect=[
             {
-                "model": "xiaomi/mimo-v2-pro (self-draft)",
+                "model": "xiaomi/mimo-v2.5-pro (self-draft)",
                 "provider": "xiaomi",
                 "success": True,
                 "content": "MiMo self-draft says buy index funds.",

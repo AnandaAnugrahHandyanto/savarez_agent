@@ -156,6 +156,10 @@ class TestXiaomiModelCatalog:
                 "api": "https://api.xiaomimimo.com/v1",
                 "env": ["XIAOMI_API_KEY"],
                 "models": {
+                    "mimo-v2.5-pro": {
+                        "limit": {"context": 1000000},
+                        "tool_call": True,
+                    },
                     "mimo-v2-pro": {
                         "limit": {"context": 1000000},
                         "tool_call": True,
@@ -174,6 +178,7 @@ class TestXiaomiModelCatalog:
         monkeypatch.setattr(md, "fetch_models_dev", lambda: fake_data)
 
         result = md.list_agentic_models("xiaomi")
+        assert "mimo-v2.5-pro" in result
         assert "mimo-v2-pro" in result
         assert "mimo-v2-flash" in result
 
@@ -191,19 +196,19 @@ class TestXiaomiNormalization:
         assert _VENDOR_PREFIXES.get("mimo") == "xiaomi"
 
     def test_matching_prefix_strip(self):
-        """xiaomi/mimo-v2-pro should normalize to mimo-v2-pro for direct API."""
+        """xiaomi/mimo-v2.5-pro should normalize to mimo-v2.5-pro for direct API."""
         from hermes_cli.model_normalize import _MATCHING_PREFIX_STRIP_PROVIDERS
         assert "xiaomi" in _MATCHING_PREFIX_STRIP_PROVIDERS
 
     def test_normalize_strips_provider_prefix(self):
         from hermes_cli.model_normalize import normalize_model_for_provider
-        result = normalize_model_for_provider("xiaomi/mimo-v2-pro", "xiaomi")
-        assert result == "mimo-v2-pro"
+        result = normalize_model_for_provider("xiaomi/mimo-v2.5-pro", "xiaomi")
+        assert result == "mimo-v2.5-pro"
 
     def test_normalize_bare_name_unchanged(self):
         from hermes_cli.model_normalize import normalize_model_for_provider
-        result = normalize_model_for_provider("mimo-v2-pro", "xiaomi")
-        assert result == "mimo-v2-pro"
+        result = normalize_model_for_provider("mimo-v2.5-pro", "xiaomi")
+        assert result == "mimo-v2.5-pro"
 
 
 # =============================================================================
