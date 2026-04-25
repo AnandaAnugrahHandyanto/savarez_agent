@@ -952,17 +952,22 @@ def run_doctor(args):
             check_warn("Node.js not found", "(optional, needed for browser tools)")
     
     # npm audit for all Node.js packages.
-    # The WhatsApp bridge moved into the ``gateway`` package in #15336 so
-    # pip/Nix installs ship the files; resolve from the package __file__
-    # rather than ``PROJECT_ROOT`` so doctor finds it under both source
-    # checkouts and installed wheels.
+    # The WhatsApp bridge is audited at its writable *runtime* location
+    # (``~/.hermes/whatsapp-bridge/``) because that's where ``npm
+    # install`` actually runs — the site-packages template location
+    # ships the JS sources but never has ``node_modules`` to audit
+    # (#15336, #15460 follow-up).  Fall back to source-tree lookups
+    # only if the import fails (dev checkout without an installed pkg).
     if _safe_which("npm"):
         try:
-            import gateway as _gateway_pkg
-            _whatsapp_bridge_dir = (
-                Path(_gateway_pkg.__file__).resolve().parent / "whatsapp_bridge"
-            )
-        except Exception:
+            from gateway.platforms.whatsapp import _resolve_runtime_bridge_dir
+            _whatsapp_bridge_dir = _resolve_runtime_bridge_dir()
+        except (ImportError, AttributeError):
+            # Dev checkout without an installed gateway package: fall
+            # back to the legacy in-tree path so the dev loop still
+            # sees the bridge.  Narrow the exception set so a genuine
+            # bug inside the gateway module surfaces loudly rather than
+            # being swallowed as "no bridge found".
             _whatsapp_bridge_dir = PROJECT_ROOT / "gateway" / "whatsapp_bridge"
         npm_dirs = [
             (PROJECT_ROOT, "Browser tools (agent-browser)"),

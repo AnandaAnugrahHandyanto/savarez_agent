@@ -23,6 +23,7 @@ These tests pin two invariants:
    without updating callers, this test fails before the next release
    ships.
 """
+import os
 from pathlib import Path
 
 
@@ -135,3 +136,157 @@ def test_bridge_init_marker_present():
         f"setuptools package and package-data is skipped on some "
         f"setuptools versions (#15336)"
     )
+
+
+# ---------------------------------------------------------------------------
+# Runtime-vs-template separation (#15460 follow-up)
+#
+# The template location lives in site-packages (read-only on Nix / system
+# pip installs).  ``npm install`` has to run in a writable location, so
+# the adapter materialises the JS files into ``HERMES_HOME/whatsapp-bridge/``
+# on first start.  These tests pin that separation so a future refactor
+# can't silently point npm back at site-packages.
+# ---------------------------------------------------------------------------
+
+
+def test_runtime_bridge_dir_lives_under_hermes_home(tmp_path, monkeypatch):
+    """The writable runtime dir must resolve under ``HERMES_HOME`` —
+    never site-packages.  Honouring ``HERMES_HOME`` means profile-
+    isolated installs and Docker volumes work without extra wiring."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    from gateway.platforms.whatsapp import _resolve_runtime_bridge_dir
+
+    runtime_dir = _resolve_runtime_bridge_dir()
+    assert runtime_dir == tmp_path / "hermes" / "whatsapp-bridge"
+
+
+def test_ensure_runtime_bridge_files_copies_template(tmp_path, monkeypatch):
+    """First-boot flow: runtime dir is empty, template has the JS
+    sources; the helper must create the runtime dir and copy the
+    expected files.  ``node_modules`` and the Python ``__init__.py``
+    marker must be skipped — npm manages the former, the latter is
+    Python-internal."""
+    from gateway.platforms.whatsapp import (
+        _BRIDGE_TEMPLATE_FILES,
+        _ensure_runtime_bridge_files,
+    )
+
+    template_dir = tmp_path / "template"
+    template_dir.mkdir()
+    for fname in _BRIDGE_TEMPLATE_FILES:
+        (template_dir / fname).write_text(f"stub-{fname}")
+    (template_dir / "__init__.py").write_text("# python marker")
+    (template_dir / "node_modules").mkdir()
+    (template_dir / "node_modules" / "pretend").write_text("should not copy")
+
+    runtime_dir = tmp_path / "runtime"
+    _ensure_runtime_bridge_files(template_dir, runtime_dir)
+
+    for fname in _BRIDGE_TEMPLATE_FILES:
+        assert (runtime_dir / fname).exists(), f"missing {fname} in runtime"
+    assert not (runtime_dir / "__init__.py").exists(), (
+        "Python package marker leaked into runtime — the runtime dir "
+        "is a pure Node app, not a Python package"
+    )
+    assert not (runtime_dir / "node_modules").exists(), (
+        "node_modules was copied from template; npm should manage "
+        "this at the runtime location"
+    )
+
+
+def test_ensure_runtime_bridge_files_chmods_writable(tmp_path):
+    """Template files may ship at mode 0o444 (read-only on Nix store).
+    The runtime copy must be writable (0o644) so ``npm install`` can
+    overwrite ``package-lock.json`` when resolving dependencies."""
+    from gateway.platforms.whatsapp import _ensure_runtime_bridge_files
+
+    template_dir = tmp_path / "template"
+    template_dir.mkdir()
+    src = template_dir / "package.json"
+    src.write_text("{}")
+    os.chmod(src, 0o444)
+
+    runtime_dir = tmp_path / "runtime"
+    _ensure_runtime_bridge_files(template_dir, runtime_dir)
+
+    dst = runtime_dir / "package.json"
+    assert dst.exists()
+    mode = dst.stat().st_mode & 0o777
+    assert mode & 0o200, (
+        f"runtime bridge file {dst} mode {oct(mode)} is not writable — "
+        f"npm install will fail with EROFS / EACCES"
+    )
+
+
+def test_ensure_runtime_bridge_files_is_mtime_aware(tmp_path, monkeypatch):
+    """Idempotent re-runs must NOT re-copy when the runtime copy is
+    already up-to-date — cheap start-up cost.  Only stale runtime
+    files (template newer than runtime) get refreshed."""
+    from gateway.platforms.whatsapp import _ensure_runtime_bridge_files
+
+    template_dir = tmp_path / "template"
+    template_dir.mkdir()
+    src = template_dir / "bridge.js"
+    src.write_text("v1")
+
+    runtime_dir = tmp_path / "runtime"
+    _ensure_runtime_bridge_files(template_dir, runtime_dir)
+
+    # Snapshot mtime of the runtime copy and re-run with the template
+    # unchanged — runtime file should NOT be re-written.
+    runtime_file = runtime_dir / "bridge.js"
+    first_mtime = runtime_file.stat().st_mtime_ns
+
+    _ensure_runtime_bridge_files(template_dir, runtime_dir)
+    second_mtime = runtime_file.stat().st_mtime_ns
+    assert second_mtime == first_mtime, (
+        "runtime bridge file was re-copied despite template being "
+        "unchanged — should be a no-op"
+    )
+
+    # Now bump the template mtime to simulate a Hermes upgrade
+    # shipping a newer bridge.js.  The runtime copy must refresh.
+    import time as _time
+    future_mtime_ns = first_mtime + 1_000_000_000  # 1s in the future
+    os.utime(src, ns=(future_mtime_ns, future_mtime_ns))
+    _ensure_runtime_bridge_files(template_dir, runtime_dir)
+    third_mtime = runtime_file.stat().st_mtime_ns
+    assert third_mtime != first_mtime, (
+        "template was updated but runtime file stayed stale — "
+        "Hermes upgrades won't propagate bridge fixes to users"
+    )
+
+
+def test_ensure_runtime_bridge_files_handles_missing_template(tmp_path):
+    """Development checkouts that never ran ``pip install -e .`` may
+    have no template dir at all.  The helper must no-op cleanly in
+    that case — the caller is responsible for handling the
+    missing-bridge user-facing error."""
+    from gateway.platforms.whatsapp import _ensure_runtime_bridge_files
+
+    template_dir = tmp_path / "does-not-exist"
+    runtime_dir = tmp_path / "runtime"
+
+    # Must not raise.
+    _ensure_runtime_bridge_files(template_dir, runtime_dir)
+    # Must not fabricate an empty runtime dir either — nothing to put
+    # in it would just confuse callers.
+    assert not runtime_dir.exists()
+
+
+def test_adapter_default_bridge_script_points_at_runtime(tmp_path, monkeypatch):
+    """End-to-end: a freshly-constructed ``WhatsAppAdapter`` must have
+    its ``_bridge_script`` default pointing at the HERMES_HOME runtime
+    location, never at site-packages.  Regression guard against the
+    bug Copilot caught on #15460 (npm install hitting read-only fs).
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+    from gateway.config import PlatformConfig
+    from gateway.platforms.whatsapp import WhatsAppAdapter
+
+    config = PlatformConfig(enabled=True, extra={})
+    adapter = WhatsAppAdapter(config)
+    assert Path(adapter._bridge_script).parent == tmp_path / "hermes" / "whatsapp-bridge"
+
+
