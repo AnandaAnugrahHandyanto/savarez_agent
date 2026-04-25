@@ -99,12 +99,13 @@ def _get_backend() -> str:
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("tavily", _has_env("TAVILY_API_KEY")),
         ("exa", _has_env("EXA_API_KEY")),
+        ("ddgs", True),  # ddgs is always available (free, no API key)
     )
     for backend, available in backend_candidates:
         if available:
             return backend
 
-    return "firecrawl"  # default (backward compat)
+    return "ddgs"  # ultimate fallback (backward compat)
 
 
 def _is_backend_available(backend: str) -> bool:
@@ -117,6 +118,8 @@ def _is_backend_available(backend: str) -> bool:
         return check_firecrawl_api_key()
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
+    if backend == "ddgs":
+        return True  # ddgs is always available
     return False
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
@@ -896,6 +899,36 @@ def _get_exa_client():
 
 # ─── Exa Search & Extract Helpers ─────────────────────────────────────────────
 
+def _ddgs_search(query: str, limit: int = 5) -> dict:
+    """Search using DuckDuckGo (ddgs) and return results as a dict."""
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return {"error": "Interrupted", "success": False}
+
+    try:
+        from ddgs import DDGS
+    except ImportError:
+        return {"error": "ddgs package not installed", "success": False}
+
+    web_results = []
+    try:
+        with DDGS() as ddgs:
+            for i, r in enumerate(ddgs.text(query, max_results=limit)):
+                if i >= limit:
+                    break
+                web_results.append({
+                    "url": r.get("href", ""),
+                    "title": r.get("title", ""),
+                    "description": r.get("body", ""),
+                    "position": i + 1,
+                })
+    except Exception as e:
+        logger.warning("DuckDuckGo search failed: %s", e)
+        return {"error": str(e), "success": False}
+
+    return {"success": True, "data": {"web": web_results}}
+
+
 def _exa_search(query: str, limit: int = 10) -> dict:
     """Search using the Exa SDK and return results as a dict."""
     from tools.interrupt import is_interrupted
@@ -1111,6 +1144,16 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                 "include_images": False,
             })
             response_data = _normalize_tavily_search_results(raw)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
+        if backend == "ddgs":
+            logger.info("DuckDuckGo search: '%s' (limit: %d)", query, limit)
+            response_data = _ddgs_search(query, limit)
             debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
             result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
             debug_call_data["final_response_size"] = len(result_json)
