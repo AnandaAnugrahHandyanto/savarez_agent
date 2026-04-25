@@ -641,7 +641,7 @@ class QQAdapter(BasePlatformAdapter):
             elif t in ("C2C_MESSAGE_CREATE", "GROUP_AT_MESSAGE_CREATE",
                         "DIRECT_MESSAGE_CREATE", "GUILD_MESSAGE_CREATE",
                         "GUILD_AT_MESSAGE_CREATE"):
-                asyncio.create_task(self._on_message(t, d))
+                self._create_task(self._on_message(t, d))
             else:
                 logger.debug("[%s] Unhandled dispatch: %s", self.name, t)
             return
