@@ -293,6 +293,7 @@ const StatusRulePane = memo(function StatusRulePane({
         cols={composer.cols}
         cwdLabel={status.cwdLabel}
         model={ui.info?.model?.split('/').pop() ?? ''}
+        promptElapsedMs={status.promptElapsedMs}
         sessionStartedAt={status.sessionStartedAt}
         showCost={ui.showCost}
         status={ui.status}

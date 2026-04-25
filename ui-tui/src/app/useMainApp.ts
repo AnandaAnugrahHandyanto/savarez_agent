@@ -105,6 +105,8 @@ export function useMainApp(gw: GatewayClient) {
   const [voiceProcessing, setVoiceProcessing] = useState(false)
   const [sessionStartedAt, setSessionStartedAt] = useState(() => Date.now())
   const [turnStartedAt, setTurnStartedAt] = useState<null | number>(null)
+  const [lastTurnDurationMs, setLastTurnDurationMs] = useState(0)
+  const turnStartedRef = useRef<null | number>(null)
   const [goodVibesTick, setGoodVibesTick] = useState(0)
   const [bellOnComplete, setBellOnComplete] = useState(false)
 
@@ -307,8 +309,14 @@ export function useMainApp(gw: GatewayClient) {
 
   useEffect(() => {
     if (ui.busy) {
-      setTurnStartedAt(prev => prev ?? Date.now())
-    } else {
+      if (turnStartedRef.current == null) {
+        const started = Date.now()
+        turnStartedRef.current = started
+        setTurnStartedAt(started)
+      }
+    } else if (turnStartedRef.current != null) {
+      setLastTurnDurationMs(Date.now() - turnStartedRef.current)
+      turnStartedRef.current = null
       setTurnStartedAt(null)
     }
   }, [ui.busy])
@@ -717,6 +725,7 @@ export function useMainApp(gw: GatewayClient) {
     () => ({
       cwdLabel: fmtCwdBranch(cwd, gitBranch),
       goodVibesTick,
+      promptElapsedMs: turnStartedAt ? null : lastTurnDurationMs,
       sessionStartedAt: ui.sid ? sessionStartedAt : null,
       showStickyPrompt: !!stickyPrompt,
       statusColor: statusColorOf(ui.status, ui.theme.color),
@@ -730,6 +739,7 @@ export function useMainApp(gw: GatewayClient) {
       cwd,
       gitBranch,
       goodVibesTick,
+      lastTurnDurationMs,
       sessionStartedAt,
       stickyPrompt,
       turnStartedAt,

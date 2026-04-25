@@ -64,6 +64,71 @@ function ctxBar(pct: number | undefined, w = 10) {
   return '█'.repeat(filled) + '░'.repeat(w - filled)
 }
 
+export function formatPromptElapsed(ms: number | null | undefined, live = false) {
+  if (!ms || ms < 0) {
+    return live ? '⏱ 0s' : '⏲ 0s'
+  }
+
+  return `${live ? '⏱' : '⏲'} ${fmtDuration(ms)}`
+}
+
+export function formatSessionElapsed(ms: number | null | undefined) {
+  if (!ms || ms < 0) {
+    return '0m'
+  }
+
+  const totalSeconds = Math.floor(ms / 1000)
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`
+  }
+
+  return `${minutes}m`
+}
+
+export function buildAuroraStatusParts({
+  model,
+  promptElapsedMs,
+  promptElapsedLive = false,
+  sessionElapsedMs,
+  t,
+  usage
+}: {
+  model: string
+  promptElapsedLive?: boolean
+  promptElapsedMs?: null | number
+  sessionElapsedMs?: null | number
+  t: Theme
+  usage: Usage
+}): { color: string; text: string }[] {
+  const pct = usage.context_percent
+  const barColor = ctxBarColor(pct, t)
+  const parts = [{ color: t.color.label, text: `${t.brand.icon} ${t.brand.name}` }]
+
+  if (model) {
+    parts.push({ color: t.color.dim, text: ` │ ${model}` })
+  }
+
+  if (usage.context_max) {
+    parts.push({ color: t.color.dim, text: ` │ ctx ${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}` })
+    parts.push({ color: barColor, text: ` │ [${ctxBar(pct)}] ${pct != null ? `${pct}%` : ''}` })
+  } else if (usage.total > 0) {
+    parts.push({ color: t.color.dim, text: ` │ ${fmtK(usage.total)} tok` })
+  }
+
+  if (sessionElapsedMs != null) {
+    parts.push({ color: t.color.dim, text: ` │ ${formatSessionElapsed(sessionElapsedMs)}` })
+  }
+
+  if (promptElapsedMs != null) {
+    parts.push({ color: t.color.dim, text: ` │ ${formatPromptElapsed(promptElapsedMs, promptElapsedLive)}` })
+  }
+
+  return parts
+}
+
 function SpawnHud({ t }: { t: Theme }) {
   // Tight HUD that only appears when the session is actually fanning out.
   // Colour escalates to warn/error as depth or concurrency approaches the cap.
@@ -129,13 +194,33 @@ function SessionDuration({ startedAt }: { startedAt: number }) {
   const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000)
+
+    return () => clearInterval(id)
+  }, [])
+
+  return formatSessionElapsed(now - startedAt)
+}
+
+function PromptElapsed({ live, ms, startedAt }: { live: boolean; ms?: null | number; startedAt?: null | number }) {
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    if (!startedAt) {
+      return
+    }
+
     setNow(Date.now())
     const id = setInterval(() => setNow(Date.now()), 1000)
 
     return () => clearInterval(id)
   }, [startedAt])
 
-  return fmtDuration(now - startedAt)
+  if (startedAt) {
+    return formatPromptElapsed(now - startedAt, true)
+  }
+
+  return formatPromptElapsed(ms, live)
 }
 
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
@@ -167,27 +252,17 @@ export function StatusRule({
   cwdLabel,
   cols,
   busy,
-  status,
   statusColor,
   model,
   usage,
   bgCount,
+  promptElapsedMs,
   sessionStartedAt,
   showCost,
   turnStartedAt,
   voiceLabel,
   t
 }: StatusRuleProps) {
-  const pct = usage.context_percent
-  const barColor = ctxBarColor(pct, t)
-
-  const ctxLabel = usage.context_max
-    ? `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
-    : usage.total > 0
-      ? `${fmtK(usage.total)} tok`
-      : ''
-
-  const bar = usage.context_max ? ctxBar(pct) : ''
   const leftWidth = Math.max(12, cols - cwdLabel.length - 3)
 
   return (
@@ -195,23 +270,33 @@ export function StatusRule({
       <Box flexShrink={1} width={leftWidth}>
         <Text color={t.color.bronze} wrap="truncate-end">
           {'─ '}
-          {busy ? (
-            <FaceTicker color={statusColor} startedAt={turnStartedAt} />
-          ) : (
-            <Text color={statusColor}>{status}</Text>
-          )}
-          <Text color={t.color.dim}> │ {model}</Text>
-          {ctxLabel ? <Text color={t.color.dim}> │ {ctxLabel}</Text> : null}
-          {bar ? (
-            <Text color={t.color.dim}>
-              {' │ '}
-              <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pct != null ? `${pct}%` : ''}</Text>
+          {buildAuroraStatusParts({
+            model,
+            promptElapsedMs: turnStartedAt ? null : promptElapsedMs,
+            sessionElapsedMs: null,
+            t,
+            usage
+          }).map((part, idx) => (
+            <Text color={part.color} key={idx}>
+              {part.text}
             </Text>
-          ) : null}
+          ))}
           {sessionStartedAt ? (
             <Text color={t.color.dim}>
               {' │ '}
               <SessionDuration startedAt={sessionStartedAt} />
+            </Text>
+          ) : null}
+          {(turnStartedAt || promptElapsedMs != null) && (
+            <Text color={t.color.dim}>
+              {' │ '}
+              <PromptElapsed live={busy} ms={promptElapsedMs} startedAt={turnStartedAt} />
+            </Text>
+          )}
+          {busy ? (
+            <Text color={statusColor}>
+              {' │ '}
+              <FaceTicker color={statusColor} startedAt={turnStartedAt} />
             </Text>
           ) : null}
           <SpawnHud t={t} />
@@ -374,6 +459,7 @@ interface StatusRuleProps {
   cols: number
   cwdLabel: string
   model: string
+  promptElapsedMs?: null | number
   sessionStartedAt?: null | number
   showCost: boolean
   status: string

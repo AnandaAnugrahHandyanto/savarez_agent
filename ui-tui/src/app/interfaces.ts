@@ -323,6 +323,7 @@ export interface AppLayoutProgressProps {
 export interface AppLayoutStatusProps {
   cwdLabel: string
   goodVibesTick: number
+  promptElapsedMs: null | number
   sessionStartedAt: null | number
   showStickyPrompt: boolean
   statusColor: string
