@@ -3033,7 +3033,10 @@ class AIAgent:
         "preferences, or personal details worth remembering?\n"
         "2. Has the user expressed expectations about how you should behave, their work "
         "style, or ways they want you to operate?\n\n"
-        "If something stands out, save it using the memory tool. "
+        "IMPORTANT: Check the existing memory contents below BEFORE saving. "
+        "Do NOT re-save information already stored. Only save genuinely NEW information.\n\n"
+        "{existing_memory}\n\n"
+        "If something NEW stands out, save it using the memory tool. "
         "If nothing is worth saving, just say 'Nothing to save.' and stop."
     )
 
@@ -3057,6 +3060,9 @@ class AIAgent:
         "and error, or changing course due to experiential findings along the way, or did "
         "the user expect or desire a different method or outcome? If a relevant skill "
         "already exists, update it. Otherwise, create a new one if the approach is reusable.\n\n"
+        "IMPORTANT: Check the existing memory contents below BEFORE saving to memory. "
+        "Do NOT re-save information already stored. Only save genuinely NEW information.\n\n"
+        "{existing_memory}\n\n"
         "Only act if there's something genuinely worth saving. "
         "If nothing stands out, just say 'Nothing to save.' and stop."
     )
@@ -3139,6 +3145,22 @@ class AIAgent:
         """
         import threading
 
+        # Read current memory so review agent avoids duplicate saves
+        _existing_memory_text = ""
+        if review_memory and self._memory_store:
+            try:
+                _mem = self._memory_store.memory_entries or []
+                _usr = self._memory_store.user_entries or []
+                _parts = []
+                if _mem:
+                    _parts.append("EXISTING MEMORY:" + chr(10) + chr(10).join(f"- {e}" for e in _mem))
+                if _usr:
+                    _parts.append("EXISTING USER PROFILE:" + chr(10) + chr(10).join(f"- {e}" for e in _usr))
+                if _parts:
+                    _existing_memory_text = chr(10).join(_parts)
+            except Exception:
+                pass
+
         # Pick the right prompt based on which triggers fired
         if review_memory and review_skills:
             prompt = self._COMBINED_REVIEW_PROMPT
@@ -3146,6 +3168,11 @@ class AIAgent:
             prompt = self._MEMORY_REVIEW_PROMPT
         else:
             prompt = self._SKILL_REVIEW_PROMPT
+
+        # Inject existing memory into prompt to prevent re-saving
+        if "{existing_memory}" in prompt:
+            _repl = _existing_memory_text if _existing_memory_text else "(No existing entries)"
+            prompt = prompt.replace("{existing_memory}", _repl)
 
         def _run_review():
             import contextlib
