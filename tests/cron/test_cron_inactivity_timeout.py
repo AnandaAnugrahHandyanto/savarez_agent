@@ -177,6 +177,16 @@ class TestInactivityTimeout:
         monkeypatch.setenv("HERMES_CRON_TIMEOUT", "0")
         assert _get_cron_inactivity_limit() is None
 
+    def test_timeout_negative_means_unlimited(self, monkeypatch):
+        """Any non-positive value matches the pre-fix behaviour: unlimited."""
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "-30")
+        assert _get_cron_inactivity_limit() is None
+
+    def test_timeout_empty_uses_default(self, monkeypatch):
+        """Empty/whitespace HERMES_CRON_TIMEOUT falls back to the default."""
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "  ")
+        assert _get_cron_inactivity_limit() == 600.0
+
     def test_invalid_timeout_env_var_falls_back_to_default(self, monkeypatch, caplog):
         """Malformed HERMES_CRON_TIMEOUT falls back to the default timeout."""
         monkeypatch.setenv("HERMES_CRON_TIMEOUT", "abc")

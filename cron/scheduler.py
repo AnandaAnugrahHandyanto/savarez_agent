@@ -523,32 +523,25 @@ def _get_script_timeout() -> int:
 
 
 def _get_cron_inactivity_limit() -> Optional[float]:
-    """Resolve cron inactivity timeout from env with a safe default."""
-    env_value = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
-    if not env_value:
-        return _DEFAULT_CRON_INACTIVITY_TIMEOUT
+    """Resolve cron inactivity timeout from HERMES_CRON_TIMEOUT.
 
+    Returns ``None`` for unlimited (any non-positive value, matching the
+    pre-fix behaviour), the parsed seconds for a positive value, or the
+    default when the env var is missing or unparseable.
+    """
+    raw = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
+    if not raw:
+        return _DEFAULT_CRON_INACTIVITY_TIMEOUT
     try:
-        timeout = float(env_value)
-    except Exception:
+        timeout = float(raw)
+    except ValueError:
         logger.warning(
             "Invalid HERMES_CRON_TIMEOUT=%r; using default %ss",
-            env_value,
+            raw,
             int(_DEFAULT_CRON_INACTIVITY_TIMEOUT),
         )
         return _DEFAULT_CRON_INACTIVITY_TIMEOUT
-
-    if timeout > 0:
-        return timeout
-    if timeout == 0:
-        return None
-
-    logger.warning(
-        "Invalid HERMES_CRON_TIMEOUT=%r; using default %ss",
-        env_value,
-        int(_DEFAULT_CRON_INACTIVITY_TIMEOUT),
-    )
-    return _DEFAULT_CRON_INACTIVITY_TIMEOUT
+    return timeout if timeout > 0 else None
 
 
 def _run_job_script(script_path: str) -> tuple[bool, str]:
