@@ -30,6 +30,7 @@ from hermes_cli.profiles import (
     import_profile,
     generate_bash_completion,
     generate_zsh_completion,
+    create_wrapper_script,
     _get_profiles_root,
     _get_default_hermes_home,
 )
@@ -905,3 +906,46 @@ class TestEdgeCases:
             delete_profile("coder", yes=True)
 
         assert get_active_profile() == "default"
+
+
+# ===================================================================
+# TestWrapperScripts
+# ===================================================================
+
+class TestWrapperScripts:
+    """Tests for profile wrapper script generation."""
+
+    def test_wrapper_includes_hermes_cli_name_env_var(self, profile_env):
+        """Wrapper script should set HERMES_CLI_NAME from $0."""
+        tmp_path = profile_env
+        profile_dir = create_profile("test-profile", no_alias=True)
+
+        # Create a wrapper for this profile
+        wrapper_path = create_wrapper_script("test-profile")
+        assert wrapper_path is not None
+
+        # Read the wrapper content
+        wrapper_content = wrapper_path.read_text()
+
+        # Verify it includes HERMES_CLI_NAME environment variable
+        assert "HERMES_CLI_NAME" in wrapper_content
+        # Verify it uses basename of $0 to derive the name
+        assert 'basename "$0"' in wrapper_content
+
+    def test_wrapper_content_basic_structure(self, profile_env):
+        """Wrapper script should have shebang and exec hermes."""
+        tmp_path = profile_env
+        profile_dir = create_profile("basic-profile", no_alias=True)
+
+        wrapper_path = create_wrapper_script("basic-profile")
+        assert wrapper_path is not None
+
+        wrapper_content = wrapper_path.read_text()
+
+        # Should be a shell script
+        assert wrapper_content.startswith("#!/bin/sh")
+        # Should exec hermes with the profile
+        assert "exec hermes" in wrapper_content
+        assert "-p" in wrapper_content
+
+

@@ -6727,7 +6727,10 @@ def cmd_profile(args):
             if wrapper_path:
                 # If custom name, write the profile name into the wrapper
                 if custom_name:
-                    wrapper_path.write_text(f'#!/bin/sh\nexec hermes -p {name} "$@"\n')
+                    wrapper_path.write_text(
+                        f'#!/bin/sh\n'
+                        f'HERMES_CLI_NAME="$(basename \\"$0\\")" exec hermes -p {name} \\"$@\\"\n'
+                    )
                 print(f"✓ Alias created: {wrapper_path}")
                 if not _is_wrapper_dir_in_path():
                     print(f"⚠ {_get_wrapper_dir()} is not in your PATH.")
@@ -6845,44 +6848,56 @@ def cmd_logs(args):
 
 def main():
     """Main entry point for hermes CLI."""
-    parser = argparse.ArgumentParser(
-        prog="hermes",
-        description="Hermes Agent - AI assistant with tool-calling capabilities",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+    def _cli_prog() -> str:
+        """Get the CLI program name for help display.
+
+        Respects HERMES_CLI_NAME env var (set by profile wrapper scripts),
+        falls back to sys.argv[0] basename, or 'hermes' as ultimate default.
+        """
+        return os.environ.get("HERMES_CLI_NAME") or Path(sys.argv[0]).name or "hermes"
+
+    def _examples_epilog(prog: str) -> str:
+        """Generate help examples with dynamic program name."""
+        return f"""
 Examples:
-    hermes                        Start interactive chat
-    hermes chat -q "Hello"        Single query mode
-    hermes -c                     Resume the most recent session
-    hermes -c "my project"        Resume a session by name (latest in lineage)
-    hermes --resume <session_id>  Resume a specific session by ID
-    hermes setup                  Run setup wizard
-    hermes logout                 Clear stored authentication
-    hermes auth add <provider>    Add a pooled credential
-    hermes auth list              List pooled credentials
-    hermes auth remove <p> <t>    Remove pooled credential by index, id, or label
-    hermes auth reset <provider>  Clear exhaustion status for a provider
-    hermes model                  Select default model
-    hermes config                 View configuration
-    hermes config edit            Edit config in $EDITOR
-    hermes config set model gpt-4 Set a config value
-    hermes gateway                Run messaging gateway
-    hermes -s hermes-agent-dev,github-auth
-    hermes -w                     Start in isolated git worktree
-    hermes gateway install        Install gateway background service
-    hermes sessions list          List past sessions
-    hermes sessions browse        Interactive session picker
-    hermes sessions rename ID T   Rename/title a session
-    hermes logs                   View agent.log (last 50 lines)
-    hermes logs -f                Follow agent.log in real time
-    hermes logs errors            View errors.log
-    hermes logs --since 1h        Lines from the last hour
-    hermes debug share             Upload debug report for support
-    hermes update                 Update to latest version
+    {prog}                        Start interactive chat
+    {prog} chat -q "Hello"        Single query mode
+    {prog} -c                     Resume the most recent session
+    {prog} -c "my project"        Resume a session by name (latest in lineage)
+    {prog} --resume <session_id>  Resume a specific session by ID
+    {prog} setup                  Run setup wizard
+    {prog} logout                 Clear stored authentication
+    {prog} auth add <provider>    Add a pooled credential
+    {prog} auth list              List pooled credentials
+    {prog} auth remove <p> <t>    Remove pooled credential by index, id, or label
+    {prog} auth reset <provider>  Clear exhaustion status for a provider
+    {prog} model                  Select default model
+    {prog} config                 View configuration
+    {prog} config edit            Edit config in $EDITOR
+    {prog} config set model gpt-4 Set a config value
+    {prog} gateway                Run messaging gateway
+    {prog} -s hermes-agent-dev,github-auth
+    {prog} -w                     Start in isolated git worktree
+    {prog} gateway install        Install gateway background service
+    {prog} sessions list          List past sessions
+    {prog} sessions browse        Interactive session picker
+    {prog} sessions rename ID T   Rename/title a session
+    {prog} logs                   View agent.log (last 50 lines)
+    {prog} logs -f                Follow agent.log in real time
+    {prog} logs errors            View errors.log
+    {prog} logs --since 1h        Lines from the last hour
+    {prog} debug share             Upload debug report for support
+    {prog} update                 Update to latest version
 
 For more help on a command:
-    hermes <command> --help
-""",
+    {prog} <command> --help
+"""
+
+    parser = argparse.ArgumentParser(
+        prog=_cli_prog(),
+        description="Hermes Agent - AI assistant with tool-calling capabilities",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=_examples_epilog(_cli_prog()),
     )
 
     parser.add_argument(
