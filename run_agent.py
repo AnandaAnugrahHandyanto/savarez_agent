@@ -5123,6 +5123,17 @@ class AIAgent:
             return primary_client
         with self._openai_client_lock():
             request_kwargs = dict(self._client_kwargs)
+        # Per-request OpenAI-wire clients (used by both the non-streaming
+        # chat-completions path and the streaming chat-completions path
+        # in `_interruptible_api_call`) should not run the SDK's built-in
+        # retry loop: the agent's outer loop owns retries with credential
+        # rotation, provider fallback, and backoff that the SDK can't
+        # see.  Leaving SDK retries on (default 2) compounds with our
+        # outer retries and lets a single hung provider request stretch
+        # to ~3× the per-call timeout before our stale detector reports
+        # it (#dailydev-stale).  Shared/primary clients and Anthropic /
+        # Bedrock paths are unaffected (they don't go through here).
+        request_kwargs["max_retries"] = 0
         return self._create_openai_client(request_kwargs, reason=reason, shared=False)
 
     def _close_request_openai_client(self, client: Any, *, reason: str) -> None:
@@ -5657,6 +5668,16 @@ class AIAgent:
         result = {"response": None, "error": None}
         request_client_holder = {"client": None}
 
+        # ── Stale-call timeout (mirrors streaming stale detector) ────────
+        # Non-streaming calls return nothing until the full response is
+        # ready.  Without this, a hung provider can block for the full
+        # httpx timeout (default 1800s) with zero feedback.  The stale
+        # detector kills the connection early so the main retry loop can
+        # apply richer recovery (credential rotation, provider fallback).
+        _stale_timeout = self._compute_non_stream_stale_timeout(
+            api_kwargs.get("messages", [])
+        )
+
         def _call():
             try:
                 if self.api_mode == "codex_responses":
@@ -5693,23 +5714,23 @@ class AIAgent:
                     result["response"] = normalize_converse_response(raw_response)
                 else:
                     request_client_holder["client"] = self._create_request_openai_client(reason="chat_completion_request")
-                    result["response"] = request_client_holder["client"].chat.completions.create(**api_kwargs)
+                    # Push the read-timeout down to the SDK as a per-call
+                    # kwarg so a hung provider fails at exactly
+                    # _stale_timeout regardless of GIL/thread scheduling.
+                    # SDK-internal retries are disabled at client
+                    # construction (max_retries=0) so this single timeout
+                    # is the true upper bound; the agent's outer loop
+                    # owns retry with richer recovery (credential
+                    # rotation, provider fallback, backoff).
+                    _call_kwargs = dict(api_kwargs)
+                    _call_kwargs.setdefault("timeout", _stale_timeout)
+                    result["response"] = request_client_holder["client"].chat.completions.create(**_call_kwargs)
             except Exception as e:
                 result["error"] = e
             finally:
                 request_client = request_client_holder.get("client")
                 if request_client is not None:
                     self._close_request_openai_client(request_client, reason="request_complete")
-
-        # ── Stale-call timeout (mirrors streaming stale detector) ────────
-        # Non-streaming calls return nothing until the full response is
-        # ready.  Without this, a hung provider can block for the full
-        # httpx timeout (default 1800s) with zero feedback.  The stale
-        # detector kills the connection early so the main retry loop can
-        # apply richer recovery (credential rotation, provider fallback).
-        _stale_timeout = self._compute_non_stream_stale_timeout(
-            api_kwargs.get("messages", [])
-        )
 
         _call_start = time.time()
         self._touch_activity("waiting for non-streaming API response")
