@@ -321,3 +321,159 @@ class TestCodeExecutionBlocked:
     def test_watch_patterns_blocked(self):
         from tools.code_execution_tool import _TERMINAL_BLOCKED_PARAMS
         assert "watch_patterns" in _TERMINAL_BLOCKED_PARAMS
+
+
+# =========================================================================
+# Suppress-after-exit (anti-spam fix)
+# =========================================================================
+
+class TestSuppressAfterExit:
+    def test_match_dropped_once_session_exited(self, registry):
+        """watch_patterns notifications stop the moment session.exited is set."""
+        session = _make_session(watch_patterns=["ERROR"])
+        # Mark the process as exited BEFORE the late chunk arrives.
+        session.exited = True
+        registry._check_watch_patterns(session, "ERROR: late buffer\n")
+        assert registry.completion_queue.empty()
+        assert session._watch_hits == 0
+
+    def test_match_still_delivered_while_session_running(self, registry):
+        """Sanity: while the process is still running, matches still deliver."""
+        session = _make_session(watch_patterns=["ERROR"])
+        session.exited = False
+        registry._check_watch_patterns(session, "ERROR: oh no\n")
+        assert not registry.completion_queue.empty()
+        evt = registry.completion_queue.get_nowait()
+        assert evt["type"] == "watch_match"
+
+
+# =========================================================================
+# Mutual exclusion: notify_on_complete wins over watch_patterns
+# =========================================================================
+
+class TestMutualExclusion:
+    def test_resolver_drops_watch_when_notify_set(self):
+        """Both flags set → watch_patterns dropped with a note."""
+        from tools.terminal_tool import _resolve_notification_flag_conflict
+
+        resolved, note = _resolve_notification_flag_conflict(
+            notify_on_complete=True,
+            watch_patterns=["ERROR", "DONE"],
+            background=True,
+        )
+        assert resolved is None
+        assert "notify_on_complete" in note
+        assert "duplicate notifications" in note
+
+    def test_resolver_keeps_watch_when_notify_off(self):
+        """notify_on_complete=False → watch_patterns kept intact."""
+        from tools.terminal_tool import _resolve_notification_flag_conflict
+
+        resolved, note = _resolve_notification_flag_conflict(
+            notify_on_complete=False,
+            watch_patterns=["ERROR"],
+            background=True,
+        )
+        assert resolved == ["ERROR"]
+        assert note == ""
+
+    def test_resolver_keeps_notify_when_no_watch(self):
+        """Only notify_on_complete set → no conflict."""
+        from tools.terminal_tool import _resolve_notification_flag_conflict
+
+        resolved, note = _resolve_notification_flag_conflict(
+            notify_on_complete=True,
+            watch_patterns=None,
+            background=True,
+        )
+        assert resolved is None
+        assert note == ""
+
+    def test_resolver_inert_when_not_background(self):
+        """Without background=True, the whole thing is a no-op."""
+        from tools.terminal_tool import _resolve_notification_flag_conflict
+
+        resolved, note = _resolve_notification_flag_conflict(
+            notify_on_complete=True,
+            watch_patterns=["ERROR"],
+            background=False,
+        )
+        assert resolved == ["ERROR"]
+        assert note == ""
+
+
+# =========================================================================
+# Global circuit breaker (cross-session overflow blocker)
+# =========================================================================
+
+class TestGlobalCircuitBreaker:
+    def test_trips_after_global_threshold(self, registry):
+        """When >N matches fire across sessions in the window, breaker trips."""
+        from tools.process_registry import (
+            WATCH_GLOBAL_MAX_PER_WINDOW,
+            WATCH_GLOBAL_COOLDOWN_SECONDS,
+        )
+        sessions = [
+            _make_session(sid=f"proc_s{i}", watch_patterns=["E"])
+            for i in range(WATCH_GLOBAL_MAX_PER_WINDOW + 3)
+        ]
+        # Each session fires exactly one match — individually well under the
+        # per-session cap. But collectively they should trip the global cap.
+        for s in sessions:
+            registry._check_watch_patterns(s, "E hit\n")
+
+        # Drain the queue and count event types.
+        watch_matches = 0
+        overflow_tripped = 0
+        while not registry.completion_queue.empty():
+            evt = registry.completion_queue.get_nowait()
+            if evt.get("type") == "watch_match":
+                watch_matches += 1
+            elif evt.get("type") == "watch_overflow_tripped":
+                overflow_tripped += 1
+        assert watch_matches == WATCH_GLOBAL_MAX_PER_WINDOW
+        assert overflow_tripped == 1
+        assert registry._global_watch_tripped_until > 0
+
+    def test_cooldown_suppresses_and_then_releases(self, registry):
+        """After trip, further events are suppressed; cooldown expiry emits release."""
+        from tools.process_registry import WATCH_GLOBAL_MAX_PER_WINDOW
+
+        # Fill the window to the cap exactly (no trip yet).
+        session = _make_session(watch_patterns=["E"])
+        for _ in range(WATCH_GLOBAL_MAX_PER_WINDOW):
+            registry._check_watch_patterns(session, "E hit\n")
+            # Reset the per-session window so we can keep pushing matches
+            # through the same session without hitting the per-session cap.
+            session._watch_window_hits = 0
+
+        # One more trips the global breaker.
+        registry._check_watch_patterns(session, "E hit\n")
+        session._watch_window_hits = 0
+        assert registry._global_watch_tripped_until > 0
+
+        # Further matches during cooldown are dropped and counted.
+        q_size_before = registry.completion_queue.qsize()
+        registry._check_watch_patterns(session, "E hit\n")
+        session._watch_window_hits = 0
+        registry._check_watch_patterns(session, "E hit\n")
+        session._watch_window_hits = 0
+        assert registry.completion_queue.qsize() == q_size_before  # no new events
+        assert registry._global_watch_suppressed_during_trip >= 2
+
+        # Simulate cooldown expiry by rewinding the trip timestamp.
+        registry._global_watch_tripped_until = time.time() - 1
+
+        # Next call should: (a) emit release summary, (b) admit the event.
+        registry._check_watch_patterns(session, "E hit\n")
+        released = False
+        admitted = False
+        while not registry.completion_queue.empty():
+            evt = registry.completion_queue.get_nowait()
+            if evt.get("type") == "watch_overflow_released":
+                released = True
+                assert evt["suppressed"] >= 2
+            elif evt.get("type") == "watch_match":
+                admitted = True
+        assert released
+        assert admitted

@@ -59,9 +59,14 @@ FINISHED_TTL_SECONDS = 1800     # Keep finished processes for 30 minutes
 MAX_PROCESSES = 64              # Max concurrent tracked processes (LRU pruning)
 
 # Watch pattern rate limiting
-WATCH_MAX_PER_WINDOW = 8        # Max notifications delivered per window
+WATCH_MAX_PER_WINDOW = 8        # Max notifications delivered per window (per session)
 WATCH_WINDOW_SECONDS = 10       # Rolling window length
 WATCH_OVERLOAD_KILL_SECONDS = 45  # Sustained overload duration before disabling watch
+
+# Global circuit breaker — catches the case where multiple sessions each stay
+# under their per-session cap but collectively flood the agent/user.
+WATCH_GLOBAL_MAX_PER_WINDOW = 15  # Max watch_match notifications across ALL sessions
+WATCH_GLOBAL_COOLDOWN_SECONDS = 30  # After a trip, suppress watch_match events for this long
 
 
 def format_uptime_short(seconds: int) -> str:
@@ -151,6 +156,15 @@ class ProcessRegistry:
         # via wait/poll/log.  Drain loops skip notifications for these.
         self._completion_consumed: set = set()
 
+        # Global watch-match circuit breaker — across all sessions.
+        # Prevents sibling processes from collectively flooding the user even
+        # when each stays under its own per-session cap.
+        self._global_watch_lock = threading.Lock()
+        self._global_watch_window_start: float = 0.0
+        self._global_watch_window_hits: int = 0
+        self._global_watch_tripped_until: float = 0.0
+        self._global_watch_suppressed_during_trip: int = 0
+
     @staticmethod
     def _clean_shell_noise(text: str) -> str:
         """Strip shell startup warnings from the beginning of output."""
@@ -168,6 +182,12 @@ class ProcessRegistry:
         disabled permanently for this process.
         """
         if not session.watch_patterns or session._watch_disabled:
+            return
+        # Suppress-after-exit: once the reader loop has declared the process
+        # exited, any late chunk we still see is post-exit noise. Dropping these
+        # prevents the "stale notifications delivered minutes after the process
+        # ended" spam when completion_queue consumers run async.
+        if session.exited:
             return
 
         # Scan new text line-by-line for pattern matches
@@ -234,6 +254,13 @@ class ProcessRegistry:
         if len(output) > 2000:
             output = output[:2000] + "\n...(truncated)"
 
+        # Global circuit breaker — across all sessions.
+        if not self._global_watch_admit(now):
+            # The breaker is tripped; drop this notification entirely. On the
+            # first drop per trip we emit a single summary event; subsequent
+            # drops are silently counted and surfaced when the breaker resets.
+            return
+
         self.completion_queue.put({
             "session_id": session.id,
             "session_key": session.session_key,
@@ -248,6 +275,93 @@ class ProcessRegistry:
             "user_name": session.watcher_user_name,
             "thread_id": session.watcher_thread_id,
         })
+
+    def _global_watch_admit(self, now: float) -> bool:
+        """Return True if this watch_match event is allowed through the global breaker.
+
+        Semantics:
+        - If we're currently in a cooldown period, drop the event and count it.
+        - Otherwise, slide the rolling window and check the global cap.
+        - If the cap is exceeded, trip the breaker for WATCH_GLOBAL_COOLDOWN_SECONDS
+          and emit ONE summary event so the agent/user sees "N notifications were
+          suppressed" instead of getting them individually.
+        - When the cooldown ends, emit a release summary and reset counters.
+        """
+        with self._global_watch_lock:
+            # Handle cooldown expiry first so we can emit the release summary.
+            if self._global_watch_tripped_until and now >= self._global_watch_tripped_until:
+                suppressed = self._global_watch_suppressed_during_trip
+                self._global_watch_tripped_until = 0.0
+                self._global_watch_suppressed_during_trip = 0
+                self._global_watch_window_start = now
+                self._global_watch_window_hits = 0
+                if suppressed > 0:
+                    # Queue a summary event outside the lock (below).
+                    release_msg = {
+                        "session_id": "",
+                        "session_key": "",
+                        "command": "",
+                        "type": "watch_overflow_released",
+                        "suppressed": suppressed,
+                        "message": (
+                            f"Watch-pattern notifications resumed. "
+                            f"{suppressed} match event(s) were suppressed during the flood."
+                        ),
+                        "platform": "",
+                        "chat_id": "",
+                        "user_id": "",
+                        "user_name": "",
+                        "thread_id": "",
+                    }
+                else:
+                    release_msg = None
+            else:
+                release_msg = None
+
+            # Still in cooldown — drop and count.
+            if self._global_watch_tripped_until and now < self._global_watch_tripped_until:
+                self._global_watch_suppressed_during_trip += 1
+                admit = False
+                trip_now = None
+            else:
+                # Slide the window.
+                if now - self._global_watch_window_start >= WATCH_WINDOW_SECONDS:
+                    self._global_watch_window_start = now
+                    self._global_watch_window_hits = 0
+
+                if self._global_watch_window_hits >= WATCH_GLOBAL_MAX_PER_WINDOW:
+                    # Trip the breaker.
+                    self._global_watch_tripped_until = now + WATCH_GLOBAL_COOLDOWN_SECONDS
+                    self._global_watch_suppressed_during_trip += 1
+                    trip_now = now
+                    admit = False
+                else:
+                    self._global_watch_window_hits += 1
+                    trip_now = None
+                    admit = True
+
+        # Queue summary events outside the lock.
+        if release_msg is not None:
+            self.completion_queue.put(release_msg)
+        if trip_now is not None:
+            self.completion_queue.put({
+                "session_id": "",
+                "session_key": "",
+                "command": "",
+                "type": "watch_overflow_tripped",
+                "message": (
+                    f"Watch-pattern overflow: >{WATCH_GLOBAL_MAX_PER_WINDOW} "
+                    f"notifications in {WATCH_WINDOW_SECONDS}s across all processes. "
+                    f"Suppressing further watch_match events for "
+                    f"{WATCH_GLOBAL_COOLDOWN_SECONDS}s."
+                ),
+                "platform": "",
+                "chat_id": "",
+                "user_id": "",
+                "user_name": "",
+                "thread_id": "",
+            })
+        return admit
 
     @staticmethod
     def _is_host_pid_alive(pid: Optional[int]) -> bool:
