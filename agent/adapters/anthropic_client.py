@@ -15,13 +15,16 @@ logger = logging.getLogger(__name__)
 
 # Allow tests to patch agent.anthropic_adapter._anthropic_sdk.
 # The façade re-exports _anthropic_sdk; this getter resolves from the
-# façade module so patches propagate into the client at call time.
+# façade module FIRST so that test patches propagate into the client.
 def _get_sdk():
-    if _anthropic_sdk is not None:
-        return _anthropic_sdk
-    # Fallback: resolve from façade (allows façade-patching by tests)
+    # Check façade first (tests patch agent.anthropic_adapter._anthropic_sdk)
     mod = sys.modules.get("agent.anthropic_adapter")
-    return getattr(mod, "_anthropic_sdk", None) if mod else None
+    if mod is not None:
+        facade_sdk = getattr(mod, "_anthropic_sdk", None)
+        if facade_sdk is not None:
+            return facade_sdk
+    # Fallback: local import
+    return _anthropic_sdk
 
 
 def build_anthropic_client(api_key: str, base_url: str = None):

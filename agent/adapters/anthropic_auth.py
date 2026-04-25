@@ -355,7 +355,12 @@ def _resolve_claude_code_token_from_credentials(creds: Optional[Dict[str, Any]] 
         return creds["accessToken"]
     if creds:
         logger.debug("Claude Code credentials expired — attempting refresh")
-        refreshed = _refresh_oauth_token(creds)
+        # Look up _refresh_oauth_token from the façade at call time so that
+        # tests patching agent.anthropic_adapter._refresh_oauth_token work.
+        import sys as _sys
+        _mod = _sys.modules.get("agent.anthropic_adapter")
+        _refresh_fn = getattr(_mod, "_refresh_oauth_token", None) if _mod else None
+        refreshed = _refresh_fn(creds) if _refresh_fn else _refresh_oauth_token(creds)
         if refreshed:
             return refreshed
         logger.debug("Token refresh failed — re-run 'claude setup-token' to reauthenticate")
