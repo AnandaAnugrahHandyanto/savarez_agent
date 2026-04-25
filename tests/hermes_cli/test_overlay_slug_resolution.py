@@ -100,3 +100,49 @@ def test_mapped_provider_credential_pool_visibility(monkeypatch):
     assert gemini is not None, "gemini should appear when auth-store credential_pool has creds"
     assert gemini["is_current"] is True
     assert gemini["total_models"] > 0
+
+
+# -- opencode-go models.dev merge in HERMES_OVERLAYS section -----------------
+
+def test_opencode_go_merge_key_uses_pid_when_hermes_slug_not_in_preferred():
+    """The _mdev_to_hermes reversal maps "opencode-go" → "go", but
+    _MODELS_DEV_PREFERRED uses "opencode-go". The merge must fall back to
+    pid when hermes_slug is not in _MODELS_DEV_PREFERRED.
+
+    Regression test for the bug where opencode-go models.dev entries were
+    silently skipped in the TUI /model picker because the slug resolution
+    produced "go" which isn't in _MODELS_DEV_PREFERRED.
+    """
+    from hermes_cli.models import _MODELS_DEV_PREFERRED, _merge_with_models_dev
+
+    # Verify the root cause: "go" is NOT in _MODELS_DEV_PREFERRED
+    assert "go" not in _MODELS_DEV_PREFERRED, "alias 'go' should not be in _MODELS_DEV_PREFERRED"
+    # But "opencode-go" IS in _MODELS_DEV_PREFERRED
+    assert "opencode-go" in _MODELS_DEV_PREFERRED, "canonical 'opencode-go' should be in _MODELS_DEV_PREFERRED"
+
+    # The merge should work when using the correct key
+    mdev = ["mimo-v2.5-pro", "mimo-v2-pro", "kimi-k2.6"]
+    with patch("agent.models_dev.list_agentic_models", return_value=mdev):
+        # Using "go" would fail to find models.dev entries
+        # Using "opencode-go" should succeed
+        out = _merge_with_models_dev("opencode-go", ["mimo-v2-pro", "kimi-k2.6"])
+    assert "mimo-v2.5-pro" in out, "models.dev entry should appear when using correct merge key"
+
+
+@patch.dict(os.environ, {"OPENCODE_GO_API_KEY": "test-key"}, clear=False)
+def test_opencode_go_overlay_merges_models_dev_entries():
+    """When opencode-go appears via HERMES_OVERLAYS (Section 2), its models
+    list should include models.dev entries, not just the curated floor.
+    """
+    mdev = ["mimo-v2.5-pro", "mimo-v2-pro", "kimi-k2.6", "glm-5"]
+    with patch("agent.models_dev.list_agentic_models", return_value=mdev):
+        providers = list_authenticated_providers(current_provider="openrouter")
+
+    opencode_go = next((p for p in providers if p["slug"] == "opencode-go"), None)
+    assert opencode_go is not None, "opencode-go should appear in Section 2 when API key is set"
+
+    # The models.dev entries should be present (not just curated floor)
+    present = set(opencode_go["models"])
+    assert "mimo-v2.5-pro" in present, (
+        f"models.dev entry mimo-v2.5-pro should appear; got models: {opencode_go['models']}"
+    )

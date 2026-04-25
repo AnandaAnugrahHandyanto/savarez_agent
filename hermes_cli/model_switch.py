@@ -1152,8 +1152,12 @@ def list_authenticated_providers(
             # Use curated list — look up by Hermes slug, fall back to overlay key
             model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
             # Merge with models.dev for preferred providers (same rationale as above).
-            if hermes_slug in _MODELS_DEV_PREFERRED:
-                model_ids = _merge_with_models_dev(hermes_slug, model_ids)
+            # Check both hermes_slug AND pid because the _mdev_to_hermes reversal
+            # can map "opencode-go" → "go", but _MODELS_DEV_PREFERRED uses the
+            # canonical provider ID ("opencode-go"), not the alias ("go").
+            merge_key = hermes_slug if hermes_slug in _MODELS_DEV_PREFERRED else (pid if pid in _MODELS_DEV_PREFERRED else None)
+            if merge_key:
+                model_ids = _merge_with_models_dev(merge_key, model_ids)
         total = len(model_ids)
         top = model_ids[:max_models]
 
