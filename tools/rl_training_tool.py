@@ -137,6 +137,9 @@ class RunState:
     api_process: Optional[subprocess.Popen] = None
     trainer_process: Optional[subprocess.Popen] = None
     env_process: Optional[subprocess.Popen] = None
+    api_log_file: Optional[Any] = None
+    trainer_log_file: Optional[Any] = None
+    env_log_file: Optional[Any] = None
 
 
 # Global state
