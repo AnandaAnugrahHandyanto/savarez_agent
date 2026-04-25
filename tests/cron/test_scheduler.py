@@ -12,6 +12,16 @@ from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
 
+@pytest.fixture(autouse=True)
+def _isolate_scheduler_tick_lock(tmp_path):
+    """Use a per-test tick lock so xdist workers cannot skip each other."""
+    lock_dir = tmp_path / "cron"
+    lock_dir.mkdir()
+    with patch("cron.scheduler._LOCK_DIR", lock_dir), \
+         patch("cron.scheduler._LOCK_FILE", lock_dir / ".tick.lock"):
+        yield
+
+
 class TestResolveOrigin:
     def test_full_origin(self):
         job = {
@@ -1556,15 +1566,6 @@ class TestSendMediaViaAdapter:
 
 class TestParallelTick:
     """Verify that tick() runs due jobs concurrently and isolates ContextVars."""
-
-    @pytest.fixture(autouse=True)
-    def _isolate_tick_lock(self, tmp_path):
-        """Point the tick file lock at a per-test temp dir to avoid xdist contention."""
-        lock_dir = tmp_path / "cron"
-        lock_dir.mkdir()
-        with patch("cron.scheduler._LOCK_DIR", lock_dir), \
-             patch("cron.scheduler._LOCK_FILE", lock_dir / ".tick.lock"):
-            yield
 
     def test_parallel_jobs_run_concurrently(self):
         """Two jobs launched in the same tick should overlap in time."""
