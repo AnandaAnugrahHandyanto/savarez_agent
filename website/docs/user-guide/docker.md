@@ -36,12 +36,24 @@ docker run -d \
   --restart unless-stopped \
   -v ~/.hermes:/opt/data \
   -p 8642:8642 \
+  -e API_SERVER_HOST=0.0.0.0 \
+  -e API_SERVER_KEY="your-secure-api-key-here" \
   nousresearch/hermes-agent gateway run
 ```
 
 Port 8642 exposes the gateway's [OpenAI-compatible API server](./api-server.md) and health endpoint. It's optional if you only use chat platforms (Telegram, Discord, etc.), but required if you want the dashboard or external tools to reach the gateway.
 
-Opening any port on an internet facing machine is a security risk. You should not do it unless you understand the risks.
+:::info
+
+The API server defaults to binding on `127.0.0.1` (localhost) for security. To make it accessible from outside the container, set `API_SERVER_HOST=0.0.0.0` **and** provide a non-trivial `API_SERVER_KEY` (generate one with `openssl rand -hex 32`). Without a key, the server refuses to start on a non-loopback address.
+
+:::
+
+:::danger
+
+Opening any port on an internet-facing machine is a security risk. The API server has authentication but does **not** provide transport-layer encryption (TLS/HTTPS). Never expose it to the public internet without a reverse proxy such as [Caddy](https://caddyserver.com/), [nginx](https://nginx.org/), or [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/).
+
+:::
 
 ## Running the dashboard
 
@@ -56,10 +68,16 @@ docker run -d \
   -v ~/.hermes:/opt/data \
   -p 9119:9119 \
   -e GATEWAY_HEALTH_URL=http://$HOST_IP:8642 \
-  nousresearch/hermes-agent dashboard
+  nousresearch/hermes-agent dashboard --host 0.0.0.0 --insecure
 ```
 
 Replace `$HOST_IP` with the IP address of the machine running the gateway container (e.g. `192.168.1.100`), or use a Docker network hostname if both containers share a network (see the [Compose example](#docker-compose-example) below).
+
+:::info
+
+The dashboard binds to `127.0.0.1` by default and refuses to listen on non-localhost without the `--insecure` flag. The `--host 0.0.0.0 --insecure` pair is required for container port mapping to work. See the [dashboard CLI reference](../cli/dashboard) for details.
+
+:::
 
 | Environment variable | Description | Default |
 |---------------------|-------------|---------|
@@ -128,12 +146,13 @@ services:
       - "8642:8642"
     volumes:
       - ~/.hermes:/opt/data
-    networks:
-      - hermes-net
-    # Uncomment to forward specific env vars instead of using .env file:
+    environment:
+      - API_SERVER_HOST=0.0.0.0
+      - API_SERVER_KEY=${API_SERVER_KEY}
+    # Uncomment to forward additional env vars instead of using .env file:
     # environment:
-    #   - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-    #   - OPENAI_API_KEY=${OPENAI_API_KEY}
+    #   - ANTHROPIC_API_KEY=${ANTH...KEY}
+    #   - OPENAI_API_KEY=***
     #   - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
     deploy:
       resources:
@@ -145,7 +164,7 @@ services:
     image: nousresearch/hermes-agent:latest
     container_name: hermes-dashboard
     restart: unless-stopped
-    command: dashboard --host 0.0.0.0
+    command: dashboard --host 0.0.0.0 --insecure
     ports:
       - "9119:9119"
     volumes:
