@@ -44,22 +44,29 @@ _TOOL_CALL_LEAK_PATTERN = re.compile(
 # Multimodal content helpers
 # ---------------------------------------------------------------------------
 
-def _chat_content_to_responses_parts(content: Any) -> List[Dict[str, Any]]:
+def _chat_content_to_responses_parts(
+    content: Any, *, role: str = "user"
+) -> List[Dict[str, Any]]:
     """Convert chat-style multimodal content to Responses API input parts.
 
     Input:  ``[{"type":"text"|"image_url", ...}]`` (native OpenAI Chat format)
-    Output: ``[{"type":"input_text"|"input_image", ...}]`` (Responses format)
+    Output: ``[{"type":"input_text"|"output_text"|"input_image", ...}]``
+
+    The Responses API requires ``"output_text"`` for assistant message content
+    and ``"input_text"`` for user message content.  Pass ``role="assistant"``
+    when converting assistant-turn content.
 
     Returns an empty list when ``content`` is not a list or contains no
     recognized parts — callers fall back to the string path.
     """
+    text_type = "output_text" if role == "assistant" else "input_text"
     if not isinstance(content, list):
         return []
     converted: List[Dict[str, Any]] = []
     for part in content:
         if isinstance(part, str):
             if part:
-                converted.append({"type": "input_text", "text": part})
+                converted.append({"type": text_type, "text": part})
             continue
         if not isinstance(part, dict):
             continue
@@ -67,7 +74,7 @@ def _chat_content_to_responses_parts(content: Any) -> List[Dict[str, Any]]:
         if ptype in {"text", "input_text", "output_text"}:
             text = part.get("text")
             if isinstance(text, str) and text:
-                converted.append({"type": "input_text", "text": text})
+                converted.append({"type": text_type, "text": text})
             continue
         if ptype in {"image_url", "input_image"}:
             image_ref = part.get("image_url")
@@ -233,9 +240,11 @@ def _chat_messages_to_responses_input(messages: List[Dict[str, Any]]) -> List[Di
         if role in {"user", "assistant"}:
             content = msg.get("content", "")
             if isinstance(content, list):
-                content_parts = _chat_content_to_responses_parts(content)
+                content_parts = _chat_content_to_responses_parts(content, role=role)
                 content_text = "".join(
-                    p.get("text", "") for p in content_parts if p.get("type") == "input_text"
+                    p.get("text", "")
+                    for p in content_parts
+                    if p.get("type") in {"input_text", "output_text"}
                 )
             else:
                 content_parts = []
@@ -429,13 +438,15 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
                 content = ""
             if isinstance(content, list):
                 # Multimodal content from ``_chat_messages_to_responses_input``
-                # is already in Responses format (``input_text`` / ``input_image``).
-                # Validate each part and pass through.
+                # is already in Responses format (``input_text``/``output_text``/
+                # ``input_image``).  Validate each part and pass through,
+                # preserving the role-correct text type.
+                text_type = "output_text" if role == "assistant" else "input_text"
                 validated: List[Dict[str, Any]] = []
                 for part_idx, part in enumerate(content):
                     if isinstance(part, str):
                         if part:
-                            validated.append({"type": "input_text", "text": part})
+                            validated.append({"type": text_type, "text": part})
                         continue
                     if not isinstance(part, dict):
                         raise ValueError(
@@ -446,7 +457,7 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
                         text = part.get("text", "")
                         if not isinstance(text, str):
                             text = str(text or "")
-                        validated.append({"type": "input_text", "text": text})
+                        validated.append({"type": text_type, "text": text})
                     elif ptype in {"input_image", "image_url"}:
                         image_ref = part.get("image_url", "")
                         detail = part.get("detail")

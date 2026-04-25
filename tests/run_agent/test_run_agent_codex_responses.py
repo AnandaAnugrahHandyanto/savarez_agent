@@ -1516,3 +1516,114 @@ def test_preflight_codex_input_deduplicates_reasoning_ids(monkeypatch):
     # IDs must be stripped — with store=False the API 404s on id lookups.
     for it in reasoning_items:
         assert "id" not in it
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for #15687: assistant message content must use output_text
+# ---------------------------------------------------------------------------
+
+
+def test_chat_content_to_responses_parts_user_uses_input_text():
+    """User message content parts must carry type='input_text'."""
+    from agent.codex_responses_adapter import _chat_content_to_responses_parts
+
+    parts = _chat_content_to_responses_parts(
+        [{"type": "text", "text": "hello"}, "world"],
+        role="user",
+    )
+    assert len(parts) == 2
+    assert all(p["type"] == "input_text" for p in parts)
+    assert parts[0]["text"] == "hello"
+    assert parts[1]["text"] == "world"
+
+
+def test_chat_content_to_responses_parts_assistant_uses_output_text():
+    """Assistant message content parts must carry type='output_text'."""
+    from agent.codex_responses_adapter import _chat_content_to_responses_parts
+
+    parts = _chat_content_to_responses_parts(
+        [{"type": "text", "text": "sure"}, "more text"],
+        role="assistant",
+    )
+    assert len(parts) == 2
+    assert all(p["type"] == "output_text" for p in parts), parts
+    assert parts[0]["text"] == "sure"
+    assert parts[1]["text"] == "more text"
+
+
+def test_chat_content_to_responses_parts_default_role_is_user():
+    """Omitting role defaults to user (input_text) to preserve backward compat."""
+    from agent.codex_responses_adapter import _chat_content_to_responses_parts
+
+    parts = _chat_content_to_responses_parts([{"type": "text", "text": "hi"}])
+    assert parts[0]["type"] == "input_text"
+
+
+def test_chat_content_to_responses_parts_empty_list():
+    """Empty list returns empty list for both user and assistant roles."""
+    from agent.codex_responses_adapter import _chat_content_to_responses_parts
+
+    assert _chat_content_to_responses_parts([], role="user") == []
+    assert _chat_content_to_responses_parts([], role="assistant") == []
+
+
+def test_chat_content_to_responses_parts_non_list_returns_empty():
+    """Non-list content returns empty list regardless of role."""
+    from agent.codex_responses_adapter import _chat_content_to_responses_parts
+
+    assert _chat_content_to_responses_parts("plain string", role="assistant") == []
+    assert _chat_content_to_responses_parts(None, role="assistant") == []
+
+
+def test_chat_messages_to_responses_input_assistant_multimodal_uses_output_text():
+    """_chat_messages_to_responses_input must emit output_text for assistant
+    messages that have list-format content — the root-cause repro for #15687."""
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+    messages = [
+        {"role": "user", "content": "What is 2+2?"},
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "The answer is 4."}],
+        },
+        {"role": "user", "content": "Thanks"},
+    ]
+    items = _chat_messages_to_responses_input(messages)
+
+    user_items = [it for it in items if it.get("role") == "user"]
+    assistant_items = [it for it in items if it.get("role") == "assistant"]
+
+    # User parts must use input_text
+    for item in user_items:
+        if isinstance(item.get("content"), list):
+            for part in item["content"]:
+                assert part["type"] == "input_text", f"user part should be input_text: {part}"
+
+    # Assistant parts must use output_text (the bug: they were input_text before)
+    for item in assistant_items:
+        if isinstance(item.get("content"), list):
+            for part in item["content"]:
+                assert part["type"] == "output_text", f"assistant part should be output_text: {part}"
+
+
+def test_preflight_codex_input_preserves_output_text_for_assistant():
+    """_preflight_codex_input_items must use output_text for assistant message
+    content, not coerce everything to input_text."""
+    from agent.codex_responses_adapter import _preflight_codex_input_items
+
+    raw = [
+        {"role": "user", "content": [{"type": "input_text", "text": "hello"}]},
+        {
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "hi there"}],
+        },
+    ]
+    normalized = _preflight_codex_input_items(raw)
+
+    user_item = next(it for it in normalized if it.get("role") == "user")
+    asst_item = next(it for it in normalized if it.get("role") == "assistant")
+
+    assert user_item["content"][0]["type"] == "input_text"
+    assert asst_item["content"][0]["type"] == "output_text", (
+        "assistant content must use output_text — was being coerced to input_text (bug #15687)"
+    )
