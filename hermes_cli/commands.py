@@ -104,6 +104,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("config", "Show current configuration", "Configuration",
                cli_only=True),
     CommandDef("model", "Switch model for this session", "Configuration", args_hint="[model] [--provider name] [--global]"),
+    CommandDef("review-model", "Configure the background review model", "Configuration",
+               cli_only=True, args_hint="[model] [--provider name]"),
     CommandDef("gquota", "Show Google Gemini Code Assist quota usage", "Info",
                cli_only=True),
 

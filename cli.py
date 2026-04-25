@@ -5064,11 +5064,47 @@ class HermesCLI:
             _ask()
         return result[0]
 
-    def _open_model_picker(self, providers: list, current_model: str, current_provider: str, user_provs=None, custom_provs=None) -> None:
-        """Open prompt_toolkit-native /model picker modal."""
+    def _prompt_hidden_input(self, prompt_text: str) -> str | None:
+        """Prompt for hidden input safely inside or outside prompt_toolkit."""
+        import getpass
+
+        result = [None]
+
+        def _ask():
+            try:
+                value = getpass.getpass(prompt_text)
+                result[0] = value if value != "" else None
+            except (KeyboardInterrupt, EOFError):
+                pass
+
+        if self._app:
+            from prompt_toolkit.application import run_in_terminal
+            was_visible = self._status_bar_visible
+            self._status_bar_visible = False
+            self._app.invalidate()
+            try:
+                run_in_terminal(_ask)
+            finally:
+                self._status_bar_visible = was_visible
+                self._app.invalidate()
+        else:
+            _ask()
+        return result[0]
+
+    def _open_model_picker(
+        self,
+        providers: list,
+        current_model: str,
+        current_provider: str,
+        user_provs=None,
+        custom_provs=None,
+        picker_kind: str = "model",
+    ) -> None:
+        """Open prompt_toolkit-native model picker modal."""
         self._capture_modal_input_snapshot()
         default_idx = next((i for i, p in enumerate(providers) if p.get("is_current")), 0)
         self._model_picker_state = {
+            "kind": picker_kind,
             "stage": "provider",
             "providers": providers,
             "selected": default_idx,
@@ -5190,6 +5226,92 @@ class HermesCLI:
         else:
             _cprint("    (session only — add --global to persist)")
 
+    def _apply_review_model_switch_result(self, result) -> None:
+        if not result.success:
+            _cprint(f"  ✗ {result.error_message}")
+            return
+
+        save_config_value("agent.review_model.model", result.new_model)
+        save_config_value("agent.review_model.provider", result.target_provider)
+        save_config_value("agent.review_model.base_url", result.base_url or "")
+        save_config_value("agent.review_model.api_key", result.api_key or "")
+        save_config_value("agent.review_model.api_mode", result.api_mode or "")
+
+        if self.agent is not None:
+            self.agent._review_model_model = result.new_model
+            self.agent._review_model_provider = result.target_provider
+            self.agent._review_model_base_url = result.base_url or ""
+            self.agent._review_model_api_key = result.api_key or ""
+            self.agent._review_model_api_mode = result.api_mode or ""
+
+        provider_label = result.provider_label or result.target_provider
+        _cprint(f"  ✓ Review model configured: {result.new_model}")
+        _cprint(f"    Provider: {provider_label}")
+        if result.base_url:
+            _cprint(f"    Base URL: {result.base_url}")
+        if result.warning_message:
+            _cprint(f"    ⚠ {result.warning_message}")
+        _cprint("    Saved to config.yaml")
+
+    def _reset_review_model_config(self) -> None:
+        save_config_value("agent.review_model.model", "default")
+        save_config_value("agent.review_model.provider", "")
+        save_config_value("agent.review_model.base_url", "")
+        save_config_value("agent.review_model.api_key", "")
+        save_config_value("agent.review_model.api_mode", "")
+
+        if self.agent is not None:
+            self.agent._review_model_model = "default"
+            self.agent._review_model_provider = ""
+            self.agent._review_model_base_url = ""
+            self.agent._review_model_api_key = ""
+            self.agent._review_model_api_mode = ""
+
+        _cprint("  ✓ Review model reset to default")
+        _cprint("    Background review will inherit the primary agent runtime.")
+
+    def _configure_review_model_custom_endpoint(self) -> None:
+        from hermes_cli.providers import determine_api_mode
+
+        provider = self._prompt_text_input("  Review provider slug [custom]: ") or "custom"
+        base_url = self._prompt_text_input("  Review base URL: ")
+        if not base_url:
+            _cprint("  ✗ Base URL is required.")
+            return
+
+        model = self._prompt_text_input("  Review model name: ")
+        if not model:
+            _cprint("  ✗ Model name is required.")
+            return
+
+        api_key = self._prompt_hidden_input("  Review API key (optional): ") or ""
+        api_mode = self._prompt_text_input("  API mode [auto]: ") or ""
+        if not api_mode:
+            try:
+                api_mode = determine_api_mode(provider, base_url)
+            except Exception:
+                api_mode = ""
+
+        save_config_value("agent.review_model.model", model)
+        save_config_value("agent.review_model.provider", provider)
+        save_config_value("agent.review_model.base_url", base_url)
+        save_config_value("agent.review_model.api_key", api_key)
+        save_config_value("agent.review_model.api_mode", api_mode)
+
+        if self.agent is not None:
+            self.agent._review_model_model = model
+            self.agent._review_model_provider = provider
+            self.agent._review_model_base_url = base_url
+            self.agent._review_model_api_key = api_key
+            self.agent._review_model_api_mode = api_mode
+
+        _cprint(f"  ✓ Review model configured: {model}")
+        _cprint(f"    Provider: {provider}")
+        _cprint(f"    Base URL: {base_url}")
+        if api_mode:
+            _cprint(f"    API mode: {api_mode}")
+        _cprint("    Saved to config.yaml")
+
     def _handle_model_picker_selection(self, persist_global: bool = False) -> None:
         state = self._model_picker_state
         if not state:
@@ -5198,7 +5320,23 @@ class HermesCLI:
         stage = state.get("stage")
         if stage == "provider":
             providers = state.get("providers") or []
-            if selected >= len(providers):
+            picker_kind = state.get("kind")
+            if picker_kind == "review-model":
+                default_idx = len(providers)
+                custom_idx = len(providers) + 1
+                cancel_idx = len(providers) + 2
+                if selected == default_idx:
+                    self._close_model_picker()
+                    self._reset_review_model_config()
+                    return
+                if selected == custom_idx:
+                    self._close_model_picker()
+                    self._configure_review_model_custom_endpoint()
+                    return
+                if selected >= cancel_idx:
+                    self._close_model_picker()
+                    return
+            elif selected >= len(providers):
                 self._close_model_picker()
                 return
             provider_data = providers[selected]
@@ -5249,7 +5387,10 @@ class HermesCLI:
                     custom_providers=state.get("custom_provs"),
                 )
                 self._close_model_picker()
-                self._apply_model_switch_result(result, persist_global)
+                if state.get("kind") == "review-model":
+                    self._apply_review_model_switch_result(result)
+                else:
+                    self._apply_model_switch_result(result, persist_global)
                 return
             self._close_model_picker()
 
@@ -5419,15 +5560,98 @@ class HermesCLI:
         else:
             _cprint("    (session only — add --global to persist)")
 
+    def _handle_review_model_switch(self, cmd_original: str):
+        """Handle /review-model command — configure background review routing."""
+        from hermes_cli.model_switch import switch_model, parse_model_flags, list_authenticated_providers
+        from hermes_cli.providers import get_label
+
+        parts = cmd_original.split(None, 1)
+        raw_args = parts[1].strip() if len(parts) > 1 else ""
+        model_input, explicit_provider, _persist_global = parse_model_flags(raw_args)
+
+        user_provs = None
+        custom_provs = None
+        try:
+            from hermes_cli.config import get_compatible_custom_providers, load_config
+            cfg = load_config()
+            user_provs = cfg.get("providers")
+            custom_provs = get_compatible_custom_providers(cfg)
+            review_cfg = (cfg.get("agent") or {}).get("review_model") or {}
+        except Exception:
+            review_cfg = {}
+
+        current_model = review_cfg.get("model") or "default"
+        current_provider = review_cfg.get("provider") or self.provider or "unknown"
+        current_base_url = review_cfg.get("base_url") or self.base_url or ""
+        current_api_key = review_cfg.get("api_key") or self.api_key or ""
+
+        normalized_model_input = (model_input or "").strip().lower()
+        if normalized_model_input in {"default", "primary", "inherit"} and not explicit_provider:
+            self._reset_review_model_config()
+            return
+        if normalized_model_input in {"custom", "custom-endpoint"} and not explicit_provider:
+            self._configure_review_model_custom_endpoint()
+            return
+
+        if not model_input and not explicit_provider:
+            model_display = current_model
+            provider_display = get_label(current_provider) if current_provider and current_provider != "unknown" else current_provider
+            try:
+                providers = list_authenticated_providers(
+                    current_provider=current_provider if current_provider != "unknown" else (self.provider or ""),
+                    user_providers=user_provs,
+                    custom_providers=custom_provs,
+                    max_models=50,
+                )
+            except Exception:
+                providers = []
+
+            if not providers:
+                _cprint("  No authenticated providers found.")
+                _cprint("")
+                _cprint("  /review-model default                  inherit the primary model")
+                _cprint("  /review-model custom                   configure custom endpoint")
+                _cprint("  /review-model <name>                   configure review model")
+                _cprint("  /review-model <name> --provider <slug> configure review model/provider")
+                return
+
+            self._open_model_picker(
+                providers,
+                model_display,
+                provider_display,
+                user_provs=user_provs,
+                custom_provs=custom_provs,
+                picker_kind="review-model",
+            )
+            return
+
+        if explicit_provider and not model_input:
+            _cprint("  ✗ Specify a model when using --provider.")
+            _cprint("    Usage: /review-model <model> --provider <slug>")
+            return
+
+        result = switch_model(
+            raw_input=model_input,
+            current_provider=current_provider if current_provider != "unknown" else (self.provider or ""),
+            current_model=current_model if current_model != "default" else (self.model or ""),
+            current_base_url=current_base_url,
+            current_api_key=current_api_key,
+            is_global=True,
+            explicit_provider=explicit_provider,
+            user_providers=user_provs,
+            custom_providers=custom_provs,
+        )
+        self._apply_review_model_switch_result(result)
+
     def _should_handle_model_command_inline(self, text: str, has_images: bool = False) -> bool:
-        """Return True when /model should be handled immediately on the UI thread."""
+        """Return True when a model-picker command should run on the UI thread."""
         if not text or has_images or not _looks_like_slash_command(text):
             return False
         try:
             from hermes_cli.commands import resolve_command
             base = text.split(None, 1)[0].lower().lstrip('/')
             cmd = resolve_command(base)
-            return bool(cmd and cmd.name == "model")
+            return bool(cmd and cmd.name in {"model", "review-model"})
         except Exception:
             return False
 
@@ -6030,6 +6254,8 @@ class HermesCLI:
             self._handle_resume_command(cmd_original)
         elif canonical == "model":
             self._handle_model_switch(cmd_original)
+        elif canonical == "review-model":
+            self._handle_review_model_switch(cmd_original)
         elif canonical == "gquota":
             self._handle_gquota_command(cmd_original)
 
@@ -9251,8 +9477,8 @@ class HermesCLI:
             text = event.app.current_buffer.text.strip()
             has_images = bool(self._attached_images)
             if text or has_images:
-                # Handle /model directly on the UI thread so interactive pickers
-                # can safely use prompt_toolkit terminal handoff helpers.
+                # Handle picker-based model commands directly on the UI thread
+                # so prompt_toolkit terminal handoff helpers remain safe.
                 if self._should_handle_model_command_inline(text, has_images=has_images):
                     if not self.process_command(text):
                         self._should_exit = True
@@ -9421,6 +9647,8 @@ class HermesCLI:
                 return
             if state.get("stage") == "provider":
                 max_idx = len(state.get("providers") or [])
+                if state.get("kind") == "review-model":
+                    max_idx += 2
             else:
                 max_idx = len(state.get("model_list") or []) + 1
             state["selected"] = min(max_idx, state.get("selected", 0) + 1)
@@ -10264,9 +10492,11 @@ class HermesCLI:
             state = cli_ref._model_picker_state
             if not state:
                 return []
+            picker_kind = state.get("kind", "model")
+            picker_label = "Review Model Picker" if picker_kind == "review-model" else "Model Picker"
             stage = state.get("stage", "provider")
             if stage == "provider":
-                title = "⚙ Model Picker — Select Provider"
+                title = f"⚙ {picker_label} — Select Provider"
                 choices = []
                 _providers = state.get("providers")
                 for p in _providers if isinstance(_providers, list) else []:
@@ -10275,12 +10505,15 @@ class HermesCLI:
                     if p.get("is_current"):
                         label += "  ← current"
                     choices.append(label)
+                if picker_kind == "review-model":
+                    choices.append("Use primary model (default)")
+                    choices.append("Custom endpoint...")
                 choices.append("Cancel")
                 hint = f"Current: {state.get('current_model', 'unknown')} on {state.get('current_provider', 'unknown')}"
             else:
                 provider_data = state.get("provider_data") or {}
                 model_list = state.get("model_list") or []
-                title = f"⚙ Model Picker — {provider_data.get('name', provider_data.get('slug', 'Provider'))}"
+                title = f"⚙ {picker_label} — {provider_data.get('name', provider_data.get('slug', 'Provider'))}"
                 choices = list(model_list) + ["← Back", "Cancel"]
                 if model_list:
                     hint = f"Select a model ({len(model_list)} available)"

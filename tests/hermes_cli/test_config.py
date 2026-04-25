@@ -60,6 +60,31 @@ class TestEnsureHermesHome:
             assert soul_path.read_text(encoding="utf-8") == "custom soul"
 
 
+class TestReviewModelConfig:
+    def test_default_config_includes_agent_review_model(self):
+        review_model = DEFAULT_CONFIG["agent"]["review_model"]
+
+        assert review_model == {
+            "model": "default",
+            "provider": "",
+            "base_url": "",
+            "api_key": "",
+            "api_mode": "",
+        }
+        assert DEFAULT_CONFIG["memory"]["review"] == {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key_env": None,
+        }
+        assert DEFAULT_CONFIG["skills"]["review"] == {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key_env": None,
+        }
+
+
 class TestLoadConfigDefaults:
     def test_returns_defaults_when_no_file(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):

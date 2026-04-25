@@ -389,6 +389,16 @@ DEFAULT_CONFIG = {
         # (60+ tool iterations with tiny output) before users assume the
         # bot is dead and /restart.
         "gateway_notify_interval": 180,
+        # Optional runtime for background memory/skill review.  "default"
+        # inherits the primary AIAgent runtime.  When set, review runs try
+        # this runtime first and fall back to the primary runtime on failure.
+        "review_model": {
+            "model": "default",
+            "provider": "",
+            "base_url": "",
+            "api_key": "",
+            "api_mode": "",
+        },
     },
     
     "terminal": {
@@ -744,6 +754,14 @@ DEFAULT_CONFIG = {
         # "hindsight", "holographic", "retaindb", "byterover".
         # Only ONE external provider is allowed at a time.
         "provider": "",
+        # Optional per-memory-review runtime override. Empty/null fields inherit
+        # agent.review_model, then the primary agent runtime.
+        "review": {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key_env": None,
+        },
     },
 
     # Subagent delegation — override the provider:model used by delegate_task
@@ -821,6 +839,14 @@ DEFAULT_CONFIG = {
         # External hub installs (trusted/community sources) are always
         # scanned regardless of this setting.
         "guard_agent_created": False,
+        # Optional per-skill-review runtime override. Empty/null fields inherit
+        # agent.review_model, then the primary agent runtime.
+        "review": {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key_env": None,
+        },
     },
 
     # Honcho AI-native memory -- reads ~/.honcho/config.json as single source of truth.

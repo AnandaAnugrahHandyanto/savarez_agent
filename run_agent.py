@@ -1573,6 +1573,43 @@ class AIAgent:
         # broad pseudo-public config object on the agent instance.
         self._aux_compression_context_length_config = None
 
+        # Review-model runtime for memory/skills post-turn review.
+        # agent.review_model.model == "default" means inherit the primary runtime.
+        self._review_model_model = "default"
+        self._review_model_provider = ""
+        self._review_model_base_url = ""
+        self._review_model_api_key = ""
+        self._review_model_api_mode = ""
+        self._memory_review_runtime_config = {}
+        self._skills_review_runtime_config = {}
+        try:
+            _agent_cfg_for_review = _agent_cfg.get("agent", {})
+            if isinstance(_agent_cfg_for_review, dict):
+                _review_cfg = _agent_cfg_for_review.get("review_model", {})
+                if isinstance(_review_cfg, dict):
+                    _configured_review_model = _review_cfg.get("model", "default")
+                    if isinstance(_configured_review_model, str) and _configured_review_model.strip():
+                        self._review_model_model = _configured_review_model.strip()
+                    for _attr, _cfg_key in (
+                        ("_review_model_provider", "provider"),
+                        ("_review_model_base_url", "base_url"),
+                        ("_review_model_api_key", "api_key"),
+                        ("_review_model_api_mode", "api_mode"),
+                    ):
+                        _value = _review_cfg.get(_cfg_key, "")
+                        if isinstance(_value, str) and _value.strip():
+                            setattr(self, _attr, _value.strip())
+
+            _memory_cfg_for_review = _agent_cfg.get("memory", {})
+            if isinstance(_memory_cfg_for_review, dict) and isinstance(_memory_cfg_for_review.get("review"), dict):
+                self._memory_review_runtime_config = dict(_memory_cfg_for_review["review"])
+
+            _skills_cfg_for_review = _agent_cfg.get("skills", {})
+            if isinstance(_skills_cfg_for_review, dict) and isinstance(_skills_cfg_for_review.get("review"), dict):
+                self._skills_review_runtime_config = dict(_skills_cfg_for_review["review"])
+        except Exception:
+            pass
+
         # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
         self._memory_store = None
         self._memory_enabled = False
@@ -3147,6 +3184,71 @@ class AIAgent:
         else:
             prompt = self._SKILL_REVIEW_PROMPT
 
+        configured_model = getattr(self, "_review_model_model", "default")
+        configured_model = configured_model.strip() if isinstance(configured_model, str) else "default"
+        review_model = self.model if (not configured_model or configured_model.lower() == "default") else configured_model
+        review_provider = getattr(self, "_review_model_provider", "") or self.provider
+        review_base_url = getattr(self, "_review_model_base_url", "") or self.base_url
+        review_api_key = getattr(self, "_review_model_api_key", "") or self.api_key
+        review_api_mode = getattr(self, "_review_model_api_mode", "")
+
+        def _configured(value: Any) -> bool:
+            return value is not None and not (isinstance(value, str) and not value.strip())
+
+        review_blocks = []
+        if review_memory:
+            review_blocks.append(getattr(self, "_memory_review_runtime_config", {}) or {})
+        if review_skills:
+            review_blocks.append(getattr(self, "_skills_review_runtime_config", {}) or {})
+
+        for block in review_blocks:
+            if not isinstance(block, dict):
+                continue
+            if _configured(block.get("model")):
+                value = block["model"].strip() if isinstance(block["model"], str) else block["model"]
+                review_model = self.model if isinstance(value, str) and value.lower() == "default" else value
+                break
+        for block in review_blocks:
+            if isinstance(block, dict) and _configured(block.get("provider")):
+                review_provider = block["provider"].strip() if isinstance(block["provider"], str) else block["provider"]
+                break
+        for block in review_blocks:
+            if isinstance(block, dict) and _configured(block.get("base_url")):
+                review_base_url = block["base_url"].strip() if isinstance(block["base_url"], str) else block["base_url"]
+                break
+        for block in review_blocks:
+            if not isinstance(block, dict) or not _configured(block.get("api_key_env")):
+                continue
+            env_name = block["api_key_env"].strip() if isinstance(block["api_key_env"], str) else str(block["api_key_env"])
+            env_key = os.environ.get(env_name, "")
+            if env_key:
+                review_api_key = env_key
+                break
+
+        if not review_api_mode and (review_provider != self.provider or review_base_url != self.base_url):
+            try:
+                from hermes_cli.providers import determine_api_mode
+                review_api_mode = determine_api_mode(review_provider, review_base_url)
+            except Exception:
+                review_api_mode = self.api_mode
+        elif not review_api_mode:
+            review_api_mode = self.api_mode
+
+        parent_review_runtime = {
+            "model": self.model,
+            "provider": self.provider,
+            "base_url": self.base_url,
+            "api_key": self.api_key,
+            "api_mode": self.api_mode,
+        }
+        requested_review_runtime = {
+            "model": review_model,
+            "provider": review_provider,
+            "base_url": review_base_url,
+            "api_key": review_api_key,
+            "api_mode": review_api_mode,
+        }
+
         def _run_review():
             import contextlib
             review_agent = None
@@ -3154,26 +3256,57 @@ class AIAgent:
                 with open(os.devnull, "w") as _devnull, \
                      contextlib.redirect_stdout(_devnull), \
                      contextlib.redirect_stderr(_devnull):
-                    review_agent = AIAgent(
-                        model=self.model,
-                        max_iterations=8,
-                        quiet_mode=True,
-                        platform=self.platform,
-                        provider=self.provider,
-                        parent_session_id=self.session_id,
-                    )
-                    review_agent._memory_write_origin = "background_review"
-                    review_agent._memory_write_context = "background_review"
-                    review_agent._memory_store = self._memory_store
-                    review_agent._memory_enabled = self._memory_enabled
-                    review_agent._user_profile_enabled = self._user_profile_enabled
-                    review_agent._memory_nudge_interval = 0
-                    review_agent._skill_nudge_interval = 0
+                    def _run_once(runtime_cfg: Dict[str, str]) -> None:
+                        nonlocal review_agent
+                        review_agent = AIAgent(
+                            model=runtime_cfg.get("model", "") or self.model,
+                            max_iterations=8,
+                            quiet_mode=True,
+                            platform=self.platform,
+                            provider=runtime_cfg.get("provider", "") or self.provider,
+                            base_url=runtime_cfg.get("base_url", "") or self.base_url,
+                            api_key=runtime_cfg.get("api_key", "") or self.api_key,
+                            api_mode=runtime_cfg.get("api_mode", "") or self.api_mode,
+                            parent_session_id=self.session_id,
+                        )
+                        review_agent._memory_write_origin = "background_review"
+                        review_agent._memory_write_context = "background_review"
+                        review_agent._memory_store = self._memory_store
+                        review_agent._memory_enabled = self._memory_enabled
+                        review_agent._user_profile_enabled = self._user_profile_enabled
+                        review_agent._memory_nudge_interval = 0
+                        review_agent._skill_nudge_interval = 0
+                        review_agent.run_conversation(
+                            user_message=prompt,
+                            conversation_history=messages_snapshot,
+                        )
 
-                    review_agent.run_conversation(
-                        user_message=prompt,
-                        conversation_history=messages_snapshot,
-                    )
+                    try:
+                        _run_once(requested_review_runtime)
+                    except Exception as review_error:
+                        # If a custom review runtime fails (model/provider/base_url/api_key),
+                        # fall back to the primary runtime for this session.
+                        if requested_review_runtime != parent_review_runtime:
+                            logger.warning(
+                                "Background review runtime failed (model=%s provider=%s base_url=%s): %s. "
+                                "Falling back to primary runtime (model=%s provider=%s base_url=%s).",
+                                requested_review_runtime.get("model", ""),
+                                requested_review_runtime.get("provider", ""),
+                                requested_review_runtime.get("base_url", ""),
+                                review_error,
+                                parent_review_runtime.get("model", ""),
+                                parent_review_runtime.get("provider", ""),
+                                parent_review_runtime.get("base_url", ""),
+                            )
+                            if review_agent is not None:
+                                try:
+                                    review_agent.close()
+                                except Exception:
+                                    pass
+                                review_agent = None
+                            _run_once(parent_review_runtime)
+                        else:
+                            raise
 
                 # Scan the review agent's messages for successful tool actions
                 # and surface a compact summary to the user. Tool messages
