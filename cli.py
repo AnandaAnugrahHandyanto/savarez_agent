@@ -1812,6 +1812,8 @@ class HermesCLI:
         checkpoints: bool = False,
         pass_session_id: bool = False,
         ignore_rules: bool = False,
+        system_prompt_override: str = None,
+        append_system_prompt: str = None,
     ):
         """
         Initialize the Hermes CLI.
@@ -1977,6 +1979,21 @@ class HermesCLI:
             or CLI_CONFIG["agent"].get("system_prompt", "")
         )
         self.personalities = CLI_CONFIG["agent"].get("personalities", {})
+
+        # ── Per-turn ephemeral prompt controls (#15597) ──
+        # ``system_prompt_override`` replaces the cached base system prompt for the
+        # turn without mutating SOUL.md, the cached base prompt, or anything in the
+        # session DB. ``--append-system-prompt`` is layered on top of the existing
+        # ``self.system_prompt`` (which is already an append-style ephemeral prompt
+        # sourced from env/config/personalities). Keeping these as separate fields
+        # — instead of stomping ``self.system_prompt`` — preserves CLI commands
+        # like ``/personality`` that mutate ``self.system_prompt`` at runtime.
+        self.system_prompt_override: Optional[str] = (
+            system_prompt_override if system_prompt_override else None
+        )
+        self.append_system_prompt: Optional[str] = (
+            append_system_prompt if append_system_prompt else None
+        )
         
         # Ephemeral prefill messages (few-shot priming, never persisted)
         self.prefill_messages = _load_prefill_messages(
@@ -3351,7 +3368,12 @@ class HermesCLI:
                 enabled_toolsets=self.enabled_toolsets,
                 verbose_logging=self.verbose,
                 quiet_mode=not self.verbose,
-                ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
+                ephemeral_system_prompt=(
+                    ((self.system_prompt + "\n\n" + self.append_system_prompt).strip())
+                    if (self.system_prompt and self.append_system_prompt)
+                    else (self.append_system_prompt or self.system_prompt or None)
+                ),
+                ephemeral_system_prompt_override=self.system_prompt_override,
                 prefill_messages=self.prefill_messages or None,
                 reasoning_config=self.reasoning_config,
                 service_tier=self.service_tier,
@@ -10859,6 +10881,8 @@ def main(
     pass_session_id: bool = False,
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
+    system_prompt_override: str = None,
+    append_system_prompt: str = None,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -10969,6 +10993,8 @@ def main(
         checkpoints=checkpoints,
         pass_session_id=pass_session_id,
         ignore_rules=ignore_rules,
+        system_prompt_override=system_prompt_override,
+        append_system_prompt=append_system_prompt,
     )
 
     if parsed_skills:

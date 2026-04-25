@@ -1170,6 +1170,25 @@ def cmd_chat(args):
     if getattr(args, "source", None):
         os.environ["HERMES_SESSION_SOURCE"] = args.source
 
+    # --system-prompt / --system-prompt-file: ephemeral per-turn override (#15597).
+    # Mutually exclusive — bail early before launching the agent.
+    _sys_prompt_override = getattr(args, "system_prompt", None)
+    _sys_prompt_file = getattr(args, "system_prompt_file", None)
+    if _sys_prompt_override and _sys_prompt_file:
+        print(
+            "Error: --system-prompt and --system-prompt-file are mutually exclusive. "
+            "Pass exactly one."
+        )
+        sys.exit(2)
+    if _sys_prompt_file:
+        try:
+            with open(_sys_prompt_file, "r", encoding="utf-8") as _fh:
+                _sys_prompt_override = _fh.read()
+        except OSError as e:
+            print(f"Error: --system-prompt-file could not be read: {e}")
+            sys.exit(2)
+    _append_sys_prompt = getattr(args, "append_system_prompt", None)
+
     if use_tui:
         _launch_tui(
             getattr(args, "resume", None),
@@ -1196,6 +1215,8 @@ def cmd_chat(args):
         "max_turns": getattr(args, "max_turns", None),
         "ignore_rules": getattr(args, "ignore_rules", False),
         "ignore_user_config": getattr(args, "ignore_user_config", False),
+        "system_prompt_override": _sys_prompt_override,
+        "append_system_prompt": _append_sys_prompt,
     }
     # Filter out None values
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
@@ -7044,6 +7065,38 @@ For more help on a command:
         help="Session source tag for filtering (default: cli). Use 'tool' for third-party integrations that should not appear in user session lists.",
     )
     chat_parser.add_argument(
+        "--system-prompt",
+        dest="system_prompt",
+        default=None,
+        metavar="TEXT",
+        help=(
+            "Per-turn system prompt override. Replaces the cached base system prompt "
+            "for this turn only — does not mutate SOUL.md, the cached base prompt, or "
+            "the persisted session system prompt."
+        ),
+    )
+    chat_parser.add_argument(
+        "--system-prompt-file",
+        dest="system_prompt_file",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Per-turn system prompt override read from PATH. Same isolation guarantees "
+            "as --system-prompt. Mutually exclusive with --system-prompt."
+        ),
+    )
+    chat_parser.add_argument(
+        "--append-system-prompt",
+        dest="append_system_prompt",
+        default=None,
+        metavar="TEXT",
+        help=(
+            "Per-turn system prompt addendum. Appended to the cached base system prompt "
+            "(or to --system-prompt/--system-prompt-file when provided) without mutating "
+            "either source. Useful for layering ephemeral persona/context onto a session."
+        ),
+    )
+    chat_parser.add_argument(
         "--tui",
         action="store_true",
         default=False,
@@ -8427,6 +8480,16 @@ Examples:
     )
     sessions_prune.add_argument("--source", help="Only prune sessions from this source")
     sessions_prune.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show how many sessions would be pruned without deleting anything",
+    )
+    sessions_prune.add_argument(
+        "--vacuum",
+        action="store_true",
+        help="Run VACUUM after pruning to reclaim disk space",
+    )
+    sessions_prune.add_argument(
         "--yes", "-y", action="store_true", help="Skip confirmation"
     )
 
@@ -8551,6 +8614,10 @@ Examples:
         elif action == "prune":
             days = args.older_than
             source_msg = f" from '{args.source}'" if args.source else ""
+            if args.dry_run:
+                count = db.prune_sessions(older_than_days=days, source=args.source, dry_run=True)
+                print(f"Would prune {count} session(s){source_msg} older than {days} days.")
+                return
             if not args.yes:
                 if not _confirm_prompt(
                     f"Delete all ended sessions older than {days} days{source_msg}? [y/N] "
@@ -8559,6 +8626,11 @@ Examples:
                     return
             count = db.prune_sessions(older_than_days=days, source=args.source)
             print(f"Pruned {count} session(s).")
+            if args.vacuum and count > 0:
+                db.vacuum()
+                print("VACUUM complete.")
+            elif args.vacuum:
+                print("Skipped VACUUM because nothing was pruned.")
 
         elif action == "rename":
             resolved_session_id = db.resolve_session_id(args.session_id)

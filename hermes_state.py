@@ -1501,16 +1501,19 @@ class SessionDB:
             return True
         return self._execute_write(_do)
 
-    def prune_sessions(self, older_than_days: int = 90, source: str = None) -> int:
-        """Delete sessions older than N days. Returns count of deleted sessions.
+    def prune_sessions(self, older_than_days: int = 90, source: str = None, dry_run: bool = False) -> int:
+        """Delete sessions older than N days. Returns count of matching/deleted sessions.
 
-        Only prunes ended sessions (not active ones).  Child sessions outside
-        the prune window are orphaned (parent_session_id set to NULL) rather
-        than cascade-deleted.
+        Only prunes ended sessions (not active ones). Child sessions whose
+        parent is being deleted are orphaned (parent_session_id set to NULL)
+        rather than cascade-deleted.
+
+        When ``dry_run`` is true, no rows are deleted; the return value is the
+        number of sessions that would be pruned.
         """
         cutoff = time.time() - (older_than_days * 86400)
 
-        def _do(conn):
+        def _matching_session_ids(conn):
             if source:
                 cursor = conn.execute(
                     """SELECT id FROM sessions
@@ -1522,12 +1525,18 @@ class SessionDB:
                     "SELECT id FROM sessions WHERE started_at < ? AND ended_at IS NOT NULL",
                     (cutoff,),
                 )
-            session_ids = set(row["id"] for row in cursor.fetchall())
+            return set(row["id"] for row in cursor.fetchall())
+
+        if dry_run:
+            with self._lock:
+                return len(_matching_session_ids(self._conn))
+
+        def _do(conn):
+            session_ids = _matching_session_ids(conn)
 
             if not session_ids:
                 return 0
 
-            # Orphan any sessions whose parent is about to be deleted
             placeholders = ",".join("?" * len(session_ids))
             conn.execute(
                 f"UPDATE sessions SET parent_session_id = NULL "
