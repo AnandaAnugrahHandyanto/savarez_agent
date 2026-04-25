@@ -12,6 +12,7 @@ from typing import Any, Deque, Optional
 import acp
 from acp.schema import (
     AgentCapabilities,
+    AudioContentBlock,
     AuthenticateResponse,
     AvailableCommand,
     AvailableCommandsUpdate,
@@ -19,7 +20,6 @@ from acp.schema import (
     EmbeddedResourceContentBlock,
     ForkSessionResponse,
     ImageContentBlock,
-    AudioContentBlock,
     Implementation,
     InitializeResponse,
     ListSessionsResponse,
@@ -30,17 +30,17 @@ from acp.schema import (
     ModelInfo,
     NewSessionResponse,
     PromptResponse,
-    ResumeSessionResponse,
-    SetSessionConfigOptionResponse,
-    SetSessionModelResponse,
-    SetSessionModeResponse,
     ResourceContentBlock,
+    ResumeSessionResponse,
     SessionCapabilities,
     SessionForkCapabilities,
+    SessionInfo,
     SessionListCapabilities,
     SessionModelState,
     SessionResumeCapabilities,
-    SessionInfo,
+    SetSessionConfigOptionResponse,
+    SetSessionModelResponse,
+    SetSessionModeResponse,
     TextContentBlock,
     UnstructuredCommandInput,
     Usage,
@@ -60,7 +60,11 @@ from acp_adapter.events import (
     make_tool_progress_cb,
 )
 from acp_adapter.permissions import make_approval_callback
-from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
+from acp_adapter.session import (
+    SessionManager,
+    SessionState,
+    _expand_acp_enabled_toolsets,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -172,7 +176,11 @@ class HermesACPAgent(acp.Agent):
         provider = getattr(state.agent, "provider", None) or detect_provider() or "openrouter"
 
         try:
-            from hermes_cli.models import curated_models_for_provider, normalize_provider, provider_label
+            from hermes_cli.models import (
+                curated_models_for_provider,
+                normalize_provider,
+                provider_label,
+            )
 
             normalized_provider = normalize_provider(provider)
             provider_name = provider_label(normalized_provider)
