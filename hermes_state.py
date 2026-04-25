@@ -388,6 +388,7 @@ class SessionDB:
         system_prompt: str = None,
         user_id: str = None,
         parent_session_id: str = None,
+        started_at: float = None,
     ) -> str:
         """Create a new session record. Returns the session_id."""
         def _do(conn):
@@ -403,7 +404,7 @@ class SessionDB:
                     json.dumps(model_config) if model_config else None,
                     system_prompt,
                     parent_session_id,
-                    time.time(),
+                    started_at if started_at is not None else time.time(),
                 ),
             )
         self._execute_write(_do)
@@ -956,6 +957,7 @@ class SessionDB:
         reasoning_content: str = None,
         reasoning_details: Any = None,
         codex_reasoning_items: Any = None,
+        timestamp: float = None,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -992,7 +994,7 @@ class SessionDB:
                     tool_call_id,
                     tool_calls_json,
                     tool_name,
-                    time.time(),
+                    timestamp if timestamp is not None else time.time(),
                     token_count,
                     finish_reason,
                     reasoning,
