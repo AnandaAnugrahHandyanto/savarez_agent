@@ -5148,6 +5148,7 @@ class GatewayRunner:
         source = event.source
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
+        adapter = self.adapters.get(source.platform)
 
         agent = self._running_agents.get(session_key)
         if agent is _AGENT_PENDING_SENTINEL:
@@ -5158,6 +5159,8 @@ class GatewayRunner:
                 interrupt_reason=_INTERRUPT_REASON_STOP,
                 invalidation_reason="stop_command_pending",
             )
+            if adapter and hasattr(adapter, "clear_session_lock"):
+                adapter.clear_session_lock(session_key)
             logger.info("STOP (pending) for session %s — sentinel cleared", session_key[:20])
             return "⚡ Stopped. The agent hadn't started yet — you can continue this session."
         if agent:
@@ -5169,9 +5172,15 @@ class GatewayRunner:
                 interrupt_reason=_INTERRUPT_REASON_STOP,
                 invalidation_reason="stop_command_handler",
             )
+            if adapter and hasattr(adapter, "clear_session_lock"):
+                adapter.clear_session_lock(session_key)
+            self._pending_messages.pop(session_key, None)
             return "⚡ Stopped. You can continue this session."
-        else:
-            return "No active task to stop."
+        if adapter and hasattr(adapter, "clear_session_lock") and adapter.clear_session_lock(session_key):
+            self._pending_messages.pop(session_key, None)
+            logger.info("STOP for session %s — adapter lock cleared without running agent", session_key[:20])
+            return "⚡ Unlocked the stuck session. You can continue this session."
+        return "No active task to stop."
 
     async def _handle_restart_command(self, event: MessageEvent) -> str:
         """Handle /restart command - drain active work, then restart the gateway."""

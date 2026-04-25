@@ -1246,6 +1246,55 @@ class BasePlatformAdapter(ABC):
         Default is a no-op for platforms with one-shot typing indicators.
         """
         pass
+
+    def _get_delivery_timeout_seconds(self) -> float:
+        """Return the per-delivery hard timeout for adapter send operations."""
+        raw = (
+            self.config.extra.get("delivery_timeout_seconds")
+            or os.getenv("HERMES_GATEWAY_DELIVERY_TIMEOUT")
+            or 60
+        )
+        try:
+            timeout = float(raw)
+        except (TypeError, ValueError):
+            timeout = 60.0
+        return timeout if timeout > 0 else 0.0
+
+    async def _run_with_delivery_timeout(
+        self,
+        awaitable: Awaitable[Any],
+        *,
+        operation: str,
+        chat_id: str,
+    ) -> Any:
+        """Bound adapter delivery so a stuck send cannot lock the session forever."""
+        timeout = self._get_delivery_timeout_seconds()
+        if timeout <= 0:
+            return await awaitable
+        try:
+            return await asyncio.wait_for(awaitable, timeout=timeout)
+        except asyncio.TimeoutError as exc:
+            logger.error(
+                "[%s] %s timed out after %.1fs for chat %s",
+                self.name,
+                operation,
+                timeout,
+                chat_id,
+            )
+            raise RuntimeError(
+                f"{operation} timed out after {timeout:.1f}s"
+            ) from exc
+
+    def clear_session_lock(self, session_key: str) -> bool:
+        """Drop adapter-level lock and queued message for a session."""
+        cleared = False
+        if session_key in self._pending_messages:
+            del self._pending_messages[session_key]
+            cleared = True
+        if session_key in self._active_sessions:
+            del self._active_sessions[session_key]
+            cleared = True
+        return cleared
     
     async def send_image(
         self,
@@ -2238,10 +2287,14 @@ class BasePlatformAdapter(ABC):
                 # Play TTS audio before text (voice-first experience)
                 if _tts_path and Path(_tts_path).exists():
                     try:
-                        await self.play_tts(
+                        await self._run_with_delivery_timeout(
+                            self.play_tts(
+                                chat_id=event.source.chat_id,
+                                audio_path=_tts_path,
+                                metadata=_thread_metadata,
+                            ),
+                            operation="tts delivery",
                             chat_id=event.source.chat_id,
-                            audio_path=_tts_path,
-                            metadata=_thread_metadata,
                         )
                     finally:
                         try:
@@ -2252,11 +2305,15 @@ class BasePlatformAdapter(ABC):
                 # Send the text portion
                 if text_content:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
-                    result = await self._send_with_retry(
+                    result = await self._run_with_delivery_timeout(
+                        self._send_with_retry(
+                            chat_id=event.source.chat_id,
+                            content=text_content,
+                            reply_to=event.message_id,
+                            metadata=_thread_metadata,
+                        ),
+                        operation="response delivery",
                         chat_id=event.source.chat_id,
-                        content=text_content,
-                        reply_to=event.message_id,
-                        metadata=_thread_metadata,
                     )
                     _record_delivery(result)
 
@@ -2278,18 +2335,26 @@ class BasePlatformAdapter(ABC):
                         )
                         # Route animated GIFs through send_animation for proper playback
                         if self._is_animation_url(image_url):
-                            img_result = await self.send_animation(
+                            img_result = await self._run_with_delivery_timeout(
+                                self.send_animation(
+                                    chat_id=event.source.chat_id,
+                                    animation_url=image_url,
+                                    caption=alt_text if alt_text else None,
+                                    metadata=_thread_metadata,
+                                ),
+                                operation="animation delivery",
                                 chat_id=event.source.chat_id,
-                                animation_url=image_url,
-                                caption=alt_text if alt_text else None,
-                                metadata=_thread_metadata,
                             )
                         else:
-                            img_result = await self.send_image(
+                            img_result = await self._run_with_delivery_timeout(
+                                self.send_image(
+                                    chat_id=event.source.chat_id,
+                                    image_url=image_url,
+                                    caption=alt_text if alt_text else None,
+                                    metadata=_thread_metadata,
+                                ),
+                                operation="image delivery",
                                 chat_id=event.source.chat_id,
-                                image_url=image_url,
-                                caption=alt_text if alt_text else None,
-                                metadata=_thread_metadata,
                             )
                         if not img_result.success:
                             logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
@@ -2307,28 +2372,44 @@ class BasePlatformAdapter(ABC):
                     try:
                         ext = Path(media_path).suffix.lower()
                         if ext in _AUDIO_EXTS:
-                            media_result = await self.send_voice(
+                            media_result = await self._run_with_delivery_timeout(
+                                self.send_voice(
+                                    chat_id=event.source.chat_id,
+                                    audio_path=media_path,
+                                    metadata=_thread_metadata,
+                                ),
+                                operation="audio delivery",
                                 chat_id=event.source.chat_id,
-                                audio_path=media_path,
-                                metadata=_thread_metadata,
                             )
                         elif ext in _VIDEO_EXTS:
-                            media_result = await self.send_video(
+                            media_result = await self._run_with_delivery_timeout(
+                                self.send_video(
+                                    chat_id=event.source.chat_id,
+                                    video_path=media_path,
+                                    metadata=_thread_metadata,
+                                ),
+                                operation="video delivery",
                                 chat_id=event.source.chat_id,
-                                video_path=media_path,
-                                metadata=_thread_metadata,
                             )
                         elif ext in _IMAGE_EXTS:
-                            media_result = await self.send_image_file(
+                            media_result = await self._run_with_delivery_timeout(
+                                self.send_image_file(
+                                    chat_id=event.source.chat_id,
+                                    image_path=media_path,
+                                    metadata=_thread_metadata,
+                                ),
+                                operation="image file delivery",
                                 chat_id=event.source.chat_id,
-                                image_path=media_path,
-                                metadata=_thread_metadata,
                             )
                         else:
-                            media_result = await self.send_document(
+                            media_result = await self._run_with_delivery_timeout(
+                                self.send_document(
+                                    chat_id=event.source.chat_id,
+                                    file_path=media_path,
+                                    metadata=_thread_metadata,
+                                ),
+                                operation="document delivery",
                                 chat_id=event.source.chat_id,
-                                file_path=media_path,
-                                metadata=_thread_metadata,
                             )
 
                         if not media_result.success:
@@ -2343,22 +2424,34 @@ class BasePlatformAdapter(ABC):
                     try:
                         ext = Path(file_path).suffix.lower()
                         if ext in _IMAGE_EXTS:
-                            await self.send_image_file(
+                            await self._run_with_delivery_timeout(
+                                self.send_image_file(
+                                    chat_id=event.source.chat_id,
+                                    image_path=file_path,
+                                    metadata=_thread_metadata,
+                                ),
+                                operation="image file delivery",
                                 chat_id=event.source.chat_id,
-                                image_path=file_path,
-                                metadata=_thread_metadata,
                             )
                         elif ext in _VIDEO_EXTS:
-                            await self.send_video(
+                            await self._run_with_delivery_timeout(
+                                self.send_video(
+                                    chat_id=event.source.chat_id,
+                                    video_path=file_path,
+                                    metadata=_thread_metadata,
+                                ),
+                                operation="video delivery",
                                 chat_id=event.source.chat_id,
-                                video_path=file_path,
-                                metadata=_thread_metadata,
                             )
                         else:
-                            await self.send_document(
+                            await self._run_with_delivery_timeout(
+                                self.send_document(
+                                    chat_id=event.source.chat_id,
+                                    file_path=file_path,
+                                    metadata=_thread_metadata,
+                                ),
+                                operation="document delivery",
                                 chat_id=event.source.chat_id,
-                                file_path=file_path,
-                                metadata=_thread_metadata,
                             )
                     except Exception as file_err:
                         logger.error("[%s] Error sending local file %s: %s", self.name, file_path, file_err)
@@ -2411,14 +2504,18 @@ class BasePlatformAdapter(ABC):
                 error_type = type(e).__name__
                 error_detail = str(e)[:300] if str(e) else "no details available"
                 _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
-                await self.send(
-                    chat_id=event.source.chat_id,
-                    content=(
-                        f"Sorry, I encountered an error ({error_type}).\n"
-                        f"{error_detail}\n"
-                        "Try again or use /reset to start a fresh session."
+                await self._run_with_delivery_timeout(
+                    self.send(
+                        chat_id=event.source.chat_id,
+                        content=(
+                            f"Sorry, I encountered an error ({error_type}).\n"
+                            f"{error_detail}\n"
+                            "Try again or use /reset to start a fresh session."
+                        ),
+                        metadata=_thread_metadata,
                     ),
-                    metadata=_thread_metadata,
+                    operation="error delivery",
+                    chat_id=event.source.chat_id,
                 )
             except Exception:
                 pass  # Last resort — don't let error reporting crash the handler

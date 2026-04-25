@@ -23,8 +23,8 @@ class _FakeAdapter:
     """Minimal adapter stub for testing."""
 
     def __init__(self):
-        self._pending_messages = {}
         self._active_sessions = {}
+        self._pending_messages = {}
         self.interrupted_sessions = []
 
     async def send(self, chat_id, text, **kwargs):
@@ -35,6 +35,19 @@ class _FakeAdapter:
         event = self._active_sessions.get(session_key)
         if event is not None:
             event.set()
+
+    def get_pending_message(self, session_key):
+        return self._pending_messages.pop(session_key, None)
+
+    def clear_session_lock(self, session_key):
+        cleared = False
+        if session_key in self._pending_messages:
+            del self._pending_messages[session_key]
+            cleared = True
+        if session_key in self._active_sessions:
+            del self._active_sessions[session_key]
+            cleared = True
+        return cleared
 
 
 def _make_runner():
@@ -442,6 +455,25 @@ async def test_stop_clears_pending_messages():
     # Pending messages must be cleared
     assert session_key not in runner._pending_messages
     adapter.get_pending_message.assert_called_once_with(session_key)
+
+
+@pytest.mark.asyncio
+async def test_stop_clears_adapter_lock_without_running_agent():
+    """If only the adapter-level session lock remains, /stop must release it."""
+    runner = _make_runner()
+    stop_event = _make_event(text="/stop")
+    session_key = build_session_key(stop_event.source)
+    runner.session_store.get_or_create_session.return_value = MagicMock(session_key=session_key)
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter._active_sessions[session_key] = asyncio.Event()
+    adapter._pending_messages[session_key] = _make_event(text="queued")
+
+    result = await runner._handle_stop_command(stop_event)
+
+    assert result is not None
+    assert "unlocked" in result.lower()
+    assert session_key not in adapter._active_sessions
+    assert session_key not in adapter._pending_messages
 
 
 # ------------------------------------------------------------------
