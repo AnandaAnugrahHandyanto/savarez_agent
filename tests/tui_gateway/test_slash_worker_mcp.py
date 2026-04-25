@@ -40,6 +40,18 @@ def test_slash_worker_sets_mcp_discovery_before_cli_import():
     )
 
 
+def test_slash_worker_overrides_parent_mcp_setting():
+    """slash_worker must force MCP discovery off, not inherit a parent override."""
+    import importlib
+    src = importlib.util.find_spec("tui_gateway.slash_worker")
+    assert src is not None and src.origin is not None
+    with open(src.origin) as fh:
+        source = fh.read()
+
+    assert 'os.environ["HERMES_MCP_DISCOVERY"] = "0"' in source
+    assert "setdefault" not in source
+
+
 def test_slash_worker_does_not_import_cli_at_module_level():
     """cli must NOT be imported at module scope -- it must be lazy in main()."""
     import importlib
@@ -82,3 +94,35 @@ def test_model_tools_runs_mcp_when_env_var_absent(monkeypatch):
     assert should_discover is True, (
         "MCP discovery should run when HERMES_MCP_DISCOVERY is not set"
     )
+
+
+def test_tui_server_forces_mcp_discovery_off_for_worker(monkeypatch):
+    """The slash worker subprocess must always inherit HERMES_MCP_DISCOVERY=0."""
+    import importlib
+    server = importlib.import_module("tui_gateway.server")
+
+    popen_kwargs = {}
+
+    class DummyProc:
+        stdin = None
+        stdout = None
+        stderr = None
+
+    class DummyThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+    def fake_popen(*args, **kwargs):
+        popen_kwargs.update(kwargs)
+        return DummyProc()
+
+    monkeypatch.setenv("HERMES_MCP_DISCOVERY", "1")
+    monkeypatch.setattr(server.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(server.threading, "Thread", DummyThread)
+
+    server._SlashWorker("session-1", "")
+
+    assert popen_kwargs["env"]["HERMES_MCP_DISCOVERY"] == "0"

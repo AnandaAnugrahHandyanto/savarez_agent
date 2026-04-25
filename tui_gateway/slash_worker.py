@@ -65,7 +65,7 @@ def main():
     # Suppress MCP discovery -- the TUI server already handles MCP servers;
     # importing cli triggers model_tools which calls discover_mcp_tools() at
     # module scope.  This env var tells model_tools to skip that step.
-    os.environ.setdefault("HERMES_MCP_DISCOVERY", "0")
+    os.environ["HERMES_MCP_DISCOVERY"] = "0"
 
     import cli as cli_mod
     from cli import HermesCLI
