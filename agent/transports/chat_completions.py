@@ -344,7 +344,14 @@ class ChatCompletionsTransport(ProviderTransport):
         # (_extract_reasoning, thinking-prefill retry) reads both distinctly,
         # so keep them apart in provider_data rather than merging.
         reasoning = getattr(msg, "reasoning", None)
+
+        # reasoning_content is an unstructured extra field on most
+        # ChatCompletionMessage models — the OpenAI SDK drops unknown keys
+        # into ``model_extra`` rather than exposing them as attributes
+        # (ref. #15250, DeepSeek V4).  Check both locations.
         reasoning_content = getattr(msg, "reasoning_content", None)
+        if reasoning_content is None and hasattr(msg, "model_extra"):
+            reasoning_content = (msg.model_extra or {}).get("reasoning_content")
 
         provider_data: Dict[str, Any] = {}
         if reasoning_content:

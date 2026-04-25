@@ -2959,11 +2959,15 @@ class AIAgent:
         if hasattr(assistant_message, 'reasoning') and assistant_message.reasoning:
             reasoning_parts.append(assistant_message.reasoning)
         
-        # Check reasoning_content field (alternative name used by some providers)
-        if hasattr(assistant_message, 'reasoning_content') and assistant_message.reasoning_content:
+        # Check reasoning_content field (alternative name used by some providers).
+        # Some SDKs store this in model_extra rather than as a typed attribute.
+        raw_rc = getattr(assistant_message, 'reasoning_content', None)
+        if raw_rc is None and hasattr(assistant_message, 'model_extra'):
+            raw_rc = (assistant_message.model_extra or {}).get('reasoning_content')
+        if raw_rc:
             # Don't duplicate if same as reasoning
-            if assistant_message.reasoning_content not in reasoning_parts:
-                reasoning_parts.append(assistant_message.reasoning_content)
+            if raw_rc not in reasoning_parts:
+                reasoning_parts.append(raw_rc)
         
         # Check reasoning_details array (OpenRouter unified format)
         # Format: [{"type": "reasoning.summary", "summary": "...", ...}, ...]
@@ -7637,16 +7641,22 @@ class AIAgent:
             "finish_reason": finish_reason,
         }
 
-        if hasattr(assistant_message, "reasoning_content"):
-            raw_reasoning_content = getattr(assistant_message, "reasoning_content", None)
-            if raw_reasoning_content is not None:
-                msg["reasoning_content"] = _sanitize_surrogates(raw_reasoning_content)
-            elif msg.get("tool_calls") and self._needs_deepseek_tool_reasoning():
-                # DeepSeek thinking mode requires reasoning_content on every
-                # assistant tool-call message. Without it, replaying the
-                # persisted message causes HTTP 400. Include empty string
-                # as a defensive compatibility fallback (refs #15250).
-                msg["reasoning_content"] = ""
+        # DeepSeek/Moonshot thinking models return reasoning in a separate
+        # ``reasoning_content`` field. The OpenAI SDK stores this in
+        # ``model_extra`` rather than exposing it as a typed attribute.
+        # Try both locations so the field survives for API replay (#15250).
+        raw_reasoning_content = getattr(assistant_message, "reasoning_content", None)
+        if raw_reasoning_content is None and hasattr(assistant_message, "model_extra"):
+            raw_reasoning_content = (assistant_message.model_extra or {}).get("reasoning_content")
+
+        if raw_reasoning_content is not None:
+            msg["reasoning_content"] = _sanitize_surrogates(raw_reasoning_content)
+        elif self._needs_deepseek_tool_reasoning():
+            # DeepSeek thinking mode requires reasoning_content on EVERY
+            # assistant message (not just tool calls). Without it, replaying
+            # the persisted message causes HTTP 400. Include empty string
+            # as a defensive compatibility fallback (refs #15250).
+            msg["reasoning_content"] = ""
 
         if hasattr(assistant_message, 'reasoning_details') and assistant_message.reasoning_details:
             # Pass reasoning_details back unmodified so providers (OpenRouter,
@@ -7767,13 +7777,10 @@ class AIAgent:
             return
 
         # Providers that require an echoed reasoning_content on every
-        # assistant tool-call turn. Detection logic lives in the per-provider
+        # assistant turn. Detection logic lives in the per-provider
         # helpers so both the creation path (_build_assistant_message) and
         # this replay path stay in sync.
-        if source_msg.get("tool_calls") and (
-            self._needs_kimi_tool_reasoning()
-            or self._needs_deepseek_tool_reasoning()
-        ):
+        if self._needs_kimi_tool_reasoning() or self._needs_deepseek_tool_reasoning():
             api_msg["reasoning_content"] = ""
 
     @staticmethod
