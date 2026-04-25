@@ -37,6 +37,7 @@ def _make_runner():
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner._session_model_overrides = {}
+    runner._session_reasoning_overrides = {}
     runner._pending_model_notes = {}
     runner._background_tasks = set()
 
@@ -96,6 +97,19 @@ async def test_new_command_no_override_is_noop():
     await runner._handle_reset_command(_make_event("/new"))
 
     assert session_key not in runner._session_model_overrides
+
+
+@pytest.mark.asyncio
+async def test_new_command_clears_session_reasoning_override():
+    """/new must remove the session-scoped reasoning override for that session."""
+    runner = _make_runner()
+    session_key = build_session_key(_make_source())
+
+    runner._session_reasoning_overrides[session_key] = {"enabled": True, "effort": "xhigh"}
+
+    await runner._handle_reset_command(_make_event("/new"))
+
+    assert session_key not in runner._session_reasoning_overrides
 
 
 @pytest.mark.asyncio
