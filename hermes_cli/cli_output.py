@@ -9,7 +9,6 @@ import getpass
 
 from hermes_cli.colors import Colors, color
 
-
 # ─── Print Helpers ────────────────────────────────────────────────────────────
 
 

@@ -15,17 +15,17 @@ Architecture:
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import logging
 import os
-import shutil
 import shlex
+import shutil
 import ssl
 import stat
-import sys
-import base64
-import hashlib
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -41,7 +41,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 import httpx
 import yaml
 
-from hermes_cli.config import get_hermes_home, get_config_path, read_raw_config
+from hermes_cli.config import get_config_path, get_hermes_home, read_raw_config
 from hermes_constants import OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
@@ -449,7 +449,10 @@ def _resolve_api_key_provider_secret(
     if provider_id == "copilot":
         # Use the dedicated copilot auth module for proper token validation
         try:
-            from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token
+            from hermes_cli.copilot_auth import (
+                get_copilot_api_token,
+                resolve_copilot_token,
+            )
             token, source = resolve_copilot_token()
             if token:
                 return get_copilot_api_token(token), source
@@ -3810,7 +3813,7 @@ def _save_model_choice(model_id: str) -> None:
     The model is stored in config.yaml only — NOT in .env.  This avoids
     conflicts in multi-agent setups where env vars would stomp each other.
     """
-    from hermes_cli.config import save_config, load_config
+    from hermes_cli.config import load_config, save_config
 
     config = load_config()
     # Always use dict format so provider/base_url can be stored alongside
@@ -4236,8 +4239,10 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                 )
 
             from hermes_cli.models import (
-                _PROVIDER_MODELS, get_pricing_for_provider,
-                check_nous_free_tier, partition_nous_models_by_tier,
+                _PROVIDER_MODELS,
+                check_nous_free_tier,
+                get_pricing_for_provider,
+                partition_nous_models_by_tier,
             )
             model_ids = _PROVIDER_MODELS.get("nous", [])
 

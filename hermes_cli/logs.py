@@ -24,7 +24,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Sequence
 
-from hermes_constants import get_hermes_home, display_hermes_home
+from hermes_constants import display_hermes_home, get_hermes_home
 
 # Known log files (name → filename)
 LOG_FILES = {
@@ -172,7 +172,7 @@ def tail_log(
     log_path = get_hermes_home() / "logs" / filename
     if not log_path.exists():
         print(f"Log file not found: {log_path}")
-        print(f"(Logs are created when Hermes runs — try 'hermes chat' first)")
+        print("(Logs are created when Hermes runs — try 'hermes chat' first)")
         sys.exit(1)
 
     # Parse --since into a datetime cutoff

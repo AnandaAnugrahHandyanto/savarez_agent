@@ -21,7 +21,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from hermes_constants import get_default_hermes_root, get_hermes_home, display_hermes_home
+from hermes_constants import (
+    display_hermes_home,
+    get_default_hermes_root,
+    get_hermes_home,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -221,7 +225,7 @@ def run_backup(args) -> None:
     print(f"  Time:        {elapsed:.1f}s")
 
     if skipped_dirs:
-        print(f"\n  Excluded directories:")
+        print("\n  Excluded directories:")
         for d in sorted(skipped_dirs):
             print(f"    {d}/")
 
@@ -397,8 +401,10 @@ def run_import(args) -> None:
         if profiles_dir.is_dir():
             try:
                 from hermes_cli.profiles import (
-                    create_wrapper_script, check_alias_collision,
-                    _is_wrapper_dir_in_path, _get_wrapper_dir,
+                    _get_wrapper_dir,
+                    _is_wrapper_dir_in_path,
+                    check_alias_collision,
+                    create_wrapper_script,
                 )
                 for entry in sorted(profiles_dir.iterdir()):
                     if not entry.is_dir():
@@ -429,8 +435,8 @@ def run_import(args) -> None:
             except ImportError:
                 # hermes_cli.profiles might not be available (fresh install)
                 if any(profiles_dir.iterdir()):
-                    print(f"\n  Profiles detected but aliases could not be created.")
-                    print(f"  Run: hermes profile list  (after installing hermes)")
+                    print("\n  Profiles detected but aliases could not be created.")
+                    print("  Run: hermes profile list  (after installing hermes)")
 
         # Guidance
         print()

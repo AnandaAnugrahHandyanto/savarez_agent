@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from getpass import getpass
 import math
 import sys
 import time
-from types import SimpleNamespace
 import uuid
+from getpass import getpass
+from types import SimpleNamespace
 
+import hermes_cli.auth as auth_mod
 from agent.credential_pool import (
     AUTH_TYPE_API_KEY,
     AUTH_TYPE_OAUTH,
@@ -16,9 +17,9 @@ from agent.credential_pool import (
     SOURCE_MANUAL,
     STATUS_EXHAUSTED,
     STRATEGY_FILL_FIRST,
-    STRATEGY_ROUND_ROBIN,
-    STRATEGY_RANDOM,
     STRATEGY_LEAST_USED,
+    STRATEGY_RANDOM,
+    STRATEGY_ROUND_ROBIN,
     PooledCredential,
     _exhausted_until,
     _normalize_custom_pool_name,
@@ -27,10 +28,8 @@ from agent.credential_pool import (
     list_custom_pool_providers,
     load_pool,
 )
-import hermes_cli.auth as auth_mod
 from hermes_cli.auth import PROVIDER_REGISTRY
 from hermes_constants import OPENROUTER_BASE_URL
-
 
 # Providers that support OAuth login in addition to API keys.
 _OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "qwen-oauth", "google-gemini-cli"}
@@ -456,11 +455,15 @@ def _interactive_auth() -> None:
 
     # Show AWS Bedrock credential status (not in the pool — uses boto3 chain)
     try:
-        from agent.bedrock_adapter import has_aws_credentials, resolve_aws_auth_env_var, resolve_bedrock_region
+        from agent.bedrock_adapter import (
+            has_aws_credentials,
+            resolve_aws_auth_env_var,
+            resolve_bedrock_region,
+        )
         if has_aws_credentials():
             auth_source = resolve_aws_auth_env_var() or "unknown"
             region = resolve_bedrock_region()
-            print(f"bedrock (AWS SDK credential chain):")
+            print("bedrock (AWS SDK credential chain):")
             print(f"  Auth: {auth_source}")
             print(f"  Region: {region}")
             try:
@@ -470,7 +473,7 @@ def _interactive_auth() -> None:
                 arn = identity.get("Arn", "unknown")
                 print(f"  Identity: {arn}")
             except Exception:
-                print(f"  Identity: (could not resolve — boto3 STS call failed)")
+                print("  Identity: (could not resolve — boto3 STS call failed)")
             print()
     except ImportError:
         pass  # boto3 or bedrock_adapter not available

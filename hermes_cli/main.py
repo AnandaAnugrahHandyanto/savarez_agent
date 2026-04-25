@@ -51,6 +51,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+
 def _add_accept_hooks_flag(parser) -> None:
     """Attach the ``--accept-hooks`` flag.  Shared across every agent
     subparser so the flag works regardless of CLI position."""
@@ -213,7 +214,7 @@ import logging
 import time as _time
 from datetime import datetime
 
-from hermes_cli import __version__, __release_date__
+from hermes_cli import __release_date__, __version__
 from hermes_constants import AI_GATEWAY_BASE_URL, OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
@@ -239,14 +240,18 @@ def _relative_time(ts) -> str:
 
 def _has_any_provider_configured() -> bool:
     """Check if at least one inference provider is usable."""
-    from hermes_cli.config import get_env_path, get_hermes_home, load_config
     from hermes_cli.auth import get_auth_status
 
     # Determine whether Hermes itself has been explicitly configured (model
     # in config that isn't the hardcoded default). Used below to gate external
     # tool credentials (Claude Code, Codex CLI) that shouldn't silently skip
     # the setup wizard on a fresh install.
-    from hermes_cli.config import DEFAULT_CONFIG
+    from hermes_cli.config import (
+        DEFAULT_CONFIG,
+        get_env_path,
+        get_hermes_home,
+        load_config,
+    )
 
     _DEFAULT_MODEL = DEFAULT_CONFIG.get("model", "")
     cfg = load_config()
@@ -336,8 +341,8 @@ def _has_any_provider_configured() -> bool:
     if _has_hermes_config:
         try:
             from agent.anthropic_adapter import (
-                read_claude_code_credentials,
                 is_claude_code_token_valid,
+                read_claude_code_credentials,
             )
 
             creds = read_claude_code_credentials()
@@ -1441,14 +1446,14 @@ def select_provider_and_model(args=None):
     persistence.
     """
     from hermes_cli.auth import (
-        resolve_provider,
         AuthError,
         format_auth_error,
+        resolve_provider,
     )
     from hermes_cli.config import (
         get_compatible_custom_providers,
-        load_config,
         get_env_value,
+        load_config,
     )
     from hermes_cli.providers import resolve_provider_full
 
@@ -1498,7 +1503,7 @@ def select_provider_and_model(args=None):
     if active == "openrouter" and get_env_value("OPENAI_BASE_URL"):
         active = "custom"
 
-    from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_LABELS
+    from hermes_cli.models import _PROVIDER_LABELS, CANONICAL_PROVIDERS
 
     provider_labels = dict(_PROVIDER_LABELS)  # derive from canonical list
     active_label = provider_labels.get(active, active) if active else "none"
@@ -1664,7 +1669,7 @@ def _clear_stale_openai_base_url():
     requests to the old custom endpoint instead of the newly selected
     provider.  See issue #5161.
     """
-    from hermes_cli.config import get_env_value, save_env_value, load_config
+    from hermes_cli.config import get_env_value, load_config, save_env_value
 
     cfg = load_config()
     model_cfg = cfg.get("model", {})
@@ -2074,7 +2079,7 @@ def _model_flow_openrouter(config, current_model=""):
         print("API key saved.")
         print()
 
-    from hermes_cli.models import model_ids, get_pricing_for_provider
+    from hermes_cli.models import get_pricing_for_provider, model_ids
 
     openrouter_models = model_ids(force_refresh=True)
 
@@ -2165,15 +2170,15 @@ def _model_flow_ai_gateway(config, current_model=""):
 def _model_flow_nous(config, current_model="", args=None):
     """Nous Portal provider: ensure logged in, then pick model."""
     from hermes_cli.auth import (
-        get_provider_auth_state,
+        PROVIDER_REGISTRY,
+        AuthError,
+        _login_nous,
         _prompt_model_selection,
         _save_model_choice,
         _update_config_for_provider,
-        resolve_nous_runtime_credentials,
-        AuthError,
         format_auth_error,
-        _login_nous,
-        PROVIDER_REGISTRY,
+        get_provider_auth_state,
+        resolve_nous_runtime_credentials,
     )
     from hermes_cli.config import (
         get_env_value,
@@ -2219,8 +2224,8 @@ def _model_flow_nous(config, current_model="", args=None):
     # shows only agentic models users recognize from OpenRouter.
     from hermes_cli.models import (
         _PROVIDER_MODELS,
-        get_pricing_for_provider,
         check_nous_free_tier,
+        get_pricing_for_provider,
         partition_nous_models_by_tier,
     )
 
@@ -2337,13 +2342,13 @@ def _model_flow_nous(config, current_model="", args=None):
 def _model_flow_openai_codex(config, current_model=""):
     """OpenAI Codex provider: ensure logged in, then pick model."""
     from hermes_cli.auth import (
-        get_codex_auth_status,
+        DEFAULT_CODEX_BASE_URL,
+        PROVIDER_REGISTRY,
+        _login_openai_codex,
         _prompt_model_selection,
         _save_model_choice,
         _update_config_for_provider,
-        _login_openai_codex,
-        PROVIDER_REGISTRY,
-        DEFAULT_CODEX_BASE_URL,
+        get_codex_auth_status,
     )
     from hermes_cli.codex_models import get_codex_model_ids
 
@@ -2433,12 +2438,12 @@ _DEFAULT_QWEN_PORTAL_MODELS = [
 def _model_flow_qwen_oauth(_config, current_model=""):
     """Qwen OAuth provider: reuse local Qwen CLI login, then pick model."""
     from hermes_cli.auth import (
-        get_qwen_auth_status,
-        resolve_qwen_runtime_credentials,
+        DEFAULT_QWEN_BASE_URL,
         _prompt_model_selection,
         _save_model_choice,
         _update_config_for_provider,
-        DEFAULT_QWEN_BASE_URL,
+        get_qwen_auth_status,
+        resolve_qwen_runtime_credentials,
     )
     from hermes_cli.models import fetch_api_models
 
@@ -2485,11 +2490,11 @@ def _model_flow_google_gemini_cli(_config, current_model=""):
     """
     from hermes_cli.auth import (
         DEFAULT_GEMINI_CLOUDCODE_BASE_URL,
-        get_gemini_oauth_auth_status,
-        resolve_gemini_oauth_runtime_credentials,
         _prompt_model_selection,
         _save_model_choice,
         _update_config_for_provider,
+        get_gemini_oauth_auth_status,
+        resolve_gemini_oauth_runtime_credentials,
     )
     from hermes_cli.models import _PROVIDER_MODELS
 
@@ -2602,8 +2607,8 @@ def _model_flow_custom(config):
     )
     if _looks_local and not _url_lower.endswith("/v1"):
         print()
-        print(f"  Hint: Did you mean to add /v1 at the end?")
-        print(f"  Most local model servers (Ollama, vLLM, llama.cpp) require it.")
+        print("  Hint: Did you mean to add /v1 at the end?")
+        print("  Most local model servers (Ollama, vLLM, llama.cpp) require it.")
         print(f"  e.g. {effective_url.rstrip('/')}/v1")
         try:
             _add_v1 = input("  Add /v1? [Y/n]: ").strip().lower()
@@ -3153,12 +3158,12 @@ def _model_flow_copilot(config, current_model=""):
         deactivate_provider,
         resolve_api_key_provider_credentials,
     )
-    from hermes_cli.config import save_env_value, load_config, save_config
+    from hermes_cli.config import load_config, save_config, save_env_value
     from hermes_cli.models import (
+        copilot_model_api_mode,
         fetch_api_models,
         fetch_github_model_catalog,
         github_model_reasoning_efforts,
-        copilot_model_api_mode,
         normalize_copilot_model_id,
     )
 
@@ -3346,11 +3351,11 @@ def _model_flow_copilot_acp(config, current_model=""):
         resolve_api_key_provider_credentials,
         resolve_external_process_provider_credentials,
     )
+    from hermes_cli.config import load_config, save_config
     from hermes_cli.models import (
         fetch_github_model_catalog,
         normalize_copilot_model_id,
     )
-    from hermes_cli.config import load_config, save_config
 
     del config
 
@@ -3457,17 +3462,17 @@ def _model_flow_kimi(config, current_model=""):
     No manual base URL prompt — endpoint is determined by key prefix.
     """
     from hermes_cli.auth import (
-        PROVIDER_REGISTRY,
         KIMI_CODE_BASE_URL,
+        PROVIDER_REGISTRY,
         _prompt_model_selection,
         _save_model_choice,
         deactivate_provider,
     )
     from hermes_cli.config import (
         get_env_value,
-        save_env_value,
         load_config,
         save_config,
+        save_env_value,
     )
 
     provider_id = "kimi-coding"
@@ -3588,7 +3593,12 @@ def _model_flow_stepfun(config, current_model=""):
         _save_model_choice,
         deactivate_provider,
     )
-    from hermes_cli.config import get_env_value, save_env_value, load_config, save_config
+    from hermes_cli.config import (
+        get_env_value,
+        load_config,
+        save_config,
+        save_env_value,
+    )
     from hermes_cli.models import fetch_api_models
 
     provider_id = "stepfun"
@@ -3705,9 +3715,9 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
         deactivate_provider,
     )
     from hermes_cli.config import (
+        get_env_value,
         load_config,
         save_config,
-        get_env_value,
         save_env_value,
     )
     from hermes_cli.models import _PROVIDER_MODELS
@@ -3799,10 +3809,10 @@ def _model_flow_bedrock(config, current_model=""):
     # 1. Check for AWS credentials
     try:
         from agent.bedrock_adapter import (
+            discover_bedrock_models,
             has_aws_credentials,
             resolve_aws_auth_env_var,
             resolve_bedrock_region,
-            discover_bedrock_models,
         )
     except ImportError:
         print("  ✗ boto3 is not installed. Install it with:")
@@ -3974,14 +3984,14 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     )
     from hermes_cli.config import (
         get_env_value,
-        save_env_value,
         load_config,
         save_config,
+        save_env_value,
     )
     from hermes_cli.models import (
         fetch_api_models,
-        opencode_model_api_mode,
         normalize_opencode_model_id,
+        opencode_model_api_mode,
     )
 
     pconfig = PROVIDER_REGISTRY[provider_id]
@@ -4201,9 +4211,9 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
 def _run_anthropic_oauth_flow(save_env_value):
     """Run the Claude OAuth setup-token flow. Returns True if credentials were saved."""
     from agent.anthropic_adapter import (
-        run_oauth_setup_token,
-        read_claude_code_credentials,
         is_claude_code_token_valid,
+        read_claude_code_credentials,
+        run_oauth_setup_token,
     )
     from hermes_cli.config import (
         save_anthropic_oauth_token,
@@ -4293,30 +4303,28 @@ def _run_anthropic_oauth_flow(save_env_value):
 
 def _model_flow_anthropic(config, current_model=""):
     """Flow for Anthropic provider — OAuth subscription, API key, or Claude Code creds."""
+    # Check ALL credential sources
     from hermes_cli.auth import (
         _prompt_model_selection,
         _save_model_choice,
         deactivate_provider,
+        get_anthropic_key,
     )
     from hermes_cli.config import (
-        save_env_value,
         load_config,
-        save_config,
         save_anthropic_api_key,
+        save_config,
+        save_env_value,
     )
     from hermes_cli.models import _PROVIDER_MODELS
-
-    # Check ALL credential sources
-    from hermes_cli.auth import get_anthropic_key
 
     existing_key = get_anthropic_key()
     cc_available = False
     try:
         from agent.anthropic_adapter import (
-            read_claude_code_credentials,
-            is_claude_code_token_valid,
             _is_oauth_token,
-            _resolve_claude_code_token_from_credentials,
+            is_claude_code_token_valid,
+            read_claude_code_credentials,
         )
 
         cc_creds = read_claude_code_credentials()
@@ -4607,6 +4615,7 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
     """
     import json as _json
     import uuid as _uuid
+
     from hermes_constants import get_hermes_home
 
     home = get_hermes_home()
@@ -5680,7 +5689,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     "✗ Authentication failed — check your git credentials or SSH key."
                 )
             else:
-                print(f"✗ Failed to fetch updates from origin.")
+                print("✗ Failed to fetch updates from origin.")
                 if stderr:
                     print(f"  {stderr.splitlines()[0]}")
             sys.exit(1)
@@ -5795,7 +5804,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     print(
                         f"  ℹ️  Local changes preserved in stash (ref: {auto_stash_ref})"
                     )
-                    print(f"  Restore manually with: git stash apply")
+                    print("  Restore manually with: git stash apply")
                 else:
                     _restore_stashed_changes(
                         git_cmd,
@@ -5863,6 +5872,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # attributes like display_hermes_home() added since the last release.
         try:
             import importlib
+
             import hermes_constants as _hc
 
             importlib.reload(_hc)
@@ -5894,8 +5904,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Sync bundled skills to all other profiles
         try:
             from hermes_cli.profiles import (
-                list_profiles,
                 get_active_profile_name,
+                list_profiles,
                 seed_profile_skills,
             )
 
@@ -5942,9 +5952,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
         print("→ Checking configuration for new options...")
 
         from hermes_cli.config import (
-            get_missing_env_vars,
-            get_missing_config_fields,
             check_config_version,
+            get_missing_config_fields,
+            get_missing_env_vars,
             migrate_config,
         )
 
@@ -6035,15 +6045,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # The code update (git pull) is shared across all profiles, so every
         # running gateway needs restarting to pick up the new code.
         try:
+            import signal as _signal
+
             from hermes_cli.gateway import (
-                is_macos,
-                supports_systemd_services,
                 _ensure_user_systemd_env,
-                find_gateway_pids,
                 _get_service_pids,
                 _graceful_restart_via_sigusr1,
+                find_gateway_pids,
+                is_macos,
+                supports_systemd_services,
             )
-            import signal as _signal
 
             def _wait_for_service_active(
                 scope_cmd_: list, svc_name_: str, timeout: float = 10.0,
@@ -6301,9 +6312,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if is_macos():
                 try:
                     from hermes_cli.gateway import (
-                        launchd_restart,
                         get_launchd_label,
                         get_launchd_plist_path,
+                        launchd_restart,
                     )
 
                     plist_path = get_launchd_plist_path()
@@ -6366,8 +6377,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # every `hermes update` surfaces the issue until the user migrates.
         try:
             from hermes_cli.gateway import (
-                has_legacy_hermes_units,
                 _find_legacy_hermes_units,
+                has_legacy_hermes_units,
                 supports_systemd_services,
             )
 
@@ -6480,17 +6491,17 @@ def _coalesce_session_name_args(argv: list) -> list:
 def cmd_profile(args):
     """Profile management — create, delete, list, switch, alias."""
     from hermes_cli.profiles import (
-        list_profiles,
+        _get_wrapper_dir,
+        _is_wrapper_dir_in_path,
+        check_alias_collision,
         create_profile,
+        create_wrapper_script,
         delete_profile,
+        get_active_profile_name,
+        list_profiles,
+        remove_wrapper_script,
         seed_profile_skills,
         set_active_profile,
-        get_active_profile_name,
-        check_alias_collision,
-        create_wrapper_script,
-        remove_wrapper_script,
-        _is_wrapper_dir_in_path,
-        _get_wrapper_dir,
     )
     from hermes_constants import display_hermes_home
 
@@ -6553,7 +6564,7 @@ def cmd_profile(args):
         try:
             set_active_profile(name)
             if name == "default":
-                print(f"Switched to: default (~/.hermes)")
+                print("Switched to: default (~/.hermes)")
             else:
                 print(f"Switched to: {name}")
         except (ValueError, FileNotFoundError) as e:
@@ -6626,9 +6637,9 @@ def cmd_profile(args):
                         if not _is_wrapper_dir_in_path():
                             print(f"\n⚠ {_get_wrapper_dir()} is not in your PATH.")
                             print(
-                                f"  Add to your shell config (~/.bashrc or ~/.zshrc):"
+                                "  Add to your shell config (~/.bashrc or ~/.zshrc):"
                             )
-                            print(f'    export PATH="$HOME/.local/bin:$PATH"')
+                            print('    export PATH="$HOME/.local/bin:$PATH"')
 
             # Profile dir for display
             try:
@@ -6637,7 +6648,7 @@ def cmd_profile(args):
                 profile_dir_display = str(profile_dir)
 
             # Next steps
-            print(f"\nNext steps:")
+            print("\nNext steps:")
             print(f"  {name} setup              Configure API keys and model")
             print(f"  {name} chat               Start chatting")
             print(f"  {name} gateway start      Start the messaging gateway")
@@ -6648,7 +6659,7 @@ def cmd_profile(args):
                 print(
                     f"\n  ⚠ This profile has no API keys yet. Run '{name} setup' first,"
                 )
-                print(f"    or it will inherit keys from your shell environment.")
+                print("    or it will inherit keys from your shell environment.")
                 print(f"  Edit {profile_dir_display}/SOUL.md to customize personality")
             print()
 
@@ -6668,11 +6679,11 @@ def cmd_profile(args):
     elif action == "show":
         name = args.profile_name
         from hermes_cli.profiles import (
-            get_profile_dir,
-            profile_exists,
-            _read_config_model,
             _check_gateway_running,
             _count_skills,
+            _read_config_model,
+            get_profile_dir,
+            profile_exists,
         )
 
         if not profile_exists(name):
@@ -6811,7 +6822,7 @@ def cmd_dashboard(args):
 
 def cmd_completion(args, parser=None):
     """Print shell completion script."""
-    from hermes_cli.completion import generate_bash, generate_zsh, generate_fish
+    from hermes_cli.completion import generate_bash, generate_fish, generate_zsh
 
     shell = getattr(args, "shell", "bash")
     if shell == "zsh":
@@ -6824,7 +6835,7 @@ def cmd_completion(args, parser=None):
 
 def cmd_logs(args):
     """View and filter Hermes log files."""
-    from hermes_cli.logs import tail_log, list_logs
+    from hermes_cli.logs import list_logs, tail_log
 
     log_name = getattr(args, "log_name", "agent") or "agent"
 
@@ -8282,7 +8293,7 @@ Examples:
             print("\n  ✓ Memory provider: built-in only")
             print("  Saved to config.yaml\n")
         elif sub == "reset":
-            from hermes_constants import get_hermes_home, display_hermes_home
+            from hermes_constants import display_hermes_home, get_hermes_home
 
             mem_dir = get_hermes_home() / "memories"
             target = getattr(args, "target", "all")
@@ -8302,7 +8313,7 @@ Examples:
                 )
                 return
 
-            print(f"\n  This will permanently erase the following memory files:")
+            print("\n  This will permanently erase the following memory files:")
             for f, desc in existing:
                 path = mem_dir / f
                 size = path.stat().st_size
@@ -8323,7 +8334,7 @@ Examples:
                 print(f"  ✓ Deleted {f} ({desc})")
 
             print(
-                f"\n  Memory reset complete. New sessions will start with a blank slate."
+                "\n  Memory reset complete. New sessions will start with a blank slate."
             )
             print(f"  Files were in: {display_hermes_home()}/memories/\n")
         else:
@@ -8743,8 +8754,8 @@ Examples:
 
     def cmd_insights(args):
         try:
-            from hermes_state import SessionDB
             from agent.insights import InsightsEngine
+            from hermes_state import SessionDB
 
             db = SessionDB()
             engine = InsightsEngine(db)
@@ -9193,8 +9204,8 @@ Examples:
                 "plugin discovery failed at CLI startup", exc_info=True,
             )
         try:
-            from hermes_cli.config import load_config
             from agent.shell_hooks import register_from_config
+            from hermes_cli.config import load_config
             register_from_config(load_config(), accept_hooks=_accept_hooks)
         except Exception:
             logger.debug(

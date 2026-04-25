@@ -15,11 +15,13 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
-
-from hermes_cli.config import (
-    load_config, save_config, get_env_value, save_env_value,
-)
 from hermes_cli.colors import Colors, color
+from hermes_cli.config import (
+    get_env_value,
+    load_config,
+    save_config,
+    save_env_value,
+)
 from hermes_cli.nous_subscription import (
     apply_nous_managed_defaults,
     get_nous_subscription_features,
@@ -36,9 +38,17 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 from hermes_cli.cli_output import (  # noqa: E402 — late import block
     print_error as _print_error,
+)
+from hermes_cli.cli_output import (
     print_info as _print_info,
+)
+from hermes_cli.cli_output import (
     print_success as _print_success,
+)
+from hermes_cli.cli_output import (
     print_warning as _print_warning,
+)
+from hermes_cli.cli_output import (
     prompt as _prompt,
 )
 
@@ -624,7 +634,7 @@ def _get_platform_tools(
     include_default_mcp_servers: bool = True,
 ) -> Set[str]:
     """Resolve which individual toolset names are enabled for a platform."""
-    from toolsets import resolve_toolset, TOOLSETS
+    from toolsets import TOOLSETS, resolve_toolset
 
     platform_toolsets = config.get("platform_toolsets") or {}
     toolset_names = platform_toolsets.get(platform)
@@ -1241,7 +1251,7 @@ def _detect_active_provider_index(providers: list, config: dict) -> int:
 
 def _fal_model_catalog():
     """Lazy-load the FAL model catalog from the tool module."""
-    from tools.image_generation_tool import FAL_MODELS, DEFAULT_MODEL
+    from tools.image_generation_tool import DEFAULT_MODEL, FAL_MODELS
     return FAL_MODELS, DEFAULT_MODEL
 
 

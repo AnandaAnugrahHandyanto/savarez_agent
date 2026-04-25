@@ -20,7 +20,6 @@ from typing import Dict
 
 from hermes_constants import display_hermes_home
 
-
 _SUBSCRIPTIONS_FILENAME = "webhook_subscriptions.json"
 
 
@@ -187,9 +186,9 @@ def _cmd_subscribe(args):
         prompt_preview = route["prompt"][:80] + ("..." if len(route["prompt"]) > 80 else "")
         label = "Message" if route.get("deliver_only") else "Prompt"
         print(f"  {label}: {prompt_preview}")
-    print(f"\n  Configure your service to POST to the URL above.")
-    print(f"  Use the secret for HMAC-SHA256 signature validation.")
-    print(f"  The gateway must be running to receive events (hermes gateway run).\n")
+    print("\n  Configure your service to POST to the URL above.")
+    print("  Use the secret for HMAC-SHA256 signature validation.")
+    print("  The gateway must be running to receive events (hermes gateway run).\n")
 
 
 def _cmd_list(args):
@@ -246,8 +245,8 @@ def _cmd_test(args):
 
     payload = args.payload or '{"test": true, "event_type": "test", "message": "Hello from hermes webhook test"}'
 
-    import hmac
     import hashlib
+    import hmac
     sig = "sha256=" + hmac.new(
         secret.encode(), payload.encode(), hashlib.sha256
     ).hexdigest()

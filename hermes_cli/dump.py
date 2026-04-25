@@ -13,7 +13,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-from hermes_cli.config import get_hermes_home, get_env_path, get_project_root, load_config
+from hermes_cli.config import (
+    get_env_path,
+    get_hermes_home,
+    get_project_root,
+    load_config,
+)
 from hermes_constants import display_hermes_home
 
 
@@ -207,7 +212,7 @@ def run_dump(args):
     hermes_home = get_hermes_home()
 
     try:
-        from hermes_cli import __version__, __release_date__
+        from hermes_cli import __release_date__, __version__
     except ImportError:
         __version__ = "(unknown)"
         __release_date__ = ""

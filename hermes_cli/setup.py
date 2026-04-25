@@ -11,19 +11,19 @@ Modular wizard with independently-runnable sections:
 Config files are stored in ~/.hermes/ for easy access.
 """
 
+import copy
 import importlib.util
 import logging
 import os
 import shutil
 import sys
-import copy
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 
 from hermes_cli.nous_subscription import get_nous_subscription_features
+from hermes_constants import get_optional_skills_dir
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 from utils import base_url_hostname
-from hermes_constants import get_optional_skills_dir
 
 logger = logging.getLogger(__name__)
 
@@ -130,20 +130,19 @@ def _set_reasoning_effort(config: Dict[str, Any], effort: str) -> None:
 
 
 # Import config helpers
+# display_hermes_home imported lazily at call sites (stale-module safety during hermes update)
+from hermes_cli.colors import Colors, color
 from hermes_cli.config import (
     DEFAULT_CONFIG,
-    get_hermes_home,
+    ensure_hermes_home,
     get_config_path,
     get_env_path,
+    get_env_value,
+    get_hermes_home,
     load_config,
     save_config,
     save_env_value,
-    get_env_value,
-    ensure_hermes_home,
 )
-# display_hermes_home imported lazily at call sites (stale-module safety during hermes update)
-
-from hermes_cli.colors import Colors, color
 
 
 def print_header(title: str):
@@ -718,6 +717,7 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     if not quick and _supports_same_provider_pool_setup(selected_provider):
         try:
             from types import SimpleNamespace
+
             from agent.credential_pool import load_pool
             from hermes_cli.auth_commands import auth_add_command
 
@@ -2330,20 +2330,20 @@ def setup_gateway(config: dict):
         _is_macos = _platform.system() == "Darwin"
 
         from hermes_cli.gateway import (
+            UserSystemdUnavailableError,
             _is_service_installed,
             _is_service_running,
-            supports_systemd_services,
             has_conflicting_systemd_units,
             has_legacy_hermes_units,
             install_linux_gateway_from_setup,
-            print_systemd_scope_conflict_warning,
-            print_legacy_unit_warning,
-            systemd_start,
-            systemd_restart,
             launchd_install,
-            launchd_start,
             launchd_restart,
-            UserSystemdUnavailableError,
+            launchd_start,
+            print_legacy_unit_warning,
+            print_systemd_scope_conflict_warning,
+            supports_systemd_services,
+            systemd_restart,
+            systemd_start,
         )
 
         service_installed = _is_service_installed()
@@ -3165,9 +3165,9 @@ def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
 def _run_quick_setup(config: dict, hermes_home):
     """Quick setup — only configure items that are missing."""
     from hermes_cli.config import (
-        get_missing_env_vars,
-        get_missing_config_fields,
         check_config_version,
+        get_missing_config_fields,
+        get_missing_env_vars,
     )
 
     print()

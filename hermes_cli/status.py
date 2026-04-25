@@ -20,6 +20,7 @@ from hermes_cli.runtime_provider import resolve_requested_provider
 from hermes_constants import OPENROUTER_MODELS_URL
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 
+
 def check_mark(ok: bool) -> str:
     if ok:
         return color("✓", Colors.GREEN)
@@ -154,7 +155,11 @@ def show_status(args):
     print(color("◆ Auth Providers", Colors.CYAN, Colors.BOLD))
 
     try:
-        from hermes_cli.auth import get_nous_auth_status, get_codex_auth_status, get_qwen_auth_status
+        from hermes_cli.auth import (
+            get_codex_auth_status,
+            get_nous_auth_status,
+            get_qwen_auth_status,
+        )
         nous_status = get_nous_auth_status()
         codex_status = get_codex_auth_status()
         qwen_status = get_qwen_auth_status()
@@ -353,7 +358,10 @@ def show_status(args):
     print(color("◆ Gateway Service", Colors.CYAN, Colors.BOLD))
 
     try:
-        from hermes_cli.gateway import get_gateway_runtime_snapshot, _format_gateway_pids
+        from hermes_cli.gateway import (
+            _format_gateway_pids,
+            get_gateway_runtime_snapshot,
+        )
 
         snapshot = get_gateway_runtime_snapshot()
         is_running = snapshot.running

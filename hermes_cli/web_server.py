@@ -31,22 +31,22 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from hermes_cli import __version__, __release_date__
+from gateway.status import get_running_pid, read_runtime_status
+from hermes_cli import __release_date__, __version__
 from hermes_cli.config import (
     DEFAULT_CONFIG,
     OPTIONAL_ENV_VARS,
+    check_config_version,
     get_config_path,
     get_env_path,
     get_hermes_home,
     load_config,
     load_env,
+    redact_key,
+    remove_env_value,
     save_config,
     save_env_value,
-    remove_env_value,
-    check_config_version,
-    redact_key,
 )
-from gateway.status import get_running_pid, read_runtime_status
 
 try:
     from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -736,7 +736,7 @@ async def get_sessions(limit: int = 20, offset: int = 0):
             return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
         finally:
             db.close()
-    except Exception as e:
+    except Exception:
         _log.exception("GET /api/sessions failed")
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -968,7 +968,7 @@ async def update_config(body: ConfigUpdate):
     try:
         save_config(_denormalize_config_from_web(body.config))
         return {"ok": True}
-    except Exception as e:
+    except Exception:
         _log.exception("PUT /api/config failed")
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -997,7 +997,7 @@ async def set_env_var(body: EnvVarUpdate):
     try:
         save_env_value(body.key, body.value)
         return {"ok": True, "key": body.key}
-    except Exception as e:
+    except Exception:
         _log.exception("PUT /api/env failed")
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -1011,7 +1011,7 @@ async def remove_env_var(body: EnvVarDelete):
         return {"ok": True, "key": body.key}
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         _log.exception("DELETE /api/env failed")
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -1088,9 +1088,9 @@ def _anthropic_oauth_status() -> Dict[str, Any]:
     """
     try:
         from agent.anthropic_adapter import (
-            read_hermes_oauth_credentials,
-            read_claude_code_credentials,
             _HERMES_OAUTH_FILE,
+            read_claude_code_credentials,
+            read_hermes_oauth_credentials,
         )
     except ImportError:
         read_claude_code_credentials = None  # type: ignore
@@ -1383,9 +1383,17 @@ _oauth_sessions_lock = threading.Lock()
 try:
     from agent.anthropic_adapter import (
         _OAUTH_CLIENT_ID as _ANTHROPIC_OAUTH_CLIENT_ID,
-        _OAUTH_TOKEN_URL as _ANTHROPIC_OAUTH_TOKEN_URL,
+    )
+    from agent.anthropic_adapter import (
         _OAUTH_REDIRECT_URI as _ANTHROPIC_OAUTH_REDIRECT_URI,
+    )
+    from agent.anthropic_adapter import (
         _OAUTH_SCOPES as _ANTHROPIC_OAUTH_SCOPES,
+    )
+    from agent.anthropic_adapter import (
+        _OAUTH_TOKEN_URL as _ANTHROPIC_OAUTH_TOKEN_URL,
+    )
+    from agent.anthropic_adapter import (
         _generate_pkce as _generate_pkce_pair,
     )
     _ANTHROPIC_OAUTH_AVAILABLE = True
@@ -1437,13 +1445,14 @@ def _save_anthropic_oauth_creds(access_token: str, refresh_token: str, expires_a
     # the file write — pool registration only matters for the rotation
     # strategy, not for runtime credential resolution.
     try:
+        import uuid
+
         from agent.credential_pool import (
-            PooledCredential,
-            load_pool,
             AUTH_TYPE_OAUTH,
             SOURCE_MANUAL,
+            PooledCredential,
+            load_pool,
         )
-        import uuid
         pool = load_pool("anthropic")
         # Avoid duplicate entries: delete any prior dashboard-issued OAuth entry
         existing = [e for e in pool.entries() if getattr(e, "source", "").startswith(f"{SOURCE_MANUAL}:dashboard_pkce")]
@@ -1568,10 +1577,10 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
     then spawns a background poller. Returns the user-facing display fields
     so the UI can render the verification page link + user code.
     """
-    from hermes_cli import auth as hauth
     if provider_id == "nous":
-        from hermes_cli.auth import _request_device_code, PROVIDER_REGISTRY
         import httpx
+
+        from hermes_cli.auth import PROVIDER_REGISTRY, _request_device_code
         pconfig = PROVIDER_REGISTRY["nous"]
         portal_base_url = (
             os.getenv("HERMES_PORTAL_BASE_URL")
@@ -1647,9 +1656,11 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
 
 def _nous_poller(session_id: str) -> None:
     """Background poller that drives a Nous device-code flow to completion."""
-    from hermes_cli.auth import _poll_for_token, refresh_nous_oauth_from_state
     from datetime import datetime, timezone
+
     import httpx
+
+    from hermes_cli.auth import _poll_for_token, refresh_nous_oauth_from_state
     with _oauth_sessions_lock:
         sess = _oauth_sessions.get(session_id)
     if not sess:
@@ -1720,6 +1731,7 @@ def _codex_full_login_worker(session_id: str) -> None:
     """
     try:
         import httpx
+
         from hermes_cli.auth import (
             CODEX_OAUTH_CLIENT_ID,
             CODEX_OAUTH_TOKEN_URL,
@@ -1804,13 +1816,14 @@ def _codex_full_login_worker(session_id: str) -> None:
             raise RuntimeError("token exchange did not return access_token")
 
         # Persist via credential pool — same shape as auth_commands.add_command
+        import uuid as _uuid
+
         from agent.credential_pool import (
-            PooledCredential,
-            load_pool,
             AUTH_TYPE_OAUTH,
             SOURCE_MANUAL,
+            PooledCredential,
+            load_pool,
         )
-        import uuid as _uuid
         pool = load_pool("openai-codex")
         base_url = (
             os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
@@ -1969,7 +1982,7 @@ async def get_logs(
     component: Optional[str] = None,
     search: Optional[str] = None,
 ):
-    from hermes_cli.logs import _read_tail, LOG_FILES
+    from hermes_cli.logs import LOG_FILES, _read_tail
 
     log_name = LOG_FILES.get(file)
     if not log_name:
@@ -2113,8 +2126,8 @@ class SkillToggle(BaseModel):
 
 @app.get("/api/skills")
 async def get_skills():
-    from tools.skills_tool import _find_all_skills
     from hermes_cli.skills_config import get_disabled_skills
+    from tools.skills_tool import _find_all_skills
     config = load_config()
     disabled = get_disabled_skills(config)
     skills = _find_all_skills(skip_disabled=True)
@@ -2204,8 +2217,8 @@ async def update_config_raw(body: RawConfigUpdate):
 
 @app.get("/api/analytics/usage")
 async def get_usage_analytics(days: int = 30):
-    from hermes_state import SessionDB
     from agent.insights import InsightsEngine
+    from hermes_state import SessionDB
 
     db = SessionDB()
     try:
@@ -2286,7 +2299,6 @@ async def get_usage_analytics(days: int = 30):
 # ---------------------------------------------------------------------------
 
 import re
-import asyncio
 
 from hermes_cli.pty_bridge import PtyBridge, PtyUnavailableError
 

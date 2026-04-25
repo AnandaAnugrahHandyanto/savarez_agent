@@ -293,6 +293,7 @@ def cmd_install(
     (True = auto-enable without prompting, False = install disabled).
     """
     import tempfile
+
     from rich.console import Console
 
     console = Console()
@@ -631,6 +632,7 @@ def _plugin_exists(name: str) -> bool:
                 return True
     # Bundled: <repo>/plugins/<name>/
     from pathlib import Path as _P
+
     import hermes_cli
     repo_plugins = _P(hermes_cli.__file__).resolve().parent.parent / "plugins"
     if repo_plugins.is_dir():

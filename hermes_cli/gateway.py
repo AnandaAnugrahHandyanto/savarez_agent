@@ -15,12 +15,13 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
-from gateway.status import terminate_pid
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
     parse_restart_drain_timeout,
 )
+from gateway.status import terminate_pid
+from hermes_cli.colors import Colors, color
 from hermes_cli.config import (
     get_env_value,
     get_hermes_home,
@@ -29,14 +30,19 @@ from hermes_cli.config import (
     read_raw_config,
     save_env_value,
 )
+
 # display_hermes_home is imported lazily at call sites to avoid ImportError
 # when hermes_constants is cached from a pre-update version during `hermes update`.
 from hermes_cli.setup import (
-    print_header, print_info, print_success, print_warning, print_error,
-    prompt, prompt_choice, prompt_yes_no,
+    print_error,
+    print_header,
+    print_info,
+    print_success,
+    print_warning,
+    prompt,
+    prompt_choice,
+    prompt_yes_no,
 )
-from hermes_cli.colors import Colors, color
-
 
 # =============================================================================
 # Process Management (for manual gateway runs)
@@ -748,6 +754,7 @@ def _profile_suffix() -> str:
     """
     import hashlib
     import re
+
     from hermes_constants import get_default_hermes_root
     home = get_hermes_home().resolve()
     default = get_default_hermes_root().resolve()
@@ -778,6 +785,7 @@ def _profile_arg(hermes_home: str | None = None) -> str:
             service definition for a different user (e.g. system service).
     """
     import re
+
     from hermes_constants import get_default_hermes_root
     home = Path(hermes_home or str(get_hermes_home())).resolve()
     default = get_default_hermes_root().resolve()
@@ -2220,6 +2228,7 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.
         force_after: Seconds of graceful waiting before escalating to force-kill.
     """
     import time
+
     from gateway.status import get_running_pid
 
     deadline = time.monotonic() + timeout
@@ -2915,8 +2924,9 @@ def _setup_standard_platform(platform: dict):
 
 def _setup_whatsapp():
     """Delegate to the existing WhatsApp setup flow."""
-    from hermes_cli.main import cmd_whatsapp
     import argparse
+
+    from hermes_cli.main import cmd_whatsapp
     cmd_whatsapp(argparse.Namespace())
 
 
@@ -2935,7 +2945,10 @@ def _setup_sms():
 def _setup_dingtalk():
     """Configure DingTalk — QR scan (recommended) or manual credential entry."""
     from hermes_cli.setup import (
-        prompt_choice, prompt_yes_no, print_info, print_success, print_warning,
+        print_success,
+        print_warning,
+        prompt_choice,
+        prompt_yes_no,
     )
 
     dingtalk_platform = next(p for p in _PLATFORMS if p["key"] == "dingtalk")

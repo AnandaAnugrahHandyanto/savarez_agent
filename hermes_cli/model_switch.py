@@ -25,22 +25,22 @@ import re
 from dataclasses import dataclass
 from typing import List, NamedTuple, Optional
 
-from hermes_cli.providers import (
-    custom_provider_slug,
-    determine_api_mode,
-    get_label,
-    is_aggregator,
-    resolve_provider_full,
-)
-from hermes_cli.model_normalize import (
-    normalize_model_for_provider,
-)
 from agent.models_dev import (
     ModelCapabilities,
     ModelInfo,
     get_model_capabilities,
     get_model_info,
     list_provider_models,
+)
+from hermes_cli.model_normalize import (
+    normalize_model_for_provider,
+)
+from hermes_cli.providers import (
+    custom_provider_slug,
+    determine_api_mode,
+    get_label,
+    is_aggregator,
+    resolve_provider_full,
 )
 
 logger = logging.getLogger(__name__)
@@ -618,8 +618,8 @@ def switch_model(
     from hermes_cli.models import (
         copilot_model_api_mode,
         detect_provider_for_model,
-        validate_requested_model,
         opencode_model_api_mode,
+        validate_requested_model,
     )
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
@@ -971,15 +971,21 @@ def list_authenticated_providers(
     Only includes providers that have API keys set or are user-defined endpoints.
     """
     import os
+
     from agent.models_dev import (
         PROVIDER_TO_MODELS_DEV,
         fetch_models_dev,
+    )
+    from agent.models_dev import (
         get_provider_info as _mdev_pinfo,
     )
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.models import (
-        OPENROUTER_MODELS, _PROVIDER_MODELS,
-        _MODELS_DEV_PREFERRED, _merge_with_models_dev, provider_model_ids,
+        _MODELS_DEV_PREFERRED,
+        _PROVIDER_MODELS,
+        OPENROUTER_MODELS,
+        _merge_with_models_dev,
+        provider_model_ids,
     )
 
     results: List[dict] = []
@@ -1065,8 +1071,8 @@ def list_authenticated_providers(
         seen_mdev_ids.add(mdev_id)
 
     # --- 2. Check Hermes-only providers (nous, openai-codex, copilot, opencode-go) ---
-    from hermes_cli.providers import HERMES_OVERLAYS
     from hermes_cli.auth import PROVIDER_REGISTRY as _auth_registry
+    from hermes_cli.providers import HERMES_OVERLAYS
 
     # Build reverse mapping: models.dev ID → Hermes provider ID.
     # HERMES_OVERLAYS keys may be models.dev IDs (e.g. "github-copilot")

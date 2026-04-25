@@ -13,11 +13,10 @@ automatically.
 
 from __future__ import annotations
 
-import io
+import logging
 import os
 import sys
 import time
-import logging
 from typing import Optional, Tuple
 
 import requests
@@ -234,7 +233,7 @@ def dingtalk_qr_auth() -> Optional[Tuple[str, str]]:
     Returns (client_id, client_secret) on success, or None if the user
     cancelled or the flow failed.
     """
-    from hermes_cli.setup import print_info, print_success, print_warning, print_error
+    from hermes_cli.setup import print_error, print_info, print_success, print_warning
 
     print()
     print_info("  Initializing DingTalk device authorization...")
@@ -258,7 +257,7 @@ def dingtalk_qr_auth() -> Optional[Tuple[str, str]]:
     print()
 
     if not render_qr_to_terminal(url):
-        print_warning(f"  QR code render failed, please open the link below to authorize:")
+        print_warning("  QR code render failed, please open the link below to authorize:")
 
     print()
     print_info(f"  Or open this link manually: {url}")

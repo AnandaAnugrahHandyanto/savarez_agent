@@ -9,23 +9,28 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
+from agent.credential_pool import (
+    CredentialPool,
+    PooledCredential,
+    get_custom_provider_pool_key,
+    load_pool,
+)
 from hermes_cli import auth as auth_mod
-from agent.credential_pool import CredentialPool, PooledCredential, get_custom_provider_pool_key, load_pool
 from hermes_cli.auth import (
-    AuthError,
     DEFAULT_CODEX_BASE_URL,
     DEFAULT_QWEN_BASE_URL,
     PROVIDER_REGISTRY,
+    AuthError,
     _agent_key_is_usable,
     format_auth_error,
-    resolve_provider,
-    resolve_nous_runtime_credentials,
-    resolve_codex_runtime_credentials,
-    resolve_qwen_runtime_credentials,
-    resolve_gemini_oauth_runtime_credentials,
-    resolve_api_key_provider_credentials,
-    resolve_external_process_provider_credentials,
     has_usable_secret,
+    resolve_api_key_provider_credentials,
+    resolve_codex_runtime_credentials,
+    resolve_external_process_provider_credentials,
+    resolve_gemini_oauth_runtime_credentials,
+    resolve_nous_runtime_credentials,
+    resolve_provider,
+    resolve_qwen_runtime_credentials,
 )
 from hermes_cli.config import get_compatible_custom_providers, load_config
 from hermes_constants import OPENROUTER_BASE_URL
@@ -952,9 +957,9 @@ def resolve_runtime_provider(
     if provider == "bedrock":
         from agent.bedrock_adapter import (
             has_aws_credentials,
+            is_anthropic_bedrock_model,
             resolve_aws_auth_env_var,
             resolve_bedrock_region,
-            is_anthropic_bedrock_model,
         )
         # When the user explicitly selected bedrock (not auto-detected),
         # trust boto3's credential chain — it handles IMDS, ECS task roles,

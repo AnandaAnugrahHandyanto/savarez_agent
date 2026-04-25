@@ -5,12 +5,12 @@ Diagnoses issues with Hermes Agent setup.
 """
 
 import os
-import sys
-import subprocess
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
-from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
+from hermes_cli.config import get_env_path, get_hermes_home, get_project_root
 from hermes_constants import display_hermes_home
 
 PROJECT_ROOT = get_project_root()
@@ -19,6 +19,7 @@ _DHH = display_hermes_home()  # user-facing display path (e.g. ~/.hermes or ~/.h
 
 # Load environment variables from ~/.hermes/.env so API key checks work
 from dotenv import load_dotenv
+
 _env_path = get_env_path()
 if _env_path.exists():
     try:
@@ -32,7 +33,6 @@ from hermes_cli.colors import Colors, color
 from hermes_cli.models import _HERMES_USER_AGENT
 from hermes_constants import OPENROUTER_MODELS_URL
 from utils import base_url_host_matches
-
 
 _PROVIDER_ENV_HINTS = (
     "OPENROUTER_API_KEY",
@@ -296,8 +296,12 @@ def run_doctor(args):
             except Exception:
                 pass
             try:
-                from hermes_cli.config import get_compatible_custom_providers as _compatible_custom_providers
-                from hermes_cli.providers import resolve_provider_full as _resolve_provider_full
+                from hermes_cli.config import (
+                    get_compatible_custom_providers as _compatible_custom_providers,
+                )
+                from hermes_cli.providers import (
+                    resolve_provider_full as _resolve_provider_full,
+                )
             except Exception:
                 _compatible_custom_providers = None
                 _resolve_provider_full = None
@@ -473,9 +477,9 @@ def run_doctor(args):
 
     try:
         from hermes_cli.auth import (
-            get_nous_auth_status,
             get_codex_auth_status,
             get_gemini_oauth_auth_status,
+            get_nous_auth_status,
         )
 
         nous_status = get_nous_auth_status()
@@ -901,7 +905,12 @@ def run_doctor(args):
         print("  Checking Anthropic API...", end="", flush=True)
         try:
             import httpx
-            from agent.anthropic_adapter import _is_oauth_token, _COMMON_BETAS, _OAUTH_ONLY_BETAS
+
+            from agent.anthropic_adapter import (
+                _COMMON_BETAS,
+                _OAUTH_ONLY_BETAS,
+                _is_oauth_token,
+            )
 
             headers = {"anthropic-version": "2023-06-01"}
             if _is_oauth_token(anthropic_key):
@@ -999,12 +1008,16 @@ def run_doctor(args):
     # -- AWS Bedrock --
     # Bedrock uses the AWS SDK credential chain, not API keys.
     try:
-        from agent.bedrock_adapter import has_aws_credentials, resolve_aws_auth_env_var, resolve_bedrock_region
+        from agent.bedrock_adapter import (
+            has_aws_credentials,
+            resolve_aws_auth_env_var,
+            resolve_bedrock_region,
+        )
         if has_aws_credentials():
             _auth_var = resolve_aws_auth_env_var()
             _region = resolve_bedrock_region()
             _label = "AWS Bedrock".ljust(20)
-            print(f"  Checking AWS Bedrock...", end="", flush=True)
+            print("  Checking AWS Bedrock...", end="", flush=True)
             try:
                 import boto3
                 _br_client = boto3.client("bedrock", region_name=_region)
@@ -1052,7 +1065,7 @@ def run_doctor(args):
     try:
         # Add project root to path for imports
         sys.path.insert(0, str(PROJECT_ROOT))
-        from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
+        from model_tools import TOOLSET_REQUIREMENTS, check_tool_availability
         
         available, unavailable = check_tool_availability()
         available, unavailable = _apply_doctor_tool_availability_overrides(available, unavailable)
@@ -1129,7 +1142,10 @@ def run_doctor(args):
         check_ok("Built-in memory active", "(no external provider configured — this is fine)")
     elif _active_memory_provider == "honcho":
         try:
-            from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
+            from plugins.memory.honcho.client import (
+                HonchoClientConfig,
+                resolve_config_path,
+            )
             hcfg = HonchoClientConfig.from_global_config()
             _honcho_cfg_path = resolve_config_path()
 
@@ -1141,7 +1157,10 @@ def run_doctor(args):
                 check_fail("Honcho API key or base URL not set", "run: hermes memory setup")
                 issues.append("No Honcho API key — run 'hermes memory setup'")
             else:
-                from plugins.memory.honcho.client import get_honcho_client, reset_honcho_client
+                from plugins.memory.honcho.client import (
+                    get_honcho_client,
+                    reset_honcho_client,
+                )
                 reset_honcho_client()
                 try:
                     get_honcho_client(hcfg)
@@ -1191,8 +1210,9 @@ def run_doctor(args):
     # Profiles
     # =========================================================================
     try:
-        from hermes_cli.profiles import list_profiles, _get_wrapper_dir, profile_exists
         import re as _re
+
+        from hermes_cli.profiles import _get_wrapper_dir, list_profiles, profile_exists
 
         named_profiles = [p for p in list_profiles() if not p.is_default]
         if named_profiles:

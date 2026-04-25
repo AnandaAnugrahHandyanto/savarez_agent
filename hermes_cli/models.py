@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import json
 import os
-import urllib.request
-import urllib.error
 import time
+import urllib.error
+import urllib.request
 from difflib import get_close_matches
 from pathlib import Path
 from typing import Any, NamedTuple, Optional
@@ -519,7 +519,10 @@ def check_nous_free_tier() -> bool:
             return cached_result
 
     try:
-        from hermes_cli.auth import get_provider_auth_state, resolve_nous_runtime_credentials
+        from hermes_cli.auth import (
+            get_provider_auth_state,
+            resolve_nous_runtime_credentials,
+        )
 
         # Ensure we have a fresh token (triggers refresh if needed)
         resolve_nous_runtime_credentials(min_key_ttl_seconds=60)
@@ -1727,7 +1730,10 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     if normalized == "nous":
         # Try live Nous Portal /models endpoint
         try:
-            from hermes_cli.auth import fetch_nous_models, resolve_nous_runtime_credentials
+            from hermes_cli.auth import (
+                fetch_nous_models,
+                resolve_nous_runtime_credentials,
+            )
             creds = resolve_nous_runtime_credentials()
             if creds:
                 live = fetch_nous_models(api_key=creds.get("api_key", ""), inference_base_url=creds.get("base_url", ""))
@@ -1796,7 +1802,7 @@ def _fetch_anthropic_models(timeout: float = 5.0) -> Optional[list[str]]:
     Claude Code auto-discovery).  Returns sorted model IDs or None.
     """
     try:
-        from agent.anthropic_adapter import resolve_anthropic_token, _is_oauth_token
+        from agent.anthropic_adapter import _is_oauth_token, resolve_anthropic_token
     except ImportError:
         return None
 
@@ -2821,7 +2827,10 @@ def validate_requested_model(
     # AWS SDK control plane (ListFoundationModels + ListInferenceProfiles).
     if normalized == "bedrock":
         try:
-            from agent.bedrock_adapter import discover_bedrock_models, resolve_bedrock_region
+            from agent.bedrock_adapter import (
+                discover_bedrock_models,
+                resolve_bedrock_region,
+            )
             region = resolve_bedrock_region()
             discovered = discover_bedrock_models(region)
             discovered_ids = {m["id"] for m in discovered}
