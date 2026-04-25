@@ -748,10 +748,58 @@ class TestMessageContextIsolation:
 # ---------------------------------------------------------------------------
 
 
+def _install_dingtalk_sdk_mocks(monkeypatch):
+    """Replace the module-level ``alibabacloud_*`` SDK symbols with
+    test-friendly stand-ins.
+
+    The DingTalk adapter imports ``tea_util_models``, ``dingtalk_card_models``,
+    ``dingtalk_robot_models`` and ``open_api_models`` inside a
+    ``try/except ImportError`` — on machines without the Alibaba SDK
+    installed (CI, most dev envs) those symbols resolve to ``None``.
+    Tests that set ``adapter._card_sdk = MagicMock()`` force the AI Card
+    path to run, which then calls e.g. ``tea_util_models.RuntimeOptions()``
+    and crashes with ``AttributeError: 'NoneType' object has no attribute
+    'RuntimeOptions'`` (see the baseline failures of
+    ``TestCardLifecycle`` and ``TestDingTalkAdapterAICards::test_send_uses_ai_card_if_configured``
+    on pristine CI runners).
+
+    The real SDK request classes (``StreamingUpdateRequest``,
+    ``CreateCardRequest``, etc.) are plain data carriers — their
+    attributes are exactly the kwargs the caller passes.  Tests
+    introspect those attributes to verify behaviour
+    (``assert request.is_finalize is True``), so the stand-in for
+    ``dingtalk_card_models`` wires ``SimpleNamespace(**kwargs)`` as the
+    side-effect of each attribute access.  Plain ``MagicMock`` would
+    auto-generate child mocks on ``.out_track_id`` / ``.is_finalize``
+    that never equal the real values the test passed in.
+    """
+    import gateway.platforms.dingtalk as _dt
+
+    class _DataClassStub:
+        """Stand-in for an SDK module of dataclass-style request objects.
+
+        Any attribute access returns a factory that builds a
+        ``SimpleNamespace`` from the caller's kwargs — mirroring the
+        shape of the real ``alibabacloud_*.models.*Request`` classes so
+        tests can still introspect ``.out_track_id``, ``.is_finalize``,
+        etc. on the object passed into the mocked SDK call.
+        """
+
+        def __getattr__(self, name):
+            return lambda *args, **kwargs: SimpleNamespace(**kwargs)
+
+    monkeypatch.setattr(_dt, "CARD_SDK_AVAILABLE", True, raising=False)
+    monkeypatch.setattr(_dt, "tea_util_models", _DataClassStub(), raising=False)
+    monkeypatch.setattr(_dt, "dingtalk_card_models", _DataClassStub(), raising=False)
+    monkeypatch.setattr(_dt, "dingtalk_robot_models", _DataClassStub(), raising=False)
+    monkeypatch.setattr(_dt, "open_api_models", _DataClassStub(), raising=False)
+
+
 class TestCardLifecycle:
 
     @pytest.fixture
-    def adapter_with_card(self):
+    def adapter_with_card(self, monkeypatch):
+        _install_dingtalk_sdk_mocks(monkeypatch)
         from gateway.platforms.dingtalk import DingTalkAdapter
         a = DingTalkAdapter(PlatformConfig(
             enabled=True,
@@ -942,7 +990,8 @@ class TestDingTalkAdapterAICards:
         return msg
 
     @pytest.mark.asyncio
-    async def test_send_uses_ai_card_if_configured(self, config, mock_stream_client, mock_http_client, mock_message):
+    async def test_send_uses_ai_card_if_configured(self, config, mock_stream_client, mock_http_client, mock_message, monkeypatch):
+        _install_dingtalk_sdk_mocks(monkeypatch)
         from gateway.platforms.dingtalk import DingTalkAdapter
 
         adapter = DingTalkAdapter(config)
