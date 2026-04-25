@@ -110,6 +110,11 @@ from agent.prompt_builder import (
 )
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.verifier import ToolCallRecord, evaluate_turn, format_report_summary
+from agent.preflight import (
+    PreflightRiskLevel,
+    classify_request,
+    format_preflight_summary,
+)
 from agent.codex_responses_adapter import (
     _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
     _deterministic_call_id as _codex_deterministic_call_id,
@@ -7892,6 +7897,26 @@ class AIAgent:
         body = ("\n" + indent).join(out_lines)
         return f"{indent}{label}{body}"
 
+    def _run_safe_orchestration_preflight(self, user_message: str) -> None:
+        """Run advisory preflight risk classification as a default-off hook."""
+        if not env_var_enabled("HERMES_OMC_PREFLIGHT"):
+            return
+        try:
+            report = classify_request(user_message)
+            summary = format_preflight_summary(report)
+        except Exception as preflight_error:
+            logger.warning(
+                "safe orchestration preflight failed; continuing conversation: %s",
+                preflight_error,
+                exc_info=True,
+            )
+            return
+
+        if report.level == PreflightRiskLevel.HIGH:
+            logger.warning(summary)
+        else:
+            logger.info(summary)
+
     def _run_safe_orchestration_verifier(self, tool_records: list[ToolCallRecord]) -> None:
         """Run the OMC verifier as a default-off, report-only post-tool hook."""
         if not tool_records or not env_var_enabled("HERMES_OMC_VERIFIER"):
@@ -8863,6 +8888,8 @@ class AIAgent:
             user_message = sanitize_context(user_message)
         if isinstance(persist_user_message, str):
             persist_user_message = sanitize_context(persist_user_message)
+
+        self._run_safe_orchestration_preflight(user_message)
 
         # Store stream callback for _interruptible_api_call to pick up
         self._stream_callback = stream_callback

@@ -2229,6 +2229,106 @@ class TestHandleMaxIterations:
         assert "reasoning" not in kwargs.get("extra_body", {})
 
 
+class TestPreflightRiskClassifierHook:
+    def _setup_agent(self, agent):
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+
+    def test_preflight_default_off_does_not_run_classifier(self, agent, monkeypatch):
+        monkeypatch.delenv("HERMES_OMC_PREFLIGHT", raising=False)
+        self._setup_agent(agent)
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Final answer",
+            finish_reason="stop",
+        )
+
+        with (
+            patch("run_agent.classify_request") as mock_classify,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("please edit run_agent.py")
+
+        mock_classify.assert_not_called()
+        assert result["final_response"] == "Final answer"
+        assert result["completed"] is True
+
+    def test_preflight_env_on_logs_redacted_report_only_summary(
+        self,
+        agent,
+        monkeypatch,
+        caplog,
+    ):
+        from agent.preflight import (
+            PreflightRecommendation,
+            PreflightReport,
+            PreflightRiskLevel,
+            PreflightSignal,
+        )
+
+        monkeypatch.setenv("HERMES_OMC_PREFLIGHT", "1")
+        self._setup_agent(agent)
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Final answer",
+            finish_reason="stop",
+        )
+        report = PreflightReport(
+            level=PreflightRiskLevel.HIGH,
+            score=3,
+            signals=(PreflightSignal(name="sensitive_config", weight=3),),
+            recommendations=(PreflightRecommendation.EXPLICIT_APPROVAL,),
+            rationale="high risk",
+        )
+
+        with (
+            patch("run_agent.classify_request", return_value=report) as mock_classify,
+            patch("run_agent.format_preflight_summary", return_value="preflight summary redacted")
+            as mock_summary,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            caplog.at_level(logging.WARNING, logger="run_agent"),
+        ):
+            result = agent.run_conversation("write token abc123 into .env")
+
+        mock_classify.assert_called_once_with("write token abc123 into .env")
+        mock_summary.assert_called_once_with(report)
+        assert result["final_response"] == "Final answer"
+        assert "preflight summary redacted" in caplog.text
+        assert ".env" not in caplog.text
+        assert "abc123" not in caplog.text
+
+    def test_preflight_exception_never_breaks_conversation(
+        self,
+        agent,
+        monkeypatch,
+        caplog,
+    ):
+        monkeypatch.setenv("HERMES_OMC_PREFLIGHT", "1")
+        self._setup_agent(agent)
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Final answer",
+            finish_reason="stop",
+        )
+
+        with (
+            patch("run_agent.classify_request", side_effect=RuntimeError("boom")),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            caplog.at_level(logging.WARNING, logger="run_agent"),
+        ):
+            result = agent.run_conversation("restart gateway")
+
+        assert result["final_response"] == "Final answer"
+        assert result["completed"] is True
+        assert "safe orchestration preflight failed" in caplog.text
+
+
 class TestRunConversation:
     """Tests for the main run_conversation method.
 
