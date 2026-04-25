@@ -341,26 +341,11 @@ def _resolve_runtime_agent_kwargs() -> dict:
     }
 
 
-def _build_media_placeholder(event) -> str:
-    """Build a text placeholder for media-only events so they aren't dropped.
-
-    When a photo/document is queued during active processing and later
-    dequeued, only .text is extracted.  If the event has no caption,
-    the media would be silently lost.  This builds a placeholder that
-    the vision enrichment pipeline will replace with a real description.
-    """
-    parts = []
-    media_urls = getattr(event, "media_urls", None) or []
-    media_types = getattr(event, "media_types", None) or []
-    for i, url in enumerate(media_urls):
-        mtype = media_types[i] if i < len(media_types) else ""
-        if mtype.startswith("image/") or getattr(event, "message_type", None) == MessageType.PHOTO:
-            parts.append(f"[User sent an image: {url}]")
-        elif mtype.startswith("audio/"):
-            parts.append(f"[User sent audio: {url}]")
-        else:
-            parts.append(f"[User sent a file: {url}]")
-    return "\n".join(parts)
+# Import display utilities (extracted to gateway/display.py)
+from gateway.display import (
+    build_media_placeholder as _build_media_placeholder,
+    format_gateway_process_notification as _format_gateway_process_notification,
+)
 
 
 def _dequeue_pending_event(adapter, session_key: str) -> MessageEvent | None:
@@ -508,31 +493,11 @@ def _parse_session_key(session_key: str) -> "dict | None":
     return None
 
 
-def _format_gateway_process_notification(evt: dict) -> "str | None":
-    """Format a watch pattern event from completion_queue into a [SYSTEM:] message."""
-    evt_type = evt.get("type", "completion")
-    _sid = evt.get("session_id", "unknown")
-    _cmd = evt.get("command", "unknown")
-
-    if evt_type == "watch_disabled":
-        return f"[SYSTEM: {evt.get('message', '')}]"
-
-    if evt_type == "watch_match":
-        _pat = evt.get("pattern", "?")
-        _out = evt.get("output", "")
-        _sup = evt.get("suppressed", 0)
-        text = (
-            f"[SYSTEM: Background process {_sid} matched "
-            f"watch pattern \"{_pat}\".\n"
-            f"Command: {_cmd}\n"
-            f"Matched output:\n{_out}"
-        )
-        if _sup:
-            text += f"\n({_sup} earlier matches were suppressed by rate limit)"
-        text += "]"
-        return text
-
-    return None
+# Import display utilities (extracted to gateway/display.py)
+from gateway.display import (
+    build_media_placeholder as _build_media_placeholder,
+    format_gateway_process_notification as _format_gateway_process_notification,
+)
 
 
 class GatewayRunner:
