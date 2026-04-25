@@ -3156,6 +3156,9 @@ class AIAgent:
                         quiet_mode=True,
                         platform=self.platform,
                         provider=self.provider,
+                        api_key=self.api_key,
+                        base_url=self.base_url,
+                        api_mode=self.api_mode,
                         parent_session_id=self.session_id,
                     )
                     review_agent._memory_write_origin = "background_review"
@@ -6229,6 +6232,12 @@ class AIAgent:
                 content=full_content,
                 tool_calls=mock_tool_calls,
                 reasoning_content=full_reasoning,
+                # Ensure reasoning field is also populated so
+                # _extract_reasoning and _build_assistant_message
+                # can find it via either reasoning or reasoning_content.
+                # DeepSeek thinking mode requires reasoning_content on
+                # every tool-call turn; without it, the API returns 400.
+                reasoning=full_reasoning,
             )
             mock_choice = SimpleNamespace(
                 index=0,
@@ -7625,11 +7634,13 @@ class AIAgent:
             raw_reasoning_content = getattr(assistant_message, "reasoning_content", None)
             if raw_reasoning_content is not None:
                 msg["reasoning_content"] = _sanitize_surrogates(raw_reasoning_content)
-            elif msg.get("tool_calls") and self._needs_deepseek_tool_reasoning():
+            elif getattr(assistant_message, "tool_calls", None) and self._needs_deepseek_tool_reasoning():
                 # DeepSeek thinking mode requires reasoning_content on every
                 # assistant tool-call message. Without it, replaying the
                 # persisted message causes HTTP 400. Include empty string
                 # as a defensive compatibility fallback (refs #15250).
+                # IMPORTANT: check assistant_message.tool_calls, NOT msg["tool_calls"]
+                # — tool_calls is added to msg much later at ~line 7705.
                 msg["reasoning_content"] = ""
 
         if hasattr(assistant_message, 'reasoning_details') and assistant_message.reasoning_details:
