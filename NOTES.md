@@ -94,7 +94,8 @@ Extend existing Hermes primitives with small opt-in modules and thin integration
 - TODO on the next deletion pass: simplify ratchet helper sprawl in `tools/checkpoint_manager.py`; the current +310 line slice is correct but heavier than the intended budget.
 - TODO on the next deletion pass: `acp_adapter/server.py` is now 1113 lines and the prompt handler is 187 lines; extract routing-mode dispatch helpers using the same helper-split pattern used for Spar.
 - TODO for ACP auto-routing: the current heuristic is English-only and keyword-based; upgrade to a semantic classifier only after at least 20 real misroutes are observed.
-- TODO on the next deletion pass: add retention or rotation for `~/.hermes/logs/route_forensics.jsonl` so routed-turn forensics stay useful without unbounded growth.
+- DONE: `~/.hermes/logs/route_forensics.jsonl` now rotates at 10MB and full raw MoA outputs are opt-in via `HERMES_MOA_FULL_FORENSICS=1`.
+- TODO asymmetric refactor: extract shared route helpers first, then evaluate `agent/llm_contract.py` as the common route -> call -> parse -> repair -> forensic primitive.
 
 ## Perf measurements
 - Ratchet tests: `59 passed`
