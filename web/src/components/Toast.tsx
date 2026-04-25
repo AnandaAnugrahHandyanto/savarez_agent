@@ -24,7 +24,7 @@ export function Toast({ toast }: { toast: { message: string; type: "success" | "
     <div
       role="status"
       aria-live="polite"
-      className={`fixed top-16 right-4 z-50 border px-4 py-2.5 font-courier text-xs tracking-wider uppercase backdrop-blur-sm ${
+      className={`fixed top-16 right-4 z-50 border px-4 py-2.5 text-xs tracking-wider  backdrop-blur-sm ${
         current.type === "success"
           ? "bg-success/15 text-success border-success/30"
           : "bg-destructive/15 text-destructive border-destructive/30"

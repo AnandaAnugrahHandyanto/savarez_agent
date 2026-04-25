@@ -1,3 +1,7 @@
+<<<<<<< HEAD
+=======
+import { useEffect, useState, useCallback, useRef, useMemo } from "react";
+>>>>>>> 0777bd2f (style(web): update dashboard font to system-ui stack)
 import {
   useEffect,
   useLayoutEffect,
@@ -130,6 +134,64 @@ function ToolCallBlock({
   );
 }
 
+
+function ToolResultContent({
+  content,
+  highlightTerms,
+}: {
+  content: string;
+  highlightTerms?: string[];
+}) {
+  const [open, setOpen] = useState(true); // Default to open for visibility, users can collapse
+  const formatted = useMemo(() => {
+    try {
+      const trimmed = content.trim();
+      if (
+        (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+        (trimmed.startsWith("[") && trimmed.endsWith("]"))
+      ) {
+        return JSON.stringify(JSON.parse(trimmed), null, 2);
+      }
+    } catch {
+      // ignore
+    }
+    return null;
+  }, [content]);
+
+  if (!formatted) {
+    return <Markdown content={content} highlightTerms={highlightTerms} />;
+  }
+
+  return (
+    <div className="mt-1 border border-warning/20 bg-warning/5">
+      <button
+        type="button"
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-warning/70 cursor-pointer hover:bg-warning/10 transition-colors border-b border-warning/10"
+        onClick={() => setOpen(!open)}
+      >
+        {open ? (
+          <ChevronDown className="h-3 w-3" />
+        ) : (
+          <ChevronRight className="h-3 w-3" />
+        )}
+        <span className="font-mono text-[10px] font-medium">Result (JSON)</span>
+        <span className="text-[10px] opacity-50 ml-auto">
+          {content.length} chars
+        </span>
+      </button>
+      {open ? (
+        <pre className="px-3 py-2 text-xs text-warning/90 overflow-x-auto whitespace-pre-wrap font-mono leading-relaxed">
+          {formatted}
+        </pre>
+      ) : (
+        <div className="px-3 py-1.5 text-xs text-warning/40 truncate font-mono">
+          {content.slice(0, 120)}...
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MessageBubble({
   msg,
   highlight,
@@ -205,6 +267,8 @@ function MessageBubble({
           <div className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">
             {msg.content}
           </div>
+        ) : msg.role === "tool" ? (
+          <ToolResultContent content={msg.content} highlightTerms={highlightTerms} />
         ) : (
           <Markdown content={msg.content} highlightTerms={highlightTerms} />
         ))}

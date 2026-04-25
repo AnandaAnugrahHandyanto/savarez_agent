@@ -91,7 +91,7 @@ export function Select({
         onClick={() => !disabled && setOpen((o) => !o)}
         onKeyDown={handleKeyDown}
         className={cn(
-          "flex h-9 w-full items-center justify-between border border-border bg-background/40 px-3 py-1 font-courier text-sm text-left transition-colors",
+          "flex h-9 w-full items-center justify-between border border-border bg-background/40 px-3 py-1 text-sm text-left transition-colors",
           "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30 focus-visible:border-foreground/25",
           "disabled:cursor-not-allowed disabled:opacity-50",
           "cursor-pointer",
@@ -132,7 +132,7 @@ export function Select({
                   close();
                 }}
                 className={cn(
-                  "flex items-center gap-2 px-3 py-2 text-sm font-courier cursor-pointer transition-colors",
+                  "flex items-center gap-2 px-3 py-2 text-sm cursor-pointer transition-colors",
                   isHighlighted && "bg-foreground/10",
                   isSelected && "text-foreground",
                   !isSelected && "text-muted-foreground",

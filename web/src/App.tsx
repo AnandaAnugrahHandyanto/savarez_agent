@@ -308,10 +308,14 @@ export default function App() {
   }, []);
 
   return (
+<<<<<<< HEAD
     <div
       data-layout-variant={layoutVariant}
       className="font-mondwest flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-black uppercase text-midground antialiased"
     >
+=======
+    <div className="text-midground bg-black min-h-screen flex flex-col antialiased overflow-x-hidden">
+>>>>>>> 0777bd2f (style(web): update dashboard font to system-ui stack)
       <SelectionSwitcher />
       <Backdrop />
       <PluginSlot name="backdrop" />
@@ -344,12 +348,80 @@ export default function App() {
           <Menu className="h-4 w-4" />
         </button>
 
+<<<<<<< HEAD
         <Typography
           className="font-bold text-[0.95rem] leading-[0.95] tracking-[0.05em] text-midground"
           style={{ mixBlendMode: "plus-lighter" }}
         >
           {t.app.brand}
         </Typography>
+=======
+              {navItems.map(({ path, label, labelKey, icon: Icon }) => (
+                <Cell key={path} className="relative !p-0">
+                  <NavLink
+                    to={path}
+                    end={path === "/"}
+                    className={({ isActive }) =>
+                      cn(
+                        "group relative flex h-full w-full items-center gap-1.5",
+                        "px-2.5 sm:px-4 py-2",
+                        "text-[0.65rem] sm:text-[0.8rem] tracking-[0.12em]",
+                        "whitespace-nowrap transition-colors cursor-pointer",
+                        "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
+                        isActive
+                          ? "text-midground"
+                          : "opacity-60 hover:opacity-100",
+                      )
+                    }
+                    style={{
+                      clipPath: "var(--component-tab-clip-path)",
+                    }}
+                  >
+                    {({ isActive }) => (
+                      <>
+                        <Icon className="h-3.5 w-3.5 shrink-0" />
+                        <span className="hidden sm:inline">
+                          {labelKey
+                            ? ((t.app.nav as Record<string, string>)[
+                                labelKey
+                              ] ?? label)
+                            : label}
+                        </span>
+
+                        <span
+                          aria-hidden
+                          className="absolute inset-1 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover:opacity-5"
+                        />
+
+                        {isActive && (
+                          <span
+                            aria-hidden
+                            className="absolute bottom-0 left-0 right-0 h-px bg-midground"
+                            style={{ mixBlendMode: "plus-lighter" }}
+                          />
+                        )}
+                      </>
+                    )}
+                  </NavLink>
+                </Cell>
+              ))}
+            </Grid>
+          </div>
+
+          <Grid className="h-full shrink-0 !border-t-0 !border-b-0">
+            <Cell className="flex items-center gap-2 !p-0 !px-2 sm:!px-4">
+              <PluginSlot name="header-right" />
+              <ThemeSwitcher />
+              <LanguageSwitcher />
+              <Typography
+                className="hidden sm:inline text-[0.7rem] tracking-[0.15em] opacity-50"
+              >
+                {t.app.webUi}
+              </Typography>
+            </Cell>
+          </Grid>
+        </div>
+>>>>>>> 0777bd2f (style(web): update dashboard font to system-ui stack)
       </header>
 
       {mobileOpen && (
@@ -526,6 +598,42 @@ export default function App() {
         </div>
       </div>
 
+<<<<<<< HEAD
+=======
+      <footer className="relative z-2 border-t border-current/20">
+        <Grid className={cn("mx-auto !border-t-0 !border-b-0", mainMaxWidth)}>
+          <Cell className="flex items-center !px-3 sm:!px-6 !py-3">
+            <PluginSlot
+              name="footer-left"
+              fallback={
+                <Typography
+                  className="text-[0.7rem] sm:text-[0.8rem] tracking-[0.12em] opacity-60"
+                >
+                  {t.app.footer.name}
+                </Typography>
+              }
+            />
+          </Cell>
+          <Cell className="flex items-center justify-end !px-3 sm:!px-6 !py-3">
+            <PluginSlot
+              name="footer-right"
+              fallback={
+                <Typography
+                  className="text-[0.6rem] sm:text-[0.7rem] tracking-[0.15em] text-midground"
+                  style={{ mixBlendMode: "plus-lighter" }}
+                >
+                  {t.app.footer.org}
+                </Typography>
+              }
+            />
+          </Cell>
+        </Grid>
+      </footer>
+
+      {/* Fixed-position overlay plugins (scanlines, vignettes, etc.) render
+          above everything else. Each plugin is responsible for its own
+          pointer-events and z-index. */}
+>>>>>>> 0777bd2f (style(web): update dashboard font to system-ui stack)
       <PluginSlot name="overlay" />
     </div>
   );

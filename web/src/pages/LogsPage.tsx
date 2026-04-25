@@ -36,8 +36,43 @@ const LINE_COLORS: Record<string, string> = {
   debug: "text-muted-foreground/60",
 };
 
+<<<<<<< HEAD
 const toOptions = <T extends string>(values: readonly T[]) =>
   values.map((v) => ({ value: v, label: v }));
+=======
+function SidebarHeading({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="text-[10px] font-semibold tracking-wider text-muted-foreground/60 px-2.5 pt-3 pb-1">
+      {children}
+    </span>
+  );
+}
+
+function SidebarItem<T extends string>({
+  label,
+  value,
+  current,
+  onChange,
+}: SidebarItemProps<T>) {
+  const isActive = current === value;
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(value)}
+      className={`group flex items-center gap-2 px-2.5 py-1 text-left text-xs transition-colors cursor-pointer ${
+        isActive
+          ? "bg-primary/10 text-primary font-medium"
+          : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+      }`}
+    >
+      <span className="flex-1 truncate">{label}</span>
+      {isActive && (
+        <ChevronRight className="h-3 w-3 text-primary/50 shrink-0" />
+      )}
+    </button>
+  );
+}
+>>>>>>> 0777bd2f (style(web): update dashboard font to system-ui stack)
 
 export default function LogsPage() {
   const [file, setFile] = useState<(typeof FILES)[number]>("agent");
