@@ -263,7 +263,14 @@ def _clean_shell_noise(output: str) -> str:
 
 # Standard PATH entries for environments with minimal PATH (e.g. systemd services).
 # Includes macOS Homebrew paths (/opt/homebrew/* for Apple Silicon).
+#
+# /home/hermes/.local/bin is prepended first so that the claude-code wrapper
+# installed by docker-entrypoint-hermes.sh is always reachable from terminal
+# tool commands. Without this, `claude-code` would be absent from the PATH
+# used by subprocess calls even though it exists on disk, because the gateway
+# process starts with a minimal environment that does not include ~/.local/bin.
 _SANE_PATH = (
+    "/home/hermes/.local/bin:"
     "/opt/homebrew/bin:/opt/homebrew/sbin:"
     "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 )

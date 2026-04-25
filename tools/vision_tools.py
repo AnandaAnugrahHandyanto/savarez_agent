@@ -355,7 +355,31 @@ async def vision_analyze_tool(
         detected_mime_type = _detect_image_mime_type(temp_image_path)
         if not detected_mime_type:
             raise ValueError("Only real image files are supported for vision analysis.")
-        
+
+        # Resize if any dimension exceeds Anthropic API limit.
+        # The messages API rejects images with any dimension >8000px with a 400
+        # error. Mobile screenshots (e.g. 1080x2316) are fine, but large desktop
+        # screenshots or high-res photos may exceed the limit. We downscale
+        # proportionally to 7900px max so the resize never triggers a second error.
+        # Pillow (pillow>=12.0) must be installed in the venv for this to work;
+        # the except ImportError branch silently skips the resize if unavailable.
+        _MAX_DIM = 7900
+        try:
+            from PIL import Image as _PILImage
+            with _PILImage.open(temp_image_path) as _img:
+                _w, _h = _img.size
+            if _w > _MAX_DIM or _h > _MAX_DIM:
+                scale = _MAX_DIM / max(_w, _h)
+                _new_w, _new_h = int(_w * scale), int(_h * scale)
+                logger.info("Resizing image %dx%d to %dx%d (Anthropic 8000px limit)", _w, _h, _new_w, _new_h)
+                with _PILImage.open(temp_image_path) as _img:
+                    _img.resize((_new_w, _new_h)).save(temp_image_path, quality=92)
+                detected_mime_type = _detect_image_mime_type(temp_image_path)
+        except ImportError:
+            logger.debug("Pillow not available, skipping resize")
+        except Exception as e_resize:
+            logger.warning("Image resize failed: %s", e_resize)
+
         # Convert image to base64 data URL
         logger.info("Converting image to base64...")
         image_data_url = _image_to_base64_data_url(temp_image_path, mime_type=detected_mime_type)

@@ -636,6 +636,7 @@ class GatewayRunner:
     def _flush_memories_for_session(
         self,
         old_session_id: str,
+        session_key: str = "",
     ):
         """Prompt the agent to save memories/skills before context is lost.
 
@@ -658,10 +659,10 @@ class GatewayRunner:
             if not runtime_kwargs.get("api_key"):
                 return
 
-            # Resolve model from config — AIAgent's default is OpenRouter-
-            # formatted ("anthropic/claude-opus-4.6") which fails when the
-            # active provider is openai-codex.
+            # Resolve model from config
             model = _resolve_gateway_model()
+            _flush_key = str(runtime_kwargs.get('api_key', '') or '')[:20]
+            logger.error('DEBUG_FLUSH: flushing session=%s model=%s provider=%s api_key=%s', old_session_id, model, runtime_kwargs.get('provider'), _flush_key)
 
             tmp_agent = AIAgent(
                 **runtime_kwargs,
@@ -736,19 +737,53 @@ class GatewayRunner:
                 conversation_history=msgs,
             )
             logger.info("Pre-reset memory flush completed for session %s", old_session_id)
+
+            # Channel memory update: extract key facts for per-channel memory
+            if session_key and ":slack:" in session_key:
+                try:
+                    from channel_memory import get_project_for_channel, load_channel_memory, save_channel_memory
+                    _parts = session_key.split(":")
+                    _channel_id = None
+                    for i, p in enumerate(_parts):
+                        if p in ("group", "channel") and i + 1 < len(_parts):
+                            _channel_id = _parts[i + 1]
+                            break
+                    if _channel_id and get_project_for_channel(_channel_id):
+                        _ch_mem_agent = AIAgent(
+                            **runtime_kwargs,
+                            model=model,
+                            max_iterations=5,
+                            quiet_mode=True,
+                            skip_memory=True,
+                            enabled_toolsets=["file"],
+                            session_id=f"ch_mem_{old_session_id}",
+                        )
+                        _ch_mem_agent._print_fn = lambda *a, **kw: None
+                        from channel_memory import build_memory_update_prompt
+                        _ch_update_prompt = build_memory_update_prompt(_channel_id, msgs)
+                        if _ch_update_prompt:
+                            _ch_mem_agent.run_conversation(
+                                user_message=_ch_update_prompt,
+                                conversation_history=msgs,
+                            )
+                            logger.info("Channel memory updated for %s", _channel_id)
+                except Exception as _cme:
+                    logger.debug("Channel memory flush failed: %s", _cme)
+
         except Exception as e:
             logger.debug("Pre-reset memory flush failed for session %s: %s", old_session_id, e)
 
     async def _async_flush_memories(
         self,
         old_session_id: str,
+        session_key: str = "",
     ):
         """Run the sync memory flush in a thread pool so it won't block the event loop."""
+        import functools
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(
             None,
-            self._flush_memories_for_session,
-            old_session_id,
+            functools.partial(self._flush_memories_for_session, old_session_id, session_key=session_key),
         )
 
     @property
@@ -1225,6 +1260,20 @@ class GatewayRunner:
             directory = build_channel_directory(self.adapters)
             ch_count = sum(len(chs) for chs in directory.get("platforms", {}).values())
             logger.info("Channel directory built: %d target(s)", ch_count)
+            # Log credential pool state at startup
+            try:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+                _startup_rt = resolve_runtime_provider(requested="anthropic")
+                _startup_pool = _startup_rt.get("credential_pool")
+                if _startup_pool:
+                    _startup_pool.log_pool_status()
+                else:
+                    _startup_key = str(_startup_rt.get("api_key", "") or "")
+                    from agent.anthropic_adapter import _is_oauth_token
+                    _startup_auth = "OAUTH" if _is_oauth_token(_startup_key) else "API_KEY"
+                    logger.info("CRED_POOL: single credential auth_type=%s key=%s", _startup_auth, _startup_key[:20])
+            except Exception as _cp_exc:
+                logger.debug("Could not log credential pool: %s", _cp_exc)
         except Exception as e:
             logger.warning("Channel directory build failed: %s", e)
         
@@ -1309,7 +1358,7 @@ class GatewayRunner:
 
                 for key, entry in _expired_entries:
                     try:
-                        await self._async_flush_memories(entry.session_id)
+                        await self._async_flush_memories(entry.session_id, session_key=key)
                         # Shut down memory provider on the cached agent
                         cached_agent = self._running_agents.get(key)
                         if cached_agent and cached_agent is not _AGENT_PENDING_SENTINEL:
@@ -2674,7 +2723,7 @@ class GatewayRunner:
         if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
             platform_name = source.platform.value
             env_key = f"{platform_name.upper()}_HOME_CHANNEL"
-            if not os.getenv(env_key):
+            if False:  # home channel notification disabled
                 adapter = self.adapters.get(source.platform)
                 if adapter:
                     await adapter.send(
@@ -2698,6 +2747,18 @@ class GatewayRunner:
                 vc_context = adapter.get_voice_channel_context(guild_id)
                 if vc_context:
                     context_prompt += f"\n\n{vc_context}"
+
+        # -----------------------------------------------------------------
+        # Channel memory — inject per-channel persistent context for Slack
+        # -----------------------------------------------------------------
+        if source.platform == Platform.SLACK and source.chat_id:
+            try:
+                from channel_memory import build_channel_memory_prompt
+                _ch_mem = build_channel_memory_prompt(source.chat_id)
+                if _ch_mem:
+                    context_prompt += _ch_mem
+            except Exception as _cme:
+                logger.debug("Channel memory injection failed (non-fatal): %s", _cme)
 
         # -----------------------------------------------------------------
         # Auto-analyze images sent by the user
@@ -2913,10 +2974,17 @@ class GatewayRunner:
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
             _resp_len = len(response)
+            try:
+                from agent.anthropic_adapter import _is_oauth_token
+                _rr_key = str(runtime_kwargs.get("api_key", "") or "")
+                _rr_auth = "OAUTH" if _is_oauth_token(_rr_key) else "API_KEY"
+                _rr_key_preview = _rr_key[:20]
+            except Exception:
+                _rr_auth, _rr_key_preview = "unknown", "?"
             logger.info(
-                "response ready: platform=%s chat=%s time=%.1fs api_calls=%d response=%d chars",
+                "response ready: platform=%s chat=%s time=%.1fs api_calls=%d response=%d chars auth=%s key=%s",
                 _platform_name, source.chat_id or "unknown",
-                _response_time, _api_calls, _resp_len,
+                _response_time, _api_calls, _resp_len, _rr_auth, _rr_key_preview,
             )
 
             # Surface error details when the agent failed silently (final_response=None)
@@ -6380,6 +6448,14 @@ class GatewayRunner:
 
             try:
                 runtime_kwargs = _resolve_runtime_agent_kwargs()
+                _dbg_key = str(runtime_kwargs.get('api_key', '') or '')
+                _dbg_key_preview = _dbg_key[:20]
+                try:
+                    from agent.anthropic_adapter import _is_oauth_token
+                    _dbg_auth = 'OAUTH' if _is_oauth_token(_dbg_key) else 'API_KEY'
+                except Exception:
+                    _dbg_auth = 'unknown'
+                logger.error('DEBUG_RUNTIME: model=%s provider=%s base_url=%s auth_type=%s key=%s api_mode=%s', model, runtime_kwargs.get('provider'), runtime_kwargs.get('base_url'), _dbg_auth, _dbg_key_preview, runtime_kwargs.get('api_mode'))
             except Exception as exc:
                 return {
                     "final_response": f"⚠️ Provider authentication failed: {exc}",
@@ -6408,6 +6484,7 @@ class GatewayRunner:
                             edit_interval=_scfg.edit_interval,
                             buffer_threshold=_scfg.buffer_threshold,
                             cursor=_scfg.cursor,
+                            final_as_new=_scfg.final_as_new_message,
                         )
                         _stream_consumer = GatewayStreamConsumer(
                             adapter=_adapter,
@@ -7337,6 +7414,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
 def main():
     """CLI entry point for the gateway."""
+    try:
+        from gateway import sentry_init  # noqa: F401
+    except Exception:
+        pass
     import argparse
     
     parser = argparse.ArgumentParser(description="Hermes Gateway - Multi-platform messaging")
