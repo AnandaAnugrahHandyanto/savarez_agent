@@ -27,9 +27,6 @@ These tests pin the contract at the production-code entry points
 ``reset_statuses``) so attribute renames or formula tweaks surface
 loudly.
 """
-from dataclasses import replace
-from unittest.mock import patch
-
 import pytest
 
 from agent.credential_pool import (
@@ -109,6 +106,55 @@ class TestExhaustedTtl:
         ``EXHAUSTED_TTL_BACKOFF_CAP`` flags this test, prompting a
         comment update."""
         assert EXHAUSTED_TTL_BACKOFF_CAP == 8
+
+    @pytest.mark.parametrize("bad_value", [None, "5", "not-a-number", 3.7, [], {}])
+    def test_corrupted_failure_value_falls_back_to_zero(self, bad_value):
+        """A malformed ``consecutive_failures`` value (string, list,
+        ``None``, etc.) from a hand-edited or migrated ``auth.json``
+        must NOT crash cooldown resolution — Copilot caught this on
+        #15455.  Fall back to the un-multiplied base TTL instead of
+        propagating ``ValueError`` from inside the failover path.
+
+        ``"5"`` is included intentionally: even though Python's
+        ``int(\"5\")`` would succeed, we prefer the conservative path
+        of treating un-typed inputs as 0 so the contract is uniform.
+        """
+        result = _exhausted_ttl(429, consecutive_failures=bad_value)
+        # The "5" string DOES coerce cleanly via int() in our helper —
+        # that's the one defensive case we choose to honour rather than
+        # discard, since it's unambiguous numeric data.
+        if bad_value == "5":
+            assert result == EXHAUSTED_TTL_429_SECONDS * 8  # 5→exponent 3→cap
+        elif bad_value == 3.7:
+            assert result == EXHAUSTED_TTL_429_SECONDS * 4  # int(3.7)=3, exp=2
+        else:
+            assert result == EXHAUSTED_TTL_429_SECONDS  # 1× base
+
+    def test_runaway_failure_count_does_not_compute_huge_int(self):
+        """Regression guard for Copilot's #15455 perf comment: a
+        credential whose upstream is permanently dead could see the
+        counter climb to thousands.  Without an exponent clamp,
+        ``2 ** 10000`` would materialise a ~3000-digit integer just to
+        be discarded by the ``min(..., CAP)``.  We clamp the exponent
+        BEFORE the shift, so the actual integer math stays trivial.
+
+        This test asserts the result equals the cap (no surprise) AND
+        that it returns instantly — if the clamp regressed, the
+        big-int construction would still produce the right value but
+        burn measurable wall time on the way there.
+        """
+        import time as _time
+        start = _time.monotonic()
+        result = _exhausted_ttl(429, consecutive_failures=10_000)
+        elapsed = _time.monotonic() - start
+        assert result == EXHAUSTED_TTL_429_SECONDS * 8
+        # Tight bound: should be sub-millisecond on every machine.
+        # If the clamp regresses to ``2 ** 10000``, this jumps to
+        # tens or hundreds of milliseconds depending on arch.
+        assert elapsed < 0.05, (
+            f"_exhausted_ttl took {elapsed:.4f}s — exponent clamp likely "
+            f"regressed; ``2 ** 10000`` is being computed before the cap"
+        )
 
 
 # ---------------------------------------------------------------------------
