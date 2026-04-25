@@ -191,6 +191,73 @@ class TestNotifyOtherToolCall(unittest.TestCase):
         notify_other_tool_call("nonexistent_task")  # Should not raise
 
 
+class TestDedupLoopDetection(unittest.TestCase):
+    """Dedup hits must flow through the consecutive counter and trigger the hard block.
+
+    Without this fix, the dedup path returned early and the loop-detection guard
+    at line 538 was never reached — the agent could loop forever on a dedup stub.
+    """
+
+    def setUp(self):
+        _read_tracker.clear()
+
+    def tearDown(self):
+        _read_tracker.clear()
+
+    @patch("tools.file_tools.os.path.getmtime", return_value=1000.0)
+    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
+    def test_dedup_second_read_returns_stub_no_warning(self, _mock_ops, _mock_mtime):
+        """2nd read (dedup hit) returns the stub but no warning yet."""
+        read_file_tool("/tmp/test.py", task_id="td1")
+        result = json.loads(read_file_tool("/tmp/test.py", task_id="td1"))
+        assert result.get("dedup") is True
+        assert "_warning" not in result
+        assert "error" not in result
+
+    @patch("tools.file_tools.os.path.getmtime", return_value=1000.0)
+    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
+    def test_dedup_third_read_returns_stub_with_warning(self, _mock_ops, _mock_mtime):
+        """3rd consecutive dedup hit returns the stub plus a warning."""
+        for _ in range(2):
+            read_file_tool("/tmp/test.py", task_id="td2")
+        result = json.loads(read_file_tool("/tmp/test.py", task_id="td2"))
+        assert result.get("dedup") is True
+        assert "_warning" in result
+        assert "3 times" in result["_warning"]
+
+    @patch("tools.file_tools.os.path.getmtime", return_value=1000.0)
+    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
+    def test_dedup_fourth_read_is_hard_blocked(self, _mock_ops, _mock_mtime):
+        """4th consecutive dedup hit returns BLOCKED with no content."""
+        for _ in range(3):
+            read_file_tool("/tmp/test.py", task_id="td3")
+        result = json.loads(read_file_tool("/tmp/test.py", task_id="td3"))
+        assert "error" in result
+        assert "BLOCKED" in result["error"]
+        assert "4 times" in result["error"]
+        assert "content" not in result
+
+    @patch("tools.file_tools.os.path.getmtime", return_value=1000.0)
+    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
+    def test_dedup_notify_resets_counter(self, _mock_ops, _mock_mtime):
+        """notify_other_tool_call between dedup hits resets the consecutive counter."""
+        for _ in range(3):
+            read_file_tool("/tmp/test.py", task_id="td4")
+        notify_other_tool_call("td4")
+        result = json.loads(read_file_tool("/tmp/test.py", task_id="td4"))
+        # After reset a dedup hit is fine — no block and no warning
+        assert result.get("dedup") is True
+        assert "_warning" not in result
+        assert "error" not in result
+
+    @patch("tools.file_tools.os.path.getmtime", return_value=1000.0)
+    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
+    def test_dedup_different_task_isolated(self, _mock_ops, _mock_mtime):
+        """Dedup consecutive counts are scoped to the task_id."""
+        for _ in range(3):
+            read_file_tool("/tmp/test.py", task_id="td5")
+        result = json.loads(read_file_tool("/tmp/test.py", task_id="td6"))
+        assert "error" not in result
 
 
 

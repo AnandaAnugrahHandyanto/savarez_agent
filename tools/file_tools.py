@@ -436,7 +436,30 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             try:
                 current_mtime = os.path.getmtime(resolved_str)
                 if current_mtime == cached_mtime:
-                    return json.dumps({
+                    # Dedup hit: still update the consecutive counter so the
+                    # loop-detection hard block fires for pathological re-reads
+                    # of unchanged files (the full-read path below is skipped).
+                    read_key = ("read", path, offset, limit)
+                    with _read_tracker_lock:
+                        if task_data["last_key"] == read_key:
+                            task_data["consecutive"] += 1
+                        else:
+                            task_data["last_key"] = read_key
+                            task_data["consecutive"] = 1
+                        count = task_data["consecutive"]
+
+                    if count >= 4:
+                        return json.dumps({
+                            "error": (
+                                f"BLOCKED: You have read this exact file region {count} times in a row. "
+                                "The content has NOT changed. You already have this information. "
+                                "STOP re-reading and proceed with your task."
+                            ),
+                            "path": path,
+                            "already_read": count,
+                        }, ensure_ascii=False)
+
+                    stub: dict = {
                         "content": (
                             "File unchanged since last read. The content from "
                             "the earlier read_file result in this conversation is "
@@ -444,7 +467,15 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                         ),
                         "path": path,
                         "dedup": True,
-                    }, ensure_ascii=False)
+                    }
+                    if count >= 3:
+                        stub["_warning"] = (
+                            f"You have read this exact file region {count} times consecutively. "
+                            "The content has not changed since your last read. Use the information "
+                            "you already have. If you are stuck in a loop, stop reading and proceed "
+                            "with writing or responding."
+                        )
+                    return json.dumps(stub, ensure_ascii=False)
             except OSError:
                 pass  # stat failed — fall through to full read
 
