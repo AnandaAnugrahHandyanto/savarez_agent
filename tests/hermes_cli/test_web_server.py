@@ -1663,6 +1663,29 @@ class TestDashboardPluginManifestExtensions:
         assert "hidden" not in entry["tab"]
         assert "override" not in entry["tab"]
 
+    def test_image_icon_manifest_is_carried_through(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_plugin(tmp_path, "image-icon", {
+            "name": "image-icon",
+            "label": "Image Icon",
+            "icon": {
+                "type": "image",
+                "src": "dist/image-icon.png",
+                "alt": "Image icon logo",
+            },
+            "tab": {"path": "/image-icon"},
+            "entry": "dist/index.js",
+        })
+        from hermes_cli import web_server
+        web_server._dashboard_plugins_cache = None
+        plugins = web_server._get_dashboard_plugins(force_rescan=True)
+        entry = next(p for p in plugins if p["name"] == "image-icon")
+        assert entry["icon"] == {
+            "type": "image",
+            "src": "dist/image-icon.png",
+            "alt": "Image icon logo",
+        }
+
     def test_slots_filters_non_string_entries(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         self._write_plugin(tmp_path, "mixed-slots", {

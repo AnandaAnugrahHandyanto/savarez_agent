@@ -507,11 +507,19 @@ export interface DashboardThemesResponse {
 
 // ── Dashboard plugin types ─────────────────────────────────────────────
 
+export type PluginIconResponse =
+  | string
+  | {
+      type: "image";
+      src: string;
+      alt?: string;
+    };
+
 export interface PluginManifestResponse {
   name: string;
   label: string;
   description: string;
-  icon: string;
+  icon: PluginIconResponse;
   version: string;
   tab: {
     path: string;
