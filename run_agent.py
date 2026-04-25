@@ -7122,11 +7122,6 @@ class AIAgent:
             api_msg["reasoning_content"] = explicit_reasoning
             return
 
-        normalized_reasoning = source_msg.get("reasoning")
-        if isinstance(normalized_reasoning, str) and normalized_reasoning:
-            api_msg["reasoning_content"] = normalized_reasoning
-            return
-
         kimi_requires_reasoning = (
             self.provider in {"kimi-coding", "kimi-coding-cn"}
             or base_url_host_matches(self.base_url, "api.kimi.com")
@@ -7137,10 +7132,20 @@ class AIAgent:
             self.provider == "deepseek"
             or base_url_host_matches(self.base_url, "api.deepseek.com")
         )
+        
+        # DeepSeek and Kimi must inject an empty string if reasoning_content is missing
+        # Evaluate this BEFORE promoting `reasoning`, to prevent cross-provider 
+        # reasoning leakage (e.g. MiniMax reasoning causing a 400 on DeepSeek).
         if deepseek_requires_reasoning or (
             source_msg.get("tool_calls") and kimi_requires_reasoning
         ):
             api_msg["reasoning_content"] = ""
+            return
+
+        normalized_reasoning = source_msg.get("reasoning")
+        if isinstance(normalized_reasoning, str) and normalized_reasoning:
+            api_msg["reasoning_content"] = normalized_reasoning
+            return
 
     @staticmethod
     def _sanitize_tool_calls_for_strict_api(api_msg: dict) -> dict:
