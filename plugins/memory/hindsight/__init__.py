@@ -431,7 +431,13 @@ class HindsightMemoryProvider(MemoryProvider):
         self._retain_async = True
         self._retain_context = "conversation between Hermes Agent and the User"
         self._turn_counter = 0
+        self._last_retained_turn = 0  # tracks last turn count that was retained
         self._session_turns: list[str] = []  # accumulates ALL turns for the session
+
+        # Lifecycle state — prevents late async work during interpreter shutdown
+        self._shutting_down = False
+        self._closed = False
+        self._state_lock = threading.Lock()
 
         # Recall controls
         self._auto_recall = True
@@ -732,8 +738,15 @@ class HindsightMemoryProvider(MemoryProvider):
                 self._client = Hindsight(**kwargs)
         return self._client
 
-    def _run_sync(self, coro):
-        """Schedule *coro* on the shared loop using the configured timeout."""
+    def _run_sync(self, coro, *, allow_shutdown: bool = False):
+        """Schedule *coro* on the shared loop using the configured timeout.
+
+        Normal callers are blocked once shutdown begins.  The shutdown path
+        itself passes ``allow_shutdown=True`` for its final flush / close.
+        """
+        if not allow_shutdown and self._shutting_down:
+            logger.debug("_run_sync: skipped (provider is shutting down)")
+            return None
         return _run_sync(coro, timeout=self._timeout)
 
     def initialize(self, session_id: str, **kwargs) -> None:
@@ -1083,11 +1096,58 @@ class HindsightMemoryProvider(MemoryProvider):
             kwargs["tags"] = merged_tags
         return kwargs
 
+    def _submit_retain(self, *, allow_shutdown: bool = False) -> None:
+        """Submit accumulated session turns to Hindsight.
+
+        Extracted from sync_turn so the shutdown path can flush a pending
+        partial batch without duplicating the retain logic.  Normal callers
+        leave *allow_shutdown* as False; shutdown sets it to True.
+        """
+        content = "[" + ",".join(self._session_turns) + "]"
+
+        lineage_tags: list[str] = []
+        if self._session_id:
+            lineage_tags.append(f"session:{self._session_id}")
+        if self._parent_session_id:
+            lineage_tags.append(f"parent:{self._parent_session_id}")
+
+        try:
+            client = self._get_client()
+            item = self._build_retain_kwargs(
+                content,
+                context=self._retain_context,
+                metadata=self._build_metadata(
+                    message_count=len(self._session_turns) * 2,
+                    turn_index=self._turn_index,
+                ),
+                tags=lineage_tags or None,
+            )
+            item.pop("bank_id", None)
+            item.pop("retain_async", None)
+            logger.debug("Hindsight retain: bank=%s, doc=%s, async=%s, content_len=%d, num_turns=%d",
+                         self._bank_id, self._document_id, self._retain_async, len(content), len(self._session_turns))
+            self._run_sync(client.aretain_batch(
+                bank_id=self._bank_id,
+                items=[item],
+                document_id=self._document_id,
+                retain_async=self._retain_async,
+            ), allow_shutdown=allow_shutdown)
+            self._last_retained_turn = self._turn_counter
+            logger.debug("Hindsight retain succeeded")
+        except Exception as e:
+            logger.warning("Hindsight sync failed: %s", e, exc_info=True)
+
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Retain conversation turn in background (non-blocking).
 
-        Respects retain_every_n_turns for batching.
+        Respects retain_every_n_turns for batching.  Returns immediately
+        once provider shutdown has begun to avoid scheduling async work
+        during interpreter teardown.
         """
+        if self._shutting_down:
+            logger.debug("sync_turn: skipped (provider is shutting down)")
+            return
+
         if not self._auto_retain:
             logger.debug("sync_turn: skipped (auto_retain disabled)")
             return
@@ -1107,39 +1167,9 @@ class HindsightMemoryProvider(MemoryProvider):
 
         logger.debug("sync_turn: retaining %d turns, total session content %d chars",
                      len(self._session_turns), sum(len(t) for t in self._session_turns))
-        content = "[" + ",".join(self._session_turns) + "]"
-
-        lineage_tags: list[str] = []
-        if self._session_id:
-            lineage_tags.append(f"session:{self._session_id}")
-        if self._parent_session_id:
-            lineage_tags.append(f"parent:{self._parent_session_id}")
 
         def _sync():
-            try:
-                client = self._get_client()
-                item = self._build_retain_kwargs(
-                    content,
-                    context=self._retain_context,
-                    metadata=self._build_metadata(
-                        message_count=len(self._session_turns) * 2,
-                        turn_index=self._turn_index,
-                    ),
-                    tags=lineage_tags or None,
-                )
-                item.pop("bank_id", None)
-                item.pop("retain_async", None)
-                logger.debug("Hindsight retain: bank=%s, doc=%s, async=%s, content_len=%d, num_turns=%d",
-                             self._bank_id, self._document_id, self._retain_async, len(content), len(self._session_turns))
-                self._run_sync(client.aretain_batch(
-                    bank_id=self._bank_id,
-                    items=[item],
-                    document_id=self._document_id,
-                    retain_async=self._retain_async,
-                ))
-                logger.debug("Hindsight retain succeeded")
-            except Exception as e:
-                logger.warning("Hindsight sync failed: %s", e, exc_info=True)
+            self._submit_retain()
 
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=5.0)
@@ -1224,10 +1254,27 @@ class HindsightMemoryProvider(MemoryProvider):
         return tool_error(f"Unknown tool: {tool_name}")
 
     def shutdown(self) -> None:
+        with self._state_lock:
+            if self._closed:
+                return
+            self._shutting_down = True
+
         logger.debug("Hindsight shutdown: waiting for background threads")
         for t in (self._prefetch_thread, self._sync_thread):
             if t and t.is_alive():
                 t.join(timeout=5.0)
+
+        # Flush any pending partial batch so recent turns are not lost.
+        # Only flush if there are un-retained turns since the last retain.
+        if (
+            self._auto_retain
+            and self._session_turns
+            and self._turn_counter > self._last_retained_turn
+            and self._client is not None
+        ):
+            logger.debug("Hindsight shutdown: flushing %d pending turns", len(self._session_turns))
+            self._submit_retain(allow_shutdown=True)
+
         if self._client is not None:
             try:
                 if self._mode == "local_embedded":
@@ -1239,10 +1286,13 @@ class HindsightMemoryProvider(MemoryProvider):
                     except RuntimeError:
                         pass
                 else:
-                    self._run_sync(self._client.aclose())
+                    self._run_sync(self._client.aclose(), allow_shutdown=True)
             except Exception:
                 pass
             self._client = None
+
+        with self._state_lock:
+            self._closed = True
         # The module-global background event loop (_loop / _loop_thread)
         # is intentionally NOT stopped here. It is shared across every
         # HindsightMemoryProvider instance in the process — the plugin
