@@ -45,15 +45,17 @@ Usage:
     )
 """
 
+import asyncio
+import datetime
 import json
 import logging
 import os
-import asyncio
-import datetime
-from typing import Dict, Any, List, Optional
-from tools.openrouter_client import get_async_client as _get_openrouter_client, check_api_key as check_openrouter_api_key
+from typing import Any, Dict, List, Optional
+
 from agent.auxiliary_client import extract_content_or_reasoning
 from tools.debug_helpers import DebugSession
+from tools.openrouter_client import check_api_key as check_openrouter_api_key
+from tools.openrouter_client import get_async_client as _get_openrouter_client
 
 logger = logging.getLogger(__name__)
 

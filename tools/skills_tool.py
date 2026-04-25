@@ -68,14 +68,13 @@ Usage:
 
 import json
 import logging
-
-from hermes_constants import get_hermes_home, display_hermes_home
 import os
 import re
 from enum import Enum
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
+from hermes_constants import display_hermes_home, get_hermes_home
 from tools.registry import registry, tool_error
 
 logger = logging.getLogger(__name__)
@@ -1068,7 +1067,7 @@ def skill_view(
 
         # If a specific file path is requested, read that instead
         if file_path and skill_dir:
-            from tools.path_security import validate_within_dir, has_traversal_component
+            from tools.path_security import has_traversal_component, validate_within_dir
 
             # Security: Prevent path traversal attacks
             if has_traversal_component(file_path):

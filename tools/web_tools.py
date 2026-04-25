@@ -40,14 +40,16 @@ Usage:
     crawl_data = web_crawl_tool("example.com", "Find contact information")
 """
 
+import asyncio
 import json
 import logging
 import os
 import re
-import asyncio
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional
+
 import httpx
 from firecrawl import Firecrawl
+
 from agent.auxiliary_client import (
     async_call_llm,
     extract_content_or_reasoning,
@@ -56,8 +58,10 @@ from agent.auxiliary_client import (
 from tools.debug_helpers import DebugSession
 from tools.managed_tool_gateway import (
     build_vendor_gateway_url,
-    read_nous_access_token as _read_nous_access_token,
     resolve_managed_tool_gateway,
+)
+from tools.managed_tool_gateway import (
+    read_nous_access_token as _read_nous_access_token,
 )
 from tools.tool_backend_helpers import managed_nous_tools_enabled, prefers_gateway
 from tools.url_safety import is_safe_url
@@ -1193,8 +1197,9 @@ async def web_extract_tool(
     """
     # Block URLs containing embedded secrets (exfiltration prevention).
     # URL-decode first so percent-encoded secrets (%73k- = sk-) are caught.
-    from agent.redact import _PREFIX_RE
     from urllib.parse import unquote
+
+    from agent.redact import _PREFIX_RE
     for _url in urls:
         if _PREFIX_RE.search(_url) or _PREFIX_RE.search(unquote(_url)):
             return json.dumps({

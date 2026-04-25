@@ -31,8 +31,8 @@ Usage:
 import difflib
 import re
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple, Any
 from enum import Enum
+from typing import Any, List, Optional, Tuple
 
 
 class OperationType(Enum):

@@ -25,7 +25,7 @@ import json
 import logging
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 import websockets
@@ -964,7 +964,7 @@ class CDPSupervisor:
             return
 
         # Parse query string for dialog metadata. Use urllib to be robust.
-        from urllib.parse import urlparse, parse_qs
+        from urllib.parse import parse_qs, urlparse
         q = parse_qs(urlparse(url).query)
 
         def _q(name: str) -> str:

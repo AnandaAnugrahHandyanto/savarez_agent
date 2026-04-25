@@ -10,9 +10,9 @@ import json
 import logging
 import os
 import re
-from typing import Dict, Optional
 import ssl
 import time
+from typing import Dict, Optional
 
 from agent.redact import redact_sensitive_text
 
@@ -192,7 +192,7 @@ def _handle_send(args):
         return tool_error("Interrupted")
 
     try:
-        from gateway.config import load_gateway_config, Platform
+        from gateway.config import Platform, load_gateway_config
         config = load_gateway_config()
     except Exception as e:
         return json.dumps(_error(f"Failed to load gateway config: {e}"))
@@ -762,7 +762,7 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
     except ImportError:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
-        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+        from gateway.platforms.base import proxy_kwargs_for_aiohttp, resolve_proxy_url
         _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
         auth_headers = {"Authorization": f"Bot {token}"}
@@ -942,7 +942,7 @@ async def _send_slack(token, chat_id, message):
     except ImportError:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
-        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+        from gateway.platforms.base import proxy_kwargs_for_aiohttp, resolve_proxy_url
         _proxy = resolve_proxy_url()
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
         url = "https://slack.com/api/chat.postMessage"
@@ -1037,7 +1037,7 @@ async def _send_signal(extra, chat_id, message, media_files=None):
             # Return warning for any skipped media files
             result = {"success": True, "platform": "signal", "chat_id": chat_id}
             if len(attachment_paths) < len(valid_media):
-                result["warnings"] = [f"Some media files were skipped (not found on disk)"]
+                result["warnings"] = ["Some media files were skipped (not found on disk)"]
             return result
     except Exception as e:
         return _error(f"Signal send failed: {e}")
@@ -1106,7 +1106,7 @@ async def _send_sms(auth_token, chat_id, message):
     message = message.strip()
 
     try:
-        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+        from gateway.platforms.base import proxy_kwargs_for_aiohttp, resolve_proxy_url
         _proxy = resolve_proxy_url()
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
         creds = f"{account_sid}:{auth_token}"
@@ -1343,7 +1343,10 @@ async def _send_wecom(extra, chat_id, message):
 async def _send_weixin(pconfig, chat_id, message, media_files=None):
     """Send via Weixin iLink using the native adapter helper."""
     try:
-        from gateway.platforms.weixin import check_weixin_requirements, send_weixin_direct
+        from gateway.platforms.weixin import (
+            check_weixin_requirements,
+            send_weixin_direct,
+        )
         if not check_weixin_requirements():
             return {"error": "Weixin requirements not met. Need aiohttp + cryptography."}
     except ImportError:
@@ -1364,7 +1367,10 @@ async def _send_weixin(pconfig, chat_id, message, media_files=None):
 async def _send_bluebubbles(extra, chat_id, message):
     """Send via BlueBubbles iMessage server using the adapter's REST API."""
     try:
-        from gateway.platforms.bluebubbles import BlueBubblesAdapter, check_bluebubbles_requirements
+        from gateway.platforms.bluebubbles import (
+            BlueBubblesAdapter,
+            check_bluebubbles_requirements,
+        )
         if not check_bluebubbles_requirements():
             return {"error": "BlueBubbles requirements not met (need aiohttp + httpx)."}
     except ImportError:
@@ -1391,7 +1397,7 @@ async def _send_bluebubbles(extra, chat_id, message):
 async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=None):
     """Send via Feishu/Lark using the adapter's send pipeline."""
     try:
-        from gateway.platforms.feishu import FeishuAdapter, FEISHU_AVAILABLE
+        from gateway.platforms.feishu import FEISHU_AVAILABLE, FeishuAdapter
         if not FEISHU_AVAILABLE:
             return {"error": "Feishu dependencies not installed. Run: pip install 'hermes-agent[feishu]'"}
         from gateway.platforms.feishu import FEISHU_DOMAIN, LARK_DOMAIN
@@ -1489,7 +1495,7 @@ async def _send_qqbot(pconfig, chat_id, message):
             token_data = token_resp.json()
             access_token = token_data.get("access_token")
             if not access_token:
-                return _error(f"QQBot: no access_token in response")
+                return _error("QQBot: no access_token in response")
 
             # Step 2: Send message via REST
             headers = {
