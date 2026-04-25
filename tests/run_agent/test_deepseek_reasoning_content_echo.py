@@ -7,13 +7,15 @@ field, DeepSeek rejects the next request with HTTP 400::
 
     The reasoning_content in the thinking mode must be passed back to the API.
 
-Fix covers three paths:
+Fix covers two paths:
 
 1. ``_build_assistant_message`` — new tool-call messages without raw
-   reasoning_content get ``""`` pinned at creation time so nothing gets
-   persisted poisoned.
+   reasoning_content get ``""`` pinned at creation time (AFTER ``tool_calls``
+   are populated on the message dict) so nothing gets persisted poisoned.
 2. ``_copy_reasoning_content_for_api`` — already-poisoned history replays
-   with ``reasoning_content=""`` injected defensively.
+   are left alone instead of injecting ``""`` which DeepSeek rejects with
+   HTTP 400.  The creation-time pin (path 1) prevents future poison.
+
 3. Detection covers three signals: ``provider == "deepseek"``,
    ``"deepseek" in model``, and ``api.deepseek.com`` host match. The third
    catches custom-provider setups pointing at DeepSeek.
@@ -76,8 +78,8 @@ class TestNeedsDeepSeekToolReasoning:
 class TestCopyReasoningContentForApi:
     """_copy_reasoning_content_for_api pads reasoning_content for DeepSeek tool-calls."""
 
-    def test_deepseek_tool_call_poisoned_history_gets_empty_string(self) -> None:
-        """Already-poisoned history (no reasoning_content, no reasoning) gets ''."""
+    def test_deepseek_tool_call_poisoned_history_skipped(self) -> None:
+        """Already-poisoned history is left alone — no empty-string injection."""
         agent = _make_agent(provider="deepseek", model="deepseek-v4-flash")
         source = {
             "role": "assistant",
@@ -86,7 +88,7 @@ class TestCopyReasoningContentForApi:
         }
         api_msg: dict = {}
         agent._copy_reasoning_content_for_api(source, api_msg)
-        assert api_msg.get("reasoning_content") == ""
+        assert "reasoning_content" not in api_msg
 
     def test_deepseek_assistant_no_tool_call_left_alone(self) -> None:
         """Plain assistant turns without tool_calls don't get padded."""
@@ -120,8 +122,8 @@ class TestCopyReasoningContentForApi:
         agent._copy_reasoning_content_for_api(source, api_msg)
         assert api_msg["reasoning_content"] == "thought trace"
 
-    def test_kimi_path_still_works(self) -> None:
-        """Existing Kimi detection still pads reasoning_content."""
+    def test_kimi_path_left_alone(self) -> None:
+        """Kimi poisoned history is left alone — no empty-string injection."""
         agent = _make_agent(provider="kimi-coding", model="kimi-k2.5")
         source = {
             "role": "assistant",
@@ -130,9 +132,9 @@ class TestCopyReasoningContentForApi:
         }
         api_msg: dict = {}
         agent._copy_reasoning_content_for_api(source, api_msg)
-        assert api_msg.get("reasoning_content") == ""
+        assert "reasoning_content" not in api_msg
 
-    def test_kimi_moonshot_base_url(self) -> None:
+    def test_kimi_moonshot_base_url_left_alone(self) -> None:
         agent = _make_agent(
             provider="custom", model="kimi-k2", base_url="https://api.moonshot.ai/v1"
         )
@@ -143,7 +145,7 @@ class TestCopyReasoningContentForApi:
         }
         api_msg: dict = {}
         agent._copy_reasoning_content_for_api(source, api_msg)
-        assert api_msg.get("reasoning_content") == ""
+        assert "reasoning_content" not in api_msg
 
     def test_non_thinking_provider_not_padded(self) -> None:
         """Providers that don't require the echo are untouched."""
@@ -161,8 +163,8 @@ class TestCopyReasoningContentForApi:
         agent._copy_reasoning_content_for_api(source, api_msg)
         assert "reasoning_content" not in api_msg
 
-    def test_deepseek_custom_base_url(self) -> None:
-        """Custom provider pointing at api.deepseek.com is detected via host."""
+    def test_deepseek_custom_base_url_left_alone(self) -> None:
+        """Custom provider pointing at api.deepseek.com — left alone."""
         agent = _make_agent(
             provider="custom",
             model="whatever",
@@ -175,7 +177,7 @@ class TestCopyReasoningContentForApi:
         }
         api_msg: dict = {}
         agent._copy_reasoning_content_for_api(source, api_msg)
-        assert api_msg.get("reasoning_content") == ""
+        assert "reasoning_content" not in api_msg
 
     def test_non_assistant_role_ignored(self) -> None:
         """User/tool messages are left alone."""

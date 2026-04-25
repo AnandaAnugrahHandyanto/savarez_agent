@@ -7639,12 +7639,6 @@ class AIAgent:
             raw_reasoning_content = getattr(assistant_message, "reasoning_content", None)
             if raw_reasoning_content is not None:
                 msg["reasoning_content"] = _sanitize_surrogates(raw_reasoning_content)
-            elif msg.get("tool_calls") and self._needs_deepseek_tool_reasoning():
-                # DeepSeek thinking mode requires reasoning_content on every
-                # assistant tool-call message. Without it, replaying the
-                # persisted message causes HTTP 400. Include empty string
-                # as a defensive compatibility fallback (refs #15250).
-                msg["reasoning_content"] = ""
 
         if hasattr(assistant_message, 'reasoning_details') and assistant_message.reasoning_details:
             # Pass reasoning_details back unmodified so providers (OpenRouter,
@@ -7718,6 +7712,19 @@ class AIAgent:
                 tool_calls.append(tc_dict)
             msg["tool_calls"] = tool_calls
 
+        # DeepSeek thinking mode requires reasoning_content on every
+        # assistant tool-call turn; omitting it causes HTTP 400 when the
+        # persisted message is replayed (#15250 / #15353).  Guard runs AFTER
+        # tool_calls are populated so msg.get("tool_calls") is reliable.
+        # When the API response didn't include reasoning_content (e.g.
+        # simple single-tool calls without thinking), pin an empty string so
+        # the message is never persisted poisoned.  Without this, a session
+        # reload + replay would trigger "reasoning_content must be passed
+        # back" errors.
+        if msg.get("tool_calls") and self._needs_deepseek_tool_reasoning():
+            if "reasoning_content" not in msg:
+                msg["reasoning_content"] = ""
+
         return msg
 
     def _needs_kimi_tool_reasoning(self) -> bool:
@@ -7764,15 +7771,14 @@ class AIAgent:
             api_msg["reasoning_content"] = normalized_reasoning
             return
 
-        # Providers that require an echoed reasoning_content on every
-        # assistant tool-call turn. Detection logic lives in the per-provider
-        # helpers so both the creation path (_build_assistant_message) and
-        # this replay path stay in sync.
-        if source_msg.get("tool_calls") and (
-            self._needs_kimi_tool_reasoning()
-            or self._needs_deepseek_tool_reasoning()
-        ):
-            api_msg["reasoning_content"] = ""
+        # When reasoning_content is missing and reasoning is also absent,
+        # do NOT inject an empty string.  DeepSeek (and other thinking-mode
+        # providers) reject empty reasoning_content with HTTP 400.
+        # _build_assistant_message already pins reasoning_content at creation
+        # time for tool-call messages, preventing poison from entering the
+        # session store.  Messages that reach here without any reasoning
+        # genuinely never had it (e.g. compacted history, old sessions) and
+        # should not carry a dummy field.
 
     @staticmethod
     def _sanitize_tool_calls_for_strict_api(api_msg: dict) -> dict:
