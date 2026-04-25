@@ -52,6 +52,51 @@ class TestFormatSessionInfo:
         assert "32K" in info
         assert "config" in info
 
+    def test_config_context_length_from_providers_dict(self, runner, tmp_path):
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            (
+                "model:\n"
+                "  default: gpt-5.4\n"
+                "  provider: newapi-openai\n"
+                "providers:\n"
+                "  newapi-openai:\n"
+                "    api: https://example.invalid/v1\n"
+                "    name: newapi-openai\n"
+                "    models:\n"
+                "      gpt-5.4:\n"
+                "        context_length: 1050000\n"
+            ),
+            "gpt-5.4",
+            {"provider": "newapi-openai", "base_url": "https://example.invalid/v1", "api_key": "***"},
+        )
+        with p1, p2, p3:
+            info = runner._format_session_info()
+        assert "1.1M" in info
+        assert "config" in info
+
+    def test_config_context_length_from_custom_providers_list(self, runner, tmp_path):
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            (
+                "model:\n"
+                "  default: gpt-5.4\n"
+                "  provider: newapi-openai\n"
+                "custom_providers:\n"
+                "  - name: newapi-openai\n"
+                "    base_url: https://example.invalid/v1\n"
+                "    models:\n"
+                "      gpt-5.4:\n"
+                "        context_length: 1050000\n"
+            ),
+            "gpt-5.4",
+            {"provider": "newapi-openai", "base_url": "https://example.invalid/v1", "api_key": "***"},
+        )
+        with p1, p2, p3:
+            info = runner._format_session_info()
+        assert "1.1M" in info
+        assert "config" in info
+
     def test_default_fallback_hint(self, runner, tmp_path):
         p1, p2, p3 = _patch_info(tmp_path, "model:\n  default: unknown-model-xyz\n",
                                   "unknown-model-xyz",
