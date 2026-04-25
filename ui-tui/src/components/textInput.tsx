@@ -134,9 +134,44 @@ function wordRight(s: string, p: number) {
   return i
 }
 
-function cursorLayout(value: string, cursor: number, cols: number) {
+/**
+ * Move cursor one logical line up or down inside `s` while preserving the
+ * column offset from the current line's start. Returns `null` when the cursor
+ * is already on the first line (up) or last line (down) — callers use that
+ * signal to fall through to history cycling instead of eating the arrow key.
+ */
+export function lineNav(s: string, p: number, dir: -1 | 1): null | number {
+  const pos = snapPos(s, p)
+  const curStart = s.lastIndexOf('\n', pos - 1) + 1
+  const col = pos - curStart
+
+  if (dir < 0) {
+    if (curStart === 0) {
+      return null
+    }
+
+    const prevStart = s.lastIndexOf('\n', curStart - 2) + 1
+
+    return snapPos(s, Math.min(prevStart + col, curStart - 1))
+  }
+
+  const nextBreak = s.indexOf('\n', pos)
+
+  if (nextBreak < 0) {
+    return null
+  }
+
+  const nextEnd = s.indexOf('\n', nextBreak + 1)
+  const lineEnd = nextEnd < 0 ? s.length : nextEnd
+
+  return snapPos(s, Math.min(nextBreak + 1 + col, lineEnd))
+}
+
+// mirrors wrap-ansi(..., { wordWrap: false, hard: true }) so the declared
+// cursor lines up with what <Text wrap="wrap-char"> actually renders
+export function cursorLayout(value: string, cursor: number, cols: number) {
   const pos = Math.max(0, Math.min(cursor, value.length))
-  const w = Math.max(1, cols - 1)
+  const w = Math.max(1, cols)
 
   let col = 0,
     line = 0
@@ -167,17 +202,23 @@ function cursorLayout(value: string, cursor: number, cols: number) {
     col += sw
   }
 
+  // trailing cursor-cell overflows to the next row at the wrap column
+  if (col >= w) {
+    line++
+    col = 0
+  }
+
   return { column: col, line }
 }
 
-function offsetFromPosition(value: string, row: number, col: number, cols: number) {
+export function offsetFromPosition(value: string, row: number, col: number, cols: number) {
   if (!value.length) {
     return 0
   }
 
   const targetRow = Math.max(0, Math.floor(row))
   const targetCol = Math.max(0, Math.floor(col))
-  const w = Math.max(1, cols - 1)
+  const w = Math.max(1, cols)
 
   let line = 0
   let column = 0
@@ -367,22 +408,20 @@ export function TextInput({
       return
     }
 
-    if (selected) {
-      setInputSelection({
-        clear: () => {
+    setInputSelection({
+      clear: () => {
+        if (selRef.current) {
           selRef.current = null
           setSel(null)
-        },
-        end: selected.end,
-        start: selected.start,
-        value: vRef.current
-      })
-    } else {
-      setInputSelection(null)
-    }
+        }
+      },
+      end: selected?.end ?? curRef.current,
+      start: selected?.start ?? curRef.current,
+      value: vRef.current
+    })
 
     return () => setInputSelection(null)
-  }, [focus, selected])
+  }, [cur, focus, selected])
 
   useEffect(
     () => () => {
@@ -570,10 +609,27 @@ export function TextInput({
         return
       }
 
+      if (k.upArrow || k.downArrow) {
+        const next = lineNav(vRef.current, curRef.current, k.upArrow ? -1 : 1)
+
+        if (next !== null) {
+          clearSel()
+          setCur(next)
+          curRef.current = next
+
+          return
+        }
+
+        return
+      }
+
+      // Ctrl+B is the documented voice-recording toggle (see platform.ts →
+      // isVoiceToggleKey). Pass it through so the app-level handler in
+      // useInputHandlers receives it instead of being swallowed here as
+      // either backward-word nav (line below) or a literal 'b' insertion.
       if (
-        k.upArrow ||
-        k.downArrow ||
         (k.ctrl && inp === 'c') ||
+        (k.ctrl && inp === 'b') ||
         k.tab ||
         (k.shift && k.tab) ||
         k.pageUp ||
@@ -598,6 +654,8 @@ export function TextInput({
       const actionHome = k.home || (!isMac && mod && inp === 'a') || isMacActionFallback(k, inp, 'a')
       const actionEnd = k.end || (mod && inp === 'e') || isMacActionFallback(k, inp, 'e')
       const actionDeleteToStart = (mod && inp === 'u') || isMacActionFallback(k, inp, 'u')
+      const actionKillToEnd = (mod && inp === 'k') || isMacActionFallback(k, inp, 'k')
+      const actionDeleteWord = (mod && inp === 'w') || isMacActionFallback(k, inp, 'w')
       const range = selRange()
       const delFwd = k.delete || fwdDel.current
 
@@ -661,7 +719,7 @@ export function TextInput({
         } else {
           v = v.slice(0, c) + v.slice(nextPos(v, c))
         }
-      } else if (mod && inp === 'w') {
+      } else if (actionDeleteWord) {
         if (range) {
           v = v.slice(0, range.start) + v.slice(range.end)
           c = range.start
@@ -681,7 +739,7 @@ export function TextInput({
           v = v.slice(c)
           c = 0
         }
-      } else if (mod && inp === 'k') {
+      } else if (actionKillToEnd) {
         if (range) {
           v = v.slice(0, range.start) + v.slice(range.end)
           c = range.start
@@ -764,7 +822,7 @@ export function TextInput({
       }}
       ref={boxRef}
     >
-      <Text wrap="wrap">{rendered}</Text>
+      <Text wrap="wrap-char">{rendered}</Text>
     </Box>
   )
 }
