@@ -7731,20 +7731,28 @@ class AIAgent:
             return
 
         # DeepSeek thinking mode requires reasoning_content on ALL assistant
-        # messages — not just tool_calls turns.  Empty string is valid.
-        # Scope to native DeepSeek API and OpenRouter-routed DeepSeek.
-        deepseek_requires_reasoning = (
-            base_url_host_matches(self.base_url, "api.deepseek.com")
-            or (
-                self._is_openrouter_url()
-                and (self.model or "").lower().startswith("deepseek/")
-            )
-        )
-        if deepseek_requires_reasoning:
-            rc = self.reasoning_config
-            if isinstance(rc, dict) and rc.get("enabled") is False:
+        # messages — not just tool_calls turns. Empty string is valid.
+        #
+        # Native DeepSeek keeps ``deepseek-chat`` as the legacy non-thinking
+        # alias, while V4 models and ``deepseek-reasoner`` default to
+        # thinking. Preserve that distinction so enabling native DeepSeek
+        # support does not silently change ``deepseek-chat`` semantics.
+        _model_lower = (self.model or "").lower()
+        _deepseek_native = base_url_host_matches(self.base_url, "api.deepseek.com")
+        _deepseek_openrouter = self._is_openrouter_url() and _model_lower.startswith("deepseek/")
+        if _deepseek_native or _deepseek_openrouter:
+            rc = self.reasoning_config if isinstance(self.reasoning_config, dict) else {}
+            if rc.get("enabled") is False:
                 return
-            api_msg["reasoning_content"] = ""
+            _deepseek_requires_reasoning = _deepseek_openrouter
+            if _deepseek_native:
+                _deepseek_requires_reasoning = (
+                    _model_lower != "deepseek-chat"
+                    or rc.get("enabled") is True
+                    or bool(rc.get("effort"))
+                )
+            if _deepseek_requires_reasoning:
+                api_msg["reasoning_content"] = ""
 
     @staticmethod
     def _sanitize_tool_calls_for_strict_api(api_msg: dict) -> dict:

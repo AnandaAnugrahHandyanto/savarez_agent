@@ -59,16 +59,22 @@ class TestDeepSeekV4ContextWindows(unittest.TestCase):
 class TestDeepSeekThinkingMode(unittest.TestCase):
     """Verify build_kwargs handles DeepSeek thinking mode correctly."""
 
-    def _build(self, reasoning_config=None, is_deepseek=True, temperature=0.7):
+    def _build(
+        self,
+        reasoning_config=None,
+        is_deepseek=True,
+        model="deepseek-v4-pro",
+        fixed_temperature=0.7,
+    ):
         transport = ChatCompletionsTransport.__new__(ChatCompletionsTransport)
         kwargs = transport.build_kwargs(
-            model="deepseek-v4-pro",
+            model=model,
             messages=[{"role": "user", "content": "Hello"}],
             tools=None,
             is_deepseek=is_deepseek,
             reasoning_config=reasoning_config,
-            model_lower="deepseek-v4-pro",
-            temperature=temperature,
+            model_lower=model.lower(),
+            fixed_temperature=fixed_temperature,
         )
         return kwargs
 
@@ -106,7 +112,7 @@ class TestDeepSeekThinkingMode(unittest.TestCase):
 
     def test_temperature_stripped_when_thinking_enabled(self):
         """DeepSeek rejects temperature when thinking is enabled."""
-        kwargs = self._build(temperature=0.7)
+        kwargs = self._build(fixed_temperature=0.7)
         self.assertNotIn("temperature", kwargs)
 
     def test_non_deepseek_not_affected(self):
@@ -119,11 +125,29 @@ class TestDeepSeekThinkingMode(unittest.TestCase):
         """When thinking is disabled, temperature should be preserved."""
         kwargs = self._build(
             reasoning_config={"enabled": False},
-            temperature=0.7,
+            fixed_temperature=0.7,
         )
-        # Temperature should not be stripped when thinking is disabled
-        # (The transport may or may not set temperature — the key point
-        # is that the DeepSeek block does not strip it)
+        self.assertEqual(kwargs.get("temperature"), 0.7)
+
+    def test_deepseek_chat_does_not_force_thinking(self):
+        """Legacy deepseek-chat should stay on its non-thinking default."""
+        kwargs = self._build(model="deepseek-chat")
+        extra = kwargs.get("extra_body", {})
+        self.assertNotIn("thinking", extra)
+        self.assertNotIn("reasoning_effort", kwargs)
+        self.assertEqual(kwargs.get("temperature"), 0.7)
+
+    def test_deepseek_chat_can_opt_in_to_thinking(self):
+        """Explicit reasoning config should enable thinking for deepseek-chat."""
+        kwargs = self._build(
+            model="deepseek-chat",
+            reasoning_config={"enabled": True, "effort": "xhigh"},
+            fixed_temperature=0.7,
+        )
+        extra = kwargs.get("extra_body", {})
+        self.assertEqual(extra.get("thinking", {}).get("type"), "enabled")
+        self.assertEqual(kwargs.get("reasoning_effort"), "max")
+        self.assertNotIn("temperature", kwargs)
 
 
 class TestDeepSeekReasoningContentReplay(unittest.TestCase):
@@ -196,6 +220,29 @@ class TestDeepSeekReasoningContentReplay(unittest.TestCase):
             api_msg,
         )
         self.assertNotIn("reasoning_content", api_msg)
+
+    def test_native_deepseek_chat_does_not_inject_by_default(self):
+        """Legacy non-thinking deepseek-chat should not replay reasoning_content."""
+        agent = self._make_agent(model="deepseek-chat")
+        api_msg = {}
+        agent._copy_reasoning_content_for_api(
+            {"role": "assistant", "content": "Hi"},
+            api_msg,
+        )
+        self.assertNotIn("reasoning_content", api_msg)
+
+    def test_native_deepseek_chat_injects_when_enabled(self):
+        """deepseek-chat should replay reasoning_content once thinking is enabled."""
+        agent = self._make_agent(
+            model="deepseek-chat",
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        api_msg = {}
+        agent._copy_reasoning_content_for_api(
+            {"role": "assistant", "content": "Hi"},
+            api_msg,
+        )
+        self.assertEqual(api_msg.get("reasoning_content"), "")
 
     def test_non_assistant_skipped(self):
         """Non-assistant messages should be skipped entirely."""

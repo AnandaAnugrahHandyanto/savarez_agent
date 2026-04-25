@@ -242,10 +242,18 @@ class ChatCompletionsTransport(ProviderTransport):
         # DeepSeek: thinking mode toggle and effort mapping
         is_deepseek = params.get("is_deepseek", False)
         if is_deepseek:
-            _ds_thinking_enabled = True
+            # Legacy ``deepseek-chat`` is the non-thinking alias; the V4
+            # family and ``deepseek-reasoner`` default to thinking mode.
+            _ds_default_thinking = model_lower != "deepseek-chat"
+            _ds_thinking_enabled = _ds_default_thinking
+            _ds_has_explicit_toggle = False
             if reasoning_config and isinstance(reasoning_config, dict):
                 if reasoning_config.get("enabled") is False:
                     _ds_thinking_enabled = False
+                    _ds_has_explicit_toggle = True
+                elif reasoning_config.get("enabled") is True or reasoning_config.get("effort"):
+                    _ds_thinking_enabled = True
+                    _ds_has_explicit_toggle = True
             if _ds_thinking_enabled:
                 # DeepSeek only supports "high" and "max" effort values.
                 # Map low/medium/high → "high", xhigh/max → "max".
@@ -260,7 +268,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 # frequency_penalty when thinking is enabled.
                 for _k in ("temperature", "top_p", "presence_penalty", "frequency_penalty"):
                     api_kwargs.pop(_k, None)
-            else:
+            elif _ds_default_thinking or _ds_has_explicit_toggle:
                 extra_body["thinking"] = {"type": "disabled"}
 
         # Reasoning
