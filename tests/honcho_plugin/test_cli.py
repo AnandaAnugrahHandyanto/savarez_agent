@@ -3,6 +3,26 @@
 from types import SimpleNamespace
 
 
+class TestHonchoAuthDetection:
+    def test_accepts_host_base_url_without_api_key(self, monkeypatch):
+        import plugins.memory.honcho.cli as honcho_cli
+
+        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes")
+        monkeypatch.delenv("HONCHO_API_KEY", raising=False)
+
+        assert honcho_cli._has_honcho_auth_or_local(  # pyright: ignore[reportPrivateUsage]
+            {"hosts": {"hermes": {"baseUrl": "http://127.0.0.1:8000"}}}
+        )
+
+    def test_rejects_missing_api_key_and_base_url(self, monkeypatch):
+        import plugins.memory.honcho.cli as honcho_cli
+
+        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes")
+        monkeypatch.delenv("HONCHO_API_KEY", raising=False)
+
+        assert not honcho_cli._has_honcho_auth_or_local({})  # pyright: ignore[reportPrivateUsage]
+
+
 class TestCmdStatus:
     def test_reports_connection_failure_when_session_setup_fails(self, monkeypatch, capsys, tmp_path):
         import plugins.memory.honcho.cli as honcho_cli

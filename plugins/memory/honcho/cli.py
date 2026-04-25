@@ -278,6 +278,14 @@ def _resolve_api_key(cfg: dict) -> str:
     return host_key or cfg.get("apiKey", "") or os.environ.get("HONCHO_API_KEY", "")
 
 
+def _has_honcho_auth_or_local(cfg: dict) -> bool:
+    """Return whether Honcho commands can connect to cloud or self-hosted Honcho."""
+    if _resolve_api_key(cfg):
+        return True
+    host_cfg = (cfg.get("hosts") or {}).get(_host_key()) or {}
+    return bool(host_cfg.get("baseUrl") or cfg.get("baseUrl"))
+
+
 def _prompt(label: str, default: str | None = None, secret: bool = False) -> str:
     suffix = f" [{default}]" if default else ""
     sys.stdout.write(f"  {label}{suffix}: ")
@@ -975,8 +983,8 @@ def cmd_tokens(args) -> None:
 def cmd_identity(args) -> None:
     """Seed AI peer identity or show both peer representations."""
     cfg = _read_config()
-    if not _resolve_api_key(cfg):
-        print("  No API key configured. Run 'hermes honcho setup' first.\n")
+    if not _has_honcho_auth_or_local(cfg):
+        print("  No API key or self-hosted baseUrl configured. Run 'hermes honcho setup' first.\n")
         return
 
     file_path = getattr(args, "file", None)
