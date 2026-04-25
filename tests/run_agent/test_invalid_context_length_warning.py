@@ -68,6 +68,17 @@ def test_string_numeric_context_length_works():
         assert "Invalid" not in str(c)
 
 
+def test_context_window_alias_works():
+    """model.context_window should behave like model.context_length."""
+    with patch("run_agent.logger") as mock_logger:
+        agent = _build_agent({"default": "gpt5.4", "provider": "custom",
+                              "base_url": "http://localhost:4000/v1",
+                              "context_window": 256000})
+    assert agent._config_context_length == 256000
+    for c in mock_logger.warning.call_args_list:
+        assert "Invalid" not in str(c)
+
+
 def test_custom_providers_invalid_context_length_warns():
     """Invalid context_length in custom_providers should warn."""
     custom_providers = [

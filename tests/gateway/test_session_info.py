@@ -52,6 +52,15 @@ class TestFormatSessionInfo:
         assert "32K" in info
         assert "config" in info
 
+    def test_context_window_alias(self, runner, tmp_path):
+        p1, p2, p3 = _patch_info(tmp_path, "model:\n  default: test-model\n  context_window: 1000000\n",
+                                  "test-model",
+                                  {"provider": "custom", "base_url": "", "api_key": ""})
+        with p1, p2, p3:
+            info = runner._format_session_info()
+        assert "1.0M" in info
+        assert "config" in info
+
     def test_default_fallback_hint(self, runner, tmp_path):
         p1, p2, p3 = _patch_info(tmp_path, "model:\n  default: unknown-model-xyz\n",
                                   "unknown-model-xyz",
@@ -59,7 +68,7 @@ class TestFormatSessionInfo:
         with p1, p2, p3:
             info = runner._format_session_info()
         assert "128K" in info
-        assert "model.context_length" in info
+        assert "model.context_length or model.context_window" in info
 
     def test_local_endpoint_shown(self, runner, tmp_path):
         p1, p2, p3 = _patch_info(

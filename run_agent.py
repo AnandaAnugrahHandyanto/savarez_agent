@@ -1738,10 +1738,14 @@ class AIAgent:
                 _aux_context_config = None
         self._aux_compression_context_length_config = _aux_context_config
 
-        # Read explicit context_length override from model config
+        # Read explicit context_length override from model config. Accept
+        # context_window as a compatibility alias because users commonly copy
+        # provider metadata keys into config.yaml.
         _model_cfg = _agent_cfg.get("model", {})
         if isinstance(_model_cfg, dict):
             _config_context_length = _model_cfg.get("context_length")
+            if _config_context_length is None:
+                _config_context_length = _model_cfg.get("context_window")
         else:
             _config_context_length = None
         if _config_context_length is not None:

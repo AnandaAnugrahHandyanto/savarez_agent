@@ -4169,8 +4169,12 @@ class GatewayRunner:
                     elif isinstance(_model_cfg, dict):
                         _hyg_model = _model_cfg.get("default") or _model_cfg.get("model") or _hyg_model
                         # Read explicit context_length override from model config
-                        # (same as run_agent.py lines 995-1005)
+                        # (same as run_agent.py). Accept context_window as a
+                        # compatibility alias for users who mirror provider
+                        # metadata into config.yaml.
                         _raw_ctx = _model_cfg.get("context_length")
+                        if _raw_ctx is None:
+                            _raw_ctx = _model_cfg.get("context_window")
                         if _raw_ctx is not None:
                             try:
                                 _hyg_config_context_length = int(_raw_ctx)
@@ -4834,6 +4838,8 @@ class GatewayRunner:
                 model_cfg = data.get("model", {})
                 if isinstance(model_cfg, dict):
                     raw_ctx = model_cfg.get("context_length")
+                    if raw_ctx is None:
+                        raw_ctx = model_cfg.get("context_window")
                     if raw_ctx is not None:
                         try:
                             config_context_length = int(raw_ctx)
@@ -4865,7 +4871,7 @@ class GatewayRunner:
         if config_context_length is not None:
             ctx_source = "config"
         elif context_length == DEFAULT_FALLBACK_CONTEXT:
-            ctx_source = "default — set model.context_length in config to override"
+            ctx_source = "default — set model.context_length or model.context_window in config to override"
         else:
             ctx_source = "detected"
 
