@@ -541,6 +541,26 @@ class TestThreadPersistence:
         data = json.loads(state_path.read_text())
         assert len(data) == 5
 
+    def test_persist_failure_keeps_existing_state_file_valid(self, tmp_path, monkeypatch):
+        """Failed persistence must not corrupt the previous matrix thread state."""
+        from gateway.platforms.helpers import ThreadParticipationTracker
+
+        state_path = tmp_path / "matrix_threads.json"
+        state_path.write_text(json.dumps(["$stable_thread"]), encoding="utf-8")
+        monkeypatch.setattr(
+            ThreadParticipationTracker,
+            "_state_path",
+            lambda self: state_path,
+        )
+        tracker = ThreadParticipationTracker("matrix")
+
+        with patch("gateway.platforms.helpers.os.replace", side_effect=OSError("disk full")):
+            tracker.mark("$fresh_thread")
+
+        assert set(json.loads(state_path.read_text(encoding="utf-8"))) == {"$stable_thread"}
+        assert "$stable_thread" in tracker
+        assert "$fresh_thread" in tracker
+
 
 # ---------------------------------------------------------------------------
 # DM mention-thread feature

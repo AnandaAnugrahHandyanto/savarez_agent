@@ -8,7 +8,9 @@ and thread participation tracking.
 import asyncio
 import json
 import logging
+import os
 import re
+import tempfile
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Optional
@@ -233,7 +235,32 @@ class ThreadParticipationTracker:
         if len(thread_list) > self._max_tracked:
             thread_list = thread_list[-self._max_tracked:]
             self._threads = set(thread_list)
-        path.write_text(json.dumps(thread_list), encoding="utf-8")
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(path.parent),
+            prefix=f".{path.stem}_",
+            suffix=".tmp",
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(thread_list, handle)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, path)
+        except OSError:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            logger.warning(
+                "[ThreadParticipationTracker] Failed to persist %s thread state to %s",
+                self._platform,
+                path,
+                exc_info=True,
+            )
 
     def mark(self, thread_id: str) -> None:
         """Mark *thread_id* as participated and persist."""

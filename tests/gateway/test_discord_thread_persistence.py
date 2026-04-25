@@ -82,3 +82,19 @@ class TestDiscordThreadPersistence:
             # ThreadParticipationTracker should return empty set, not crash
             tracker = ThreadParticipationTracker("discord")
             assert "$test" not in tracker
+
+    def test_persist_failure_keeps_existing_state_file_valid(self, tmp_path):
+        """Failed persistence must not corrupt the previous on-disk state."""
+        from gateway.platforms.helpers import ThreadParticipationTracker
+
+        state_file = tmp_path / "discord_threads.json"
+        state_file.write_text(json.dumps(["stable-thread"]), encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            tracker = ThreadParticipationTracker("discord")
+            with patch("gateway.platforms.helpers.os.replace", side_effect=OSError("disk full")):
+                tracker.mark("fresh-thread")
+
+        assert set(json.loads(state_file.read_text(encoding="utf-8"))) == {"stable-thread"}
+        assert "stable-thread" in tracker
+        assert "fresh-thread" in tracker
