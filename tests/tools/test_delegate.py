@@ -1355,12 +1355,14 @@ class TestDelegateHeartbeat(unittest.TestCase):
 
         child.run_conversation.side_effect = slow_run
 
-        # Patch both the interval AND the idle ceiling so the test proves
-        # the in-tool branch takes effect: with a 0.05s interval and the
-        # default _HEARTBEAT_STALE_CYCLES_IDLE=5, the old behavior would
-        # trip after 0.25s and stop firing. We should see heartbeats
-        # continuing through the full 0.4s run.
-        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05):
+        # Make the stale-threshold split explicit and assert on the real
+        # behavior we care about: while current_tool is set, the heartbeat
+        # must keep touching the parent and must NOT emit the stale warning
+        # that the idle branch uses to stop propagation.
+        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05), \
+             patch("tools.delegate_tool._HEARTBEAT_STALE_CYCLES_IDLE", 2), \
+             patch("tools.delegate_tool._HEARTBEAT_STALE_CYCLES_IN_TOOL", 100), \
+             patch("tools.delegate_tool.logger.warning") as mock_warning:
             _run_single_child(
                 task_index=0,
                 goal="Test long-running tool",
@@ -1368,13 +1370,13 @@ class TestDelegateHeartbeat(unittest.TestCase):
                 parent_agent=parent,
             )
 
-        # With the old idle threshold (5 cycles = 0.25s), touch_calls
-        # would cap at ~5. With the in-tool threshold (20 cycles = 1.0s),
-        # we should see substantially more heartbeats over 0.4s.
         self.assertGreater(
-            len(touch_calls), 6,
-            f"Heartbeat stopped too early while child was inside a tool; "
-            f"got {len(touch_calls)} touches over 0.4s at 0.05s interval",
+            len(touch_calls), 0,
+            "Heartbeat never propagated while child was inside a tool",
+        )
+        self.assertFalse(
+            any("appears stale" in str(call.args[0]) for call in mock_warning.call_args_list),
+            f"In-tool child should not be marked stale: {mock_warning.call_args_list}",
         )
 
     def test_heartbeat_still_trips_idle_stale_when_no_tool(self):
