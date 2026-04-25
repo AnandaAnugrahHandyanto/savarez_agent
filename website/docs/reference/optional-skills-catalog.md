@@ -95,6 +95,12 @@ hermes skills uninstall <skill-name>
 |-------|-------------|
 | [**openclaw-migration**](/docs/user-guide/skills/optional/migration/migration-openclaw-migration) | Migrate a user's OpenClaw customization footprint into Hermes Agent. Imports Hermes-compatible memories, SOUL.md, command allowlists, user skills, and selected workspace assets from ~/.openclaw, then reports exactly what could not be mig... |
 
+## observability
+
+| Skill | Description |
+|-------|-------------|
+| [**langfuse-tracing**](/docs/user-guide/skills/optional/observability/observability-langfuse-tracing) | Install and configure opt-in Langfuse tracing as a persistent Hermes plugin. The skill is only the setup/update surface; once installed, tracing auto-loads through plugin hooks for new sessions without prompt-context injection. |
+
 ## mlops
 
 | Skill | Description |
