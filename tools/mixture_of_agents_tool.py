@@ -25,7 +25,7 @@ Architecture:
 3. Multiple layers can be used for iterative refinement (future enhancement)
 
 Default Models Used:
-- Reference Models: MiniMax-M2.7-highspeed, DeepSeek Reasoner
+- Reference Models: NVIDIA Nemotron 3 Super, Google Gemma 4 31B via OpenRouter free tier
 - Aggregator Model: Xiaomi MiMo v2 Pro
 
 Legacy OpenRouter-style model slugs still work when passed explicitly.
@@ -70,14 +70,14 @@ ModelRoute = Dict[str, Any]
 # Reference models - these generate diverse initial responses in parallel.
 DEFAULT_REFERENCE_ROUTES: List[ModelRoute] = [
     {
-        "provider": "minimax",
-        "model": "MiniMax-M2.7-highspeed",
-        "label": "minimax/MiniMax-M2.7-highspeed",
+        "provider": "openrouter",
+        "model": "nvidia/nemotron-3-super-120b-a12b:free",
+        "label": "nvidia/nemotron-3-super-120b-a12b:free",
     },
     {
-        "provider": "deepseek",
-        "model": "deepseek-reasoner",
-        "label": "deepseek/deepseek-reasoner",
+        "provider": "openrouter",
+        "model": "google/gemma-4-31b-it:free",
+        "label": "google/gemma-4-31b-it:free",
     },
 ]
 
@@ -1161,7 +1161,7 @@ from tools.registry import registry
 
 MOA_SCHEMA = {
     "name": "mixture_of_agents",
-    "description": "Route a hard problem through multiple LLMs collaboratively. By default Hermes uses Xiaomi MiMo v2 Pro as the aggregator with direct MiniMax and DeepSeek reference models. Requires Xiaomi plus at least one reference-provider key. Use sparingly for genuinely difficult problems: complex math, advanced algorithms, and multi-step analytical reasoning.",
+    "description": "Route a hard problem through multiple LLMs collaboratively. By default Hermes uses Xiaomi MiMo v2 Pro as the aggregator with OpenRouter free Nemotron and Gemma reference models. Requires Xiaomi plus OPENROUTER_API_KEY. Use sparingly for genuinely difficult problems: complex math, advanced algorithms, and multi-step analytical reasoning.",
     "parameters": {
         "type": "object",
         "properties": {

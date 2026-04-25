@@ -61,15 +61,15 @@ DEFAULT_BUILDER_ROUTE = {
 }
 
 DEFAULT_REVIEWER_ROUTE = {
-    "provider": "minimax",
-    "model": "MiniMax-M2.7-highspeed",
-    "label": "minimax/MiniMax-M2.7-highspeed",
+    "provider": "openrouter",
+    "model": "nvidia/nemotron-3-super-120b-a12b:free",
+    "label": "nvidia/nemotron-3-super-120b-a12b:free",
 }
 
 DEFAULT_JUDGE_ROUTE = {
-    "provider": "deepseek",
-    "model": "deepseek-reasoner",
-    "label": "deepseek/deepseek-reasoner",
+    "provider": "openrouter",
+    "model": "google/gemma-4-31b-it:free",
+    "label": "google/gemma-4-31b-it:free",
 }
 
 
@@ -542,11 +542,11 @@ SPAR_SCHEMA = {
             },
             "reviewer_model": {
                 "type": "string",
-                "description": "Optional Spar reviewer model route. Defaults to MiniMax-M2.7-highspeed.",
+                "description": "Optional Spar reviewer model route. Defaults to nvidia/nemotron-3-super-120b-a12b:free.",
             },
             "judge_model": {
                 "type": "string",
-                "description": "Optional judge model route. Defaults to DeepSeek Reasoner.",
+                "description": "Optional judge model route. Defaults to google/gemma-4-31b-it:free.",
             },
             "judge_enabled": {
                 "type": "boolean",

@@ -10,8 +10,8 @@ moa = importlib.import_module("tools.mixture_of_agents_tool")
 
 def test_moa_defaults_track_current_direct_provider_stack():
     assert moa.REFERENCE_MODELS == [
-        "minimax/MiniMax-M2.7-highspeed",
-        "deepseek/deepseek-reasoner",
+        "nvidia/nemotron-3-super-120b-a12b:free",
+        "google/gemma-4-31b-it:free",
     ]
     assert moa.AGGREGATOR_MODEL == "xiaomi/mimo-v2-pro"
 

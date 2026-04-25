@@ -139,8 +139,8 @@ async def test_spar_tool_returns_rejection_after_fix_budget_is_exhausted(monkeyp
 def test_check_spar_requirements_uses_builder_and_reviewer_routes(monkeypatch):
     available = {
         "xiaomi/mimo-v2-pro",
-        "minimax/MiniMax-M2.7-highspeed",
-        "deepseek/deepseek-reasoner",
+        "nvidia/nemotron-3-super-120b-a12b:free",
+        "google/gemma-4-31b-it:free",
     }
     monkeypatch.setattr(spar, "_default_builder_route", lambda: {"provider": "xiaomi", "model": "mimo-v2-pro", "label": "xiaomi/mimo-v2-pro"})
     monkeypatch.setattr(spar, "_route_is_available", lambda route: spar._route_label(route) in available)
