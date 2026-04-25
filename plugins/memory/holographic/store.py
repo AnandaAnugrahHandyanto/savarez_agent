@@ -46,7 +46,7 @@ CREATE INDEX IF NOT EXISTS idx_facts_category ON facts(category);
 CREATE INDEX IF NOT EXISTS idx_entities_name  ON entities(name);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts
-    USING fts5(content, tags, content=facts, content_rowid=fact_id);
+    USING fts5(content, tags, content=facts, content_rowid=fact_id, tokenize="trigram");
 
 CREATE TRIGGER IF NOT EXISTS facts_ai AFTER INSERT ON facts BEGIN
     INSERT INTO facts_fts(rowid, content, tags)
@@ -133,7 +133,45 @@ class MemoryStore:
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(facts)").fetchall()}
         if "hrr_vector" not in columns:
             self._conn.execute("ALTER TABLE facts ADD COLUMN hrr_vector BLOB")
+        # Migrate: rebuild FTS5 with trigram tokenizer for CJK support
+        self._migrate_fts_trigram()
         self._conn.commit()
+
+    def _migrate_fts_trigram(self) -> None:
+        """Rebuild FTS5 table with trigram tokenizer if not already using it."""
+        row = self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='facts_fts'"
+        ).fetchone()
+        if row is None:
+            return  # FTS5 table doesn't exist yet, will be created by _SCHEMA
+        if "trigram" in row[0]:
+            return  # Already using trigram tokenizer
+
+        # Drop and recreate with trigram tokenizer
+        self._conn.execute("DROP TRIGGER IF EXISTS facts_ai")
+        self._conn.execute("DROP TRIGGER IF EXISTS facts_ad")
+        self._conn.execute("DROP TRIGGER IF EXISTS facts_au")
+        self._conn.execute("DROP TABLE IF EXISTS facts_fts")
+        self._conn.execute(
+            'CREATE VIRTUAL TABLE facts_fts '
+            'USING fts5(content, tags, content=facts, content_rowid=fact_id, tokenize="trigram")'
+        )
+        # Recreate triggers
+        self._conn.execute(
+            "CREATE TRIGGER facts_ai AFTER INSERT ON facts BEGIN "
+            "INSERT INTO facts_fts(rowid, content, tags) VALUES (new.fact_id, new.content, new.tags); END"
+        )
+        self._conn.execute(
+            "CREATE TRIGGER facts_ad AFTER DELETE ON facts BEGIN "
+            "INSERT INTO facts_fts(facts_fts, rowid, content, tags) VALUES ('delete', old.fact_id, old.content, old.tags); END"
+        )
+        self._conn.execute(
+            "CREATE TRIGGER facts_au AFTER UPDATE ON facts BEGIN "
+            "INSERT INTO facts_fts(facts_fts, rowid, content, tags) VALUES ('delete', old.fact_id, old.content, old.tags); "
+            "INSERT INTO facts_fts(rowid, content, tags) VALUES (new.fact_id, new.content, new.tags); END"
+        )
+        # Rebuild index
+        self._conn.execute('INSERT INTO facts_fts(facts_fts) VALUES("rebuild")')
 
     # ------------------------------------------------------------------
     # Public API
