@@ -21,13 +21,14 @@ Agent workflow:
   6. Run --check to verify. Done.
 """
 
+from __future__ import annotations  # allow PEP 604 `X | None` on Python 3.9+
+
 import argparse
 import json
 import os
 import subprocess
 import sys
 from pathlib import Path
-
 
 def _find_hermes_agent_root(script_path: Path) -> Path | None:
     """Return the repo root (directory containing hermes_constants.py) for *script_path*."""
@@ -38,13 +39,12 @@ def _find_hermes_agent_root(script_path: Path) -> Path | None:
     return None
 
 
-try:
-    from hermes_constants import display_hermes_home, get_hermes_home
-except ModuleNotFoundError:
-    HERMES_AGENT_ROOT = _find_hermes_agent_root(Path(__file__))
-    if HERMES_AGENT_ROOT is not None:
-        sys.path.insert(0, str(HERMES_AGENT_ROOT))
-    from hermes_constants import display_hermes_home, get_hermes_home
+# Ensure sibling modules (_hermes_home) are importable when run standalone.
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+
+from _hermes_home import display_hermes_home, get_hermes_home
 
 HERMES_HOME = get_hermes_home()
 TOKEN_PATH = HERMES_HOME / "google_token.json"
@@ -121,7 +121,11 @@ def install_deps():
         return True
     except subprocess.CalledProcessError as e:
         print(f"ERROR: Failed to install dependencies: {e}")
-        print(f"Try manually: {sys.executable} -m pip install {' '.join(REQUIRED_PACKAGES)}")
+        print(
+            "On environments without pip (e.g. Nix), install the optional extra instead:"
+        )
+        print("  pip install 'hermes-agent[google]'")
+        print(f"Or manually: {sys.executable} -m pip install {' '.join(REQUIRED_PACKAGES)}")
         return False
 
 
