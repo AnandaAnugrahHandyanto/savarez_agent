@@ -713,6 +713,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        user_id: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -749,6 +750,7 @@ class APIServerAdapter(BasePlatformAdapter):
             enabled_toolsets=enabled_toolsets,
             session_id=session_id,
             platform="api_server",
+            user_id=user_id,
             stream_delta_callback=stream_delta_callback,
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
@@ -864,6 +866,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
 
+        # Per-user memory scoping: callers pass X-Hermes-User-Id so
+        # memory plugins (holographic, mem0, honcho) isolate facts per
+        # user.  When absent, all facts are visible (CLI behaviour).
+        provided_user_id = request.headers.get(
+            "X-Hermes-User-Id", ""
+        ).strip() or None
+
         # Allow caller to continue an existing session by passing X-Hermes-Session-Id.
         # When provided, history is loaded from state.db instead of from the request body.
         #
@@ -974,6 +983,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 stream_delta_callback=_on_delta,
                 tool_progress_callback=_on_tool_progress,
                 agent_ref=agent_ref,
+                user_id=provided_user_id,
             ))
 
             return await self._write_sse_chat_completion(
@@ -988,6 +998,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
+                user_id=provided_user_id,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -1772,6 +1783,11 @@ class APIServerAdapter(BasePlatformAdapter):
         if body.get("truncation") == "auto" and len(conversation_history) > 100:
             conversation_history = conversation_history[-100:]
 
+        # Per-user memory scoping (same header as chat completions)
+        resp_user_id = request.headers.get(
+            "X-Hermes-User-Id", ""
+        ).strip() or None
+
         # Reuse session from previous_response_id chain so the dashboard
         # groups the entire conversation under one session entry.
         session_id = stored_session_id or str(uuid.uuid4())
@@ -1827,6 +1843,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_progress_callback=_on_tool_progress,
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
+                user_id=resp_user_id,
                 agent_ref=agent_ref,
             ))
 
@@ -1856,6 +1873,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=conversation_history,
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
+                user_id=resp_user_id,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -2252,6 +2270,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
+        user_id: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -2274,6 +2293,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_progress_callback=tool_progress_callback,
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
+                user_id=user_id,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent
@@ -2436,6 +2456,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
         session_id = body.get("session_id") or stored_session_id or run_id
         ephemeral_system_prompt = instructions
+        stream_user_id = request.headers.get(
+            "X-Hermes-User-Id", ""
+        ).strip() or None
 
         async def _run_and_close():
             try:
@@ -2444,6 +2467,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     session_id=session_id,
                     stream_delta_callback=_text_cb,
                     tool_progress_callback=event_cb,
+                    user_id=stream_user_id,
                 )
                 self._active_run_agents[run_id] = agent
                 def _run_sync():
