@@ -201,9 +201,11 @@ const ComposerPane = memo(function ComposerPane({
 
       <Box flexDirection="column" marginTop={ui.statusBar === 'top' ? 0 : 1} position="relative">
         <FloatingOverlays
+          catalog={composer.catalog}
           cols={composer.cols}
           compIdx={composer.compIdx}
           completions={composer.completions}
+          onCommandSelect={actions.onCommandSelect}
           onModelSelect={actions.onModelSelect}
           onPickerSelect={actions.resumeById}
           pagerPageSize={composer.pagerPageSize}

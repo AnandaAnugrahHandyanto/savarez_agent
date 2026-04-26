@@ -80,6 +80,13 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
+    aliases: ['commands'],
+    help: 'open the Aurora command palette',
+    name: 'palette',
+    run: arg => patchOverlayState({ commandPalette: { query: arg.trim() || undefined } })
+  },
+
+  {
     aliases: ['exit', 'q'],
     help: 'exit hermes',
     name: 'quit',

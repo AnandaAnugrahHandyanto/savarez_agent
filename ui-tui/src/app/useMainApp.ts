@@ -637,6 +637,14 @@ export function useMainApp(gw: GatewayClient) {
     slashRef.current(`/model ${value}`)
   }, [])
 
+  const onCommandSelect = useCallback(
+    (value: string) => {
+      patchOverlayState({ commandPalette: null })
+      composerActions.setInput(value)
+    },
+    [composerActions]
+  )
+
   const hasReasoning = Boolean(turn.reasoning.trim())
 
   // Per-section overrides win over the global mode — when every section is
@@ -665,15 +673,17 @@ export function useMainApp(gw: GatewayClient) {
       answerClarify,
       answerSecret,
       answerSudo,
+      onCommandSelect,
       onModelSelect,
       resumeById: session.resumeById,
       setStickyPrompt
     }),
-    [answerApproval, answerClarify, answerSecret, answerSudo, onModelSelect, session.resumeById]
+    [answerApproval, answerClarify, answerSecret, answerSudo, onCommandSelect, onModelSelect, session.resumeById]
   )
 
   const appComposer = useMemo(
     () => ({
+      catalog,
       cols,
       compIdx: composerState.compIdx,
       completions: composerState.completions,
@@ -687,7 +697,7 @@ export function useMainApp(gw: GatewayClient) {
       submit,
       updateInput: composerActions.setInput
     }),
-    [cols, composerActions, composerState, empty, pagerPageSize, submit]
+    [catalog, cols, composerActions, composerState, empty, pagerPageSize, submit]
   )
 
   const liveTailVisible = (() => {

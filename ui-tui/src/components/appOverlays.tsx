@@ -7,6 +7,7 @@ import { $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $uiState } from '../app/uiStore.js'
 
 import { FloatBox } from './appChrome.js'
+import { CommandPalette } from './commandPalette.js'
 import { MaskedPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
 import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt } from './prompts.js'
@@ -94,15 +95,21 @@ export function FloatingOverlays({
   cols,
   compIdx,
   completions,
+  catalog,
+  onCommandSelect,
   onModelSelect,
   onPickerSelect,
   pagerPageSize
-}: Pick<AppOverlaysProps, 'cols' | 'compIdx' | 'completions' | 'onModelSelect' | 'onPickerSelect' | 'pagerPageSize'>) {
+}: Pick<
+  AppOverlaysProps,
+  'catalog' | 'cols' | 'compIdx' | 'completions' | 'onCommandSelect' | 'onModelSelect' | 'onPickerSelect' | 'pagerPageSize'
+>) {
   const { gw } = useGateway()
   const overlay = useStore($overlayState)
   const ui = useStore($uiState)
 
-  const hasAny = overlay.modelPicker || overlay.pager || overlay.picker || overlay.skillsHub || completions.length
+  const hasAny =
+    overlay.commandPalette || overlay.modelPicker || overlay.pager || overlay.picker || overlay.skillsHub || completions.length
 
   if (!hasAny) {
     return null
@@ -143,6 +150,18 @@ export function FloatingOverlays({
       {overlay.skillsHub && (
         <FloatBox color={ui.theme.color.bronze}>
           <SkillsHub gw={gw} onClose={() => patchOverlayState({ skillsHub: false })} t={ui.theme} />
+        </FloatBox>
+      )}
+
+      {overlay.commandPalette && (
+        <FloatBox color={ui.theme.color.bronze}>
+          <CommandPalette
+            catalog={catalog}
+            initialQuery={overlay.commandPalette.query ?? ''}
+            onClose={() => patchOverlayState({ commandPalette: null })}
+            onSelect={onCommandSelect}
+            t={ui.theme}
+          />
         </FloatBox>
       )}
 
