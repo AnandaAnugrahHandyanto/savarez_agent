@@ -214,6 +214,32 @@ $CS upload file.md d:                   # if "d" is configured = dropbox
 | Slow speeds | `rclone` is single-threaded. Add `--transfers 4` or `--multi-thread-cutoff 50M` |
 | OneDrive "name already exists" | Delete the conflicting file first, or add `--checksum --ignore-existing` |
 
+## Why rclone Instead of Direct APIs?
+
+This skill uses rclone as a universal backend rather than provider-specific direct API clients. This decision came from real-world trial and error:
+
+### Microsoft OneDirect OAuth Pitfalls
+
+Direct integration with the Microsoft Graph API for OneDrive requires OAuth. Both common paths hit walls for consumer (`@outlook.com`, `@live.com`) accounts:
+
+| Method | Pitfall |
+|--------|---------|
+| **Device-code flow** | Azure app must be **Public client** type (`AADSTS70002`). Web-type apps are rejected. Changing this requires Azure Portal access. |
+| **PKCE flow** | Requires the `https://login.microsoftonline.com/common/oauth2/nativeclient` redirect URI to be registered in the Azure app. Unregistered = `invalid_request` on redirect. |
+
+**rclone bypasses all of this** — it ships with its own pre-registered public OAuth client for OneDrive (and Google Drive, Dropbox, etc.). Users run `rclone config` once, approve in a browser, and never touch Azure Portal.
+
+### Other Benefits
+
+- **70+ providers** with one skill (S3, WebDAV, SFTP, B2, Wasabi, Box, pCloud…)
+- **No pip dependencies** — rclone is a standalone binary
+- **Token refresh handled internally** by rclone
+- **Chunked uploads** for large files work for free
+
+### When Direct API Is Still Better
+
+If you control an Azure/Google Cloud app with the correct app type and redirect URIs, a direct API client (like the original `onedrive` skill we prototyped) gives you more control over scopes and token storage. For most Hermes users — especially on Termux phones — rclone is the pragmatic path.
+
 ## Security Notes
 
 - rclone stores its config (including tokens) in `~/.config/rclone/rclone.conf`
