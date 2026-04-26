@@ -138,6 +138,73 @@ class FleetApiClient:
             bot_username=str(bot.get("username") or ""),
         )
 
+    # ── Update stream (manager bot polling) ────────────────────────────
+
+    def get_updates(
+        self,
+        *,
+        offset: Optional[int] = None,
+        timeout: int = 0,
+        allowed_updates: Optional[list] = None,
+    ) -> list:
+        """Long-poll ``getUpdates`` and return the raw ``Update`` list.
+
+        Used by the manager bot to surface ``managed_bot`` events when a
+        user taps a spawn deep link.  ``timeout`` 0 means non-blocking.
+        """
+        payload: Dict[str, Any] = {}
+        if offset is not None:
+            payload["offset"] = int(offset)
+        if timeout:
+            payload["timeout"] = int(timeout)
+        if allowed_updates is not None:
+            payload["allowed_updates"] = list(allowed_updates)
+        data = self._post("getUpdates", payload)
+        result = data.get("result")
+        if not isinstance(result, list):
+            raise BotApiError(
+                "getUpdates",
+                None,
+                f"unexpected result type {type(result).__name__}",
+            )
+        return result
+
+    def drain_managed_bot_events(
+        self, *, offset: Optional[int] = None, timeout: int = 0
+    ):
+        """Drain pending ``managed_bot`` updates → resolved ``ManagedBotInfo``.
+
+        Returns ``(infos, next_offset)`` — the list of newly-confirmed
+        managed bots and the update_id to pass back as ``offset`` on the
+        next call (so we don't re-process the same updates).
+        """
+        updates = self.get_updates(
+            offset=offset, timeout=timeout, allowed_updates=["managed_bot"]
+        )
+        infos: list = []
+        next_offset = offset
+        for upd in updates:
+            if not isinstance(upd, dict):
+                continue
+            uid = upd.get("update_id")
+            if isinstance(uid, int):
+                next_offset = uid + 1
+            mb = upd.get("managed_bot")
+            if not isinstance(mb, dict):
+                continue
+            bot = mb.get("bot") or {}
+            bot_id = int(bot.get("id") or 0)
+            if not bot_id:
+                continue
+            try:
+                infos.append(self.get_managed_bot_token(bot_id))
+            except BotApiError as e:
+                logger.warning(
+                    "could not resolve token for managed bot id=%s: %s",
+                    bot_id, e,
+                )
+        return infos, next_offset
+
     # ── Child-bot helpers (sending as a fleet member) ────────────────
 
     def send_message_as(

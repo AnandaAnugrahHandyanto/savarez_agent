@@ -330,6 +330,37 @@ class FleetCoordinator:
             suggested_username=suggested, deep_link=deep_link, nonce=nonce
         )
 
+    def absorb_pending_updates(
+        self, *, max_polls: int = 1, poll_timeout: int = 0
+    ) -> List[ChildBot]:
+        """Drain ``managed_bot`` updates from Telegram and absorb them.
+
+        Each poll call (``max_polls`` total) issues one ``getUpdates``
+        request with the given ``poll_timeout`` (0 = non-blocking, >0 =
+        long-poll seconds — Telegram caps this at ~50).  Any matching
+        pending roster entries are promoted to active.  Returns the list
+        of newly-active children.
+        """
+        api = self._require_api()
+        absorbed: List[ChildBot] = []
+        offset: Optional[int] = None
+        for _ in range(max(1, int(max_polls))):
+            try:
+                infos, offset = api.drain_managed_bot_events(
+                    offset=offset, timeout=poll_timeout
+                )
+            except BotApiError as e:
+                logger.warning("getUpdates failed: %s", e)
+                break
+            for info in infos:
+                child = self.absorb_managed_bot(info)
+                if child is not None:
+                    absorbed.append(child)
+            if not infos and poll_timeout == 0:
+                # Non-blocking poll exhausted the queue.
+                break
+        return absorbed
+
     def absorb_managed_bot(self, info: ManagedBotInfo) -> Optional[ChildBot]:
         """Promote a pending child to active when the user confirms the spawn.
 
