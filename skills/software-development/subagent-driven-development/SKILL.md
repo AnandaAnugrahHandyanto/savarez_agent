@@ -1,6 +1,6 @@
 ---
 name: subagent-driven-development
-description: Use when executing implementation plans with independent tasks. Dispatches fresh delegate_task per task with two-stage review (spec compliance then code quality).
+description: Use when executing implementation plans with independent tasks. Defaults to fresh `/copilot_remote` execution contexts per task with two-stage review (spec compliance then code quality), with `delegate_task` as fallback.
 version: 1.1.0
 author: Hermes Agent (adapted from obra/superpowers)
 license: MIT
@@ -17,6 +17,19 @@ metadata:
 Execute implementation plans by dispatching fresh subagents per task with systematic two-stage review.
 
 **Core principle:** Fresh subagent per task + two-stage review (spec then quality) = high quality, fast iteration.
+
+## Copilot-First Routing
+
+This skill assumes `/copilot_remote` is the default execution path for each
+software-development implementation task in Hermes. Fresh contexts and review loops
+still matter; `/copilot_remote` changes the route, not the discipline.
+
+Before dispatching any implementation task, inspect the current workspace for a
+`repos/` directory and determine which repo the task belongs to. Hermes Copilot must
+launch into one of those repos to run successfully. When the target repo can be
+inferred, start the task from that repo root. When it cannot, launch `/copilot_remote` with
+`--repo <name>` or `--repo-path <absolute-path>` so the subagent lands in a valid repo
+instead of the workspace wrapper.
 
 ## When to Use
 
@@ -56,9 +69,9 @@ todo([
 
 For EACH task in the plan:
 
-#### Step 1: Dispatch Implementer Subagent
+#### Step 1: Dispatch Implementer via `/copilot_remote`
 
-Use `delegate_task` with complete context:
+Use `/copilot_remote` with complete context for implementation. Fall back to `delegate_task` only if `/copilot_remote` is unavailable in the current runtime:
 
 ```python
 delegate_task(

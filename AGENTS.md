@@ -25,13 +25,46 @@ hermes-agent/
 ├── model_tools.py        # Tool orchestration, discover_builtin_tools(), handle_function_call()
 ├── toolsets.py           # Toolset definitions, _HERMES_CORE_TOOLS list
 ├── cli.py                # HermesCLI class — interactive CLI orchestrator (~11k LOC)
-├── hermes_state.py       # SessionDB — SQLite session store (FTS5 search)
+├── hermes_state.py       # SessionDB — SQLite session store (FTS5 search + copilot remote tracking)
 ├── hermes_constants.py   # get_hermes_home(), display_hermes_home() — profile-aware paths
 ├── hermes_logging.py     # setup_logging() — agent.log / errors.log / gateway.log (profile-aware)
 ├── batch_runner.py       # Parallel batch processing
+├── copilot_remote/         # Repo router + detached GitHub Copilot remote session lifecycle
 ├── agent/                # Agent internals (provider adapters, memory, caching, compression, etc.)
+│   ├── prompt_builder.py     # System prompt assembly
+│   ├── context_compressor.py # Auto context compression
+│   ├── prompt_caching.py     # Anthropic prompt caching
+│   ├── auxiliary_client.py   # Auxiliary LLM client (vision, summarization)
+│   ├── model_metadata.py     # Model context lengths, token estimation
+│   ├── models_dev.py         # models.dev registry integration (provider-aware context)
+│   ├── display.py            # KawaiiSpinner, tool preview formatting
+│   ├── skill_commands.py     # Skill slash commands (shared CLI/gateway)
+│   └── trajectory.py         # Trajectory saving helpers
 ├── hermes_cli/           # CLI subcommands, setup wizard, plugins loader, skin engine
+│   ├── main.py           # Entry point — all `hermes` subcommands
+│   ├── config.py         # DEFAULT_CONFIG, OPTIONAL_ENV_VARS, migration
+│   ├── commands.py       # Slash command definitions + SlashCommandCompleter
+│   ├── copilot_cmd.py    # `hermes copilot` + `/copilot_remote` remote job commands
+│   ├── callbacks.py      # Terminal callbacks (clarify, sudo, approval)
+│   ├── setup.py          # Interactive setup wizard
+│   ├── skin_engine.py    # Skin/theme engine — CLI visual customization
+│   ├── skills_config.py  # `hermes skills` — enable/disable skills per platform
+│   ├── tools_config.py   # `hermes tools` — enable/disable tools per platform
+│   ├── skills_hub.py     # `/skills` slash command (search, browse, install)
+│   ├── models.py         # Model catalog, provider model lists
+│   ├── model_switch.py   # Shared /model switch pipeline (CLI + gateway)
+│   └── auth.py           # Provider credential resolution
 ├── tools/                # Tool implementations — auto-discovered via tools/registry.py
+│   ├── registry.py       # Central tool registry (schemas, handlers, dispatch)
+│   ├── approval.py       # Dangerous command detection
+│   ├── terminal_tool.py  # Terminal orchestration
+│   ├── process_registry.py # Background process management
+│   ├── file_tools.py     # File read/write/search/patch
+│   ├── web_tools.py      # Web search/extract (Parallel + Firecrawl)
+│   ├── browser_tool.py   # Browserbase browser automation
+│   ├── code_execution_tool.py # execute_code sandbox
+│   ├── delegate_tool.py  # Subagent delegation
+│   ├── mcp_tool.py       # MCP client (~1050 lines)
 │   └── environments/     # Terminal backends (local, docker, ssh, modal, daytona, singularity)
 ├── gateway/              # Messaging gateway — run.py + session.py + platforms/
 │   ├── platforms/        # Adapter per platform (telegram, discord, slack, whatsapp,
@@ -143,6 +176,7 @@ Reasoning content is stored in `assistant_msg["reasoning"]`.
 - **Skin engine** (`hermes_cli/skin_engine.py`) — data-driven CLI theming; initialized from `display.skin` config key at startup; skins customize banner colors, spinner faces/verbs/wings, tool prefix, response box, branding text
 - `process_command()` is a method on `HermesCLI` — dispatches on canonical command name resolved via `resolve_command()` from the central registry
 - Skill slash commands: `agent/skill_commands.py` scans `~/.hermes/skills/`, injects as **user message** (not system prompt) to preserve prompt caching
+- Copilot remote jobs: `hermes_cli/copilot_cmd.py` exposes both `hermes copilot` and `/copilot_remote`, backed by `copilot_remote/` for repo routing, detached launches, and DB completion updates
 
 ### Slash Command Registry (`hermes_cli/commands.py`)
 

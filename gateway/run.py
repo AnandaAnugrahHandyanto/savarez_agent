@@ -759,7 +759,7 @@ class GatewayRunner:
 
         # DM pairing store for code-based user authorization
         from gateway.pairing import PairingStore
-        self.pairing_store = PairingStore()
+        self.pairing_store = PairingStore(base_dir=_hermes_home)
         
         # Event hook system
         from gateway.hooks import HookRegistry
@@ -3774,6 +3774,17 @@ class GatewayRunner:
 
         if canonical == "background":
             return await self._handle_background_command(event)
+
+        if canonical == "copilot_remote":
+            from hermes_cli.copilot_cmd import handle_copilot_remote_slash
+            import io, contextlib
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                try:
+                    handle_copilot_remote_slash(event.text)
+                except SystemExit:
+                    pass
+            return buf.getvalue().strip() or "Done."
 
         if canonical == "steer":
             # No active agent — /steer has no tool call to inject into.
