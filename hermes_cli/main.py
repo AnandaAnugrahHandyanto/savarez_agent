@@ -4030,13 +4030,21 @@ def _model_flow_vertex(config, current_model=""):
     if not model_list:
         model_list = ["gemini-2.5-pro", "gemini-2.5-flash"]
 
-    selected = _prompt_model_selection(model_list, current_model, provider_id="vertex")
+    selected = _prompt_model_selection(model_list, current_model)
     if not selected:
         print("  No change.")
         return
 
+    _save_model_choice(selected)
+
     cfg = load_config()
-    _save_model_choice(cfg, "vertex", selected)
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["provider"] = "vertex"
+    model.pop("base_url", None)
+    model.pop("api_mode", None)
     save_config(cfg)
     deactivate_provider()
     print(f"  Default model set to: {selected} (via Google Vertex AI, {region})")
