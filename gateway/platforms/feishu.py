@@ -1273,7 +1273,14 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         _apply_runtime_ws_overrides()
         return result
 
-    ws_client_module.websockets.connect = _connect_with_overrides
+    # Create a local copy of the websockets module to avoid monkey-patching
+    # the global module (which would break DingTalk and other platforms).
+    import types
+    local_websockets = types.ModuleType('websockets')
+    local_websockets.__dict__.update(ws_client_module.websockets.__dict__)
+    local_websockets.connect = _connect_with_overrides
+    ws_client_module.websockets = local_websockets
+
     if original_configure is not None:
         setattr(ws_client, "_configure", _configure_with_overrides)
     _apply_runtime_ws_overrides()
@@ -1282,7 +1289,8 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     except Exception:
         pass
     finally:
-        ws_client_module.websockets.connect = original_connect
+        # Restore the original websockets module reference
+        ws_client_module.websockets = ws_client_module.websockets.__dict__.get('__original_module__', ws_client_module.websockets)
         if original_configure is not None:
             setattr(ws_client, "_configure", original_configure)
         pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
