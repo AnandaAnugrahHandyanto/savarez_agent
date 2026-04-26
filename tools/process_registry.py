@@ -1351,4 +1351,6 @@ registry.register(
     schema=PROCESS_SCHEMA,
     handler=_handle_process,
     emoji="⚙️",
+    runtime_dependencies=["shell_session", "background_process_registry"],
+    execution_tags=["process", "background_process", "long_running", "side_effect"],
 )

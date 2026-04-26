@@ -2552,6 +2552,9 @@ if __name__ == "__main__":
 from tools.registry import registry, tool_error
 
 _BROWSER_SCHEMA_MAP = {s["name"]: s for s in BROWSER_TOOL_SCHEMAS}
+_BROWSER_RUNTIME_DEPENDENCIES = ["browser_session"]
+_BROWSER_ACTION_TAGS = ["browser", "side_effect"]
+_BROWSER_OBSERVATION_TAGS = ["browser", "observation"]
 
 registry.register(
     name="browser_navigate",
@@ -2560,6 +2563,8 @@ registry.register(
     handler=lambda args, **kw: browser_navigate(url=args.get("url", ""), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="🌐",
+    runtime_dependencies=_BROWSER_RUNTIME_DEPENDENCIES,
+    execution_tags=_BROWSER_ACTION_TAGS + ["network"],
 )
 registry.register(
     name="browser_snapshot",
@@ -2569,6 +2574,8 @@ registry.register(
         full=args.get("full", False), task_id=kw.get("task_id"), user_task=kw.get("user_task")),
     check_fn=check_browser_requirements,
     emoji="📸",
+    runtime_dependencies=_BROWSER_RUNTIME_DEPENDENCIES,
+    execution_tags=_BROWSER_OBSERVATION_TAGS,
 )
 registry.register(
     name="browser_click",
@@ -2577,6 +2584,8 @@ registry.register(
     handler=lambda args, **kw: browser_click(ref=args.get("ref", ""), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="👆",
+    runtime_dependencies=_BROWSER_RUNTIME_DEPENDENCIES,
+    execution_tags=_BROWSER_ACTION_TAGS,
 )
 registry.register(
     name="browser_type",
@@ -2585,6 +2594,8 @@ registry.register(
     handler=lambda args, **kw: browser_type(ref=args.get("ref", ""), text=args.get("text", ""), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="⌨️",
+    runtime_dependencies=_BROWSER_RUNTIME_DEPENDENCIES,
+    execution_tags=_BROWSER_ACTION_TAGS,
 )
 registry.register(
     name="browser_scroll",
@@ -2593,6 +2604,8 @@ registry.register(
     handler=lambda args, **kw: browser_scroll(direction=args.get("direction", "down"), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="📜",
+    runtime_dependencies=_BROWSER_RUNTIME_DEPENDENCIES,
+    execution_tags=_BROWSER_ACTION_TAGS,
 )
 registry.register(
     name="browser_back",
@@ -2601,6 +2614,8 @@ registry.register(
     handler=lambda args, **kw: browser_back(task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="◀️",
+    runtime_dependencies=_BROWSER_RUNTIME_DEPENDENCIES,
+    execution_tags=_BROWSER_ACTION_TAGS,
 )
 registry.register(
     name="browser_press",
@@ -2609,6 +2624,8 @@ registry.register(
     handler=lambda args, **kw: browser_press(key=args.get("key", ""), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="⌨️",
+    runtime_dependencies=_BROWSER_RUNTIME_DEPENDENCIES,
+    execution_tags=_BROWSER_ACTION_TAGS,
 )
 
 registry.register(
@@ -2618,6 +2635,8 @@ registry.register(
     handler=lambda args, **kw: browser_get_images(task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="🖼️",
+    runtime_dependencies=_BROWSER_RUNTIME_DEPENDENCIES,
+    execution_tags=_BROWSER_OBSERVATION_TAGS,
 )
 registry.register(
     name="browser_vision",
@@ -2626,6 +2645,8 @@ registry.register(
     handler=lambda args, **kw: browser_vision(question=args.get("question", ""), annotate=args.get("annotate", False), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="👁️",
+    runtime_dependencies=_BROWSER_RUNTIME_DEPENDENCIES,
+    execution_tags=_BROWSER_OBSERVATION_TAGS,
 )
 registry.register(
     name="browser_console",
@@ -2634,4 +2655,6 @@ registry.register(
     handler=lambda args, **kw: browser_console(clear=args.get("clear", False), expression=args.get("expression"), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="🖥️",
+    runtime_dependencies=_BROWSER_RUNTIME_DEPENDENCIES,
+    execution_tags=_BROWSER_OBSERVATION_TAGS,
 )
