@@ -6834,12 +6834,24 @@ class GatewayRunner:
                 level = rc.get("effort", "medium")
             display_state = "on ✓" if show_reasoning else "off"
             has_session_override = session_key in (getattr(self, "_session_reasoning_overrides", {}) or {})
-            scope = "session override" if has_session_override else "global config"
+            effort_scope = "session override" if has_session_override else "global config"
+
+            display_scope = "global fallback"
+            try:
+                user_config = _load_gateway_config()
+                platform_display_cfg = (
+                    ((user_config.get("display") or {}).get("platforms") or {}).get(platform_key) or {}
+                )
+                if isinstance(platform_display_cfg, dict) and "show_reasoning" in platform_display_cfg:
+                    display_scope = "platform override"
+            except Exception:
+                pass
             return (
                 "🧠 **Reasoning Settings**\n\n"
                 f"**Effort:** `{level}`\n"
-                f"**Scope:** {scope}\n"
-                f"**Display:** {display_state}\n\n"
+                f"**Effort Scope:** {effort_scope}\n"
+                f"**Display:** {display_state}\n"
+                f"**Display Scope:** {display_scope}\n\n"
                 "_Usage:_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`"
             )
 

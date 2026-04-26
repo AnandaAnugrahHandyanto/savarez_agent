@@ -98,8 +98,8 @@ class TestReasoningCommand:
         result = await runner._handle_reasoning_command(_make_event("/reasoning"))
 
         assert "**Effort:** `none (disabled)`" in result
+        assert "**Effort Scope:** global config" in result
         assert "**Display:** on ✓" in result
-        assert runner._reasoning_config == {"enabled": False}
 
     @pytest.mark.asyncio
     async def test_load_show_reasoning_resolves_per_platform(self, tmp_path, monkeypatch):
@@ -161,6 +161,25 @@ class TestReasoningCommand:
         result = await runner._handle_reasoning_command(event)
 
         assert "**Display:** on ✓" in result
+        assert "**Display Scope:** platform override" in result
+
+    @pytest.mark.asyncio
+    async def test_reasoning_command_global_display_fallback_status(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "display:\n"
+            "  show_reasoning: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+        runner = _make_runner()
+        event = _make_event(text="/reasoning", platform=Platform.WECOM)
+        result = await runner._handle_reasoning_command(event)
+
+        assert "**Display:** on ✓" in result
+        assert "**Display Scope:** global fallback" in result
 
     @pytest.mark.asyncio
     async def test_handle_reasoning_command_updates_config_and_cache(self, tmp_path, monkeypatch):
