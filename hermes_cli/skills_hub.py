@@ -11,6 +11,7 @@ handler are thin wrappers that parse args and delegate.
 """
 
 import json
+import re
 import shutil
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -139,6 +140,52 @@ def _derive_category_from_install_path(install_path: str) -> str:
     path = Path(install_path)
     parent = str(path.parent)
     return "" if parent == "." else parent
+
+
+_SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
+_SKILL_MULTI_HYPHEN = re.compile(r"-+")
+
+
+def _normalize_skill_slug(raw_name: str) -> str:
+    slug = (raw_name or "").strip().lower().replace(" ", "-").replace("_", "-")
+    slug = _SKILL_INVALID_CHARS.sub("", slug)
+    slug = _SKILL_MULTI_HYPHEN.sub("-", slug).strip("-")
+    return slug
+
+
+def _build_skill_scaffold(name: str, description: str) -> str:
+    safe_name = name.strip()
+    safe_description = description.strip()
+    return (
+        "---\n"
+        f"name: {json.dumps(safe_name, ensure_ascii=False)}\n"
+        f"description: {json.dumps(safe_description, ensure_ascii=False)}\n"
+        "version: 0.1.0\n"
+        "# author: Your Name\n"
+        "# license: MIT\n"
+        "# metadata:\n"
+        "#   hermes:\n"
+        "#     tags: [replace, me]\n"
+        "#     related_skills: []\n"
+        "---\n\n"
+        f"# {safe_name}\n\n"
+        f"{safe_description}\n\n"
+        "## When to Use\n\n"
+        "- Trigger 1: TODO describe when this skill should be loaded.\n"
+        "- Trigger 2: TODO add a second common cue or user request.\n\n"
+        "## Quick Reference\n\n"
+        "- Primary command/tool: TODO\n"
+        "- Required inputs: TODO\n"
+        "- Expected output: TODO\n\n"
+        "## Procedure\n\n"
+        "1. TODO: Gather prerequisites or inputs.\n"
+        "2. TODO: Perform the main workflow.\n"
+        "3. TODO: Return the result in the expected format.\n\n"
+        "## Pitfalls\n\n"
+        "- TODO: Note common failure modes, guardrails, or things to avoid.\n\n"
+        "## Verification\n\n"
+        "- TODO: Explain how to verify the skill worked.\n"
+    )
 
 
 def do_search(query: str, source: str = "all", limit: int = 10,
@@ -768,6 +815,141 @@ def do_uninstall(name: str, console: Optional[Console] = None,
         c.print(f"[bold red]Error:[/] {msg}\n")
 
 
+
+def do_create(name: str, description: str, console: Optional[Console] = None) -> None:
+    """Create a new local skill scaffold under ~/.hermes/skills/."""
+    from agent.skill_commands import scan_skill_commands
+    from tools.skills_tool import MAX_NAME_LENGTH, MAX_DESCRIPTION_LENGTH, SKILLS_DIR
+
+    c = console or _console
+    raw_name = (name or "").strip()
+    raw_description = (description or "").strip()
+
+    if not raw_name or not raw_description:
+        c.print("[bold red]Usage:[/] /skills create <name> <initial-description>\n")
+        return
+
+    if len(raw_name) > MAX_NAME_LENGTH:
+        c.print(
+            f"[bold red]Error:[/] Skill name exceeds {MAX_NAME_LENGTH} characters.\n"
+        )
+        return
+
+    if len(raw_description) > MAX_DESCRIPTION_LENGTH:
+        c.print(
+            f"[bold red]Error:[/] Description exceeds {MAX_DESCRIPTION_LENGTH} characters.\n"
+        )
+        return
+
+    slug = _normalize_skill_slug(raw_name)
+    if not slug:
+        c.print(
+            "[bold red]Error:[/] Skill name must contain at least one letter or number after normalization.\n"
+        )
+        return
+
+    commands = scan_skill_commands()
+    command_key = f"/{slug}"
+    if command_key in commands:
+        c.print(
+            f"[bold red]Error:[/] A skill or alias already exposes {command_key}.\n"
+        )
+        return
+
+    skill_dir = SKILLS_DIR / slug
+    if skill_dir.exists():
+        c.print(
+            f"[bold red]Error:[/] Skill directory already exists: {skill_dir}\n"
+        )
+        return
+
+    skill_dir.mkdir(parents=True, exist_ok=False)
+    skill_file = skill_dir / "SKILL.md"
+    skill_file.write_text(_build_skill_scaffold(raw_name, raw_description), encoding="utf-8")
+
+    try:
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+    except Exception:
+        pass
+
+    c.print(f"[bold green]Created local skill:[/] {raw_name}")
+    c.print(f"[dim]Directory:[/] {skill_dir}")
+    c.print(f"[dim]Command:[/] /{slug}")
+    c.print(f"[dim]Edit:[/] {skill_file}\n")
+
+
+
+def do_rename(query: str, new_name: str, console=None) -> None:
+    """Create an alias for a local skill, making it appear under a new /command."""
+    import re
+    from pathlib import Path as _Path
+    from agent.skill_commands import scan_skill_commands
+
+    c = console or _console
+
+    if not query or not new_name:
+        c.print("[bold red]Usage:[/] /skills rename <query> <new-name>\n")
+        return
+
+    commands = scan_skill_commands()
+    q = query.lower().lstrip("/")
+
+    match = None
+    for cmd_key, info in commands.items():
+        if cmd_key.lstrip("/") == q or _Path(info["skill_dir"]).name == q:
+            match = info
+            break
+    if not match:
+        prefix = [(k, v) for k, v in commands.items()
+                  if k.lstrip("/").startswith(q) or v["name"].lower().startswith(q)]
+        if prefix:
+            match = min(prefix, key=lambda x: len(x[0]))[1]
+    if not match:
+        substr = [(k, v) for k, v in commands.items()
+                  if q in k.lstrip("/") or q in v["name"].lower()]
+        if substr:
+            match = min(substr, key=lambda x: len(x[0]))[1]
+
+    if not match:
+        c.print(f"[bold red]Skill not found:[/] {query}\n")
+        return
+
+    skill_dir = _Path(match["skill_dir"])
+    original = (skill_dir / "SKILL.md").read_text(encoding="utf-8", errors="ignore")
+    m = re.search(r"##\s+Runtime command\s*\n+```[^\n]*\n(.*?)```", original, re.DOTALL)
+    runtime = m.group(1).strip() if m else f"# skill em: {skill_dir}"
+
+    alias = new_name.lstrip("/").lower().replace(" ", "-")
+    alias_dir = _Path.home() / ".hermes" / "skills" / "shortcuts" / alias
+    alias_dir.mkdir(parents=True, exist_ok=True)
+
+    skill_md = f"""---
+name: {alias}
+description: "Alias para {match['name']}"
+---
+
+# {alias}
+
+Atalho para `{match['name']}`.
+
+## Runtime command
+
+```bash
+{runtime}
+```
+"""
+    (alias_dir / "SKILL.md").write_text(skill_md, encoding="utf-8")
+
+    try:
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+    except Exception:
+        pass
+
+    c.print(f"[bold green]/{alias}[/] → {match['name']} (disponível no próximo scan)\n")
+
 def do_reset(name: str, restore: bool = False,
              console: Optional[Console] = None,
              skip_confirm: bool = False,
@@ -1121,6 +1303,11 @@ def skills_command(args) -> None:
         do_browse(page=args.page, page_size=args.size, source=args.source)
     elif action == "search":
         do_search(args.query, source=args.source, limit=args.limit)
+    elif action == "create":
+        description = getattr(args, "description", "")
+        if isinstance(description, list):
+            description = " ".join(description)
+        do_create(args.name, description)
     elif action == "install":
         do_install(args.identifier, category=args.category, force=args.force,
                    skip_confirm=getattr(args, "yes", False))
@@ -1161,7 +1348,7 @@ def skills_command(args) -> None:
             return
         do_tap(tap_action, repo=repo)
     else:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|uninstall|reset|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|create|install|inspect|list|check|update|audit|uninstall|reset|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
 
 
@@ -1250,6 +1437,12 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
                 query_parts.append(args[i])
                 i += 1
         do_search(" ".join(query_parts), source=source, limit=limit, console=c)
+
+    elif action == "create":
+        if len(args) < 2:
+            c.print("[bold red]Usage:[/] /skills create <name> <initial-description>\n")
+            return
+        do_create(args[0], " ".join(args[1:]), console=c)
 
     elif action == "install":
         if not args:
@@ -1355,6 +1548,12 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         repo = args[1] if len(args) > 1 else ""
         do_tap(tap_action, repo=repo, console=c)
 
+    elif action == "rename":
+        if len(args) < 2:
+            c.print("[bold red]Usage:[/] /skills rename <query> <new-name>\n")
+            return
+        do_rename(args[0], args[1], console=c)
+
     elif action in ("help", "--help", "-h"):
         _print_skills_help(c)
 
@@ -1369,6 +1568,7 @@ def _print_skills_help(console: Console) -> None:
         "[bold]Skills Hub Commands:[/]\n\n"
         "  [cyan]browse[/] [--source official]   Browse all available skills (paginated)\n"
         "  [cyan]search[/] <query>              Search registries for skills\n"
+        "  [cyan]create[/] <name> <desc>        Create a local skill scaffold in ~/.hermes/skills/\n"
         "  [cyan]install[/] <identifier>        Install a skill (with security scan)\n"
         "  [cyan]inspect[/] <identifier>        Preview a skill without installing\n"
         "  [cyan]list[/] [--source hub|builtin|local] List installed skills\n"

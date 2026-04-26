@@ -8375,6 +8375,16 @@ Examples:
     )
     skills_search.add_argument("--limit", type=int, default=10, help="Max results")
 
+    skills_create = skills_subparsers.add_parser(
+        "create", help="Create a local skill scaffold"
+    )
+    skills_create.add_argument("name", help="Skill name (shown in frontmatter and heading)")
+    skills_create.add_argument(
+        "description",
+        nargs="+",
+        help="Initial description for the generated skill scaffold",
+    )
+
     skills_install = skills_subparsers.add_parser("install", help="Install a skill")
     skills_install.add_argument(
         "identifier", help="Skill identifier (e.g. openai/skills/skill-creator)"

@@ -318,6 +318,16 @@ skills/
 └── ...
 ```
 
+For local prototyping, you can scaffold a new skill directly into `~/.hermes/skills/` with:
+
+```bash
+hermes skills create my-skill "Initial description"
+# or inside chat:
+/skills create my-skill Initial description
+```
+
+This creates `~/.hermes/skills/my-skill/SKILL.md` with starter frontmatter plus `When to Use`, `Quick Reference`, `Procedure`, `Pitfalls`, and `Verification` sections you can fill in.
+
 ### SKILL.md format
 
 ```markdown

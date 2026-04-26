@@ -115,6 +115,7 @@ hermes tools disable NAME   Disable a toolset
 
 hermes skills list          List installed skills
 hermes skills search QUERY  Search the skills hub
+hermes skills create N DESC Create a local skill scaffold
 hermes skills install ID    Install a skill
 hermes skills inspect ID    Preview without installing
 hermes skills config        Enable/disable skills per platform
