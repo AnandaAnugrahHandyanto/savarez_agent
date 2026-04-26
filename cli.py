@@ -10534,7 +10534,6 @@ class HermesCLI:
         app._on_resize = _resize_clear_ghosts
 
         def spinner_loop():
-            last_idle_refresh = 0.0
             while not self._should_exit:
                 if not self._app:
                     time.sleep(0.1)
@@ -10543,10 +10542,11 @@ class HermesCLI:
                     self._invalidate(min_interval=0.1)
                     time.sleep(0.1)
                 else:
-                    now = time.monotonic()
-                    if now - last_idle_refresh >= 1.0:
-                        last_idle_refresh = now
-                        self._invalidate(min_interval=1.0)
+                    # Do not repaint while idle. In non-full-screen prompt_toolkit
+                    # layouts, periodic idle invalidation can fight tmux/terminal
+                    # viewport restoration and make the command/input area drift
+                    # upward after focus/idle time. Explicit input, resize, status
+                    # changes, and running commands still invalidate the UI.
                     time.sleep(0.2)
 
         spinner_thread = threading.Thread(target=spinner_loop, daemon=True)
