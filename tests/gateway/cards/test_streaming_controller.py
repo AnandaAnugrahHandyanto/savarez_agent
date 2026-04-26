@@ -330,5 +330,134 @@ class TestCardBuilders(unittest.TestCase):
         self.assertIn("web_search", card_str)
 
 
+# ---------------------------------------------------------------------------
+# Bug fix regression tests
+# ---------------------------------------------------------------------------
+
+class TestCursorSuffix(unittest.TestCase):
+    """Bug 4 — cursor '▌' must be a suffix appended after text, not a replacement."""
+
+    def test_cursor_appended_when_text_present(self):
+        """Streaming card with text must show text + cursor, not just cursor."""
+        card = _build_streaming_card(text="hello world", is_streaming=True)
+        card_str = json.dumps(card, ensure_ascii=False)
+        self.assertIn("hello world▌", card_str)
+
+    def test_cursor_alone_when_no_text(self):
+        """Streaming card with empty text shows just the cursor."""
+        card = _build_streaming_card(text="", is_streaming=True)
+        card_str = json.dumps(card, ensure_ascii=False)
+        self.assertIn("▌", card_str)
+
+    def test_no_cursor_in_final_card(self):
+        """Final (non-streaming) card must not contain the cursor character."""
+        card = _build_streaming_card(text="done text", is_streaming=False)
+        card_str = json.dumps(card, ensure_ascii=False)
+        self.assertNotIn("▌", card_str)
+
+    def test_streaming_card_text_has_cursor_suffix_via_controller(self):
+        """to_card_json() in STREAMING phase appends cursor after accumulated text."""
+        ctrl = _make_controller()
+        with patch.object(ctrl, "_perform_flush", new=AsyncMock()):
+            _run(ctrl.add_text_chunk("partial answer"))
+        card = ctrl.to_card_json()
+        card_str = json.dumps(card, ensure_ascii=False)
+        self.assertIn("partial answer▌", card_str)
+
+
+class TestAddEmptyTextChunk(unittest.TestCase):
+    """Bug 9 — add_text_chunk('') should be a noop."""
+
+    def test_add_empty_string_is_noop(self):
+        ctrl = _make_controller()
+        with patch.object(ctrl, "_perform_flush", new=AsyncMock()) as mock_pf:
+            _run(ctrl.add_text_chunk(""))
+        mock_pf.assert_not_called()
+        self.assertEqual(ctrl.text.accumulated_text, "")
+        self.assertEqual(ctrl.phase, Phase.IDLE)
+
+    def test_add_none_is_noop(self):
+        """None chunk (falsy) must also be ignored without raising."""
+        ctrl = _make_controller()
+        with patch.object(ctrl, "_perform_flush", new=AsyncMock()) as mock_pf:
+            _run(ctrl.add_text_chunk(None))  # type: ignore[arg-type]
+        mock_pf.assert_not_called()
+        self.assertEqual(ctrl.text.accumulated_text, "")
+
+
+class TestTextTruncation(unittest.TestCase):
+    """Bug 10 — accumulated_text must be truncated before Feishu 30k char limit."""
+
+    def test_text_truncated_at_limit(self):
+        ctrl = _make_controller()
+        with patch.object(ctrl, "_perform_flush", new=AsyncMock()):
+            # Feed a chunk that exceeds the 28k threshold in one go
+            big_chunk = "x" * 29_000
+            _run(ctrl.add_text_chunk(big_chunk))
+        self.assertLessEqual(len(ctrl.text.accumulated_text), 28_000)
+        self.assertTrue(ctrl.text.accumulated_text.endswith("...[truncated]"))
+
+    def test_text_below_limit_not_truncated(self):
+        ctrl = _make_controller()
+        with patch.object(ctrl, "_perform_flush", new=AsyncMock()):
+            _run(ctrl.add_text_chunk("short text"))
+        self.assertEqual(ctrl.text.accumulated_text, "short text")
+
+
+class TestFlushLockProtectsFinalPath(unittest.TestCase):
+    """Bug 1 — _flush_final must acquire _flush_lock to prevent race with _perform_flush."""
+
+    def test_flush_final_acquires_lock(self):
+        """_flush_final should wait when _flush_lock is already held."""
+        ctrl = _make_controller()
+        ctrl._phase = Phase.COMPLETED
+
+        call_order: list = []
+
+        async def _run_test():
+            # Acquire the lock to simulate an in-flight _perform_flush
+            async with ctrl._flush_lock:
+                call_order.append("lock_held")
+                # Schedule _flush_final — it must block on the lock
+                task = asyncio.ensure_future(ctrl._flush_final(is_error=False))
+                await asyncio.sleep(0)  # yield control
+                call_order.append("still_holding")
+            # Lock released — _flush_final may now proceed
+            await task
+            call_order.append("final_done")
+
+        with patch.object(ctrl, "_patch_message", new=AsyncMock()):
+            asyncio.get_event_loop().run_until_complete(_run_test())
+
+        self.assertEqual(call_order[0], "lock_held")
+        self.assertEqual(call_order[1], "still_holding")
+        self.assertEqual(call_order[2], "final_done")
+
+
+class TestActiveToolRendering(unittest.TestCase):
+    """P2 — active tool must be visible in streaming card before complete_tool_use."""
+
+    def test_active_tool_renders_during_call(self):
+        ctrl = _make_controller()
+        ctrl._phase = Phase.STREAMING
+        ctrl.start_tool_use("web_search", args={"query": "test"})
+        # Do NOT call complete_tool_use — tool is still active
+        card = ctrl.to_card_json()
+        card_str = json.dumps(card, ensure_ascii=False)
+        self.assertIn("web_search", card_str)
+        self.assertIn("running", card_str)
+
+    def test_completed_tool_shows_elapsed(self):
+        ctrl = _make_controller()
+        ctrl._phase = Phase.STREAMING
+        ctrl.start_tool_use("code_runner")
+        ctrl.complete_tool_use(result="ok")
+        card = ctrl.to_card_json()
+        card_str = json.dumps(card, ensure_ascii=False)
+        self.assertIn("code_runner", card_str)
+        # Completed steps show elapsed ms, not "running"
+        self.assertNotIn("running", card_str)
+
+
 if __name__ == "__main__":
     unittest.main()

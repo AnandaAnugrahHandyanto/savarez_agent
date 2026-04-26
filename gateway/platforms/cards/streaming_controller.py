@@ -150,29 +150,32 @@ def _build_streaming_card(
         })
         elements.append({"tag": "hr"})
 
-    # Tool-use steps
+    # Tool-use steps (active tools show a running indicator)
     if tool_steps:
-        steps_md = "\n".join(
-            f"- {s.get('name', 'tool')} ({s.get('elapsed_ms', 0):.0f} ms)"
-            for s in tool_steps
-        )
+        step_lines = []
+        for s in tool_steps:
+            if s.get("_active"):
+                step_lines.append(f"- {s.get('name', 'tool')} ⏳ running...")
+            else:
+                step_lines.append(f"- {s.get('name', 'tool')} ({s.get('elapsed_ms', 0):.0f} ms)")
+        steps_md = "\n".join(step_lines)
         elements.append({
             "tag": "markdown",
             "content": f"**Tool calls:**\n{steps_md}",
         })
         elements.append({"tag": "hr"})
 
-    # Main text
-    if text:
+    # Main text — cursor "▌" is always a suffix in streaming mode so it
+    # follows the accumulated text rather than replacing it.
+    if is_streaming:
+        elements.append({
+            "tag": "markdown",
+            "content": text + "▌",
+        })
+    elif text:
         elements.append({
             "tag": "markdown",
             "content": text,
-        })
-    elif is_streaming:
-        # Show a placeholder cursor while no text yet
-        elements.append({
-            "tag": "markdown",
-            "content": "▌",
         })
 
     # Footer status note
@@ -317,6 +320,7 @@ class StreamingCardController:
         self._last_flush_time: float = 0.0
         self._flush_lock: asyncio.Lock = asyncio.Lock()
         self._pending_flush: bool = False
+        self._pending_flush_task: Optional[asyncio.Task] = None
 
     # ------------------------------------------------------------------
     # Public accessors
@@ -399,12 +403,17 @@ class StreamingCardController:
     def _capture_tool_use_elapsed(self) -> None:
         if not self.tool_use.started_at:
             return
-        self.tool_use.elapsed_ms = (time.time() - self.tool_use.started_at) * 1000
+        # Round to int to avoid float trailing-zero false-negative dedup.
+        self.tool_use.elapsed_ms = int(round((time.time() - self.tool_use.started_at) * 1000))
         self.tool_use.is_active = False
 
     # ------------------------------------------------------------------
     # Public API: chunk ingestion
     # ------------------------------------------------------------------
+
+    # Max characters to accumulate before truncating (Feishu card content limit ~30k).
+    _MAX_ACCUMULATED_TEXT: int = 28_000
+    _TRUNCATION_SUFFIX: str = "...[truncated]"
 
     async def add_text_chunk(self, chunk: str) -> None:
         """Append a text token to the answer accumulator.
@@ -412,6 +421,9 @@ class StreamingCardController:
         Transitions from ``idle`` to ``creating`` → ``streaming`` on first
         call if the controller has not yet started.  Schedules a throttled
         flush after accumulating.
+
+        Empty string or None chunks are silently ignored (noop) — this is
+        intentional to handle LLM stream events that emit empty deltas.
 
         Args:
             chunk: Raw text token from the LLM stream.
@@ -432,6 +444,17 @@ class StreamingCardController:
                 )
 
         self.text.accumulated_text += chunk
+
+        # Enforce Feishu card content limit (~30k chars). Truncate with warning.
+        if len(self.text.accumulated_text) > self._MAX_ACCUMULATED_TEXT:
+            self.text.accumulated_text = (
+                self.text.accumulated_text[:27_000] + self._TRUNCATION_SUFFIX
+            )
+            logger.warning(
+                "streaming_card: accumulated_text truncated at 27000 chars "
+                "message_id=%s",
+                self.card_kit.card_message_id,
+            )
 
         await self._ensure_streaming()
         if not self.is_terminal_phase:
@@ -503,11 +526,17 @@ class StreamingCardController:
     async def mark_completed(self) -> None:
         """Finalize the reply with a completed-state card.
 
-        Flushes accumulated state, transitions to ``completed``, and
-        sends a final non-streaming card update to Feishu.
+        Waits for any in-flight scheduled flush to complete, then transitions
+        to ``completed`` and sends a final non-streaming card update to Feishu.
         """
         if self.is_terminal_phase:
             return
+        # Wait for any in-flight scheduled flush before taking the terminal path.
+        if self._pending_flush_task and not self._pending_flush_task.done():
+            try:
+                await self._pending_flush_task
+            except Exception:
+                pass
         self._capture_tool_use_elapsed()
         self.text.completed_text = self.text.accumulated_text
         self._transition(Phase.COMPLETED, "mark_completed", "normal")
@@ -561,6 +590,15 @@ class StreamingCardController:
                 is_error=False,
             )
 
+        # Build visible tool steps: completed steps + active tool placeholder.
+        visible_steps = list(self.tool_use.steps)
+        if self.tool_use.is_active and self.tool_use.tool_name:
+            visible_steps.append({
+                "name": self.tool_use.tool_name,
+                "elapsed_ms": self.tool_use.elapsed_ms,
+                "_active": True,
+            })
+
         return _build_streaming_card(
             text=self.text.accumulated_text,
             reasoning_text=(
@@ -568,7 +606,7 @@ class StreamingCardController:
                 if self.reasoning.is_reasoning_phase
                 else None
             ),
-            tool_steps=self.tool_use.steps or None,
+            tool_steps=visible_steps or None,
             is_streaming=True,
         )
 
@@ -608,6 +646,9 @@ class StreamingCardController:
         If a flush was performed recently, waits for the remainder of the
         throttle window before flushing.  Concurrent calls are coalesced —
         only one pending flush runs at a time.
+
+        Saves the task reference to ``_pending_flush_task`` so that
+        ``mark_completed`` can await it before entering the terminal path.
         """
         if self.is_terminal_phase:
             return
@@ -619,12 +660,17 @@ class StreamingCardController:
         delay_ms = max(0.0, _FLUSH_THROTTLE_MS - elapsed_since_flush)
 
         self._pending_flush = True
-        if delay_ms > 0:
-            await asyncio.sleep(delay_ms / 1000)
 
-        self._pending_flush = False
-        if not self.is_terminal_phase:
-            await self._perform_flush()
+        async def _do_flush_after_delay() -> None:
+            if delay_ms > 0:
+                await asyncio.sleep(delay_ms / 1000)
+            self._pending_flush = False
+            if not self.is_terminal_phase:
+                await self._perform_flush()
+
+        task = asyncio.ensure_future(_do_flush_after_delay())
+        self._pending_flush_task = task
+        await task
 
     # ------------------------------------------------------------------
     # Internal: actual Feishu PATCH call
@@ -668,6 +714,10 @@ class StreamingCardController:
     ) -> None:
         """Push the final terminal card to Feishu.
 
+        Acquires ``_flush_lock`` to prevent a concurrent in-progress
+        ``_perform_flush`` (running in ThreadPoolExecutor) from racing with
+        this final PATCH.
+
         Args:
             is_aborted: Pass True when the reply was cancelled.
             is_error: Pass True when the reply ended with an error.
@@ -686,17 +736,18 @@ class StreamingCardController:
         )
         card_json = json.dumps(card_payload, ensure_ascii=False)
 
-        try:
-            await self._patch_message(card_json)
-            logger.info(
-                "streaming_card: final card sent message_id=%s aborted=%s error=%s",
-                self.card_kit.card_message_id, is_aborted, is_error,
-            )
-        except Exception as exc:
-            logger.warning(
-                "streaming_card: final flush failed message_id=%s error=%s",
-                self.card_kit.card_message_id, exc,
-            )
+        async with self._flush_lock:
+            try:
+                await self._patch_message(card_json)
+                logger.info(
+                    "streaming_card: final card sent message_id=%s aborted=%s error=%s",
+                    self.card_kit.card_message_id, is_aborted, is_error,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "streaming_card: final flush failed message_id=%s error=%s",
+                    self.card_kit.card_message_id, exc,
+                )
 
     async def _patch_message(self, card_json: str) -> None:
         """Call Feishu ``im.v1.message.update`` (PATCH) with TENANT token.

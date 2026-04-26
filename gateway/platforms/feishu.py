@@ -1743,7 +1743,7 @@ class FeishuAdapter(BasePlatformAdapter):
         """Send a streaming interactive card that updates as the LLM generates text.
 
         Creates an initial placeholder card, then uses StreamingCardController
-        to push incremental PATCH updates via FlushController throttling.
+        to push throttled incremental PATCH updates as the LLM generates text.
         On error, sends a build_error_card to the chat.
 
         Args:
@@ -1789,6 +1789,16 @@ class FeishuAdapter(BasePlatformAdapter):
             await ctrl.mark_completed()
         except Exception as exc:
             logger.error("[Feishu] streaming_card: stream error message_id=%s: %s", message_id, exc)
+            # PATCH the placeholder card to an error terminal state so it is
+            # not left showing "▌" forever (orphaned placeholder).
+            try:
+                await ctrl._flush_final(is_aborted=False, is_error=True)
+            except Exception as patch_exc:
+                logger.warning(
+                    "[Feishu] streaming_card: failed to patch placeholder to error state: %s",
+                    patch_exc,
+                )
+            # Optionally send a separate error reply card.
             try:
                 error_card_payload = json.dumps(
                     build_error_card_for_exception(exc), ensure_ascii=False
