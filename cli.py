@@ -8566,7 +8566,7 @@ class HermesCLI:
                     maybe_auto_title(
                         self._session_db,
                         self.session_id,
-                        message,
+                        result.get("original_user_message") or message,
                         response,
                         self.conversation_history,
                     )

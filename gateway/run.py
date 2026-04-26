@@ -10195,10 +10195,11 @@ class GatewayRunner:
                 try:
                     from agent.title_generator import maybe_auto_title
                     all_msgs = result_holder[0].get("messages", []) if result_holder[0] else []
+                    _clean_msg = (result_holder[0] or {}).get("original_user_message") or message
                     maybe_auto_title(
                         self._session_db,
                         effective_session_id,
-                        message,
+                        _clean_msg,
                         final_response,
                         all_msgs,
                     )

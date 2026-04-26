@@ -12508,6 +12508,7 @@ class AIAgent:
             "partial": False,  # True only when stopped due to invalid tool calls
             "interrupted": interrupted,
             "response_previewed": getattr(self, "_response_was_previewed", False),
+            "original_user_message": original_user_message,
             "model": self.model,
             "provider": self.provider,
             "base_url": self.base_url,
