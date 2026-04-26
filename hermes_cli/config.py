@@ -726,11 +726,16 @@ DEFAULT_CONFIG = {
 
     # Approval mode for dangerous commands:
     #   manual — always prompt the user (default)
-    #   smart  — use auxiliary LLM to auto-approve low-risk commands, prompt for high-risk
+    #   smart  — use auxiliary LLM to auto-approve low-risk commands, auto-deny
+    #            high-risk commands, and prompt when uncertain
     #   off    — skip all approval prompts (equivalent to --yolo)
+    # smart_deny controls smart DENY verdicts:
+    #   block  — hard-block smart-denied commands (default/current safety behavior)
+    #   ask    — ask the user via the normal manual/gateway approval path
     "approvals": {
         "mode": "manual",
         "timeout": 60,
+        "smart_deny": "block",
     },
 
     # Permanently allowed dangerous command patterns (added via "always" approval)

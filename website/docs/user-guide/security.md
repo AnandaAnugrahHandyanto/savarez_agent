@@ -30,14 +30,15 @@ The approval system supports three modes, configured via `approvals.mode` in `~/
 
 ```yaml
 approvals:
-  mode: manual    # manual | smart | off
-  timeout: 60     # seconds to wait for user response (default: 60)
+  mode: manual       # manual | smart | off
+  timeout: 60        # seconds to wait for user response (default: 60)
+  smart_deny: block  # block | ask; only applies when mode: smart
 ```
 
 | Mode | Behavior |
 |------|----------|
 | **manual** (default) | Always prompt the user for approval on dangerous commands |
-| **smart** | Use an auxiliary LLM to assess risk. Low-risk commands (e.g., `python -c "print('hello')"`) are auto-approved. Genuinely dangerous commands are auto-denied. Uncertain cases escalate to a manual prompt. |
+| **smart** | Use an auxiliary LLM to assess risk. Low-risk commands (e.g., `python -c "print('hello')"`) are auto-approved. Genuinely dangerous commands are auto-denied by default, or sent to the normal manual/gateway approval prompt when `smart_deny: ask` is configured. Uncertain cases always escalate to a manual prompt. |
 | **off** | Disable all approval checks — equivalent to running with `--yolo`. All commands execute without prompts. |
 
 :::warning

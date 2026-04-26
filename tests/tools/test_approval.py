@@ -8,6 +8,7 @@ import tools.approval as approval_module
 from tools.approval import (
     _get_approval_mode,
     approve_session,
+    check_all_command_guards,
     detect_dangerous_command,
     is_approved,
     load_permanent,
@@ -24,6 +25,33 @@ class TestApprovalModeParsing:
     def test_string_off_still_maps_to_off(self):
         with mock_patch("hermes_cli.config.load_config", return_value={"approvals": {"mode": "off"}}):
             assert _get_approval_mode() == "off"
+
+
+class TestSmartDenyHandling:
+    def test_smart_deny_blocks_by_default(self):
+        with mock_patch("hermes_cli.config.load_config", return_value={"approvals": {"mode": "smart"}}), \
+             mock_patch("tools.approval.detect_dangerous_command", return_value=(True, "danger:test", "test danger")), \
+             mock_patch("tools.approval._smart_approve", return_value="deny"), \
+             mock_patch.dict("os.environ", {"HERMES_GATEWAY_SESSION": "1", "HERMES_SESSION_KEY": "smart-deny-default"}, clear=True):
+            result = check_all_command_guards("dangerous command", "local")
+
+        assert result["approved"] is False
+        assert result.get("smart_denied") is True
+        assert result.get("status") != "approval_required"
+        assert "BLOCKED by smart approval" in result["message"]
+
+    def test_smart_deny_can_ask_user_when_configured(self):
+        with mock_patch("hermes_cli.config.load_config", return_value={"approvals": {"mode": "smart", "smart_deny": "ask"}}), \
+             mock_patch("tools.approval.detect_dangerous_command", return_value=(True, "danger:test", "test danger")), \
+             mock_patch("tools.approval._smart_approve", return_value="deny"), \
+             mock_patch.dict("os.environ", {"HERMES_GATEWAY_SESSION": "1", "HERMES_SESSION_KEY": "smart-deny-ask"}, clear=True):
+            result = check_all_command_guards("dangerous command", "local")
+
+        assert result["approved"] is False
+        assert result.get("status") == "approval_required"
+        assert result["command"] == "dangerous command"
+        assert result["description"] == "test danger"
+        assert result.get("smart_denied") is None
 
 
 class TestDetectDangerousRm:
