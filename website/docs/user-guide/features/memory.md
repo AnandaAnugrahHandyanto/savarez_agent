@@ -23,6 +23,17 @@ Both are stored in `~/.hermes/memories/` and are injected into the system prompt
 Character limits keep memory focused. When memory is full, the agent consolidates or replaces entries to make room for new information.
 :::
 
+## Checking Memory Usage Live
+
+Inside the interactive CLI, run `/memory` to open a terminal-friendly dashboard that shows:
+
+- Separate progress bars for `MEMORY.md` and `USER.md`
+- Current character usage vs limit for each store
+- Entry counts for each store
+- External memory provider status and config summary when a provider is configured
+
+From the terminal outside chat, `hermes memory status` renders the same dashboard so the CLI command and the standalone command stay consistent.
+
 ## How Memory Appears in the System Prompt
 
 At the start of every session, memory entries are loaded from disk and rendered into the system prompt as a frozen block:

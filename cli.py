@@ -6191,6 +6191,8 @@ class HermesCLI:
             self._manual_compress(cmd_original)
         elif canonical == "usage":
             self._show_usage()
+        elif canonical == "memory":
+            self._show_memory()
         elif canonical == "insights":
             self._show_insights(cmd_original)
         elif canonical == "copy":
@@ -7184,6 +7186,25 @@ class HermesCLI:
 
         args = SimpleNamespace(lines=200, expire=7, local=False)
         run_debug_share(args)
+
+    def _show_memory(self):
+        """Show built-in memory usage plus optional provider status."""
+        from hermes_cli.config import load_config
+        from hermes_cli.memory_setup import _get_available_providers
+        from hermes_cli.memory_status import build_memory_status_lines, build_memory_status_snapshot
+
+        config = load_config()
+        mem_config = config.get("memory", {})
+        provider_name = mem_config.get("provider", "")
+        provider_config = mem_config.get(provider_name, {}) if provider_name else {}
+        snapshot = build_memory_status_snapshot(
+            provider_name=provider_name,
+            provider_config=provider_config,
+            providers=_get_available_providers(),
+        )
+        lines = build_memory_status_lines(snapshot)
+        for line in lines:
+            _cprint(line)
 
     def _show_usage(self):
         """Show rate limits (if available) and compact session/provider usage."""

@@ -12,6 +12,7 @@ import os
 import sys
 from pathlib import Path
 
+from hermes_cli.memory_status import build_memory_status_lines, build_memory_status_snapshot
 from hermes_constants import get_hermes_home
 
 
@@ -385,60 +386,33 @@ def _write_env_vars(env_path: Path, env_writes: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def cmd_status(args) -> None:
-    """Show current memory provider config."""
+    """Show current memory provider config and built-in memory usage."""
     from hermes_cli.config import load_config
 
     config = load_config()
     mem_config = config.get("memory", {})
     provider_name = mem_config.get("provider", "")
-
-    print(f"\nMemory status\n" + "─" * 40)
-    print(f"  Built-in:  always active")
-    print(f"  Provider:  {provider_name or '(none — built-in only)'}")
-
-    if provider_name:
-        provider_config = mem_config.get(provider_name, {})
-        if provider_config:
-            print(f"\n  {provider_name} config:")
-            for key, val in provider_config.items():
-                print(f"    {key}: {val}")
-
-        providers = _get_available_providers()
-        found = any(name == provider_name for name, _, _ in providers)
-        if found:
-            print(f"\n  Plugin:    installed ✓")
-            for pname, _, p in providers:
-                if pname == provider_name:
-                    if p.is_available():
-                        print(f"  Status:    available ✓")
-                    else:
-                        print(f"  Status:    not available ✗")
-                        schema = p.get_config_schema() if hasattr(p, "get_config_schema") else []
-                        # Check all fields that have env_var (both secret and non-secret)
-                        required_fields = [f for f in schema if f.get("env_var")]
-                        if required_fields:
-                            print(f"  Missing:")
-                            for f in required_fields:
-                                env_var = f.get("env_var", "")
-                                url = f.get("url", "")
-                                is_set = bool(os.environ.get(env_var))
-                                mark = "✓" if is_set else "✗"
-                                line = f"    {mark} {env_var}"
-                                if url and not is_set:
-                                    line += f"  → {url}"
-                                print(line)
-                    break
-        else:
-            print(f"\n  Plugin:    NOT installed ✗")
-            print(f"  Install the '{provider_name}' memory plugin to ~/.hermes/plugins/")
-
+    provider_config = mem_config.get(provider_name, {}) if provider_name else {}
     providers = _get_available_providers()
+
+    snapshot = build_memory_status_snapshot(
+        provider_name=provider_name,
+        provider_config=provider_config,
+        providers=providers,
+    )
+    lines = build_memory_status_lines(snapshot)
+
+    print()
+    for line in lines:
+        print(line)
+
     if providers:
-        print(f"\n  Installed plugins:")
+        print()
+        print("Installed plugins")
+        print("─" * 40)
         for pname, desc, _ in providers:
             active = " ← active" if pname == provider_name else ""
-            print(f"    • {pname}  ({desc}){active}")
-
+            print(f"  • {pname}  ({desc}){active}")
     print()
 
 

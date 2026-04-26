@@ -73,6 +73,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | Command | Description |
 |---------|-------------|
 | `/help` | Show this help message |
+| `/memory` | Show a terminal-friendly memory dashboard with progress bars for `MEMORY.md` and `USER.md`, plus external memory provider status when configured |
 | `/usage` | Show a compact 79-character usage table with session tokens, balances, quota progress bars, session duration, and CLI colors when supported |
 | `/insights` | Show usage insights and analytics (last 30 days) |
 | `/platforms` (alias: `/gateway`) | Show gateway/messaging platform status |

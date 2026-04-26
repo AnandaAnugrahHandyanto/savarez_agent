@@ -163,6 +163,7 @@ Type `/` to see an autocomplete dropdown of all commands:
 | Command | What it does |
 |---------|-------------|
 | `/help` | Show all available commands |
+| `/memory` | Show how full `MEMORY.md` and `USER.md` are |
 | `/tools` | List available tools |
 | `/model` | Switch models interactively |
 | `/personality pirate` | Try a fun personality |
