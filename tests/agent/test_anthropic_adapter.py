@@ -128,6 +128,12 @@ class TestReadClaudeCodeCredentials:
             }
         }))
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        # Keychain is checked before the file path on macOS; suppress it so
+        # the test exercises the file-based credential path exclusively.
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+            lambda: None,
+        )
         creds = read_claude_code_credentials()
         assert creds is not None
         assert creds["accessToken"] == "sk-ant-oat01-token"
@@ -138,12 +144,20 @@ class TestReadClaudeCodeCredentials:
         claude_json = tmp_path / ".claude.json"
         claude_json.write_text(json.dumps({"primaryApiKey": "sk-ant-api03-primary"}))
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+            lambda: None,
+        )
 
         creds = read_claude_code_credentials()
         assert creds is None
 
     def test_returns_none_for_missing_file(self, tmp_path, monkeypatch):
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+            lambda: None,
+        )
         assert read_claude_code_credentials() is None
 
     def test_returns_none_for_missing_oauth_key(self, tmp_path, monkeypatch):
@@ -151,6 +165,10 @@ class TestReadClaudeCodeCredentials:
         cred_file.parent.mkdir(parents=True)
         cred_file.write_text(json.dumps({"someOtherKey": {}}))
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+            lambda: None,
+        )
         assert read_claude_code_credentials() is None
 
     def test_returns_none_for_empty_access_token(self, tmp_path, monkeypatch):
@@ -160,6 +178,10 @@ class TestReadClaudeCodeCredentials:
             "claudeAiOauth": {"accessToken": "", "refreshToken": "x"}
         }))
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+            lambda: None,
+        )
         assert read_claude_code_credentials() is None
 
 
@@ -236,6 +258,10 @@ class TestResolveAnthropicToken:
             }
         }))
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+            lambda: None,
+        )
         assert resolve_anthropic_token() == "cc-auto-token"
 
     def test_prefers_refreshable_claude_code_credentials_over_static_anthropic_token(self, monkeypatch, tmp_path):
@@ -252,6 +278,10 @@ class TestResolveAnthropicToken:
             }
         }))
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+            lambda: None,
+        )
 
         assert resolve_anthropic_token() == "cc-auto-token"
 
@@ -396,6 +426,14 @@ class TestRunOauthSetupToken:
         monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/claude")
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        # Suppress the macOS Keychain path so the file-based lookup is
+        # exercised. Without this, subprocess.run is globally patched with a
+        # MagicMock whose .stdout.strip() is also a MagicMock, causing
+        # json.loads to raise TypeError inside _read_claude_code_credentials_from_keychain.
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+            lambda: None,
+        )
 
         # Pre-create credential files that will be found after subprocess
         cred_file = tmp_path / ".claude" / ".credentials.json"
@@ -426,6 +464,10 @@ class TestRunOauthSetupToken:
         monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "from-env-var")
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+            lambda: None,
+        )
 
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
@@ -439,6 +481,10 @@ class TestRunOauthSetupToken:
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+            lambda: None,
+        )
 
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
