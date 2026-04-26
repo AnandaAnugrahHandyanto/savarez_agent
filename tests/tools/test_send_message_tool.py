@@ -14,6 +14,7 @@ from tools.send_message_tool import (
     _parse_target_ref,
     _send_discord,
     _send_matrix_via_adapter,
+    _send_slack,
     _send_telegram,
     _send_to_platform,
     send_message_tool,
@@ -349,6 +350,7 @@ class TestSendToPlatformChunking:
             "***",
             "C123",
             "*hello* from <https://example.com|Hermes>",
+            thread_id=None,
         )
 
     def test_slack_bold_italic_formatted_before_send(self, monkeypatch):
@@ -454,6 +456,165 @@ class TestSendToPlatformChunking:
         assert len(sent_calls) >= 3
         assert all(call == [] for call in sent_calls[:-1])
         assert sent_calls[-1] == media
+
+    def test_slack_media_routes_through_send_slack(self, monkeypatch):
+        """When media_files are present, _send_to_platform must dispatch them
+        to _send_slack rather than dropping them with the legacy warning."""
+        _ensure_slack_mock(monkeypatch)
+        import gateway.platforms.slack as slack_mod
+
+        monkeypatch.setattr(slack_mod, "SLACK_AVAILABLE", True)
+        send = AsyncMock(return_value={"success": True, "platform": "slack", "chat_id": "C123", "message_id": "1.0"})
+        media = [("/tmp/figure_11_1.png", False)]
+        with patch("tools.send_message_tool._send_slack", send):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.SLACK,
+                    SimpleNamespace(enabled=True, token="xoxb-***", extra={}),
+                    "C123",
+                    "Figure 11-1 shows...",
+                    media_files=media,
+                )
+            )
+        assert result["success"] is True
+        send.assert_awaited_once()
+        kwargs = send.await_args.kwargs
+        assert kwargs["media_files"] == media
+        assert kwargs["thread_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# Slack media upload via files_upload_v2
+# ---------------------------------------------------------------------------
+
+
+class TestSendSlackMedia:
+    def test_uploads_image_with_caption_as_initial_comment(self, tmp_path):
+        image_path = tmp_path / "figure_11_1.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+
+        upload_response = {
+            "ok": True,
+            "files": [
+                {
+                    "id": "F123",
+                    "shares": {"public": {"C123": [{"ts": "1700000000.000100"}]}},
+                }
+            ],
+        }
+        client = MagicMock()
+        client.files_upload_v2 = AsyncMock(return_value=upload_response)
+
+        with patch("slack_sdk.web.async_client.AsyncWebClient", return_value=client):
+            result = asyncio.run(
+                _send_slack(
+                    "xoxb-***",
+                    "C123",
+                    "Figure 11-1 shows the typical 3 Hz spike-and-wave.",
+                    media_files=[(str(image_path), False)],
+                )
+            )
+
+        assert result["success"] is True
+        assert result["platform"] == "slack"
+        assert result["message_id"] == "1700000000.000100"
+        client.files_upload_v2.assert_awaited_once()
+        kwargs = client.files_upload_v2.await_args.kwargs
+        assert kwargs["channel"] == "C123"
+        assert kwargs["file"] == str(image_path)
+        assert kwargs["filename"] == "figure_11_1.png"
+        assert kwargs["initial_comment"] == "Figure 11-1 shows the typical 3 Hz spike-and-wave."
+        assert "thread_ts" not in kwargs
+
+    def test_thread_id_forwarded_as_thread_ts(self, tmp_path):
+        image_path = tmp_path / "figure.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+
+        client = MagicMock()
+        client.files_upload_v2 = AsyncMock(return_value={"ok": True, "files": []})
+
+        with patch("slack_sdk.web.async_client.AsyncWebClient", return_value=client):
+            result = asyncio.run(
+                _send_slack(
+                    "xoxb-***",
+                    "C123",
+                    "see attached",
+                    thread_id="1699999999.000100",
+                    media_files=[(str(image_path), False)],
+                )
+            )
+
+        assert result["success"] is True
+        assert result["thread_id"] == "1699999999.000100"
+        kwargs = client.files_upload_v2.await_args.kwargs
+        assert kwargs["thread_ts"] == "1699999999.000100"
+
+    def test_multiple_files_only_first_carries_caption(self, tmp_path):
+        a = tmp_path / "a.png"
+        b = tmp_path / "b.png"
+        for p in (a, b):
+            p.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+
+        client = MagicMock()
+        client.files_upload_v2 = AsyncMock(return_value={"ok": True, "files": []})
+
+        with patch("slack_sdk.web.async_client.AsyncWebClient", return_value=client):
+            asyncio.run(
+                _send_slack(
+                    "xoxb-***",
+                    "C123",
+                    "two figures",
+                    media_files=[(str(a), False), (str(b), False)],
+                )
+            )
+
+        assert client.files_upload_v2.await_count == 2
+        first_kwargs = client.files_upload_v2.await_args_list[0].kwargs
+        second_kwargs = client.files_upload_v2.await_args_list[1].kwargs
+        assert first_kwargs["initial_comment"] == "two figures"
+        assert "initial_comment" not in second_kwargs
+
+    def test_missing_file_records_warning_and_continues(self, tmp_path):
+        present = tmp_path / "exists.png"
+        present.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+
+        client = MagicMock()
+        client.files_upload_v2 = AsyncMock(return_value={"ok": True, "files": []})
+
+        with patch("slack_sdk.web.async_client.AsyncWebClient", return_value=client):
+            result = asyncio.run(
+                _send_slack(
+                    "xoxb-***",
+                    "C123",
+                    "",
+                    media_files=[
+                        ("/tmp/does-not-exist.png", False),
+                        (str(present), False),
+                    ],
+                )
+            )
+
+        assert result["success"] is True
+        assert "warnings" in result and any("not found" in w for w in result["warnings"])
+        client.files_upload_v2.assert_awaited_once()
+
+    def test_all_missing_files_returns_error(self):
+        client = MagicMock()
+        client.files_upload_v2 = AsyncMock()
+
+        with patch("slack_sdk.web.async_client.AsyncWebClient", return_value=client):
+            result = asyncio.run(
+                _send_slack(
+                    "xoxb-***",
+                    "C123",
+                    "",
+                    media_files=[("/tmp/does-not-exist.png", False)],
+                )
+            )
+
+        assert "error" in result
+        assert "No deliverable text or media remained" in result["error"]
+        client.files_upload_v2.assert_not_awaited()
 
     def test_matrix_media_uses_native_adapter_helper(self):
 
