@@ -277,11 +277,13 @@ class HonchoSessionManager:
             logger.debug("Local session cache hit: %s", key)
             return self._cache[key]
 
-        # Gateway sessions should use the runtime user identity when available.
-        if self._runtime_user_peer_name:
-            user_peer_id = self._sanitize_id(self._runtime_user_peer_name)
-        elif self._config and self._config.peer_name:
+        # Explicit peerName from honcho.json wins — it means the owner chose
+        # their identity.  Fall back to the gateway runtime identity (e.g.
+        # Telegram user ID) only when no peerName is configured.
+        if self._config and self._config.peer_name:
             user_peer_id = self._sanitize_id(self._config.peer_name)
+        elif self._runtime_user_peer_name:
+            user_peer_id = self._sanitize_id(self._runtime_user_peer_name)
         else:
             # Fallback: derive from session key
             parts = key.split(":", 1)

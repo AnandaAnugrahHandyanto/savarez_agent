@@ -1758,3 +1758,46 @@ class TestGetSessionContextFallback:
         peer_id, target = fetch_calls[0]
         assert peer_id == "ai-peer", f"expected ai-peer, got {peer_id}"
         assert target == "ai-peer"
+
+
+class TestPeerNamePriority:
+    """Explicit config.peer_name must win over runtime_user_peer_name in session resolution."""
+
+    def _make_config(self, peer_name=None, ai_peer="hermes"):
+        from plugins.memory.honcho.client import HonchoClientConfig
+        return HonchoClientConfig(peer_name=peer_name, ai_peer=ai_peer, enabled=True)
+
+    def _make_manager(self, config=None, runtime_user_peer_name=None):
+        mgr = HonchoSessionManager(config=config, runtime_user_peer_name=runtime_user_peer_name)
+        mgr._get_or_create_peer = MagicMock(side_effect=lambda pid: MagicMock())
+        mgr._get_or_create_honcho_session = MagicMock(return_value=(MagicMock(), []))
+        return mgr
+
+    def test_config_peer_name_wins_over_runtime(self):
+        """When both config.peer_name and runtime_user_peer_name are set,
+        config.peer_name must be used as the session's user_peer_id."""
+        mgr = self._make_manager(
+            config=self._make_config(peer_name="sash"),
+            runtime_user_peer_name="8439114563",
+        )
+        session = mgr.get_or_create("telegram:99999")
+        assert session.user_peer_id == "sash"
+
+    def test_runtime_peer_used_when_no_config_peer_name(self):
+        """When config has no peer_name, runtime_user_peer_name is used."""
+        mgr = self._make_manager(
+            config=self._make_config(peer_name=None),
+            runtime_user_peer_name="8439114563",
+        )
+        session = mgr.get_or_create("telegram:99999")
+        assert session.user_peer_id == "8439114563"
+
+    def test_fallback_derives_from_session_key(self):
+        """When neither config.peer_name nor runtime_user_peer_name is set,
+        peer ID is derived from the session key."""
+        mgr = self._make_manager(
+            config=self._make_config(peer_name=None),
+            runtime_user_peer_name=None,
+        )
+        session = mgr.get_or_create("telegram:99999")
+        assert session.user_peer_id == "user-telegram-99999"
