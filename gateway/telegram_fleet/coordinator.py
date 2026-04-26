@@ -1,0 +1,642 @@
+"""FleetCoordinator — the orchestration brain for Telegram Fleet Mode.
+
+Responsibilities:
+
+* Hold the parsed roster in memory and persist mutations.
+* Talk to the manager bot via :class:`FleetApiClient` (token rotation,
+  managed-bot identity, child-bot send).
+* Mint pending entries when the agent calls ``telegram_spawn_bot`` and
+  return the deep link for the user to tap.
+* Promote a pending entry to active when a ``managed_bot`` update arrives
+  (the gateway feeds these updates in via :meth:`absorb_managed_bot`).
+* Fan out a swarm: assign sub-tasks to active "pool" children, run them in
+  parallel via ``delegate_task``, post status updates to each child's chat
+  so the user can watch live, then aggregate findings.
+
+Single-instance per process, fetched via :func:`get_coordinator`.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import secrets
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Callable, Dict, List, Optional
+
+from gateway.telegram_fleet.api import (
+    BotApiError,
+    FleetApiClient,
+    ManagedBotInfo,
+    build_managed_bot_deep_link,
+)
+from gateway.telegram_fleet.audit import audit_event
+from gateway.telegram_fleet.guardrails import (
+    FleetGuardrailError,
+    check_can_spawn,
+    check_rate_limit,
+)
+from gateway.telegram_fleet.roster import (
+    ChildBot,
+    FleetRoster,
+    PENDING_TTL_SECONDS,
+    RosterError,
+    load_roster,
+    save_roster,
+)
+
+logger = logging.getLogger(__name__)
+
+
+# ── Spawn / orchestration result types ────────────────────────────────
+
+
+@dataclass
+class SpawnResult:
+    """Returned by :meth:`FleetCoordinator.spawn_bot`."""
+
+    suggested_username: str
+    deep_link: str
+    nonce: str
+    qr_text: Optional[str] = None  # Caller can render it; coordinator does not.
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "suggested_username": self.suggested_username,
+            "deep_link": self.deep_link,
+            "nonce": self.nonce,
+        }
+
+
+@dataclass
+class SwarmTaskResult:
+    """One sub-task's outcome inside an orchestrate_swarm run."""
+
+    persona: str
+    bot_username: str
+    goal: str
+    response: str
+    duration_seconds: float
+    error: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        out = {
+            "persona": self.persona,
+            "bot_username": self.bot_username,
+            "goal": self.goal,
+            "response": self.response,
+            "duration_seconds": round(self.duration_seconds, 3),
+        }
+        if self.error:
+            out["error"] = self.error
+        return out
+
+
+# ── Coordinator ───────────────────────────────────────────────────────
+
+
+class FleetCoordinator:
+    """Single-process orchestrator for the Telegram fleet."""
+
+    def __init__(
+        self,
+        *,
+        manager_token: Optional[str] = None,
+        manager_username: Optional[str] = None,
+        api_client: Optional[FleetApiClient] = None,
+        roster_path=None,
+        delegate_fn: Optional[Callable[..., str]] = None,
+    ):
+        self._lock = threading.RLock()
+        self._roster_path = roster_path
+        self._roster: FleetRoster = load_roster(path=roster_path)
+        # Drop stale pending entries immediately so callers don't see them.
+        if self._roster.prune_expired_pending():
+            save_roster(self._roster, path=roster_path)
+        self._manager_token = manager_token or os.getenv("TELEGRAM_FLEET_MANAGER_TOKEN")
+        if manager_username:
+            self._roster.manager_bot_username = manager_username.lstrip("@")
+        self._api = api_client
+        self._delegate_fn = delegate_fn  # Injectable for tests; falls back to delegate_tool.
+
+    # ── Roster access ────────────────────────────────────────────────
+
+    @property
+    def roster(self) -> FleetRoster:
+        with self._lock:
+            return self._roster
+
+    def list_children(self, *, status: Optional[str] = None) -> List[ChildBot]:
+        with self._lock:
+            children = list(self._roster.children)
+        if status:
+            children = [c for c in children if c.status == status]
+        return children
+
+    def find(self, username: str) -> Optional[ChildBot]:
+        with self._lock:
+            return self._roster.find(username)
+
+    def reload(self) -> None:
+        """Re-read the roster from disk (e.g. after an external edit)."""
+        with self._lock:
+            self._roster = load_roster(path=self._roster_path)
+            self._roster.prune_expired_pending()
+
+    # ── Manager API client ───────────────────────────────────────────
+
+    def _require_api(self) -> FleetApiClient:
+        if self._api is not None:
+            return self._api
+        if not self._manager_token:
+            raise FleetGuardrailError(
+                "no manager bot token configured.  Set TELEGRAM_FLEET_MANAGER_TOKEN "
+                "in ~/.hermes/.env or pass manager_token to FleetCoordinator."
+            )
+        self._api = FleetApiClient(self._manager_token)
+        return self._api
+
+    def manager_username(self) -> str:
+        with self._lock:
+            cached = self._roster.manager_bot_username
+        if cached:
+            return cached
+        try:
+            api = self._require_api()
+            me = api.get_me()
+        except (FleetGuardrailError, BotApiError) as e:
+            raise FleetGuardrailError(f"could not resolve manager bot: {e}") from e
+        username = str(me.get("username") or "")
+        if not username:
+            raise FleetGuardrailError("manager bot has no username — set one in @BotFather")
+        with self._lock:
+            self._roster.manager_bot_username = username
+            save_roster(self._roster, path=self._roster_path)
+        return username
+
+    # ── Spawn ────────────────────────────────────────────────────────
+
+    def spawn_bot(
+        self,
+        suggested_username: str,
+        *,
+        persona: str = "",
+        display_name: Optional[str] = None,
+        model: Optional[str] = None,
+        profile: Optional[str] = None,
+        toolset: Optional[List[str]] = None,
+        rate_limit_per_min: int = 30,
+        daily_budget_usd: Optional[float] = None,
+        notes: str = "",
+    ) -> SpawnResult:
+        """Mint a pending child entry and return the deep link to confirm.
+
+        The bot only enters ``active`` status once a ``managed_bot`` update
+        arrives via :meth:`absorb_managed_bot`.
+        """
+        suggested = _normalize_username(suggested_username)
+        if not suggested:
+            raise FleetGuardrailError("suggested_username must be non-empty")
+        with self._lock:
+            check_can_spawn(self._roster)
+            if self._roster.find(suggested) is not None:
+                raise FleetGuardrailError(
+                    f"a bot named @{suggested} is already in the roster"
+                )
+            nonce = secrets.token_hex(8)
+            child = ChildBot(
+                username=suggested,
+                persona=persona,
+                model=model,
+                profile=profile,
+                toolset=toolset,
+                rate_limit_per_min=rate_limit_per_min,
+                daily_budget_usd=daily_budget_usd,
+                status="pending",
+                nonce=nonce,
+                notes=notes,
+            )
+            self._roster.upsert(child)
+            save_roster(self._roster, path=self._roster_path)
+
+        manager = self.manager_username()
+        deep_link = build_managed_bot_deep_link(
+            manager, suggested, name=display_name or persona[:40] or suggested
+        )
+        audit_event(
+            "spawn_requested",
+            bot_username=suggested,
+            persona_chars=len(persona),
+            has_model_override=bool(model),
+            has_toolset_override=bool(toolset),
+            nonce=_redact_nonce(nonce),
+        )
+        return SpawnResult(
+            suggested_username=suggested, deep_link=deep_link, nonce=nonce
+        )
+
+    def absorb_managed_bot(self, info: ManagedBotInfo) -> Optional[ChildBot]:
+        """Promote a pending child to active when the user confirms the spawn.
+
+        Called by the gateway when it receives a ``managed_bot`` update
+        and resolves the token via ``getManagedBotToken``.  Matches by
+        username (we generate unique suggested usernames per spawn).
+        Returns the updated ``ChildBot`` or None if no pending entry was
+        waiting for it (e.g. the user created a bot directly in BotFather).
+        """
+        username = _normalize_username(info.bot_username)
+        with self._lock:
+            child = self._roster.find(username)
+            if child is None:
+                logger.info(
+                    "managed_bot update for @%s with no pending roster entry; ignoring",
+                    username,
+                )
+                return None
+            child.bot_id = info.bot_id
+            child.token = info.token
+            child.status = "active"
+            child.last_rotated_at = _now_iso()
+            self._roster.upsert(child)
+            save_roster(self._roster, path=self._roster_path)
+        audit_event(
+            "spawn_confirmed",
+            bot_username=username,
+            bot_id=info.bot_id,
+        )
+        return child
+
+    # ── Token rotation / decommission ────────────────────────────────
+
+    def rotate_token(self, username: str) -> ChildBot:
+        with self._lock:
+            child = self._roster.find(username)
+            if child is None or child.status != "active":
+                raise FleetGuardrailError(
+                    f"@{username} is not an active fleet member"
+                )
+            if child.bot_id is None:
+                raise FleetGuardrailError(
+                    f"@{username} has no bot_id recorded; cannot rotate"
+                )
+            bot_id = child.bot_id
+        api = self._require_api()
+        info = api.replace_managed_bot_token(bot_id)
+        with self._lock:
+            child = self._roster.find(username)
+            if child is None:  # raced with a decommission
+                raise FleetGuardrailError(f"@{username} disappeared mid-rotation")
+            child.token = info.token
+            child.last_rotated_at = _now_iso()
+            self._roster.upsert(child)
+            save_roster(self._roster, path=self._roster_path)
+            updated = child
+        audit_event("token_rotated", bot_username=username, bot_id=bot_id)
+        return updated
+
+    def decommission(self, username: str) -> bool:
+        """Mark a child decommissioned (kept in roster for audit) and zero its token."""
+        with self._lock:
+            child = self._roster.find(username)
+            if child is None:
+                return False
+            child.token = None
+            child.status = "decommissioned"
+            self._roster.upsert(child)
+            save_roster(self._roster, path=self._roster_path)
+        audit_event("decommissioned", bot_username=username)
+        return True
+
+    # ── Direct delegation (one bot speaks via another) ───────────────
+
+    def delegate_message(
+        self,
+        target_username: str,
+        chat_id: str,
+        text: str,
+        *,
+        reply_to: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Have the named child bot post *text* into *chat_id*."""
+        with self._lock:
+            child = self._roster.find(target_username)
+            if child is None or not child.is_active():
+                raise FleetGuardrailError(
+                    f"@{target_username} is not an active fleet member"
+                )
+            token = child.token
+            rate = child.rate_limit_per_min
+            username = child.username
+        if not check_rate_limit(username, per_minute=rate):
+            raise FleetGuardrailError(
+                f"@{username} exceeded its {rate}/min rate limit"
+            )
+        api = self._require_api()
+        result = api.send_message_as(token, chat_id, text, reply_to=reply_to)
+        audit_event(
+            "delegate_message",
+            bot_username=username,
+            chat_id=str(chat_id),
+            text_chars=len(text),
+        )
+        return result
+
+    # ── The orchestration primitive ──────────────────────────────────
+
+    def orchestrate_swarm(
+        self,
+        objective: str,
+        subtasks: List[Dict[str, Any]],
+        *,
+        report_chat_id: Optional[str] = None,
+        max_parallel: int = 8,
+        per_task_timeout_s: float = 600.0,
+        parent_agent: Any = None,
+    ) -> Dict[str, Any]:
+        """Fan *subtasks* across active fleet members, aggregate results.
+
+        Each entry of *subtasks* is::
+
+            {
+                "goal": "...",                # required
+                "persona": "...",             # optional override
+                "bot_username": "@worker_3",  # optional explicit pin
+                "context": "...",             # optional extra context
+                "toolsets": ["web", ...],     # optional override
+            }
+
+        Workflow:
+
+        1. Bind each subtask to an active fleet member (explicit pin first,
+           otherwise round-robin across remaining active children).
+        2. Run all of them in parallel via the injected ``delegate_fn``
+           (defaults to :func:`tools.delegate_tool.delegate_task`).
+        3. If a ``report_chat_id`` is configured, each child posts a
+           one-line "starting / done" status as itself so the operator can
+           watch progress live.
+        4. Collect results, write a ``swarm_started`` / ``swarm_completed``
+           audit pair.
+        """
+        if not objective.strip():
+            raise FleetGuardrailError("objective must be non-empty")
+        if not subtasks:
+            raise FleetGuardrailError("subtasks must contain at least one entry")
+        with self._lock:
+            active = [c for c in self._roster.children if c.is_active()]
+        if not active:
+            raise FleetGuardrailError(
+                "no active fleet members.  Spawn at least one bot via "
+                "telegram_spawn_bot first."
+            )
+
+        bindings = self._bind_subtasks(subtasks, active)
+        delegate_fn = self._delegate_fn or _resolve_delegate()
+
+        run_id = secrets.token_hex(6)
+        audit_event(
+            "swarm_started",
+            run_id=run_id,
+            objective_chars=len(objective),
+            tasks=len(bindings),
+            bots=[b["bot_username"] for b in bindings],
+            report_chat_id=str(report_chat_id) if report_chat_id else None,
+        )
+
+        # Optional per-task status posts back to a results chat.
+        if report_chat_id:
+            for b in bindings:
+                self._safe_post(
+                    b["bot_username"],
+                    report_chat_id,
+                    f"▶︎ starting: {b['goal'][:120]}",
+                )
+
+        results: List[SwarmTaskResult] = []
+        with ThreadPoolExecutor(max_workers=min(max_parallel, len(bindings))) as ex:
+            futures = {
+                ex.submit(
+                    self._run_subtask,
+                    binding=b,
+                    objective=objective,
+                    delegate_fn=delegate_fn,
+                    parent_agent=parent_agent,
+                    timeout=per_task_timeout_s,
+                ): b
+                for b in bindings
+            }
+            for fut in as_completed(futures):
+                b = futures[fut]
+                try:
+                    result = fut.result(timeout=per_task_timeout_s + 5)
+                except Exception as e:  # pragma: no cover - delegate failure
+                    result = SwarmTaskResult(
+                        persona=b.get("persona", ""),
+                        bot_username=b["bot_username"],
+                        goal=b["goal"],
+                        response="",
+                        duration_seconds=0.0,
+                        error=f"{type(e).__name__}: {e}",
+                    )
+                results.append(result)
+                if report_chat_id:
+                    summary = result.error or _truncate(result.response, 280)
+                    self._safe_post(
+                        result.bot_username,
+                        report_chat_id,
+                        f"✅ done: {summary}" if not result.error else f"❌ failed: {summary}",
+                    )
+
+        audit_event(
+            "swarm_completed",
+            run_id=run_id,
+            tasks=len(results),
+            failures=sum(1 for r in results if r.error),
+        )
+        aggregate = _aggregate(objective, results)
+        return {
+            "run_id": run_id,
+            "objective": objective,
+            "results": [r.to_dict() for r in results],
+            "summary": aggregate,
+        }
+
+    # ── internals ────────────────────────────────────────────────────
+
+    def _bind_subtasks(
+        self, subtasks: List[Dict[str, Any]], active: List[ChildBot]
+    ) -> List[Dict[str, Any]]:
+        """Resolve each subtask to a concrete bot username + persona."""
+        bindings: List[Dict[str, Any]] = []
+        rotation = list(active)
+        rr_idx = 0
+        for raw in subtasks:
+            if not isinstance(raw, dict):
+                raise FleetGuardrailError(f"subtask must be a mapping, got {type(raw).__name__}")
+            goal = str(raw.get("goal") or "").strip()
+            if not goal:
+                raise FleetGuardrailError("subtask is missing 'goal'")
+            pin = _normalize_username(str(raw.get("bot_username") or ""))
+            if pin:
+                child = self._roster.find(pin)
+                if child is None or not child.is_active():
+                    raise FleetGuardrailError(
+                        f"subtask requested @{pin} but it is not an active fleet member"
+                    )
+                bot = child
+            else:
+                bot = rotation[rr_idx % len(rotation)]
+                rr_idx += 1
+            persona = str(raw.get("persona") or bot.persona or "")
+            bindings.append(
+                {
+                    "goal": goal,
+                    "context": str(raw.get("context") or ""),
+                    "toolsets": list(raw.get("toolsets") or bot.toolset or []) or None,
+                    "bot_username": bot.username,
+                    "persona": persona,
+                    "bot_token": bot.token,
+                }
+            )
+        return bindings
+
+    def _run_subtask(
+        self,
+        *,
+        binding: Dict[str, Any],
+        objective: str,
+        delegate_fn: Callable[..., str],
+        parent_agent: Any,
+        timeout: float,
+    ) -> SwarmTaskResult:
+        start = time.monotonic()
+        persona = binding.get("persona") or ""
+        context_parts = [
+            f"Swarm objective: {objective}",
+        ]
+        if persona:
+            context_parts.append(f"Your persona for this task: {persona}")
+        if binding.get("context"):
+            context_parts.append(str(binding["context"]))
+        context = "\n\n".join(context_parts)
+        try:
+            response = delegate_fn(
+                goal=binding["goal"],
+                context=context,
+                toolsets=binding.get("toolsets"),
+                role="leaf",
+                parent_agent=parent_agent,
+            )
+        except Exception as e:
+            return SwarmTaskResult(
+                persona=persona,
+                bot_username=binding["bot_username"],
+                goal=binding["goal"],
+                response="",
+                duration_seconds=time.monotonic() - start,
+                error=f"{type(e).__name__}: {e}",
+            )
+        return SwarmTaskResult(
+            persona=persona,
+            bot_username=binding["bot_username"],
+            goal=binding["goal"],
+            response=str(response),
+            duration_seconds=time.monotonic() - start,
+        )
+
+    def _safe_post(self, username: str, chat_id: str, text: str) -> None:
+        try:
+            self.delegate_message(username, chat_id, text)
+        except Exception as e:
+            logger.debug("could not post status from @%s: %s", username, e)
+
+
+# ── Module-level singleton ─────────────────────────────────────────────
+
+
+_singleton_lock = threading.Lock()
+_singleton: Optional[FleetCoordinator] = None
+
+
+def get_coordinator(*, refresh: bool = False) -> FleetCoordinator:
+    """Return the per-process FleetCoordinator (lazy-init).
+
+    Pass ``refresh=True`` to discard the cached instance and re-read the
+    roster from disk — useful after the user edits ``telegram_fleet.yaml``
+    by hand.
+    """
+    global _singleton
+    with _singleton_lock:
+        if _singleton is None or refresh:
+            _singleton = FleetCoordinator()
+        return _singleton
+
+
+def reset_coordinator() -> None:
+    """Drop the cached coordinator.  Test helper."""
+    global _singleton
+    with _singleton_lock:
+        _singleton = None
+
+
+# ── helpers ───────────────────────────────────────────────────────────
+
+
+def _resolve_delegate() -> Callable[..., str]:
+    """Lazy import so the fleet package doesn't pull in tools at import time."""
+    from tools.delegate_tool import delegate_task
+
+    return delegate_task
+
+
+def _normalize_username(value: str) -> str:
+    return (value or "").strip().lstrip("@").lower()
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _redact_nonce(nonce: str) -> str:
+    if not nonce or len(nonce) < 8:
+        return "***"
+    return f"{nonce[:4]}…"
+
+
+def _truncate(s: str, n: int) -> str:
+    s = s or ""
+    if len(s) <= n:
+        return s
+    return s[: n - 1].rstrip() + "…"
+
+
+def _aggregate(objective: str, results: List[SwarmTaskResult]) -> str:
+    """Compose a human-readable summary of the swarm run."""
+    lines = [f"Swarm objective: {objective}", ""]
+    successes = [r for r in results if not r.error]
+    failures = [r for r in results if r.error]
+    lines.append(f"Workers: {len(results)}  ·  ok: {len(successes)}  ·  failed: {len(failures)}")
+    lines.append("")
+    for r in results:
+        header = f"— @{r.bot_username}"
+        if r.persona:
+            header += f" ({r.persona[:60]})"
+        header += f"  [{r.duration_seconds:.1f}s]"
+        lines.append(header)
+        lines.append(r.error if r.error else _truncate(r.response, 600))
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+# Re-export for callers
+__all__ = [
+    "FleetCoordinator",
+    "SpawnResult",
+    "SwarmTaskResult",
+    "get_coordinator",
+    "reset_coordinator",
+    "PENDING_TTL_SECONDS",
+]
