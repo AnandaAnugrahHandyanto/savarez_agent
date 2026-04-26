@@ -13,9 +13,13 @@ from agent.auxiliary_client import call_llm
 logger = logging.getLogger(__name__)
 
 _TITLE_PROMPT = (
-    "Generate a short, descriptive title (3-7 words) for a conversation that starts with the "
-    "following exchange. The title should capture the main topic or intent. "
-    "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
+    "You are a title generator. Read the conversation below and output a single short title "
+    "(3-7 words) that captures the main topic or intent. "
+    "RULES: Output ONLY the title — no quotes, no punctuation, no prefixes like 'Title:', no explanation, no formatting. "
+    "Example valid outputs:\n"
+    "  Debugging Python import errors\n"
+    "  Setting up Docker environment\n"
+    "  Fixing session title generation\n"
 )
 
 
@@ -43,6 +47,22 @@ def generate_title(user_message: str, assistant_response: str, timeout: float = 
             timeout=timeout,
         )
         title = (response.choices[0].message.content or "").strip()
+        # Strip MiniMax reasoning token prefix if it leaks into content
+        if title.startswith("一致"):
+            title = title[2:].strip()
+        # Discard responses that look like the instruction prompt itself
+        # (model failed to follow instructions and echoed the input back)
+        prompt_fragments = [
+            "generate a short",
+            "return only the title",
+            "no quotes, no punctuation",
+            "no prefixes",
+            "the title should capture",
+        ]
+        title_lower = title.lower()
+        if any(frag in title_lower for frag in prompt_fragments):
+            logger.warning("Title generation produced prompt-like output, discarding.")
+            return None
         # Clean up: remove quotes, trailing punctuation, prefixes like "Title: "
         title = title.strip('"\'')
         if title.lower().startswith("title:"):
