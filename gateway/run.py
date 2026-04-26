@@ -41,6 +41,10 @@ from agent.account_usage import fetch_account_usage, render_account_usage_lines
 _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 
+# Keep automatic voice replies short enough for responsive gateway delivery and
+# provider character limits; the full text reply is still sent separately.
+AUTO_TTS_REPLY_MAX_CHARS = 900
+
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
 # Must run BEFORE any HTTP library (discord, aiohttp, etc.) is imported.
@@ -6648,15 +6652,20 @@ class GatewayRunner:
         try:
             from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
 
-            tts_text = _strip_markdown_for_tts(text[:4000])
+            tts_text = _strip_markdown_for_tts(text[:AUTO_TTS_REPLY_MAX_CHARS])
             if not tts_text:
                 return
 
-            # Use .mp3 extension so edge-tts conversion to opus works correctly.
-            # The TTS tool may convert to .ogg — use file_path from result.
+            # Telegram voice bubbles require OGG/Opus. If we hand TTS an
+            # explicit .mp3 path here, providers may respect it and Telegram
+            # will send an audio attachment instead of a voice note. Other
+            # platforms can keep the provider-neutral MP3 intermediate.
+            _platform_raw = getattr(event.source.platform, "value", None) or getattr(event.source.platform, "name", None) or event.source.platform
+            _platform_value = str(_platform_raw).split(".")[-1].lower()
+            _voice_ext = ".ogg" if _platform_value == "telegram" else ".mp3"
             audio_path = os.path.join(
                 tempfile.gettempdir(), "hermes_voice",
-                f"tts_reply_{_uuid.uuid4().hex[:12]}.mp3",
+                f"tts_reply_{_uuid.uuid4().hex[:12]}{_voice_ext}",
             )
             os.makedirs(os.path.dirname(audio_path), exist_ok=True)
 
