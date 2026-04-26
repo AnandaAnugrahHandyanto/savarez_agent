@@ -400,6 +400,18 @@ def _reset_module_state():
     except Exception:
         pass
 
+    # tools.terminal_tool — stale sandbox per-task_id must not win over
+    # TERMINAL_CWD in file_tools._resolve_path_for_task (xdist workers
+    # reuse a process; a prior test may have left "default" container cwd
+    # equal to the repo root).
+    try:
+        from tools import terminal_tool as _tt_mod
+        with _tt_mod._env_lock:
+            _tt_mod._active_environments.clear()
+        _tt_mod._task_env_overrides.clear()
+    except Exception:
+        pass
+
     yield
 
 
