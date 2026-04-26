@@ -149,10 +149,14 @@ _MOA_AUTO_HINTS = (
     "difficult",
 )
 
-_ROUTED_HISTORY_MAX_MESSAGES = 8
-# Roughly ~1500 tokens of history, leaving headroom for the wrapper text and
+_ROUTED_HISTORY_MAX_MESSAGES = 3
+# Roughly ~600 tokens of history, leaving headroom for the wrapper text and
 # the force-routed tool's own output inside the downstream model budget.
-_ROUTED_HISTORY_MAX_CHARS = 6000
+# Tightened from 8/6000 -> 3/2400 on 2026-04-26: MoA+Spar fans the prompt
+# out to 5+ models, so each extra char is multiplied. Short-range context
+# (last 3 turns) is enough for follow-up questions; older context lives
+# in session storage if needed.
+_ROUTED_HISTORY_MAX_CHARS = 2400
 _ROUTED_LOCAL_FILE_MAX_CHARS = 30000
 _ROUTED_LOCAL_FILE_MAX_COUNT = 3
 _ROUTE_FORENSICS_LOG = "route_forensics.jsonl"
