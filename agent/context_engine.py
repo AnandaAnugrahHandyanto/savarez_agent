@@ -91,7 +91,7 @@ class ContextEngine(ABC):
         Args:
             focus_topic: Optional topic string from manual ``/compress <focus>``.
                 Engines that support guided compression should prioritise
-                preserving information related to this topic.  Engines that
+                preserving information related to this topic. Engines that
                 don't support it may simply ignore this argument.
         """
 
