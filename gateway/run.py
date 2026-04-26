@@ -1041,6 +1041,8 @@ class GatewayRunner:
         (provider/api_key/base_url/api_mode), prefer it directly instead of
         resolving fresh global runtime state first.
         """
+        from hermes_cli.providers import determine_api_mode
+
         resolved_session_key = session_key
         if not resolved_session_key and source is not None:
             try:
@@ -1058,6 +1060,23 @@ class GatewayRunner:
                 "base_url": override.get("base_url"),
                 "api_mode": override.get("api_mode"),
             }
+            override_provider = (override_runtime.get("provider") or "").strip().lower()
+            override_base_url = override_runtime.get("base_url") or ""
+            inferred_api_mode = determine_api_mode(override_provider, override_base_url)
+            if (
+                override_runtime.get("api_mode") == "anthropic_messages"
+                and inferred_api_mode != "anthropic_messages"
+            ):
+                logger.warning(
+                    "Correcting stale session override api_mode for session=%s provider=%s base_url=%s: %s -> %s",
+                    (resolved_session_key or "")[:30],
+                    override_provider,
+                    override_base_url,
+                    override_runtime.get("api_mode"),
+                    inferred_api_mode,
+                )
+                override_runtime["api_mode"] = inferred_api_mode
+                override["api_mode"] = inferred_api_mode
             if override_runtime.get("api_key"):
                 logger.debug(
                     "Session model override (fast): session=%s config_model=%s -> override_model=%s provider=%s",

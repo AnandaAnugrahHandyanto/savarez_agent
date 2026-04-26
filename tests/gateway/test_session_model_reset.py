@@ -75,7 +75,7 @@ async def test_new_command_clears_session_model_override():
     runner._session_model_overrides[session_key] = {
         "model": "gpt-4o",
         "provider": "openai",
-        "api_key": "sk-test",
+        "api_key": "***",
         "base_url": "",
         "api_mode": "openai",
     }
@@ -108,14 +108,14 @@ async def test_new_command_only_clears_own_session():
     runner._session_model_overrides[session_key] = {
         "model": "gpt-4o",
         "provider": "openai",
-        "api_key": "sk-test",
+        "api_key": "***",
         "base_url": "",
         "api_mode": "openai",
     }
     runner._session_model_overrides[other_key] = {
         "model": "claude-sonnet-4-6",
         "provider": "anthropic",
-        "api_key": "sk-ant-test",
+        "api_key": "***",
         "base_url": "",
         "api_mode": "anthropic",
     }
@@ -124,3 +124,28 @@ async def test_new_command_only_clears_own_session():
 
     assert session_key not in runner._session_model_overrides
     assert other_key in runner._session_model_overrides
+
+
+def test_resolve_session_runtime_recomputes_stale_override_api_mode_for_custom_openai_endpoint():
+    """A stale override api_mode must not force custom /v1 endpoints onto Anthropic path."""
+    runner = _make_runner()
+    session_key = build_session_key(_make_source())
+    runner._session_model_overrides[session_key] = {
+        "model": "gpt-5.4",
+        "provider": "custom",
+        "api_key": "***",
+        "base_url": "http://192.168.50.81:8317/v1",
+        "api_mode": "anthropic_messages",
+    }
+
+    model, runtime = runner._resolve_session_agent_runtime(
+        source=_make_source(),
+        session_key=session_key,
+        user_config={},
+    )
+
+    assert model == "gpt-5.4"
+    assert runtime["provider"] == "custom"
+    assert runtime["base_url"] == "http://192.168.50.81:8317/v1"
+    assert runtime["api_mode"] == "chat_completions"
+    assert runner._session_model_overrides[session_key]["api_mode"] == "chat_completions"

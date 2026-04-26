@@ -6709,7 +6709,7 @@ class AIAgent:
         """Build the keyword arguments dict for the active API mode."""
         if self.api_mode == "anthropic_messages":
             _transport = self._get_anthropic_transport()
-            anthropic_messages = self._prepare_anthropic_messages_for_api(api_messages)
+            anthropic_messages = api_messages
             ctx_len = getattr(self, "context_compressor", None)
             ctx_len = ctx_len.context_length if ctx_len else None
             ephemeral_out = getattr(self, "_ephemeral_max_output_tokens", None)
