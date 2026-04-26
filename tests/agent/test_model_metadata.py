@@ -281,6 +281,24 @@ class TestCodexOAuthContextLength:
                     "(models.dev leakage?)"
                 )
 
+    def test_provider_prefixed_gpt55_codex_slug_uses_effective_cap(self):
+        """A persisted or cron-style provider/model slug must not bypass the
+        GPT-5.5 Codex cap when provider/base_url were not passed separately.
+        """
+        from agent.model_metadata import get_model_context_length
+
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.save_context_length"), \
+             patch("agent.models_dev.lookup_models_dev_context", return_value=1_050_000):
+            for model in ("openai-codex/gpt-5.5", "gpt-5.5-codex"):
+                ctx = get_model_context_length(
+                    model=model,
+                    base_url="",
+                    api_key="",
+                    provider="",
+                )
+                assert ctx == 272_000
+
     def test_live_probe_overrides_fallback_for_non_gpt55_codex_models(self):
         """When a token is provided, the live /models probe is preferred
         for Codex models that do not have an explicit temporary cap."""

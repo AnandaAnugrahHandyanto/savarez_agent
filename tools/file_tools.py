@@ -59,6 +59,58 @@ def _get_max_read_chars() -> int:
     _max_read_chars_cached = _DEFAULT_MAX_READ_CHARS
     return _max_read_chars_cached
 
+
+def _resource_entry_platform_ids(entry: dict, platform: str) -> set[str]:
+    ids: set[str] = set()
+    if not isinstance(entry, dict):
+        return ids
+    for key in ("platforms", "user_ids"):
+        raw_map = entry.get(key)
+        raw = raw_map.get(platform) if isinstance(raw_map, dict) else None
+        if isinstance(raw, (list, tuple, set)):
+            ids.update(str(v) for v in raw if str(v).strip())
+        elif raw:
+            ids.add(str(raw))
+    return ids
+
+
+def _current_requester_is_owner() -> bool:
+    """Return True for owner/no-session contexts; False for collaborator sessions.
+
+    File tools run on the local machine. In Telegram/Discord/etc. sessions, a
+    non-owner asking for "my files" must not silently get Roger's filesystem.
+    CLI/cron contexts have no HERMES_SESSION_* metadata and retain existing
+    behavior. Gateway sessions fail closed if ownership cannot be resolved.
+    """
+    try:
+        from gateway.session_context import get_session_env
+        platform = get_session_env("HERMES_SESSION_PLATFORM", "").strip()
+        if not platform:
+            return True
+        source_ids = {
+            v for v in (
+                get_session_env("HERMES_SESSION_USER_ID", "").strip(),
+                get_session_env("HERMES_SESSION_CHAT_ID", "").strip(),
+            ) if v
+        }
+        from hermes_cli.config import load_config
+        policy = (load_config() or {}).get("resource_ownership") or {}
+        owner = policy.get("owner") if isinstance(policy.get("owner"), dict) else {}
+        owner_ids = _resource_entry_platform_ids(owner, platform)
+        return bool(owner_ids and source_ids & owner_ids)
+    except Exception:
+        return False
+
+
+def _collaborator_file_guard_error(action: str) -> Optional[str]:
+    if _current_requester_is_owner():
+        return None
+    return (
+        f"Blocked: {action} would access the local filesystem of the machine running this agent. "
+        "For non-owner collaborators, personal file requests must use their own machine/local-agent/SSH connector "
+        "or an explicitly authorized shared resource; Roger's M5 filesystem is not used by fallback."
+    )
+
 # If the total file size exceeds this AND the caller didn't specify a narrow
 # range (limit <= 200), we include a hint encouraging targeted reads.
 _LARGE_FILE_HINT_BYTES = 512_000  # 512 KB
@@ -401,6 +453,9 @@ def clear_file_ops_cache(task_id: str = None):
 def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers."""
     try:
+        guard_err = _collaborator_file_guard_error("read_file")
+        if guard_err:
+            return json.dumps({"error": guard_err}, ensure_ascii=False)
         offset, limit = normalize_read_pagination(offset, limit)
 
         # ── Device path guard ─────────────────────────────────────────
@@ -664,6 +719,9 @@ def _check_file_staleness(filepath: str, task_id: str) -> str | None:
 
 def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
     """Write content to a file."""
+    guard_err = _collaborator_file_guard_error("write_file")
+    if guard_err:
+        return tool_error(guard_err)
     sensitive_err = _check_sensitive_path(path, task_id)
     if sensitive_err:
         return tool_error(sensitive_err)
@@ -718,6 +776,9 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                new_string: str = None, replace_all: bool = False, patch: str = None,
                task_id: str = "default") -> str:
     """Patch a file using replace mode or V4A patch format."""
+    guard_err = _collaborator_file_guard_error("patch")
+    if guard_err:
+        return tool_error(guard_err)
     # Check sensitive paths for both replace (explicit path) and V4A patch (extract paths)
     _paths_to_check = []
     if path:
@@ -816,6 +877,9 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 task_id: str = "default") -> str:
     """Search for content or files."""
     try:
+        guard_err = _collaborator_file_guard_error("search_files")
+        if guard_err:
+            return json.dumps({"error": guard_err}, ensure_ascii=False)
         offset, limit = normalize_search_pagination(offset, limit)
 
         # Track searches to detect *consecutive* repeated search loops.

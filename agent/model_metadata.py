@@ -83,17 +83,27 @@ def _strip_provider_prefix(model: str) -> str:
     """Strip a recognised provider prefix from a model string.
 
     ``"local:my-model"`` → ``"my-model"``
+    ``"openai-codex/gpt-5.5"`` → ``"gpt-5.5"``
     ``"qwen3.5:27b"``   → ``"qwen3.5:27b"``  (unchanged — not a provider prefix)
     ``"qwen:0.5b"``     → ``"qwen:0.5b"``    (unchanged — Ollama model:tag)
     ``"deepseek:latest"``→ ``"deepseek:latest"``(unchanged — Ollama model:tag)
     """
-    if ":" not in model or model.startswith("http"):
+    if model.startswith("http"):
         return model
-    prefix, suffix = model.split(":", 1)
+
+    separator = None
+    if ":" in model:
+        separator = ":"
+    elif "/" in model and model.split("/", 1)[0].strip().lower() == "openai-codex":
+        separator = "/"
+    if not separator:
+        return model
+
+    prefix, suffix = model.split(separator, 1)
     prefix_lower = prefix.strip().lower()
     if prefix_lower in _PROVIDER_PREFIXES:
         # Don't strip if suffix looks like an Ollama tag (e.g. "7b", "latest", "q4_0")
-        if _OLLAMA_TAG_PATTERN.match(suffix.strip()):
+        if separator == ":" and _OLLAMA_TAG_PATTERN.match(suffix.strip()):
             return model
         return suffix
     return model
@@ -134,10 +144,13 @@ OPENAI_CODEX_GPT55_EFFECTIVE_CONTEXT = 272_000
 
 
 def _is_openai_codex_gpt55(model: str, provider: str = "", base_url: str = "") -> bool:
-    model_lower = (model or "").strip().lower()
+    raw_model = (model or "").strip().lower()
+    model_lower = _strip_provider_prefix(raw_model)
+    provider_lower = (provider or "").strip().lower()
+    if raw_model.startswith("openai-codex/") or raw_model.startswith("openai-codex:") or raw_model == "gpt-5.5-codex":
+        provider_lower = provider_lower or "openai-codex"
     if model_lower not in {"gpt-5.5", "gpt-5.5-codex"}:
         return False
-    provider_lower = (provider or "").strip().lower()
     return provider_lower == "openai-codex" or base_url_host_matches(base_url, "chatgpt.com")
 
 # Thin fallback defaults — only broad model family patterns.
@@ -1258,14 +1271,20 @@ def get_model_context_length(
         except Exception:
             pass  # fall through to probing
 
-    # Normalise provider-prefixed model names (e.g. "local:model-name" →
-    # "model-name") so cache lookups and server queries use the bare ID that
-    # local servers actually know about.  Ollama "model:tag" colons are preserved.
+    # Normalise provider-prefixed model names (e.g. "local:model-name" or
+    # "openai-codex/gpt-5.5" → "model-name") so cache lookups and server
+    # queries use the bare ID that local servers actually know about. Ollama
+    # "model:tag" colons are preserved.
+    original_model = model
     model = _strip_provider_prefix(model)
 
     # GPT-5.5 on ChatGPT/Codex currently has a 272k effective cap for agent
     # budgeting even if cache/discovery sources advertise a larger native window.
-    if _is_openai_codex_gpt55(model, provider=provider, base_url=base_url):
+    if _is_openai_codex_gpt55(model, provider=provider, base_url=base_url) or _is_openai_codex_gpt55(
+        original_model,
+        provider=provider or ("openai-codex" if str(original_model).strip().lower().startswith("openai-codex/") else ""),
+        base_url=base_url,
+    ):
         return OPENAI_CODEX_GPT55_EFFECTIVE_CONTEXT
 
     # 1. Check persistent cache (model+provider)

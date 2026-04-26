@@ -227,6 +227,116 @@ def _discord_tools_loaded() -> bool:
         return False
 
 
+def _load_resource_ownership_config() -> Dict[str, Any]:
+    """Return optional requester/resource ownership policy from config.yaml.
+
+    This is deliberately prompt-layer policy: it gives the model a hard,
+    per-session boundary without granting or routing credentials. Invalid config
+    fails closed to the generic non-owner boundary.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        policy = cfg.get("resource_ownership") or {}
+        return policy if isinstance(policy, dict) else {}
+    except Exception:
+        return {}
+
+
+def _resource_entry_ids(entry: Dict[str, Any], platform: Platform) -> List[str]:
+    """Extract configured identifiers for a resource principal on *platform*."""
+    ids: List[str] = []
+    if not isinstance(entry, dict):
+        return ids
+
+    platforms = entry.get("platforms")
+    if isinstance(platforms, dict):
+        raw = platforms.get(platform.value) or platforms.get(str(platform.value))
+        if isinstance(raw, (list, tuple, set)):
+            ids.extend(str(v) for v in raw if str(v).strip())
+        elif raw:
+            ids.append(str(raw))
+
+    raw_ids = entry.get("user_ids")
+    if isinstance(raw_ids, dict):
+        raw = raw_ids.get(platform.value) or raw_ids.get(str(platform.value))
+        if isinstance(raw, (list, tuple, set)):
+            ids.extend(str(v) for v in raw if str(v).strip())
+        elif raw:
+            ids.append(str(raw))
+    elif isinstance(raw_ids, (list, tuple, set)):
+        ids.extend(str(v) for v in raw_ids if str(v).strip())
+    return ids
+
+
+def _source_identity_values(source: SessionSource) -> set[str]:
+    """Return platform/user/chat identifiers that may identify the requester."""
+    values: set[str] = set()
+    for value in (source.user_id, source.user_id_alt, source.chat_id, source.chat_id_alt):
+        if value is not None and str(value).strip():
+            values.add(str(value))
+    return values
+
+
+def _resource_ownership_lines(context: SessionContext, *, redact_pii: bool = False) -> List[str]:
+    """Build prompt lines for requester-owned resource boundaries.
+
+    Core rule: personal-resource words like "my calendar" or "my files" bind
+    to the requester/principal, not blindly to the machine running the agent.
+    """
+    src = context.source
+    if src.platform == Platform.LOCAL:
+        return []
+
+    policy = _load_resource_ownership_config()
+    owner = policy.get("owner") if isinstance(policy.get("owner"), dict) else {}
+    owner_name = owner.get("name") or "the agent owner"
+    requester_label = src.user_name or src.user_id or src.chat_name or "the requester"
+    if redact_pii and src.user_id and not src.user_name:
+        requester_label = _hash_sender_id(src.user_id)
+
+    source_ids = _source_identity_values(src)
+    owner_ids = set(_resource_entry_ids(owner, src.platform))
+    is_owner = bool(source_ids & owner_ids) if owner_ids else False
+
+    matched_collaborator = None
+    collaborators = policy.get("collaborators") or []
+    if isinstance(collaborators, list):
+        for entry in collaborators:
+            if not isinstance(entry, dict):
+                continue
+            ids = set(_resource_entry_ids(entry, src.platform))
+            if ids and source_ids & ids:
+                matched_collaborator = entry
+                requester_label = entry.get("name") or requester_label
+                break
+
+    lines = ["", "**Resource ownership boundary:**"]
+    if context.shared_multi_user_session:
+        lines.extend([
+            "- This is a shared multi-user session; each message sender is the resource principal for that message.",
+            "- Personal-resource words like `my calendar`, `my email`, `my Drive`, `my files`, `my Desktop`, `my Downloads`, or `my local machine` refer to the sender's own accounts/machines, not automatically to the machine running this agent.",
+            f"- Do not use {owner_name}'s Google tokens, email, Drive, Calendar, browser sessions, Keychain, local filesystem, or machine files for another sender unless an explicit shared/owner-authorized resource is named.",
+            "- If sender-owned OAuth, SSH, local-agent, or filesystem access is not configured, stop and ask to connect it; do not fall back to owner credentials.",
+        ])
+    elif is_owner:
+        lines.extend([
+            f"- Requester/principal: {owner_name} (owner).",
+            "- Owner-owned Google, local filesystem, browser, and machine resources may be in scope subject to normal safety and confirmation rules.",
+        ])
+    else:
+        role = "trusted collaborator" if matched_collaborator else "non-owner requester"
+        lines.extend([
+            f"- Requester/principal: {requester_label} ({role}).",
+            f"- Personal-resource words like `my calendar`, `my email`, `my Drive`, `my files`, `my Desktop`, `my Downloads`, or `my local machine` refer to {requester_label}'s own accounts/machines, not {owner_name}'s.",
+            f"- Do not use {owner_name}'s Google tokens, email, Drive, Calendar, browser sessions, Keychain, local filesystem, or machine files for this requester unless an explicit shared/owner-authorized resource is named.",
+            "- If requester-owned OAuth, SSH, local-agent, or filesystem access is not configured, stop and ask to connect it; do not fall back to owner credentials.",
+            "- Before external side effects, name the target resource owner/account/host in the confirmation.",
+        ])
+    return lines
+
+
 def build_session_context_prompt(
     context: SessionContext,
     *,
@@ -302,6 +412,8 @@ def build_session_context_prompt(
         if redact_pii:
             uid = _hash_sender_id(uid)
         lines.append(f"**User ID:** {uid}")
+
+    lines.extend(_resource_ownership_lines(context, redact_pii=redact_pii))
     
     # Platform-specific behavioral notes
     if context.source.platform == Platform.SLACK:

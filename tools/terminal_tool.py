@@ -40,11 +40,114 @@ import time
 import threading
 import atexit
 import shutil
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 logger = logging.getLogger(__name__)
+
+
+_SESSION_ENV_KEYS = (
+    "HERMES_SESSION_PLATFORM",
+    "HERMES_SESSION_CHAT_ID",
+    "HERMES_SESSION_CHAT_NAME",
+    "HERMES_SESSION_THREAD_ID",
+    "HERMES_SESSION_USER_ID",
+    "HERMES_SESSION_USER_NAME",
+    "HERMES_SESSION_KEY",
+)
+
+
+def _current_session_env_vars() -> Dict[str, str]:
+    """Return task-local session metadata for child processes.
+
+    Gateway sessions store requester identity in contextvars, not process-global
+    os.environ.  Child shells still need the values so profile-scoped tools
+    (notably Google Workspace helpers) can enforce requester/owner boundaries.
+    """
+    try:
+        from gateway.session_context import get_session_env
+    except Exception:
+        return {}
+    result: Dict[str, str] = {}
+    for key in _SESSION_ENV_KEYS:
+        value = get_session_env(key, "")
+        if value:
+            result[key] = value
+    return result
+
+
+def _inject_session_env(env: Any) -> None:
+    """Best-effort injection of session metadata into a terminal environment."""
+    values = _current_session_env_vars()
+    if not hasattr(env, "env"):
+        return
+    try:
+        for key in _SESSION_ENV_KEYS:
+            env.env.pop(key, None)
+        env.env.update(values)
+
+        # BaseEnvironment sources a persisted shell snapshot after process env
+        # is set. Keep requester identity out of that snapshot so a reused local
+        # shell cannot re-export the previous Telegram/Discord sender.
+        snapshot_path = getattr(env, "_snapshot_path", None)
+        if snapshot_path:
+            path = Path(snapshot_path)
+            if path.exists():
+                lines = path.read_text(errors="replace").splitlines()
+                filtered = [line for line in lines if not any(key in line for key in _SESSION_ENV_KEYS)]
+                for key, value in values.items():
+                    filtered.append(f"export {key}={shlex.quote(value)}")
+                path.write_text("\n".join(filtered) + ("\n" if filtered else ""))
+    except Exception:
+        logger.debug("Unable to inject session env vars into terminal environment", exc_info=True)
+
+
+def _resource_entry_platform_ids(entry: dict, platform: str) -> set[str]:
+    ids: set[str] = set()
+    if not isinstance(entry, dict):
+        return ids
+    for key in ("platforms", "user_ids"):
+        raw_map = entry.get(key)
+        raw = raw_map.get(platform) if isinstance(raw_map, dict) else None
+        if isinstance(raw, (list, tuple, set)):
+            ids.update(str(v) for v in raw if str(v).strip())
+        elif raw:
+            ids.add(str(raw))
+    return ids
+
+
+def _current_requester_is_owner() -> bool:
+    """Return True for owner/no-session contexts; False for collaborator sessions."""
+    values = _current_session_env_vars()
+    platform = values.get("HERMES_SESSION_PLATFORM", "").strip()
+    if not platform:
+        return True
+    source_ids = {
+        v for v in (
+            values.get("HERMES_SESSION_USER_ID", "").strip(),
+            values.get("HERMES_SESSION_CHAT_ID", "").strip(),
+        ) if v
+    }
+    try:
+        from hermes_cli.config import load_config
+        policy = (load_config() or {}).get("resource_ownership") or {}
+        owner = policy.get("owner") if isinstance(policy.get("owner"), dict) else {}
+        owner_ids = _resource_entry_platform_ids(owner, platform)
+        return bool(owner_ids and source_ids & owner_ids)
+    except Exception:
+        return False
+
+
+def _collaborator_terminal_guard_error(env_type: str) -> Optional[str]:
+    if env_type != "local" or _current_requester_is_owner():
+        return None
+    return (
+        "Blocked: terminal would execute on the local filesystem/machine running this agent. "
+        "For non-owner collaborators, personal local-machine work must use their own machine/local-agent/SSH connector "
+        "or an explicitly authorized shared resource; Roger's M5 is not used by fallback."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1498,6 +1601,14 @@ def terminal_tool(
         # Get configuration
         config = _get_env_config()
         env_type = config["env_type"]
+        local_guard_error = _collaborator_terminal_guard_error(env_type)
+        if local_guard_error:
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": local_guard_error,
+                "status": "blocked",
+            }, ensure_ascii=False)
 
         # Use task_id for environment isolation. By default all subagent
         # task_ids collapse back to "default" so the top-level agent and
@@ -1637,6 +1748,11 @@ def terminal_tool(
                         _last_activity[effective_task_id] = time.time()
                         env = new_env
                     logger.info("%s environment ready for task %s", env_type, effective_task_id[:8])
+
+        # Refresh requester/session metadata on every call. Terminal
+        # environments can be reused across sessions, so creation-time env vars
+        # are not sufficient for per-requester resource guards.
+        _inject_session_env(env)
 
         # Pre-exec security checks (tirith + dangerous command detection)
         # Skip check if force=True (user has confirmed they want to run it)

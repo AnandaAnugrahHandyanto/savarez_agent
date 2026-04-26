@@ -420,6 +420,63 @@ class TestBuildSessionContextPrompt:
         assert "**User:** Alice" in prompt
         assert "Multi-user thread" not in prompt
 
+    def test_owner_resource_boundary_for_configured_owner(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="1425151324",
+            chat_type="dm",
+            user_id="1425151324",
+            user_name="Roger Gimbel",
+        )
+        policy = {
+            "resource_ownership": {
+                "owner": {"name": "Roger Gimbel", "platforms": {"telegram": ["1425151324"]}},
+                "collaborators": [],
+            }
+        }
+        with patch("hermes_cli.config.load_config", return_value=policy):
+            ctx = build_session_context(source, config)
+            prompt = build_session_context_prompt(ctx)
+
+        assert "**Resource ownership boundary:**" in prompt
+        assert "Requester/principal: Roger Gimbel (owner)" in prompt
+        assert "Owner-owned Google" in prompt
+
+    def test_collaborator_resource_boundary_blocks_owner_resources(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="222",
+            chat_type="dm",
+            user_id="222",
+            user_name="Stuart Seligman",
+        )
+        policy = {
+            "resource_ownership": {
+                "owner": {"name": "Roger Gimbel", "platforms": {"telegram": ["1425151324"]}},
+                "collaborators": [
+                    {"name": "Stuart Seligman", "platforms": {"telegram": ["222"]}},
+                ],
+            }
+        }
+        with patch("hermes_cli.config.load_config", return_value=policy):
+            ctx = build_session_context(source, config)
+            prompt = build_session_context_prompt(ctx)
+
+        assert "Requester/principal: Stuart Seligman (trusted collaborator)" in prompt
+        assert "refer to Stuart Seligman's own accounts/machines" in prompt
+        assert "Do not use Roger Gimbel's Google tokens" in prompt
+        assert "do not fall back to owner credentials" in prompt
+
 
 class TestSessionStoreRewriteTranscript:
     """Regression: /retry and /undo must persist truncated history to disk."""

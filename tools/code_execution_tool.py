@@ -930,8 +930,18 @@ def execute_code(
         return tool_error("No code provided.")
 
     # Dispatch: remote backends use file-based RPC, local uses UDS
-    from tools.terminal_tool import _get_env_config
+    from tools.terminal_tool import _get_env_config, _current_requester_is_owner
     env_type = _get_env_config()["env_type"]
+    if env_type == "local" and not _current_requester_is_owner():
+        return json.dumps({
+            "success": False,
+            "error": (
+                "Blocked: execute_code would run Python on the local filesystem/machine running this agent. "
+                "For non-owner collaborators, code execution must use their own machine/local-agent/SSH connector "
+                "or an explicitly authorized shared resource; Roger's M5 is not used by fallback."
+            ),
+            "status": "blocked",
+        }, ensure_ascii=False)
     if env_type != "local":
         return _execute_remote(code, task_id, enabled_tools)
 
@@ -1022,6 +1032,22 @@ def execute_code(
             # Allow vars with known safe prefixes.
             if any(k.startswith(p) for p in _SAFE_ENV_PREFIXES):
                 child_env[k] = v
+        try:
+            from gateway.session_context import get_session_env as _gse
+            for _key in (
+                "HERMES_SESSION_PLATFORM",
+                "HERMES_SESSION_CHAT_ID",
+                "HERMES_SESSION_CHAT_NAME",
+                "HERMES_SESSION_THREAD_ID",
+                "HERMES_SESSION_USER_ID",
+                "HERMES_SESSION_USER_NAME",
+                "HERMES_SESSION_KEY",
+            ):
+                _value = _gse(_key, "")
+                if _value:
+                    child_env[_key] = _value
+        except Exception:
+            pass
         child_env["HERMES_RPC_SOCKET"] = sock_path
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"
         # Ensure the hermes-agent root is importable in the sandbox so

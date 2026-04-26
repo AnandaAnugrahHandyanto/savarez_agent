@@ -22,6 +22,60 @@ def get_token_path() -> Path:
     return get_hermes_home() / "google_token.json"
 
 
+def _load_resource_ownership_policy() -> dict:
+    try:
+        import yaml
+    except Exception:
+        return {}
+    try:
+        cfg_path = get_hermes_home() / "config.yaml"
+        if not cfg_path.exists():
+            return {}
+        data = yaml.safe_load(cfg_path.read_text()) or {}
+        policy = data.get("resource_ownership") or {}
+        return policy if isinstance(policy, dict) else {}
+    except Exception:
+        return {}
+
+
+def _entry_platform_ids(entry: dict, platform: str) -> set[str]:
+    if not isinstance(entry, dict):
+        return set()
+    values: set[str] = set()
+    for key in ("platforms", "user_ids"):
+        raw_map = entry.get(key)
+        raw = raw_map.get(platform) if isinstance(raw_map, dict) else None
+        if isinstance(raw, (list, tuple, set)):
+            values.update(str(v) for v in raw if str(v).strip())
+        elif raw:
+            values.add(str(raw))
+    return values
+
+
+def _guard_profile_google_token_for_requester():
+    platform = os.getenv("HERMES_SESSION_PLATFORM", "").strip()
+    if not platform:
+        return
+    source_ids = {
+        v for v in (
+            os.getenv("HERMES_SESSION_USER_ID", "").strip(),
+            os.getenv("HERMES_SESSION_CHAT_ID", "").strip(),
+        ) if v
+    }
+    policy = _load_resource_ownership_policy()
+    owner = policy.get("owner") if isinstance(policy.get("owner"), dict) else {}
+    owner_ids = _entry_platform_ids(owner, platform)
+    if owner_ids and source_ids & owner_ids:
+        return
+    owner_name = owner.get("name") or "the agent owner"
+    print(
+        "Blocked: requester-owned Google authorization is required; "
+        f"not using {owner_name}'s Google token by fallback.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
+
 def _normalize_authorized_user_payload(payload: dict) -> dict:
     normalized = dict(payload)
     if not normalized.get("type"):
@@ -73,6 +127,7 @@ def refresh_token(token_data: dict) -> dict:
 
 def get_valid_token() -> str:
     """Return a valid access token, refreshing if needed."""
+    _guard_profile_google_token_for_requester()
     token_path = get_token_path()
     if not token_path.exists():
         print("ERROR: No Google token found. Run setup.py --auth-url first.", file=sys.stderr)
