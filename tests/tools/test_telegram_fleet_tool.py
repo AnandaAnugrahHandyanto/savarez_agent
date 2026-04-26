@@ -172,6 +172,39 @@ def test_orchestrate_swarm_end_to_end(fleet):
     assert "ok: 3" in payload["summary"]
 
 
+def test_parent_agent_threads_through_handle_function_call(fleet):
+    """Regression: parent_agent must reach delegate_task or it errors.
+
+    The user-reported bug was ``{"error": "delegate_task requires a parent
+    agent context."}`` because handle_function_call → registry.dispatch
+    only forwarded task_id/user_task, never parent_agent.  This pins the
+    fix: a sentinel agent passed to handle_function_call must reach the
+    delegate_fn each worker calls.
+    """
+    from unittest.mock import MagicMock
+    from model_tools import handle_function_call
+
+    coord, _, delegate = fleet
+    _seed_active(coord, ["worker_bot"])
+
+    # Use a sentinel object so we can assert identity, not just truthy.
+    sentinel_agent = MagicMock(name="AGENT")
+    sentinel_agent._delegate_depth = 0
+
+    handle_function_call(
+        "telegram_orchestrate_swarm",
+        {
+            "objective": "X",
+            "subtasks": [{"goal": "task", "bot_username": "worker_bot"}],
+        },
+        parent_agent=sentinel_agent,
+    )
+    # Verify the sentinel reached the delegate call.
+    assert delegate.call_count == 1
+    _, call_kwargs = delegate.call_args_list[0].args, delegate.call_args_list[0].kwargs
+    assert call_kwargs.get("parent_agent") is sentinel_agent
+
+
 def test_orchestrate_swarm_rejects_when_fleet_empty(fleet):
     from tools.telegram_fleet_tool import telegram_orchestrate_swarm
 
