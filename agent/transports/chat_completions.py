@@ -155,6 +155,7 @@ class ChatCompletionsTransport(ProviderTransport):
             is_nvidia_nim: bool
             is_kimi: bool
             is_lmstudio: bool
+            is_deepseek: bool
             is_custom_provider: bool
             ollama_num_ctx: int | None
             # Provider routing
@@ -244,6 +245,7 @@ class ChatCompletionsTransport(ProviderTransport):
         is_nvidia_nim = params.get("is_nvidia_nim", False)
         is_kimi = params.get("is_kimi", False)
         is_tokenhub = params.get("is_tokenhub", False)
+        is_deepseek = params.get("is_deepseek", False)
         reasoning_config = params.get("reasoning_config")
 
         if ephemeral is not None and max_tokens_fn:
@@ -290,6 +292,22 @@ class ChatCompletionsTransport(ProviderTransport):
                         _tokenhub_effort = _e
                 api_kwargs["reasoning_effort"] = _tokenhub_effort
 
+        # DeepSeek: top-level reasoning_effort
+        # DeepSeek supports "high" and "max" (xhigh → max, low/medium → high)
+        if is_deepseek:
+            _ds_thinking_off = bool(
+                reasoning_config
+                and isinstance(reasoning_config, dict)
+                and reasoning_config.get("enabled") is False
+            )
+            if not _ds_thinking_off:
+                _ds_effort = "high"
+                if reasoning_config and isinstance(reasoning_config, dict):
+                    _e = (reasoning_config.get("effort") or "").strip().lower()
+                    if _e in ("xhigh", "max"):
+                        _ds_effort = "max"
+                api_kwargs["reasoning_effort"] = _ds_effort
+
         # LM Studio: top-level reasoning_effort. Only emit when the model
         # declares reasoning support via /api/v1/models capabilities (gated
         # upstream by params["supports_reasoning"]). resolve_lmstudio_effort
@@ -322,6 +340,17 @@ class ChatCompletionsTransport(ProviderTransport):
                     _kimi_thinking_enabled = False
             extra_body["thinking"] = {
                 "type": "enabled" if _kimi_thinking_enabled else "disabled",
+            }
+
+
+        # DeepSeek extra_body.thinking
+        if is_deepseek:
+            _ds_thinking_enabled = True
+            if reasoning_config and isinstance(reasoning_config, dict):
+                if reasoning_config.get("enabled") is False:
+                    _ds_thinking_enabled = False
+            extra_body["thinking"] = {
+                "type": "enabled" if _ds_thinking_enabled else "disabled",
             }
 
         # Reasoning. LM Studio is handled above via top-level reasoning_effort,
