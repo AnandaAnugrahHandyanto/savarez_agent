@@ -116,11 +116,11 @@ function parseKey(keypress: ParsedKey): [Key, string] {
       // so the raw "[57358u" doesn't leak into the prompt. See #38781.
       input = ''
     } else {
-      // 'space' → ' '; 'escape' → '' (key.escape carries it;
+      // 'space' → ' '; 'escape'/'return' → '' (key.escape/key.return carry it;
       // processedAsSpecialSequence bypasses the nonAlphanumericKeys
-      // clear below, so we must handle it explicitly here);
+      // clear below, so we must handle them explicitly here);
       // otherwise use key name.
-      input = keypress.name === 'space' ? ' ' : keypress.name === 'escape' ? '' : keypress.name
+      input = keypress.name === 'space' ? ' ' : keypress.name === 'escape' || keypress.name === 'return' ? '' : keypress.name
     }
 
     processedAsSpecialSequence = true
@@ -138,7 +138,7 @@ function parseKey(keypress: ParsedKey): [Key, string] {
       // guards against future terminal behavior.
       input = ''
     } else {
-      input = keypress.name === 'space' ? ' ' : keypress.name === 'escape' ? '' : keypress.name
+      input = keypress.name === 'space' ? ' ' : keypress.name === 'escape' || keypress.name === 'return' ? '' : keypress.name
     }
 
     processedAsSpecialSequence = true

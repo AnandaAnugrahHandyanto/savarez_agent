@@ -20,7 +20,7 @@ import reconciler from '../reconciler.js'
 import { finishSelection, hasSelection, type SelectionState, startSelection } from '../selection.js'
 import { getTerminalFocused, setTerminalFocused } from '../terminal-focus-state.js'
 import { TerminalQuerier, xtversion } from '../terminal-querier.js'
-import { isXtermJs, setXtversionName, supportsExtendedKeys } from '../terminal.js'
+import { isXtermJs, setXtversionName, supportsKittyKeyboard, supportsModifyOtherKeys } from '../terminal.js'
 import {
   DISABLE_KITTY_KEYBOARD,
   DISABLE_MODIFY_OTHER_KEYS,
@@ -273,8 +273,11 @@ export default class App extends PureComponent<Props, State> {
         // push (CSI >1u) and xterm modifyOtherKeys level 2 (CSI >4;2m) —
         // terminals honor whichever they implement (tmux only accepts the
         // latter).
-        if (supportsExtendedKeys()) {
+        if (supportsKittyKeyboard()) {
           this.props.stdout.write(ENABLE_KITTY_KEYBOARD)
+        }
+
+        if (supportsModifyOtherKeys()) {
           this.props.stdout.write(ENABLE_MODIFY_OTHER_KEYS)
         }
 

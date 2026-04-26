@@ -176,12 +176,44 @@ export function isXtermJs(): boolean {
 // in xterm.js-based terminals like VS Code). tmux is allowlisted because it
 // accepts modifyOtherKeys and doesn't forward the kitty sequence to the outer
 // terminal.
-const EXTENDED_KEYS_TERMINALS = ['iTerm.app', 'kitty', 'WezTerm', 'ghostty', 'tmux', 'windows-terminal']
+const KITTY_KEYBOARD_TERMINALS = ['iTerm.app', 'kitty', 'WezTerm', 'ghostty', 'windows-terminal']
+const MODIFY_OTHER_KEYS_TERMINALS = [...KITTY_KEYBOARD_TERMINALS, 'tmux']
 
-/** True if this terminal correctly handles extended key reporting
- *  (Kitty keyboard protocol + xterm modifyOtherKeys). */
+type ExtendedKeyProbe = {
+  term?: string
+  terminal?: null | string
+}
+
+function isXtermCompatibleTerm(term?: string): boolean {
+  return !!term && (term.startsWith('xterm') || term.startsWith('screen') || term.startsWith('tmux'))
+}
+
+/** True if the terminal should receive Kitty keyboard protocol enablement.
+ *  Keep this conservative: some xterm-compatible terminals honor CSI >1u but
+ *  emit keyboard codepoints differently than Kitty. */
+export function supportsKittyKeyboardForTerminal({ term, terminal }: ExtendedKeyProbe): boolean {
+  return KITTY_KEYBOARD_TERMINALS.includes(terminal ?? '') || term === 'xterm-kitty'
+}
+
+/** True if the terminal should receive xterm modifyOtherKeys enablement.
+ *  This is the path that makes Shift+Enter distinguishable in plain xterm-ish
+ *  environments where TERM_PROGRAM/KITTY_WINDOW_ID are absent (common through
+ *  WSL, ssh, and minimal shells). Unsupported terminals ignore it. */
+export function supportsModifyOtherKeysForTerminal({ term, terminal }: ExtendedKeyProbe): boolean {
+  return MODIFY_OTHER_KEYS_TERMINALS.includes(terminal ?? '') || isXtermCompatibleTerm(term)
+}
+
+/** True if this terminal should receive at least one extended key mode. */
 export function supportsExtendedKeys(): boolean {
-  return EXTENDED_KEYS_TERMINALS.includes(env.terminal ?? '')
+  return supportsKittyKeyboardForTerminal({ term: process.env.TERM, terminal: env.terminal }) || supportsModifyOtherKeysForTerminal({ term: process.env.TERM, terminal: env.terminal })
+}
+
+export function supportsKittyKeyboard(): boolean {
+  return supportsKittyKeyboardForTerminal({ term: process.env.TERM, terminal: env.terminal })
+}
+
+export function supportsModifyOtherKeys(): boolean {
+  return supportsModifyOtherKeysForTerminal({ term: process.env.TERM, terminal: env.terminal })
 }
 
 /** True if the terminal scrolls the viewport when it receives cursor-up
