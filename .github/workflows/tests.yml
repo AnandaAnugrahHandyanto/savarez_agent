@@ -52,6 +52,8 @@ jobs:
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
+          TERMINAL_ENV: local
+          TERMINAL_MODAL_MODE: auto
 
   e2e:
     runs-on: ubuntu-latest
@@ -80,3 +82,5 @@ jobs:
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
+          TERMINAL_ENV: local
+          TERMINAL_MODAL_MODE: auto

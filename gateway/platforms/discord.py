@@ -78,6 +78,24 @@ def _clean_discord_id(entry: str) -> str:
     return entry.strip()
 
 
+def _discord_message_guild_id(message: Any) -> Optional[str]:
+    """Return guild id for a Discord Message (or test SimpleNamespace with channel.guild).
+
+    Tests use types.SimpleNamespace without a top-level ``guild``; real messages
+    still expose ``message.guild``, but the guild is always available from
+    ``message.channel.guild`` when the message is in a server.
+    """
+    g = getattr(message, "guild", None)
+    if g is not None and getattr(g, "id", None) is not None:
+        return str(g.id)
+    ch = getattr(message, "channel", None)
+    if ch is not None:
+        g2 = getattr(ch, "guild", None)
+        if g2 is not None and getattr(g2, "id", None) is not None:
+            return str(g2.id)
+    return None
+
+
 def check_discord_requirements() -> bool:
     """Check if Discord dependencies are available."""
     return DISCORD_AVAILABLE
@@ -3321,7 +3339,7 @@ class DiscordAdapter(BasePlatformAdapter):
             thread_id=thread_id,
             chat_topic=chat_topic,
             is_bot=getattr(message.author, "bot", False),
-            guild_id=str(message.guild.id) if message.guild else None,
+            guild_id=_discord_message_guild_id(message),
             parent_chat_id=parent_channel_id,
             message_id=str(message.id),
         )
