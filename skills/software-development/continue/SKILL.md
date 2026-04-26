@@ -7,7 +7,6 @@ license: MIT
 metadata:
   hermes:
     tags: [continuation, sessions, cross-channel, gateway, tui]
-    related_skills: [plan]
 triggers:
   - "/continue"
   - "/continue telegram"
@@ -20,25 +19,26 @@ triggers:
 
 Use this skill when the user wants to resume work from another Hermes channel or session.
 
-## How it works
+## Core flow
 
 When the user types `/continue` or `/continue <platform>`:
 
 1. Detect the command.
 2. If no platform is provided, scan recent sessions and show a channel picker.
-3. If a platform is provided, skip the picker and go straight to that platform's latest session.
+3. If a platform is provided, go straight to that platform's latest session.
 4. Summarize the last 5-6 user messages in 2-3 sentences.
-5. Ask: `Pick up there? (yes/no)`
-6. On `yes`, continue with that context and inspect the session more deeply if needed.
-7. On `no`, drop the loaded context and start fresh.
+5. Ask `Pick up there? (yes/no)`.
+6. On `yes`, continue from that context.
+7. On `no`, start fresh.
 
 ## Channel picker
 
-If the user only types `/continue`, scan `~/.hermes/sessions` and show the latest session for each platform.
+If the user types `/continue` with no platform argument, scan `~/.hermes/sessions` and show the latest session for each expected platform.
 
-### Live session rule
-
-Treat a session file modified within the last 20 minutes as live.
+- Treat a session file modified within the last 20 minutes as live.
+- Label missing or `null` platform values as `local`.
+- Support both platform names and numeric picks from the list.
+- If only one platform has recent sessions, skip the picker and summarize directly.
 
 ### Scan script
 
@@ -135,16 +135,11 @@ for idx, p in enumerate(KNOWN_PLATFORMS, 1):
 Pick one (name or number):
 ```
 
-Notes:
-- `null` or missing platform values should be labeled as `local`.
-- Support both platform names and numeric picks from the channel list.
-- If only one platform has recent sessions, skip the picker and summarize directly.
-
 ## Summary generation
 
-Session storage differs by platform, so handle both formats:
+Handle both Hermes session formats:
 
-- `*.jsonl` — Telegram, Discord, and similar gateway sessions. Read line-delimited JSON and inspect the first `session_meta` line for platform.
+- `*.jsonl` — gateway sessions such as Telegram and Discord. Read line-delimited JSON and inspect the first `session_meta` line for platform.
 - `session_*.json` — TUI/local sessions. Read the top-level `platform` key and extract messages from the `messages` array.
 
 ### Summary extraction script
@@ -226,8 +221,8 @@ Pick up there? (yes/no)
 
 ### If the user says yes
 
-- Continue working from that context.
-- If needed, inspect the session file more deeply.
+- Continue from that context.
+- Inspect the session more deeply only if needed.
 - Do not dump the full transcript unless the user asks for it.
 
 ### If the user says no
@@ -253,13 +248,13 @@ Got it. What would you like to work on instead?
 
 ## Implementation checklist
 
-- Parse optional platform argument from the `/continue` command.
+- Parse the optional platform argument.
 - If no platform is provided, scan sessions and show a channel picker.
 - Include expected platforms even when some have no recent sessions.
-- Support both platform names and numeric picks from the picker.
+- Support both platform names and numeric picks.
 - If a platform is provided, locate the latest session for that platform.
 - Support both `.jsonl` and `.json` session formats.
-- Read the last 5-6 user messages only.
+- Read only the last 5-6 user messages.
 - Summarize in 2-3 sentences.
 - Ask `Pick up there? (yes/no)`.
 - Continue on `yes`; start fresh on `no`.
@@ -267,6 +262,6 @@ Got it. What would you like to work on instead?
 ## Notes
 
 - Keep the summary short.
-- Skip tool output, code blocks, and system/invoke messages when building the summary.
-- Prefer the most recent live session if multiple sessions exist for the same platform.
-- If the user typed `/continue <platform>` directly, do not ask them to pick a channel first.
+- Skip tool output, code blocks, and system/invoke messages.
+- Prefer the most recent live session when multiple sessions exist for one platform.
+- If the user typed `/continue <platform>` directly, do not show the picker first.
