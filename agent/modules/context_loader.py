@@ -14,6 +14,7 @@ Emission mechanism: EventEmitter instance (injected by turn_handler).
 
 from __future__ import annotations
 
+import os
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field
@@ -25,8 +26,8 @@ from agent.modules.identity import IdentityPacket
 # I/O types
 # ---------------------------------------------------------------------------
 
-#: Default token budget for the assembled context package.
-DEFAULT_TOKEN_BUDGET = 8_192
+# Configurable via MEMORY_RETRIEVAL_BUDGET_TOKENS env var; defaults to 8192.
+DEFAULT_TOKEN_BUDGET: int = int(os.environ.get("MEMORY_RETRIEVAL_BUDGET_TOKENS", "8192"))
 
 
 class UserMessage(BaseModel):
@@ -82,7 +83,6 @@ def _fetch_session_history(session_id: str) -> list[dict[str, Any]]:
     """last N turns from local session store (stub: empty list if DB unreachable)."""
     return []
 
-import os
 import httpx
 import logging
 
