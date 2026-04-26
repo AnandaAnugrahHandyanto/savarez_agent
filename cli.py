@@ -1378,7 +1378,7 @@ def _resolve_attachment_path(raw_path: str) -> Path | None:
 
 
 def _format_process_notification(evt: dict) -> "str | None":
-    """Format a process notification event into a [SYSTEM: ...] message.
+    """Format a process notification event into a [IMPORTANT: ...] message.
 
     Handles both completion events (notify_on_complete) and watch pattern
     match events from the unified completion_queue.
@@ -1388,14 +1388,14 @@ def _format_process_notification(evt: dict) -> "str | None":
     _cmd = evt.get("command", "unknown")
 
     if evt_type == "watch_disabled":
-        return f"[SYSTEM: {evt.get('message', '')}]"
+        return f"[IMPORTANT: {evt.get('message', '')}]"
 
     if evt_type == "watch_match":
         _pat = evt.get("pattern", "?")
         _out = evt.get("output", "")
         _sup = evt.get("suppressed", 0)
         text = (
-            f"[SYSTEM: Background process {_sid} matched "
+            f"[IMPORTANT: Background process {_sid} matched "
             f"watch pattern \"{_pat}\".\n"
             f"Command: {_cmd}\n"
             f"Matched output:\n{_out}"
@@ -1409,7 +1409,7 @@ def _format_process_notification(evt: dict) -> "str | None":
     _exit = evt.get("exit_code", "?")
     _out = evt.get("output", "")
     return (
-        f"[SYSTEM: Background process {_sid} completed "
+        f"[IMPORTANT: Background process {_sid} completed "
         f"(exit code {_exit}).\n"
         f"Command: {_cmd}\n"
         f"Output:\n{_out}]"
@@ -4915,6 +4915,12 @@ class HermesCLI:
         if self.agent:
             self.agent.session_id = new_session_id
             self.agent.session_start = now
+            # Redirect the JSON session log to the new branch session file so
+            # messages written after branching land in the correct file.
+            if hasattr(self.agent, "session_log_file") and hasattr(self.agent, "logs_dir"):
+                self.agent.session_log_file = (
+                    self.agent.logs_dir / f"session_{new_session_id}.json"
+                )
             self.agent.reset_session_state()
             if hasattr(self.agent, "_last_flushed_db_idx"):
                 self.agent._last_flushed_db_idx = len(self.conversation_history)
@@ -6307,6 +6313,12 @@ class HermesCLI:
         turn_route = self._resolve_turn_agent_config(prompt)
 
         def run_background():
+            set_sudo_password_callback(self._sudo_password_callback)
+            set_approval_callback(self._approval_callback)
+            try:
+                set_secret_capture_callback(self._secret_capture_callback)
+            except Exception:
+                pass
             try:
                 bg_agent = AIAgent(
                     model=turn_route["model"],
@@ -6404,6 +6416,12 @@ class HermesCLI:
                 print()
                 _cprint(f"  ❌ Background task #{task_num} failed: {e}")
             finally:
+                try:
+                    set_sudo_password_callback(None)
+                    set_approval_callback(None)
+                    set_secret_capture_callback(None)
+                except Exception:
+                    pass
                 self._background_tasks.pop(task_id, None)
                 # Clear spinner only if no foreground agent owns it
                 if not self._agent_running:
@@ -7217,7 +7235,7 @@ class HermesCLI:
             change_detail = ". ".join(change_parts) + ". " if change_parts else ""
             self.conversation_history.append({
                 "role": "user",
-                "content": f"[SYSTEM: MCP servers have been reloaded. {change_detail}{tool_summary}. The tool list for this conversation has been updated accordingly.]",
+                "content": f"[IMPORTANT: MCP servers have been reloaded. {change_detail}{tool_summary}. The tool list for this conversation has been updated accordingly.]",
             })
 
             # Persist session immediately so the session log reflects the
@@ -9841,7 +9859,7 @@ class HermesCLI:
                 status = cli_ref._command_status or "Processing command..."
                 return f"{frame} {status}"
             if cli_ref._agent_running:
-                return "type a message + Enter to interrupt, Ctrl+C to cancel"
+                return "msg=interrupt · /queue · /bg · /steer · Ctrl+C cancel"
             if cli_ref._voice_mode:
                 return "type or Ctrl+B to record"
             return ""

@@ -592,20 +592,20 @@ def _parse_session_key(session_key: str) -> "dict | None":
 
 
 def _format_gateway_process_notification(evt: dict) -> "str | None":
-    """Format a watch pattern event from completion_queue into a [SYSTEM:] message."""
+    """Format a watch pattern event from completion_queue into a [IMPORTANT:] message."""
     evt_type = evt.get("type", "completion")
     _sid = evt.get("session_id", "unknown")
     _cmd = evt.get("command", "unknown")
 
     if evt_type == "watch_disabled":
-        return f"[SYSTEM: {evt.get('message', '')}]"
+        return f"[IMPORTANT: {evt.get('message', '')}]"
 
     if evt_type == "watch_match":
         _pat = evt.get("pattern", "?")
         _out = evt.get("output", "")
         _sup = evt.get("suppressed", 0)
         text = (
-            f"[SYSTEM: Background process {_sid} matched "
+            f"[IMPORTANT: Background process {_sid} matched "
             f"watch pattern \"{_pat}\".\n"
             f"Command: {_cmd}\n"
             f"Matched output:\n{_out}"
@@ -683,6 +683,16 @@ class GatewayRunner:
         self._running_agents: Dict[str, Any] = {}
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
+        # Overflow buffer for explicit /queue commands.  The adapter-level
+        # _pending_messages dict is a single slot per session (designed for
+        # "next-turn" follow-ups where repeated sends collapse into one
+        # event).  /queue has different semantics: each invocation must
+        # produce its own full agent turn, in FIFO order, with no merging.
+        # When the slot is occupied, additional /queue items land here and
+        # are promoted one-at-a-time after each run's drain.  Cleared on
+        # /new and /reset.  /model and other mid-session operations
+        # preserve the queue.
+        self._queued_events: Dict[str, List[MessageEvent]] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
         self._session_run_generation: Dict[str, int] = {}
 
@@ -1204,6 +1214,76 @@ class GatewayRunner:
 
     def _queue_during_drain_enabled(self) -> bool:
         return self._restart_requested and self._busy_input_mode == "queue"
+
+    # -------- /queue FIFO helpers --------------------------------------
+    # /queue must produce one full agent turn per invocation, in FIFO
+    # order, with no merging.  The adapter's _pending_messages dict is a
+    # single "next-up" slot (shared with photo-burst follow-ups), so we
+    # use it for the head of the queue and an overflow list for the
+    # tail.  Enqueue puts new items in the slot when free, otherwise in
+    # the overflow.  Promotion (called after each run's drain) moves the
+    # next overflow item into the slot so the following recursion picks
+    # it up.  Clearing happens on /new and /reset via
+    # _handle_reset_command.
+
+    def _enqueue_fifo(self, session_key: str, queued_event: "MessageEvent", adapter: Any) -> None:
+        """Append a /queue event to the FIFO chain for a session."""
+        if adapter is None:
+            return
+        pending_slot = getattr(adapter, "_pending_messages", None)
+        if pending_slot is None:
+            return
+        queued_events = getattr(self, "_queued_events", None)
+        if queued_events is None:
+            queued_events = {}
+            self._queued_events = queued_events
+        if session_key in pending_slot:
+            queued_events.setdefault(session_key, []).append(queued_event)
+        else:
+            pending_slot[session_key] = queued_event
+
+    def _promote_queued_event(
+        self,
+        session_key: str,
+        adapter: Any,
+        pending_event: Optional["MessageEvent"],
+    ) -> Optional["MessageEvent"]:
+        """Promote the next overflow item after the slot was drained.
+
+        Called at the drain site after _dequeue_pending_event consumed
+        (or failed to consume) the slot.  If there's an overflow item:
+          - When pending_event is None (slot was empty), return the
+            overflow head as the new pending_event.
+          - When pending_event already exists (slot was populated by an
+            interrupt follow-up or similar), stage the overflow head in
+            the slot so the NEXT recursion picks it up.
+        Returns the (possibly updated) pending_event for drain to use.
+        """
+        queued_events = getattr(self, "_queued_events", None)
+        if not queued_events:
+            return pending_event
+        overflow = queued_events.get(session_key)
+        if not overflow:
+            return pending_event
+        next_queued = overflow.pop(0)
+        if not overflow:
+            queued_events.pop(session_key, None)
+        if pending_event is None:
+            return next_queued
+        if adapter is not None and hasattr(adapter, "_pending_messages"):
+            adapter._pending_messages[session_key] = next_queued
+        else:
+            # No adapter — push back so we don't silently drop the item.
+            queued_events.setdefault(session_key, []).insert(0, next_queued)
+        return pending_event
+
+    def _queue_depth(self, session_key: str, *, adapter: Any = None) -> int:
+        """Total pending /queue items for a session — slot + overflow."""
+        queued_events = getattr(self, "_queued_events", None) or {}
+        depth = len(queued_events.get(session_key, []))
+        if adapter is not None and session_key in getattr(adapter, "_pending_messages", {}):
+            depth += 1
+        return depth
 
     def _update_runtime_status(self, gateway_state: Optional[str] = None, exit_reason: Optional[str] = None) -> None:
         try:
@@ -2343,7 +2423,7 @@ class GatewayRunner:
         # Build initial channel directory for send_message name resolution
         try:
             from gateway.channel_directory import build_channel_directory
-            directory = build_channel_directory(self.adapters)
+            directory = await build_channel_directory(self.adapters)
             ch_count = sum(len(chs) for chs in directory.get("platforms", {}).values())
             logger.info("Channel directory built: %d target(s)", ch_count)
         except Exception as e:
@@ -2627,7 +2707,7 @@ class GatewayRunner:
                         # Rebuild channel directory with the new adapter
                         try:
                             from gateway.channel_directory import build_channel_directory
-                            build_channel_directory(self.adapters)
+                            await build_channel_directory(self.adapters)
                         except Exception:
                             pass
                     else:
@@ -2808,6 +2888,23 @@ class GatewayRunner:
                     logger.error("Failed to launch detached gateway restart: %s", e)
 
             self._finalize_shutdown_agents(active_agents)
+
+            # Also shut down memory providers on idle cached agents.
+            # _finalize_shutdown_agents only handles agents that were
+            # mid-turn at drain time; the _agent_cache may still hold
+            # idle agents whose MemoryProviders never received
+            # on_session_end().
+            _cache_lock = getattr(self, "_agent_cache_lock", None)
+            _cache = getattr(self, "_agent_cache", None)
+            if _cache_lock is not None and _cache is not None:
+                with _cache_lock:
+                    _idle_agents = list(_cache.values())
+                    _cache.clear()
+                for _entry in _idle_agents:
+                    _agent = (
+                        _entry[0] if isinstance(_entry, tuple) else _entry
+                    )
+                    self._cleanup_agent_resources(_agent)
 
             for platform, adapter in list(self.adapters.items()):
                 try:
@@ -3505,7 +3602,10 @@ class GatewayRunner:
                 # doesn't think an agent is still active.
                 return await self._handle_reset_command(event)
 
-            # /queue <prompt> — queue without interrupting
+            # /queue <prompt> — queue without interrupting.
+            # Semantics: each /queue invocation produces its own full agent
+            # turn, processed in FIFO order after the current run (and any
+            # earlier /queue items) finishes.  Messages are NOT merged.
             if event.get_command() in ("queue", "q"):
                 queued_text = event.get_command_args().strip()
                 if not queued_text:
@@ -3519,8 +3619,11 @@ class GatewayRunner:
                         message_id=event.message_id,
                         channel_prompt=event.channel_prompt,
                     )
-                    adapter._pending_messages[_quick_key] = queued_event
-                return "Queued for the next turn."
+                    self._enqueue_fifo(_quick_key, queued_event, adapter)
+                depth = self._queue_depth(_quick_key, adapter=self.adapters.get(source.platform))
+                if depth <= 1:
+                    return "Queued for the next turn."
+                return f"Queued for the next turn. ({depth} queued)"
 
             # /steer <prompt> — inject mid-run after the next tool call.
             # Unlike /queue (turn boundary), /steer lands BETWEEN tool-call
@@ -4321,7 +4424,7 @@ class GatewayRunner:
                     if _loaded:
                         _loaded_skill, _skill_dir, _display_name = _loaded
                         _note = (
-                            f'[SYSTEM: The "{_display_name}" skill is auto-loaded. '
+                            f'[IMPORTANT: The "{_display_name}" skill is auto-loaded. '
                             f"Follow its instructions for this session.]"
                         )
                         _part = _build_skill_message(_loaded_skill, _skill_dir, _note)
@@ -4609,12 +4712,20 @@ class GatewayRunner:
             if not os.getenv(env_key):
                 adapter = self.adapters.get(source.platform)
                 if adapter:
+                    # Slack dispatches all Hermes commands through a single
+                    # parent slash command `/hermes`; bare `/sethome` is not
+                    # registered and would fail with "app did not respond".
+                    sethome_cmd = (
+                        "/hermes sethome"
+                        if source.platform == Platform.SLACK
+                        else "/sethome"
+                    )
                     await adapter.send(
                         source.chat_id,
                         f"📬 No home channel is set for {platform_name.title()}. "
                         f"A home channel is where Hermes delivers cron job results "
                         f"and cross-platform messages.\n\n"
-                        f"Type /sethome to make this chat your home channel, "
+                        f"Type {sethome_cmd} to make this chat your home channel, "
                         f"or ignore to skip."
                     )
         
@@ -5147,6 +5258,13 @@ class GatewayRunner:
                 self._cleanup_agent_resources(_old_agent)
         self._evict_cached_agent(session_key)
 
+        # Discard any /queue overflow for this session — /new is a
+        # conversation-boundary operation, queued follow-ups from the
+        # previous conversation must not bleed into the new one.
+        _qe = getattr(self, "_queued_events", None)
+        if _qe is not None:
+            _qe.pop(session_key, None)
+
         try:
             from tools.env_passthrough import clear_env_passthrough
             clear_env_passthrough()
@@ -5254,6 +5372,10 @@ class GatewayRunner:
         session_key = session_entry.session_key
         is_running = session_key in self._running_agents
 
+        # Count pending /queue follow-ups (slot + overflow).
+        adapter = self.adapters.get(source.platform) if source else None
+        queue_depth = self._queue_depth(session_key, adapter=adapter)
+
         title = None
         if self._session_db:
             try:
@@ -5273,6 +5395,10 @@ class GatewayRunner:
             f"**Last Activity:** {session_entry.updated_at.strftime('%Y-%m-%d %H:%M')}",
             f"**Tokens:** {session_entry.total_tokens:,}",
             f"**Agent Running:** {'Yes ⚡' if is_running else 'No'}",
+        ])
+        if queue_depth:
+            lines.append(f"**Queued follow-ups:** {queue_depth}")
+        lines.extend([
             "",
             f"**Connected Platforms:** {', '.join(connected_platforms)}",
         ])
@@ -7562,7 +7688,7 @@ class GatewayRunner:
             change_detail = ". ".join(change_parts) + ". " if change_parts else ""
             reload_msg = {
                 "role": "user",
-                "content": f"[SYSTEM: MCP servers have been reloaded. {change_detail}{tool_summary}. The tool list for this conversation has been updated accordingly.]",
+                "content": f"[IMPORTANT: MCP servers have been reloaded. {change_detail}{tool_summary}. The tool list for this conversation has been updated accordingly.]",
             }
             try:
                 session_entry = self.session_store.get_or_create_session(event.source)
@@ -8501,7 +8627,7 @@ class GatewayRunner:
                     from tools.ansi_strip import strip_ansi
                     _out = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
                     synth_text = (
-                        f"[SYSTEM: Background process {session_id} completed "
+                        f"[IMPORTANT: Background process {session_id} completed "
                         f"(exit code {session.exit_code}).\n"
                         f"Command: {session.command}\n"
                         f"Output:\n{_out}]"
@@ -8810,6 +8936,25 @@ class GatewayRunner:
         if _lock:
             with _lock:
                 self._agent_cache.pop(session_key, None)
+
+    @staticmethod
+    def _init_cached_agent_for_turn(agent: Any, interrupt_depth: int) -> None:
+        """Reset per-turn state on a cached agent before a new turn starts.
+
+        Both _last_activity_ts and _last_activity_desc are only reset for
+        fresh external turns (depth 0); they are semantically paired —
+        desc describes the activity *at* ts, so updating one without the
+        other would make get_activity_summary() misleading.
+        For interrupt-recursive turns both are preserved so the inactivity
+        watchdog can accumulate stuck-turn idle time and fire the 30-min
+        timeout (#15654).  The depth-0 reset is still needed: a session
+        idle for 29 min would otherwise trip the watchdog before the new
+        turn makes its first API call (#9051).
+        """
+        if interrupt_depth == 0:
+            agent._last_activity_ts = time.time()
+            agent._last_activity_desc = "starting new turn (cached)"
+        agent._api_call_count = 0
 
     def _release_evicted_agent_soft(self, agent: Any) -> None:
         """Soft cleanup for cache-evicted agents — preserves session tool state.
@@ -9855,12 +10000,7 @@ class GatewayRunner:
                                 _cache.move_to_end(session_key)
                             except KeyError:
                                 pass
-                        # Reset activity timestamp so the inactivity timeout
-                        # handler doesn't see stale idle time from the previous
-                        # turn and immediately kill this agent.  (#9051)
-                        agent._last_activity_ts = time.time()
-                        agent._last_activity_desc = "starting new turn (cached)"
-                        agent._api_call_count = 0
+                        self._init_cached_agent_for_turn(agent, _interrupt_depth)
                         logger.debug("Reusing cached agent for session %s", session_key)
 
             if agent is None:
@@ -10648,6 +10788,13 @@ class GatewayRunner:
             pending = None
             if result and adapter and session_key:
                 pending_event = _dequeue_pending_event(adapter, session_key)
+                # /queue overflow: after consuming the adapter's "next-up"
+                # slot, promote the next queued event into it so the
+                # recursive run's drain will see it.  This keeps the slot
+                # occupied for the full FIFO chain, which (a) preserves
+                # order, and (b) causes any mid-chain /queue to correctly
+                # route to overflow rather than jumping the queue.
+                pending_event = self._promote_queued_event(session_key, adapter, pending_event)
                 if result.get("interrupted") and not pending_event and result.get("interrupt_message"):
                     interrupt_message = result.get("interrupt_message")
                     if _is_control_interrupt_message(interrupt_message):
@@ -10943,7 +11090,15 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
         if tick_count % CHANNEL_DIR_EVERY == 0 and adapters:
             try:
                 from gateway.channel_directory import build_channel_directory
-                build_channel_directory(adapters)
+                if loop is not None:
+                    # build_channel_directory is async (Slack web calls), and
+                    # this ticker runs in a background thread. Schedule onto
+                    # the gateway event loop and wait briefly for completion
+                    # so refresh failures are still logged via the except.
+                    fut = asyncio.run_coroutine_threadsafe(
+                        build_channel_directory(adapters), loop
+                    )
+                    fut.result(timeout=30)
             except Exception as e:
                 logger.debug("Channel directory refresh error: %s", e)
 
