@@ -45,6 +45,14 @@ FEISHU_DOC_READ_SCHEMA = {
                 "type": "string",
                 "description": "The document token (from the document URL or comment context).",
             },
+            "use_uat": {
+                "type": "boolean",
+                "description": (
+                    "If true, use user_access_token (UAT) identity instead of "
+                    "tenant identity. Requires a valid UAT on disk."
+                ),
+                "default": False,
+            },
         },
         "required": ["doc_token"],
     },
@@ -64,29 +72,59 @@ def _handle_feishu_doc_read(args: dict, **kwargs) -> str:
     if not doc_token:
         return tool_error("doc_token is required")
 
-    client = get_client()
-    if client is None:
-        return tool_error("Feishu client not available (not in a Feishu comment context)")
+    use_uat = bool(args.get("use_uat", False))
 
     try:
-        from lark_oapi import AccessTokenType
+        from lark_oapi import AccessTokenType, RequestOption
         from lark_oapi.core.enum import HttpMethod
         from lark_oapi.core.model.base_request import BaseRequest
     except ImportError:
         return tool_error("lark_oapi not installed")
 
-    request = (
-        BaseRequest.builder()
-        .http_method(HttpMethod.GET)
-        .uri(_RAW_CONTENT_URI)
-        .token_types({AccessTokenType.TENANT})
-        .paths({"document_id": doc_token})
-        .build()
-    )
+    if use_uat:
+        # UAT path: build client from disk token
+        try:
+            from tools.feishu_oapi_client import FeishuClient, NeedAuthorizationError
+        except ImportError:
+            return tool_error("feishu_oapi_client not available")
+        try:
+            fc = FeishuClient.for_user()
+        except NeedAuthorizationError as exc:
+            return tool_error(f"UAT not available: {exc}")
+        except ValueError as exc:
+            return tool_error(f"Feishu client config error: {exc}")
 
-    # Tool handlers run synchronously in a worker thread (no running event
-    # loop), so call the blocking lark client directly.
-    response = client.request(request)
+        request = (
+            BaseRequest.builder()
+            .http_method(HttpMethod.GET)
+            .uri(_RAW_CONTENT_URI)
+            .token_types({AccessTokenType.USER})
+            .paths({"document_id": doc_token})
+            .build()
+        )
+        opt = (
+            RequestOption.builder()
+            .user_access_token(fc.access_token)
+            .build()
+        )
+        response = fc.sdk.request(request, opt)
+    else:
+        # Tenant path: use thread-local client (original behaviour)
+        client = get_client()
+        if client is None:
+            return tool_error("Feishu client not available (not in a Feishu comment context)")
+
+        request = (
+            BaseRequest.builder()
+            .http_method(HttpMethod.GET)
+            .uri(_RAW_CONTENT_URI)
+            .token_types({AccessTokenType.TENANT})
+            .paths({"document_id": doc_token})
+            .build()
+        )
+        # Tool handlers run synchronously in a worker thread (no running event
+        # loop), so call the blocking lark client directly.
+        response = client.request(request)
 
     code = getattr(response, "code", None)
     if code != 0:
