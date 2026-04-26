@@ -3232,6 +3232,7 @@ class AIAgent:
                         platform=self.platform,
                         provider=self.provider,
                         parent_session_id=self.session_id,
+                        enabled_toolsets=["memory", "skills"],
                     )
                     review_agent._memory_write_origin = "background_review"
                     review_agent._memory_write_context = "background_review"
