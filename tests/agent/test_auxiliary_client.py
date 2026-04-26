@@ -746,6 +746,26 @@ class TestReadConfigFallbackProviders:
             result = _read_config_fallback_providers()
         assert result == []
 
+    def test_includes_legacy_fallback_model(self):
+        cfg = {
+            "fallback_providers": [],
+            "fallback_model": {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+        }
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            result = _read_config_fallback_providers()
+        assert len(result) == 1
+        assert result[0]["provider"] == "openrouter"
+        assert result[0]["model"] == "anthropic/claude-sonnet-4"
+
+    def test_ignores_malformed_fallback_model(self):
+        cfg = {
+            "fallback_providers": [],
+            "fallback_model": {"provider": "openrouter"},  # missing model
+        }
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            result = _read_config_fallback_providers()
+        assert result == []
+
 
 class TestGetProviderChain:
     """_get_provider_chain() resolves functions at call time (testable)."""
@@ -829,16 +849,33 @@ class TestTryPaymentFallback:
         assert label == "deepseek-v4"
 
     def test_skips_config_fallback_provider_matching_failed_provider(self):
-        """Don't retry the same provider that already failed."""
-        mock_or = MagicMock()
-        fb_entries = [{"provider": "openai-codex", "model": "gpt-5-codex"}]
-        with patch("agent.auxiliary_client._try_openrouter", return_value=(mock_or, "gpt-4o")), \
-             patch("agent.auxiliary_client._read_main_provider", return_value="openai-codex"), \
-             patch("agent.auxiliary_client._read_config_fallback_providers", return_value=fb_entries):
-            client, model, label = _try_payment_fallback("openai-codex", task="compression")
-        # Should have found openrouter first, not tried the config fallback
-        assert client is mock_or
-        assert label == "openrouter"
+        """Don't retry the same provider (or its alias) that already failed."""
+        mock_client = MagicMock()
+        wrong_client = MagicMock()
+        # "codex" failed → skip_chain_labels contains "openai-codex" via alias mapping.
+        # A config entry with provider="openai-codex" must therefore be skipped.
+        fb_entries = [
+            {"provider": "openai-codex", "model": "gpt-5-codex"},  # alias match — must skip
+            {"provider": "deepseek", "model": "deepseek-v4-flash"},  # different — must succeed
+        ]
+
+        def _fake_resolve(provider, model):
+            if provider == "openai-codex":
+                return (wrong_client, "gpt-5-codex")
+            return (mock_client, "deepseek-v4-flash")
+
+        with patch("agent.auxiliary_client._try_openrouter", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_nous", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_codex", return_value=(None, None)), \
+             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)), \
+             patch("agent.auxiliary_client._read_main_provider", return_value="codex"), \
+             patch("agent.auxiliary_client._read_config_fallback_providers", return_value=fb_entries), \
+             patch("agent.auxiliary_client.resolve_provider_client", side_effect=_fake_resolve):
+            client, model, label = _try_payment_fallback("codex", task="compression")
+        assert client is mock_client
+        assert model == "deepseek-v4-flash"
+        assert label == "deepseek"
 
 
 class TestCallLlmPaymentFallback:

@@ -1471,19 +1471,23 @@ def _refresh_provider_credentials(provider: str) -> bool:
 
 
 def _read_config_fallback_providers() -> List[Dict[str, Any]]:
-    """Read user-configured fallback_providers from config.yaml.
+    """Read user-configured fallback providers from config.yaml.
 
-    Returns the list of dicts with at least 'provider' and 'model' keys,
-    skipping any malformed entries.
+    Reads both ``fallback_providers`` (list) and the legacy ``fallback_model``
+    (single-entry dict), returning a combined list of valid entries.
     """
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
         entries = cfg.get("fallback_providers") or []
-        return [
+        result = [
             p for p in entries
             if isinstance(p, dict) and p.get("provider") and p.get("model")
         ]
+        fb = cfg.get("fallback_model")
+        if isinstance(fb, dict) and fb.get("provider") and fb.get("model"):
+            result.append(fb)
+        return result
     except Exception:
         return []
 
@@ -1534,7 +1538,8 @@ def _try_payment_fallback(
     for fb_entry in _read_config_fallback_providers():
         fb_provider = str(fb_entry.get("provider", "")).strip()
         fb_model = str(fb_entry.get("model", "")).strip()
-        if not fb_provider or fb_provider.lower() in skip_labels:
+        _fb_lower = fb_provider.lower()
+        if not fb_provider or _fb_lower in skip_labels or _alias_to_label.get(_fb_lower, _fb_lower) in skip_chain_labels:
             tried.append(fb_provider)
             continue
         try:
