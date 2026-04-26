@@ -1265,18 +1265,21 @@ class TestIsStaleConnectionError:
     """Classifier that decides whether an exception warrants client eviction."""
 
     def test_detects_botocore_connection_closed_error(self):
+        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
         from agent.bedrock_adapter import is_stale_connection_error
         from botocore.exceptions import ConnectionClosedError
         exc = ConnectionClosedError(endpoint_url="https://bedrock.example")
         assert is_stale_connection_error(exc) is True
 
     def test_detects_botocore_endpoint_connection_error(self):
+        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
         from agent.bedrock_adapter import is_stale_connection_error
         from botocore.exceptions import EndpointConnectionError
         exc = EndpointConnectionError(endpoint_url="https://bedrock.example")
         assert is_stale_connection_error(exc) is True
 
     def test_detects_botocore_read_timeout(self):
+        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
         from agent.bedrock_adapter import is_stale_connection_error
         from botocore.exceptions import ReadTimeoutError
         exc = ReadTimeoutError(endpoint_url="https://bedrock.example")
@@ -1337,6 +1340,7 @@ class TestCallConverseInvalidatesOnStaleError:
     reconnects instead of reusing the dead socket."""
 
     def test_converse_evicts_client_on_stale_error(self):
+        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
         from agent.bedrock_adapter import (
             _bedrock_runtime_client_cache,
             call_converse,
@@ -1363,6 +1367,7 @@ class TestCallConverseInvalidatesOnStaleError:
         )
 
     def test_converse_stream_evicts_client_on_stale_error(self):
+        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
         from agent.bedrock_adapter import (
             _bedrock_runtime_client_cache,
             call_converse_stream,
@@ -1388,6 +1393,7 @@ class TestCallConverseInvalidatesOnStaleError:
 
     def test_converse_does_not_evict_on_non_stale_error(self):
         """Non-stale errors (e.g. ValidationException) leave the client cache alone."""
+        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
         from agent.bedrock_adapter import (
             _bedrock_runtime_client_cache,
             call_converse,
