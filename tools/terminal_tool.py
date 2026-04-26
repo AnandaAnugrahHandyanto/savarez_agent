@@ -1342,6 +1342,13 @@ _LONG_LIVED_FOREGROUND_PATTERNS = (
     re.compile(r"\bgunicorn\b", re.IGNORECASE),
     re.compile(r"\bpython(?:3)?\s+-m\s+http\.server\b", re.IGNORECASE),
 )
+_GATEWAY_OFFLOAD_PATTERNS = (
+    re.compile(r"\bcolgrep\s+search\b", re.IGNORECASE),
+    re.compile(r"\bpaper_benchmark_runner[_\w.-]*\.py\b", re.IGNORECASE),
+    re.compile(r"\bbenchmark(?:s|ing)?\b", re.IGNORECASE),
+    re.compile(r"\b(?:cuda|cudnn|cublas|ld_library_path|hf_home)\b", re.IGNORECASE),
+    re.compile(r"\b(?:python|python3)\b.*\.omx/metrics/", re.IGNORECASE),
+)
 
 
 def _looks_like_help_or_version_command(command: str) -> bool:
@@ -1352,6 +1359,28 @@ def _looks_like_help_or_version_command(command: str) -> bool:
         or normalized.endswith(" -h")
         or " --version" in normalized
         or normalized.endswith(" -v")
+    )
+
+
+def _gateway_local_offload_guidance(command: str, env_type: str) -> str | None:
+    """Require offload_job for gateway-local commands likely to stress memory/GPU."""
+    if env_type != "local" or not os.getenv("HERMES_GATEWAY_SESSION"):
+        return None
+    if os.getenv("HERMES_ALLOW_INLINE_HEAVY_TERMINAL"):
+        return None
+    if _looks_like_help_or_version_command(command):
+        return None
+
+    matches = sum(1 for pattern in _GATEWAY_OFFLOAD_PATTERNS if pattern.search(command))
+    if matches < 2 and not re.search(r"\bcolgrep\s+search\b", command, re.IGNORECASE):
+        return None
+
+    return (
+        "Gateway-local terminal execution refused: this command looks like a "
+        "heavy benchmark/model/GPU workload and must not run inside "
+        "hermes-gateway.service. Use offload_job(action='start', command=..., "
+        "workdir=..., memory_max='32G', cpu_quota='800%', timeout=...) instead, "
+        "then poll offload_job(action='status'/'tail')."
     )
 
 
@@ -1495,6 +1524,15 @@ def terminal_tool(
         cwd = overrides.get("cwd") or config["cwd"]
         default_timeout = config["timeout"]
         effective_timeout = timeout or default_timeout
+
+        offload_guidance = _gateway_local_offload_guidance(command, env_type)
+        if offload_guidance:
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": offload_guidance,
+                "status": "offload_required",
+            }, ensure_ascii=False)
 
         # Reject foreground commands where the model explicitly requests
         # a timeout above FOREGROUND_MAX_TIMEOUT — nudge it toward background.
