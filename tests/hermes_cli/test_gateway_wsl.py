@@ -142,7 +142,7 @@ class TestSupportsSystemdServicesWSL:
         assert gateway.supports_systemd_services() is False
 
     def test_native_linux(self, monkeypatch):
-        """Native Linux (not WSL) → True without checking systemd."""
+        """Native Linux (not WSL, not container) → True when systemctl is found on PATH."""
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr(gateway, "is_wsl", lambda: False)
