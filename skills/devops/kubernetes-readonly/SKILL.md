@@ -75,4 +75,4 @@ On missing kubectl:
 ## When **not** to use it
 
 - Any operation that changes cluster state (use human-approved workflows outside this skill).
-- Untrusted multi-tenant clusters where even read access is sensitive — confirm with the user first.
+- Untrusted multi-tenant clusters where even read access is sensitive: confirm with the user first.
