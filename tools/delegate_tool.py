@@ -1048,6 +1048,8 @@ def _build_child_agent(
         provider_sort=parent_agent.provider_sort,
         tool_progress_callback=child_progress_cb,
         iteration_budget=None,  # fresh budget per subagent
+        fallback_model=getattr(parent_agent, "_fallback_chain", None)
+        or getattr(parent_agent, "_fallback_model", None),
     )
     child._print_fn = getattr(parent_agent, "_print_fn", None)
     # Set delegation depth so children can't spawn grandchildren
