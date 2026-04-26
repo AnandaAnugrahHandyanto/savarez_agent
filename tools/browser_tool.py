@@ -200,6 +200,46 @@ def _get_command_timeout() -> int:
     return result
 
 
+_cached_headed: Optional[bool] = None
+_headed_resolved = False
+
+
+def _get_headed() -> bool:
+    """Return whether the local browser should run in headed (visible) mode.
+
+    Checks ``config["browser"]["headed"]`` first.  The ``AGENT_BROWSER_HEADED``
+    environment variable takes precedence over the config value when set.
+    Both accept truthy values (``true``, ``1``, ``yes``).  Defaults to
+    ``False`` (headless).  Only meaningful for local browser mode — cloud
+    providers and Camofox are unaffected.
+    """
+    global _cached_headed, _headed_resolved
+    if _headed_resolved:
+        return _cached_headed
+
+    _headed_resolved = True
+    result = False
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        val = cfg.get("browser", {}).get("headed")
+        if val is not None:
+            if isinstance(val, bool):
+                result = val
+            else:
+                result = str(val).lower() in ("true", "1", "yes")
+    except Exception as e:
+        logger.debug("Could not read headed from config: %s", e)
+
+    # Env var overrides config if set
+    env_val = os.environ.get("AGENT_BROWSER_HEADED", "").strip()
+    if env_val:
+        result = env_val.lower() in ("true", "1", "yes")
+
+    _cached_headed = result
+    return result
+
+
 def _get_vision_model() -> Optional[str]:
     """Model for browser_vision (screenshot analysis — multimodal)."""
     return os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
@@ -1248,8 +1288,10 @@ def _run_browser_command(
         # --session creates a local browser instance and silently ignores --cdp.
         backend_args = ["--cdp", session_info["cdp_url"]]
     else:
-        # Local mode — launch a headless Chromium instance
+        # Local mode — launch a headless (or headed) Chromium instance
         backend_args = ["--session", session_info["session_name"]]
+        if _get_headed():
+            backend_args.append("--headed")
 
     # Keep concrete executable paths intact, even when they contain spaces.
     # Only the synthetic npx fallback needs to expand into multiple argv items.
@@ -2460,6 +2502,10 @@ def cleanup_all_browsers() -> None:
     _discover_homebrew_node_dirs.cache_clear()
     _cached_command_timeout = None
     _command_timeout_resolved = False
+
+    global _cached_headed, _headed_resolved
+    _cached_headed = None
+    _headed_resolved = False
 
 
 # ============================================================================

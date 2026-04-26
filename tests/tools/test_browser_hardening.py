@@ -18,6 +18,8 @@ def _reset_caches():
     bt._agent_browser_resolved = False
     bt._cached_command_timeout = None
     bt._command_timeout_resolved = False
+    bt._cached_headed = None
+    bt._headed_resolved = False
     # lru_cache for _discover_homebrew_node_dirs
     if hasattr(bt._discover_homebrew_node_dirs, "cache_clear"):
         bt._discover_homebrew_node_dirs.cache_clear()
@@ -114,6 +116,66 @@ class TestCommandTimeoutCache:
             _get_command_timeout()
             _get_command_timeout()
         mock_read.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Caching: _get_headed
+# ---------------------------------------------------------------------------
+
+class TestHeadedCache:
+
+    def test_default_is_false(self):
+        from tools.browser_tool import _get_headed
+        with patch("hermes_cli.config.read_raw_config", return_value={}):
+            assert _get_headed() is False
+
+    def test_reads_from_config_bool_true(self):
+        from tools.browser_tool import _get_headed
+        cfg = {"browser": {"headed": True}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _get_headed() is True
+
+    def test_reads_from_config_string_truthy(self):
+        from tools.browser_tool import _get_headed
+        cfg = {"browser": {"headed": "yes"}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _get_headed() is True
+
+    def test_env_var_overrides_config(self):
+        from tools.browser_tool import _get_headed
+        cfg = {"browser": {"headed": True}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg), \
+             patch.dict(os.environ, {"AGENT_BROWSER_HEADED": "false"}):
+            assert _get_headed() is False
+
+    def test_env_var_truthy_values(self):
+        from tools.browser_tool import _get_headed
+        for val in ("true", "1", "yes"):
+            with patch("hermes_cli.config.read_raw_config", return_value={}), \
+                 patch.dict(os.environ, {"AGENT_BROWSER_HEADED": val}):
+                assert _get_headed() is True, f"Expected True for AGENT_BROWSER_HEADED={val}"
+
+    def test_env_var_falsy_values(self):
+        from tools.browser_tool import _get_headed
+        for val in ("false", "0", "no", "random"):
+            with patch("hermes_cli.config.read_raw_config", return_value={}), \
+                 patch.dict(os.environ, {"AGENT_BROWSER_HEADED": val}):
+                assert _get_headed() is False, f"Expected False for AGENT_BROWSER_HEADED={val}"
+
+    def test_cached_after_first_call(self):
+        from tools.browser_tool import _get_headed
+        mock_read = MagicMock(return_value={"browser": {"headed": True}})
+        with patch("hermes_cli.config.read_raw_config", mock_read):
+            _get_headed()
+            _get_headed()
+        mock_read.assert_called_once()
+
+    def test_cache_cleared_by_cleanup(self):
+        import tools.browser_tool as bt
+        bt._cached_headed = True
+        bt._headed_resolved = True
+        bt.cleanup_all_browsers()
+        assert bt._headed_resolved is False
 
 
 # ---------------------------------------------------------------------------

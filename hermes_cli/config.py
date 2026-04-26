@@ -465,6 +465,7 @@ DEFAULT_CONFIG = {
         "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
         "allow_private_urls": False,  # Allow navigating to private/internal IPs (localhost, 192.168.x.x, etc.)
+        "headed": False,  # Run local browser in headed (visible window) mode instead of headless
         "cdp_url": "",  # Optional persistent CDP endpoint for attaching to an existing Chromium/Chrome
         # CDP supervisor — dialog + frame detection via a persistent WebSocket.
         # Active only when a CDP-capable backend is attached (Browserbase or
@@ -1495,6 +1496,13 @@ OPTIONAL_ENV_VARS = {
         "description": "Camofox browser server URL for local anti-detection browsing (e.g. http://localhost:9377)",
         "prompt": "Camofox server URL",
         "url": "https://github.com/jo-inc/camofox-browser",
+        "tools": ["browser_navigate", "browser_click"],
+        "password": False,
+        "category": "tool",
+    },
+    "AGENT_BROWSER_HEADED": {
+        "description": "Run local browser in headed (visible window) mode instead of headless (default: false)",
+        "prompt": "Run browser in headed mode (true/false)",
         "tools": ["browser_navigate", "browser_click"],
         "password": False,
         "category": "tool",
