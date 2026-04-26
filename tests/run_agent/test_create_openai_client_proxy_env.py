@@ -187,3 +187,29 @@ def test_create_openai_client_skips_keepalive_injection_for_codex_base_url(mock_
         "Expected no custom http_client injection for Codex base_url; got %r"
         % (forwarded.get("http_client"),)
     )
+
+
+@patch("run_agent.OpenAI")
+def test_create_openai_client_preserves_timeout_for_regular_openai_endpoints(mock_openai, monkeypatch):
+    """Timeout must be forwarded even when keepalive http_client is injected."""
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                "https_proxy", "http_proxy", "all_proxy"):
+        monkeypatch.delenv(key, raising=False)
+
+    agent = _make_agent(
+        base_url="https://api.openai.com/v1",
+        provider="openai",
+        model="gpt-4o-mini",
+    )
+    kwargs = {
+        "api_key": "***",
+        "base_url": "https://api.openai.com/v1",
+        "timeout": 300.0,
+    }
+    agent._create_openai_client(kwargs, reason="test", shared=False)
+
+    forwarded = mock_openai.call_args.kwargs
+    assert forwarded.get("timeout") == 300.0, (
+        "Expected timeout to be preserved when injecting keepalive http_client; "
+        "got %r" % (forwarded.get("timeout"),)
+    )
