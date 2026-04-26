@@ -145,7 +145,7 @@ def _find_whisper_binary() -> Optional[str]:
     return _find_binary("whisper")
 
 
-def _get_local_command_template() -> Optional[str]:
+def _get_local_command_template(stt_config: Optional[dict] = None) -> Optional[str]:
     # HERMES_LOCAL_STT_COMMAND env var wins so deploy-time overrides work.
     configured = os.getenv(LOCAL_STT_COMMAND_ENV, "").strip()
     if configured:
@@ -153,7 +153,9 @@ def _get_local_command_template() -> Optional[str]:
 
     # Fall back to stt.local_command.command in config.yaml so users can set
     # the wrapper path without needing a separate shell environment.
-    config_command = _load_stt_config().get("local_command", {}).get("command", "").strip()
+    cfg = stt_config if stt_config is not None else _load_stt_config()
+    raw_command = cfg.get("local_command", {}).get("command")
+    config_command = raw_command.strip() if isinstance(raw_command, str) else ""
     if config_command:
         return config_command
 
@@ -470,7 +472,10 @@ def _prepare_local_audio(file_path: str, work_dir: str) -> tuple[Optional[str], 
 
 def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]:
     """Run the configured local STT command template and read back a .txt transcript."""
-    command_template = _get_local_command_template()
+    # Load config once and share with _get_local_command_template to avoid
+    # two load_config() calls per transcription request.
+    _stt_cfg = _load_stt_config()
+    command_template = _get_local_command_template(_stt_cfg)
     if not command_template:
         return {
             "success": False,
@@ -481,7 +486,6 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
         }
 
     # Language: stt.local_command.language > stt.local.language > env var > default.
-    _stt_cfg = _load_stt_config()
     language = (
         _stt_cfg.get("local_command", {}).get("language")
         or _stt_cfg.get("local", {}).get("language")
