@@ -1,0 +1,45 @@
+version: "3.8"
+
+services:
+  miles:
+    image: ghcr.io/kelsi-bizer/miles-agent:latest
+    container_name: miles
+    restart: unless-stopped
+    environment:
+      - ARCEE_API_KEY=${ARCEE_API_KEY}
+      - ARCEE_BASE_URL=https://api.arcee.ai/v1
+      - ARCEE_MODEL=arcee-trinity
+      - API_SERVER_HOST=0.0.0.0
+      - API_SERVER_PORT=8642
+      - API_SERVER_KEY=${API_SERVER_KEY}
+      - MILES_HOME=/opt/data
+      - HERMES_HOME=/opt/data
+      - MILES_UID=1000
+      - MILES_GID=1000
+    volumes:
+      - ${APP_DATA_DIR}/data:/opt/data
+    ports:
+      - ${APP_PORT}:8642
+    networks:
+      - tipi_main_network
+    labels:
+      traefik.enable: true
+      traefik.http.middlewares.miles-web-redirect.redirectscheme.scheme: https
+      traefik.http.services.miles.loadbalancer.server.port: 8642
+      # HTTP entry — redirected to HTTPS by the middleware above.
+      traefik.http.routers.miles-insecure.rule: Host(`${APP_DOMAIN}`)
+      traefik.http.routers.miles-insecure.entrypoints: web
+      traefik.http.routers.miles-insecure.service: miles
+      traefik.http.routers.miles-insecure.middlewares: miles-web-redirect
+      # HTTPS entry.
+      traefik.http.routers.miles.rule: Host(`${APP_DOMAIN}`)
+      traefik.http.routers.miles.entrypoints: websecure
+      traefik.http.routers.miles.service: miles
+      traefik.http.routers.miles.tls.certresolver: myresolver
+      runtipi.managed: true
+    command: ["gateway", "run"]
+
+networks:
+  tipi_main_network:
+    name: runtipi_tipi_main_network
+    external: true

@@ -170,7 +170,15 @@ class DirectAlias(NamedTuple):
 
 
 # Built-in direct aliases (can be extended via config.yaml model_aliases:)
-_BUILTIN_DIRECT_ALIASES: dict[str, DirectAlias] = {}
+_BUILTIN_DIRECT_ALIASES: dict[str, DirectAlias] = {
+    # Miles default — points "arcee-trinity" at the Trinity Mini chat model
+    # via Arcee's OpenAI-compatible endpoint.
+    "arcee-trinity": DirectAlias(
+        model="trinity-mini",
+        provider="arcee",
+        base_url="https://api.arcee.ai/v1",
+    ),
+}
 
 # Merged dict (builtins + user config); populated by _load_direct_aliases()
 DIRECT_ALIASES: dict[str, DirectAlias] = {}

@@ -220,8 +220,8 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         id="arcee",
         name="Arcee AI",
         auth_type="api_key",
-        inference_base_url="https://api.arcee.ai/api/v1",
-        api_key_env_vars=("ARCEEAI_API_KEY",),
+        inference_base_url="https://api.arcee.ai/v1",
+        api_key_env_vars=("ARCEE_API_KEY", "ARCEEAI_API_KEY"),
         base_url_env_var="ARCEE_BASE_URL",
     ),
     "minimax": ProviderConfig(

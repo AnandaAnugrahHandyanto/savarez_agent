@@ -1,0 +1,12 @@
+#!/usr/bin/env python3
+"""
+Miles CLI launcher (BizerOS AI agent).
+
+Mirrors the installed `miles` command, including subcommands such as
+`gateway`, `cron`, and `doctor`. The legacy `hermes` script is kept as
+an alias for backward compatibility.
+"""
+
+if __name__ == "__main__":
+    from hermes_cli.main import main
+    main()

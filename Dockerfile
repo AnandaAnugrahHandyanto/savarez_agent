@@ -7,23 +7,26 @@ ENV PYTHONUNBUFFERED=1
 
 # Store Playwright browsers outside the volume mount so the build-time
 # install survives the /opt/data volume overlay at runtime.
-ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/miles/.playwright
 
 # Install system dependencies in one layer, clear APT cache
 # tini reaps orphaned zombie processes (MCP stdio subprocesses, git, bun, etc.)
-# that would otherwise accumulate when hermes runs as PID 1. See #15012.
+# that would otherwise accumulate when miles runs as PID 1.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         build-essential nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps git openssh-client docker-cli tini && \
     rm -rf /var/lib/apt/lists/*
 
-# Non-root user for runtime; UID can be overridden via HERMES_UID at runtime
+# Non-root user for runtime; UID can be overridden via MILES_UID (or HERMES_UID
+# legacy alias) at runtime. The internal account is named "hermes" purely
+# because the entrypoint and supporting Python code reference that user; this
+# is an internal detail and not user-facing.
 RUN useradd -u 10000 -m -d /opt/data hermes
 
 COPY --chmod=0755 --from=gosu_source /gosu /usr/local/bin/
 COPY --chmod=0755 --from=uv_source /usr/local/bin/uv /usr/local/bin/uvx /usr/local/bin/
 
-WORKDIR /opt/hermes
+WORKDIR /opt/miles
 
 # ---------- Layer-cached dependency install ----------
 # Copy only package manifests first so npm install + Playwright are cached
@@ -44,20 +47,28 @@ COPY --chown=hermes:hermes . .
 RUN cd web && npm run build
 
 # ---------- Permissions ----------
-# Make install dir world-readable so any HERMES_UID can read it at runtime.
+# Make install dir world-readable so any MILES_UID can read it at runtime.
 # The venv needs to be traversable too.
 USER root
-RUN chmod -R a+rX /opt/hermes
+RUN chmod -R a+rX /opt/miles
 # Start as root so the entrypoint can usermod/groupmod + gosu.
-# If HERMES_UID is unset, the entrypoint drops to the default hermes user (10000).
+# If MILES_UID is unset, the entrypoint drops to the default runtime user (10000).
 
 # ---------- Python virtualenv ----------
 RUN uv venv && \
     uv pip install --no-cache-dir -e ".[all]"
 
 # ---------- Runtime ----------
-ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
+# MILES_* are the canonical env vars; HERMES_* aliases are exported for
+# backward compatibility with code paths still reading the legacy names.
+ENV MILES_WEB_DIST=/opt/miles/hermes_cli/web_dist
+ENV HERMES_WEB_DIST=/opt/miles/hermes_cli/web_dist
+ENV MILES_HOME=/opt/data
 ENV HERMES_HOME=/opt/data
 ENV PATH="/opt/data/.local/bin:${PATH}"
+
+# OpenAI-compatible API server (default Miles entry point for Runtipi).
+EXPOSE 8642
+
 VOLUME [ "/opt/data" ]
-ENTRYPOINT [ "/usr/bin/tini", "-g", "--", "/opt/hermes/docker/entrypoint.sh" ]
+ENTRYPOINT [ "/usr/bin/tini", "-g", "--", "/opt/miles/docker/entrypoint.sh" ]

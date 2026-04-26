@@ -1,22 +1,27 @@
 #!/bin/bash
-# Docker/Podman entrypoint: bootstrap config files into the mounted volume, then run hermes.
+# Docker/Podman entrypoint: bootstrap config files into the mounted volume, then run miles.
 set -e
 
-HERMES_HOME="${HERMES_HOME:-/opt/data}"
-INSTALL_DIR="/opt/hermes"
+# MILES_* env vars are canonical; HERMES_* are honored as legacy aliases.
+HERMES_HOME="${MILES_HOME:-${HERMES_HOME:-/opt/data}}"
+HERMES_UID="${MILES_UID:-${HERMES_UID:-}}"
+HERMES_GID="${MILES_GID:-${HERMES_GID:-}}"
+export HERMES_HOME MILES_HOME="${MILES_HOME:-$HERMES_HOME}"
+INSTALL_DIR="/opt/miles"
 
 # --- Privilege dropping via gosu ---
 # When started as root (the default for Docker, or fakeroot in rootless Podman),
-# optionally remap the hermes user/group to match host-side ownership, fix volume
-# permissions, then re-exec as hermes.
+# optionally remap the runtime user/group to match host-side ownership, fix
+# volume permissions, then re-exec as that user. The internal account is
+# named "hermes" — that's an implementation detail of the upstream fork.
 if [ "$(id -u)" = "0" ]; then
     if [ -n "$HERMES_UID" ] && [ "$HERMES_UID" != "$(id -u hermes)" ]; then
-        echo "Changing hermes UID to $HERMES_UID"
+        echo "Changing runtime UID to $HERMES_UID"
         usermod -u "$HERMES_UID" hermes
     fi
 
     if [ -n "$HERMES_GID" ] && [ "$HERMES_GID" != "$(id -g hermes)" ]; then
-        echo "Changing hermes GID to $HERMES_GID"
+        echo "Changing runtime GID to $HERMES_GID"
         # -o allows non-unique GID (e.g. macOS GID 20 "staff" may already exist
         # as "dialout" in the Debian-based container image)
         groupmod -o -g "$HERMES_GID" hermes 2>/dev/null || true
@@ -33,7 +38,7 @@ if [ "$(id -u)" = "0" ]; then
         needs_chown=true
     fi
     if [ "$needs_chown" = true ]; then
-        echo "Fixing ownership of $HERMES_HOME to hermes ($actual_hermes_uid)"
+        echo "Fixing ownership of $HERMES_HOME to runtime user ($actual_hermes_uid)"
         # In rootless Podman the container's "root" is mapped to an unprivileged
         # host UID — chown will fail.  That's fine: the volume is already owned
         # by the mapped user on the host side.
@@ -94,9 +99,9 @@ fi
 # If the first positional arg resolves to an executable on PATH, we assume the
 # caller wants to run it directly (needed by the launcher which runs long-lived
 # `sleep infinity` sandbox containers — see tools/environments/docker.py).
-# Otherwise we treat the args as a hermes subcommand and wrap with `hermes`,
+# Otherwise we treat the args as a miles subcommand and wrap with `miles`,
 # preserving the documented `docker run <image> <subcommand>` behavior.
 if [ $# -gt 0 ] && command -v "$1" >/dev/null 2>&1; then
     exec "$@"
 fi
-exec hermes "$@"
+exec miles "$@"

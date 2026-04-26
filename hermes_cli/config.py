@@ -35,6 +35,7 @@ _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
 _EXTRA_ENV_KEYS = frozenset({
     "OPENAI_API_KEY", "OPENAI_BASE_URL",
     "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
+    "ARCEE_API_KEY", "ARCEE_BASE_URL", "ARCEE_MODEL",
     "DISCORD_HOME_CHANNEL", "TELEGRAM_HOME_CHANNEL",
     "SIGNAL_ACCOUNT", "SIGNAL_HTTP_URL",
     "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
@@ -1168,9 +1169,17 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "ARCEE_API_KEY": {
+        "description": "Arcee AI API key (Trinity models — default for Miles)",
+        "prompt": "Arcee API key",
+        "url": "https://chat.arcee.ai/",
+        "password": True,
+        "category": "provider",
+        "advanced": False,
+    },
     "ARCEEAI_API_KEY": {
-        "description": "Arcee AI API key",
-        "prompt": "Arcee AI API key",
+        "description": "Arcee AI API key (legacy alias for ARCEE_API_KEY)",
+        "prompt": "Arcee AI API key (legacy)",
         "url": "https://chat.arcee.ai/",
         "password": True,
         "category": "provider",

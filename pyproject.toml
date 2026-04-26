@@ -3,12 +3,12 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "hermes-agent"
+name = "miles-agent"
 version = "0.11.0"
-description = "The self-improving AI agent — creates skills from experience, improves them during use, and runs anywhere"
+description = "Miles — the BizerOS AI agent for small, local businesses. Powered by Arcee Trinity."
 readme = "README.md"
 requires-python = ">=3.11"
-authors = [{ name = "Nous Research" }]
+authors = [{ name = "BizerOS" }]
 license = { text = "MIT" }
 dependencies = [
   # Core — pinned to known-good ranges to limit supply chain attack surface
@@ -69,12 +69,12 @@ termux = [
   # avoiding extras that currently depend on non-Android wheels (notably
   # faster-whisper -> ctranslate2 via the voice extra).
   "python-telegram-bot[webhooks]>=22.6,<23",
-  "hermes-agent[cron]",
-  "hermes-agent[cli]",
-  "hermes-agent[pty]",
-  "hermes-agent[mcp]",
-  "hermes-agent[honcho]",
-  "hermes-agent[acp]",
+  "miles-agent[cron]",
+  "miles-agent[cli]",
+  "miles-agent[pty]",
+  "miles-agent[mcp]",
+  "miles-agent[honcho]",
+  "miles-agent[acp]",
 ]
 dingtalk = ["dingtalk-stream>=0.20,<1", "alibabacloud-dingtalk>=2.0.0", "qrcode>=7.0,<8"]
 feishu = ["lark-oapi>=1.5.3,<2", "qrcode>=7.0,<8"]
@@ -98,34 +98,39 @@ rl = [
 ]
 yc-bench = ["yc-bench @ git+https://github.com/collinear-ai/yc-bench.git@bfb0c88062450f46341bd9a5298903fc2e952a5c ; python_version >= '3.12'"]
 all = [
-  "hermes-agent[modal]",
-  "hermes-agent[daytona]",
-  "hermes-agent[messaging]",
+  "miles-agent[modal]",
+  "miles-agent[daytona]",
+  "miles-agent[messaging]",
   # matrix: python-olm (required by matrix-nio[e2e]) is upstream-broken on
   # modern macOS (archived libolm, C++ errors with Clang 21+).  On Linux the
   # [matrix] extra's own marker pulls in the [e2e] variant automatically.
-  "hermes-agent[matrix]; sys_platform == 'linux'",
-  "hermes-agent[cron]",
-  "hermes-agent[cli]",
-  "hermes-agent[dev]",
-  "hermes-agent[tts-premium]",
-  "hermes-agent[slack]",
-  "hermes-agent[pty]",
-  "hermes-agent[honcho]",
-  "hermes-agent[mcp]",
-  "hermes-agent[homeassistant]",
-  "hermes-agent[sms]",
-  "hermes-agent[acp]",
-  "hermes-agent[voice]",
-  "hermes-agent[dingtalk]",
-  "hermes-agent[feishu]",
-  "hermes-agent[google]",
-  "hermes-agent[mistral]",
-  "hermes-agent[bedrock]",
-  "hermes-agent[web]",
+  "miles-agent[matrix]; sys_platform == 'linux'",
+  "miles-agent[cron]",
+  "miles-agent[cli]",
+  "miles-agent[dev]",
+  "miles-agent[tts-premium]",
+  "miles-agent[slack]",
+  "miles-agent[pty]",
+  "miles-agent[honcho]",
+  "miles-agent[mcp]",
+  "miles-agent[homeassistant]",
+  "miles-agent[sms]",
+  "miles-agent[acp]",
+  "miles-agent[voice]",
+  "miles-agent[dingtalk]",
+  "miles-agent[feishu]",
+  "miles-agent[google]",
+  "miles-agent[mistral]",
+  "miles-agent[bedrock]",
+  "miles-agent[web]",
 ]
 
 [project.scripts]
+# Miles — branded entry points (preferred)
+miles = "hermes_cli.main:main"
+miles-agent = "run_agent:main"
+miles-acp = "acp_adapter.entry:main"
+# Hermes — legacy aliases (kept for backward compatibility with the upstream fork)
 hermes = "hermes_cli.main:main"
 hermes-agent = "run_agent:main"
 hermes-acp = "acp_adapter.entry:main"
