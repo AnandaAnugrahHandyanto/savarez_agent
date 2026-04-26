@@ -51,6 +51,8 @@ Usage:
 
 import atexit
 import functools
+import importlib
+import ipaddress
 import json
 import logging
 import os
@@ -516,6 +518,27 @@ def _auto_local_for_private_urls() -> bool:
     return _cached_auto_local_for_private_urls
 
 
+# Explicit private ranges for Python 3.10 compatibility.
+# ``ipaddress.ip_address.is_private`` only covers 172.16.0.0/12 in Python ≥3.11
+# (expanded in bpo-40791). These are the complete RFC1918 private ranges
+# plus link-local and ULA (fd00::/8).
+_PRIVATE_IP_RANGES = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("fd00::/8"),
+)
+
+
+def _ip_in_private_range(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Check if IP is in RFC1918 private ranges (Python 3.10 compatible).
+
+    Uses explicit ranges instead of ip.is_private for Python 3.10 compatibility.
+    """
+    return any(ip in net for net in _PRIVATE_IP_RANGES)
+
+
 def _url_is_private(url: str) -> bool:
     """Return True when the URL's host resolves to a private/LAN/loopback address.
 
@@ -524,14 +547,10 @@ def _url_is_private(url: str) -> bool:
     resolution failures are treated as NOT private (fall through to whatever
     backend is configured, which will surface the DNS error naturally).
     """
+    from urllib.parse import urlparse
+    import socket
+
     try:
-        from tools.url_safety import is_safe_url
-        # is_safe_url returns False for private/loopback/link-local/CGNAT AND
-        # for DNS failures.  We only want the private-network case here, so
-        # we parse + check the host shape as a DNS-failure sieve first.
-        from urllib.parse import urlparse
-        import ipaddress
-        import socket
         parsed = urlparse(url)
         hostname = (parsed.hostname or "").strip().lower().rstrip(".")
         if not hostname:
@@ -540,10 +559,10 @@ def _url_is_private(url: str) -> bool:
         try:
             ip = ipaddress.ip_address(hostname)
             return (
-                ip.is_private
+                _ip_in_private_range(ip)
                 or ip.is_loopback
                 or ip.is_link_local
-                or ip in ipaddress.ip_network("100.64.0.0/10")
+                or ip in ipaddress.ip_network("100.64.0.0/10")  # CGNAT
             )
         except ValueError:
             pass
@@ -564,10 +583,10 @@ def _url_is_private(url: str) -> bool:
             except ValueError:
                 continue
             if (
-                ip.is_private
+                _ip_in_private_range(ip)
                 or ip.is_loopback
                 or ip.is_link_local
-                or ip in ipaddress.ip_network("100.64.0.0/10")
+                or ip in ipaddress.ip_network("100.64.0.0/10")  # CGNAT
             ):
                 return True
         return False
@@ -1687,21 +1706,13 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
                      "Secrets must not be sent in URLs.",
         })
 
-    # SSRF protection — block private/internal addresses before navigating.
+    # SSRF protection — always block dangerous URLs before any navigation.
+    # This runs FIRST, before routing decision, because safety is absolute.
     # Skipped for local backends (Camofox, headless Chromium without a cloud
-    # provider) because the agent already has full local network access via
-    # the terminal tool.  Also skipped when hybrid routing will auto-spawn a
-    # local Chromium sidecar for this URL (cloud provider configured +
-    # private URL + ``browser.auto_local_for_private_urls`` enabled) — the
-    # cloud provider never sees the URL in that case.  Can also be opted
-    # out globally via ``browser.allow_private_urls`` in config.
-    effective_task_id = task_id or "default"
-    nav_session_key = _navigation_session_key(effective_task_id, url)
-    auto_local_this_nav = _is_local_sidecar_key(nav_session_key)
-
+    # provider) because the agent already has full local network access.
+    # Also skipped when user has explicitly opted out via ``browser.allow_private_urls``.
     if (
         not _is_local_backend()
-        and not auto_local_this_nav
         and not _allow_private_urls()
         and not _is_safe_url(url)
     ):
@@ -1709,6 +1720,11 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
             "success": False,
             "error": "Blocked: URL targets a private or internal address",
         })
+
+    # Routing decision — now separate from safety check.
+    effective_task_id = task_id or "default"
+    nav_session_key = _navigation_session_key(effective_task_id, url)
+    auto_local_this_nav = _is_local_sidecar_key(nav_session_key)
 
     # Website policy check — block before navigating
     blocked = check_website_access(url)
@@ -1755,15 +1771,11 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         title = data.get("title", "")
         final_url = data.get("url", url)
 
-        # Post-redirect SSRF check — if the browser followed a redirect to a
-        # private/internal address, block the result so the model can't read
-        # internal content via subsequent browser_snapshot calls.
-        # Skipped for local backends (same rationale as the pre-nav check),
-        # and for the hybrid local sidecar (we're already on a local browser
-        # hitting a private URL by design).
+        # Post-redirect SSRF check — always block if redirect lands on dangerous URL.
+        # This runs regardless of routing destination because safety is absolute.
+        # Skipped for local backends (same rationale as the pre-nav check).
         if (
             not _is_local_backend()
-            and not auto_local_this_nav
             and not _allow_private_urls()
             and final_url and final_url != url and not _is_safe_url(final_url)
         ):
