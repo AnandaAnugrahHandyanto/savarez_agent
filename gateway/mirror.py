@@ -94,6 +94,8 @@ def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = Non
         origin_chat_id = str(origin.get("chat_id", ""))
         if origin_chat_id == str(chat_id):
             origin_thread_id = origin.get("thread_id")
+            if thread_id is None and origin_thread_id is not None:
+                continue
             if thread_id is not None and str(origin_thread_id or "") != str(thread_id):
                 continue
             updated = entry.get("updated_at", "")
