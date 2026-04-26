@@ -120,6 +120,10 @@ def show_status(args):
     keys = {
         "OpenRouter": "OPENROUTER_API_KEY",
         "OpenAI": "OPENAI_API_KEY",
+        "Google/Gemini": "GOOGLE_API_KEY",
+        "DeepSeek": "DEEPSEEK_API_KEY",
+        "xAI / Grok": "XAI_API_KEY",
+        "NVIDIA NIM": "NVIDIA_API_KEY",
         "Z.AI/GLM": "GLM_API_KEY",
         "Kimi": "KIMI_API_KEY",
         "StepFun Step Plan": "STEPFUN_API_KEY",
@@ -258,6 +262,10 @@ def show_status(args):
     print(color("◆ API-Key Providers", Colors.CYAN, Colors.BOLD))
 
     apikey_providers = {
+        "Google / Gemini":  ("GOOGLE_API_KEY", "GEMINI_API_KEY"),
+        "DeepSeek":         ("DEEPSEEK_API_KEY",),
+        "xAI / Grok":       ("XAI_API_KEY",),
+        "NVIDIA NIM":       ("NVIDIA_API_KEY",),
         "Z.AI / GLM":       ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
         "Kimi / Moonshot":  ("KIMI_API_KEY",),
         "StepFun Step Plan": ("STEPFUN_API_KEY",),
