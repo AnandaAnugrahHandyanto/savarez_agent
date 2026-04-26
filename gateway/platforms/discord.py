@@ -2162,6 +2162,16 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception:
             pass  # logging must never block command dispatch
 
+        user_id = str(interaction.user.id) if interaction.user else None
+        if not user_id or not self._is_allowed_user(user_id, interaction.user):
+            try:
+                await interaction.response.send_message(
+                    "You don't have permission to use this command.", ephemeral=True,
+                )
+            except Exception:
+                pass
+            return
+
         await interaction.response.defer(ephemeral=True)
         event = self._build_slash_event(interaction, command_text)
         await self.handle_message(event)
