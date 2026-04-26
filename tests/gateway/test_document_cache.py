@@ -13,6 +13,8 @@ import pytest
 
 from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
+    TEXT_INJECTABLE_EXTENSIONS,
+    TEXT_INJECTABLE_MIME_TYPES,
     cache_document_from_bytes,
     cleanup_document_cache,
     get_document_cache_dir,
@@ -151,7 +153,15 @@ class TestSupportedDocumentTypes:
 
     @pytest.mark.parametrize(
         "ext",
-        [".pdf", ".md", ".txt", ".zip", ".docx", ".xlsx", ".pptx"],
+        [".pdf", ".md", ".txt", ".log", ".csv", ".json", ".zip", ".docx", ".xlsx", ".pptx"],
     )
     def test_expected_extensions_present(self, ext):
         assert ext in SUPPORTED_DOCUMENT_TYPES
+
+    def test_text_injectable_extensions_are_supported(self):
+        for ext in TEXT_INJECTABLE_EXTENSIONS:
+            assert ext in SUPPORTED_DOCUMENT_TYPES
+
+    def test_text_injectable_mime_types_cover_supported_extensions(self):
+        injectable_mimes = {SUPPORTED_DOCUMENT_TYPES[ext] for ext in TEXT_INJECTABLE_EXTENSIONS}
+        assert injectable_mimes <= TEXT_INJECTABLE_MIME_TYPES

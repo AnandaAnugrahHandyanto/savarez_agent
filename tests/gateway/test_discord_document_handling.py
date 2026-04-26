@@ -227,6 +227,76 @@ class TestIncomingDocumentHandling:
         assert "please inspect this" in event.text
 
     @pytest.mark.asyncio
+    async def test_csv_content_injected(self, adapter):
+        """.csv file under 100KB should be cached and injected into event.text."""
+        file_content = b"name,age\nAlice,30\nBob,25"
+
+        with _mock_aiohttp_download(file_content):
+            msg = make_message(
+                attachments=[make_attachment(filename="users.csv", content_type="text/csv")],
+                content="summarize this",
+            )
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.DOCUMENT
+        assert event.media_types == ["text/csv"]
+        assert "[Content of users.csv]:" in event.text
+        assert "Alice,30" in event.text
+        assert "summarize this" in event.text
+
+    @pytest.mark.asyncio
+    async def test_json_content_injected(self, adapter):
+        """.json file under 100KB should be cached and injected into event.text."""
+        file_content = b'{"users": [{"name": "Alice"}]}'
+
+        with _mock_aiohttp_download(file_content):
+            msg = make_message(
+                attachments=[make_attachment(filename="users.json", content_type="application/json")],
+                content="",
+            )
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.DOCUMENT
+        assert event.media_types == ["application/json"]
+        assert "[Content of users.json]:" in event.text
+        assert '"Alice"' in event.text
+
+    @pytest.mark.asyncio
+    async def test_large_csv_cached_not_injected(self, adapter):
+        """.csv over 100KB should be cached but not injected into event.text."""
+        file_content = b"col1,col2\n" + b"x,y\n" * 60000
+
+        with _mock_aiohttp_download(file_content):
+            msg = make_message(
+                attachments=[make_attachment(filename="big.csv", content_type="text/csv", size=len(file_content))],
+                content="",
+            )
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert len(event.media_urls) == 1
+        assert "[Content of" not in (event.text or "")
+
+    @pytest.mark.asyncio
+    async def test_binary_json_cached_not_injected(self, adapter):
+        """.json with invalid UTF-8 should still cache without inline injection."""
+        file_content = bytes(range(128, 256)) * 10
+
+        with _mock_aiohttp_download(file_content):
+            msg = make_message(
+                attachments=[make_attachment(filename="broken.json", content_type="application/json")],
+                content="",
+            )
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert len(event.media_urls) == 1
+        assert event.media_types == ["application/json"]
+        assert "[Content of" not in (event.text or "")
+
+    @pytest.mark.asyncio
     async def test_oversized_document_skipped(self, adapter):
         """A document over 32MB should be skipped — media_urls stays empty."""
         msg = make_message([

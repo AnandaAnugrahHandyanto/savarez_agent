@@ -230,6 +230,41 @@ class TestDocumentDownloadBlock:
         assert "# Title" in event.text
 
     @pytest.mark.asyncio
+    async def test_supported_csv_injects_content(self, adapter):
+        content = b"name,age\nAlice,30\nBob,25"
+        file_obj = _make_file_obj(content)
+        doc = _make_document(
+            file_name="users.csv", mime_type="text/csv",
+            file_size=len(content), file_obj=file_obj,
+        )
+        msg = _make_message(document=doc, caption="summarize this")
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.media_types == ["text/csv"]
+        assert "[Content of users.csv]" in event.text
+        assert "Alice,30" in event.text
+        assert "summarize this" in event.text
+
+    @pytest.mark.asyncio
+    async def test_supported_json_injects_content(self, adapter):
+        content = b'{"users": [{"name": "Alice"}]}'
+        file_obj = _make_file_obj(content)
+        doc = _make_document(
+            file_name="users.json", mime_type="application/json",
+            file_size=len(content), file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.media_types == ["application/json"]
+        assert "[Content of users.json]" in event.text
+        assert '"Alice"' in event.text
+
+    @pytest.mark.asyncio
     async def test_caption_preserved_with_injection(self, adapter):
         content = b"file text"
         file_obj = _make_file_obj(content)
@@ -343,6 +378,57 @@ class TestDocumentDownloadBlock:
         assert len(event.media_urls) == 1
         # Content should NOT be injected
         assert "[Content of" not in (event.text or "")
+
+    @pytest.mark.asyncio
+    async def test_binary_json_cached_not_injected(self, adapter):
+        """Invalid UTF-8 in a .json file should not be injected into event.text."""
+        binary = bytes(range(128, 256))
+        file_obj = _make_file_obj(binary)
+        doc = _make_document(
+            file_name="broken.json", mime_type="application/json",
+            file_size=len(binary), file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert len(event.media_urls) == 1
+        assert "[Content of" not in (event.text or "")
+
+    @pytest.mark.asyncio
+    async def test_csv_injection_capped(self, adapter):
+        """.csv over 100KB should be cached but not injected."""
+        large = b"col1,col2\n" + b"x,y\n" * 60000
+        file_obj = _make_file_obj(large)
+        doc = _make_document(
+            file_name="big.csv", mime_type="text/csv",
+            file_size=len(large), file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert len(event.media_urls) == 1
+        assert "[Content of" not in (event.text or "")
+
+    @pytest.mark.asyncio
+    async def test_missing_filename_json_uses_mime_lookup(self, adapter):
+        """No file_name but application/json MIME should resolve to .json."""
+        content = b'{"key": "value"}'
+        file_obj = _make_file_obj(content)
+        doc = _make_document(
+            file_name=None, mime_type="application/json",
+            file_size=len(content), file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert len(event.media_urls) == 1
+        assert event.media_types == ["application/json"]
 
     @pytest.mark.asyncio
     async def test_download_exception_handled(self, adapter):
