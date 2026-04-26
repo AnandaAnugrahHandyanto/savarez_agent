@@ -132,7 +132,8 @@ def make_message(attachments: list, content: str = "") -> SimpleNamespace:
         reference=None,
         created_at=datetime.now(timezone.utc),
         channel=FakeDMChannel(),
-        author=SimpleNamespace(id=42, display_name="Tester", name="Tester"),
+        guild=None,  # DM — no guild; build_source reads message.guild directly
+        author=SimpleNamespace(id=42, display_name="Tester", name="Tester", bot=False),
     )
 
 
@@ -383,3 +384,88 @@ class TestIncomingDocumentHandling:
         assert event.message_type == MessageType.PHOTO
         assert event.media_urls == ["/tmp/cached_image.png"]
         assert event.media_types == ["image/png"]
+
+
+class TestAttachmentTypeDetection:
+    """msg_type classification scans all attachments, not just the first (#15701).
+
+    The old code broke out of the attachment loop unconditionally after the
+    first attachment that had *any* content_type, so an unsupported attachment
+    type at position 0 caused all later image/audio/video attachments to be
+    missed and the message to be classified as TEXT.
+    """
+
+    @pytest.mark.asyncio
+    async def test_unsupported_first_recognized_image_second(self, adapter):
+        """Unsupported first attachment (application/octet-stream / .bin) must
+        not block classification; the second image attachment wins."""
+        with patch.object(
+            adapter, "_cache_discord_image",
+            new_callable=AsyncMock,
+            return_value="/tmp/photo.png",
+        ):
+            msg = make_message([
+                make_attachment(filename="data.bin", content_type="application/octet-stream"),
+                make_attachment(filename="photo.png", content_type="image/png"),
+            ])
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.PHOTO, (
+            "Unsupported first attachment should not prevent image classification"
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_content_type_on_first_falls_through_to_image(self, adapter):
+        """First attachment with content_type=None is silently skipped; the
+        subsequent image attachment is still classified correctly."""
+        with patch.object(
+            adapter, "_cache_discord_image",
+            new_callable=AsyncMock,
+            return_value="/tmp/photo.png",
+        ):
+            msg = make_message([
+                make_attachment(filename="data.bin", content_type=None),
+                make_attachment(filename="photo.png", content_type="image/png"),
+            ])
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.PHOTO
+
+    @pytest.mark.asyncio
+    async def test_first_recognized_type_wins(self, adapter):
+        """When the first attachment is a recognized image, later audio
+        attachments do not downgrade the classification."""
+        with (
+            patch.object(
+                adapter, "_cache_discord_image",
+                new_callable=AsyncMock,
+                return_value="/tmp/photo.jpg",
+            ),
+            patch.object(
+                adapter, "_cache_discord_audio",
+                new_callable=AsyncMock,
+                return_value="/tmp/voice.ogg",
+            ),
+        ):
+            msg = make_message([
+                make_attachment(filename="photo.jpg", content_type="image/jpeg"),
+                make_attachment(filename="voice.ogg", content_type="audio/ogg"),
+            ])
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.PHOTO
+
+    @pytest.mark.asyncio
+    async def test_unsupported_only_stays_text(self, adapter):
+        """A single unsupported attachment with no recognized type keeps msg_type TEXT."""
+        adapter._text_batch_delay_seconds = 0  # skip batching so handle_message is called inline
+        msg = make_message([
+            make_attachment(filename="data.bin", content_type="application/octet-stream"),
+        ])
+        await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.TEXT

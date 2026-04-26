@@ -3814,15 +3814,22 @@ class DiscordAdapter(BasePlatformAdapter):
         if normalized_content.startswith("/"):
             msg_type = MessageType.COMMAND
         elif message.attachments:
-            # Check attachment types
+            # Scan all attachments; stop at the first one that resolves to a
+            # recognised type.  The old code broke unconditionally after the
+            # first attachment that had *any* content_type, so an unsupported
+            # first attachment (e.g. application/octet-stream) caused
+            # subsequent image/audio/video attachments to be missed (#15701).
             for att in message.attachments:
                 if att.content_type:
                     if att.content_type.startswith("image/"):
                         msg_type = MessageType.PHOTO
+                        break
                     elif att.content_type.startswith("video/"):
                         msg_type = MessageType.VIDEO
+                        break
                     elif att.content_type.startswith("audio/"):
                         msg_type = MessageType.AUDIO
+                        break
                     else:
                         doc_ext = ""
                         if att.filename:
@@ -3830,7 +3837,7 @@ class DiscordAdapter(BasePlatformAdapter):
                             doc_ext = doc_ext.lower()
                         if doc_ext in SUPPORTED_DOCUMENT_TYPES:
                             msg_type = MessageType.DOCUMENT
-                    break
+                            break
 
         # When auto-threading kicked in, route responses to the new thread
         effective_channel = auto_threaded_channel or message.channel
