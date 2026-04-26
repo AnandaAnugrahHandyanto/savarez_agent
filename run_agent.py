@@ -7851,11 +7851,20 @@ class AIAgent:
             api_msg["reasoning_content"] = existing
             return
 
-        # 2. DeepSeek / Kimi thinking mode: tool-call turns that lack
-        # reasoning_content are "poisoned history" — a prior provider (MiniMax,
-        # etc.) left them empty. DeepSeek returns HTTP 400 if reasoning_content
-        # is absent on replay; inject "" to satisfy the provider's requirement
-        # without forwarding any cross-provider reasoning content.
+        # 2. Healthy session: promote 'reasoning' field to 'reasoning_content'
+        # for providers that use the internal 'reasoning' key.
+        # Must come BEFORE the poisoned-history empty-string fallback so
+        # valid reasoning traces are preserved (#15430).
+        normalized_reasoning = source_msg.get("reasoning")
+        if isinstance(normalized_reasoning, str) and normalized_reasoning:
+            api_msg["reasoning_content"] = normalized_reasoning
+            return
+
+        # 3. DeepSeek / Kimi thinking mode: tool-call turns that lack both
+        # reasoning_content and reasoning are "poisoned history" — a prior
+        # provider (MiniMax, etc.) left them empty. DeepSeek returns HTTP 400
+        # if reasoning_content is absent on replay; inject "" to satisfy the
+        # provider's requirement without forwarding cross-provider content.
         needs_empty_reasoning = (
             source_msg.get("tool_calls")
             and (
@@ -7867,16 +7876,11 @@ class AIAgent:
             api_msg["reasoning_content"] = ""
             return
 
-        # 3. Healthy session: promote 'reasoning' field to 'reasoning_content'
-        # for providers that use the internal 'reasoning' key.
-        normalized_reasoning = source_msg.get("reasoning")
-        if isinstance(normalized_reasoning, str) and normalized_reasoning:
-            api_msg["reasoning_content"] = normalized_reasoning
-            return
-
         # 4. DeepSeek / Kimi thinking mode: all assistant messages need
         # reasoning_content. Inject "" to satisfy the provider's requirement
-        # when no explicit reasoning content is present.
+        # when no explicit reasoning content is present. Covers text-only
+        # messages from sessions that were recorded before the
+        # unconditional-reasoning_content write was landed (#15430).
         if (
             self._needs_kimi_tool_reasoning()
             or self._needs_deepseek_tool_reasoning()
