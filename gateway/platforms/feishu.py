@@ -127,6 +127,11 @@ FEISHU_WEBSOCKET_AVAILABLE = websockets is not None
 FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.cards import (
+    StreamingCardController,
+    build_error_card,
+    build_error_card_for_exception,
+)
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -387,6 +392,7 @@ class FeishuAdapterSettings:
     admins: frozenset[str] = frozenset()
     default_group_policy: str = ""
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
+    streaming_card_enabled: bool = False
 
 
 @dataclass
@@ -1446,6 +1452,9 @@ class FeishuAdapter(BasePlatformAdapter):
             admins=admins,
             default_group_policy=default_group_policy,
             group_rules=group_rules,
+            streaming_card_enabled=bool(
+                (extra.get("streaming_card") or {}).get("enabled", False)
+            ),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1476,6 +1485,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_reconnect_interval = settings.ws_reconnect_interval
         self._ws_ping_interval = settings.ws_ping_interval
         self._ws_ping_timeout = settings.ws_ping_timeout
+        self._streaming_card_enabled = settings.streaming_card_enabled
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -1722,6 +1732,79 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
+
+    async def _send_streaming_card(
+        self,
+        chat_id: str,
+        llm_stream: Any,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a streaming interactive card that updates as the LLM generates text.
+
+        Creates an initial placeholder card, then uses StreamingCardController
+        to push incremental PATCH updates via FlushController throttling.
+        On error, sends a build_error_card to the chat.
+
+        Args:
+            chat_id: Feishu chat_id to send to.
+            llm_stream: Async iterator yielding str chunks from the LLM.
+            reply_to: Optional message_id to reply to.
+            metadata: Optional metadata dict (e.g. thread_id).
+
+        Returns:
+            SendResult with the message_id of the sent card.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        # Send initial placeholder card
+        initial_card = {"schema": "2.0", "body": {"elements": [{"tag": "markdown", "content": "▌"}]}}
+        initial_payload = json.dumps(initial_card, ensure_ascii=False)
+        try:
+            init_response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=initial_payload,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+        except Exception as exc:
+            logger.error("[Feishu] streaming_card: failed to send initial card: %s", exc)
+            return SendResult(success=False, error=str(exc))
+
+        if not self._response_succeeded(init_response):
+            return self._finalize_send_result(init_response, "streaming_card initial send failed")
+
+        message_id = self._extract_response_field(init_response, "message_id")
+        if not message_id:
+            return SendResult(success=False, error="streaming_card: no message_id from initial card")
+
+        # Stream LLM chunks into the card controller
+        ctrl = StreamingCardController(message_id=message_id, client=self._client)
+        try:
+            async for chunk in llm_stream:
+                if isinstance(chunk, str):
+                    await ctrl.add_text_chunk(chunk)
+            await ctrl.mark_completed()
+        except Exception as exc:
+            logger.error("[Feishu] streaming_card: stream error message_id=%s: %s", message_id, exc)
+            try:
+                error_card_payload = json.dumps(
+                    build_error_card_for_exception(exc), ensure_ascii=False
+                )
+                await self._feishu_send_with_retry(
+                    chat_id=chat_id,
+                    msg_type="interactive",
+                    payload=error_card_payload,
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
+            except Exception as send_exc:
+                logger.warning("[Feishu] streaming_card: error card send failed: %s", send_exc)
+            return SendResult(success=False, error=str(exc))
+
+        return SendResult(success=True, message_id=message_id)
 
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
@@ -4040,6 +4123,51 @@ class FeishuAdapter(BasePlatformAdapter):
             .log_level(lark.LogLevel.WARNING)
             .build()
         )
+
+    def _build_lark_client_for_user(self, domain: Any) -> Optional[Any]:
+        """Build a lark Client pre-loaded with the stored user access token (UAT).
+
+        The returned client's ``sdk`` attribute is the same TAT-capable
+        ``lark.Client`` as ``_build_lark_client()``.  The UAT is exposed via
+        the returned ``FeishuClient`` wrapper's ``access_token`` attribute and
+        ``build_user_request_option()`` helper so callers can inject it into
+        SDK requests or raw ``BaseRequest`` calls.
+
+        The TENANT path (``self._client``) is **not touched** by this method.
+        Only call this when you need to make a UAT-authenticated API call.
+
+        Returns:
+            ``tools.feishu_oapi_client.FeishuClient`` with UAT set, or None if
+            the UAT file is missing / expired (caller should surface
+            NeedAuthorizationError to the user).
+
+        Raises:
+            tools.feishu_oapi_client.NeedAuthorizationError: If the token file
+                is absent or the access_token is expiring within 60 seconds.
+        """
+        try:
+            from tools.feishu_oapi_client import FeishuClient, NeedAuthorizationError  # noqa: F401
+        except ImportError:
+            logger.warning(
+                "[Feishu] tools.feishu_oapi_client not available; "
+                "_build_lark_client_for_user returning None"
+            )
+            return None
+
+        # for_user() reads ~/.hermes/feishu_uat.json and raises
+        # NeedAuthorizationError if the token is missing/expired.
+        # We let the exception propagate to the caller.
+        client = FeishuClient.for_user()
+
+        # Attach the same underlying lark SDK domain so the client uses the
+        # correct endpoint (feishu vs lark international).
+        client.domain = self._domain_name
+        client.sdk = self._build_lark_client(domain)
+
+        logger.debug(
+            "[Feishu] Built UAT lark client for user %s", client.user_open_id
+        )
+        return client
 
     async def _feishu_send_with_retry(
         self,
