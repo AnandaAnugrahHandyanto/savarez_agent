@@ -1723,6 +1723,7 @@ def select_provider_and_model(args=None):
         _model_flow_azure_foundry(config, current_model)
     elif selected_provider in (
         "gemini",
+        "aimlapi",
         "deepseek",
         "xai",
         "zai",
@@ -2554,7 +2555,7 @@ def _model_flow_qwen_oauth(_config, current_model=""):
     models = None
     try:
         creds = resolve_qwen_runtime_credentials(refresh_if_expiring=True)
-        models = fetch_api_models(creds["api_key"], creds["base_url"])
+        models = fetch_api_models(creds["api_key"], creds["base_url"], provider="qwen-oauth")
     except Exception:
         pass
     if not models:
@@ -3225,7 +3226,10 @@ def _model_flow_named_custom(config, provider_info):
 
     print("Fetching available models...")
     models = fetch_api_models(
-        api_key, base_url, timeout=8.0,
+        api_key,
+        base_url,
+        provider="custom",
+        timeout=8.0,
         api_mode=api_mode or None,
     )
 
@@ -4388,11 +4392,16 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         current_base = get_env_value(base_url_env) or os.getenv(base_url_env, "")
     effective_base = current_base or pconfig.inference_base_url
 
-    try:
-        override = input(f"Base URL [{effective_base}]: ").strip()
-    except (KeyboardInterrupt, EOFError):
+    if provider_id == "aimlapi":
+        print(f"  {pconfig.name} endpoint: {effective_base}")
         print()
         override = ""
+    else:
+        try:
+            override = input(f"Base URL [{effective_base}]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            override = ""
     if override and base_url_env:
         if not override.startswith(("http://", "https://")):
             print(
@@ -4453,7 +4462,11 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             api_key_for_probe = existing_key or (
                 get_env_value(key_env) if key_env else ""
             )
-            live_models = fetch_api_models(api_key_for_probe, effective_base)
+            live_models = fetch_api_models(
+                api_key_for_probe,
+                effective_base,
+                provider=provider_id,
+            )
             if live_models and len(live_models) >= len(curated):
                 model_list = live_models
                 print(f"  Found {len(model_list)} model(s) from {pconfig.name} API")
@@ -7405,6 +7418,7 @@ For more help on a command:
             "copilot",
             "anthropic",
             "gemini",
+            "aimlapi",
             "xai",
             "ollama-cloud",
             "huggingface",

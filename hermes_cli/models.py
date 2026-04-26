@@ -270,6 +270,14 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "deepseek-chat",
         "deepseek-reasoner",
     ],
+    "aimlapi": [
+        "openai/gpt-5-chat-latest",
+        "openai/o4-mini",
+        "anthropic/claude-sonnet-4.6",
+        "google/gemini-2.5-flash",
+        "deepseek/deepseek-r1",
+        "openai/gpt-4.1",
+    ],
     "xiaomi": [
         "mimo-v2.5-pro",
         "mimo-v2.5",
@@ -717,6 +725,7 @@ class ProviderEntry(NamedTuple):
 CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("nous",           "Nous Portal",              "Nous Portal (Nous Research subscription)"),
     ProviderEntry("openrouter",     "OpenRouter",               "OpenRouter (100+ models, pay-per-use)"),
+    ProviderEntry("aimlapi",        "AI/ML API",                "AI/ML API (300+ models, OpenAI-compatible aggregator)"),
     ProviderEntry("ai-gateway",     "Vercel AI Gateway",        "Vercel AI Gateway (200+ models, $5 free credit, no markup)"),
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models — API key or Claude Code)"),
     ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex"),
@@ -750,7 +759,6 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
 _PROVIDER_LABELS = {p.slug: p.label for p in CANONICAL_PROVIDERS}
 _PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named provider
 
-
 _PROVIDER_ALIASES = {
     "glm": "zai",
     "z-ai": "zai",
@@ -775,6 +783,8 @@ _PROVIDER_ALIASES = {
     "arceeai": "arcee",
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
+    "aiml": "aimlapi",
+    "ai-ml-api": "aimlapi",
     "claude": "anthropic",
     "claude-code": "anthropic",
     "deep-seek": "deepseek",
@@ -1862,7 +1872,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                 or os.getenv("OPENAI_API_KEY", "")
                 or os.getenv("OPENROUTER_API_KEY", "")
             )
-            live = fetch_api_models(api_key, base_url)
+            live = fetch_api_models(api_key, base_url, provider=normalized)
             if live:
                 return live
     curated_static = list(_PROVIDER_MODELS.get(normalized, []))
@@ -2065,6 +2075,40 @@ def _fetch_github_models(api_key: Optional[str] = None, timeout: float = 5.0) ->
     if not catalog:
         return None
     return [item.get("id", "") for item in catalog if item.get("id")]
+
+
+def _api_model_item_allowed(item: dict[str, Any], provider: Optional[str]) -> bool:
+    """Return True if a ``/models`` entry should be exposed for *provider*."""
+    normalized = normalize_provider(provider)
+
+    if normalized == "aimlapi":
+        return str(item.get("type") or "").strip().lower() == "chat-completion"
+
+    return True
+
+
+def _extract_api_model_ids(
+    payload: dict[str, Any],
+    provider: Optional[str] = None,
+) -> list[str]:
+    """Extract user-selectable model IDs from an OpenAI-compatible ``/models`` payload."""
+    data = payload.get("data", [])
+    if not isinstance(data, list):
+        return []
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        if not _api_model_item_allowed(item, provider):
+            continue
+        model_id = str(item.get("id") or "").strip()
+        if not model_id or model_id in seen:
+            continue
+        seen.add(model_id)
+        result.append(model_id)
+    return result
 
 
 _COPILOT_MODEL_ALIASES = {
@@ -2324,6 +2368,7 @@ def github_model_reasoning_efforts(
 def probe_api_models(
     api_key: Optional[str],
     base_url: Optional[str],
+    provider: Optional[str] = None,
     timeout: float = 5.0,
     api_mode: Optional[str] = None,
 ) -> dict[str, Any]:
@@ -2381,7 +2426,7 @@ def probe_api_models(
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
                 return {
-                    "models": [m.get("id", "") for m in data.get("data", [])],
+                    "models": _extract_api_model_ids(data, provider=provider),
                     "probed_url": url,
                     "resolved_base_url": candidate_base.rstrip("/"),
                     "suggested_base_url": alternate_base if alternate_base != candidate_base else normalized,
@@ -2432,6 +2477,7 @@ def _fetch_ai_gateway_models(timeout: float = 5.0) -> Optional[list[str]]:
 def fetch_api_models(
     api_key: Optional[str],
     base_url: Optional[str],
+    provider: Optional[str] = None,
     timeout: float = 5.0,
     api_mode: Optional[str] = None,
 ) -> Optional[list[str]]:
@@ -2440,7 +2486,13 @@ def fetch_api_models(
     Returns a list of model ID strings, or ``None`` if the endpoint could not
     be reached (network error, timeout, auth failure, etc.).
     """
-    return probe_api_models(api_key, base_url, timeout=timeout, api_mode=api_mode).get("models")
+    return probe_api_models(
+        api_key,
+        base_url,
+        provider=provider,
+        timeout=timeout,
+        api_mode=api_mode,
+    ).get("models")
 
 
 # ---------------------------------------------------------------------------
@@ -2610,11 +2662,12 @@ def validate_requested_model(
         }
 
     if normalized == "custom":
-        # Try probing with correct auth for the api_mode.
-        if api_mode == "anthropic_messages":
-            probe = probe_api_models(api_key, base_url, api_mode=api_mode)
-        else:
-            probe = probe_api_models(api_key, base_url)
+        probe = probe_api_models(
+            api_key,
+            base_url,
+            provider=normalized,
+            api_mode=api_mode,
+        )
         api_models = probe.get("models")
         if api_models is not None:
             if requested_for_lookup in set(api_models):
@@ -2842,7 +2895,7 @@ def validate_requested_model(
         }
 
     # Probe the live API to check if the model actually exists
-    api_models = fetch_api_models(api_key, base_url)
+    api_models = fetch_api_models(api_key, base_url, provider=normalized)
 
     if api_models is not None:
         # Gemini's OpenAI-compat /v1beta/openai/models endpoint returns IDs
