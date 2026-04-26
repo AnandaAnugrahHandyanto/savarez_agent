@@ -207,8 +207,16 @@ class SlackAdapter(BasePlatformAdapter):
             async def handle_assistant_thread_context_changed(event, say):
                 await self._handle_assistant_thread_lifecycle_event(event)
 
-            # Register slash command handler
-            @self._app.command("/hermes")
+            # Register slash command handler.
+            # Use the profile name so each profile gets its own command:
+            #   default → /hermes,  profile "foo" → /foo
+            # This avoids collisions when multiple profiles run as
+            # separate Slack bots in the same workspace.
+            from hermes_cli.profiles import get_active_profile_name
+            _profile = get_active_profile_name()
+            _slash_cmd = "/hermes" if _profile == "default" else f"/{_profile}"
+
+            @self._app.command(_slash_cmd)
             async def handle_hermes_command(ack, command):
                 await ack()
                 await self._handle_slash_command(command)
