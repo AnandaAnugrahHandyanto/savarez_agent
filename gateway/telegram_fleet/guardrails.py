@@ -10,13 +10,11 @@ Why these exist:
   global limit is 30/sec, but fan-out from a swarm can blow through that
   in seconds; this is a soft local limit applied per child before we even
   hit Telegram.
-* **Spawn approval gate** (`spawn_requires_approval`, default True) —
-  ``telegram_spawn_bot`` returns a deep link that the human must tap, and
-  the resulting child only enters the active roster once the
-  ``managed_bot`` update arrives.  This is enforced by Telegram itself; we
-  also surface it as an explicit toggle so operators can audit the
-  default.  When False, spawn-via-tool is rejected with
-  :class:`SpawnApprovalRequired` to make the policy explicit.
+* **Spawn enabled gate** (`spawn_enabled`, default True) —
+  controls whether the fleet is allowed to spawn new bots at all.
+  ``telegram_spawn_bot`` always returns a deep link the human must tap
+  (Telegram's platform contract); ``spawn_enabled=False`` prevents even
+  generating that link and raises :class:`SpawnApprovalRequired`.
 """
 
 from __future__ import annotations
@@ -46,15 +44,10 @@ def check_can_spawn(roster: FleetRoster) -> None:
 
     Raises :class:`FleetGuardrailError` (or a subclass) when not.
     """
-    if not roster.spawn_requires_approval:
-        # Operator explicitly disabled the user-tap step.  We still refuse —
-        # the Managed Bots API itself requires user confirmation, so a True
-        # "no approval" mode is impossible without violating the platform
-        # contract.  Surface it loudly so callers don't get confused.
+    if not roster.spawn_enabled:
         raise SpawnApprovalRequired(
-            "spawn_requires_approval is False, but Managed Bots requires a "
-            "user tap on the deep link.  Set spawn_requires_approval: true in "
-            "telegram_fleet.yaml or via the fleet config."
+            "spawn_enabled is False in telegram_fleet.yaml.  Set it to true "
+            "to allow the fleet to mint new child-bot deep links."
         )
 
     active = len(roster.active_children())

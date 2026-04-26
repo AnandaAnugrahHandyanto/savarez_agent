@@ -23,7 +23,7 @@ import os
 import secrets
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
@@ -477,6 +477,12 @@ class FleetCoordinator:
             raise FleetGuardrailError("objective must be non-empty")
         if not subtasks:
             raise FleetGuardrailError("subtasks must contain at least one entry")
+        if max_parallel < 1:
+            raise FleetGuardrailError(f"max_parallel must be ≥ 1, got {max_parallel}")
+        if per_task_timeout_s <= 0:
+            raise FleetGuardrailError(
+                f"per_task_timeout_s must be positive, got {per_task_timeout_s}"
+            )
         with self._lock:
             active = [c for c in self._roster.children if c.is_active()]
         if not active:
@@ -543,31 +549,49 @@ class FleetCoordinator:
                     objective=objective,
                     delegate_fn=delegate_fn,
                     parent_agent=parent_agent,
-                    timeout=per_task_timeout_s,
                 ): b
                 for b in bindings
             }
-            for fut in as_completed(futures):
-                b = futures[fut]
-                try:
-                    result = fut.result(timeout=per_task_timeout_s + 5)
-                except Exception as e:  # pragma: no cover - delegate failure
-                    result = SwarmTaskResult(
-                        persona=b.get("persona", ""),
-                        bot_username=b["bot_username"],
-                        goal=b["goal"],
-                        response="",
-                        duration_seconds=0.0,
-                        error=f"{type(e).__name__}: {e}",
-                    )
-                results.append(result)
-                if report_chat_id:
-                    summary = result.error or _truncate(result.response, 280)
-                    self._safe_post(
-                        result.bot_username,
-                        report_chat_id,
-                        f"✅ done: {summary}" if not result.error else f"❌ failed: {summary}",
-                    )
+            # per_task_timeout_s is a per-task budget; multiply by task count for
+            # the overall wall-clock cap so a single slow task doesn't starve all others.
+            overall_timeout = per_task_timeout_s * len(bindings)
+            try:
+                pending = dict(futures)
+                for fut in as_completed(pending, timeout=overall_timeout):
+                    b = pending[fut]
+                    try:
+                        result = fut.result()
+                    except Exception as e:  # pragma: no cover - delegate failure
+                        result = SwarmTaskResult(
+                            persona=b.get("persona", ""),
+                            bot_username=b["bot_username"],
+                            goal=b["goal"],
+                            response="",
+                            duration_seconds=0.0,
+                            error=f"{type(e).__name__}: {e}",
+                        )
+                    results.append(result)
+                    if report_chat_id:
+                        summary = result.error or _truncate(result.response, 280)
+                        self._safe_post(
+                            result.bot_username,
+                            report_chat_id,
+                            f"✅ done: {summary}" if not result.error else f"❌ failed: {summary}",
+                        )
+            except FuturesTimeout:
+                for fut, b in list(futures.items()):
+                    if not fut.done():
+                        fut.cancel()
+                        results.append(
+                            SwarmTaskResult(
+                                persona=b.get("persona", ""),
+                                bot_username=b["bot_username"],
+                                goal=b["goal"],
+                                response="",
+                                duration_seconds=per_task_timeout_s,
+                                error="timed out",
+                            )
+                        )
 
         # Kimi-style Critical Path metric: wall-clock per stage = max(workers).
         # Single-stage fan-out so critical_path == max(durations).
@@ -627,14 +651,20 @@ class FleetCoordinator:
                 bot = rotation[rr_idx % len(rotation)]
                 rr_idx += 1
             persona = str(raw.get("persona") or bot.persona or "")
+            raw_toolsets = raw.get("toolsets")
+            if raw_toolsets is not None and not isinstance(raw_toolsets, list):
+                raise FleetGuardrailError(
+                    f"subtask 'toolsets' must be a list of strings, got "
+                    f"{type(raw_toolsets).__name__!r}"
+                )
+            toolsets = (raw_toolsets if raw_toolsets is not None else list(bot.toolset or [])) or None
             bindings.append(
                 {
                     "goal": goal,
                     "context": str(raw.get("context") or ""),
-                    "toolsets": list(raw.get("toolsets") or bot.toolset or []) or None,
+                    "toolsets": toolsets,
                     "bot_username": bot.username,
                     "persona": persona,
-                    "bot_token": bot.token,
                 }
             )
         return bindings
@@ -646,7 +676,6 @@ class FleetCoordinator:
         objective: str,
         delegate_fn: Callable[..., str],
         parent_agent: Any,
-        timeout: float,
     ) -> SwarmTaskResult:
         start = time.monotonic()
         persona = binding.get("persona") or ""

@@ -2,7 +2,7 @@
 
 Schema is YAML-on-disk at ``~/.hermes/telegram_fleet.yaml``.  Tokens are
 treated as secrets — file is created with mode 0600, never logged in full,
-and write-locked via :class:`utils.atomic_yaml_write`.
+and atomically written via :func:`utils.atomic_yaml_write`.
 
 A ``ChildBot`` is the smallest unit of state we keep per bot:
 
@@ -152,7 +152,7 @@ class FleetRoster:
     manager_bot_username: str = ""
     children: List[ChildBot] = field(default_factory=list)
     max_size: int = 16
-    spawn_requires_approval: bool = True
+    spawn_enabled: bool = True
     updated_at: str = ""
 
     def __post_init__(self) -> None:
@@ -211,7 +211,7 @@ class FleetRoster:
             "schema_version": self.schema_version,
             "manager_bot_username": self.manager_bot_username,
             "max_size": self.max_size,
-            "spawn_requires_approval": self.spawn_requires_approval,
+            "spawn_enabled": self.spawn_enabled,
             "updated_at": self.updated_at,
             "children": [
                 c.to_dict(include_token=include_tokens) for c in self.children
@@ -231,7 +231,7 @@ class FleetRoster:
             schema_version=int(data.get("schema_version", SCHEMA_VERSION)),
             manager_bot_username=str(data.get("manager_bot_username", "")),
             max_size=int(data.get("max_size", 16)),
-            spawn_requires_approval=bool(data.get("spawn_requires_approval", True)),
+            spawn_enabled=bool(data.get("spawn_enabled", True)),
             updated_at=str(data.get("updated_at", "")),
             children=[ChildBot.from_dict(c) for c in children_raw],
         )

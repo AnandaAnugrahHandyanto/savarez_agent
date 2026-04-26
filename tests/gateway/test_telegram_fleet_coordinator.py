@@ -91,7 +91,7 @@ def test_spawn_respects_max_size(hermes_home):
 
 def test_spawn_rejected_when_approval_disabled(hermes_home):
     api = _stub_api()
-    roster = FleetRoster(spawn_requires_approval=False, manager_bot_username="TestMgr")
+    roster = FleetRoster(spawn_enabled=False, manager_bot_username="TestMgr")
     save_roster(roster)
     coord = FleetCoordinator(manager_token="12345:ABC", api_client=api)
     with pytest.raises(SpawnApprovalRequired):

@@ -20,13 +20,11 @@ All tools are read-only against config — they only touch
 from __future__ import annotations
 
 import json
-import logging
 import os
 from typing import Any, Dict, List, Optional
 
 from gateway.telegram_fleet import (
     FleetApprovalRequired,
-    FleetCoordinator,
     FleetGuardrailError,
     RosterError,
     SpawnApprovalRequired,
@@ -34,8 +32,6 @@ from gateway.telegram_fleet import (
 )
 from gateway.telegram_fleet.api import BotApiError
 from tools.registry import registry, tool_error, tool_result
-
-logger = logging.getLogger(__name__)
 
 
 # ── Tool: telegram_spawn_bot ───────────────────────────────────────────
@@ -461,11 +457,19 @@ TELEGRAM_ORCHESTRATE_SWARM_SCHEMA = {
 
 
 def _check_telegram_fleet_available() -> bool:
-    """Toolset is available when the operator has set the manager-bot token."""
+    """Toolset is available when the manager-bot token env var is set.
+
+    API-calling tools (delegate, rotate, spawn, swarm) all require the token
+    at call time.  Reporting True when only the roster file exists would make
+    the tools appear available while every call fails with "no manager token".
+    """
+    return bool(os.getenv("TELEGRAM_FLEET_MANAGER_TOKEN"))
+
+
+def _check_fleet_read_available() -> bool:
+    """telegram_fleet_list only reads the roster — no API token required."""
     if os.getenv("TELEGRAM_FLEET_MANAGER_TOKEN"):
         return True
-    # Also accept a roster on disk that already has a manager configured —
-    # supports the "I configured this once via CLI" case without env vars.
     try:
         from gateway.telegram_fleet.roster import load_roster
 
@@ -492,7 +496,7 @@ registry.register(
     toolset=_TOOLSET,
     schema=TELEGRAM_FLEET_LIST_SCHEMA,
     handler=lambda args, **kw: telegram_fleet_list(**args, **kw),
-    check_fn=_check_telegram_fleet_available,
+    check_fn=_check_fleet_read_available,
     emoji="📋",
 )
 registry.register(

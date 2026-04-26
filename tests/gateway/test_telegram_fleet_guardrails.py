@@ -25,10 +25,10 @@ def _isolate_rate_limits():
 
 
 def test_spawn_approval_required_when_disabled():
-    r = FleetRoster(spawn_requires_approval=False)
+    r = FleetRoster(spawn_enabled=False)
     with pytest.raises(SpawnApprovalRequired) as e:
         check_can_spawn(r)
-    assert "user tap" in str(e.value).lower()
+    assert "spawn_enabled" in str(e.value).lower()
 
 
 def test_spawn_approval_default_passes_with_capacity():
