@@ -383,6 +383,14 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "us.meta.llama4-maverick-17b-instruct-v1:0",
         "us.meta.llama4-scout-17b-instruct-v1:0",
     ],
+    # Google vertex available models supported by the ChatCompletions API
+    "vertex": [
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-2.0-flash-001",
+        "gemini-2.0-flash-lite-001",
+    ]
 }
 
 # Vercel AI Gateway: derive the bare-model-id catalog from the curated
@@ -740,6 +748,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("opencode-zen",   "OpenCode Zen",             "OpenCode Zen (35+ curated models, pay-as-you-go)"),
     ProviderEntry("opencode-go",    "OpenCode Go",              "OpenCode Go (open models, $10/month subscription)"),
     ProviderEntry("bedrock",        "AWS Bedrock",              "AWS Bedrock (Claude, Nova, Llama, DeepSeek — IAM or API key)"),
+    ProviderEntry("vertex",         "Vertex AI",                "Google Vertex AI (GCP Service Account JSON)"),
 ]
 
 # Derived dicts — used throughout the codebase

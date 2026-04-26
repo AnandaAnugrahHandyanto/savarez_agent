@@ -356,6 +356,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=(),
         base_url_env_var="BEDROCK_BASE_URL",
     ),
+    "vertex": ProviderConfig(
+        id="vertex",
+        name="Google Vertex AI",
+        auth_type="api_key",
+        inference_base_url="",
+        api_key_env_vars=("GOOGLE_APPLICATION_CREDENTIALS",),
+        base_url_env_var="VERTEX_LOCATION"
+    )
 }
 
 

@@ -212,6 +212,37 @@ def _resolve_runtime_from_pool_entry(
         if cfg_provider == "anthropic":
             cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
         base_url = cfg_base_url or base_url or "https://api.anthropic.com"
+    elif provider == "vertex":
+        api_mode = "chat_completions"
+        creds_path = api_key or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+        
+        if not creds_path or not __import__("os").path.exists(creds_path):
+            raise ValueError("Vertex AI credentials not found. Please set GOOGLE_APPLICATION_CREDENTIALS to a valid JSON key file path.")
+        
+        try:
+            from google.oauth2 import service_account
+            from google.auth.transport.requests import Request
+        except ImportError:
+            raise ImportError(
+                "Missing Google Auth dependencies for Vertex AI. "
+                "Please install them via: pip install hermes-agent[vertex]"
+            )
+        import json
+
+        with open(creds_path, 'r') as f:
+            sa_info = json.load(f)
+        project_id = sa_info.get("project_id")
+        
+        if not project_id:
+            raise ValueError("Invalid Vertex AI credential file: missing 'project_id' field.")
+            
+        location = base_url if base_url else __import__("os").environ.get("VERTEX_LOCATION", "us-central1")
+        scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+        creds = service_account.Credentials.from_service_account_file(creds_path, scopes=scopes)
+        creds.refresh(Request())
+        
+        api_key = creds.token
+        base_url = f"https://{location}-aiplatform.googleapis.com/v1beta1/projects/{project_id}/locations/{location}/endpoints/openapi"
     elif provider == "openrouter":
         base_url = base_url or OPENROUTER_BASE_URL
     elif provider == "xai":

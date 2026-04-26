@@ -2471,7 +2471,9 @@ class HermesCLI:
             if resolved_provider not in _AGGREGATOR_PROVIDERS:
                 normalized_model = normalize_model_for_provider(current_model, resolved_provider)
                 if normalized_model and normalized_model != current_model:
-                    if not self._model_is_default:
+                    # --- PR Fix: Suppress warning for Vertex's mandatory publisher prefix ---
+                    _is_vertex_prefix_fix = (resolved_provider == "vertex" and normalized_model == f"google/{current_model}")
+                    if not self._model_is_default and not _is_vertex_prefix_fix:
                         self._console_print(
                             f"[yellow]⚠️  Normalized model '{current_model}' to '{normalized_model}' for {resolved_provider}.[/]"
                         )

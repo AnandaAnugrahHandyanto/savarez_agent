@@ -71,6 +71,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         auth_type="oauth_external",
         base_url_override="cloudcode-pa://google",
     ),
+    "vertex": HermesOverlay(
+        transport="openai_chat",
+        auth_type="api_key",
+        extra_env_vars=("GOOGLE_APPLICATION_CREDENTIALS",),
+        base_url_env_var="VERTEX_LOCATION",
+    ),
     "copilot-acp": HermesOverlay(
         transport="codex_responses",
         auth_type="external_process",
@@ -270,6 +276,10 @@ ALIASES: Dict[str, str] = {
     # google-gemini-cli (OAuth + Code Assist)
     "gemini-cli": "google-gemini-cli",
     "gemini-oauth": "google-gemini-cli",
+
+    # google vertex
+    "vertex-ai": "vertex",
+    "google-vertex": "vertex",
 
 
     # huggingface

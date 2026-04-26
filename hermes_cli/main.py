@@ -1626,6 +1626,7 @@ def select_provider_and_model(args=None):
         _model_flow_bedrock(config, current_model)
     elif selected_provider in (
         "gemini",
+        "vertex",
         "deepseek",
         "xai",
         "zai",
