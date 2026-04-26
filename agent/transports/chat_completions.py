@@ -34,30 +34,39 @@ class ChatCompletionsTransport(ProviderTransport):
         Strips Codex Responses API fields (``codex_reasoning_items`` on the
         message, ``call_id``/``response_item_id`` on tool_calls) that strict
         chat-completions providers reject with 400/422.
+
+        Also ensures every assistant message has ``reasoning_content`` field
+        for providers (DeepSeek thinking mode, Kimi K2, etc.) that require it
+        on all assistant turns, not just tool-call turns.
         """
-        needs_sanitize = False
+        _need_rc_fix = False
         for msg in messages:
             if not isinstance(msg, dict):
                 continue
+            if msg.get("role") == "assistant" and "reasoning_content" not in msg:
+                _need_rc_fix = True
             if "codex_reasoning_items" in msg:
-                needs_sanitize = True
+                _need_rc_fix = True
                 break
             tool_calls = msg.get("tool_calls")
             if isinstance(tool_calls, list):
                 for tc in tool_calls:
                     if isinstance(tc, dict) and ("call_id" in tc or "response_item_id" in tc):
-                        needs_sanitize = True
+                        _need_rc_fix = True
                         break
-                if needs_sanitize:
+                if _need_rc_fix:
                     break
 
-        if not needs_sanitize:
+        if not _need_rc_fix:
             return messages
 
         sanitized = copy.deepcopy(messages)
         for msg in sanitized:
             if not isinstance(msg, dict):
                 continue
+            # Ensure reasoning_content on all assistant messages
+            if msg.get("role") == "assistant" and "reasoning_content" not in msg:
+                msg["reasoning_content"] = ""
             msg.pop("codex_reasoning_items", None)
             tool_calls = msg.get("tool_calls")
             if isinstance(tool_calls, list):

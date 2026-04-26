@@ -320,8 +320,7 @@ class HermesAgentLoop:
                 # Preserve reasoning_content for multi-turn chat template handling
                 # (e.g., Kimi-K2's template renders <think> blocks differently
                 # for history vs. the latest turn based on this field)
-                if reasoning:
-                    msg_dict["reasoning_content"] = reasoning
+                msg_dict["reasoning_content"] = reasoning or ""
 
                 messages.append(msg_dict)
 
@@ -492,8 +491,7 @@ class HermesAgentLoop:
                     "role": "assistant",
                     "content": assistant_msg.content or "",
                 }
-                if reasoning:
-                    msg_dict["reasoning_content"] = reasoning
+                msg_dict["reasoning_content"] = reasoning or ""
                 messages.append(msg_dict)
 
                 turn_elapsed = _time.monotonic() - turn_start

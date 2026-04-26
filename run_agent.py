@@ -7765,14 +7765,14 @@ class AIAgent:
             return
 
         # Providers that require an echoed reasoning_content on every
-        # assistant tool-call turn. Detection logic lives in the per-provider
-        # helpers so both the creation path (_build_assistant_message) and
-        # this replay path stay in sync.
-        if source_msg.get("tool_calls") and (
+        # assistant turn (tool-call and text-only alike). Detection logic
+        # lives in the per-provider helpers so both the creation path
+        # (_build_assistant_message) and this replay path stay in sync.
+        if (
             self._needs_kimi_tool_reasoning()
             or self._needs_deepseek_tool_reasoning()
         ):
-            api_msg["reasoning_content"] = ""
+            api_msg["reasoning_content"] = source_msg.get("reasoning_content") or ""
 
     @staticmethod
     def _sanitize_tool_calls_for_strict_api(api_msg: dict) -> dict:
