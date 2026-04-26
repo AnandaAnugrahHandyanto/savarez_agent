@@ -84,6 +84,26 @@ if [ -d "$INSTALL_DIR/skills" ]; then
     python3 "$INSTALL_DIR/tools/skills_sync.py"
 fi
 
+# Set AGENT_BROWSER_EXECUTABLE_PATH to point to Playwright's Chromium
+# This fixes "Chrome not found" errors in Docker when using agent-browser
+# with Playwright-installed Chromium instead of agent-browser's own download.
+if [ -z "$AGENT_BROWSER_EXECUTABLE_PATH" ]; then
+    # Prefer chrome-headless-shell (Playwright's recommended executable for headless use)
+    CHROME_HEADLESS=$(find "$PLAYWRIGHT_BROWSERS_PATH" -name "chrome-headless-shell" 2>/dev/null | head -1)
+    # Fallback to regular chrome binary
+    CHROME_BIN=$(find "$PLAYWRIGHT_BROWSERS_PATH" -name "chrome" -type f -executable 2>/dev/null | head -1)
+    # Fallback to chromium binary
+    CHROMIUM_BIN=$(find "$PLAYWRIGHT_BROWSERS_PATH" -name "chromium" -type f -executable 2>/dev/null | head -1)
+
+    if [ -n "$CHROME_HEADLESS" ]; then
+        export AGENT_BROWSER_EXECUTABLE_PATH="$CHROME_HEADLESS"
+    elif [ -n "$CHROME_BIN" ]; then
+        export AGENT_BROWSER_EXECUTABLE_PATH="$CHROME_BIN"
+    elif [ -n "$CHROMIUM_BIN" ]; then
+        export AGENT_BROWSER_EXECUTABLE_PATH="$CHROMIUM_BIN"
+    fi
+fi
+
 # Final exec: two supported invocation patterns.
 #
 #   docker run <image>                 -> exec `hermes` with no args (legacy default)
