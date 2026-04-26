@@ -206,7 +206,7 @@ def _load_uat() -> dict:
     """
     if not FEISHU_UAT_PATH.exists():
         raise NeedAuthorizationError(
-            reason="no token file found; run 'hermes feishu-uat' first"
+            reason="no token file found; run 'hermes feishu-auth' first"
         )
 
     try:
@@ -220,7 +220,7 @@ def _load_uat() -> dict:
     access_token = data.get("access_token", "")
     if not access_token:
         raise NeedAuthorizationError(
-            reason="token file has no access_token; re-run 'hermes feishu-uat'"
+            reason="token file has no access_token; re-run 'hermes feishu-auth'"
         )
 
     expires_at_ms = data.get("expires_at", 0)
@@ -229,9 +229,22 @@ def _load_uat() -> dict:
 
     if now_ms >= expires_at_ms - headroom_ms:
         user_open_id = data.get("user_open_id", "unknown")
+        # Attempt automatic refresh before failing
+        app_id = os.getenv("FEISHU_APP_ID", "").strip()
+        app_secret = os.getenv("FEISHU_APP_SECRET", "").strip()
+        if app_id and app_secret:
+            try:
+                from hermes_cli.feishu_auth import refresh_uat
+                refresh_uat(app_id, app_secret)
+                logger.info("UAT auto-refreshed for user %s", user_open_id)
+                # Re-read the freshly saved token
+                with open(FEISHU_UAT_PATH, encoding="utf-8") as fh:
+                    return json.load(fh)
+            except Exception as exc:
+                logger.debug("Auto-refresh failed: %s", exc)
         raise NeedAuthorizationError(
             user_open_id=user_open_id,
-            reason="access_token expired or expiring soon; re-run 'hermes feishu-uat'",
+            reason="access_token expired or expiring soon; re-run 'hermes feishu-auth'",
         )
 
     return data
@@ -282,14 +295,10 @@ class FeishuClient:
     # ------------------------------------------------------------------
 
     @classmethod
-    def for_tenant(cls, *, account_id: str = "default") -> "FeishuClient":
+    def for_tenant(cls) -> "FeishuClient":
         """Create or reuse a TAT (tenant_access_token) lark Client.
 
         Reads FEISHU_APP_ID and FEISHU_APP_SECRET from the environment.
-
-        Args:
-            account_id: Cache key for multi-account scenarios (unused in
-                hermes single-user setup, kept for API symmetry).
 
         Returns:
             FeishuClient configured for tenant identity.
@@ -307,7 +316,7 @@ class FeishuClient:
                 "Run 'hermes setup' to configure the Feishu bot."
             )
 
-        cache_key = f"tenant:{account_id}:{app_id}"
+        cache_key = f"tenant:default:{app_id}"
         existing = cls._cache.get(cache_key)
         if existing and existing.app_secret == app_secret:
             return existing
@@ -315,7 +324,7 @@ class FeishuClient:
         instance = cls(
             app_id=app_id,
             app_secret=app_secret,
-            account_id=account_id,
+            account_id="default",
             domain=domain,
         )
         cls._cache[cache_key] = instance
@@ -479,6 +488,13 @@ class FeishuClient:
         except ImportError as exc:
             raise RuntimeError("lark_oapi not installed") from exc
 
+        if use_uat and not self.access_token:
+            raise NeedAuthorizationError(
+                user_open_id=self.user_open_id or "unknown",
+                reason="do_request called with use_uat=True but no access_token loaded; "
+                       "call FeishuClient.for_user() or run 'hermes feishu-auth'",
+            )
+
         http_method = HttpMethod.GET if method.upper() == "GET" else HttpMethod.POST
 
         builder = (
@@ -487,7 +503,7 @@ class FeishuClient:
             .uri(uri)
         )
 
-        if use_uat and self.access_token:
+        if use_uat:
             builder = builder.token_types({AccessTokenType.USER})
         else:
             builder = builder.token_types({AccessTokenType.TENANT})
@@ -501,7 +517,7 @@ class FeishuClient:
 
         request = builder.build()
 
-        if use_uat and self.access_token:
+        if use_uat:
             opt = (
                 RequestOption.builder()
                 .user_access_token(self.access_token)

@@ -5,6 +5,7 @@ actions, and optional retry buttons that route through the existing
 Feishu card callback mechanism.
 """
 
+import re
 from typing import Any, Optional
 
 # ---------------------------------------------------------------------------
@@ -68,6 +69,22 @@ _ERROR_CONFIG: dict[str, dict[str, Any]] = {
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+_SENSITIVE_PATTERNS = [
+    (re.compile(r"Bearer\s+\S+"), "[REDACTED]"),
+    (re.compile(r"access_token=\S+"), "access_token=[REDACTED]"),
+    (re.compile(r"device_code=\S+"), "device_code=[REDACTED]"),
+    (re.compile(r"refresh_token=\S+"), "refresh_token=[REDACTED]"),
+]
+
+
+def _safe_error_text(exc: BaseException) -> str:
+    """Return str(exc) with sensitive token/code values redacted for safe display."""
+    text = str(exc)
+    for pattern, replacement in _SENSITIVE_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
 
 def _truncate(text: str, max_len: int = 300) -> str:
     """Truncate a string to max_len chars, appending ellipsis if needed."""
@@ -216,17 +233,25 @@ def build_error_card_for_exception(
         A Feishu error card dict.
     """
     type_name = type(exc).__name__
-    # Map well-known exception names to our constants
+    # Map well-known exception names to our constants.
+    # Their messages are hardcoded safe strings — no redaction needed.
     known_types = {
         ERROR_NEED_AUTHORIZATION,
         ERROR_APP_SCOPE_MISSING,
         ERROR_USER_AUTH_REQUIRED,
         ERROR_USER_SCOPE_INSUFFICIENT,
     }
-    error_type = type_name if type_name in known_types else ERROR_GENERIC
+    if type_name in known_types:
+        error_type = type_name
+        message: str | None = str(exc) or None
+    else:
+        error_type = ERROR_GENERIC
+        # Redact sensitive values from generic exception messages before displaying
+        raw = str(exc)
+        message = _safe_error_text(exc) if raw else None
     return build_error_card(
         error_type=error_type,
-        message=str(exc) or None,
+        message=message,
         retry_action=retry_action,
         extra_context=extra_context,
     )

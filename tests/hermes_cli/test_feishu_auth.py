@@ -384,7 +384,7 @@ class TestWaitForAuthorizationSuccess(unittest.TestCase):
             "error": "ok",  # truthy, non-pending, non-slow_down → reaches access_token check
         }
 
-        token, refresh, open_id = wait_for_authorization_success(
+        token, refresh, open_id, expires_in, refresh_expires_in = wait_for_authorization_success(
             "dc", "app", interval=0, expires_in=60
         )
 

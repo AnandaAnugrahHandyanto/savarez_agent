@@ -17,7 +17,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Optional, Tuple
@@ -38,7 +40,10 @@ FEISHU_OPEN_BASE_URL = os.environ.get(
     "FEISHU_OPEN_BASE_URL", "https://open.feishu.cn"
 ).rstrip("/")
 
-# Default scope for UAT — covers core OAPI tool families
+# Default scope for UAT — covers core OAPI tool families.
+# WARNING: im:message:send_as_user is intentionally excluded from defaults —
+# it is a privileged scope. Pass it explicitly via --scope if needed.
+# TODO(worker-3): update feishu-uat-tools.md setup command to reflect this change.
 FEISHU_DEFAULT_SCOPE = (
     "calendar:calendar "
     "drive:drive "
@@ -49,7 +54,6 @@ FEISHU_DEFAULT_SCOPE = (
     "sheets:spreadsheet "
     "task:task:write "
     "task:task:read "
-    "im:message:send_as_user "
     "contact:user.base:readonly"
 )
 
@@ -66,6 +70,27 @@ _POLL_INTERVAL_CAP = 30
 
 class FeishuAuthError(Exception):
     """Raised when a Feishu OAuth API call fails or the flow cannot complete."""
+
+
+# ---------------------------------------------------------------------------
+# Security helpers
+# ---------------------------------------------------------------------------
+
+_SENSITIVE_PATTERNS = [
+    (re.compile(r"Bearer\s+\S+"), "[REDACTED]"),
+    (re.compile(r"access_token=\S+"), "access_token=[REDACTED]"),
+    (re.compile(r"device_code=\S+"), "device_code=[REDACTED]"),
+    (re.compile(r"user_code=\S+"), "user_code=[REDACTED]"),
+    (re.compile(r"refresh_token=\S+"), "refresh_token=[REDACTED]"),
+]
+
+
+def _safe_error_text(exc: BaseException) -> str:
+    """Return str(exc) with sensitive token/code values redacted."""
+    text = str(exc)
+    for pattern, replacement in _SENSITIVE_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +244,7 @@ def wait_for_authorization_success(
     interval: int = 3,
     expires_in: int = 1800,
     on_waiting: Optional[callable] = None,
-) -> Tuple[str, str, str]:
+) -> Tuple[str, str, str, int, int]:
     """Block until Feishu device authorization succeeds or times out.
 
     Args:
@@ -230,7 +255,7 @@ def wait_for_authorization_success(
         on_waiting: Optional callback invoked on each pending poll iteration.
 
     Returns:
-        Tuple of (access_token, refresh_token, open_id).
+        Tuple of (access_token, refresh_token, open_id, expires_in, refresh_expires_in).
 
     Raises:
         FeishuAuthError: On authorization failure, denial, or timeout.
@@ -275,7 +300,9 @@ def wait_for_authorization_success(
             token = result["access_token"]
             refresh = result.get("refresh_token") or ""
             open_id = result.get("open_id") or ""
-            return token, refresh, open_id
+            tok_expires_in = int(result.get("expires_in") or 7200)
+            tok_refresh_expires_in = int(result.get("refresh_expires_in") or 2592000)
+            return token, refresh, open_id, tok_expires_in, tok_refresh_expires_in
 
         # Authorization explicitly denied or expired
         if retry_start == 0.0:
@@ -285,7 +312,7 @@ def wait_for_authorization_success(
         description = result.get("error_description") or error
         raise FeishuAuthError(f"authorization failed: {description}")
 
-    raise FeishuAuthError("authorization timed out — please retry 'hermes setup feishu-uat'")
+    raise FeishuAuthError("authorization timed out — please retry 'hermes setup feishu-auth'")
 
 
 # ---------------------------------------------------------------------------
@@ -323,10 +350,22 @@ def save_uat(
         "scope": scope,
         "granted_at": now_ms,
     }
-    FEISHU_UAT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(FEISHU_UAT_PATH, "w", encoding="utf-8") as fh:
-        json.dump(token_data, fh, indent=2)
-    os.chmod(FEISHU_UAT_PATH, 0o600)
+    parent = FEISHU_UAT_PATH.parent
+    parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    os.chmod(parent, 0o700)
+    # Atomic write: write to a temp file then os.replace to avoid partial reads
+    fd, tmp_path = tempfile.mkstemp(dir=parent)
+    try:
+        os.chmod(tmp_path, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(token_data, fh, indent=2)
+        os.replace(tmp_path, FEISHU_UAT_PATH)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
     logger.info("Feishu UAT saved to %s", FEISHU_UAT_PATH)
 
 
@@ -344,6 +383,80 @@ def load_uat() -> Optional[dict]:
     except (json.JSONDecodeError, OSError) as exc:
         logger.warning("Failed to load feishu UAT from %s: %s", FEISHU_UAT_PATH, exc)
         return None
+
+
+def refresh_uat(client_id: str, client_secret: str) -> None:
+    """Attempt to refresh the stored UAT using its refresh_token.
+
+    On success, persists new tokens via save_uat() (atomic write).
+    On 4xx or expired refresh_token, removes the stale token file and raises
+    NeedAuthorizationError so the caller knows re-authorization is required.
+
+    Args:
+        client_id: Feishu app ID (FEISHU_APP_ID).
+        client_secret: Feishu app secret (FEISHU_APP_SECRET).
+
+    Raises:
+        NeedAuthorizationError: If refresh fails or token file is missing.
+        FeishuAuthError: On non-auth network/API errors.
+    """
+    from tools.feishu_oapi_client import NeedAuthorizationError
+
+    data = load_uat()
+    if not data:
+        raise NeedAuthorizationError(reason="no token file; run 'hermes feishu-auth' first")
+
+    refresh_token = data.get("refresh_token", "")
+    if not refresh_token:
+        raise NeedAuthorizationError(reason="no refresh_token in stored UAT")
+
+    payload = {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": client_id,
+        "client_secret": client_secret,
+    }
+
+    try:
+        resp_data = _api_post(
+            "/open-apis/authen/v2/oauth/token",
+            FEISHU_OPEN_BASE_URL,
+            payload,
+        )
+    except FeishuAuthError as exc:
+        # Treat refresh failure as expired — clean up and require re-auth
+        logger.warning("refresh_uat failed: %s", _safe_error_text(exc))
+        try:
+            os.remove(FEISHU_UAT_PATH)
+        except OSError:
+            pass
+        raise NeedAuthorizationError(
+            user_open_id=data.get("user_open_id", "unknown"),
+            reason="refresh_token expired or invalid; re-run 'hermes feishu-auth'",
+        ) from exc
+
+    new_access_token = str(resp_data.get("access_token", "")).strip()
+    new_refresh_token = str(resp_data.get("refresh_token", "")).strip()
+    if not new_access_token:
+        try:
+            os.remove(FEISHU_UAT_PATH)
+        except OSError:
+            pass
+        raise NeedAuthorizationError(
+            user_open_id=data.get("user_open_id", "unknown"),
+            reason="refresh response missing access_token; re-run 'hermes feishu-auth'",
+        )
+
+    save_uat(
+        access_token=new_access_token,
+        refresh_token=new_refresh_token or refresh_token,
+        open_id=data.get("user_open_id", ""),
+        expires_in=int(resp_data.get("expires_in") or 7200),
+        refresh_expires_in=int(resp_data.get("refresh_expires_in") or 2592000),
+        scope=str(resp_data.get("scope", "")).strip() or data.get("scope", ""),
+        app_id=data.get("app_id", client_id),
+    )
+    logger.info("Feishu UAT refreshed for user %s", data.get("user_open_id", "unknown"))
 
 
 # ---------------------------------------------------------------------------
@@ -488,26 +601,28 @@ def feishu_qr_auth(
             sys.stdout.flush()
 
     try:
-        access_token, refresh_token, open_id = wait_for_authorization_success(
-            device_code=auth_data["device_code"],
-            client_id=client_id,
-            interval=auth_data["interval"],
-            expires_in=auth_data["expires_in"],
-            on_waiting=_on_waiting,
+        access_token, refresh_token, open_id, tok_expires_in, tok_refresh_expires_in = (
+            wait_for_authorization_success(
+                device_code=auth_data["device_code"],
+                client_id=client_id,
+                interval=auth_data["interval"],
+                expires_in=auth_data["expires_in"],
+                on_waiting=_on_waiting,
+            )
         )
     except FeishuAuthError as exc:
         print()
         print_error(f"  Authorization failed: {exc}")
         return None
 
-    # Persist tokens
+    # Persist tokens using real expires_in values from the token response
     try:
         save_uat(
             access_token=access_token,
             refresh_token=refresh_token,
             open_id=open_id,
-            expires_in=7200,
-            refresh_expires_in=2592000,
+            expires_in=tok_expires_in,
+            refresh_expires_in=tok_refresh_expires_in,
             scope=scope or FEISHU_DEFAULT_SCOPE,
             app_id=client_id,
         )
@@ -526,11 +641,14 @@ def feishu_qr_auth(
 
 
 # ---------------------------------------------------------------------------
-# CLI entry point (called by hermes_cli/main.py cmd_feishu_uat)
+# CLI entry point (called by hermes_cli/main.py cmd_feishu_auth_setup)
 # ---------------------------------------------------------------------------
 
-def cmd_feishu_uat_setup(args) -> None:
-    """Handle ``hermes setup feishu-uat`` CLI command.
+def cmd_feishu_auth_setup(args) -> None:
+    """Handle ``hermes feishu-auth`` CLI command.
+
+    Previously named cmd_feishu_uat_setup. The subcommand was renamed from
+    feishu-uat to feishu-auth for consistency with dingtalk-auth naming.
 
     Args:
         args: Parsed argparse namespace.
