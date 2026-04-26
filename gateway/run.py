@@ -5207,8 +5207,12 @@ class GatewayRunner:
             notify_data = {
                 "platform": event.source.platform.value if event.source.platform else None,
                 "chat_id": event.source.chat_id,
+                "chat_type": event.source.chat_type,
+                "session_key": self._session_key_for_source(event.source),
             }
-            if event.source.thread_id:
+            if event.source.user_id:
+                notify_data["user_id"] = event.source.user_id
+            if event.source.thread_id is not None:
                 notify_data["thread_id"] = event.source.thread_id
             (_hermes_home / ".restart_notify.json").write_text(
                 json.dumps(notify_data)
@@ -8039,6 +8043,7 @@ class GatewayRunner:
             platform_str = data.get("platform")
             chat_id = data.get("chat_id")
             thread_id = data.get("thread_id")
+            session_key = data.get("session_key")
 
             if not platform_str or not chat_id:
                 return
@@ -8052,10 +8057,16 @@ class GatewayRunner:
                 )
                 return
 
-            metadata = {"thread_id": thread_id} if thread_id else None
+            metadata = {"thread_id": thread_id} if thread_id is not None else None
+            continuity_entry = self._find_restart_continuity_entry(
+                platform=platform,
+                chat_id=chat_id,
+                thread_id=thread_id,
+                session_key=session_key,
+            )
             await adapter.send(
                 chat_id,
-                "♻ Gateway restarted successfully. Your session continues.",
+                self._build_restart_notification_message(continuity_entry),
                 metadata=metadata,
             )
             logger.info(
@@ -8067,6 +8078,77 @@ class GatewayRunner:
             logger.warning("Restart notification failed: %s", e)
         finally:
             notify_path.unlink(missing_ok=True)
+
+    def _find_restart_continuity_entry(
+        self,
+        *,
+        platform: Platform,
+        chat_id: str,
+        thread_id: Optional[str] = None,
+        session_key: Optional[str] = None,
+    ):
+        """Return the newest session entry for the restarted chat, if any.
+
+        This keeps restart notifications channel-scoped: a Telegram DM restart
+        only mentions that same Telegram DM's session, and threaded chats must
+        match the same thread/topic.  If session storage is unavailable, fall
+        back silently to the plain restart notification.  Session-key matching
+        is required before surfacing continuity so non-thread group/channel
+        restarts cannot mention another participant's per-user session.
+        """
+        if not session_key:
+            return None
+
+        try:
+            entries = self.session_store.list_sessions()
+        except Exception as exc:
+            logger.debug("Restart continuity session lookup failed: %s", exc)
+            return None
+
+        requested_chat_id = str(chat_id)
+        requested_thread_id = str(thread_id) if thread_id is not None else None
+        matching_entries = []
+        for entry in entries:
+            if getattr(entry, "suspended", False):
+                continue
+            origin = getattr(entry, "origin", None)
+            if origin is None:
+                continue
+            if getattr(entry, "session_key", None) != session_key:
+                continue
+            if getattr(origin, "platform", None) != platform:
+                continue
+            if str(getattr(origin, "chat_id", "")) != requested_chat_id:
+                continue
+            origin_thread_id = getattr(origin, "thread_id", None)
+            origin_thread_id = str(origin_thread_id) if origin_thread_id is not None else None
+            if origin_thread_id != requested_thread_id:
+                continue
+            matching_entries.append(entry)
+
+        if not matching_entries:
+            return None
+        return max(matching_entries, key=lambda entry: getattr(entry, "updated_at", datetime.min))
+
+    def _build_restart_notification_message(self, continuity_entry=None) -> str:
+        """Build the gateway comeback message with an optional continuity prompt."""
+        message = "♻ Gateway restarted successfully. Your session continues."
+        if continuity_entry is None:
+            return message
+
+        raw_session_id = getattr(continuity_entry, "session_id", "") or "current session"
+        session_id = str(raw_session_id).replace("`", "ʼ")
+        if getattr(continuity_entry, "resume_pending", False):
+            return (
+                f"{message}\n\n"
+                "I found an interrupted conversation in this chat and kept the transcript intact. "
+                f"Session: `{session_id}`. Reply `continue` and I’ll pick it back up from there."
+            )
+        return (
+            f"{message}\n\n"
+            "I found the last conversation in this chat. "
+            f"Session: `{session_id}`. Reply `continue` if you want me to pick it back up."
+        )
 
     def _set_session_env(self, context: SessionContext) -> list:
         """Set session context variables for the current async task.
