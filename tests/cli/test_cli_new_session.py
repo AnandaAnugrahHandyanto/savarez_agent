@@ -34,6 +34,7 @@ class _FakeAgent:
         self._todo_store.write(
             [{"id": "t1", "content": "unfinished task", "status": "in_progress"}]
         )
+        self.flush_memories = MagicMock()
         self.commit_memory_session = MagicMock()
         self._invalidate_system_prompt = MagicMock()
 

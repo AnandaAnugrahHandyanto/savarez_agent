@@ -267,3 +267,5 @@ class TestContextEnginePluginInit:
         assert old_sid == "sess-old"
         assert new_sid == agent.session_id
         assert kwargs["previous_messages"] == messages
+        assert kwargs["carry_over_context"] is True
+        assert kwargs["boundary_reason"] == "compression"

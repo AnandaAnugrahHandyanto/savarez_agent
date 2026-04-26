@@ -2078,6 +2078,7 @@ class AIAgent:
         previous_messages: list | None = None,
         carry_over_context: bool = False,
         reset_engine: bool = False,
+        boundary_reason: str | None = None,
     ) -> None:
         """Apply the host-side lifecycle contract for context-engine session boundaries."""
         engine = getattr(self, "context_compressor", None)
@@ -2091,6 +2092,8 @@ class AIAgent:
             "model": getattr(self, "model", ""),
             "context_length": getattr(engine, "context_length", 0),
         }
+        if boundary_reason:
+            lifecycle_kwargs["boundary_reason"] = boundary_reason
 
         if old_session_id and previous_messages is not None:
             rollover = getattr(engine, "rollover_session", None)
@@ -8251,6 +8254,7 @@ class AIAgent:
                     previous_messages=messages,
                     carry_over_context=True,
                     reset_engine=False,
+                    boundary_reason="compression",
                 )
                 # Auto-number the title for the continuation session
                 if old_title:
