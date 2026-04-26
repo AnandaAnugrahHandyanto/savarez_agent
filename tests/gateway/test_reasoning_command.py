@@ -179,7 +179,7 @@ class TestReasoningCommand:
         result = await runner._handle_reasoning_command(event)
 
         assert "**Display:** on ✓" in result
-        assert "**Display Scope:** global fallback" in result
+        assert "**Display Scope:** global config" in result
 
     @pytest.mark.asyncio
     async def test_handle_reasoning_command_updates_config_and_cache(self, tmp_path, monkeypatch):
