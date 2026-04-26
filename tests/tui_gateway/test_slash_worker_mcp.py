@@ -7,10 +7,15 @@ import time.  Inspired by Claude Code's SocketPool.ensureConnected().
 
 import json
 import os
+import sys
+import subprocess
 import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 # ---------------------------------------------------------------------------
@@ -216,3 +221,28 @@ class TestSlashWorkerImportSafety:
         # The critical assertion: register_mcp_servers was NOT called
         mock_reg.assert_not_called()
         assert mcp_mod._mcp_initialized is False
+
+    def test_subprocess_import_does_not_spawn_mcp_children(self):
+        """Real subprocess test: importing model_tools should not spawn
+        MCP server subprocesses (the core #15275 issue)."""
+        code = (
+            "import tools.mcp_tool as mcp\n"
+            "original = mcp.register_mcp_servers\n"
+            "called = []\n"
+            "def spy(*a, **kw):\n"
+            "    called.append(True)\n"
+            "    return original(*a, **kw)\n"
+            "mcp.register_mcp_servers = spy\n"
+            "import model_tools\n"
+            "print('CALLED' if called else 'SKIPPED')\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True, text=True, timeout=30,
+            cwd=str(_PROJECT_ROOT),
+        )
+        assert result.returncode == 0, f"Subprocess failed: {result.stderr}"
+        assert "SKIPPED" in result.stdout, (
+            f"register_mcp_servers was called at import time despite lazy=True. "
+            f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
