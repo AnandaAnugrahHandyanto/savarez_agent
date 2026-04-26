@@ -4,36 +4,64 @@ import { type ReactNode, type RefObject, useCallback, useEffect, useMemo, useSta
 
 import { $delegationState } from '../app/delegationStore.js'
 import { $turnState } from '../app/turnStore.js'
-import { FACES } from '../content/faces.js'
-import { VERBS } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
 import { stickyPromptFromViewport } from '../domain/viewport.js'
 import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree.js'
 import { fmtK } from '../lib/text.js'
 import type { Theme } from '../theme.js'
-import type { Msg, Usage } from '../types.js'
+import type { ActiveTool, Msg, Usage } from '../types.js'
 
-const FACE_TICK_MS = 2500
+import { Spinner } from './thinking.js'
+
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
 const AURORA_STATUS_IDENTITY = 'Aurora Proto'
 
-function FaceTicker({ color, startedAt }: { color: string; startedAt?: null | number }) {
-  const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
-  const [now, setNow] = useState(() => Date.now())
+export interface CognitivePhaseInput {
+  busy: boolean
+  reasoningStreaming?: boolean
+  streaming?: string
+  tools?: ActiveTool[]
+  turnTrail?: string[]
+}
 
-  useEffect(() => {
-    const face = setInterval(() => setTick(n => n + 1), FACE_TICK_MS)
-    const clock = setInterval(() => setNow(Date.now()), 1000)
+export type CognitivePhase = {
+  beads: string
+  color: 'idle' | 'thinking' | 'tool' | 'integrating'
+  spinner: 'think' | 'tool'
+}
 
-    return () => {
-      clearInterval(face)
-      clearInterval(clock)
-    }
-  }, [])
+export function buildCognitivePhase({
+  busy,
+  reasoningStreaming = false,
+  streaming = '',
+  tools = [],
+  turnTrail = []
+}: CognitivePhaseInput): CognitivePhase | null {
+  if (!busy) {
+    return null
+  }
+
+  if (tools.length > 0) {
+    return { beads: '⚙◐◇', color: 'tool', spinner: 'tool' }
+  }
+
+  if (turnTrail.length > 0) {
+    return { beads: '◇◐✦', color: 'integrating', spinner: 'think' }
+  }
+
+  if (reasoningStreaming || streaming.trim()) {
+    return { beads: '◐◇✦', color: 'thinking', spinner: 'think' }
+  }
+
+  return { beads: '◐✦◇', color: 'thinking', spinner: 'think' }
+}
+
+function CognitivePhaseGlyphs({ phase, t }: { phase: CognitivePhase; t: Theme }) {
+  const color = phase.color === 'tool' ? t.color.amber : phase.color === 'integrating' ? t.color.gold : t.color.statusGood
 
   return (
     <Text color={color}>
-      {FACES[tick % FACES.length]} {VERBS[tick % VERBS.length]}…{startedAt ? ` · ${fmtDuration(now - startedAt)}` : ''}
+      <Spinner color={color} variant={phase.spinner} /> {phase.beads}
     </Text>
   )
 }
@@ -253,7 +281,6 @@ export function StatusRule({
   cwdLabel,
   cols,
   busy,
-  statusColor,
   model,
   usage,
   bgCount,
@@ -265,6 +292,15 @@ export function StatusRule({
   t
 }: StatusRuleProps) {
   const leftWidth = Math.max(12, cols - cwdLabel.length - 3)
+  const turn = useStore($turnState)
+
+  const phase = buildCognitivePhase({
+    busy,
+    reasoningStreaming: turn.reasoningStreaming,
+    streaming: turn.streaming,
+    tools: turn.tools,
+    turnTrail: turn.turnTrail
+  })
 
   return (
     <Box height={1}>
@@ -294,10 +330,10 @@ export function StatusRule({
               <PromptElapsed live={busy} ms={promptElapsedMs} startedAt={turnStartedAt} />
             </Text>
           )}
-          {busy ? (
-            <Text color={statusColor}>
+          {phase ? (
+            <Text>
               {' │ '}
-              <FaceTicker color={statusColor} startedAt={turnStartedAt} />
+              <CognitivePhaseGlyphs phase={phase} t={t} />
             </Text>
           ) : null}
           <SpawnHud t={t} />
