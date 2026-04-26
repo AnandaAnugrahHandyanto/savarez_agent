@@ -2,6 +2,7 @@
 
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -61,6 +62,25 @@ def _make_event(chat_id: str, thread_id: str, message_id: str = "1") -> MessageE
     )
 
 
+def _make_gateway_runner(adapter: BasePlatformAdapter):
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner._running_agents = {}
+    runner._running_agents_ts = {}
+    runner._pending_messages = {}
+    runner._busy_ack_ts = {}
+    runner._draining = False
+    runner._restart_requested = False
+    runner._update_prompt_pending = {}
+    runner._is_user_authorized = lambda _source: True
+    runner.hooks = SimpleNamespace(emit=AsyncMock())
+    runner.config = {}
+    runner.adapters = {adapter.platform: adapter}
+    runner._handle_message_with_agent = AsyncMock(return_value="SHOULD_NOT_RUN")
+    return runner
+
+
 class TestBasePlatformTopicSessions:
     @pytest.mark.asyncio
     async def test_handle_message_does_not_interrupt_different_topic(self, monkeypatch):
@@ -106,6 +126,218 @@ class TestBasePlatformTopicSessions:
 
         assert scheduled == []
         assert adapter.get_pending_message(build_session_key(pending_event.source)) == pending_event
+
+    @pytest.mark.asyncio
+    async def test_busy_queue_command_bypasses_active_session_guard(self):
+        adapter = DummyTelegramAdapter()
+        adapter._busy_session_handler = AsyncMock(return_value=True)
+        handled = []
+
+        async def handler(event):
+            handled.append(event.text)
+            return "Queued for the next turn."
+
+        adapter.set_message_handler(handler)
+
+        active_event = _make_event("-1001", "10")
+        adapter._active_sessions[build_session_key(active_event.source)] = asyncio.Event()
+
+        queue_event = MessageEvent(
+            text="/queue remember this",
+            source=active_event.source,
+            message_id="2",
+        )
+        await adapter.handle_message(queue_event)
+
+        assert handled == ["/queue remember this"]
+        adapter._busy_session_handler.assert_not_awaited()
+        assert adapter.sent == [
+            {
+                "chat_id": "-1001",
+                "content": "Queued for the next turn.",
+                "reply_to": "2",
+                "metadata": {"thread_id": "10"},
+            }
+        ]
+        assert adapter._pending_messages == {}
+        assert not adapter._active_sessions[build_session_key(active_event.source)].is_set()
+
+    @pytest.mark.asyncio
+    async def test_busy_queue_alias_bypasses_active_session_guard(self):
+        adapter = DummyTelegramAdapter()
+        adapter._busy_session_handler = AsyncMock(return_value=True)
+        handled = []
+
+        async def handler(event):
+            handled.append(event.text)
+            return "Queued via alias."
+
+        adapter.set_message_handler(handler)
+
+        active_event = _make_event("-1001", "10")
+        adapter._active_sessions[build_session_key(active_event.source)] = asyncio.Event()
+
+        queue_event = MessageEvent(
+            text="/q remember this too",
+            source=active_event.source,
+            message_id="3",
+        )
+        await adapter.handle_message(queue_event)
+
+        assert handled == ["/q remember this too"]
+        adapter._busy_session_handler.assert_not_awaited()
+        assert adapter.sent == [
+            {
+                "chat_id": "-1001",
+                "content": "Queued via alias.",
+                "reply_to": "3",
+                "metadata": {"thread_id": "10"},
+            }
+        ]
+        assert adapter._pending_messages == {}
+        assert not adapter._active_sessions[build_session_key(active_event.source)].is_set()
+
+    @pytest.mark.asyncio
+    async def test_busy_model_command_bypasses_active_session_guard(self):
+        adapter = DummyTelegramAdapter()
+        adapter._busy_session_handler = AsyncMock(return_value=True)
+        handled = []
+
+        async def handler(event):
+            handled.append(event.text)
+            return "Agent is running — wait or /stop first, then switch models."
+
+        adapter.set_message_handler(handler)
+
+        active_event = _make_event("-1001", "10")
+        adapter._active_sessions[build_session_key(active_event.source)] = asyncio.Event()
+
+        model_event = MessageEvent(
+            text="/model gpt-5",
+            source=active_event.source,
+            message_id="4",
+        )
+        await adapter.handle_message(model_event)
+
+        assert handled == ["/model gpt-5"]
+        adapter._busy_session_handler.assert_not_awaited()
+        assert adapter.sent == [
+            {
+                "chat_id": "-1001",
+                "content": "Agent is running — wait or /stop first, then switch models.",
+                "reply_to": "4",
+                "metadata": {"thread_id": "10"},
+            }
+        ]
+        assert adapter._pending_messages == {}
+        assert not adapter._active_sessions[build_session_key(active_event.source)].is_set()
+
+    @pytest.mark.asyncio
+    async def test_busy_queue_reaches_runner_busy_semantics_during_handoff(self):
+        adapter = DummyTelegramAdapter()
+        runner = _make_gateway_runner(adapter)
+        adapter.set_message_handler(runner._handle_message)
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1001",
+            chat_type="group",
+            thread_id="10",
+            user_id="u1",
+            user_name="tester",
+        )
+        session_key = build_session_key(source)
+        adapter._active_sessions[session_key] = asyncio.Event()
+
+        queue_event = MessageEvent(
+            text="/queue remember this",
+            source=source,
+            message_id="5a",
+        )
+        await adapter.handle_message(queue_event)
+
+        runner._handle_message_with_agent.assert_not_awaited()
+        assert adapter.sent == [
+            {
+                "chat_id": "-1001",
+                "content": "Queued for the next turn.",
+                "reply_to": "5a",
+                "metadata": {"thread_id": "10"},
+            }
+        ]
+        assert session_key in adapter._pending_messages
+        assert adapter._pending_messages[session_key].text == "remember this"
+
+    @pytest.mark.asyncio
+    async def test_busy_queue_alias_reaches_runner_busy_semantics_during_handoff(self):
+        adapter = DummyTelegramAdapter()
+        runner = _make_gateway_runner(adapter)
+        adapter.set_message_handler(runner._handle_message)
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1001",
+            chat_type="group",
+            thread_id="10",
+            user_id="u1",
+            user_name="tester",
+        )
+        session_key = build_session_key(source)
+        adapter._active_sessions[session_key] = asyncio.Event()
+
+        queue_event = MessageEvent(
+            text="/q remember this too",
+            source=source,
+            message_id="5",
+        )
+        await adapter.handle_message(queue_event)
+
+        runner._handle_message_with_agent.assert_not_awaited()
+        assert adapter.sent == [
+            {
+                "chat_id": "-1001",
+                "content": "Queued for the next turn.",
+                "reply_to": "5",
+                "metadata": {"thread_id": "10"},
+            }
+        ]
+        assert session_key in adapter._pending_messages
+        assert adapter._pending_messages[session_key].text == "remember this too"
+
+    @pytest.mark.asyncio
+    async def test_busy_model_reaches_runner_busy_semantics_during_handoff(self):
+        adapter = DummyTelegramAdapter()
+        runner = _make_gateway_runner(adapter)
+        adapter.set_message_handler(runner._handle_message)
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1001",
+            chat_type="group",
+            thread_id="10",
+            user_id="u1",
+            user_name="tester",
+        )
+        session_key = build_session_key(source)
+        adapter._active_sessions[session_key] = asyncio.Event()
+
+        model_event = MessageEvent(
+            text="/model gpt-5",
+            source=source,
+            message_id="6",
+        )
+        await adapter.handle_message(model_event)
+
+        runner._handle_message_with_agent.assert_not_awaited()
+        assert adapter.sent == [
+            {
+                "chat_id": "-1001",
+                "content": "Agent is running — wait or /stop first, then switch models.",
+                "reply_to": "6",
+                "metadata": {"thread_id": "10"},
+            }
+        ]
+        assert adapter._pending_messages == {}
 
     @pytest.mark.asyncio
     async def test_process_message_background_replies_in_same_topic(self):

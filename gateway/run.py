@@ -3367,15 +3367,24 @@ class GatewayRunner:
                 )
                 self._release_running_agent_state(_quick_key)
 
-        if _quick_key in self._running_agents:
+        _busy_session_bypass = bool(getattr(event, "_busy_session_bypass", False))
+        from hermes_cli.commands import (
+            ACTIVE_SESSION_BYPASS_COMMANDS as _DEDICATED_HANDLERS,
+            resolve_command as _resolve_cmd_inner,
+        )
+        _evt_cmd = event.get_command()
+        _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
+        _requires_busy_semantics = (
+            _busy_session_bypass
+            and _cmd_def_inner is not None
+            and _cmd_def_inner.name in ("queue", "model")
+        )
+
+        if _quick_key in self._running_agents or _requires_busy_semantics:
             if event.get_command() == "status":
                 return await self._handle_status_command(event)
 
             # Resolve the command once for all early-intercept checks below.
-            from hermes_cli.commands import (
-                ACTIVE_SESSION_BYPASS_COMMANDS as _DEDICATED_HANDLERS,
-                resolve_command as _resolve_cmd_inner,
-            )
             _evt_cmd = event.get_command()
             _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
 
@@ -3417,18 +3426,27 @@ class GatewayRunner:
                 return await self._handle_reset_command(event)
 
             # /queue <prompt> — queue without interrupting
-            if event.get_command() in ("queue", "q"):
+            if _cmd_def_inner and _cmd_def_inner.name == "queue":
                 queued_text = event.get_command_args().strip()
-                if not queued_text:
+                has_media = bool(getattr(event, "media_urls", None))
+                if not queued_text and not has_media:
                     return "Usage: /queue <prompt>"
                 adapter = self.adapters.get(source.platform)
                 if adapter:
                     queued_event = MessageEvent(
                         text=queued_text,
-                        message_type=MessageType.TEXT,
+                        message_type=event.message_type if has_media else MessageType.TEXT,
                         source=event.source,
+                        raw_message=event.raw_message,
                         message_id=event.message_id,
+                        media_urls=list(getattr(event, "media_urls", []) or []),
+                        media_types=list(getattr(event, "media_types", []) or []),
+                        reply_to_message_id=event.reply_to_message_id,
+                        reply_to_text=event.reply_to_text,
+                        auto_skill=event.auto_skill,
                         channel_prompt=event.channel_prompt,
+                        internal=event.internal,
+                        timestamp=event.timestamp,
                     )
                     adapter._pending_messages[_quick_key] = queued_event
                 return "Queued for the next turn."
