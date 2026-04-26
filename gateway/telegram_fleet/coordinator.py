@@ -416,6 +416,7 @@ class FleetCoordinator:
                 )
 
         results: List[SwarmTaskResult] = []
+        wall_clock_start = time.monotonic()
         with ThreadPoolExecutor(max_workers=min(max_parallel, len(bindings))) as ex:
             futures = {
                 ex.submit(
@@ -450,11 +451,20 @@ class FleetCoordinator:
                         f"✅ done: {summary}" if not result.error else f"❌ failed: {summary}",
                     )
 
+        # Kimi-style Critical Path metric: wall-clock per stage = max(workers).
+        # Single-stage fan-out so critical_path == max(durations).
+        durations = [r.duration_seconds for r in results]
+        critical_path = max(durations) if durations else 0.0
+        total_serial = sum(durations)
+        speedup = (total_serial / critical_path) if critical_path > 0 else 1.0
+
         audit_event(
             "swarm_completed",
             run_id=run_id,
             tasks=len(results),
             failures=sum(1 for r in results if r.error),
+            critical_path_seconds=round(critical_path, 3),
+            parallel_speedup=round(speedup, 2),
         )
         aggregate = _aggregate(objective, results)
         return {
@@ -462,6 +472,14 @@ class FleetCoordinator:
             "objective": objective,
             "results": [r.to_dict() for r in results],
             "summary": aggregate,
+            "metrics": {
+                "workers": len(results),
+                "failures": sum(1 for r in results if r.error),
+                "critical_path_seconds": round(critical_path, 3),
+                "total_serial_seconds": round(total_serial, 3),
+                "wall_clock_seconds": round(time.monotonic() - wall_clock_start, 3),
+                "parallel_speedup": round(speedup, 2),
+            },
         }
 
     # ── internals ────────────────────────────────────────────────────
