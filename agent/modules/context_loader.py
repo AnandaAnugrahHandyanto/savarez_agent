@@ -78,13 +78,32 @@ def _estimate_tokens(item: Any) -> int:
     """Best-effort rough count of tokens."""
     return len(str(item)) // 4
 
-def _fetch_session_history(session_id: str) -> list[dict[str, Any]]:
-    """last N turns from local session store (stub: empty list if DB unreachable)."""
-    return []
-
 import os
 import httpx
 import logging
+
+from agent.modules.budgeting import SHORT_TERM_MAX_TURNS, summarize_turns
+
+
+def _fetch_session_history(session_id: str) -> list[dict[str, Any]]:
+    """Fetch turns from the gateway; compress oldest via summarize_turns if over budget."""
+    try:
+        url = f"http://localhost:9080/api/state-engine/sessions/{session_id}/turns"
+        res = httpx.get(url, timeout=5.0)
+        res.raise_for_status()
+        raw_turns: list[dict[str, Any]] = res.json().get("turns", [])
+    except Exception as exc:
+        logging.warning("_fetch_session_history failed for %s: %s", session_id, exc)
+        return []
+
+    if len(raw_turns) <= SHORT_TERM_MAX_TURNS:
+        return raw_turns
+
+    summary_text, recent = summarize_turns(raw_turns, keep_recent=SHORT_TERM_MAX_TURNS)
+    synthetic: list[dict[str, Any]] = []
+    if summary_text:
+        synthetic = [{"role": "system", "content": f"[Earlier conversation summary] {summary_text}"}]
+    return synthetic + recent
 
 def _fetch_memory_snippets(user_id: str, tenant_id: Optional[str]) -> list[str]:
     """mem0 top_k=5 with cosine >= 0.80 + tenant filter."""
