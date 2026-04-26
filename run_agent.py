@@ -6435,7 +6435,16 @@ class AIAgent:
                     # retry can block for the full stream-read timeout (120s+),
                     # causing multi-minute delays between /stop and response.
                     if self._interrupt_requested:
-                        raise InterruptedError("Agent interrupted before stream retry")
+                        # Stash for the poller to re-raise — a bare ``raise`` here
+                        # bubbles past the ``except`` below, hits ``finally`` in the
+                        # worker thread, and then dies without setting
+                        # ``result["error"]``, so the main thread would return
+                        # ``result["response"]`` (None) with no exception (see
+                        # test_stream_interrupt_retry::test_interrupt_before_first_attempt).
+                        result["error"] = InterruptedError(
+                            "Agent interrupted before stream retry"
+                        )
+                        return
                     try:
                         if self.api_mode == "anthropic_messages":
                             self._try_refresh_anthropic_client_credentials()
