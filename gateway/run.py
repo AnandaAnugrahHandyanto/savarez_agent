@@ -31,7 +31,11 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List
 
-from agent.account_usage import fetch_account_usage, render_account_usage_lines
+from agent.account_usage import (
+    fetch_all_relevant_providers,
+    render_multi_provider_hash,
+)
+from agent.usage_middleman import build_compact_usage_table
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -7346,6 +7350,50 @@ class GatewayRunner:
         source = event.source
         session_key = self._session_key_for_source(source)
 
+        def _compact_reset(dt):
+            if not dt:
+                return "unknown"
+            delta = dt - datetime.now(dt.tzinfo)
+            total_seconds = int(delta.total_seconds())
+            if total_seconds <= 0:
+                return "now"
+            hours, rem = divmod(total_seconds, 3600)
+            minutes = rem // 60
+            if hours >= 24:
+                days, hours = divmod(hours, 24)
+                return f"in {days}d {hours}h"
+            if hours > 0:
+                return f"in {hours}h {minutes}m"
+            return f"in {minutes}m"
+
+        def _build_quota_sections(snapshots):
+            sections = []
+            for snapshot in snapshots:
+                normalized = str(getattr(snapshot, "provider", "") or "").strip().lower()
+                if normalized == "anthropic":
+                    title = "claude code"
+                elif normalized == "openai-codex":
+                    title = "codex / openai"
+                else:
+                    continue
+
+                rows = []
+                for window in getattr(snapshot, "windows", ()):
+                    reset_text = None
+                    if getattr(window, "reset_at", None):
+                        reset_text = _compact_reset(window.reset_at)
+                    elif getattr(window, "detail", None):
+                        reset_text = str(window.detail).strip()
+                    if not reset_text:
+                        reset_text = "unknown"
+                    rows.append((window.label, window.used_percent, reset_text))
+                if rows:
+                    sections.append((title, rows))
+            return sections
+
+        def _render_table(lines: list[str]) -> str:
+            return "```\n" + "\n".join(lines) + "\n```"
+
         # Try running agent first (mid-turn), then cached agent (between turns)
         agent = self._running_agents.get(session_key)
         if not agent or agent is _AGENT_PENDING_SENTINEL:
@@ -7373,50 +7421,24 @@ class GatewayRunner:
             provider = provider or persisted.get("billing_provider")
             base_url = base_url or persisted.get("billing_base_url")
 
-        # Fetch account usage off the event loop so slow provider APIs don't
-        # block the gateway. Failures are non-fatal -- account_lines stays [].
-        account_lines: list[str] = []
+        # Fetch provider usage off the event loop so slow APIs don't block the gateway.
+        usage_snapshots = []
         if provider:
             try:
-                account_snapshot = await asyncio.to_thread(
-                    fetch_account_usage,
+                usage_snapshots = await asyncio.to_thread(
+                    fetch_all_relevant_providers,
                     provider,
                     base_url=base_url,
                     api_key=api_key,
                 )
             except Exception:
-                account_snapshot = None
-            if account_snapshot:
-                account_lines = render_account_usage_lines(account_snapshot, markdown=True)
+                usage_snapshots = []
 
         if agent and hasattr(agent, "session_total_tokens") and agent.session_api_calls > 0:
-            lines = []
-
-            # Rate limits (when available from provider headers)
-            rl_state = agent.get_rate_limit_state()
-            if rl_state and rl_state.has_data:
-                from agent.rate_limit_tracker import format_rate_limit_compact
-                lines.append(f"⏱️ **Rate Limits:** {format_rate_limit_compact(rl_state)}")
-                lines.append("")
-
-            # Session token usage — detailed breakdown matching CLI
             input_tokens = getattr(agent, "session_input_tokens", 0) or 0
             output_tokens = getattr(agent, "session_output_tokens", 0) or 0
             cache_read = getattr(agent, "session_cache_read_tokens", 0) or 0
             cache_write = getattr(agent, "session_cache_write_tokens", 0) or 0
-
-            lines.append("📊 **Session Token Usage**")
-            lines.append(f"Model: `{agent.model}`")
-            lines.append(f"Input tokens: {input_tokens:,}")
-            if cache_read:
-                lines.append(f"Cache read tokens: {cache_read:,}")
-            if cache_write:
-                lines.append(f"Cache write tokens: {cache_write:,}")
-            lines.append(f"Output tokens: {output_tokens:,}")
-            lines.append(f"Total: {agent.session_total_tokens:,}")
-            lines.append(f"API calls: {agent.session_api_calls}")
-
-            # Cost estimation
             try:
                 from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
                 cost_result = estimate_usage_cost(
@@ -7430,27 +7452,36 @@ class GatewayRunner:
                     provider=getattr(agent, "provider", None),
                     base_url=getattr(agent, "base_url", None),
                 )
-                if cost_result.amount_usd is not None:
-                    prefix = "~" if cost_result.status == "estimated" else ""
-                    lines.append(f"Cost: {prefix}${float(cost_result.amount_usd):.4f}")
-                elif cost_result.status == "included":
-                    lines.append("Cost: included")
             except Exception:
-                pass
+                cost_result = None
 
-            # Context window and compressions
             ctx = agent.context_compressor
-            if ctx.last_prompt_tokens:
-                pct = min(100, ctx.last_prompt_tokens / ctx.context_length * 100) if ctx.context_length else 0
-                lines.append(f"Context: {ctx.last_prompt_tokens:,} / {ctx.context_length:,} ({pct:.0f}%)")
-            if ctx.compression_count:
-                lines.append(f"Compressions: {ctx.compression_count}")
+            session_notes = []
+            if cost_result is not None and cost_result.status == "unknown":
+                session_notes.append(f"Pricing unknown for {agent.model}")
 
-            if account_lines:
-                lines.append("")
-                lines.extend(account_lines)
-
-            return "\n".join(lines)
+            lines = build_compact_usage_table(
+                model=agent.model,
+                provider=provider,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_tokens=cache_read,
+                cache_write_tokens=cache_write,
+                total_tokens=agent.session_total_tokens,
+                cost_usd=(None if cost_result is None else cost_result.amount_usd),
+                cost_status=("unknown" if cost_result is None else cost_result.status),
+                duration_str="",
+                context_tokens=getattr(ctx, "last_prompt_tokens", 0) or 0,
+                context_length=getattr(ctx, "context_length", 0) or 0,
+                api_calls=agent.session_api_calls,
+                balance_rows=render_multi_provider_hash(usage_snapshots),
+                quota_sections=_build_quota_sections(usage_snapshots),
+                include_session=True,
+                message_count=None,
+                compression_count=getattr(ctx, "compression_count", 0) or 0,
+                session_notes=session_notes,
+            )
+            return _render_table(lines)
 
         # No agent at all -- check session history for a rough count
         session_entry = self.session_store.get_or_create_session(source)
@@ -7459,18 +7490,54 @@ class GatewayRunner:
             from agent.model_metadata import estimate_messages_tokens_rough
             msgs = [m for m in history if m.get("role") in ("user", "assistant") and m.get("content")]
             approx = estimate_messages_tokens_rough(msgs)
+            balance_rows = render_multi_provider_hash(usage_snapshots)
+            if balance_rows:
+                lines = build_compact_usage_table(
+                    model="unknown",
+                    provider=provider,
+                    input_tokens=0,
+                    output_tokens=0,
+                    cache_read_tokens=0,
+                    cache_write_tokens=0,
+                    total_tokens=0,
+                    cost_usd=None,
+                    cost_status="unknown",
+                    duration_str="",
+                    context_tokens=0,
+                    context_length=0,
+                    api_calls=0,
+                    balance_rows=balance_rows,
+                    quota_sections=_build_quota_sections(usage_snapshots),
+                    include_session=False,
+                )
+                return _render_table(lines)
             lines = [
                 "📊 **Session Info**",
                 f"Messages: {len(msgs)}",
                 f"Estimated context: ~{approx:,} tokens",
                 "_(Detailed usage available after the first agent response)_",
             ]
-            if account_lines:
-                lines.append("")
-                lines.extend(account_lines)
             return "\n".join(lines)
-        if account_lines:
-            return "\n".join(account_lines)
+        if usage_snapshots:
+            lines = build_compact_usage_table(
+                model="unknown",
+                provider=provider,
+                input_tokens=0,
+                output_tokens=0,
+                cache_read_tokens=0,
+                cache_write_tokens=0,
+                total_tokens=0,
+                cost_usd=None,
+                cost_status="unknown",
+                duration_str="",
+                context_tokens=0,
+                context_length=0,
+                api_calls=0,
+                balance_rows=render_multi_provider_hash(usage_snapshots),
+                quota_sections=_build_quota_sections(usage_snapshots),
+                include_session=False,
+            )
+            return _render_table(lines)
         return "No usage data available for this session."
 
     async def _handle_insights_command(self, event: MessageEvent) -> str:

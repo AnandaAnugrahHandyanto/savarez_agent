@@ -81,7 +81,20 @@ The bar adapts to terminal width — full layout at ≥ 76 columns, compact at 5
 | Orange | 80–95% | Approaching limit |
 | Red | ≥ 95% | Near overflow — consider `/compress` |
 
-Use `/usage` for a detailed breakdown including per-category costs (input vs output tokens).
+Use `/usage` for a compact 79-character hash table that keeps the full report in one symmetric block.
+
+### `/usage` breakdown
+
+The interactive CLI renders `/usage` as a fixed-width table with `#` borders so the right edge stays aligned even when model names, balances, or reset strings are long.
+
+Depending on what Hermes knows about the current session and configured providers, the table can include:
+
+- `session` — prompt/completion/cache tokens, estimated cost, context usage, duration, and API call count
+- `balances` — provider account balances such as OpenRouter credits
+- `claude code` — Claude subscription quota rows with progress bars and reset timers
+- `codex / openai` — Codex/OpenAI quota rows with progress bars and reset timers
+
+If you run `/usage` at the very start of a fresh CLI session, Hermes will still try to show useful information. It first checks persisted counters for the current session; if there are no calls yet but the active provider is already known, it still renders balances and quota sections instead of failing with "No active agent".
 
 ### Session Resume Display
 

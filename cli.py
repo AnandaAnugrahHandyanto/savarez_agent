@@ -68,7 +68,11 @@ from agent.usage_pricing import (
     format_duration_compact,
     format_token_count_compact,
 )
-from agent.account_usage import fetch_account_usage, render_account_usage_lines
+from agent.account_usage import (
+    fetch_all_relevant_providers,
+    render_multi_provider_hash,
+)
+from agent.usage_middleman import build_compact_usage_table
 from hermes_cli.banner import _format_context_length, format_banner_version_label
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
@@ -7066,19 +7070,196 @@ class HermesCLI:
         run_debug_share(args)
 
     def _show_usage(self):
-        """Show rate limits (if available) and session token usage."""
-        if not self.agent:
+        """Show rate limits (if available) and compact session/provider usage."""
+        def _compact_reset(dt):
+            if not dt:
+                return "unknown"
+            delta = dt - datetime.now(dt.tzinfo)
+            total_seconds = int(delta.total_seconds())
+            if total_seconds <= 0:
+                return "now"
+            hours, rem = divmod(total_seconds, 3600)
+            minutes = rem // 60
+            if hours >= 24:
+                days, hours = divmod(hours, 24)
+                return f"in {days}d {hours}h"
+            if hours > 0:
+                return f"in {hours}h {minutes}m"
+            return f"in {minutes}m"
+
+        def _fetch_usage_snapshots(provider_name, resolved_base_url=None, resolved_api_key=None):
+            if not provider_name:
+                return []
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
+                try:
+                    return _pool.submit(
+                        fetch_all_relevant_providers,
+                        provider_name,
+                        base_url=resolved_base_url,
+                        api_key=resolved_api_key,
+                    ).result(timeout=12.0)
+                except (concurrent.futures.TimeoutError, Exception):
+                    return []
+
+        def _build_quota_sections(snapshots):
+            sections = []
+            for snapshot in snapshots:
+                normalized = str(getattr(snapshot, "provider", "") or "").strip().lower()
+                if normalized == "anthropic":
+                    title = "claude code"
+                elif normalized == "openai-codex":
+                    title = "codex / openai"
+                else:
+                    continue
+
+                rows = []
+                for window in getattr(snapshot, "windows", ()):
+                    reset_text = None
+                    if getattr(window, "reset_at", None):
+                        reset_text = _compact_reset(window.reset_at)
+                    elif getattr(window, "detail", None):
+                        reset_text = str(window.detail).strip()
+                    if not reset_text:
+                        reset_text = "unknown"
+                    rows.append((window.label, window.used_percent, reset_text))
+                if rows:
+                    sections.append((title, rows))
+            return sections
+
+        def _print_compact(provider_name, base_url, api_key, *, model, include_session, input_tokens=0, output_tokens=0,
+                           cache_read_tokens=0, cache_write_tokens=0, total_tokens=0, cost_result=None,
+                           duration_str="", context_tokens=0, context_length=0, api_calls=0,
+                           message_count=None, compression_count=None, session_notes=None):
+            snapshots = _fetch_usage_snapshots(provider_name, base_url, api_key)
+            lines = build_compact_usage_table(
+                model=model,
+                provider=provider_name,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
+                total_tokens=total_tokens,
+                cost_usd=(None if cost_result is None else cost_result.amount_usd),
+                cost_status=("unknown" if cost_result is None else cost_result.status),
+                duration_str=duration_str,
+                context_tokens=context_tokens,
+                context_length=context_length,
+                api_calls=api_calls,
+                balance_rows=render_multi_provider_hash(snapshots),
+                quota_sections=_build_quota_sections(snapshots),
+                include_session=include_session,
+                message_count=message_count,
+                compression_count=compression_count,
+                session_notes=session_notes or (),
+            )
+            for line in lines:
+                print(line)
+
+        agent = self.agent
+        if not agent:
+            persisted = {}
+            if getattr(self, "_session_db", None) is not None and getattr(self, "session_id", None):
+                try:
+                    persisted = self._session_db.get_session(self.session_id) or {}
+                except Exception:
+                    persisted = {}
+            persisted_calls = int(persisted.get("api_calls") or 0)
+            provider = (
+                persisted.get("billing_provider")
+                or getattr(self, "provider", None)
+            )
+            base_url = (
+                persisted.get("billing_base_url")
+                or getattr(self, "base_url", None)
+            )
+            api_key = getattr(self, "api_key", None)
+            if persisted_calls > 0:
+                from types import SimpleNamespace
+                from agent.model_metadata import get_model_context_length
+
+                model = (
+                    persisted.get("model")
+                    or getattr(self, "model", None)
+                    or "unknown"
+                )
+                input_tokens = int(
+                    persisted.get("input_tokens")
+                    or persisted.get("prompt_tokens")
+                    or 0
+                )
+                output_tokens = int(
+                    persisted.get("output_tokens")
+                    or persisted.get("completion_tokens")
+                    or 0
+                )
+                prompt_tokens = int(persisted.get("prompt_tokens") or input_tokens)
+                completion_tokens = int(persisted.get("completion_tokens") or output_tokens)
+                total_tokens = int(
+                    persisted.get("total_tokens")
+                    or (input_tokens + output_tokens)
+                )
+                cache_read_tokens = int(persisted.get("cache_read_tokens") or 0)
+                cache_write_tokens = int(persisted.get("cache_write_tokens") or 0)
+                context_tokens = input_tokens or prompt_tokens or total_tokens
+                try:
+                    context_length = int(
+                        get_model_context_length(model, provider=provider, base_url=base_url) or 0
+                    )
+                except Exception:
+                    context_length = 0
+
+                agent = SimpleNamespace(
+                    model=model,
+                    provider=provider,
+                    base_url=base_url,
+                    api_key=api_key,
+                    session_input_tokens=input_tokens,
+                    session_output_tokens=output_tokens,
+                    session_cache_read_tokens=cache_read_tokens,
+                    session_cache_write_tokens=cache_write_tokens,
+                    session_prompt_tokens=prompt_tokens,
+                    session_completion_tokens=completion_tokens,
+                    session_total_tokens=total_tokens,
+                    session_api_calls=persisted_calls,
+                    get_rate_limit_state=lambda: None,
+                    context_compressor=SimpleNamespace(
+                        last_prompt_tokens=context_tokens,
+                        context_length=context_length,
+                        compression_count=0,
+                    ),
+                )
+            elif provider:
+                print("(._.) No API calls made yet in this session.")
+                _print_compact(
+                    provider,
+                    base_url,
+                    api_key,
+                    model=getattr(self, "model", None) or "unknown",
+                    include_session=False,
+                )
+                return
+
+        if not agent:
             print("(._.) No active agent -- send a message first.")
             return
 
-        agent = self.agent
+        provider = getattr(agent, "provider", None) or getattr(self, "provider", None)
+        base_url = getattr(agent, "base_url", None) or getattr(self, "base_url", None)
+        api_key = getattr(agent, "api_key", None) or getattr(self, "api_key", None)
         calls = agent.session_api_calls
 
         if calls == 0:
             print("(._.) No API calls made yet in this session.")
+            if provider:
+                _print_compact(
+                    provider,
+                    base_url,
+                    api_key,
+                    model=getattr(agent, "model", None) or getattr(self, "model", None) or "unknown",
+                    include_session=False,
+                )
             return
 
-        # ── Rate limits (shown first when available) ────────────────
         rl_state = agent.get_rate_limit_state()
         if rl_state and rl_state.has_data:
             from agent.rate_limit_tracker import format_rate_limit_display
@@ -7086,20 +7267,16 @@ class HermesCLI:
             print(format_rate_limit_display(rl_state))
             print()
 
-        # ── Session token usage ─────────────────────────────────────
         input_tokens = getattr(agent, "session_input_tokens", 0) or 0
         output_tokens = getattr(agent, "session_output_tokens", 0) or 0
         cache_read_tokens = getattr(agent, "session_cache_read_tokens", 0) or 0
         cache_write_tokens = getattr(agent, "session_cache_write_tokens", 0) or 0
-        prompt = agent.session_prompt_tokens
-        completion = agent.session_completion_tokens
         total = agent.session_total_tokens
 
         compressor = agent.context_compressor
-        last_prompt = compressor.last_prompt_tokens
-        ctx_len = compressor.context_length
-        pct = min(100, (last_prompt / ctx_len * 100)) if ctx_len else 0
-        compressions = compressor.compression_count
+        last_prompt = getattr(compressor, "last_prompt_tokens", 0) or 0
+        ctx_len = getattr(compressor, "context_length", 0) or 0
+        compressions = getattr(compressor, "compression_count", 0) or 0
 
         msg_count = len(self.conversation_history)
         cost_result = estimate_usage_cost(
@@ -7114,55 +7291,30 @@ class HermesCLI:
             base_url=getattr(agent, "base_url", None),
         )
         elapsed = format_duration_compact((datetime.now() - self.session_start).total_seconds())
-
-        print("  📊 Session Token Usage")
-        print(f"  {'─' * 40}")
-        print(f"  Model:                     {agent.model}")
-        print(f"  Input tokens:              {input_tokens:>10,}")
-        print(f"  Cache read tokens:         {cache_read_tokens:>10,}")
-        print(f"  Cache write tokens:        {cache_write_tokens:>10,}")
-        print(f"  Output tokens:             {output_tokens:>10,}")
-        print(f"  Prompt tokens (total):     {prompt:>10,}")
-        print(f"  Completion tokens:         {completion:>10,}")
-        print(f"  Total tokens:              {total:>10,}")
-        print(f"  API calls:                 {calls:>10,}")
-        print(f"  Session duration:          {elapsed:>10}")
-        print(f"  Cost status:              {cost_result.status:>10}")
-        print(f"  Cost source:              {cost_result.source:>10}")
-        if cost_result.amount_usd is not None:
-            prefix = "~" if cost_result.status == "estimated" else ""
-            print(f"  Total cost:              {prefix}${float(cost_result.amount_usd):>10.4f}")
-        elif cost_result.status == "included":
-            print(f"  Total cost:              {'included':>10}")
-        else:
-            print(f"  Total cost:              {'n/a':>10}")
-        print(f"  {'─' * 40}")
-        print(f"  Current context:  {last_prompt:,} / {ctx_len:,} ({pct:.0f}%)")
-        print(f"  Messages:         {msg_count}")
-        print(f"  Compressions:     {compressions}")
+        session_notes = []
         if cost_result.status == "unknown":
-            print(f"  Note:             Pricing unknown for {agent.model}")
+            session_notes.append(f"Pricing unknown for {agent.model}")
 
-        # Account limits -- fetched off-thread with a hard timeout so slow
-        # provider APIs don't hang the prompt.
-        provider = getattr(agent, "provider", None) or getattr(self, "provider", None)
-        base_url = getattr(agent, "base_url", None) or getattr(self, "base_url", None)
-        api_key = getattr(agent, "api_key", None) or getattr(self, "api_key", None)
-        account_snapshot = None
-        if provider:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
-                try:
-                    account_snapshot = _pool.submit(
-                        fetch_account_usage, provider,
-                        base_url=base_url, api_key=api_key,
-                    ).result(timeout=10.0)
-                except (concurrent.futures.TimeoutError, Exception):
-                    account_snapshot = None
-        account_lines = [f"  {line}" for line in render_account_usage_lines(account_snapshot)]
-        if account_lines:
-            print()
-            for line in account_lines:
-                print(line)
+        _print_compact(
+            provider,
+            base_url,
+            api_key,
+            model=agent.model,
+            include_session=True,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_write_tokens=cache_write_tokens,
+            total_tokens=total,
+            cost_result=cost_result,
+            duration_str=elapsed,
+            context_tokens=last_prompt,
+            context_length=ctx_len,
+            api_calls=calls,
+            message_count=msg_count,
+            compression_count=compressions,
+            session_notes=session_notes,
+        )
 
         if self.verbose:
             logging.getLogger().setLevel(logging.DEBUG)

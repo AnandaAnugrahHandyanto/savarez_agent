@@ -268,7 +268,71 @@ class TestCLIStatusBar:
 
 
 class TestCLIUsageReport:
-    def test_show_usage_includes_estimated_cost(self, capsys):
+    def test_show_usage_without_agent_still_shows_account_limits_when_provider_known(self, capsys, monkeypatch):
+        cli_obj = _make_cli(model="anthropic/claude-sonnet-4.6")
+        cli_obj.provider = "openrouter"
+        cli_obj.base_url = "https://openrouter.ai/api/v1"
+        cli_obj.api_key = "test-key"
+        cli_obj.verbose = False
+        cli_obj._session_db = MagicMock()
+        cli_obj._session_db.get_session.return_value = {}
+
+        monkeypatch.setattr(
+            "cli.fetch_all_relevant_providers",
+            lambda provider, base_url=None, api_key=None: [],
+        )
+        monkeypatch.setattr(
+            "cli.render_multi_provider_hash",
+            lambda snapshots: [("openrouter", "Credits balance: $12.34")],
+        )
+
+        cli_obj._show_usage()
+        output = capsys.readouterr().out
+
+        lines = [line for line in output.splitlines() if line]
+        assert lines[0] == "(._.) No API calls made yet in this session."
+        table_lines = lines[1:]
+        assert table_lines[0] == "#" * 79
+        assert all(len(line) == 79 for line in table_lines)
+        assert any("balances" in line for line in table_lines)
+        assert any("openrouter" in line for line in table_lines)
+        assert any("Credits balance: $12.34" in line for line in table_lines)
+
+    def test_show_usage_uses_persisted_session_when_agent_not_active(self, capsys, monkeypatch):
+        cli_obj = _make_cli()
+        cli_obj.session_id = "sess-usage"
+        cli_obj._session_db = MagicMock()
+        cli_obj.verbose = False
+        cli_obj._session_db.get_session.return_value = {
+            "model": "anthropic/claude-sonnet-4.6",
+            "billing_provider": "openrouter",
+            "billing_base_url": "https://openrouter.ai/api/v1",
+            "prompt_tokens": 10_230,
+            "completion_tokens": 2_220,
+            "total_tokens": 12_450,
+            "api_calls": 7,
+            "cache_read_tokens": 300,
+            "cache_write_tokens": 100,
+            "estimated_cost_usd": 0.0642,
+        }
+        monkeypatch.setattr(
+            "cli.fetch_all_relevant_providers",
+            lambda provider, base_url=None, api_key=None: [],
+        )
+
+        cli_obj._show_usage()
+        output = capsys.readouterr().out
+        lines = [line for line in output.splitlines() if line]
+
+        assert lines[0] == "#" * 79
+        assert all(len(line) == 79 for line in lines)
+        assert any("openrouter / anthropic/claude-sonnet-4.6" in line for line in lines)
+        assert any("tokens" in line and "12,450" in line for line in lines)
+        assert any("calls" in line and "7" in line for line in lines)
+        assert any("cost" in line and "$" in line for line in lines)
+
+    def test_show_usage_renders_compact_table_with_provider_and_quota_sections(self, capsys, monkeypatch):
+        from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
         cli_obj = _attach_agent(
             _make_cli(),
             prompt_tokens=10_230,
@@ -281,17 +345,60 @@ class TestCLIUsageReport:
         )
         cli_obj.verbose = False
 
+        monkeypatch.setattr(
+            "cli.fetch_all_relevant_providers",
+            lambda provider, base_url=None, api_key=None: [
+                AccountUsageSnapshot(
+                    provider="openrouter",
+                    source="credits_api",
+                    fetched_at=datetime.now(),
+                    details=("Credits balance: $44.48",),
+                ),
+                AccountUsageSnapshot(
+                    provider="anthropic",
+                    source="oauth_usage_api",
+                    fetched_at=datetime.now(),
+                    windows=(
+                        AccountUsageWindow(
+                            label="Current session",
+                            used_percent=55.0,
+                            detail="in 3h 10m",
+                        ),
+                    ),
+                ),
+                AccountUsageSnapshot(
+                    provider="openai-codex",
+                    source="usage_api",
+                    fetched_at=datetime.now(),
+                    windows=(
+                        AccountUsageWindow(
+                            label="5h limit",
+                            used_percent=0.0,
+                            detail="in 5h 26m",
+                        ),
+                    ),
+                ),
+            ],
+        )
+        monkeypatch.setattr(
+            "cli.render_multi_provider_hash",
+            lambda snapshots: [("openrouter", "Credits balance: $44.48")],
+        )
+
         cli_obj._show_usage()
         output = capsys.readouterr().out
+        lines = [line for line in output.splitlines() if line]
 
-        assert "Model:" in output
-        assert "Cost status:" in output
-        assert "Cost source:" in output
-        assert "Total cost:" in output
-        assert "$" in output
-        assert "0.064" in output
-        assert "Session duration:" in output
-        assert "Compressions:" in output
+        assert lines[0] == "#" * 79
+        assert lines[-1] == "#" * 79
+        assert all(len(line) == 79 for line in lines)
+        assert any("session" in line for line in lines)
+        assert any("balances" in line for line in lines)
+        assert any("claude code" in line for line in lines)
+        assert any("codex / openai" in line for line in lines)
+        assert any("Credits balance: $44.48" in line for line in lines)
+        assert any("$0.064" in line for line in lines)
+        assert any("[████████" in line or "[███████" in line for line in lines)
 
     def test_show_usage_marks_unknown_pricing(self, capsys):
         cli_obj = _attach_agent(
@@ -307,10 +414,12 @@ class TestCLIUsageReport:
 
         cli_obj._show_usage()
         output = capsys.readouterr().out
+        lines = [line for line in output.splitlines() if line]
 
-        assert "Total cost:" in output
-        assert "n/a" in output
-        assert "Pricing unknown for local/my-custom-model" in output
+        assert lines[0] == "#" * 79
+        assert all(len(line) == 79 for line in lines)
+        assert any("cost" in line and "n/a" in line for line in lines)
+        assert any("Pricing unknown for local/my-custom-model" in line for line in lines)
 
     def test_zero_priced_provider_models_stay_unknown(self, capsys):
         cli_obj = _attach_agent(
@@ -326,10 +435,12 @@ class TestCLIUsageReport:
 
         cli_obj._show_usage()
         output = capsys.readouterr().out
+        lines = [line for line in output.splitlines() if line]
 
-        assert "Total cost:" in output
-        assert "n/a" in output
-        assert "Pricing unknown for glm-5" in output
+        assert lines[0] == "#" * 79
+        assert all(len(line) == 79 for line in lines)
+        assert any("cost" in line and "n/a" in line for line in lines)
+        assert any("Pricing unknown for glm-5" in line for line in lines)
 
 
 class TestStatusBarWidthSource:

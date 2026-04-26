@@ -324,3 +324,40 @@ def fetch_account_usage(
     except Exception:
         return None
     return None
+
+
+def fetch_all_relevant_providers(
+    provider: Optional[str],
+    *,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> list[AccountUsageSnapshot]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for candidate in (provider, "openrouter", "anthropic", "openai-codex"):
+        normalized = str(candidate or "").strip().lower()
+        if normalized in {"", "auto", "custom"} or normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+
+    snapshots: list[AccountUsageSnapshot] = []
+    primary = str(provider or "").strip().lower()
+    for current in ordered:
+        kwargs: dict[str, Optional[str]] = {}
+        if current == primary:
+            kwargs = {"base_url": base_url, "api_key": api_key}
+        snapshot = fetch_account_usage(current, **kwargs)
+        if snapshot and (snapshot.available or snapshot.unavailable_reason):
+            snapshots.append(snapshot)
+    return snapshots
+
+
+def render_multi_provider_hash(snapshots: list[AccountUsageSnapshot]) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    for snapshot in snapshots:
+        detail_text = " • ".join(part.strip() for part in snapshot.details if str(part).strip())
+        if not detail_text:
+            continue
+        rows.append((snapshot.provider, detail_text))
+    return rows

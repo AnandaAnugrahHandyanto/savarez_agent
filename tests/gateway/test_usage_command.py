@@ -1,6 +1,5 @@
 """Tests for gateway /usage command — agent cache lookup and output fields."""
 
-import asyncio
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -27,12 +26,10 @@ def _make_mock_agent(**overrides):
     for k, v in defaults.items():
         setattr(agent, k, v)
 
-    # Rate limit state
     rl = MagicMock()
     rl.has_data = True
     agent.get_rate_limit_state.return_value = rl
 
-    # Context compressor
     ctx = MagicMock()
     ctx.last_prompt_tokens = 30_000
     ctx.context_length = 200_000
@@ -44,7 +41,7 @@ def _make_mock_agent(**overrides):
 
 def _make_runner(session_key, agent=None, cached_agent=None):
     """Build a bare GatewayRunner with just the fields _handle_usage_command needs."""
-    from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
+    from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner._running_agents = {}
@@ -59,7 +56,6 @@ def _make_runner(session_key, agent=None, cached_agent=None):
     if cached_agent is not None:
         runner._agent_cache[session_key] = (cached_agent, "sig")
 
-    # Wire helper
     runner._session_key_for_source = MagicMock(return_value=session_key)
 
     return runner
@@ -78,19 +74,22 @@ class TestUsageCachedAgent:
         event = MagicMock()
 
         with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
+             patch("gateway.run.fetch_all_relevant_providers", return_value=[]), \
              patch("agent.usage_pricing.estimate_usage_cost") as mock_cost:
             mock_cost.return_value = MagicMock(amount_usd=0.1234, status="estimated")
             result = await runner._handle_usage_command(event)
 
+        assert "```" in result
+        assert "#" * 79 in result
         assert "claude-sonnet-4.6" in result
-        assert "35,000" in result  # input tokens
-        assert "10,000" in result  # output tokens
-        assert "5,000" in result   # cache read
-        assert "2,000" in result   # cache write
-        assert "50,000" in result  # total
+        assert "35,000" in result
+        assert "10,000" in result
+        assert "5,000" in result
+        assert "2,000" in result
+        assert "50,000" in result
         assert "$0.1234" in result
-        assert "30,000" in result  # context
-        assert "Compressions: 1" in result
+        assert "30,000" in result
+        assert "compressions 1" in result
 
     @pytest.mark.asyncio
     async def test_running_agent_preferred_over_cache(self):
@@ -101,12 +100,13 @@ class TestUsageCachedAgent:
         event = MagicMock()
 
         with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
+             patch("gateway.run.fetch_all_relevant_providers", return_value=[]), \
              patch("agent.usage_pricing.estimate_usage_cost") as mock_cost:
             mock_cost.return_value = MagicMock(amount_usd=None, status="unknown")
             result = await runner._handle_usage_command(event)
 
-        assert "80,000" in result   # running agent's total
-        assert "API calls: 10" in result
+        assert "80,000" in result
+        assert "calls" in result and "10" in result
 
     @pytest.mark.asyncio
     async def test_sentinel_skipped_uses_cache(self):
@@ -119,12 +119,13 @@ class TestUsageCachedAgent:
         event = MagicMock()
 
         with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
+             patch("gateway.run.fetch_all_relevant_providers", return_value=[]), \
              patch("agent.usage_pricing.estimate_usage_cost") as mock_cost:
             mock_cost.return_value = MagicMock(amount_usd=None, status="unknown")
             result = await runner._handle_usage_command(event)
 
         assert "claude-sonnet-4.6" in result
-        assert "Session Token Usage" in result
+        assert "#" * 79 in result
 
     @pytest.mark.asyncio
     async def test_no_agent_anywhere_falls_to_history(self):
@@ -155,12 +156,13 @@ class TestUsageCachedAgent:
         event = MagicMock()
 
         with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
+             patch("gateway.run.fetch_all_relevant_providers", return_value=[]), \
              patch("agent.usage_pricing.estimate_usage_cost") as mock_cost:
             mock_cost.return_value = MagicMock(amount_usd=None, status="unknown")
             result = await runner._handle_usage_command(event)
 
-        assert "Cache read" not in result
-        assert "Cache write" not in result
+        assert "cache-r" not in result
+        assert "cache-w" not in result
 
     @pytest.mark.asyncio
     async def test_cost_included_status(self):
@@ -170,15 +172,17 @@ class TestUsageCachedAgent:
         event = MagicMock()
 
         with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
+             patch("gateway.run.fetch_all_relevant_providers", return_value=[]), \
              patch("agent.usage_pricing.estimate_usage_cost") as mock_cost:
             mock_cost.return_value = MagicMock(amount_usd=None, status="included")
             result = await runner._handle_usage_command(event)
 
-        assert "Cost: included" in result
+        assert "cost" in result
+        assert "included" in result
 
 
 class TestUsageAccountSection:
-    """Account-limits section appended to /usage output (PR #2486)."""
+    """Provider balance and quota sections appended to compact /usage output."""
 
     @pytest.mark.asyncio
     async def test_usage_command_includes_account_section(self, monkeypatch):
@@ -189,24 +193,20 @@ class TestUsageAccountSection:
         event = MagicMock()
 
         monkeypatch.setattr(
-            "gateway.run.fetch_account_usage",
-            lambda provider, base_url=None, api_key=None: object(),
+            "gateway.run.fetch_all_relevant_providers",
+            lambda provider, base_url=None, api_key=None: [],
         )
         monkeypatch.setattr(
-            "gateway.run.render_account_usage_lines",
-            lambda snapshot, markdown=False: [
-                "📈 **Account limits**",
-                "Provider: openai-codex (Pro)",
-                "Session: 85% remaining (15% used)",
-            ],
+            "gateway.run.render_multi_provider_hash",
+            lambda snapshots: [("openai-codex", "Provider: openai-codex (Pro)")],
         )
         with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
              patch("agent.usage_pricing.estimate_usage_cost") as mock_cost:
             mock_cost.return_value = MagicMock(amount_usd=None, status="included")
             result = await runner._handle_usage_command(event)
 
-        assert "📊 **Session Token Usage**" in result
-        assert "📈 **Account limits**" in result
+        assert "#" * 79 in result
+        assert "balances" in result
         assert "Provider: openai-codex (Pro)" in result
 
     @pytest.mark.asyncio
@@ -233,15 +233,12 @@ class TestUsageAccountSection:
 
         monkeypatch.setattr("gateway.run.asyncio.to_thread", _fake_to_thread)
         monkeypatch.setattr(
-            "gateway.run.fetch_account_usage",
-            lambda provider, base_url=None, api_key=None: object(),
+            "gateway.run.fetch_all_relevant_providers",
+            lambda provider, base_url=None, api_key=None: [],
         )
         monkeypatch.setattr(
-            "gateway.run.render_account_usage_lines",
-            lambda snapshot, markdown=False: [
-                "📈 **Account limits**",
-                "Provider: openai-codex (Pro)",
-            ],
+            "gateway.run.render_multi_provider_hash",
+            lambda snapshots: [("openai-codex", "Provider: openai-codex (Pro)")],
         )
 
         event = MagicMock()
@@ -249,5 +246,60 @@ class TestUsageAccountSection:
 
         assert calls["args"] == ("openai-codex",)
         assert calls["kwargs"]["base_url"] == "https://chatgpt.com/backend-api/codex"
-        assert "📊 **Session Info**" in result
-        assert "📈 **Account limits**" in result
+        assert "#" * 79 in result
+        assert "balances" in result
+
+    @pytest.mark.asyncio
+    async def test_usage_command_renders_quota_sections_in_compact_table(self, monkeypatch):
+        from datetime import datetime
+        from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
+
+        agent = _make_mock_agent(provider="openrouter")
+        runner = _make_runner(SK, cached_agent=agent)
+        event = MagicMock()
+
+        monkeypatch.setattr(
+            "gateway.run.fetch_all_relevant_providers",
+            lambda provider, base_url=None, api_key=None: [
+                AccountUsageSnapshot(
+                    provider="openrouter",
+                    source="credits_api",
+                    fetched_at=datetime.now(),
+                    details=("Credits balance: $44.48",),
+                ),
+                AccountUsageSnapshot(
+                    provider="anthropic",
+                    source="oauth_usage_api",
+                    fetched_at=datetime.now(),
+                    windows=(
+                        AccountUsageWindow(
+                            label="Current session",
+                            used_percent=55.0,
+                            detail="in 3h 10m",
+                        ),
+                    ),
+                ),
+                AccountUsageSnapshot(
+                    provider="openai-codex",
+                    source="usage_api",
+                    fetched_at=datetime.now(),
+                    windows=(
+                        AccountUsageWindow(
+                            label="5h limit",
+                            used_percent=0.0,
+                            detail="in 5h 26m",
+                        ),
+                    ),
+                ),
+            ],
+        )
+
+        with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
+             patch("agent.usage_pricing.estimate_usage_cost") as mock_cost:
+            mock_cost.return_value = MagicMock(amount_usd=0.1234, status="estimated")
+            result = await runner._handle_usage_command(event)
+
+        assert "claude code" in result
+        assert "codex / openai" in result
+        assert "Credits balance: $44.48" in result
+        assert "[███████" in result or "[████████" in result
