@@ -88,6 +88,88 @@ class TestLoadMCPConfig:
 # ---------------------------------------------------------------------------
 
 class TestSchemaConversion:
+    def test_known_claude_context_runtime_metadata_exposes_indexing_workflow(self):
+        from tools.mcp_tool import _get_known_mcp_runtime_metadata
+
+        metadata = _get_known_mcp_runtime_metadata("claude-context", "index_codebase")
+
+        assert "filesystem" in metadata["runtime_dependencies"]
+        assert "vector_store" in metadata["runtime_dependencies"]
+        assert "indexing_workflow" in metadata["execution_tags"]
+        assert "side_effect" in metadata["execution_tags"]
+
+    def test_normalizes_claude_context_indexing_status_to_partial(self):
+        from tools.mcp_tool import _normalize_known_mcp_success_payload
+
+        payload = {
+            "result": "ok",
+            "structuredContent": {
+                "status": "indexing",
+                "progress": 42,
+            },
+        }
+
+        normalized = _normalize_known_mcp_success_payload(
+            "claude-context",
+            "get_indexing_status",
+            payload,
+            {"path": "/tmp/repo"},
+        )
+
+        assert normalized["repo_context_result"] == {
+            "codebase_path": "/tmp/repo",
+            "workflow": "index/status/search/clear",
+            "identity_scope": "absolute_path",
+            "state": "indexing",
+            "retrieval_status": "partial",
+        }
+
+    def test_normalizes_claude_context_indexing_status_to_complete(self):
+        from tools.mcp_tool import _normalize_known_mcp_success_payload
+
+        payload = {
+            "result": "ok",
+            "structuredContent": {
+                "status": "indexed",
+            },
+        }
+
+        normalized = _normalize_known_mcp_success_payload(
+            "claude-context",
+            "get_indexing_status",
+            payload,
+            {"path": "/tmp/repo"},
+        )
+
+        assert normalized["repo_context_result"]["retrieval_status"] == "complete"
+
+    def test_make_tool_handler_preserves_structured_content_for_structured_only_results(self):
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(
+            return_value=SimpleNamespace(
+                content=[],
+                isError=False,
+                structuredContent={"status": "indexing"},
+            )
+        )
+        server = _make_mock_server("claude-context", session=mock_session)
+        _servers["claude-context"] = server
+
+        def fake_run(coro, timeout=30):
+            return asyncio.run(coro)
+
+        try:
+            handler = _make_tool_handler("claude-context", "get_indexing_status", 120)
+            with patch("tools.mcp_tool._run_on_mcp_loop", side_effect=fake_run):
+                result = json.loads(handler({"path": "/tmp/repo"}))
+        finally:
+            _servers.pop("claude-context", None)
+
+        assert result["structuredContent"] == {"status": "indexing"}
+        assert result["repo_context_result"]["retrieval_status"] == "partial"
+
     def test_converts_mcp_tool_to_hermes_schema(self):
         from tools.mcp_tool import _convert_mcp_schema
 
@@ -590,6 +672,168 @@ class TestDiscoverAndRegister:
         assert entry.toolset == "mcp-srv"
 
         _servers.pop("srv", None)
+
+    def test_registers_claude_context_runtime_metadata(self):
+        """Known claude-context MCP tools get Hermes runtime metadata."""
+        from tools.mcp_tool import _register_server_tools
+        from tools.registry import ToolRegistry
+
+        mock_registry = ToolRegistry()
+        server = _make_mock_server(
+            "claude-context",
+            session=MagicMock(),
+            tools=[
+                _make_mcp_tool("index_codebase", "Index codebase"),
+                _make_mcp_tool("search_code", "Search code"),
+                _make_mcp_tool("get_indexing_status", "Get indexing status"),
+                _make_mcp_tool("clear_index", "Clear index"),
+            ],
+        )
+
+        with patch("tools.registry.registry", mock_registry):
+            registered = _register_server_tools("claude-context", server, {"command": "npx"})
+
+        assert "mcp_claude_context_index_codebase" in registered
+        assert mock_registry.get_tool_runtime_metadata("mcp_claude_context_index_codebase") == {
+            "runtime_dependencies": ["filesystem", "mcp_server", "vector_store"],
+            "execution_tags": ["filesystem", "network", "side_effect", "indexing_workflow"],
+        }
+        assert mock_registry.get_tool_runtime_metadata("mcp_claude_context_search_code") == {
+            "runtime_dependencies": ["filesystem", "mcp_server", "vector_store"],
+            "execution_tags": ["filesystem", "network", "indexing_workflow"],
+        }
+        assert mock_registry.get_tool_runtime_metadata("mcp_claude_context_get_indexing_status") == {
+            "runtime_dependencies": ["filesystem", "mcp_server"],
+            "execution_tags": ["filesystem", "indexing_workflow"],
+        }
+        assert mock_registry.get_tool_runtime_metadata("mcp_claude_context_clear_index") == {
+            "runtime_dependencies": ["filesystem", "mcp_server", "vector_store"],
+            "execution_tags": ["filesystem", "network", "side_effect", "destructive", "indexing_workflow"],
+        }
+
+    def test_registers_scrapling_runtime_metadata(self):
+        """Known Scrapling MCP tools get Hermes runtime metadata."""
+        from tools.mcp_tool import _register_server_tools
+        from tools.registry import ToolRegistry
+
+        mock_registry = ToolRegistry()
+        server = _make_mock_server(
+            "scrapling",
+            session=MagicMock(),
+            tools=[
+                _make_mcp_tool("get", "Static fetch"),
+                _make_mcp_tool("fetch", "Browser fetch"),
+                _make_mcp_tool("stealthy_fetch", "Stealth browser fetch"),
+                _make_mcp_tool("open_session", "Open browser session"),
+                _make_mcp_tool("list_sessions", "List sessions"),
+                _make_mcp_tool("close_session", "Close session"),
+                _make_mcp_tool("screenshot", "Capture screenshot"),
+            ],
+        )
+
+        with patch("tools.registry.registry", mock_registry):
+            registered = _register_server_tools("scrapling", server, {"command": "scrapling"})
+
+        assert "mcp_scrapling_get" in registered
+        assert mock_registry.get_tool_runtime_metadata("mcp_scrapling_get") == {
+            "runtime_dependencies": ["mcp_server", "network"],
+            "execution_tags": ["network", "scraping"],
+        }
+        assert mock_registry.get_tool_runtime_metadata("mcp_scrapling_fetch") == {
+            "runtime_dependencies": ["mcp_server", "network", "browser_session"],
+            "execution_tags": ["network", "browser", "scraping", "side_effect"],
+        }
+        assert mock_registry.get_tool_runtime_metadata("mcp_scrapling_stealthy_fetch") == {
+            "runtime_dependencies": ["mcp_server", "network", "browser_session"],
+            "execution_tags": ["network", "browser", "scraping", "side_effect"],
+        }
+        assert mock_registry.get_tool_runtime_metadata("mcp_scrapling_open_session") == {
+            "runtime_dependencies": ["mcp_server", "browser_session"],
+            "execution_tags": ["browser", "scraping", "side_effect"],
+        }
+        assert mock_registry.get_tool_runtime_metadata("mcp_scrapling_list_sessions") == {
+            "runtime_dependencies": ["mcp_server", "browser_session"],
+            "execution_tags": ["browser", "scraping"],
+        }
+        assert mock_registry.get_tool_runtime_metadata("mcp_scrapling_close_session") == {
+            "runtime_dependencies": ["mcp_server", "browser_session"],
+            "execution_tags": ["browser", "scraping", "side_effect"],
+        }
+        assert mock_registry.get_tool_runtime_metadata("mcp_scrapling_screenshot") == {
+            "runtime_dependencies": ["mcp_server", "browser_session"],
+            "execution_tags": ["browser", "scraping"],
+        }
+
+    def test_normalizes_scrapling_fetch_result(self):
+        from tools.mcp_tool import _normalize_known_mcp_success_payload
+
+        payload = {
+            "result": "# Example title\n\nBody text",
+            "structuredContent": {
+                "status": 200,
+                "content": ["# Example title", "Body text"],
+                "url": "https://example.com/page",
+            },
+        }
+
+        normalized = _normalize_known_mcp_success_payload(
+            "scrapling",
+            "fetch",
+            payload,
+            {"session_id": "sess-1", "css_selector": "main", "main_content_only": True},
+        )
+
+        assert normalized["scrape_result"]["source_url"] == "https://example.com/page"
+        assert normalized["scrape_result"]["route_used"] == "fetch"
+        assert normalized["scrape_result"]["session_id"] == "sess-1"
+        assert normalized["scrape_result"]["selector_used"] == "main"
+        assert normalized["scrape_result"]["is_partial"] is True
+        assert "selector-targeted extraction" in normalized["scrape_result"]["caveats"]
+
+    def test_normalizes_scrapling_open_session_result(self):
+        from tools.mcp_tool import _normalize_known_mcp_success_payload
+
+        payload = {
+            "result": "Session opened",
+            "structuredContent": {
+                "session_id": "sess-42",
+                "url": "https://example.com/login",
+            },
+        }
+
+        normalized = _normalize_known_mcp_success_payload(
+            "scrapling",
+            "open_session",
+            payload,
+            {"url": "https://example.com/login"},
+        )
+
+        assert normalized["session_result"]["action"] == "open_session"
+        assert normalized["session_result"]["session_id"] == "sess-42"
+        assert normalized["session_result"]["source_url"] == "https://example.com/login"
+        assert normalized["session_result"]["is_active"] is True
+
+    def test_normalizes_scrapling_screenshot_result(self):
+        from tools.mcp_tool import _normalize_known_mcp_success_payload
+
+        payload = {
+            "result": "/tmp/example.png",
+            "structuredContent": {
+                "path": "/tmp/example.png",
+                "url": "https://example.com/page",
+            },
+        }
+
+        normalized = _normalize_known_mcp_success_payload(
+            "scrapling",
+            "screenshot",
+            payload,
+            {"session_id": "sess-9", "url": "https://example.com/page"},
+        )
+
+        assert normalized["screenshot_result"]["session_id"] == "sess-9"
+        assert normalized["screenshot_result"]["source_url"] == "https://example.com/page"
+        assert normalized["screenshot_result"]["screenshot_path"] == "/tmp/example.png"
 
 
 # ---------------------------------------------------------------------------

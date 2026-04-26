@@ -5,7 +5,7 @@ import threading
 from pathlib import Path
 from unittest.mock import patch
 
-from tools.registry import ToolRegistry, discover_builtin_tools
+from tools.registry import ToolRegistry, discover_builtin_tools, registry
 
 
 def _dummy_handler(args, **kwargs):
@@ -31,6 +31,40 @@ class TestRegisterAndDispatch:
         )
         result = json.loads(reg.dispatch("alpha", {}))
         assert result == {"ok": True}
+
+    def test_register_preserves_runtime_metadata(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="alpha",
+            toolset="core",
+            schema=_make_schema("alpha"),
+            handler=_dummy_handler,
+            runtime_dependencies=["browser_session", "filesystem"],
+            execution_tags=["network", "side_effect"],
+        )
+
+        entry = reg.get_entry("alpha")
+        assert entry is not None
+        assert entry.runtime_dependencies == ["browser_session", "filesystem"]
+        assert entry.execution_tags == ["network", "side_effect"]
+
+        metadata = reg.get_tool_runtime_metadata("alpha")
+        assert metadata == {
+            "runtime_dependencies": ["browser_session", "filesystem"],
+            "execution_tags": ["network", "side_effect"],
+        }
+
+    def test_runtime_metadata_defaults_to_empty_lists(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="alpha",
+            toolset="core",
+            schema=_make_schema("alpha"),
+            handler=_dummy_handler,
+        )
+
+        metadata = reg.get_tool_runtime_metadata("alpha")
+        assert metadata == {"runtime_dependencies": [], "execution_tags": []}
 
     def test_dispatch_passes_args(self):
         reg = ToolRegistry()
@@ -118,6 +152,41 @@ class TestUnknownToolDispatch:
         result = json.loads(reg.dispatch("nonexistent", {}))
         assert "error" in result
         assert "Unknown tool" in result["error"]
+
+
+class TestBuiltInRuntimeMetadata:
+    def test_terminal_runtime_metadata_registered(self):
+        discover_builtin_tools()
+        metadata = registry.get_tool_runtime_metadata("terminal")
+        assert "shell_session" in metadata["runtime_dependencies"]
+        assert "shell" in metadata["execution_tags"]
+        assert "side_effect" in metadata["execution_tags"]
+
+    def test_process_runtime_metadata_registered(self):
+        discover_builtin_tools()
+        metadata = registry.get_tool_runtime_metadata("process")
+        assert "shell_session" in metadata["runtime_dependencies"]
+        assert "background_process_registry" in metadata["runtime_dependencies"]
+        assert "process" in metadata["execution_tags"]
+        assert "background_process" in metadata["execution_tags"]
+        assert "long_running" in metadata["execution_tags"]
+        assert "side_effect" in metadata["execution_tags"]
+
+    def test_browser_runtime_metadata_registered(self):
+        discover_builtin_tools()
+        metadata = registry.get_tool_runtime_metadata("browser_navigate")
+        assert metadata["runtime_dependencies"] == ["browser_session"]
+        assert "browser" in metadata["execution_tags"]
+        assert "network" in metadata["execution_tags"]
+
+    def test_send_message_runtime_metadata_registered(self):
+        discover_builtin_tools()
+        metadata = registry.get_tool_runtime_metadata("send_message")
+        assert "messaging_gateway" in metadata["runtime_dependencies"]
+        assert "messaging" in metadata["execution_tags"]
+        assert "network" in metadata["execution_tags"]
+        assert "external_delivery" in metadata["execution_tags"]
+        assert "side_effect" in metadata["execution_tags"]
 
 
 class TestToolsetAvailability:

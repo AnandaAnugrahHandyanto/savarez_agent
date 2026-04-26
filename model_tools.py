@@ -23,6 +23,7 @@ Public API (signatures preserved from the original 2,400-line version):
 import json
 import asyncio
 import logging
+import os
 import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
@@ -139,11 +140,14 @@ def _run_async(coro):
 discover_builtin_tools()
 
 # MCP tool discovery (external MCP servers from config)
-try:
-    from tools.mcp_tool import discover_mcp_tools
-    discover_mcp_tools()
-except Exception as e:
-    logger.debug("MCP tool discovery failed: %s", e)
+if os.environ.get("HERMES_SKIP_MCP_DISCOVERY") == "1":
+    logger.debug("Skipping MCP tool discovery because HERMES_SKIP_MCP_DISCOVERY=1")
+else:
+    try:
+        from tools.mcp_tool import discover_mcp_tools
+        discover_mcp_tools()
+    except Exception as e:
+        logger.debug("MCP tool discovery failed: %s", e)
 
 # Plugin tool discovery (user/project/pip plugins)
 try:
@@ -337,6 +341,41 @@ def get_tool_definitions(
                         "function": {**td["function"], "description": desc},
                     }
                     break
+
+    scrapling_available = {
+        "mcp_scrapling_get",
+        "mcp_scrapling_fetch",
+        "mcp_scrapling_stealthy_fetch",
+    } & available_tool_names
+    scrapling_session_available = {"mcp_scrapling_open_session", "mcp_scrapling_screenshot"} <= available_tool_names
+    if scrapling_available:
+        for i, td in enumerate(filtered_tools):
+            name = td.get("function", {}).get("name")
+            desc = td.get("function", {}).get("description", "")
+            if name == "browser_navigate" and "mcp_scrapling_get" not in desc:
+                desc += (
+                    " For scraping or page extraction, prefer mcp_scrapling_get for public/static pages, "
+                    "escalate to mcp_scrapling_fetch when browser rendering or stateful page context is needed, "
+                    "and reserve mcp_scrapling_stealthy_fetch for sites that clearly require stealth."
+                )
+                if scrapling_session_available:
+                    desc += (
+                        " For multi-step scraping that needs the same page state, open mcp_scrapling_open_session and pair it with "
+                        "mcp_scrapling_screenshot when you need evidence from that same state."
+                    )
+                filtered_tools[i] = {
+                    "type": "function",
+                    "function": {**td["function"], "description": desc},
+                }
+            elif name == "web_extract" and "mcp_scrapling_fetch" not in desc:
+                desc += (
+                    " For page-specific DOM extraction, stateful browsing, or stealth-needed sites, "
+                    "prefer mcp_scrapling_fetch or mcp_scrapling_stealthy_fetch before escalating to full browser control."
+                )
+                filtered_tools[i] = {
+                    "type": "function",
+                    "function": {**td["function"], "description": desc},
+                }
 
     if not quiet_mode:
         if filtered_tools:
@@ -653,6 +692,11 @@ def get_all_tool_names() -> List[str]:
 def get_toolset_for_tool(tool_name: str) -> Optional[str]:
     """Return the toolset a tool belongs to."""
     return registry.get_toolset_for_tool(tool_name)
+
+
+def get_tool_runtime_metadata(tool_name: str) -> Dict[str, object]:
+    """Return structured runtime metadata for a tool."""
+    return registry.get_tool_runtime_metadata(tool_name)
 
 
 def get_available_toolsets() -> Dict[str, dict]:
