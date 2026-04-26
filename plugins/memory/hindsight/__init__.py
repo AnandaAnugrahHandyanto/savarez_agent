@@ -592,6 +592,10 @@ class HindsightMemoryProvider(MemoryProvider):
             sys.stdout.write("  LLM API key: ")
             sys.stdout.flush()
             llm_key = getpass.getpass(prompt="") if sys.stdin.isatty() else sys.stdin.readline().strip()
+            if not (llm_key and str(llm_key).strip()):
+                existing = _load_simple_env(Path(hermes_home) / ".env").get("HINDSIGHT_LLM_API_KEY", "")
+                if existing:
+                    llm_key = existing
             # Always write explicitly (including empty) so the provider sees ""
             # rather than a missing variable.  The daemon reads from .env at
             # startup and fails when HINDSIGHT_LLM_API_KEY is unset.
