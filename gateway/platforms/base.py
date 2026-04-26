@@ -982,10 +982,19 @@ def resolve_channel_prompt(
     return None
 
 
+def _read_auto_tts_config() -> bool:
+    try:
+        from hermes_cli.config import load_config as _lc
+        voice = _lc().get("voice")
+        return bool(voice.get("auto_tts", False) if isinstance(voice, dict) else False)
+    except Exception:
+        return False
+
+
 class BasePlatformAdapter(ABC):
     """
     Base class for platform adapters.
-    
+
     Subclasses implement platform-specific logic for:
     - Connecting and authenticating
     - Receiving messages
@@ -1027,6 +1036,8 @@ class BasePlatformAdapter(ABC):
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
         # Chats where auto-TTS on voice input is disabled (set by /voice off)
         self._auto_tts_disabled_chats: set = set()
+        # Global gate: voice.auto_tts must be true in config.yaml for any auto-TTS to fire.
+        self._auto_tts_globally_enabled: bool = _read_auto_tts_config()
         # Chats where typing indicator is paused (e.g. during approval waits).
         # _keep_typing skips send_typing when the chat_id is in this set.
         self._typing_paused: set = set()
@@ -2214,9 +2225,11 @@ class BasePlatformAdapter(ABC):
                     logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
                 
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
-                # Skipped when the chat has voice mode disabled (/voice off)
+                # Requires voice.auto_tts: true in config.yaml; skipped when the chat
+                # has voice mode disabled (/voice off).
                 _tts_path = None
-                if (event.message_type == MessageType.VOICE
+                if (self._auto_tts_globally_enabled
+                        and event.message_type == MessageType.VOICE
                         and text_content
                         and not media_files
                         and event.source.chat_id not in self._auto_tts_disabled_chats):
