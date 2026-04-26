@@ -838,6 +838,7 @@ class AIAgent:
         api_mode: str = None,
         acp_command: str = None,
         acp_args: list[str] | None = None,
+        acp_allow_writes: bool = False,
         command: str = None,
         args: list[str] | None = None,
         model: str = "",
@@ -972,6 +973,7 @@ class AIAgent:
         self.provider = provider_name or ""
         self.acp_command = acp_command or command
         self.acp_args = list(acp_args or args or [])
+        self.acp_allow_writes = bool(acp_allow_writes)
         if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse"}:
             self.api_mode = api_mode
         elif self.provider == "openai-codex":
@@ -1338,6 +1340,7 @@ class AIAgent:
                 if self.provider == "copilot-acp":
                     client_kwargs["command"] = self.acp_command
                     client_kwargs["args"] = self.acp_args
+                    client_kwargs["allow_writes"] = self.acp_allow_writes
                 effective_base = base_url
                 if base_url_host_matches(effective_base, "openrouter.ai"):
                     client_kwargs["default_headers"] = {
@@ -5998,6 +6001,18 @@ class AIAgent:
             or getattr(self, "_stream_callback", None) is not None
         )
 
+    def _supports_streaming_api_call(self) -> bool:
+        """Return False for local ACP adapters that expose only create()."""
+        if self.provider == "copilot-acp":
+            return False
+        base_url = str(self.base_url or "").lower()
+        if base_url.startswith("acp://copilot") or base_url.startswith("acp+tcp://"):
+            return False
+        client = getattr(self, "client", None)
+        if client is not None and client.__class__.__name__ == "CopilotACPClient":
+            return False
+        return True
+
     def _interruptible_streaming_api_call(
         self, api_kwargs: dict, *, on_first_delta: callable = None
     ):
@@ -9977,6 +9992,8 @@ class AIAgent:
                     # attempt — switch to non-streaming for the rest of this
                     # session instead of re-failing every retry.
                     if getattr(self, "_disable_streaming", False):
+                        _use_streaming = False
+                    elif not self._supports_streaming_api_call():
                         _use_streaming = False
                     elif not self._has_stream_consumers():
                         # No display/TTS consumer. Still prefer streaming for

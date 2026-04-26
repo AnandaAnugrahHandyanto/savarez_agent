@@ -12,9 +12,11 @@ Run with:  python -m pytest tests/test_delegate.py -v
 import json
 import os
 import sys
+import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from tools.delegate_tool import (
@@ -74,6 +76,140 @@ class TestDelegateRequirements(unittest.TestCase):
         # predictable budgets.
         self.assertNotIn("max_iterations", props)
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
+
+    def test_bridge_lifecycle_tools_are_in_delegation_toolset(self):
+        from toolsets import TOOLSETS, _HERMES_CORE_TOOLS
+
+        expected = {
+            "delegate_bridge_check",
+            "delegate_bridge_reply",
+            "delegate_bridge_result",
+            "delegate_bridge_kill",
+        }
+        self.assertTrue(expected.issubset(set(TOOLSETS["delegation"]["tools"])))
+        self.assertTrue(expected.issubset(set(_HERMES_CORE_TOOLS)))
+
+
+class TestBridgeTransportConfig(unittest.TestCase):
+    def test_cursor_bridge_config_bootstrap_writes_project_mcp_config(self):
+        from tools.delegate_bridge_transport import ensure_cursor_bridge_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp) / "repo"
+            cwd.mkdir()
+            root = Path(tmp) / "cache"
+            bridge_server = Path(tmp) / "bridge-mcp" / "server.js"
+            bridge_server.parent.mkdir()
+            bridge_server.write_text("// test\n")
+
+            config_path = ensure_cursor_bridge_config(cwd, root, bridge_server, "hermes-test", {})
+
+            self.assertEqual(config_path, cwd / ".cursor" / "mcp.json")
+            data = json.loads(config_path.read_text())
+            server = data["mcpServers"]["worker-bridge"]
+            self.assertEqual(server["command"], "node")
+            self.assertEqual(server["args"], [str(bridge_server)])
+            self.assertEqual(server["env"]["BRIDGE_SESSION_DIR"], str(root))
+            self.assertEqual(server["env"]["AGENT_ORCHESTRATOR_SESSION_ID"], "hermes-test")
+
+    def test_cursor_bridge_config_preserves_existing_servers(self):
+        from tools.delegate_bridge_transport import ensure_cursor_bridge_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp) / "repo"
+            cursor_dir = cwd / ".cursor"
+            cursor_dir.mkdir(parents=True)
+            existing_config = {
+                "mcpServers": {
+                    "other": {"command": "echo", "args": ["ok"]},
+                }
+            }
+            (cursor_dir / "mcp.json").write_text(json.dumps(existing_config))
+            root = Path(tmp) / "cache"
+            bridge_server = Path(tmp) / "bridge-mcp" / "server.js"
+            bridge_server.parent.mkdir()
+            bridge_server.write_text("// test\n")
+
+            ensure_cursor_bridge_config(cwd, root, bridge_server, "hermes-test", {})
+
+            data = json.loads((cursor_dir / "mcp.json").read_text())
+            self.assertIn("other", data["mcpServers"])
+            self.assertIn("worker-bridge", data["mcpServers"])
+
+    def test_cursor_bridge_config_updates_session_id_for_next_spawn(self):
+        from tools.delegate_bridge_transport import ensure_cursor_bridge_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp) / "repo"
+            cwd.mkdir()
+            root = Path(tmp) / "cache"
+            bridge_server = Path(tmp) / "bridge-mcp" / "server.js"
+            bridge_server.parent.mkdir()
+            bridge_server.write_text("// test\n")
+
+            ensure_cursor_bridge_config(cwd, root, bridge_server, "hermes-one", {})
+            ensure_cursor_bridge_config(cwd, root, bridge_server, "hermes-two", {})
+
+            data = json.loads((cwd / ".cursor" / "mcp.json").read_text())
+            env = data["mcpServers"]["worker-bridge"]["env"]
+            self.assertEqual(env["AGENT_ORCHESTRATOR_SESSION_ID"], "hermes-two")
+
+    def test_bridge_status_reports_starting_before_ipc_dir_exists(self):
+        from tools.delegate_bridge_transport import bridge_status
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "cache"
+            session_id = "hermes-test-starting"
+            session_dir = root / session_id
+            session_dir.mkdir(parents=True)
+            state = {
+                "pid": 12345,
+                "worker_type": "cursor-agent",
+                "model": "gpt-5.5-extra-high",
+                "bridge_dir": str(root / f"bridge-{session_id}"),
+                "transport": "bridge",
+                "session_id": session_id,
+            }
+            (session_dir / ".orchestrator-state.json").write_text(json.dumps(state))
+
+            with patch("tools.delegate_bridge_transport._is_running", return_value=True):
+                status = bridge_status(session_id, cfg={"agent_orchestrator_dir": str(root)})
+
+            self.assertEqual(status["status"], "starting")
+            self.assertFalse(status["bridge_ready"])
+            self.assertTrue(status["running"])
+
+    def test_bridge_status_reports_activity_diagnostics(self):
+        from tools.delegate_bridge_transport import bridge_status
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "cache"
+            session_id = "hermes-test-activity"
+            session_dir = root / session_id
+            bridge_dir = root / f"bridge-{session_id}"
+            session_dir.mkdir(parents=True)
+            bridge_dir.mkdir(parents=True)
+            (bridge_dir / "question_1.json").write_text(json.dumps({"message": "ready"}))
+            state = {
+                "pid": 12345,
+                "worker_type": "claude",
+                "model": "opus",
+                "bridge_dir": str(bridge_dir),
+                "session_dir": str(session_dir),
+                "transport": "bridge",
+                "session_id": session_id,
+                "started_at": time.time() - 12,
+            }
+            (session_dir / ".orchestrator-state.json").write_text(json.dumps(state))
+
+            with patch("tools.delegate_bridge_transport._is_running", return_value=True):
+                status = bridge_status(session_id, cfg={"agent_orchestrator_dir": str(root)})
+
+            self.assertEqual(status["status"], "waiting_for_reply")
+            self.assertGreaterEqual(status["elapsed_seconds"], 0)
+            self.assertGreaterEqual(status["bridge_file_count"], 1)
+            self.assertTrue(status["last_activity_path"])
+            self.assertIsNotNone(status["last_activity_age_seconds"])
 
 
 class TestChildSystemPrompt(unittest.TestCase):
@@ -958,6 +1094,335 @@ class TestDelegationProviderIntegration(unittest.TestCase):
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_explicit_acp_command_skips_delegation_credentials(self, mock_creds, mock_cfg):
+        """Explicit ACP child transports use local CLI auth, not delegation API credentials."""
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "base_url": "https://example.invalid/v1",
+            "api_key": "",
+        }
+        mock_creds.side_effect = ValueError(
+            "Delegation base_url is configured but no API key was found."
+        )
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_child = MagicMock()
+            mock_build.return_value = mock_child
+            mock_run.return_value = {
+                "task_index": 0, "status": "completed",
+                "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
+            }
+
+            result = json.loads(delegate_task(
+                goal="ACP simple-pipe test",
+                parent_agent=parent,
+                acp_command="claude",
+                acp_args=["-p", "--output-format", "json"],
+                transport="simple-pipe",
+            ))
+
+            self.assertEqual(result["results"][0]["status"], "completed")
+            mock_creds.assert_not_called()
+            _, kwargs = mock_build.call_args
+            self.assertIsNone(kwargs.get("override_provider"))
+            self.assertIsNone(kwargs.get("override_base_url"))
+            self.assertIsNone(kwargs.get("override_api_key"))
+            self.assertIsNone(kwargs.get("override_api_mode"))
+            self.assertEqual(kwargs.get("override_acp_command"), "claude")
+            self.assertEqual(kwargs.get("override_acp_args"), ["-p", "--output-format", "json"])
+
+    @patch("tools.delegate_tool.spawn_bridge_session")
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_bridge_transport_spawns_native_bridge_without_credentials(self, mock_creds, mock_cfg, mock_spawn):
+        """Bridge transport should spawn Claude/Cursor via local CLI auth and return a session id."""
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "base_url": "https://example.invalid/v1",
+            "api_key": "",
+        }
+        mock_creds.side_effect = AssertionError("credential resolution should be skipped")
+        mock_spawn.return_value = {
+            "status": "waiting_for_reply",
+            "session_id": "hermes-test",
+            "worker_type": "claude",
+            "model": "opus",
+            "pid": 123,
+            "pending": {"turn": 1, "message": "ready"},
+        }
+        parent = _make_mock_parent(depth=0)
+
+        result = json.loads(delegate_task(
+            goal="Bridge test",
+            parent_agent=parent,
+            acp_command="claude",
+            acp_args=["-p", "--model", "opus", "--permission-mode", "plan"],
+            transport="bridge",
+        ))
+
+        self.assertEqual(result["transport"], "bridge")
+        self.assertTrue(result["interactive_supported"])
+        self.assertFalse(result["fallback_used"])
+        self.assertEqual(result["results"][0]["bridge_session_id"], "hermes-test")
+        mock_creds.assert_not_called()
+        mock_spawn.assert_called_once()
+
+    @patch("tools.delegate_tool.spawn_bridge_session")
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_claude_cursor_acp_commands_default_to_bridge(self, mock_creds, mock_cfg, mock_spawn):
+        """Bridge is the class-one Claude/Cursor transport; simple-pipe must be explicit."""
+        mock_cfg.return_value = {"max_iterations": 45}
+        mock_creds.side_effect = AssertionError("credential resolution should be skipped")
+        mock_spawn.side_effect = [
+            {
+                "status": "waiting_for_reply",
+                "session_id": "claude-session",
+                "worker_type": "claude",
+                "model": "opus",
+                "pid": 123,
+                "pending": {"turn": 1, "message": "ready"},
+            },
+            {
+                "status": "starting",
+                "session_id": "cursor-session",
+                "worker_type": "cursor-agent",
+                "model": "gpt-5.5-extra-high",
+                "pid": 124,
+                "bridge_ready": False,
+                "pending": None,
+            },
+        ]
+        parent = _make_mock_parent(depth=0)
+
+        result = json.loads(delegate_task(
+            tasks=[
+                {
+                    "goal": "Claude bridge default",
+                    "acp_command": "claude",
+                    "acp_args": ["-p", "--model", "opus"],
+                },
+                {
+                    "goal": "Cursor bridge default",
+                    "acp_command": "cursor-agent",
+                    "acp_args": ["-p", "--model", "gpt-5.5-extra-high", "--mode", "plan"],
+                },
+            ],
+            parent_agent=parent,
+        ))
+
+        self.assertEqual(result["transport"], "bridge")
+        self.assertEqual(result["results"][0]["bridge_session_id"], "claude-session")
+        self.assertEqual(result["results"][1]["bridge_session_id"], "cursor-session")
+        mock_creds.assert_not_called()
+        self.assertEqual(mock_spawn.call_count, 2)
+
+    @patch("tools.delegate_tool.spawn_bridge_session")
+    @patch("tools.delegate_tool._load_config")
+    def test_bridge_transport_rejects_non_claude_cursor_commands(self, mock_cfg, mock_spawn):
+        mock_cfg.return_value = {"max_iterations": 45}
+        parent = _make_mock_parent(depth=0)
+
+        result = json.loads(delegate_task(
+            goal="Codex bridge test",
+            parent_agent=parent,
+            acp_command="codex",
+            acp_args=["exec"],
+            transport="bridge",
+        ))
+
+        self.assertIn("error", result)
+        self.assertIn("claude", result["error"])
+        mock_spawn.assert_not_called()
+
+    @patch("tools.delegate_tool.spawn_bridge_session")
+    @patch("tools.delegate_tool._load_config")
+    def test_bridge_transport_write_mode_requires_operator_gate(self, mock_cfg, mock_spawn):
+        mock_cfg.return_value = {"max_iterations": 45}
+        parent = _make_mock_parent(depth=0)
+
+        result = json.loads(delegate_task(
+            goal="Bridge write test",
+            parent_agent=parent,
+            acp_command="cursor-agent",
+            acp_args=["-p", "--yolo"],
+            unsafe_allow_writes=True,
+            transport="bridge",
+        ))
+
+        self.assertIn("error", result)
+        self.assertIn("operator approval", result["error"])
+        mock_spawn.assert_not_called()
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_explicit_acp_args_model_hint_reaches_child_agent(self, mock_creds, mock_cfg):
+        """External CLI workers should be labeled by the CLI model, not parent model."""
+        mock_cfg.return_value = {"max_iterations": 45, "allow_unsafe_acp_writes": True}
+        mock_creds.side_effect = AssertionError("credential resolution should be skipped")
+        parent = _make_mock_parent(depth=0)
+        parent.model = "deepseek-v4-pro"
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_child = MagicMock()
+            mock_build.return_value = mock_child
+            mock_run.return_value = {
+                "task_index": 0, "status": "completed",
+                "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
+            }
+
+            delegate_task(
+                goal="ACP model hint test",
+                parent_agent=parent,
+                acp_command="claude",
+                acp_args=["-p", "--model", "opus", "--output-format", "json"],
+                transport="simple-pipe",
+            )
+
+            _, kwargs = mock_build.call_args
+            self.assertEqual(kwargs.get("model"), "opus")
+            self.assertEqual(kwargs.get("override_acp_command"), "claude")
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_explicit_acp_unsafe_allow_writes_reaches_child_agent(self, mock_creds, mock_cfg):
+        """Write-capable CLI modes must be explicitly authorized per delegation."""
+        mock_cfg.return_value = {"max_iterations": 45, "allow_unsafe_acp_writes": True}
+        mock_creds.side_effect = AssertionError("credential resolution should be skipped")
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_child = MagicMock()
+            mock_build.return_value = mock_child
+            mock_run.return_value = {
+                "task_index": 0, "status": "completed",
+                "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
+            }
+
+            delegate_task(
+                goal="ACP unsafe write mode test",
+                parent_agent=parent,
+                acp_command="claude",
+                acp_args=["-p", "--permission-mode", "acceptEdits"],
+                unsafe_allow_writes=True,
+                transport="simple-pipe",
+            )
+
+            _, kwargs = mock_build.call_args
+            self.assertEqual(kwargs.get("override_acp_command"), "claude")
+            self.assertTrue(kwargs.get("unsafe_allow_writes"))
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_per_task_acp_unsafe_allow_writes_reaches_child_agent(self, mock_creds, mock_cfg):
+        """Batch tasks can authorize write-capable CLI modes per child."""
+        mock_cfg.return_value = {"max_iterations": 45, "allow_unsafe_acp_writes": True}
+        mock_creds.side_effect = AssertionError("credential resolution should be skipped")
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_child = MagicMock()
+            mock_build.return_value = mock_child
+            mock_run.return_value = {
+                "task_index": 0, "status": "completed",
+                "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
+            }
+
+            delegate_task(
+                tasks=[
+                    {
+                        "goal": "Cursor write mode test",
+                        "acp_command": "cursor-agent",
+                        "acp_args": ["-p", "--yolo"],
+                        "unsafe_allow_writes": True,
+                        "transport": "simple-pipe",
+                    }
+                ],
+                parent_agent=parent,
+            )
+
+            _, kwargs = mock_build.call_args
+            self.assertEqual(kwargs.get("override_acp_command"), "cursor-agent")
+            self.assertTrue(kwargs.get("unsafe_allow_writes"))
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_unsafe_allow_writes_requires_operator_gate(self, mock_creds, mock_cfg):
+        """The model-visible write flag is inert unless operator config allows it."""
+        mock_cfg.return_value = {"max_iterations": 45}
+        mock_creds.side_effect = AssertionError("credential resolution should be skipped")
+        parent = _make_mock_parent(depth=0)
+
+        with patch.dict(os.environ, {"HERMES_DELEGATION_ALLOW_UNSAFE_ACP_WRITES": ""}, clear=False), \
+             patch("tools.delegate_tool._build_child_agent") as mock_build:
+            result = json.loads(delegate_task(
+                goal="ACP unsafe write mode denied",
+                parent_agent=parent,
+                acp_command="claude",
+                acp_args=["-p", "--permission-mode", "acceptEdits"],
+                unsafe_allow_writes=True,
+                transport="simple-pipe",
+            ))
+
+        self.assertIn("error", result)
+        self.assertIn("operator approval", result["error"])
+        mock_build.assert_not_called()
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_mixed_explicit_acp_batch_preserves_non_acp_credentials(self, mock_creds, mock_cfg):
+        """Explicit ACP tasks must not zero credentials for sibling non-ACP tasks."""
+        mock_cfg.return_value = {"max_iterations": 45}
+        mock_creds.return_value = {
+            "model": "meta-llama/llama-4-scout",
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "sk-or-mixed",
+            "api_mode": "chat_completions",
+            "command": None,
+            "args": [],
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_child = MagicMock()
+            mock_build.return_value = mock_child
+            mock_run.return_value = {
+                "task_index": 0, "status": "completed",
+                "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
+            }
+
+            delegate_task(
+                tasks=[
+                    {
+                        "goal": "ACP review",
+                        "acp_command": "claude",
+                        "acp_args": ["-p", "--permission-mode", "plan"],
+                        "transport": "simple-pipe",
+                    },
+                    {"goal": "Regular delegated task"},
+                ],
+                parent_agent=parent,
+            )
+
+        self.assertEqual(mock_build.call_count, 2)
+        acp_kwargs = mock_build.call_args_list[0].kwargs
+        regular_kwargs = mock_build.call_args_list[1].kwargs
+        self.assertEqual(acp_kwargs.get("override_acp_command"), "claude")
+        self.assertEqual(acp_kwargs.get("model"), "meta-llama/llama-4-scout")
+        self.assertEqual(regular_kwargs.get("override_provider"), "openrouter")
+        self.assertEqual(regular_kwargs.get("override_base_url"), "https://openrouter.ai/api/v1")
+        self.assertEqual(regular_kwargs.get("override_api_key"), "sk-or-mixed")
+        self.assertIsNone(regular_kwargs.get("override_acp_command"))
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
     def test_model_only_no_provider_inherits_parent_credentials(self, mock_creds, mock_cfg):
         """Setting only model (no provider) changes model but keeps parent credentials."""
         mock_cfg.return_value = {
@@ -1531,6 +1996,7 @@ class TestDispatchDelegateTask(unittest.TestCase):
                 goal="test",
                 acp_command="claude",
                 acp_args=["--acp", "--stdio"],
+                transport="simple-pipe",
                 parent_agent=parent,
             )
             _, kwargs = mock_build.call_args

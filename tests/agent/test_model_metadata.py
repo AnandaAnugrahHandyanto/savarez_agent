@@ -358,6 +358,24 @@ class TestCodexOAuthContextLength:
             "leaked outside openai-codex provider"
         )
 
+    def test_cursor_acp_marker_does_not_use_copilot_context_catalog(self):
+        """Cursor ACP workers use the ACP shim but are not GitHub Copilot models."""
+        from agent.model_metadata import get_model_context_length
+
+        with patch("hermes_cli.models.get_copilot_model_context", return_value=128_000), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.models_dev.lookup_models_dev_context", return_value=None):
+            ctx = get_model_context_length(
+                model="gpt-5.5-extra-high",
+                base_url="acp://cursor-agent",
+                api_key="",
+                provider="copilot-acp",
+            )
+
+        assert ctx == 1_000_000
+
     def test_stale_codex_cache_over_400k_is_invalidated(self, tmp_path, monkeypatch):
         """Pre-PR #14935 builds cached gpt-5.5 at 1.05M (from models.dev)
         before the Codex-aware branch existed. Upgrading users keep that
