@@ -191,14 +191,37 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "without acting are not acceptable."
 )
 
+COPILOT_REMOTE_DELEGATION_GUIDANCE = (
+    "# Copilot remote delegation\n"
+    "When the copilot_remote tool is available, it is the default execution "
+    "path for user requests that ask Hermes to write, create, build, edit, "
+    "fix, implement, refactor, test, or otherwise change code, websites, "
+    "documentation files, configuration, scripts, or repository files.\n"
+    "For these implementation requests, call copilot_remote(action=\"launch\") "
+    "as the first implementation action after only the minimum context needed "
+    "to write a complete prompt. Do not implement locally with terminal, "
+    "read_file, write_file, patch, execute_code, or delegate_task first unless "
+    "the user explicitly asks Hermes to do the work itself instead of Copilot.\n"
+    "If the target repository is clear, pass repo or repo_path. If it is not "
+    "clear, omit repo fields and let Hermes route from the prompt. Ask a "
+    "clarifying question only when the task itself is too ambiguous to describe.\n"
+    "Do not run terminal Copilot probes such as `copilot --help`, `copilot "
+    "version`, login checks, smoke tests, or ACP checks before launching; "
+    "copilot_remote owns launch validation and returns an error if Copilot is "
+    "unavailable.\n"
+    "Use normal tools directly for explanation, planning, code review without "
+    "edits, diagnostics/status checks, or non-code tasks. After launching, "
+    "report the job_id, repo, state, and connect_command. For follow-up status, "
+    "use copilot_remote(action=\"list\") or copilot_remote(action=\"show\")."
+)
+
 # Model name substrings that trigger tool-use enforcement guidance.
 # Add new patterns here when a model family needs explicit steering.
 TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok")
 
-# OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes
+# OpenAI GPT-family execution guidance.  Addresses known failure modes
 # where GPT models abandon work on partial results, skip prerequisite lookups,
 # hallucinate instead of using tools, and declare "done" without verification.
-# Inspired by patterns from OpenAI's GPT-5.4 prompting guide & OpenClaw PR #38953.
 OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "# Execution discipline\n"
     "<tool_persistence>\n"
@@ -282,11 +305,11 @@ GOOGLE_MODEL_OPERATIONAL_GUIDANCE = (
 )
 
 # Model name substrings that should use the 'developer' role instead of
-# 'system' for the system prompt.  OpenAI's newer models (GPT-5, Codex)
+# 'system' for the system prompt.  Some newer OpenAI models
 # give stronger instruction-following weight to the 'developer' role.
 # The swap happens at the API boundary in _build_api_kwargs() so internal
 # message representation stays consistent ("system" everywhere).
-DEVELOPER_ROLE_MODELS = ("gpt-5", "codex")
+DEVELOPER_ROLE_MODELS = ("gpt-5",)
 
 PLATFORM_HINTS = {
     "whatsapp": (
@@ -568,6 +591,19 @@ def _build_snapshot_entry(
 # Skills index
 # =========================================================================
 
+PROMPT_HIDDEN_CODING_AGENT_SKILLS = frozenset({
+    "blackbox",
+    "claude-code",
+    "codex",
+    "opencode",
+})
+
+
+def _skill_hidden_from_prompt(*names: str) -> bool:
+    """Return True for bundled third-party coding-agent skills hidden from prompts."""
+    return any((name or "").strip().lower() in PROMPT_HIDDEN_CODING_AGENT_SKILLS for name in names)
+
+
 def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
     """Read a SKILL.md once and return platform compatibility, frontmatter, and description.
 
@@ -681,6 +717,8 @@ def build_skills_system_prompt(
             category = entry.get("category") or "general"
             frontmatter_name = entry.get("frontmatter_name") or skill_name
             platforms = entry.get("platforms") or []
+            if _skill_hidden_from_prompt(skill_name, frontmatter_name):
+                continue
             if not skill_matches_platform({"platforms": platforms}):
                 continue
             if frontmatter_name in disabled or skill_name in disabled:
@@ -708,6 +746,8 @@ def build_skills_system_prompt(
             if not is_compatible:
                 continue
             skill_name = entry["skill_name"]
+            if _skill_hidden_from_prompt(skill_name, entry["frontmatter_name"]):
+                continue
             if entry["frontmatter_name"] in disabled or skill_name in disabled:
                 continue
             if not _skill_should_show(
@@ -761,6 +801,8 @@ def build_skills_system_prompt(
                 entry = _build_snapshot_entry(skill_file, ext_dir, frontmatter, desc)
                 skill_name = entry["skill_name"]
                 frontmatter_name = entry["frontmatter_name"]
+                if _skill_hidden_from_prompt(skill_name, frontmatter_name):
+                    continue
                 if frontmatter_name in seen_skill_names:
                     continue
                 if frontmatter_name in disabled or skill_name in disabled:
@@ -996,22 +1038,6 @@ def _load_agents_md(cwd_path: Path) -> str:
     return ""
 
 
-def _load_claude_md(cwd_path: Path) -> str:
-    """CLAUDE.md / claude.md — cwd only."""
-    for name in ["CLAUDE.md", "claude.md"]:
-        candidate = cwd_path / name
-        if candidate.exists():
-            try:
-                content = candidate.read_text(encoding="utf-8").strip()
-                if content:
-                    content = _scan_context_content(content, name)
-                    result = f"## {name}\n\n{content}"
-                    return _truncate_content(result, "CLAUDE.md")
-            except Exception as e:
-                logger.debug("Could not read %s: %s", candidate, e)
-    return ""
-
-
 def _load_cursorrules(cwd_path: Path) -> str:
     """.cursorrules + .cursor/rules/*.mdc — cwd only."""
     cursorrules_content = ""
@@ -1048,11 +1074,18 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
     Priority (first found wins — only ONE project context type is loaded):
       1. .hermes.md / HERMES.md  (walk to git root)
       2. AGENTS.md / agents.md   (cwd only)
-      3. CLAUDE.md / claude.md   (cwd only)
-      4. .cursorrules / .cursor/rules/*.mdc  (cwd only)
+      3. .cursorrules / .cursor/rules/*.mdc  (cwd only)
 
     SOUL.md from HERMES_HOME is independent and always included when present.
     Each context source is capped at 20,000 chars.
+
+    .. note::
+       ``CLAUDE.md`` / ``claude.md`` was removed from this priority list as
+       part of the SWE-skill consolidation that moved Claude/Codex/Opencode
+       delegation to the new ``copilot`` toolset (see
+       ``website/docs/user-guide/features/copilot-remote.md``). Projects
+       relying on ``CLAUDE.md`` for repo conventions should rename to
+       ``AGENTS.md`` (already in the priority list above) or ``.hermes.md``.
 
     When *skip_soul* is True, SOUL.md is not included here (it was already
     loaded via ``load_soul_md()`` for the identity slot).
@@ -1067,7 +1100,6 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
     project_context = (
         _load_hermes_md(cwd_path)
         or _load_agents_md(cwd_path)
-        or _load_claude_md(cwd_path)
         or _load_cursorrules(cwd_path)
     )
     if project_context:
