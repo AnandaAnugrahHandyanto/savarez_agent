@@ -18,6 +18,18 @@ let
 
   isAarch64Darwin = stdenv.hostPlatform.system == "aarch64-darwin";
 
+  # Nix daemon RewritingSink corrupts Mach-O ad-hoc code signatures on
+  # ffmpeg-headless sibling outputs (aarch64-darwin), causing SIGKILL when
+  # loading av's ffmpeg dylibs during build checks.
+  # Drop once https://github.com/NixOS/nix/pull/15638 lands.
+  avDarwin = python312.pkgs.av.overrideAttrs (_: {
+    dontUsePytestCheck = true;
+    dontUsePythonImportsCheck = true;
+  });
+  fasterWhisperDarwin = (python312.pkgs.faster-whisper.override { av = avDarwin; }).overrideAttrs (_: {
+    dontUsePythonImportsCheck = true;
+  });
+
   # Keep the workspace locked through uv2nix, but supply the local voice stack
   # from nixpkgs so wheel-only transitive artifacts do not break evaluation.
   mkPrebuiltPassthru = dependencies: {
@@ -55,7 +67,7 @@ let
 
       pyarrow = mkPrebuiltOverride final python312.pkgs.pyarrow { };
 
-      av = mkPrebuiltOverride final python312.pkgs.av { };
+      av = mkPrebuiltOverride final avDarwin { };
 
       humanfriendly = mkPrebuiltOverride final python312.pkgs.humanfriendly { };
 
@@ -74,7 +86,7 @@ let
         pyyaml = [ ];
       };
 
-      faster-whisper = mkPrebuiltOverride final python312.pkgs.faster-whisper {
+      faster-whisper = mkPrebuiltOverride final fasterWhisperDarwin {
         av = [ ];
         ctranslate2 = [ ];
         huggingface-hub = [ ];
