@@ -55,6 +55,7 @@ DevOps and infrastructure automation skills.
 
 | Skill | Description | Path |
 |-------|-------------|------|
+| `kubernetes-readonly` | Read-only kubectl inspections (get, describe, explain, api-resources, version, cluster-info, top) via a JSON-in / JSON-out helper script with strict Pydantic validation. Requires kubectl on PATH. | `devops/kubernetes-readonly` |
 | `webhook-subscriptions` | Create and manage webhook subscriptions for event-driven agent activation. External services (GitHub, Stripe, CI/CD, IoT) POST events to trigger agent runs. Requires webhook platform to be enabled. | `devops/webhook-subscriptions` |
 
 ## dogfood
