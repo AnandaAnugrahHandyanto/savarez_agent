@@ -1,0 +1,150 @@
+"""Tests for hermes_cli.copilot_cmd — slash command parsing and dispatch."""
+
+import io
+import sys
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
+
+from hermes_state import SessionDB
+
+
+@pytest.fixture()
+def db(tmp_path):
+    """Provide a fresh SessionDB with HERMES_HOME pointed at tmp_path."""
+    db_path = tmp_path / ".hermes" / "state.db"
+    db_path.parent.mkdir(parents=True)
+    _db = SessionDB(db_path=db_path)
+    _real_close = _db.close
+    _db.close = lambda: None
+    yield _db
+    _real_close()
+
+
+@pytest.fixture(autouse=True)
+def _patch_get_db(db, monkeypatch):
+    """Patch _get_db in copilot_cmd to use the test DB."""
+    monkeypatch.setattr(
+        "hermes_cli.copilot_cmd._get_db", lambda: db
+    )
+
+
+def _capture_slash(cmd: str) -> str:
+    """Run handle_copilot_remote_slash and capture combined stdout+stderr."""
+    from hermes_cli.copilot_cmd import handle_copilot_remote_slash
+    buf = io.StringIO()
+    old_out, old_err = sys.stdout, sys.stderr
+    sys.stdout = sys.stderr = buf
+    try:
+        handle_copilot_remote_slash(cmd)
+    finally:
+        sys.stdout, sys.stderr = old_out, old_err
+    return buf.getvalue()
+
+
+class TestSlashList:
+    def test_empty_list(self):
+        out = _capture_slash("/copilot_remote list")
+        assert "No copilot remote jobs found" in out
+
+    def test_list_shows_job(self, db):
+        db.create_copilot_remote(
+            job_id="aaaaaaaa-0000-0000-0000-000000000001", repo_slug="my-repo", repo_path="/test"
+        )
+        out = _capture_slash("/copilot_remote list")
+        assert "aaaaaaaa-0000-0000-0000-000000000001" in out
+        assert "my-repo" in out
+
+    def test_default_subcommand_is_list(self, db):
+        """Bare /copilot_remote with no subcommand should show the job list."""
+        db.create_copilot_remote(
+            job_id="bbbbbbbb-0000-0000-0000-000000000001", repo_slug="bare-repo", repo_path="/test"
+        )
+        out = _capture_slash("/copilot_remote")
+        assert "bbbbbbbb-0000-0000-0000-000000000001" in out
+
+    def test_list_state_filter(self, db):
+        db.create_copilot_remote(
+            job_id="cccccccc-0000-0000-0000-000000000001", repo_slug="repo-a", repo_path="/a"
+        )
+        db.create_copilot_remote(
+            job_id="cccccccc-0000-0000-0000-000000000002", repo_slug="repo-b", repo_path="/b"
+        )
+        db.finish_copilot_remote("cccccccc-0000-0000-0000-000000000002", state="done", exit_code=0)
+
+        out = _capture_slash("/copilot_remote list --state running")
+        assert "cccccccc-0000-0000-0000-000000000001" in out
+        assert "cccccccc-0000-0000-0000-000000000002" not in out
+
+
+class TestSlashLaunchDryRun:
+    def test_dry_run_launches(self, db):
+        out = _capture_slash(
+            "/copilot_remote launch --dry-run --repo dr-repo --repo-path /dr Do something"
+        )
+        assert "done" in out.lower() or "connect" in out.lower()
+
+        jobs = db.list_copilot_remote(state="done")
+        assert len(jobs) == 1
+
+    def test_model_flag(self, db):
+        out = _capture_slash(
+            "/copilot_remote launch --dry-run --model gpt-5 --repo m-repo --repo-path /m Test"
+        )
+        assert "done" in out.lower() or "connect" in out.lower()
+
+    def test_launch_surfaces_prompt_delivery_warning(self, db):
+        fake_result = {
+            "session_id": "job-123",
+            "connect_id": "task-123",
+            "cmd": ["copilot"],
+            "proc": None,
+            "prompt_delivery_status": "unverified",
+            "prompt_delivery_warning": "Hermes could not determine the remote task ID.",
+        }
+
+        with patch("copilot_remote.launcher.launch_copilot", return_value=fake_result):
+            out = _capture_slash(
+                "/copilot_remote launch --repo warn-repo --repo-path /warn Respond"
+            )
+
+        assert "warning:" in out.lower()
+        assert "remote task id" in out.lower()
+        assert "copilot --connect=task-123" in out
+
+
+class TestSlashShow:
+    def test_show_existing(self, db):
+        db.create_copilot_remote(
+            job_id="dddddddd-0000-0000-0000-000000000001", repo_slug="show-repo", repo_path="/show"
+        )
+        out = _capture_slash("/copilot_remote show dddddddd-0000-0000-0000-000000000001")
+        assert "dddddddd-0000-0000-0000-000000000001" in out
+        assert "show-repo" in out
+        assert "connect" in out.lower()
+
+    def test_show_prefers_external_connect_handle(self, db):
+        db.create_copilot_remote(
+            job_id="eeeeeeee-0000-0000-0000-000000000001",
+            repo_slug="show-repo",
+            repo_path="/show",
+            connect_handle="task-123",
+        )
+        out = _capture_slash("/copilot_remote show eeeeeeee-0000-0000-0000-000000000001")
+        assert "copilot --connect=task-123" in out
+
+    def test_show_nonexistent(self):
+        out = _capture_slash("/copilot_remote show dddddddd-0000-0000-0000-999999999999")
+        assert "not found" in out.lower()
+
+
+class TestSlashErrorPaths:
+    def test_empty_launch(self):
+        out = _capture_slash("/copilot_remote launch")
+        assert "required" in out.lower()
+
+    def test_unknown_subcommand_shows_help(self):
+        out = _capture_slash("/copilot_remote foobar")
+        assert "usage" in out.lower()
+        assert "launch" in out

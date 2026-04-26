@@ -4773,6 +4773,12 @@ def cmd_cron(args):
     cron_command(args)
 
 
+def cmd_copilot(args):
+    """Copilot remote session management."""
+    from hermes_cli.copilot_cmd import copilot_command
+    copilot_command(args)
+
+
 def cmd_webhook(args):
     """Webhook subscription management."""
     from hermes_cli.webhook import webhook_command
@@ -6785,6 +6791,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "auth",
         "status",
         "cron",
+        "copilot",
         "doctor",
         "config",
         "pairing",
@@ -8051,6 +8058,51 @@ For more help on a command:
     _add_accept_hooks_flag(cron_tick)
     _add_accept_hooks_flag(cron_parser)
     cron_parser.set_defaults(func=cmd_cron)
+
+    # =========================================================================
+    # copilot command — Copilot remote session lifecycle
+    # =========================================================================
+    copilot_parser = subparsers.add_parser(
+        "copilot",
+        help="Manage Copilot remote sessions",
+        description="Launch and inspect Copilot remote sessions",
+    )
+    copilot_subparsers = copilot_parser.add_subparsers(dest="copilot_action")
+
+    # copilot launch
+    cop_launch = copilot_subparsers.add_parser(
+        "launch", help="Launch a new Copilot session for a repo"
+    )
+    cop_launch.add_argument(
+        "prompt", nargs="?", default=None,
+        help="Task prompt (used for repo routing if --repo is omitted)"
+    )
+    cop_launch.add_argument("--repo", help="Repo slug")
+    cop_launch.add_argument("--repo-path", dest="repo_path", help="Absolute path to the repo inside the container")
+    cop_launch.add_argument("--model", help="Model to use for the session")
+    cop_launch.add_argument("--dry-run", dest="dry_run", action="store_true", help="Simulate launch without spawning copilot")
+    cop_launch.add_argument("--signal-source", dest="signal_source", default="cli", help="Signal origin (default: cli)")
+    cop_launch.add_argument(
+        "--signal-ref",
+        dest="signal_ref",
+        help=(
+            "External reference metadata for the launch (e.g. a Jira ticket "
+            "ID or Slack message ts). Stored as job metadata only \u2014 the "
+            "Copilot reconnect handle is tracked separately and is not "
+            "affected by this flag."
+        ),
+    )
+
+    # copilot list
+    cop_list = copilot_subparsers.add_parser("list", aliases=["ls"], help="List copilot remote jobs")
+    cop_list.add_argument("--state", help="Filter by state (running, done, failed)")
+    cop_list.add_argument("--limit", type=int, default=20, help="Max results (default: 20)")
+
+    # copilot show
+    cop_show = copilot_subparsers.add_parser("show", help="Show details of a copilot remote")
+    cop_show.add_argument("job_id", help="Job ID to inspect")
+
+    copilot_parser.set_defaults(func=cmd_copilot)
 
     # =========================================================================
     # webhook command

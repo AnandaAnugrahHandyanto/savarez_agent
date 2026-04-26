@@ -56,6 +56,8 @@ _HERMES_CORE_TOOLS = [
     "peer_query",
     # Code execution + delegation
     "execute_code", "delegate_task",
+    # Copilot remote job delegation
+    "copilot_remote",
     # Cronjob management
     "cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
@@ -198,6 +200,12 @@ TOOLSETS = {
     "delegation": {
         "description": "Spawn subagents with isolated context for complex subtasks",
         "tools": ["delegate_task"],
+        "includes": []
+    },
+
+    "copilot": {
+        "description": "Default implementation tool — delegate code-writing, file-editing, refactoring, and repository changes to a remote Copilot job",
+        "tools": ["copilot_remote"],
         "includes": []
     },
 
