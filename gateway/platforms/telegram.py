@@ -121,6 +121,51 @@ def _strip_mdv2(text: str) -> str:
     return cleaned
 
 
+_PHONE_GATE_NONCE_RE = re.compile(r"^[A-Z0-9]{1,128}$")
+
+
+def _claim_phone_gate_request(nonce: str) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    """Atomically claim a pending phone-gate request by nonce.
+
+    Returns ``(payload, None)`` on success, where payload contains ``purpose``
+    and ``claimed_path``. Returns ``(None, reason)`` on failure where reason is
+    one of ``invalid_nonce``, ``missing``, ``expired``, or ``invalid_payload``.
+    """
+    normalized = (nonce or "").upper()
+    if not _PHONE_GATE_NONCE_RE.fullmatch(normalized):
+        return None, "invalid_nonce"
+
+    from pathlib import Path as _Path
+    import json as _json
+    import os as _os
+    import time as _time
+
+    gate_dir = _Path.home() / ".hermes" / "phone-gate"
+    pending_path = gate_dir / f"{normalized}.pending"
+    claimed_path = gate_dir / f"{normalized}.{_os.getpid()}.claimed"
+
+    try:
+        pending_path.replace(claimed_path)
+    except FileNotFoundError:
+        return None, "missing"
+    except OSError:
+        return None, "missing"
+
+    try:
+        payload = _json.loads(claimed_path.read_text())
+        if float(payload.get("expires_at", 0)) < _time.time():
+            claimed_path.unlink(missing_ok=True)
+            return None, "expired"
+        return {
+            "purpose": payload.get("purpose", "?"),
+            "claimed_path": claimed_path,
+            "nonce": normalized,
+        }, None
+    except Exception:
+        claimed_path.unlink(missing_ok=True)
+        return None, "invalid_payload"
+
+
 # ---------------------------------------------------------------------------
 # Markdown table → code block conversion
 # ---------------------------------------------------------------------------
@@ -764,6 +809,11 @@ class TelegramAdapter(BasePlatformAdapter):
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+            # Handle Mini App sendData() results (phone-gate biometric)
+            self._app.add_handler(TelegramMessageHandler(
+                filters.StatusUpdate.WEB_APP_DATA,
+                self._handle_web_app_data,
+            ))
             
             # Start polling — retry initialize() for transient TLS resets
             try:
@@ -1673,6 +1723,66 @@ class TelegramAdapter(BasePlatformAdapter):
                     logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
             return
 
+        # --- Phone-gate approval callbacks (pg:approve/deny:NONCE) ---
+        if data.startswith("pg:"):
+            parts = data.split(":", 2)
+            if len(parts) != 3:
+                await query.answer(text="Invalid phone-gate data.")
+                return
+            verb = parts[1]   # "approve" or "deny"
+            nonce = parts[2].upper()
+            if verb not in {"approve", "deny"}:
+                await query.answer(text="Invalid phone-gate action.")
+                return
+
+            claimed, reason = _claim_phone_gate_request(nonce)
+            if claimed is None:
+                if reason == "invalid_nonce":
+                    await query.answer(text="Invalid phone-gate nonce.")
+                elif reason == "expired":
+                    await query.answer(text="Solicitação expirada.")
+                elif reason == "invalid_payload":
+                    await query.answer(text="Erro ao ler solicitação.")
+                else:
+                    await query.answer(text="Solicitação expirada ou já respondida.")
+                return
+
+            _result = "approved" if verb == "approve" else "denied"
+            _label = "✅ Aprovado" if _result == "approved" else "❌ Negado"
+            _user = getattr(query.from_user, "first_name", "Usuário")
+            _purpose = claimed["purpose"]
+            _claimed_path = claimed["claimed_path"]
+
+            from pathlib import Path as _Path
+            _gate_dir = _Path.home() / ".hermes" / "phone-gate"
+            _response = _gate_dir / f"{nonce}.response"
+            _tmp = _response.with_suffix(".tmp")
+            try:
+                _tmp.write_text(_result)
+                _tmp.replace(_response)
+                try:
+                    _response.chmod(0o600)
+                except OSError:
+                    pass
+            except Exception as _exc:
+                logger.error("phone-gate button: failed to write response %s: %s", nonce, _exc)
+                await query.answer(text="Erro interno.")
+                return
+            finally:
+                _claimed_path.unlink(missing_ok=True)
+
+            await query.answer(text=_label)
+            try:
+                await query.edit_message_text(
+                    text=f"🔐 *Hermes — {_label}*\n\nOperação: `{_purpose}`\n\n_{_label} por {_user}_",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
+            logger.info("phone-gate button: nonce %s → %s (purpose: %s)", nonce, _result, _purpose)
+            return
+
         # --- Update prompt callbacks ---
         if not data.startswith("update_prompt:"):
             return
@@ -1704,6 +1814,59 @@ class TelegramAdapter(BasePlatformAdapter):
                         answer, getattr(query.from_user, "id", "unknown"))
         except Exception as exc:
             logger.error("Failed to write update response from callback: %s", exc)
+
+    async def _handle_web_app_data(
+        self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
+    ) -> None:
+        """Handle sendData() results from the phone-gate biometric Mini App."""
+        msg = update.message
+        if not msg or not msg.web_app_data:
+            return
+        data = msg.web_app_data.data or ""
+
+        if not data.startswith("pg:"):
+            return
+        parts = data.split(":", 2)
+        if len(parts) != 3:
+            return
+        verb = parts[1]   # "approve" or "deny"
+        nonce = parts[2].upper()
+        if verb not in {"approve", "deny"}:
+            return
+
+        claimed, reason = _claim_phone_gate_request(nonce)
+        if claimed is None:
+            if reason == "invalid_nonce":
+                logger.warning("phone-gate miniapp: invalid nonce %r", nonce)
+            elif reason == "invalid_payload":
+                logger.warning("phone-gate miniapp: invalid payload for nonce %s", nonce)
+            elif reason == "expired":
+                logger.info("phone-gate miniapp: nonce %s expired", nonce)
+            else:
+                logger.info("phone-gate miniapp: nonce %s not found (expired or already answered)", nonce)
+            return
+
+        _result = "approved" if verb == "approve" else "denied"
+        _purpose = claimed["purpose"]
+        _claimed_path = claimed["claimed_path"]
+
+        from pathlib import Path as _Path
+        _gate_dir = _Path.home() / ".hermes" / "phone-gate"
+        _response = _gate_dir / f"{nonce}.response"
+        _tmp = _response.with_suffix(".tmp")
+        try:
+            _tmp.write_text(_result)
+            _tmp.replace(_response)
+            try:
+                _response.chmod(0o600)
+            except OSError:
+                pass
+        except Exception as _exc:
+            logger.error("phone-gate miniapp: failed to write response %s: %s", nonce, _exc)
+            return
+        finally:
+            _claimed_path.unlink(missing_ok=True)
+        logger.info("phone-gate miniapp: nonce %s → %s (purpose: %s)", nonce, _result, _purpose)
 
     def _missing_media_path_error(self, label: str, path: str) -> str:
         """Build an actionable file-not-found error for gateway MEDIA delivery.

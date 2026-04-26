@@ -358,3 +358,133 @@ class TestTelegramApprovalCallback:
         query.answer.assert_called_once()
         query.edit_message_text.assert_called_once()
         assert (tmp_path / ".update_response").read_text() == "n"
+
+
+class TestTelegramPhoneGateCallbacks:
+    """Test phone-gate approval callbacks and mini-app data handling."""
+
+    @pytest.mark.asyncio
+    async def test_phone_gate_callback_writes_response_file(self, tmp_path):
+        adapter = _make_adapter()
+        gate_dir = tmp_path / ".hermes" / "phone-gate"
+        gate_dir.mkdir(parents=True)
+        (gate_dir / "ABC123.pending").write_text(
+            '{"expires_at": 4102444800, "purpose": "Approve secret access"}'
+        )
+
+        query = AsyncMock()
+        query.data = "pg:approve:abc123"
+        query.message = MagicMock()
+        query.from_user = MagicMock()
+        query.from_user.first_name = "Alice"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            await adapter._handle_callback_query(update, context)
+
+        assert (gate_dir / "ABC123.response").read_text() == "approved"
+        assert not (gate_dir / "ABC123.pending").exists()
+        query.answer.assert_called_once()
+        query.edit_message_text.assert_called_once()
+        assert "Approve secret access" in query.edit_message_text.call_args.kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_phone_gate_callback_handles_expired_request(self, tmp_path):
+        adapter = _make_adapter()
+        gate_dir = tmp_path / ".hermes" / "phone-gate"
+        gate_dir.mkdir(parents=True)
+        (gate_dir / "XYZ999.pending").write_text(
+            '{"expires_at": 1, "purpose": "Expired request"}'
+        )
+
+        query = AsyncMock()
+        query.data = "pg:deny:xyz999"
+        query.message = MagicMock()
+        query.from_user = MagicMock()
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            await adapter._handle_callback_query(update, context)
+
+        assert not (gate_dir / "XYZ999.pending").exists()
+        assert not (gate_dir / "XYZ999.response").exists()
+        query.answer.assert_called_once()
+        assert "expirada" in query.answer.call_args.kwargs["text"].lower()
+        query.edit_message_text.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_handle_web_app_data_writes_response_file(self, tmp_path):
+        adapter = _make_adapter()
+        gate_dir = tmp_path / ".hermes" / "phone-gate"
+        gate_dir.mkdir(parents=True)
+        (gate_dir / "WEB777.pending").write_text(
+            '{"expires_at": 4102444800, "purpose": "Biometric approval"}'
+        )
+
+        message = MagicMock()
+        message.web_app_data = MagicMock()
+        message.web_app_data.data = "pg:deny:web777"
+
+        update = MagicMock()
+        update.message = message
+        context = MagicMock()
+
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            await adapter._handle_web_app_data(update, context)
+
+        assert (gate_dir / "WEB777.response").read_text() == "denied"
+        assert not (gate_dir / "WEB777.pending").exists()
+
+    @pytest.mark.asyncio
+    async def test_phone_gate_callback_rejects_invalid_nonce(self, tmp_path):
+        adapter = _make_adapter()
+        gate_dir = tmp_path / ".hermes" / "phone-gate"
+        gate_dir.mkdir(parents=True)
+
+        query = AsyncMock()
+        query.data = "pg:approve:../escape"
+        query.message = MagicMock()
+        query.from_user = MagicMock()
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            await adapter._handle_callback_query(update, context)
+
+        query.answer.assert_called_once()
+        assert "invalid phone-gate nonce" in query.answer.call_args.kwargs["text"].lower()
+        query.edit_message_text.assert_not_called()
+        assert list(gate_dir.iterdir()) == []
+
+    @pytest.mark.asyncio
+    async def test_handle_web_app_data_ignores_invalid_nonce(self, tmp_path):
+        adapter = _make_adapter()
+        gate_dir = tmp_path / ".hermes" / "phone-gate"
+        gate_dir.mkdir(parents=True)
+
+        message = MagicMock()
+        message.web_app_data = MagicMock()
+        message.web_app_data.data = "pg:approve:../escape"
+
+        update = MagicMock()
+        update.message = message
+        context = MagicMock()
+
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            await adapter._handle_web_app_data(update, context)
+
+        assert list(gate_dir.iterdir()) == []
