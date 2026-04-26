@@ -377,19 +377,36 @@ class _CodexCompletionsAdapter:
         model = kwargs.get("model", self._model)
 
         # Separate system/instructions from conversation messages.
-        # Convert chat.completions multimodal content blocks to Responses
-        # API format (input_text / input_image instead of text / image_url).
+        # Convert chat.completions history to Responses API input items.  This
+        # must translate chat ``role=tool`` messages to ``function_call_output``
+        # items; sending raw tool-role messages to Codex Responses fails with
+        # HTTP 400 ("Invalid value: 'tool'").
         instructions = "You are a helpful assistant."
-        input_msgs: List[Dict[str, Any]] = []
+        conversation_msgs: List[Dict[str, Any]] = []
         for msg in messages:
+            if not isinstance(msg, dict):
+                continue
             role = msg.get("role", "user")
             content = msg.get("content") or ""
             if role == "system":
                 instructions = content if isinstance(content, str) else str(content)
             else:
+                conversation_msgs.append(msg)
+
+        try:
+            from agent.codex_responses_adapter import _chat_messages_to_responses_input
+            input_msgs = _chat_messages_to_responses_input(conversation_msgs)
+        except Exception:
+            # Conservative fallback: preserve the old behavior but drop raw
+            # tool-role messages rather than forwarding a role Codex rejects.
+            input_msgs = []
+            for msg in conversation_msgs:
+                role = msg.get("role", "user")
+                if role == "tool":
+                    continue
                 input_msgs.append({
                     "role": role,
-                    "content": _convert_content_for_responses(content),
+                    "content": _convert_content_for_responses(msg.get("content") or ""),
                 })
 
         resp_kwargs: Dict[str, Any] = {

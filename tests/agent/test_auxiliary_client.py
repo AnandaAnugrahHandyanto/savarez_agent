@@ -22,6 +22,7 @@ from agent.auxiliary_client import (
     _normalize_aux_provider,
     _try_payment_fallback,
     _resolve_auto,
+    _CodexCompletionsAdapter,
 )
 
 
@@ -53,6 +54,88 @@ def codex_auth_dir(tmp_path, monkeypatch):
         lambda: "codex-test-token-abc123",
     )
     return codex_dir
+
+
+class _FakeCodexStream:
+    def __init__(self, captured, kwargs):
+        self._captured = captured
+        self._kwargs = kwargs
+
+    def __enter__(self):
+        self._captured.append(self._kwargs)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def __iter__(self):
+        return iter(())
+
+    def get_final_response(self):
+        message = MagicMock()
+        message.type = "message"
+        part = MagicMock()
+        part.type = "output_text"
+        part.text = "ok"
+        message.content = [part]
+        final = MagicMock()
+        final.output = [message]
+        final.usage = None
+        return final
+
+
+class _FakeCodexResponses:
+    def __init__(self):
+        self.captured = []
+
+    def stream(self, **kwargs):
+        return _FakeCodexStream(self.captured, kwargs)
+
+
+class _FakeCodexClient:
+    def __init__(self):
+        self.responses = _FakeCodexResponses()
+
+
+class TestCodexCompletionsAdapter:
+    def test_converts_chat_tool_messages_to_responses_items(self):
+        client = _FakeCodexClient()
+        adapter = _CodexCompletionsAdapter(client, "gpt-5.5")
+
+        adapter.create(
+            model="gpt-5.5",
+            messages=[
+                {"role": "system", "content": "system prompt"},
+                {"role": "user", "content": "remember this"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_abc123",
+                            "type": "function",
+                            "function": {"name": "memory", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call_abc123", "content": "saved"},
+            ],
+        )
+
+        sent = client.responses.captured[0]
+        assert sent["instructions"] == "system prompt"
+        assert {"role": "tool", "content": "saved"} not in sent["input"]
+        assert {
+            "type": "function_call",
+            "call_id": "call_abc123",
+            "name": "memory",
+            "arguments": "{}",
+        } in sent["input"]
+        assert {
+            "type": "function_call_output",
+            "call_id": "call_abc123",
+            "output": "saved",
+        } in sent["input"]
 
 
 class TestNormalizeAuxProvider:
