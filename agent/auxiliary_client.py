@@ -373,23 +373,35 @@ class _CodexCompletionsAdapter:
         self._model = model
 
     def create(self, **kwargs) -> Any:
+        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
         messages = kwargs.get("messages", [])
         model = kwargs.get("model", self._model)
 
         # Separate system/instructions from conversation messages.
-        # Convert chat.completions multimodal content blocks to Responses
-        # API format (input_text / input_image instead of text / image_url).
         instructions = "You are a helpful assistant."
-        input_msgs: List[Dict[str, Any]] = []
+        non_system_messages: List[Dict[str, Any]] = []
         for msg in messages:
             role = msg.get("role", "user")
             content = msg.get("content") or ""
             if role == "system":
                 instructions = content if isinstance(content, str) else str(content)
             else:
+                non_system_messages.append(msg)
+
+        canonical_roles = {"user", "assistant", "tool"}
+        if all((msg.get("role") in canonical_roles) for msg in non_system_messages):
+            input_msgs = _chat_messages_to_responses_input(non_system_messages)
+        else:
+            input_msgs = []
+            for msg in non_system_messages:
+                role = msg.get("role", "user")
+                if role in canonical_roles:
+                    input_msgs.extend(_chat_messages_to_responses_input([msg]))
+                    continue
                 input_msgs.append({
                     "role": role,
-                    "content": _convert_content_for_responses(content),
+                    "content": _convert_content_for_responses(msg.get("content") or ""),
                 })
 
         resp_kwargs: Dict[str, Any] = {
