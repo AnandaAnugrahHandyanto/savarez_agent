@@ -811,7 +811,7 @@ class TestParseTargetRefE164:
 
 
 class TestParseTargetRefSlack:
-    """_parse_target_ref recognizes Slack alphanumeric channel/group/DM/user IDs."""
+    """_parse_target_ref recognizes Slack conversation IDs (C/G/D) as explicit targets."""
 
     def test_public_channel_id_is_explicit(self):
         """Slack public channel IDs (C...) are recognized as explicit."""
@@ -832,11 +832,14 @@ class TestParseTargetRefSlack:
         assert chat_id == "D0123456789"
         assert is_explicit is True
 
-    def test_user_id_is_explicit(self):
-        """Slack user IDs (U...) are recognized as explicit."""
-        chat_id, _, is_explicit = _parse_target_ref("slack", "U0123456789")
-        assert chat_id == "U0123456789"
-        assert is_explicit is True
+    def test_user_id_is_not_explicit_without_dm_resolution(self):
+        """Slack user IDs (U...) are not explicit send targets.
+
+        chat.postMessage rejects U... values directly; a DM must be opened
+        first via conversations.open to obtain a D... conversation ID.
+        """
+        _, _, is_explicit = _parse_target_ref("slack", "U0123456789")
+        assert is_explicit is False
 
     def test_whitespace_stripped(self):
         """Whitespace around a Slack channel ID is stripped."""

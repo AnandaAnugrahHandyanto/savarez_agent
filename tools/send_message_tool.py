@@ -30,10 +30,11 @@ _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # downstream adapters (signal, etc.) expect.
 _PHONE_PLATFORMS = frozenset({"signal", "sms", "whatsapp"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
-# Slack channel/group/DM/user/workspace IDs are uppercase alphanumeric strings
-# starting with C, G, D, U, or W — they never pass isdigit() so without this
-# branch they silently fall through to name resolution and fail.
-_SLACK_CHANNEL_ID_RE = re.compile(r"^\s*([CGDUW][A-Z0-9]{8,})\s*$")
+# Slack conversation IDs are uppercase alphanumeric strings starting with C
+# (public channel), G (private/group channel), or D (DM).  User IDs (U...) and
+# workspace IDs (W...) are not valid chat.postMessage channel values — they
+# require a conversations.open call first to obtain a D... ID.
+_SLACK_CHANNEL_ID_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,})\s*$")
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
 _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a"}

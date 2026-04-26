@@ -223,8 +223,9 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
     if not channels:
         return None
 
-    # 0. Direct channel-ID match — handles alphanumeric IDs (e.g. Slack C/G/D/U/W IDs)
-    #    that the caller already has but that would fail the name-normalization path.
+    # 0. Exact ID match (case-sensitive) — short-circuits name normalization for callers
+    #    that already have a raw conversation ID (e.g. Slack C.../G.../D... values).
+    #    Name matching below is case-insensitive; this path is not.
     name_stripped = name.strip()
     for ch in channels:
         if ch.get("id") == name_stripped:
