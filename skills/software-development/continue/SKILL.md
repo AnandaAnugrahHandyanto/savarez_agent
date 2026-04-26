@@ -51,6 +51,7 @@ from collections import defaultdict
 
 SESSION_DIR = os.path.expanduser('~/.hermes/sessions')
 LIVE_THRESHOLD_MIN = 20
+KNOWN_PLATFORMS = ['telegram', 'discord', 'tui', 'local']
 
 def get_platform_jsonl(filepath):
     try:
@@ -104,14 +105,21 @@ for p in platforms:
     platforms[p].sort(key=lambda x: x['mtime'], reverse=True)
 
 now = datetime.now(timezone.utc)
-for p, sess_list in sorted(platforms.items()):
+for idx, p in enumerate(KNOWN_PLATFORMS, 1):
+    sess_list = platforms.get(p, [])
+    if not sess_list:
+        print(f"{idx}. {p:<10} — No recent sessions")
+        continue
+
     latest = sess_list[0]
     age_min = int((now - latest['mtime']).total_seconds() / 60)
     live = age_min < LIVE_THRESHOLD_MIN
     if live:
-        print(f"{p:<12} — Live now ({age_min}m ago) [live]")
+        print(f"{idx}. {p:<10} — Live now ({age_min}m ago) [live]")
+    elif age_min < 60:
+        print(f"{idx}. {p:<10} — Last: {age_min}m ago")
     else:
-        print(f"{p:<12} — Last: {age_min//60}h {age_min%60}m ago")
+        print(f"{idx}. {p:<10} — Last: {age_min//60}h {age_min%60}m ago")
 ```
 
 ### Display format
@@ -119,15 +127,17 @@ for p, sess_list in sorted(platforms.items()):
 ```text
 📋 Available channels:
 
-telegram     — Live now (2m ago) [live]
-tui          — Last: 0h 15m ago
-local        — No recent sessions
+1. telegram   — Live now (2m ago) [live]
+2. discord    — No recent sessions
+3. tui        — Last: 15m ago
+4. local      — No recent sessions
 
 Pick one (name or number):
 ```
 
 Notes:
 - `null` or missing platform values should be labeled as `local`.
+- Support both platform names and numeric picks from the channel list.
 - If only one platform has recent sessions, skip the picker and summarize directly.
 
 ## Summary generation
@@ -151,7 +161,12 @@ def find_latest_session(platform):
         try:
             with open(filepath, 'r') as f:
                 meta = json.loads(f.readline())
-            if meta.get('role') == 'session_meta' and (meta.get('platform') or 'local') == platform:
+            detected = None
+            if meta.get('role') == 'session_meta':
+                detected = meta.get('platform') or 'local'
+            elif 'mirror_source' in meta:
+                detected = meta.get('mirror_source') or 'local'
+            if detected == platform:
                 candidates.append((filepath, os.stat(filepath).st_mtime, 'jsonl'))
         except Exception:
             pass
@@ -232,6 +247,7 @@ Got it. What would you like to work on instead?
 | Platform requested but no matching session file exists | Fall back to `session_search` |
 | `session_search` also fails | Say `Can't find that session. Start fresh?` |
 | User picks current platform | Summarize from current context instead of searching files |
+| User replies with a number instead of a platform name | Map the number from the displayed picker to the selected platform |
 | Old sessions with `platform: null` | Treat as `local` |
 | TUI/local sessions stored as `.json` | Scan `session_*.json` and read the `messages` array |
 
@@ -239,6 +255,8 @@ Got it. What would you like to work on instead?
 
 - Parse optional platform argument from the `/continue` command.
 - If no platform is provided, scan sessions and show a channel picker.
+- Include expected platforms even when some have no recent sessions.
+- Support both platform names and numeric picks from the picker.
 - If a platform is provided, locate the latest session for that platform.
 - Support both `.jsonl` and `.json` session formats.
 - Read the last 5-6 user messages only.
