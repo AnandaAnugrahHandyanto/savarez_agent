@@ -574,6 +574,14 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["require_mention"] = platform_cfg["require_mention"]
                 if "free_response_channels" in platform_cfg:
                     bridged["free_response_channels"] = platform_cfg["free_response_channels"]
+                if plat == Platform.DISCORD and "auto_thread" in platform_cfg:
+                    bridged["auto_thread"] = platform_cfg["auto_thread"]
+                if plat == Platform.DISCORD and "allowed_channels" in platform_cfg:
+                    bridged["allowed_channels"] = platform_cfg["allowed_channels"]
+                if plat == Platform.DISCORD and "ignored_channels" in platform_cfg:
+                    bridged["ignored_channels"] = platform_cfg["ignored_channels"]
+                if plat == Platform.DISCORD and "no_thread_channels" in platform_cfg:
+                    bridged["no_thread_channels"] = platform_cfg["no_thread_channels"]
                 if "mention_patterns" in platform_cfg:
                     bridged["mention_patterns"] = platform_cfg["mention_patterns"]
                 if "dm_policy" in platform_cfg:

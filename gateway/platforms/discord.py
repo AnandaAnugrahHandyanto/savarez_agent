@@ -2709,6 +2709,44 @@ class DiscordAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no", "off")
 
+    def _discord_config_or_env_value(self, key: str, env_name: str, default: Any = None) -> Any:
+        """Return a Discord config value, with non-empty env vars overriding config."""
+        extra = self.config.extra if isinstance(getattr(self.config, "extra", None), dict) else {}
+        configured = extra.get(key)
+        env_value = os.getenv(env_name)
+        if env_value is not None and str(env_value).strip():
+            return env_value
+        if configured is not None:
+            return configured
+        return default
+
+    @staticmethod
+    def _discord_channel_set(raw: Any) -> set:
+        """Normalize Discord channel config from CSV, YAML sequences, or scalar IDs."""
+        if raw is None:
+            return set()
+        if isinstance(raw, str):
+            return {part.strip() for part in raw.split(",") if part.strip()}
+        if isinstance(raw, (list, tuple, set)):
+            return {
+                str(part).strip()
+                for part in raw
+                if part is not None and str(part).strip()
+            }
+        raw_text = str(raw).strip()
+        return {raw_text} if raw_text else set()
+
+    def _discord_channel_setting(self, key: str, env_name: str) -> set:
+        """Return a normalized Discord channel-control set."""
+        return self._discord_channel_set(self._discord_config_or_env_value(key, env_name))
+
+    def _discord_auto_thread_enabled(self) -> bool:
+        """Return whether Discord auto-threading is enabled."""
+        raw = self._discord_config_or_env_value("auto_thread", "DISCORD_AUTO_THREAD", True)
+        if isinstance(raw, str):
+            return raw.strip().lower() in ("true", "1", "yes", "on")
+        return bool(raw)
+
     def _discord_free_response_channels(self) -> set:
         """Return Discord channel IDs where no bot mention is required.
 
@@ -2716,14 +2754,10 @@ class DiscordAdapter(BasePlatformAdapter):
         string) is preserved in the returned set so callers can short-circuit
         on wildcard membership, consistent with ``allowed_channels``.
         """
-        raw = self.config.extra.get("free_response_channels")
-        if raw is None:
-            raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
-        if isinstance(raw, list):
-            return {str(part).strip() for part in raw if str(part).strip()}
-        if isinstance(raw, str) and raw.strip():
-            return {part.strip() for part in raw.split(",") if part.strip()}
-        return set()
+        return self._discord_channel_setting(
+            "free_response_channels",
+            "DISCORD_FREE_RESPONSE_CHANNELS",
+        )
 
     def _thread_parent_channel(self, channel: Any) -> Any:
         """Return the parent text channel when invoked from a thread."""
@@ -3205,16 +3239,20 @@ class DiscordAdapter(BasePlatformAdapter):
                 channel_ids.add(parent_channel_id)
 
             # Check allowed channels - if set, only respond in these channels
-            allowed_channels_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
-            if allowed_channels_raw:
-                allowed_channels = {ch.strip() for ch in allowed_channels_raw.split(",") if ch.strip()}
+            allowed_channels = self._discord_channel_setting(
+                "allowed_channels",
+                "DISCORD_ALLOWED_CHANNELS",
+            )
+            if allowed_channels:
                 if "*" not in allowed_channels and not (channel_ids & allowed_channels):
                     logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_ids)
                     return
 
             # Check ignored channels - never respond even when mentioned
-            ignored_channels_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
-            ignored_channels = {ch.strip() for ch in ignored_channels_raw.split(",") if ch.strip()}
+            ignored_channels = self._discord_channel_setting(
+                "ignored_channels",
+                "DISCORD_IGNORED_CHANNELS",
+            )
             if "*" in ignored_channels or (channel_ids & ignored_channels):
                 logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_ids)
                 return
@@ -3248,10 +3286,16 @@ class DiscordAdapter(BasePlatformAdapter):
         # no_thread_channels: channels where bot responds directly without thread.
         auto_threaded_channel = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
-            no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
-            no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            skip_thread = bool(channel_ids & no_thread_channels) or is_free_channel
-            auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
+            no_thread_channels = self._discord_channel_setting(
+                "no_thread_channels",
+                "DISCORD_NO_THREAD_CHANNELS",
+            )
+            skip_thread = (
+                "*" in no_thread_channels
+                or bool(channel_ids & no_thread_channels)
+                or is_free_channel
+            )
+            auto_thread = self._discord_auto_thread_enabled()
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
                 thread = await self._auto_create_thread(message)
