@@ -19,7 +19,8 @@ Usage:
 import json
 import time
 from collections import Counter, defaultdict
-from datetime import datetime
+from datetime import date as date_cls
+from datetime import datetime, time as datetime_time, timedelta, timezone, tzinfo
 from typing import Any, Dict, List
 
 from agent.usage_pricing import (
@@ -121,56 +122,39 @@ class InsightsEngine:
         """
         cutoff = time.time() - (days * 86400)
 
-        # Gather raw data
         sessions = self._get_sessions(cutoff, source)
         tool_usage = self._get_tool_usage(cutoff, source)
         skill_usage = self._get_skill_usage(cutoff, source)
         message_stats = self._get_message_stats(cutoff, source)
+        return self._build_report(
+            sessions,
+            source=source,
+            days=days,
+            tool_usage=tool_usage,
+            skill_usage=skill_usage,
+            message_stats=message_stats,
+        )
 
-        if not sessions:
-            return {
-                "days": days,
-                "source_filter": source,
-                "empty": True,
-                "overview": {},
-                "models": [],
-                "platforms": [],
-                "tools": [],
-                "skills": {
-                    "summary": {
-                        "total_skill_loads": 0,
-                        "total_skill_edits": 0,
-                        "total_skill_actions": 0,
-                        "distinct_skills_used": 0,
-                    },
-                    "top_skills": [],
-                },
-                "activity": {},
-                "top_sessions": [],
+    def generate_daily_summary(
+        self,
+        day: datetime | date_cls | str | None = None,
+        *,
+        tz: tzinfo | None = None,
+        source: str = None,
+    ) -> Dict[str, Any]:
+        """Generate a report for one calendar day in the given timezone."""
+        target_day, start_ts, end_ts, resolved_tz = self._resolve_day_window(day, tz)
+        sessions = self._get_sessions_between(start_ts, end_ts, source)
+        report = self._build_report(sessions, source=source)
+        report.update(
+            {
+                "date": target_day.isoformat(),
+                "timezone": self._format_timezone_name(resolved_tz),
+                "window_start": start_ts,
+                "window_end": end_ts,
             }
-
-        # Compute insights
-        overview = self._compute_overview(sessions, message_stats)
-        models = self._compute_model_breakdown(sessions)
-        platforms = self._compute_platform_breakdown(sessions)
-        tools = self._compute_tool_breakdown(tool_usage)
-        skills = self._compute_skill_breakdown(skill_usage)
-        activity = self._compute_activity_patterns(sessions)
-        top_sessions = self._compute_top_sessions(sessions)
-
-        return {
-            "days": days,
-            "source_filter": source,
-            "empty": False,
-            "generated_at": time.time(),
-            "overview": overview,
-            "models": models,
-            "platforms": platforms,
-            "tools": tools,
-            "skills": skills,
-            "activity": activity,
-            "top_sessions": top_sessions,
-        }
+        )
+        return report
 
     # =========================================================================
     # Data gathering (SQL queries)
@@ -202,6 +186,24 @@ class InsightsEngine:
             cursor = self._conn.execute(self._GET_SESSIONS_WITH_SOURCE, (cutoff, source))
         else:
             cursor = self._conn.execute(self._GET_SESSIONS_ALL, (cutoff,))
+        return [dict(row) for row in cursor.fetchall()]
+
+    def _get_sessions_between(self, start_ts: float, end_ts: float, source: str = None) -> List[Dict]:
+        """Fetch sessions whose started_at falls inside a half-open time window."""
+        if source:
+            cursor = self._conn.execute(
+                f"SELECT {self._SESSION_COLS} FROM sessions"
+                " WHERE started_at >= ? AND started_at < ? AND source = ?"
+                " ORDER BY started_at DESC",
+                (start_ts, end_ts, source),
+            )
+        else:
+            cursor = self._conn.execute(
+                f"SELECT {self._SESSION_COLS} FROM sessions"
+                " WHERE started_at >= ? AND started_at < ?"
+                " ORDER BY started_at DESC",
+                (start_ts, end_ts),
+            )
         return [dict(row) for row in cursor.fetchall()]
 
     def _get_tool_usage(self, cutoff: float, source: str = None) -> List[Dict]:
@@ -407,6 +409,189 @@ class InsightsEngine:
     # =========================================================================
     # Computation
     # =========================================================================
+
+    def _build_report(
+        self,
+        sessions: List[Dict],
+        *,
+        source: str = None,
+        days: int | None = None,
+        tool_usage: List[Dict] | None = None,
+        skill_usage: List[Dict] | None = None,
+        message_stats: Dict[str, int] | None = None,
+    ) -> Dict[str, Any]:
+        """Build a report payload from a pre-filtered session list."""
+        if not sessions:
+            return {
+                "days": days,
+                "source_filter": source,
+                "empty": True,
+                "generated_at": time.time(),
+                "overview": {},
+                "models": [],
+                "platforms": [],
+                "tools": [],
+                "skills": {
+                    "summary": {
+                        "total_skill_loads": 0,
+                        "total_skill_edits": 0,
+                        "total_skill_actions": 0,
+                        "distinct_skills_used": 0,
+                    },
+                    "top_skills": [],
+                },
+                "activity": {},
+                "top_sessions": [],
+            }
+
+        message_stats = message_stats or self._compute_message_stats_from_sessions(sessions)
+        tool_usage = tool_usage if tool_usage is not None else self._compute_tool_usage_from_sessions(sessions)
+        skill_usage = skill_usage if skill_usage is not None else self._compute_skill_usage_from_sessions(sessions)
+        overview = self._compute_overview(sessions, message_stats)
+        models = self._compute_model_breakdown(sessions)
+        platforms = self._compute_platform_breakdown(sessions)
+        tools = self._compute_tool_breakdown(tool_usage)
+        skills = self._compute_skill_breakdown(skill_usage)
+        activity = self._compute_activity_patterns(sessions)
+        top_sessions = self._compute_top_sessions(sessions)
+
+        return {
+            "days": days,
+            "source_filter": source,
+            "empty": False,
+            "generated_at": time.time(),
+            "overview": overview,
+            "models": models,
+            "platforms": platforms,
+            "tools": tools,
+            "skills": skills,
+            "activity": activity,
+            "top_sessions": top_sessions,
+        }
+
+    def _compute_message_stats_from_sessions(self, sessions: List[Dict]) -> Dict[str, int]:
+        """Approximate message counts from session rows when message scans are skipped."""
+        total_messages = sum(s.get("message_count") or 0 for s in sessions)
+        return {
+            "total_messages": total_messages,
+            "user_messages": 0,
+            "assistant_messages": 0,
+            "tool_messages": 0,
+        }
+
+    def _compute_tool_usage_from_sessions(self, sessions: List[Dict]) -> List[Dict[str, int]]:
+        """Fallback aggregate tool counts from session rows when per-message data is unavailable."""
+        counts = Counter()
+        for session in sessions:
+            tool_calls = session.get("tool_call_count") or 0
+            if tool_calls:
+                counts["tool_calls"] += tool_calls
+        return [{"tool_name": name, "count": count} for name, count in counts.most_common()]
+
+    def _compute_skill_usage_from_sessions(self, sessions: List[Dict]) -> List[Dict[str, Any]]:
+        """Daily summaries currently do not expand per-message skill usage."""
+        return []
+
+    def _resolve_day_window(
+        self,
+        day: datetime | date_cls | str | None,
+        tz: tzinfo | None,
+    ) -> tuple[date_cls, float, float, tzinfo]:
+        """Resolve a calendar day into a timezone-aware half-open timestamp window."""
+        resolved_tz = tz or datetime.now().astimezone().tzinfo or timezone.utc
+
+        if day is None:
+            target_day = datetime.now(resolved_tz).date()
+        elif isinstance(day, datetime):
+            if day.tzinfo is None:
+                day = day.replace(tzinfo=resolved_tz)
+            else:
+                day = day.astimezone(resolved_tz)
+            target_day = day.date()
+        elif isinstance(day, date_cls):
+            target_day = day
+        elif isinstance(day, str):
+            target_day = date_cls.fromisoformat(day)
+        else:
+            raise TypeError("day must be a date, datetime, ISO date string, or None")
+
+        start_dt = datetime.combine(target_day, datetime_time.min, tzinfo=resolved_tz)
+        end_dt = start_dt + timedelta(days=1)
+        return target_day, start_dt.timestamp(), end_dt.timestamp(), resolved_tz
+
+    def _format_timezone_name(self, tz: tzinfo) -> str:
+        """Return a stable human-readable timezone label for reports."""
+        name = getattr(tz, "key", None) or getattr(tz, "zone", None) or tz.tzname(None)
+        if name:
+            return name
+
+        offset = datetime.now(tz).utcoffset()
+        if offset is None:
+            return "UTC"
+        if offset == timedelta(0):
+            return "UTC"
+
+        total_minutes = int(offset.total_seconds() // 60)
+        sign = "+" if total_minutes >= 0 else "-"
+        total_minutes = abs(total_minutes)
+        hours, minutes = divmod(total_minutes, 60)
+        return f"UTC{sign}{hours:02d}:{minutes:02d}"
+
+    def format_feishu_daily_markdown(self, report: Dict) -> str:
+        """Format a one-day usage report for Feishu/Lark Markdown delivery."""
+        if report.get("empty"):
+            date_label = report.get("date", "unknown")
+            timezone_label = report.get("timezone", "UTC")
+            return (
+                "# Hermes Daily Usage Report\n\n"
+                f"**Date:** {date_label}\n"
+                f"**Timezone:** {timezone_label}\n\n"
+                "No sessions found for this day."
+            )
+
+        overview = report.get("overview", {})
+        lines = [
+            "# Hermes Daily Usage Report",
+            "",
+            f"**Date:** {report.get('date', 'unknown')}",
+            f"**Timezone:** {report.get('timezone', 'UTC')}",
+            "",
+            "## Token Usage",
+            f"- Sessions: {overview.get('total_sessions', 0):,}",
+            f"- Input tokens: {overview.get('total_input_tokens', 0):,}",
+            f"- Output tokens: {overview.get('total_output_tokens', 0):,}",
+        ]
+
+        if overview.get("total_cache_read_tokens"):
+            lines.append(f"- Cache read tokens: {overview['total_cache_read_tokens']:,}")
+        if overview.get("total_cache_write_tokens"):
+            lines.append(f"- Cache write tokens: {overview['total_cache_write_tokens']:,}")
+
+        lines.extend(
+            [
+                f"- Total tokens: {overview.get('total_tokens', 0):,}",
+                "",
+            ]
+        )
+
+        models = report.get("models", [])
+        if models:
+            lines.append("## Models")
+            for model in models:
+                lines.append(
+                    f"- {model['model']}: {model['total_tokens']:,} tokens across {model['sessions']} session(s)"
+                )
+            lines.append("")
+
+        platforms = report.get("platforms", [])
+        if platforms:
+            lines.append("## Platforms")
+            for platform in platforms:
+                lines.append(
+                    f"- {platform['platform']}: {platform['total_tokens']:,} tokens across {platform['sessions']} session(s)"
+                )
+
+        return "\n".join(lines)
 
     def _compute_overview(self, sessions: List[Dict], message_stats: Dict) -> Dict:
         """Compute high-level overview statistics."""

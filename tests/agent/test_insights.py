@@ -1,8 +1,10 @@
 """Tests for agent/insights.py — InsightsEngine analytics and reporting."""
 
 import time
-import pytest
+from datetime import datetime, timezone
 from pathlib import Path
+
+import pytest
 
 from hermes_state import SessionDB
 from agent.insights import (
@@ -531,6 +533,118 @@ class TestGatewayFormatting:
 
         assert "Models" in text
         assert "sessions" in text
+
+
+class TestDailyUsageReporting:
+    def test_generate_daily_summary_aggregates_one_calendar_day(self, db):
+        target_day = datetime(2026, 4, 25, tzinfo=timezone.utc)
+
+        db.create_session(
+            session_id="d1",
+            source="feishu",
+            model="anthropic/claude-sonnet-4-20250514",
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = 'd1'",
+            (datetime(2026, 4, 25, 1, 30, tzinfo=timezone.utc).timestamp(),
+             datetime(2026, 4, 25, 2, 0, tzinfo=timezone.utc).timestamp()),
+        )
+        db.update_token_counts(
+            "d1",
+            input_tokens=1200,
+            output_tokens=300,
+            cache_read_tokens=200,
+            billing_provider="anthropic",
+        )
+
+        db.create_session(
+            session_id="d2",
+            source="cli",
+            model="gpt-4o",
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = 'd2'",
+            (datetime(2026, 4, 25, 18, 0, tzinfo=timezone.utc).timestamp(),
+             datetime(2026, 4, 25, 18, 20, tzinfo=timezone.utc).timestamp()),
+        )
+        db.update_token_counts(
+            "d2",
+            input_tokens=800,
+            output_tokens=200,
+            billing_provider="openai",
+        )
+
+        db.create_session(
+            session_id="old_day",
+            source="feishu",
+            model="gpt-4o-mini",
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = 'old_day'",
+            (datetime(2026, 4, 24, 23, 50, tzinfo=timezone.utc).timestamp(),
+             datetime(2026, 4, 25, 0, 10, tzinfo=timezone.utc).timestamp()),
+        )
+        db.update_token_counts(
+            "old_day",
+            input_tokens=999,
+            output_tokens=1,
+            billing_provider="openai",
+        )
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        report = engine.generate_daily_summary(day=target_day, tz=timezone.utc)
+
+        assert report["date"] == "2026-04-25"
+        assert report["timezone"] == "UTC"
+        assert report["empty"] is False
+        assert report["overview"]["total_sessions"] == 2
+        assert report["overview"]["total_input_tokens"] == 2000
+        assert report["overview"]["total_output_tokens"] == 500
+        assert report["overview"]["total_cache_read_tokens"] == 200
+        assert report["overview"]["total_tokens"] == 2700
+
+        model_names = [item["model"] for item in report["models"]]
+        assert "claude-sonnet-4-20250514" in model_names
+        assert "gpt-4o" in model_names
+        assert "gpt-4o-mini" not in model_names
+
+    def test_format_feishu_daily_markdown(self, db):
+        db.create_session(
+            session_id="d1",
+            source="feishu",
+            model="anthropic/claude-sonnet-4-20250514",
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = 'd1'",
+            (datetime(2026, 4, 25, 9, 0, tzinfo=timezone.utc).timestamp(),
+             datetime(2026, 4, 25, 9, 30, tzinfo=timezone.utc).timestamp()),
+        )
+        db.update_token_counts(
+            "d1",
+            input_tokens=1500,
+            output_tokens=500,
+            cache_write_tokens=100,
+            billing_provider="anthropic",
+        )
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        report = engine.generate_daily_summary(day="2026-04-25", tz=timezone.utc)
+        text = engine.format_feishu_daily_markdown(report)
+
+        assert "# Hermes Daily Usage Report" in text
+        assert "**Date:** 2026-04-25" in text
+        assert "## Token Usage" in text
+        assert "- Sessions: 1" in text
+        assert "- Input tokens: 1,500" in text
+        assert "- Output tokens: 500" in text
+        assert "- Cache write tokens: 100" in text
+        assert "- Total tokens: 2,100" in text
+        assert "## Models" in text
+        assert "claude-sonnet-4-20250514" in text
+        assert "## Platforms" in text
+        assert "feishu" in text
 
 
 # =========================================================================
