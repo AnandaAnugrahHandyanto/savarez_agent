@@ -403,4 +403,11 @@ def test_check_fn_true_when_cdp_url_set_but_agent_browser_missing(monkeypatch):
     monkeypatch.setattr(
         bt, "_get_cdp_override", lambda: "ws://localhost:9222/devtools/browser/x"
     )
+
+    def _unexpected_browser_check():
+        raise AssertionError(
+            "check_browser_requirements should not be needed when CDP URL is set"
+        )
+
+    monkeypatch.setattr(bt, "check_browser_requirements", _unexpected_browser_check)
     assert browser_cdp_tool._browser_cdp_check() is True
