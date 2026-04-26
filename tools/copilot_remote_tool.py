@@ -297,6 +297,22 @@ def _launch(args: Dict[str, Any]) -> str:
     job_id = str(uuid.uuid4())
     db = _get_db()
     try:
+        # Validate the FK reference before insert. SessionDB enables
+        # PRAGMA foreign_keys=ON and copilot_remote.hermes_session_id
+        # references sessions(id); passing an id whose row does not
+        # exist (e.g. because create_session() failed at agent startup
+        # and was logged-and-swallowed) would raise IntegrityError and
+        # block delegation. Fall back to NULL with a logged warning so
+        # the launch still succeeds.
+        hermes_session_id = str(args.get("hermes_session_id") or "") or None
+        if hermes_session_id and db.get_session(hermes_session_id) is None:
+            logger.warning(
+                "copilot_remote: hermes_session_id=%s has no sessions row; "
+                "inserting copilot_remote with NULL FK to avoid IntegrityError",
+                hermes_session_id,
+            )
+            hermes_session_id = None
+
         db.create_copilot_remote(
             job_id=job_id,
             repo_slug=repo_entry.slug,
@@ -304,7 +320,7 @@ def _launch(args: Dict[str, Any]) -> str:
             prompt=prompt,
             signal_source=str(args.get("signal_source") or "tool"),
             signal_ref=str(args.get("signal_ref") or "") or None,
-            hermes_session_id=str(args.get("hermes_session_id") or "") or None,
+            hermes_session_id=hermes_session_id,
         )
 
         from copilot_remote.launcher import launch_copilot
