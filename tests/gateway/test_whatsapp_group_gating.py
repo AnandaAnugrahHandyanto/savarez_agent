@@ -346,3 +346,63 @@ def test_dm_allowlist_allow_all_users_env_bypasses_list(monkeypatch):
 
     dm = _dm_message("hello", senderId="6281234567890@s.whatsapp.net")
     assert adapter._should_process_message(dm) is True
+
+
+# --- JID device-suffix normalization regression tests ---
+
+def test_normalize_whatsapp_id_strips_device_suffix():
+    """_normalize_whatsapp_id should strip the ':10' device part, not replace ':' with '@'.
+
+    Regression: old code did replace(':', '@', 1), turning 'number:10@domain'
+    into 'number@10@domain'. Group quotedParticipant has no device suffix
+    ('number@domain'), so the comparison always failed and reply-to-bot
+    detection was broken.
+    """
+    from gateway.platforms.whatsapp import WhatsAppAdapter
+
+    assert WhatsAppAdapter._normalize_whatsapp_id("15551230000:10@s.whatsapp.net") == "15551230000@s.whatsapp.net"
+    assert WhatsAppAdapter._normalize_whatsapp_id("125619388076125:0@lid") == "125619388076125@lid"
+    # Already bare — must be unchanged
+    assert WhatsAppAdapter._normalize_whatsapp_id("15551230000@s.whatsapp.net") == "15551230000@s.whatsapp.net"
+    assert WhatsAppAdapter._normalize_whatsapp_id("125619388076125@lid") == "125619388076125@lid"
+
+
+def test_reply_to_bot_triggers_with_device_suffix_in_botids():
+    """Quoting the bot's message in a group should trigger a response.
+
+    Baileys delivers sock.user.id as 'number:10@s.whatsapp.net'.
+    Group quotedParticipant has no device suffix: 'number@s.whatsapp.net'.
+    After stripping the device part both normalize to the same string.
+    """
+    adapter = _make_adapter(require_mention=True)
+
+    msg = _group_message(
+        "replying to bot",
+        botIds=["15551230000:10@s.whatsapp.net"],
+        quotedParticipant="15551230000@s.whatsapp.net",
+    )
+    assert adapter._should_process_message(msg) is True
+
+
+def test_reply_to_bot_triggers_with_lid_device_suffix():
+    """Same regression for LID-based accounts ('@lid' suffix)."""
+    adapter = _make_adapter(require_mention=True)
+
+    msg = _group_message(
+        "replying via lid",
+        botIds=["125619388076125:0@lid"],
+        quotedParticipant="125619388076125@lid",
+    )
+    assert adapter._should_process_message(msg) is True
+
+
+def test_reply_to_non_bot_does_not_trigger():
+    """Quoting a different participant should not trigger when require_mention is set."""
+    adapter = _make_adapter(require_mention=True)
+
+    msg = _group_message(
+        "replying to someone else",
+        botIds=["15551230000:10@s.whatsapp.net"],
+        quotedParticipant="9999999999@s.whatsapp.net",
+    )
+    assert adapter._should_process_message(msg) is False
