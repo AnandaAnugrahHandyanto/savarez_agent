@@ -10,33 +10,43 @@ from unittest.mock import patch
 
 
 class TestReadAutoTtsConfig:
-    """_read_auto_tts_config() correctly reads voice.auto_tts from load_config."""
+    """_read_auto_tts_config() correctly reads voice.auto_tts from read_raw_config."""
 
     def test_returns_false_when_voice_section_absent(self):
-        with patch("hermes_cli.config.load_config", return_value={}):
+        with patch("hermes_cli.config.read_raw_config", return_value={}):
             from gateway.platforms.base import _read_auto_tts_config
             assert _read_auto_tts_config() is False
 
     def test_returns_false_when_explicitly_false(self):
-        with patch("hermes_cli.config.load_config", return_value={"voice": {"auto_tts": False}}):
+        with patch("hermes_cli.config.read_raw_config", return_value={"voice": {"auto_tts": False}}):
             from gateway.platforms.base import _read_auto_tts_config
             assert _read_auto_tts_config() is False
 
     def test_returns_true_when_explicitly_true(self):
-        with patch("hermes_cli.config.load_config", return_value={"voice": {"auto_tts": True}}):
+        with patch("hermes_cli.config.read_raw_config", return_value={"voice": {"auto_tts": True}}):
             from gateway.platforms.base import _read_auto_tts_config
             assert _read_auto_tts_config() is True
 
     def test_returns_false_when_voice_is_non_dict(self):
-        # Malformed config: voice is not a dict
-        with patch("hermes_cli.config.load_config", return_value={"voice": "invalid"}):
+        with patch("hermes_cli.config.read_raw_config", return_value={"voice": "invalid"}):
             from gateway.platforms.base import _read_auto_tts_config
             assert _read_auto_tts_config() is False
 
-    def test_returns_false_on_load_config_exception(self):
-        with patch("hermes_cli.config.load_config", side_effect=Exception("io error")):
+    def test_returns_false_on_exception(self):
+        with patch("hermes_cli.config.read_raw_config", side_effect=Exception("io error")):
             from gateway.platforms.base import _read_auto_tts_config
             assert _read_auto_tts_config() is False
+
+    def test_returns_false_for_string_false(self):
+        # YAML may parse quoted "false" as a string — must not be treated as truthy
+        with patch("hermes_cli.config.read_raw_config", return_value={"voice": {"auto_tts": "false"}}):
+            from gateway.platforms.base import _read_auto_tts_config
+            assert _read_auto_tts_config() is False
+
+    def test_returns_true_for_string_true(self):
+        with patch("hermes_cli.config.read_raw_config", return_value={"voice": {"auto_tts": "true"}}):
+            from gateway.platforms.base import _read_auto_tts_config
+            assert _read_auto_tts_config() is True
 
 
 class TestAutoTtsConditionStructure:

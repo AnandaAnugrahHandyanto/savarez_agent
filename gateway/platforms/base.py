@@ -984,9 +984,14 @@ def resolve_channel_prompt(
 
 def _read_auto_tts_config() -> bool:
     try:
-        from hermes_cli.config import load_config as _lc
-        voice = _lc().get("voice")
-        return bool(voice.get("auto_tts", False) if isinstance(voice, dict) else False)
+        from hermes_cli.config import read_raw_config as _rc
+        voice = _rc().get("voice")
+        if not isinstance(voice, dict):
+            return False
+        val = voice.get("auto_tts", False)
+        if isinstance(val, str):
+            return val.lower() in ("true", "1", "yes")
+        return bool(val)
     except Exception:
         return False
 
