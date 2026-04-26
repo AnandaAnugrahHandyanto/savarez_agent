@@ -251,6 +251,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self._model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
+        # Stop-button stubs: session_key → (chat_id, message_id)
+        self._stop_stubs: Dict[str, tuple] = {}
 
     @staticmethod
     def _is_callback_user_authorized(user_id: str) -> bool:
@@ -1673,6 +1675,27 @@ class TelegramAdapter(BasePlatformAdapter):
                     logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
             return
 
+        # --- Stop button callbacks (st:<session_key>) ---
+        if data.startswith("st:"):
+            session_key = data[3:]
+            chat_id = str(query.message.chat_id) if query.message else None
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(caller_id):
+                await query.answer(text="⛔ You are not authorized to stop this session.")
+                return
+            stub = self._stop_stubs.pop(session_key, None)
+            if stub is None:
+                await query.answer(text="Session already stopped or finished.")
+                return
+            await query.answer(text="🛑 Stopping…")
+            try:
+                await query.edit_message_text(text="🛑 Stopped.")
+            except Exception:
+                pass
+            if chat_id:
+                await self.interrupt_session_activity(session_key, chat_id)
+            return
+
         # --- Update prompt callbacks ---
         if not data.startswith("update_prompt:"):
             return
@@ -3083,28 +3106,89 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.debug("[%s] set_message_reaction failed (%s): %s", self.name, emoji, e)
             return False
 
+    def _stop_button_enabled(self) -> bool:
+        """Return True when the ⏳ Stop button stub is enabled (opt-in via env)."""
+        return os.getenv("TELEGRAM_STOP_BUTTON", "false").lower() not in ("false", "0", "no")
+
+    def _session_key_for_event(self, event: MessageEvent) -> str:
+        """Derive the canonical session key from a MessageEvent source."""
+        from gateway.session import build_session_key
+        return build_session_key(
+            event.source,
+            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+        )
+
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Add an in-progress reaction when message processing begins."""
-        if not self._reactions_enabled():
+        """React to processing start and optionally send a ⏳ Stop button stub."""
+        if self._reactions_enabled():
+            chat_id = getattr(event.source, "chat_id", None)
+            message_id = getattr(event, "message_id", None)
+            if chat_id and message_id:
+                await self._set_reaction(chat_id, message_id, "\U0001f440")
+
+        if self._stop_button_enabled():
+            await self._send_stop_stub(event)
+
+    async def _send_stop_stub(self, event: MessageEvent) -> None:
+        """Send a ⏳ Working… message with a [🛑 Stop] inline button.
+
+        The message is stored in ``_stop_stubs`` keyed by session_key so it
+        can be cleaned up in ``on_processing_complete`` or removed immediately
+        when the user clicks the button.
+        """
+        if not self._bot:
             return
         chat_id = getattr(event.source, "chat_id", None)
-        message_id = getattr(event, "message_id", None)
-        if chat_id and message_id:
-            await self._set_reaction(chat_id, message_id, "\U0001f440")
+        if not chat_id:
+            return
+        session_key = self._session_key_for_event(event)
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🛑 Stop", callback_data=f"st:{session_key}")
+        ]])
+        thread_id = getattr(event.source, "thread_id", None)
+        kwargs: Dict[str, Any] = {
+            "chat_id": int(chat_id),
+            "text": "⏳ _Working…_",
+            "parse_mode": ParseMode.MARKDOWN,
+            "reply_markup": keyboard,
+            **self._link_preview_kwargs(),
+        }
+        message_thread_id = self._message_thread_id_for_send(thread_id)
+        if message_thread_id is not None:
+            kwargs["message_thread_id"] = message_thread_id
+        try:
+            msg = await self._bot.send_message(**kwargs)
+            self._stop_stubs[session_key] = (chat_id, str(msg.message_id))
+        except Exception as e:
+            logger.debug("[%s] Failed to send stop stub: %s", self.name, e)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Swap the in-progress reaction for a final success/failure reaction.
+        """Swap the in-progress reaction and clean up the ⏳ Stop button stub.
 
         Unlike Discord (additive reactions), Telegram's set_message_reaction
         replaces all existing reactions in one call — no remove step needed.
         """
-        if not self._reactions_enabled():
-            return
-        chat_id = getattr(event.source, "chat_id", None)
-        message_id = getattr(event, "message_id", None)
-        if chat_id and message_id and outcome != ProcessingOutcome.CANCELLED:
-            await self._set_reaction(
-                chat_id,
-                message_id,
-                "\U0001f44d" if outcome == ProcessingOutcome.SUCCESS else "\U0001f44e",
-            )
+        if self._reactions_enabled():
+            chat_id = getattr(event.source, "chat_id", None)
+            message_id = getattr(event, "message_id", None)
+            if chat_id and message_id and outcome != ProcessingOutcome.CANCELLED:
+                await self._set_reaction(
+                    chat_id,
+                    message_id,
+                    "\U0001f44d" if outcome == ProcessingOutcome.SUCCESS else "\U0001f44e",
+                )
+
+        if self._stop_button_enabled():
+            await self._delete_stop_stub(event)
+
+    async def _delete_stop_stub(self, event: MessageEvent) -> None:
+        """Delete the ⏳ Working… stub message when processing finishes normally."""
+        session_key = self._session_key_for_event(event)
+        stub = self._stop_stubs.pop(session_key, None)
+        if stub and self._bot:
+            chat_id, message_id = stub
+            try:
+                await self._bot.delete_message(int(chat_id), int(message_id))
+            except Exception as e:
+                logger.debug("[%s] Failed to delete stop stub %s: %s", self.name, message_id, e)
