@@ -2884,6 +2884,16 @@ class GatewayRunner:
             adapter.gateway_runner = self  # For cross-platform delivery
             return adapter
 
+        elif platform == Platform.NOTIONAGENT:
+            from gateway.platforms.notionagent import (
+                NotionAgentAdapter,
+                check_notionagent_requirements,
+            )
+            if not check_notionagent_requirements():
+                logger.warning("NotionAgent: aiohttp/httpx not installed")
+                return None
+            return NotionAgentAdapter(config)
+
         elif platform == Platform.BLUEBUBBLES:
             from gateway.platforms.bluebubbles import BlueBubblesAdapter, check_bluebubbles_requirements
             if not check_bluebubbles_requirements():
@@ -2940,6 +2950,7 @@ class GatewayRunner:
             Platform.WEIXIN: "WEIXIN_ALLOWED_USERS",
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
             Platform.QQBOT: "QQ_ALLOWED_USERS",
+            Platform.NOTIONAGENT: "NOTIONAGENT_ALLOWED_USERS",
         }
         platform_group_env_map = {
             Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS",
@@ -2962,11 +2973,20 @@ class GatewayRunner:
             Platform.WEIXIN: "WEIXIN_ALLOW_ALL_USERS",
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
             Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
+            Platform.NOTIONAGENT: "NOTIONAGENT_ALLOW_ALL_USERS",
         }
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
         platform_allow_all_var = platform_allow_all_map.get(source.platform, "")
         if platform_allow_all_var and os.getenv(platform_allow_all_var, "").lower() in ("true", "1", "yes"):
+            return True
+
+        if (
+            source.platform == Platform.NOTIONAGENT
+            and not os.getenv("NOTIONAGENT_ALLOWED_USERS", "").strip()
+            and not os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
+            and not os.getenv("NOTIONAGENT_ALLOW_ALL_USERS", "").strip()
+        ):
             return True
 
         # Discord bot senders that passed the DISCORD_ALLOW_BOTS platform
@@ -3093,6 +3113,7 @@ class GatewayRunner:
                 Platform.WEIXIN:   "WEIXIN_ALLOWED_USERS",
                 Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
                 Platform.QQBOT:    "QQ_ALLOWED_USERS",
+                Platform.NOTIONAGENT: "NOTIONAGENT_ALLOWED_USERS",
             }
             if os.getenv(platform_env_map.get(platform, ""), "").strip():
                 return "ignore"
