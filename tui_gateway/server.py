@@ -5621,12 +5621,11 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """VAD-driven continuous record loop, CLI-parity.
 
-    ``start`` turns on a VAD loop that emits ``voice.transcript`` events
-    for each detected utterance and auto-restarts for the next turn.
-    ``stop`` halts the loop (manual stop; matches cli.py's Ctrl+B-while-
-    recording branch clearing ``_voice_continuous``). Three consecutive
-    silent cycles stop the loop automatically and emit a
-    ``voice.transcript`` with ``no_speech_limit=True``.
+    ``start`` begins one VAD-bounded capture and emits ``voice.transcript``
+    after silence stops the recorder. ``stop`` forces transcription of the
+    active buffer, matching classic CLI push-to-talk. Three consecutive
+    silent captures stop the loop automatically and emit ``voice.transcript``
+    with ``no_speech_limit=True``.
     """
     action = params.get("action", "start")
 
@@ -5673,13 +5672,14 @@ def _(rid, params: dict) -> dict:
                 ),
                 silence_threshold=safe_threshold,
                 silence_duration=safe_duration,
+                auto_restart=False,
             )
             return _ok(rid, {"status": "recording"})
 
         # action == "stop"
         from hermes_cli.voice import stop_continuous
 
-        stop_continuous()
+        stop_continuous(force_transcribe=True)
         return _ok(rid, {"status": "stopped"})
     except ImportError:
         return _err(
