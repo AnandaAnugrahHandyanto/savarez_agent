@@ -234,3 +234,88 @@ def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, m
     assert isinstance(creds, FakeCredentials)
     assert saved["token"] == "ya29.refreshed"
     assert saved["type"] == "authorized_user"
+
+
+def test_api_tasks_lists_returns_tasklists(api_module, capsys):
+    api_module._gws_binary = lambda: None
+
+    service = MagicMock()
+    service.tasklists.return_value.list.return_value.execute.return_value = {
+        "items": [
+            {"id": "tl_1", "title": "Personal", "updated": "2026-04-21T10:00:00.000Z"}
+        ]
+    }
+
+    args = api_module.argparse.Namespace(max=20, func=api_module.tasks_lists)
+
+    with patch.object(api_module, "build_service", return_value=service):
+        api_module.tasks_lists(args)
+
+    service.tasklists.return_value.list.assert_called_once_with(maxResults=20)
+    assert json.loads(capsys.readouterr().out) == [
+        {"id": "tl_1", "title": "Personal", "updated": "2026-04-21T10:00:00.000Z"}
+    ]
+
+
+def test_api_tasks_create_passes_insert_params_and_body(api_module, capsys):
+    api_module._gws_binary = lambda: None
+
+    service = MagicMock()
+    service.tasks.return_value.insert.return_value.execute.return_value = {
+        "id": "task_1",
+        "title": "Buy milk",
+        "selfLink": "https://tasks.google.com/task_1",
+    }
+
+    args = api_module.argparse.Namespace(
+        tasklist="tl_1",
+        title="Buy milk",
+        notes="2L whole",
+        due="2026-04-21T12:00:00",
+        parent="parent_1",
+        previous="prev_1",
+        func=api_module.tasks_create,
+    )
+
+    with patch.object(api_module, "build_service", return_value=service):
+        api_module.tasks_create(args)
+
+    service.tasks.return_value.insert.assert_called_once_with(
+        tasklist="tl_1",
+        parent="parent_1",
+        previous="prev_1",
+        body={
+            "title": "Buy milk",
+            "notes": "2L whole",
+            "due": "2026-04-21T12:00:00Z",
+        },
+    )
+    assert json.loads(capsys.readouterr().out) == {
+        "status": "created",
+        "id": "task_1",
+        "title": "Buy milk",
+        "selfLink": "https://tasks.google.com/task_1",
+    }
+
+
+def test_api_tasks_complete_marks_task_completed(api_module, capsys):
+    api_module._gws_binary = lambda: None
+
+    service = MagicMock()
+    service.tasks.return_value.patch.return_value.execute.return_value = {"id": "task_1"}
+
+    args = api_module.argparse.Namespace(
+        tasklist="tl_1",
+        task_id="task_1",
+        func=api_module.tasks_complete,
+    )
+
+    with patch.object(api_module, "build_service", return_value=service):
+        api_module.tasks_complete(args)
+
+    patch_kwargs = service.tasks.return_value.patch.call_args.kwargs
+    assert patch_kwargs["tasklist"] == "tl_1"
+    assert patch_kwargs["task"] == "task_1"
+    assert patch_kwargs["body"]["status"] == "completed"
+    assert patch_kwargs["body"]["completed"].endswith("Z")
+    assert json.loads(capsys.readouterr().out) == {"status": "completed", "id": "task_1"}

@@ -240,3 +240,7 @@ class TestExchangeAuthCode:
         assert setup_module.TOKEN_PATH.exists()
         # Pending auth is cleaned up
         assert not setup_module.PENDING_AUTH_PATH.exists()
+
+
+def test_google_workspace_scopes_include_tasks(setup_module):
+    assert "https://www.googleapis.com/auth/tasks" in setup_module.SCOPES
