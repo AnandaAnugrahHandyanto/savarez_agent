@@ -376,10 +376,10 @@ TELEGRAM_ORCHESTRATE_SWARM_SCHEMA = {
     "function": {
         "name": "telegram_orchestrate_swarm",
         "description": (
-            "Kimi-Agent-Swarm-style fan-out across the Telegram fleet.  "
-            "Each subtask runs as a NAMED Telegram bot that may post "
-            "messages out into chats — this is the visible variant, "
-            "treat it as an outbound action.\n\n"
+            "Fan a task across the connected Telegram bot swarm.  Each "
+            "subtask runs as a NAMED child bot that posts updates out "
+            "into chats — this is the visible variant, treat it as an "
+            "outbound action.\n\n"
             "APPROVAL FLOW (mirrors `terminal_tool` force=True pattern):\n"
             "1. First call WITHOUT user_approved returns "
             "`status: approval_required` with a structured plan.\n"

@@ -1,4 +1,4 @@
-"""hermes_swarm — Kimi-style fan-out orchestration, in-process, no external deps.
+"""hermes_swarm — parallel sub-agent fan-out, in-process, no external deps.
 
 This is the **default** swarm primitive.  It runs entirely inside the current
 Hermes process by reusing :func:`tools.delegate_tool.delegate_task` as the
@@ -15,11 +15,15 @@ Why this exists alongside ``telegram_orchestrate_swarm``:
   "research X across N angles" / "draft N variants" / "verify X via M
   independent checks" request, regardless of whether a fleet exists.
 
-Both tools share the same Kimi-derived patterns:
+Both tools share the same orchestration patterns drawn from multi-agent
+scaling research (Moonshot's published PARL methodology, hierarchical RL,
+the Options framework — see ``skills/agents/swarm-orchestration/SKILL.md``
+for citations):
 
-1. **Critical Path metric.**  We measure the max wall-clock per stage and
-   the sum across stages; this is what Kimi's PARL training optimises.  The
-   metric appears in the result as ``critical_path_seconds``.
+1. **Critical Path metric** — wall-clock per parallel stage = max(workers),
+   not sum.  Spawning more workers only helps if it shortens the longest
+   chain.  Surfaced in the result as ``critical_path_seconds`` so the
+   leader can self-tune.
 2. **Anti-serialization guard.**  A "fan-out" call with a single subtask is
    rejected — fan-out of one is just a delegation, and the prompt explicitly
    asks for parallel work.
@@ -28,7 +32,7 @@ Both tools share the same Kimi-derived patterns:
    per multi-agent scaling research.
 4. **Distilled returns.**  Each worker is a leaf delegate (cannot recurse),
    so its full reasoning trace stays in its own context; only the final
-   answer comes back.  Mirrors Kimi's context-sharding.
+   answer comes back.  Bounded local context per worker.
 """
 
 from __future__ import annotations
@@ -130,7 +134,7 @@ def hermes_swarm(
                 }
             results.append(result)
 
-    # Critical Path metric (Kimi's PARL optimisation target).  In a
+    # Critical Path metric — wall-clock per stage = max(workers).  In a
     # single-stage fan-out like ours the critical path is just the slowest
     # worker; we keep it as a list so multi-stage callers can append.
     durations = [r.get("duration_seconds", 0.0) for r in results]
@@ -255,8 +259,8 @@ HERMES_SWARM_SCHEMA = {
     "function": {
         "name": "hermes_swarm",
         "description": (
-            "Kimi-Agent-Swarm-style fan-out, in-process, zero config.  YOU "
-            "are the leader — decompose the user's request into 2–8 atomic "
+            "Parallel sub-agent fan-out, in-process, zero config.  YOU are "
+            "the leader — decompose the user's request into 2–8 atomic "
             "subtasks (one per persona/angle/check), then call this tool "
             "ONCE with all of them.  Each subtask runs as an isolated "
             "Hermes subagent in parallel; results come back as structured "
@@ -267,7 +271,10 @@ HERMES_SWARM_SCHEMA = {
             "monitor N feeds).  DO NOT use it for tightly-coupled "
             "sequential work where each step depends on the previous one — "
             "use delegate_task or solve inline.  Do NOT call with fewer "
-            "than 2 subtasks; the tool will reject single-subtask plans."
+            "than 2 subtasks; the tool will reject single-subtask plans.  "
+            "For a Telegram-visible variant where each subtask runs as a "
+            "named child bot, use telegram_orchestrate_swarm (requires the "
+            "manager bot setup at `hermes fleet setup`)."
         ),
         "parameters": {
             "type": "object",

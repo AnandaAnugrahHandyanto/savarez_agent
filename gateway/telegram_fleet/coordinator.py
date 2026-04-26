@@ -624,7 +624,7 @@ class FleetCoordinator:
                             )
                         )
 
-        # Kimi-style Critical Path metric: wall-clock per stage = max(workers).
+        # Critical Path metric — wall-clock per stage = max(workers), not sum.
         # Single-stage fan-out so critical_path == max(durations).
         durations = [r.duration_seconds for r in results]
         critical_path = max(durations) if durations else 0.0

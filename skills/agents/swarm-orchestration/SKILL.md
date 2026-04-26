@@ -1,12 +1,12 @@
 ---
 name: swarm-orchestration
-description: Decide when to fan a request across parallel sub-agents (a "swarm") vs solve it solo or via a single delegation. Kimi-Agent-Swarm-style orchestration — in-process by default, escalates to a Telegram fleet only when the user wants visible bot activity.
+description: Decide when to fan a request across parallel sub-agents (a "swarm") vs solve it solo or via a single delegation. Hermes is the orchestrator — runs in-process by default, escalates to a connected Telegram bot swarm when the user wants visible activity.
 version: 1.0.0
 author: Hermes Agent
 license: MIT
 metadata:
   hermes:
-    tags: [orchestration, multi-agent, parallelism, delegation, kimi-swarm]
+    tags: [orchestration, multi-agent, parallelism, delegation, telegram-swarm]
 ---
 
 # Swarm Orchestration
@@ -86,14 +86,16 @@ The Telegram variant adds:
 - A `report_chat_id` argument streams live status as each bot.
 - Same `objective` / `subtasks` shape as `hermes_swarm`.
 
-## How to decompose well (Kimi-derived patterns)
+## How to decompose well
 
 1. **Atomic, independent subtasks.** Each goal should stand alone. If two goals reference each other, merge them.
 2. **3–5 workers is the production sweet spot.** Coordination overhead dominates beyond ~7. The cap is 16 — treat that as a ceiling, not a target.
 3. **Balance the work.** Aim for similar effort per subtask. Wall-clock = slowest worker; one outlier worker means no speedup.
 4. **Use personas / roles.** Each worker behaves better when its persona is concrete: "skeptical legal analyst", "market sizing specialist", "fact-checker focused on dates and numbers".
-5. **Spawn a verifier.** For high-stakes answers, add a final subtask `{"goal": "Cross-check the other workers' answers for contradictions and unsupported claims", "persona": "skeptic / fact-checker"}`. This emerged organically in Kimi's swarms; it works.
+5. **Spawn a verifier.** For high-stakes answers, add a final subtask `{"goal": "Cross-check the other workers' answers for contradictions and unsupported claims", "persona": "skeptic / fact-checker"}` — a well-known pattern in multi-agent research; it works.
 6. **Distil, don't dump.** Each worker returns one focused answer; you synthesise. Don't ask workers to "report everything they did."
+
+> Prior art: these patterns trace back to hierarchical reinforcement learning (Sutton's Options framework, Feudal Networks), recent multi-agent scaling research, and Moonshot AI's published PARL methodology for Kimi K2.5/K2.6.  We adopt them as orchestration heuristics, not as a training regime.
 
 ## Anti-patterns — when NOT to swarm
 
