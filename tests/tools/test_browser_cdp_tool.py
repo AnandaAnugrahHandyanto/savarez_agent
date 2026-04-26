@@ -386,23 +386,32 @@ def test_check_fn_false_when_no_cdp_url(monkeypatch):
 
 
 def test_check_fn_true_when_cdp_url_set(monkeypatch):
-    """Gate opens as soon as a CDP URL is resolvable."""
+    """Gate opens as soon as a CDP URL is resolvable.
+
+    browser_cdp is a pure WebSocket client — it does NOT depend on
+    agent-browser CLI, so check_browser_requirements is irrelevant."""
     import tools.browser_tool as bt
 
-    monkeypatch.setattr(bt, "check_browser_requirements", lambda: True)
+    # No need to mock check_browser_requirements — browser_cdp doesn't use it.
     monkeypatch.setattr(
         bt, "_get_cdp_override", lambda: "ws://localhost:9222/devtools/browser/x"
     )
     assert browser_cdp_tool._browser_cdp_check() is True
 
 
-def test_check_fn_false_when_browser_requirements_fail(monkeypatch):
-    """Even with a CDP URL, gate closes if the overall browser toolset is
-    unavailable (e.g. agent-browser not installed)."""
+def test_check_fn_available_without_agent_browser_cli(monkeypatch):
+    """Regression test for #15952: browser_cdp should be available when CDP URL
+    is set, even if agent-browser CLI is NOT installed.
+
+    Previously, _browser_cdp_check gated on check_browser_requirements(),
+    which checks for agent-browser. Now it only checks CDP endpoint."""
     import tools.browser_tool as bt
 
+    # Simulate agent-browser NOT installed (check_browser_requirements = False)
     monkeypatch.setattr(bt, "check_browser_requirements", lambda: False)
+    # But CDP endpoint IS available
     monkeypatch.setattr(
         bt, "_get_cdp_override", lambda: "ws://localhost:9222/devtools/browser/x"
     )
-    assert browser_cdp_tool._browser_cdp_check() is False
+    # browser_cdp should now be available (fixed behavior)
+    assert browser_cdp_tool._browser_cdp_check() is True

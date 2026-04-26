@@ -390,13 +390,12 @@ def _browser_cdp_check() -> bool:
     try:
         from tools.browser_tool import (  # type: ignore[import-not-found]
             _get_cdp_override,
-            check_browser_requirements,
         )
     except ImportError as exc:  # pragma: no cover — defensive
         logger.debug("browser_cdp check: browser_tool import failed: %s", exc)
         return False
-    if not check_browser_requirements():
-        return False
+    # browser_cdp is a pure WebSocket client — it does NOT need agent-browser CLI.
+    # Only check if a CDP endpoint is configured (env var or config.yaml).
     return bool(_get_cdp_override())
 
 
