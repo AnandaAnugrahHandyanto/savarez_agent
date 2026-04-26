@@ -220,10 +220,9 @@ export interface Translations {
     name: string;
     namePlaceholder: string;
     nameRequired: string;
-    cloneFrom: string;
-    cloneFromNone: string;
-    cloneMode: string;
-    cloneModeNone: string;
+    cloneSource: string;
+    cloneSourceBlank: string;
+    copyMode: string;
     cloneModeConfig: string;
     cloneModeAll: string;
     importTitle: string;

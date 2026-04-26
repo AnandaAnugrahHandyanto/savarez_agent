@@ -24,6 +24,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectOption } from "@/components/ui/select";
+import { Segmented } from "@/components/ui/segmented";
 import { useI18n } from "@/i18n";
 
 export default function ProfilesPage() {
@@ -33,10 +34,12 @@ export default function ProfilesPage() {
   const { toast, showToast } = useToast();
   const { t } = useI18n();
 
-  // Create form
+  // Create form. ``cloneSource === ""`` means a blank profile is created; any
+  // other value is the explicit source profile to clone from. ``copyMode``
+  // is irrelevant (and hidden from the UI) when the source is blank.
   const [newName, setNewName] = useState("");
-  const [cloneFrom, setCloneFrom] = useState<string>("");
-  const [cloneMode, setCloneMode] = useState<"none" | "config" | "all">("none");
+  const [cloneSource, setCloneSource] = useState<string>("");
+  const [copyMode, setCopyMode] = useState<"config" | "all">("config");
   const [creating, setCreating] = useState(false);
 
   // Rename state
@@ -138,16 +141,20 @@ export default function ProfilesPage() {
     }
     setCreating(true);
     try {
+      const hasSource = cloneSource !== "";
       await api.createProfile({
         name,
-        clone_from: cloneFrom || undefined,
-        clone_all: cloneMode === "all",
-        clone_config: cloneMode === "config",
+        clone_from: hasSource ? cloneSource : undefined,
+        clone_all: hasSource && copyMode === "all",
+        // Setting clone_config when clone_from is given is redundant — the
+        // backend already copies config files whenever a source is set — but
+        // we forward it for symmetry with the CLI flags.
+        clone_config: hasSource && copyMode === "config",
       });
       showToast(`${t.profiles.created}: ${name}`, "success");
       setNewName("");
-      setCloneFrom("");
-      setCloneMode("none");
+      setCloneSource("");
+      setCopyMode("config");
       load();
     } catch (e) {
       showToast(`${t.status.error}: ${e}`, "error");
@@ -281,47 +288,24 @@ export default function ProfilesPage() {
               />
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="grid gap-2">
-                <Label htmlFor="profile-clone-from">
-                  {t.profiles.cloneFrom}
+                <Label htmlFor="profile-clone-source">
+                  {t.profiles.cloneSource}
                 </Label>
                 <Select
-                  id="profile-clone-from"
-                  value={cloneFrom}
-                  onValueChange={(v) => setCloneFrom(v)}
+                  id="profile-clone-source"
+                  value={cloneSource}
+                  onValueChange={(v) => setCloneSource(v)}
                 >
                   <SelectOption value="">
-                    {t.profiles.cloneFromNone}
+                    {t.profiles.cloneSourceBlank}
                   </SelectOption>
                   {profiles.map((p) => (
                     <SelectOption key={p.name} value={p.name}>
                       {p.name}
                     </SelectOption>
                   ))}
-                </Select>
-              </div>
-
-              <div className="grid gap-2">
-                <Label htmlFor="profile-clone-mode">
-                  {t.profiles.cloneMode}
-                </Label>
-                <Select
-                  id="profile-clone-mode"
-                  value={cloneMode}
-                  onValueChange={(v) =>
-                    setCloneMode(v as "none" | "config" | "all")
-                  }
-                >
-                  <SelectOption value="none">
-                    {t.profiles.cloneModeNone}
-                  </SelectOption>
-                  <SelectOption value="config">
-                    {t.profiles.cloneModeConfig}
-                  </SelectOption>
-                  <SelectOption value="all">
-                    {t.profiles.cloneModeAll}
-                  </SelectOption>
                 </Select>
               </div>
 
@@ -336,57 +320,78 @@ export default function ProfilesPage() {
                 </Button>
               </div>
             </div>
+
+            {cloneSource !== "" && (
+              <div className="grid gap-2">
+                <Label>{t.profiles.copyMode}</Label>
+                <Segmented<"config" | "all">
+                  size="md"
+                  value={copyMode}
+                  onChange={setCopyMode}
+                  options={[
+                    { value: "config", label: t.profiles.cloneModeConfig },
+                    { value: "all", label: t.profiles.cloneModeAll },
+                  ]}
+                />
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>
 
-      {/* Import profile */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Upload className="h-4 w-4" />
-            {t.profiles.importTitle}
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid gap-4">
-            <div className="grid gap-2">
-              <Label htmlFor="profile-import-path">
-                {t.profiles.archivePath}
-              </Label>
-              <Input
-                id="profile-import-path"
-                placeholder={t.profiles.archivePathPlaceholder}
-                value={importPath}
-                onChange={(e) => setImportPath(e.target.value)}
-              />
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div className="grid gap-2 sm:col-span-2">
-                <Label htmlFor="profile-import-name">
-                  {t.profiles.importNameOptional}
+      {/* Import profile UI is hidden for now — needs UX work to handle
+          server-side path entry and (eventually) browser file upload before
+          it's safe to surface. Backend endpoint /api/profiles/import is
+          still wired up, just no entry from this page. */}
+      {/* eslint-disable-next-line no-constant-binary-expression */}
+      {false && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Upload className="h-4 w-4" />
+              {t.profiles.importTitle}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-4">
+              <div className="grid gap-2">
+                <Label htmlFor="profile-import-path">
+                  {t.profiles.archivePath}
                 </Label>
                 <Input
-                  id="profile-import-name"
-                  placeholder={t.profiles.importNamePlaceholder}
-                  value={importName}
-                  onChange={(e) => setImportName(e.target.value)}
+                  id="profile-import-path"
+                  placeholder={t.profiles.archivePathPlaceholder}
+                  value={importPath}
+                  onChange={(e) => setImportPath(e.target.value)}
                 />
               </div>
-              <div className="flex items-end">
-                <Button
-                  onClick={handleImport}
-                  disabled={importing}
-                  className="w-full"
-                >
-                  <Upload className="h-3 w-3" />
-                  {importing ? t.common.loading : t.profiles.importAction}
-                </Button>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div className="grid gap-2 sm:col-span-2">
+                  <Label htmlFor="profile-import-name">
+                    {t.profiles.importNameOptional}
+                  </Label>
+                  <Input
+                    id="profile-import-name"
+                    placeholder={t.profiles.importNamePlaceholder}
+                    value={importName}
+                    onChange={(e) => setImportName(e.target.value)}
+                  />
+                </div>
+                <div className="flex items-end">
+                  <Button
+                    onClick={handleImport}
+                    disabled={importing}
+                    className="w-full"
+                  >
+                    <Upload className="h-3 w-3" />
+                    {importing ? t.common.loading : t.profiles.importAction}
+                  </Button>
+                </div>
               </div>
             </div>
-          </div>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Profiles list */}
       <div className="flex flex-col gap-3">
