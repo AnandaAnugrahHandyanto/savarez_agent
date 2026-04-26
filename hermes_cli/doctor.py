@@ -329,7 +329,14 @@ def run_doctor(args):
                 canonical_provider = provider_def.id if provider_def is not None else None
 
             if provider and provider != "auto":
-                if canonical_provider is None or (known_providers and canonical_provider not in known_providers):
+                # canonical_provider may be an alias-resolved id (e.g. "github-copilot"
+                # for input "copilot") that differs from the PROVIDER_REGISTRY key.
+                # Accept the provider if EITHER the original name OR the canonical id
+                # is in known_providers to avoid false-positive "unknown provider" errors.
+                if (
+                    (canonical_provider is None or (known_providers and canonical_provider not in known_providers))
+                    and provider not in known_providers
+                ):
                     known_list = ", ".join(sorted(known_providers)) if known_providers else "(unavailable)"
                     check_fail(
                         f"model.provider '{provider_raw}' is not a recognised provider",
