@@ -25,6 +25,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 from gateway.telegram_fleet import (
+    FleetApprovalRequired,
     FleetCoordinator,
     FleetGuardrailError,
     RosterError,
@@ -331,6 +332,7 @@ def telegram_orchestrate_swarm(
     report_chat_id: Optional[str] = None,
     max_parallel: int = 8,
     per_task_timeout_s: float = 600.0,
+    user_approved: bool = False,
     parent_agent: Any = None,
     **_: Any,
 ) -> str:
@@ -342,7 +344,31 @@ def telegram_orchestrate_swarm(
             report_chat_id=str(report_chat_id) if report_chat_id else None,
             max_parallel=int(max_parallel or 8),
             per_task_timeout_s=float(per_task_timeout_s or 600.0),
+            user_approved=bool(user_approved),
             parent_agent=parent_agent,
+        )
+    except FleetApprovalRequired as e:
+        # Hermes-style approval-required response.  The agent is expected to
+        # surface the plan via `clarify` (multiple-choice or open-ended), get
+        # consent, then re-call this tool with ``user_approved=true``.
+        return json.dumps(
+            {
+                "status": "approval_required",
+                "code": "approval_required",
+                "message": str(e),
+                "plan": e.to_plan_dict(),
+                "instruction": (
+                    "Surface the plan to the user via the `clarify` tool "
+                    "(or in a normal reply) and confirm they want this run.  "
+                    "Once they say yes, re-call telegram_orchestrate_swarm "
+                    "with the same arguments plus user_approved=true.  If "
+                    "they want to change the plan, edit subtasks and "
+                    "re-call without user_approved.  To bypass approval "
+                    "entirely, the user can pin every subtask to a "
+                    "specific bot_username."
+                ),
+            },
+            ensure_ascii=False,
         )
     except FleetGuardrailError as e:
         return tool_error(str(e), code="guardrail")
@@ -354,17 +380,26 @@ TELEGRAM_ORCHESTRATE_SWARM_SCHEMA = {
     "function": {
         "name": "telegram_orchestrate_swarm",
         "description": (
-            "Kimi-Agent-Swarm-style fan-out across the Telegram fleet.  YOU "
-            "are the leader — decompose the user's request into atomic "
-            "sub-tasks (one per persona/angle), then call this tool ONCE "
-            "with all of them.  Each sub-task runs in parallel as an "
-            "isolated Hermes sub-agent on behalf of one fleet member; if a "
-            "report_chat_id is set, every worker posts live status updates "
-            "to that chat as itself so the operator can watch.  Returns "
-            "aggregated structured results which YOU then synthesise into "
-            "the final user-facing answer.  Use this for any 'spin up a "
-            "swarm and report back' request — research a topic across N "
-            "angles, monitor N feeds in parallel, draft N variants, etc."
+            "Kimi-Agent-Swarm-style fan-out across the Telegram fleet.  "
+            "Each subtask runs as a NAMED Telegram bot that may post "
+            "messages out into chats — this is the visible variant, "
+            "treat it as an outbound action.\n\n"
+            "APPROVAL FLOW (mirrors `terminal_tool` force=True pattern):\n"
+            "1. First call WITHOUT user_approved returns "
+            "`status: approval_required` with a structured plan.\n"
+            "2. Surface the plan to the user via `clarify` (or in your "
+            "reply) and let them confirm / adjust / cancel.\n"
+            "3. On confirmation, re-call with user_approved=true.\n"
+            "Bypass: if every subtask pins a specific bot_username, the "
+            "user is treated as having already requested by name and the "
+            "approval gate is skipped.  Operators can disable the gate "
+            "globally via `telegram_fleet.auto_approve: true` in "
+            "config.yaml.\n\n"
+            "USE THIS over `hermes_swarm` ONLY when the user explicitly "
+            "wants visible Telegram bot activity ('I want to watch them "
+            "work', 'send updates from each agent', or they referenced "
+            "fleet bots by name).  Default to `hermes_swarm` for "
+            "invisible in-process fan-out."
         ),
         "parameters": {
             "type": "object",
@@ -401,6 +436,19 @@ TELEGRAM_ORCHESTRATE_SWARM_SCHEMA = {
                     "type": "number",
                     "description": "Per-sub-task timeout in seconds.  Default 600 (10 minutes).",
                     "default": 600,
+                },
+                "user_approved": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Set to true ONLY after the user has explicitly "
+                        "confirmed (via `clarify` or in their reply) that "
+                        "they want this fleet run to proceed.  Without "
+                        "approval AND without every subtask pinning a "
+                        "specific bot_username, the tool returns "
+                        "`status: approval_required` with the proposed "
+                        "plan instead of running."
+                    ),
                 },
             },
             "required": ["objective", "subtasks"],

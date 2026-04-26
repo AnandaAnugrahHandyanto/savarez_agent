@@ -36,6 +36,7 @@ from gateway.telegram_fleet.guardrails import (
     check_rate_limit,
 )
 from gateway.telegram_fleet.coordinator import (
+    FleetApprovalRequired,
     FleetCoordinator,
     get_coordinator,
 )
@@ -51,6 +52,7 @@ __all__ = [
     "SpawnApprovalRequired",
     "check_can_spawn",
     "check_rate_limit",
+    "FleetApprovalRequired",
     "FleetCoordinator",
     "get_coordinator",
 ]

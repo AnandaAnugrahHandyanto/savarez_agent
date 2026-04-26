@@ -51,9 +51,35 @@ hermes_swarm(
 
 Per worker you can also pass `context` (extra grounding) and `toolsets` (allowed tool whitelist).
 
-## Escalation: `telegram_orchestrate_swarm`
+## Escalation: `telegram_orchestrate_swarm` (requires approval)
 
 Use **only** when the user explicitly wants visible Telegram bot activity ("send me updates from each agent", "I want to watch them work in Telegram", or they've already been working with named fleet bots like `@research_legal_bot`). Requires a one-time manager-bot setup; if not configured, prefer `hermes_swarm`.
+
+**This variant has visible side-effects** (named bots posting into chats), so it requires explicit user consent — same pattern as `terminal_tool`'s dangerous-command flow. Two paths to run:
+
+### A. Approval flow (default)
+
+```
+1. Call telegram_orchestrate_swarm(objective, subtasks)  ← no user_approved
+   → returns {"status": "approval_required", "plan": {...}}
+2. Surface the plan via the `clarify` tool:
+     clarify(
+        question="Run this Telegram swarm? <one-line summary of plan>",
+        choices=["Yes, run as proposed", "Adjust the plan", "Cancel"],
+     )
+3a. User says yes → re-call with user_approved=true.
+3b. User wants changes → adjust subtasks, re-call without user_approved
+    (this loops back to step 2).
+3c. User cancels → solve solo or use hermes_swarm.
+```
+
+### B. By-name request (skips approval)
+
+If the user named specific bots in their request ("use @legal_bot and @market_bot"), pin every subtask to a `bot_username`. The tool treats this as the user already requesting by name — no approval prompt.
+
+### Operator override
+
+Power users can set `telegram_fleet.auto_approve: true` in `~/.hermes/config.yaml` (or `TELEGRAM_FLEET_AUTO_APPROVE=1`) to disable the prompt entirely. Default is **off** — never run a Telegram swarm without consent.
 
 The Telegram variant adds:
 - Each subtask runs as a named child bot (visible identity).
@@ -109,7 +135,9 @@ You are the leader. The structured `results` array is for **you** to read and sy
 2. Ask: are there 2+ independent angles? If no, answer solo or use `delegate_task`.
 3. If yes, decompose into 2–8 atomic subtasks with clear personas.
 4. (Optional) Add a verifier subtask if facts/numbers matter.
-5. Call `hermes_swarm` (default) or `telegram_orchestrate_swarm` (if user wants Telegram visibility).
+5. Pick the variant:
+   - Default → `hermes_swarm` (invisible in-process, just runs).
+   - Telegram → `telegram_orchestrate_swarm`. **First call returns `approval_required`**; surface the plan via `clarify`, get user consent, re-call with `user_approved=true`. Skip approval only if user pinned specific bots by name.
 6. Synthesise the structured results into your final answer.
 
 ## Verification

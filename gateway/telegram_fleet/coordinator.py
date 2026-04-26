@@ -55,6 +55,97 @@ logger = logging.getLogger(__name__)
 # ── Spawn / orchestration result types ────────────────────────────────
 
 
+class FleetApprovalRequired(FleetGuardrailError):
+    """Raised when ``orchestrate_swarm`` needs the user to approve the plan.
+
+    Carries the proposed bindings + objective so the tool layer can render
+    a structured plan back to the agent (which then surfaces it via
+    ``clarify`` for the user to approve / adjust / reject).
+    """
+
+    def __init__(
+        self,
+        *,
+        objective: str,
+        bindings: List[Dict[str, Any]],
+        report_chat_id: Optional[str],
+    ):
+        bots = [b["bot_username"] for b in bindings]
+        super().__init__(
+            "Telegram fleet swarm requires user approval before posting as "
+            f"{len(bots)} named bots ({', '.join('@' + b for b in bots)}).  "
+            "Use the `clarify` tool to confirm, then re-call with "
+            "user_approved=true.  To bypass: pin every subtask to a "
+            "specific bot_username, or set telegram_fleet.auto_approve: "
+            "true in config.yaml."
+        )
+        self.objective = objective
+        self.bindings = bindings
+        self.report_chat_id = report_chat_id
+
+    def to_plan_dict(self) -> Dict[str, Any]:
+        return {
+            "objective": self.objective,
+            "report_chat_id": self.report_chat_id,
+            "workers": [
+                {
+                    "bot_username": b["bot_username"],
+                    "persona": b.get("persona", ""),
+                    "goal": b["goal"],
+                }
+                for b in self.bindings
+            ],
+        }
+
+
+def _is_by_name_request(subtasks: List[Dict[str, Any]]) -> bool:
+    """Return True when every subtask pinned a ``bot_username``.
+
+    A by-name request means the user already named who they want — that
+    counts as explicit consent and bypasses the approval gate.
+    """
+    if not subtasks:
+        return False
+    for raw in subtasks:
+        if not isinstance(raw, dict):
+            return False
+        pin = str(raw.get("bot_username") or "").strip()
+        if not pin:
+            return False
+    return True
+
+
+def _auto_approve_enabled() -> bool:
+    """Return True when the operator opted out of the approval prompt.
+
+    Resolution order: ``TELEGRAM_FLEET_AUTO_APPROVE`` env var, then
+    ``telegram_fleet.auto_approve`` in ``~/.hermes/config.yaml``.  Default
+    is False — the gate stays on unless the operator explicitly disables it.
+    """
+    if (os.environ.get("TELEGRAM_FLEET_AUTO_APPROVE") or "").strip().lower() in {
+        "1", "true", "yes", "on"
+    }:
+        return True
+    try:
+        from hermes_constants import get_config_path
+
+        config_path = get_config_path()
+        if not config_path.exists():
+            return False
+        import yaml  # local import — avoid hard dep at module-load time
+
+        parsed = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except Exception as e:  # malformed YAML, missing yaml, IO error
+        logger.debug("could not read auto_approve from config.yaml: %s", e)
+        return False
+    if not isinstance(parsed, dict):
+        return False
+    cfg = parsed.get("telegram_fleet") or {}
+    if not isinstance(cfg, dict):
+        return False
+    return bool(cfg.get("auto_approve", False))
+
+
 @dataclass
 class SpawnResult:
     """Returned by :meth:`FleetCoordinator.spawn_bot`."""
@@ -356,6 +447,7 @@ class FleetCoordinator:
         max_parallel: int = 8,
         per_task_timeout_s: float = 600.0,
         parent_agent: Any = None,
+        user_approved: bool = False,
     ) -> Dict[str, Any]:
         """Fan *subtasks* across active fleet members, aggregate results.
 
@@ -394,6 +486,32 @@ class FleetCoordinator:
             )
 
         bindings = self._bind_subtasks(subtasks, active)
+
+        # Approval gate (Hermes house style — mirrors terminal_tool's
+        # ``force=True`` pattern).  The Telegram swarm has visible side-effects
+        # (named bots posting messages); gate it behind explicit consent.
+        # Two ways to bypass:
+        #   (a) ``user_approved=True`` — caller explicitly confirms.
+        #   (b) Every subtask pinned ``bot_username`` — by-name request.
+        # Operators can disable the gate entirely via config flag
+        # ``telegram_fleet.auto_approve: true``.
+        if not user_approved and not _is_by_name_request(subtasks):
+            if not _auto_approve_enabled():
+                # Record the request so operators can see swarm-attempt patterns
+                # without leaking subtask content or bot tokens.
+                audit_event(
+                    "swarm_approval_required",
+                    objective_chars=len(objective),
+                    workers=len(bindings),
+                    bots=[b["bot_username"] for b in bindings],
+                    report_chat_id=str(report_chat_id) if report_chat_id else None,
+                )
+                raise FleetApprovalRequired(
+                    objective=objective,
+                    bindings=bindings,
+                    report_chat_id=report_chat_id,
+                )
+
         delegate_fn = self._delegate_fn or _resolve_delegate()
 
         run_id = secrets.token_hex(6)

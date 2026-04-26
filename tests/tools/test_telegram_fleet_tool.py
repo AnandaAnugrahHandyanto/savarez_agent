@@ -193,6 +193,7 @@ def test_orchestrate_swarm_streams_status_to_report_chat(fleet):
         objective="X",
         subtasks=[{"goal": "task"}],
         report_chat_id="555",
+        user_approved=True,
     )
     # Expect at least a "starting" + a "done" message posted as the worker.
     assert api.send_message_as.call_count >= 2

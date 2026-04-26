@@ -239,6 +239,7 @@ def test_orchestrate_swarm_fans_out_subtasks(hermes_home):
             {"goal": "market angle"},
             {"goal": "tech angle"},
         ],
+        user_approved=True,  # approval gate covered separately
     )
     assert delegate.call_count == 3
     # Each result should pair a goal with a non-empty response.
@@ -303,6 +304,7 @@ def test_orchestrate_swarm_captures_subtask_failure(hermes_home):
     result = coord.orchestrate_swarm(
         objective="X",
         subtasks=[{"goal": "ok"}, {"goal": "boom"}],
+        user_approved=True,
     )
     failures = [r for r in result["results"] if r.get("error")]
     assert len(failures) == 1
@@ -322,6 +324,7 @@ def test_orchestrate_swarm_posts_status_to_report_chat(hermes_home):
         objective="X",
         subtasks=[{"goal": "task"}],
         report_chat_id="555",
+        user_approved=True,
     )
     # We expect at least one start + one done message posted via the manager API.
     assert api.send_message_as.call_count >= 2
