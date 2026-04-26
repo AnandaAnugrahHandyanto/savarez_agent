@@ -115,3 +115,63 @@ def test_sessions_prune_handles_eoferror_on_confirm(monkeypatch, capsys):
 
     output = capsys.readouterr().out
     assert "Cancelled" in output
+
+
+def test_sessions_prune_dry_run_calls_db_without_deleting(monkeypatch, capsys):
+    import hermes_cli.main as main_mod
+    import hermes_state
+
+    captured = {}
+
+    class FakeDB:
+        def prune_sessions(self, **kwargs):
+            captured["kwargs"] = kwargs
+            return 7
+
+        def close(self):
+            captured["closed"] = True
+
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hermes", "sessions", "prune", "--older-than", "30", "--source", "telegram", "--dry-run"],
+    )
+
+    main_mod.main()
+
+    output = capsys.readouterr().out
+    assert captured["kwargs"] == {"older_than_days": 30, "source": "telegram", "dry_run": True}
+    assert "Would prune 7 session(s) from 'telegram' older than 30 days." in output
+
+
+def test_sessions_prune_vacuum_runs_only_after_real_prune(monkeypatch, capsys):
+    import hermes_cli.main as main_mod
+    import hermes_state
+
+    captured = {"vacuum": 0}
+
+    class FakeDB:
+        def prune_sessions(self, **kwargs):
+            captured["kwargs"] = kwargs
+            return 3
+
+        def vacuum(self):
+            captured["vacuum"] += 1
+
+        def close(self):
+            captured["closed"] = True
+
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hermes", "sessions", "prune", "--yes", "--vacuum"],
+    )
+
+    main_mod.main()
+
+    output = capsys.readouterr().out
+    assert captured["kwargs"] == {"older_than_days": 90, "source": None}
+    assert captured["vacuum"] == 1
+    assert "VACUUM complete." in output

@@ -849,6 +849,7 @@ class AIAgent:
         verbose_logging: bool = False,
         quiet_mode: bool = False,
         ephemeral_system_prompt: str = None,
+        ephemeral_system_prompt_override: str = None,
         log_prefix_chars: int = 100,
         log_prefix: str = "",
         providers_allowed: List[str] = None,
@@ -911,6 +912,9 @@ class AIAgent:
             verbose_logging (bool): Enable verbose logging for debugging (default: False)
             quiet_mode (bool): Suppress progress output for clean CLI experience (default: False)
             ephemeral_system_prompt (str): System prompt used during agent execution but NOT saved to trajectories (optional)
+            ephemeral_system_prompt_override (str): When set, replaces the cached base system prompt for the duration of
+                the turn without mutating ``_cached_system_prompt`` or any persisted session prompt. ``ephemeral_system_prompt``
+                is still appended on top, matching the cached-base + append layering used by the standard path.
             log_prefix_chars (int): Number of characters to show in log previews for tool calls/responses (default: 100)
             log_prefix (str): Prefix to add to all log messages for identification in parallel processing (default: "")
             providers_allowed (List[str]): OpenRouter providers to allow (optional)
@@ -948,6 +952,12 @@ class AIAgent:
         self.verbose_logging = verbose_logging
         self.quiet_mode = quiet_mode
         self.ephemeral_system_prompt = ephemeral_system_prompt
+        # Per-turn system prompt override (replaces the cached base prompt for the
+        # API call without mutating self._cached_system_prompt or anything persisted
+        # in the session DB). When set, ``ephemeral_system_prompt`` is appended on
+        # top of this override, mirroring the layered behaviour of the cached base
+        # prompt + ephemeral append. See ``_effective_system_prompt``.
+        self.ephemeral_system_prompt_override = ephemeral_system_prompt_override
         self.platform = platform  # "cli", "telegram", "discord", "whatsapp", etc.
         self._user_id = user_id  # Platform user identifier (gateway sessions)
         self._user_name = user_name
@@ -1506,6 +1516,13 @@ class AIAgent:
         if self.ephemeral_system_prompt and not self.quiet_mode:
             prompt_preview = self.ephemeral_system_prompt[:60] + "..." if len(self.ephemeral_system_prompt) > 60 else self.ephemeral_system_prompt
             print(f"🔒 Ephemeral system prompt: '{prompt_preview}' (not saved to trajectories)")
+        if self.ephemeral_system_prompt_override and not self.quiet_mode:
+            override_preview = (
+                self.ephemeral_system_prompt_override[:60] + "..."
+                if len(self.ephemeral_system_prompt_override) > 60
+                else self.ephemeral_system_prompt_override
+            )
+            print(f"🔒 System prompt override: '{override_preview}' (cached base prompt unchanged)")
         
         # Show prompt caching status
         if self._use_prompt_caching and not self.quiet_mode:
@@ -4826,13 +4843,31 @@ class AIAgent:
     def _invalidate_system_prompt(self):
         """
         Invalidate the cached system prompt, forcing a rebuild on the next turn.
-        
+
         Called after context compression events. Also reloads memory from disk
         so the rebuilt prompt captures any writes from this session.
         """
         self._cached_system_prompt = None
         if self._memory_store:
             self._memory_store.load_from_disk()
+
+    def _effective_system_prompt(self, cached_system_prompt: Optional[str]) -> str:
+        """Compose the system prompt actually sent to the API for this turn.
+
+        Layering (issue #15597):
+          1. ``ephemeral_system_prompt_override`` — when set, replaces the cached
+             base prompt for this call without touching ``_cached_system_prompt``
+             or anything persisted to the session DB.
+          2. Otherwise, the cached base prompt assembled by ``_build_system_prompt``.
+          3. ``ephemeral_system_prompt`` is appended on top in either case.
+        """
+        if self.ephemeral_system_prompt_override:
+            base = self.ephemeral_system_prompt_override
+        else:
+            base = cached_system_prompt or ""
+        if self.ephemeral_system_prompt:
+            base = (base + "\n\n" + self.ephemeral_system_prompt).strip()
+        return base
 
     @staticmethod
     def _deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:
@@ -9041,9 +9076,7 @@ class AIAgent:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
                 api_messages.append(api_msg)
 
-            effective_system = self._cached_system_prompt or ""
-            if self.ephemeral_system_prompt:
-                effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+            effective_system = self._effective_system_prompt(self._cached_system_prompt)
             if effective_system:
                 api_messages = [{"role": "system", "content": effective_system}] + api_messages
             if self.prefill_messages:
@@ -9726,10 +9759,10 @@ class AIAgent:
             # Build the final system message: cached prompt + ephemeral system prompt.
             # Ephemeral additions are API-call-time only (not persisted to session DB).
             # External recall context is injected into the user message, not the system
-            # prompt, so the stable cache prefix remains unchanged.
-            effective_system = active_system_prompt or ""
-            if self.ephemeral_system_prompt:
-                effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+            # prompt, so the stable cache prefix remains unchanged. ``_effective_system_prompt``
+            # also honours ``ephemeral_system_prompt_override`` (issue #15597), which
+            # replaces the cached base prompt for this call only.
+            effective_system = self._effective_system_prompt(active_system_prompt)
             # NOTE: Plugin context from pre_llm_call hooks is injected into the
             # user message (see injection block above), NOT the system prompt.
             # This is intentional — system prompt modifications break the prompt
@@ -10670,6 +10703,11 @@ class AIAgent:
                                 _sanitized_ephemeral = _strip_non_ascii(self.ephemeral_system_prompt)
                                 if _sanitized_ephemeral != self.ephemeral_system_prompt:
                                     self.ephemeral_system_prompt = _sanitized_ephemeral
+                                    _system_sanitized = True
+                            if isinstance(getattr(self, "ephemeral_system_prompt_override", None), str):
+                                _sanitized_override = _strip_non_ascii(self.ephemeral_system_prompt_override)
+                                if _sanitized_override != self.ephemeral_system_prompt_override:
+                                    self.ephemeral_system_prompt_override = _sanitized_override
                                     _system_sanitized = True
 
                             _headers_sanitized = False
