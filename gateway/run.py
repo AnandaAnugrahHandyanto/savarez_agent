@@ -2720,14 +2720,25 @@ class GatewayRunner:
 
             self._finalize_shutdown_agents(active_agents)
 
+            # Disconnect adapters with per-adapter timeout to prevent hangs.
+            # A stuck adapter (e.g., Feishu WebSocket thread waiting for network
+            # I/O) should not block the entire shutdown sequence and prevent
+            # PID file cleanup, which would cause "PID file race lost" errors
+            # on restart after systemd SIGKILL's the process.
+            _adapter_disconnect_timeout = 15.0  # seconds per adapter
             for platform, adapter in list(self.adapters.items()):
                 try:
                     await adapter.cancel_background_tasks()
                 except Exception as e:
                     logger.debug("✗ %s background-task cancel error: %s", platform.value, e)
                 try:
-                    await adapter.disconnect()
+                    await asyncio.wait_for(adapter.disconnect(), timeout=_adapter_disconnect_timeout)
                     logger.info("✓ %s disconnected", platform.value)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "✗ %s disconnect timed out after %.1fs - forcing continue",
+                        platform.value, _adapter_disconnect_timeout
+                    )
                 except Exception as e:
                     logger.error("✗ %s disconnect error: %s", platform.value, e)
 
