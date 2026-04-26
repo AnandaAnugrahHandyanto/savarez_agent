@@ -247,6 +247,25 @@ def _resolved_local_file_context(user_text: str) -> str:
     return "Local file content resolved by Hermes before routing:\n\n" + "\n\n".join(blocks)
 
 
+# Top-level keys that a real MoA / Spar / bridge tool payload is expected to
+# carry. If the candidate parsed dict has none of these, it is almost certainly
+# a small JSON-like substring picked up from inside a tool's `response` value
+# (e.g. an embedded code block) — we should keep scanning for a better match.
+_TOOL_PAYLOAD_HINT_KEYS = (
+    "success",
+    "response",
+    "approved",
+    "final_response",
+    "models_used",
+    "judge_verdict",
+    "issues",
+)
+
+
+def _payload_has_tool_shape(payload: dict[str, Any]) -> bool:
+    return any(key in payload for key in _TOOL_PAYLOAD_HINT_KEYS)
+
+
 def _extract_json_object(raw_text: str) -> dict[str, Any]:
     text = str(raw_text or "").strip()
     if not text:
@@ -254,14 +273,28 @@ def _extract_json_object(raw_text: str) -> dict[str, Any]:
     decoder = json.JSONDecoder()
     candidates = [match.group(1).strip() for match in _JSON_FENCE_RE.finditer(text) if match.group(1).strip()]
     candidates.append(text)
+    # First pass: only accept dicts that look like a real tool payload. This
+    # prevents the parser from silently latching onto a small inner JSON-like
+    # substring inside a tool's response (which would be missing `success` /
+    # `response` keys and look like a "failed run" to the bridge).
+    fallback: dict[str, Any] | None = None
     for candidate in candidates:
         for start in (idx for idx, char in enumerate(candidate) if char == "{"):
             try:
                 payload, _ = decoder.raw_decode(candidate[start:])
             except json.JSONDecodeError:
                 continue
-            if isinstance(payload, dict):
+            if not isinstance(payload, dict):
+                continue
+            if _payload_has_tool_shape(payload):
                 return payload
+            if fallback is None:
+                fallback = payload
+    if fallback is not None:
+        # No tool-shaped match found; return the first valid dict we saw so
+        # callers that don't need tool keys (e.g. forensic-analysis output) keep
+        # working.
+        return fallback
     raise ValueError("tool output does not contain a valid JSON object")
 
 

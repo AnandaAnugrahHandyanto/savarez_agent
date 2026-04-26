@@ -360,6 +360,26 @@ class TestSessionConfiguration:
         assert payload["success"] is True
         assert payload["response"] == "ok"
 
+    def test_parse_tool_json_prefers_outer_payload_over_inner_fence(self):
+        """Race regression: a real tool payload whose `response` field contains a
+        markdown code block with an inner JSON-like dict must NOT cause the parser
+        to latch onto the inner dict. Caught live in the MoA + Spar bridge: a
+        successful MoA run with an embedded ```json {...}``` example was being
+        mis-parsed as a small inner dict missing `success`/`response`, which the
+        bridge then surfaced as 'MoA failed without a usable response.'"""
+        import json as _json
+        moa_output = _json.dumps({
+            "success": True,
+            "response": "Run this:\n\n```json\n{\"foo\": \"bar\"}\n```\n\nThen ship.",
+            "models_used": {"aggregator_model": "xiaomi/mimo-v2-pro"},
+        }, indent=2, ensure_ascii=False)
+
+        payload = _parse_tool_json(moa_output, stage="moa")
+
+        assert payload.get("success") is True
+        assert "response" in payload
+        assert payload.get("models_used", {}).get("aggregator_model") == "xiaomi/mimo-v2-pro"
+
     def test_route_turn_id_accepts_acp_and_python_param_names(self):
         assert _route_turn_id_from_kwargs({"messageId": "camel"}) == "camel"
         assert _route_turn_id_from_kwargs({"message_id": "snake"}) == "snake"
