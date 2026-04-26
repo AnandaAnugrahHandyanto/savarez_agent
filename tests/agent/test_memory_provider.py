@@ -52,8 +52,8 @@ class FakeMemoryProvider(MemoryProvider):
     def queue_prefetch(self, query, *, session_id=""):
         self.queued_prefetches.append(query)
 
-    def sync_turn(self, user_content, assistant_content, *, session_id=""):
-        self.synced_turns.append((user_content, assistant_content))
+    def sync_turn(self, user_content, assistant_content, *, session_id="", tool_calls=None):
+        self.synced_turns.append((user_content, assistant_content, tool_calls))
 
     def get_tool_schemas(self):
         return self._tools
@@ -226,8 +226,20 @@ class TestMemoryManager:
         mgr.add_provider(p2)
 
         mgr.sync_all("user msg", "assistant msg")
-        assert p1.synced_turns == [("user msg", "assistant msg")]
-        assert p2.synced_turns == [("user msg", "assistant msg")]
+        assert p1.synced_turns == [("user msg", "assistant msg", None)]
+        assert p2.synced_turns == [("user msg", "assistant msg", None)]
+
+    def test_sync_all_passes_tool_calls(self):
+        mgr = MemoryManager()
+        p1 = FakeMemoryProvider("builtin")
+        p2 = FakeMemoryProvider("external")
+        mgr.add_provider(p1)
+        mgr.add_provider(p2)
+
+        tool_calls = [{"function": {"name": "read_file"}}]
+        mgr.sync_all("user msg", "assistant msg", tool_calls=tool_calls)
+        assert p1.synced_turns == [("user msg", "assistant msg", tool_calls)]
+        assert p2.synced_turns == [("user msg", "assistant msg", tool_calls)]
 
     def test_sync_failure_doesnt_block_others(self):
         """If one provider's sync fails, others still run."""
@@ -240,7 +252,7 @@ class TestMemoryManager:
 
         mgr.sync_all("user", "assistant")
         # p1 failed but p2 still synced
-        assert p2.synced_turns == [("user", "assistant")]
+        assert p2.synced_turns == [("user", "assistant", None)]
 
     # -- Tool routing -------------------------------------------------------
 

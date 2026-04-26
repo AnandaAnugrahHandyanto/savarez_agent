@@ -4737,3 +4737,13 @@ class TestMemoryProviderTurnStart:
         import inspect
         src = inspect.getsource(AIAgent.run_conversation)
         assert "on_turn_start(self._user_turn_count" in src
+
+
+class TestMemoryProviderToolCallSync:
+    def test_run_conversation_extracts_last_assistant_tool_calls_for_memory_sync(self):
+        """Source-level regression check for missing tool_calls passthrough."""
+        import inspect
+        src = inspect.getsource(AIAgent.run_conversation)
+        assert "_last_asst_tool_calls" in src
+        assert 'm.get("role") == "assistant" and m.get("tool_calls")' in src
+        assert "tool_calls=_last_asst_tool_calls" in src
