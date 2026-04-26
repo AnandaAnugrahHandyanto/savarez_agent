@@ -39,7 +39,13 @@ def test_launch_explicit_repo_dry_run(db):
     assert result["action"] == "launch"
     assert result["job"]["repo"] == "static-pages"
     assert result["job"]["state"] == "done"
-    assert result["job"]["connect_command"].startswith("copilot --connect=")
+    # Dry-run never spawns the Copilot subprocess, so the launcher cannot
+    # extract a real reconnect handle. The tool must NOT fabricate one
+    # from the Hermes job UUID — the launcher does not pass that into
+    # Copilot via --resume, so it would be a non-functional command.
+    assert result["job"]["connect_handle"] is None
+    assert result["job"]["connect_command"] is None
+    assert result["job"]["resume_command"] is None
 
     jobs = db.list_copilot_remote(state="done")
     assert len(jobs) == 1

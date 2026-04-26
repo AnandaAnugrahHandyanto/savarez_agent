@@ -11,6 +11,7 @@ import sys
 import time
 import uuid
 from datetime import datetime, timezone
+from typing import Optional
 
 from agent.redact import redact_sensitive_text
 from hermes_state import SessionDB
@@ -21,16 +22,23 @@ def _get_db() -> SessionDB:
     return SessionDB()
 
 
-def _connect_handle(job: dict) -> str:
-    """Return the best Copilot reconnect handle for connect/resume.
+def _connect_handle(job: dict) -> Optional[str]:
+    """Return the Copilot reconnect handle for connect/resume, or ``None``.
 
-    Prefers the dedicated ``connect_handle`` column (populated by the
-    launcher) and falls back to the job ``id``. ``signal_ref`` is
-    intentionally *not* consulted here — it stores caller metadata
-    (e.g. a Jira ticket ID) and would otherwise produce invalid
+    Reads only the dedicated ``connect_handle`` column populated by the
+    launcher. When that handle was not extracted (Copilot CLI changed its
+    output, the verification HTTP probe failed, etc.) this returns
+    ``None`` so callers can surface an explicit "connect handle
+    unavailable" message rather than fabricating an invalid reconnect
+    command from the Hermes job UUID. The launcher does not pass the
+    Hermes ``job_id`` into Copilot via ``--resume``, so the job UUID is
+    not a usable reconnect handle. ``signal_ref`` is intentionally *not*
+    consulted either — it stores caller metadata (e.g. a Jira ticket
+    ID) and would otherwise produce invalid
     ``copilot --connect=<ticket-id>`` output.
     """
-    return job.get("connect_handle") or job["id"]
+    handle = job.get("connect_handle")
+    return handle if handle else None
 
 
 def _relative_time(ts) -> str:
@@ -162,8 +170,8 @@ def copilot_launch(args):
         db.close()
         raise exc.__class__(redacted).with_traceback(exc.__traceback__) from None
 
-    connect_handle = result.get("connect_id") or job_id
-    if connect_handle != job_id:
+    connect_handle = result.get("connect_id")
+    if connect_handle:
         db.update_copilot_remote_connect_handle(job_id, connect_handle)
 
     prompt_delivery_warning = result.get("prompt_delivery_warning")
@@ -177,8 +185,21 @@ def copilot_launch(args):
     if prompt_delivery_warning:
         print(f"  Warning: {prompt_delivery_warning}", file=sys.stderr)
 
-    print(f"\n  Connect: copilot --connect={connect_handle}")
-    print(f"  Resume:  copilot --resume={connect_handle}")
+    if connect_handle:
+        print(f"\n  Connect: copilot --connect={connect_handle}")
+        print(f"  Resume:  copilot --resume={connect_handle}")
+    else:
+        # The launcher could not extract Copilot's remote task ID. Do not
+        # fabricate a reconnect command from the Hermes job UUID — it is
+        # not a valid `--connect/--resume` handle. Direct the user to the
+        # launcher log and `hermes copilot show` so they can recover the
+        # handle once Copilot writes it.
+        print(
+            "\n  Connect handle unavailable — Hermes could not extract "
+            "Copilot's remote task ID.\n"
+            f"  Inspect ~/.hermes/logs/copilot-{job_id}.log and re-run "
+            f"`hermes copilot show {job_id}` once the handle is recorded."
+        )
 
     db.close()
 
@@ -231,8 +252,16 @@ def copilot_show(args):
             print(f"Prompt:   {preview}")
 
         sid = _connect_handle(job)
-        print(f"Connect:  copilot --connect={sid}")
-        print(f"Resume:   copilot --resume={sid}")
+        if sid:
+            print(f"Connect:  copilot --connect={sid}")
+            print(f"Resume:   copilot --resume={sid}")
+        else:
+            print(
+                "Connect:  unavailable — Hermes did not extract a Copilot "
+                "reconnect handle for this job.\n"
+                f"          Inspect ~/.hermes/logs/copilot-{job['id']}.log "
+                "to recover it."
+            )
 
         if job.get("exit_code") is not None:
             print(f"Exit:     {job['exit_code']}")

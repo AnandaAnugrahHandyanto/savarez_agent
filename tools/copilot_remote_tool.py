@@ -127,9 +127,18 @@ def _error(message: str) -> str:
     return json.dumps({"success": False, "error": redact_sensitive_text(message)})
 
 
-def _job_handle(job: Dict[str, Any]) -> str:
-    """Return the Copilot reconnect handle (never the metadata ``signal_ref``)."""
-    return str(job.get("connect_handle") or job.get("id") or "")
+def _job_handle(job: Dict[str, Any]) -> Optional[str]:
+    """Return the launcher-extracted Copilot reconnect handle, or ``None``.
+
+    The Hermes job UUID is *not* a valid Copilot ``--connect/--resume``
+    handle (the launcher does not pass it into Copilot via ``--resume``),
+    so when ``connect_handle`` is missing we return ``None`` rather than
+    falling back to ``job['id']``. ``_serialize_job()`` then omits the
+    ``connect_command``/``resume_command`` fields so model callers do
+    not get a fabricated, non-functional reconnect command.
+    """
+    handle = job.get("connect_handle")
+    return str(handle) if handle else None
 
 
 def _serialize_job(job: Dict[str, Any]) -> Dict[str, Any]:
@@ -271,8 +280,8 @@ def _launch(args: Dict[str, Any]) -> str:
             on_complete=_finish_job,
         )
 
-        connect_handle = result.get("connect_id") or job_id
-        if connect_handle != job_id:
+        connect_handle = result.get("connect_id")
+        if connect_handle:
             db.update_copilot_remote_connect_handle(job_id, str(connect_handle))
 
         job = db.get_copilot_remote(job_id) or {
@@ -281,7 +290,7 @@ def _launch(args: Dict[str, Any]) -> str:
             "repo_slug": repo_entry.slug,
             "repo_path": repo_entry.path,
             "prompt": prompt,
-            "connect_handle": connect_handle if connect_handle != job_id else None,
+            "connect_handle": connect_handle,
         }
         payload = {
             "success": True,
