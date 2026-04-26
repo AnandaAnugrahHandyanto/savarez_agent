@@ -3416,6 +3416,16 @@ class GatewayRunner:
                 # doesn't think an agent is still active.
                 return await self._handle_reset_command(event)
 
+            # /approve and /deny must bypass the running-agent interrupt guard
+            # so they can signal the blocked agent thread during approval waits.
+            # Without this bypass, /approve is treated as a plain interrupt and
+            # never reaches _handle_approve_command — making it impossible to
+            # unblock a pending dangerous command from Discord or other gateways.
+            if _cmd_def_inner and _cmd_def_inner.name in ("approve", "deny"):
+                if _cmd_def_inner.name == "approve":
+                    return await self._handle_approve_command(event)
+                return await self._handle_deny_command(event)
+
             # /queue <prompt> — queue without interrupting
             if event.get_command() in ("queue", "q"):
                 queued_text = event.get_command_args().strip()
