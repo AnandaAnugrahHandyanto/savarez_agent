@@ -1593,6 +1593,26 @@ class AIAgent:
         # broad pseudo-public config object on the agent instance.
         self._aux_compression_context_length_config = None
 
+        self._background_review_model = None
+        self._background_review_provider = None
+        self._background_review_max_iterations = 8
+        try:
+            _bg_review_config = _agent_cfg.get("background_review", {})
+            if not isinstance(_bg_review_config, dict):
+                _bg_review_config = {}
+            _bg_review_model = _bg_review_config.get("model")
+            _bg_review_provider = _bg_review_config.get("provider")
+            if _bg_review_model:
+                self._background_review_model = str(_bg_review_model).strip()
+            if _bg_review_provider:
+                self._background_review_provider = str(_bg_review_provider).strip()
+            self._background_review_max_iterations = max(
+                1,
+                int(_bg_review_config.get("max_iterations", 8)),
+            )
+        except Exception:
+            pass
+
         # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
         self._memory_store = None
         self._memory_enabled = False
@@ -3226,11 +3246,11 @@ class AIAgent:
                      contextlib.redirect_stdout(_devnull), \
                      contextlib.redirect_stderr(_devnull):
                     review_agent = AIAgent(
-                        model=self.model,
-                        max_iterations=8,
+                        model=self._background_review_model or self.model,
+                        max_iterations=self._background_review_max_iterations,
                         quiet_mode=True,
                         platform=self.platform,
-                        provider=self.provider,
+                        provider=self._background_review_provider or self.provider,
                         parent_session_id=self.session_id,
                     )
                     review_agent._memory_write_origin = "background_review"

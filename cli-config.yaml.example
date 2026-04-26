@@ -397,6 +397,15 @@ prompt_caching:
 #                           # extra_body:
 #                           #   enable_thinking: false
 
+# Background memory/skill review uses the active conversation runtime by default.
+# Set this to route those non-user-visible review turns to a cheaper or isolated
+# endpoint.
+#
+# background_review:
+#   provider: ""            # empty/unset = inherit active conversation provider
+#   model: ""               # empty/unset = inherit active conversation model
+#   max_iterations: 8
+
 # =============================================================================
 # Persistent Memory
 # =============================================================================

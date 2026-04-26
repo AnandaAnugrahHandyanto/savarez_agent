@@ -6,7 +6,10 @@ history before the review started (e.g. an earlier "Cron job '...' created.").
 """
 
 import json
+import threading
+from unittest.mock import patch
 
+import run_agent
 from run_agent import AIAgent
 
 
@@ -128,3 +131,65 @@ def test_removed_or_replaced_relabels_by_target():
 
     assert "User profile updated" in actions
     assert "Memory updated" in actions
+
+
+def test_spawn_background_review_uses_configured_runtime(monkeypatch):
+    """Background review agents can be routed away from the active model."""
+    with (
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+        patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "background_review": {
+                    "model": "qwen3.6-35b-q8",
+                    "provider": "artemis-direct",
+                    "max_iterations": 4,
+                }
+            },
+        ),
+    ):
+        agent = AIAgent(
+            model="qwen3.6-27b",
+            provider="voyager",
+            api_key="test-key",
+            base_url="http://localhost:8080/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    captured = {}
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            captured["conversation"] = kwargs
+
+        def close(self):
+            captured["closed"] = True
+
+    class ImmediateThread:
+        def __init__(self, target, daemon, name):
+            self._target = target
+            captured["thread"] = {"daemon": daemon, "name": name}
+
+        def start(self):
+            self._target()
+
+    monkeypatch.setattr(run_agent, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(threading, "Thread", ImmediateThread)
+
+    snapshot = [{"role": "user", "content": "hello"}]
+    agent._spawn_background_review(snapshot, review_skills=True)
+
+    assert captured["model"] == "qwen3.6-35b-q8"
+    assert captured["provider"] == "artemis-direct"
+    assert captured["max_iterations"] == 4
+    assert captured["parent_session_id"] == agent.session_id
+    assert captured["conversation"]["conversation_history"] == snapshot
+    assert captured["closed"] is True
