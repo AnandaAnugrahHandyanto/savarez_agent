@@ -86,11 +86,11 @@ def _simulate_note_injection(
         )
     elif agent_history and agent_history[-1].get("role") == "tool":
         message = (
-            "[System note: Your previous turn was interrupted before you could "
-            "process the last tool result(s). The conversation history contains "
-            "tool outputs you haven't responded to yet. Please finish processing "
-            "those results and summarize what was accomplished, then address the "
-            "user's new message below.]\n\n"
+            "[System note: Address the user's new message below as the primary task. "
+            "An orphaned tool result from a previous interrupted turn exists in history — "
+            "reference or summarize it ONLY if it is directly relevant to the user's new message. "
+            "If the new message is on a different topic, treat the orphan as resolved and ignore it. "
+            "Do NOT lead your reply with stale-topic content.]\n\n"
             + message
         )
     return message
