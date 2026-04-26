@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 
 import hermes_constants
-from hermes_constants import get_default_hermes_root, is_container
+from hermes_constants import get_default_hermes_root, is_container, reasoning_effort_label
 
 
 class TestGetDefaultHermesRoot:
@@ -111,3 +111,24 @@ class TestIsContainer:
         # Even if we make os.path.exists return False, cached value wins
         monkeypatch.setattr(os.path, "exists", lambda p: False)
         assert is_container() is True
+
+
+@pytest.mark.parametrize(
+    ("reasoning_config", "expected"),
+    [
+        (None, ""),
+        ({}, ""),
+        ("high", ""),
+        ({"enabled": False}, "none"),
+        ({"enabled": False, "effort": "high"}, "none"),
+        ({"enabled": True, "effort": "minimal"}, "minimal"),
+        ({"enabled": True, "effort": "high"}, "high"),
+        ({"enabled": True, "effort": "xhigh"}, "xhigh"),
+        ({"enabled": True, "effort": "medium"}, "medium"),
+        ({"enabled": True, "effort": "bogus"}, ""),
+        ({"enabled": True, "effort": ""}, ""),
+        ({"effort": "low"}, "low"),
+    ],
+)
+def test_reasoning_effort_label(reasoning_config, expected):
+    assert reasoning_effort_label(reasoning_config) == expected
