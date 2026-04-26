@@ -242,7 +242,8 @@ export interface Translations {
     hasEnv: string;
     model: string;
     skills: string;
-    activate: string;
+    restartGateway: string;
+    gatewayRestarting: string;
     rename: string;
     exportAction: string;
     editConfig: string;
@@ -260,7 +261,6 @@ export interface Translations {
     created: string;
     deleted: string;
     renamed: string;
-    activated: string;
     exported: string;
     imported: string;
     soulSaved: string;

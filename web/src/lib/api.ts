@@ -204,6 +204,11 @@ export const api = {
         body: JSON.stringify(body),
       },
     ),
+  restartProfileGateway: (name: string) =>
+    fetchJSON<{ ok: boolean; pid: number; name: string }>(
+      `/api/profiles/${encodeURIComponent(name)}/gateway/restart`,
+      { method: "POST" },
+    ),
 
   // Skills & Toolsets
   getSkills: () => fetchJSON<SkillInfo[]>("/api/skills"),

@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  CheckCircle2,
   ChevronDown,
   ChevronRight,
   Download,
   Pencil,
   Plus,
+  RotateCw,
   Settings2,
   Trash2,
   Upload,
@@ -156,11 +156,13 @@ export default function ProfilesPage() {
     }
   };
 
-  const handleActivate = async (name: string) => {
+  const handleRestartGateway = async (name: string) => {
     try {
-      await api.activateProfile(name);
-      showToast(`${t.profiles.activated}: ${name}`, "success");
-      load();
+      await api.restartProfileGateway(name);
+      showToast(`${t.profiles.gatewayRestarting}: ${name}`, "success");
+      // Gateway state takes a few seconds to settle; refresh after a short
+      // delay so the "gateway up" badge reflects the new pid.
+      setTimeout(load, 3000);
     } catch (e) {
       showToast(`${t.status.error}: ${e}`, "error");
     }
@@ -478,17 +480,15 @@ export default function ProfilesPage() {
                     </>
                   ) : (
                     <>
-                      {!isActive && (
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          title={t.profiles.activate}
-                          aria-label={t.profiles.activate}
-                          onClick={() => handleActivate(p.name)}
-                        >
-                          <CheckCircle2 className="h-4 w-4" />
-                        </Button>
-                      )}
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        title={t.profiles.restartGateway}
+                        aria-label={t.profiles.restartGateway}
+                        onClick={() => handleRestartGateway(p.name)}
+                      >
+                        <RotateCw className="h-4 w-4" />
+                      </Button>
                       <Button
                         variant="ghost"
                         size="icon"

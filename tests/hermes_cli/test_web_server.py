@@ -761,6 +761,43 @@ class TestNewEndpoints:
 
         self.client.delete("/api/profiles/model-prof")
 
+    def test_profile_gateway_restart_spawns_with_profile_home(self, monkeypatch):
+        """Per-profile restart must override HERMES_HOME for the spawned process."""
+        import hermes_cli.profiles as profiles_mod
+        import hermes_cli.web_server as web_server
+        monkeypatch.setattr(profiles_mod, "_cleanup_gateway_service", lambda *a, **kw: None)
+
+        self.client.post("/api/profiles", json={"name": "restart-prof"})
+
+        captured: dict = {}
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                captured["cmd"] = cmd
+                captured["env"] = kwargs.get("env", {})
+                self.pid = 99999
+
+        monkeypatch.setattr(web_server.subprocess, "Popen", _FakePopen)
+
+        resp = self.client.post("/api/profiles/restart-prof/gateway/restart")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["pid"] == 99999
+        assert body["name"] == "restart-prof"
+
+        # The spawned process must have HERMES_HOME pointing at the profile dir,
+        # not the dashboard's own HERMES_HOME.
+        profile_dir = profiles_mod.get_profile_dir("restart-prof")
+        assert captured["env"]["HERMES_HOME"] == str(profile_dir)
+        assert captured["cmd"][-2:] == ["gateway", "restart"]
+
+        self.client.delete("/api/profiles/restart-prof")
+
+    def test_profile_gateway_restart_unknown_404(self):
+        resp = self.client.post("/api/profiles/no-such-profile/gateway/restart")
+        assert resp.status_code == 404
+
     def test_profile_model_normalises_legacy_string_form(self, monkeypatch):
         # Some profiles still ship the legacy ``model: "<slug>"`` string form
         # at the root of config.yaml. The PUT must rewrite it as a dict

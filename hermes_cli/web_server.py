@@ -2325,6 +2325,62 @@ async def get_profile_model(name: str):
     return {"model": model, "provider": provider}
 
 
+def _spawn_per_profile_gateway_restart(profile_dir: Path) -> subprocess.Popen:
+    """Spawn ``hermes gateway restart`` against a specific profile.
+
+    Mirrors :func:`_spawn_hermes_action` but overrides ``HERMES_HOME`` so the
+    spawned ``hermes`` process operates on the target profile rather than the
+    one the dashboard itself is running under. Each profile keeps its own
+    ``logs/gateway-restart.log`` so concurrent restarts don't interleave.
+    """
+    log_dir = profile_dir / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "gateway-restart.log"
+    log_file = open(log_path, "ab", buffering=0)
+    log_file.write(
+        f"\n=== gateway-restart started {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n".encode()
+    )
+
+    cmd = [sys.executable, "-m", "hermes_cli.main", "gateway", "restart"]
+    env = {**os.environ, "HERMES_HOME": str(profile_dir), "HERMES_NONINTERACTIVE": "1"}
+
+    popen_kwargs: Dict[str, Any] = {
+        "cwd": str(PROJECT_ROOT),
+        "stdin": subprocess.DEVNULL,
+        "stdout": log_file,
+        "stderr": subprocess.STDOUT,
+        "env": env,
+    }
+    if sys.platform == "win32":
+        popen_kwargs["creationflags"] = (
+            subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
+            | getattr(subprocess, "DETACHED_PROCESS", 0)
+        )
+    else:
+        popen_kwargs["start_new_session"] = True
+
+    return subprocess.Popen(cmd, **popen_kwargs)
+
+
+@app.post("/api/profiles/{name}/gateway/restart")
+async def restart_profile_gateway(name: str):
+    """Restart the gateway for a specific profile.
+
+    Spawns ``hermes gateway restart`` with ``HERMES_HOME`` pointing at the
+    target profile's directory, so the action operates on that profile
+    regardless of which profile the dashboard itself is running under.
+    """
+    profile_dir = _resolve_profile_dir(name)
+    try:
+        proc = _spawn_per_profile_gateway_restart(profile_dir)
+    except Exception as exc:
+        _log.exception("Failed to restart gateway for profile %s", name)
+        raise HTTPException(
+            status_code=500, detail=f"Failed to restart gateway: {exc}"
+        )
+    return {"ok": True, "pid": proc.pid, "name": name}
+
+
 @app.put("/api/profiles/{name}/model")
 async def update_profile_model(name: str, body: ProfileModelUpdate):
     from utils import atomic_yaml_write
