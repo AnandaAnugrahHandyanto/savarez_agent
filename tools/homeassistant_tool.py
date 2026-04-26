@@ -1,10 +1,11 @@
 """Home Assistant tool for controlling smart home devices via REST API.
 
-Registers four LLM-callable tools:
+Registers five LLM-callable tools:
 - ``ha_list_entities`` -- list/filter entities by domain or area
 - ``ha_get_state`` -- get detailed state of a single entity
 - ``ha_list_services`` -- list available services (actions) per domain
 - ``ha_call_service`` -- call a HA service (turn_on, turn_off, set_temperature, etc.)
+- ``ha_get_calendar_events`` -- list calendar events with UIDs (required for delete/edit)
 
 Authentication uses a Long-Lived Access Token via ``HASS_TOKEN`` env var.
 The HA instance URL is read from ``HASS_URL`` (default: http://homeassistant.local:8123).
@@ -471,6 +472,79 @@ HA_CALL_SERVICE_SCHEMA = {
 
 
 # ---------------------------------------------------------------------------
+# Calendar events (REST endpoint — not a service call)
+# ---------------------------------------------------------------------------
+
+async def _async_get_calendar_events(
+    entity_id: str,
+    start: str,
+    end: str,
+) -> Dict[str, Any]:
+    """Fetch calendar events via the HA REST calendar API."""
+    import aiohttp
+    from urllib.parse import urlencode
+
+    hass_url, hass_token = _get_config()
+    params = urlencode({"start": start, "end": end})
+    url = f"{hass_url}/api/calendars/{entity_id}?{params}"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            url,
+            headers=_get_headers(hass_token),
+            timeout=aiohttp.ClientTimeout(total=15),
+        ) as resp:
+            resp.raise_for_status()
+            events = await resp.json()
+
+    return {"entity_id": entity_id, "count": len(events), "events": events}
+
+
+def _handle_get_calendar_events(args: dict, **kw) -> str:
+    entity_id = args.get("entity_id", "")
+    start = args.get("start", "")
+    end = args.get("end", "")
+    if not entity_id or not start or not end:
+        return tool_error("Missing required parameters: entity_id, start, end")
+    if not _ENTITY_ID_RE.match(entity_id):
+        return tool_error(f"Invalid entity_id format: {entity_id}")
+    try:
+        result = _run_async(_async_get_calendar_events(entity_id, start, end))
+        return json.dumps({"result": result})
+    except Exception as e:
+        logger.error("ha_get_calendar_events error: %s", e)
+        return tool_error(f"Failed to get calendar events for {entity_id}: {e}")
+
+
+HA_GET_CALENDAR_EVENTS_SCHEMA = {
+    "name": "ha_get_calendar_events",
+    "description": (
+        "List calendar events from a Home Assistant calendar entity for a given time range. "
+        "Returns events with their uid field, which is required to delete or edit an event "
+        "via ha_call_service(domain='calendar', service='delete_event', data={'uid': ...}). "
+        "Use this before any delete or edit operation."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "entity_id": {
+                "type": "string",
+                "description": "Calendar entity ID, e.g. 'calendar.family'.",
+            },
+            "start": {
+                "type": "string",
+                "description": "Start of range in ISO 8601 format, e.g. '2026-04-17T00:00:00'.",
+            },
+            "end": {
+                "type": "string",
+                "description": "End of range in ISO 8601 format, e.g. '2026-04-24T23:59:59'.",
+            },
+        },
+        "required": ["entity_id", "start", "end"],
+    },
+}
+
+
+# ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 
@@ -510,4 +584,13 @@ registry.register(
     handler=_handle_call_service,
     check_fn=_check_ha_available,
     emoji="🏠",
+)
+
+registry.register(
+    name="ha_get_calendar_events",
+    toolset="homeassistant",
+    schema=HA_GET_CALENDAR_EVENTS_SCHEMA,
+    handler=_handle_get_calendar_events,
+    check_fn=_check_ha_available,
+    emoji="📅",
 )
