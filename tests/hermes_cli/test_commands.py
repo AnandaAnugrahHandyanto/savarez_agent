@@ -79,6 +79,10 @@ class TestCommandRegistry:
             "xhigh",
         )
 
+    def test_skills_command_lists_create_subcommand(self):
+        skills = next(cmd for cmd in COMMAND_REGISTRY if cmd.name == "skills")
+        assert "create" in skills.subcommands
+
     def test_cli_only_and_gateway_only_are_mutually_exclusive(self):
         for cmd in COMMAND_REGISTRY:
             assert not (cmd.cli_only and cmd.gateway_only), \

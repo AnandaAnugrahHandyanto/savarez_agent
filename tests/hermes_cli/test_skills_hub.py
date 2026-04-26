@@ -5,7 +5,7 @@ import pytest
 from rich.console import Console
 
 from cli import ChatConsole
-from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
+from hermes_cli.skills_hub import do_check, do_create, do_install, do_list, do_update, handle_skills_slash
 
 
 class _DummyLockFile:
@@ -194,6 +194,46 @@ def test_handle_skills_slash_search_accepts_chatconsole_without_status_errors():
          patch("tools.skills_hub.create_source_router", return_value={}), \
          patch("tools.skills_hub.GitHubAuth"):
         handle_skills_slash("/skills search kubernetes", console=ChatConsole())
+
+
+def test_do_create_scaffolds_local_skill(monkeypatch, tmp_path):
+    import tools.skills_tool as skills_tool
+
+    skills_dir = tmp_path / "skills"
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", skills_dir)
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    do_create("My Test Skill", "Initial description for the skill", console=console)
+
+    skill_dir = skills_dir / "my-test-skill"
+    skill_file = skill_dir / "SKILL.md"
+
+    assert skill_dir.is_dir()
+    assert skill_file.exists()
+
+    content = skill_file.read_text(encoding="utf-8")
+    assert 'name: "My Test Skill"' in content
+    assert 'description: "Initial description for the skill"' in content
+    assert "version: 0.1.0" in content
+    assert "# author: Your Name" in content
+    assert "# license: MIT" in content
+    assert "# My Test Skill" in content
+    assert "## Quick Reference" in content
+    assert "## Pitfalls" in content
+    assert "1. TODO: Gather prerequisites or inputs." in content
+    assert "- TODO: Explain how to verify the skill worked." in content
+
+
+def test_handle_skills_slash_create_passes_name_and_description():
+    with patch("hermes_cli.skills_hub.do_create") as mock_create:
+        handle_skills_slash("/skills create my-skill Initial description goes here")
+
+    mock_create.assert_called_once()
+    args, kwargs = mock_create.call_args
+    assert args[:2] == ("my-skill", "Initial description goes here")
+    assert "console" in kwargs
 
 
 def test_do_install_scans_with_resolved_identifier(monkeypatch, tmp_path, hub_env):
