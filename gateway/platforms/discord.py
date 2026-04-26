@@ -425,7 +425,8 @@ class DiscordAdapter(BasePlatformAdapter):
     _SPLIT_THRESHOLD = 1900  # near the 2000-char split point
 
     # Auto-disconnect from voice channel after this many seconds of inactivity
-    VOICE_TIMEOUT = 300
+    # Increased from 5 minutes to 60 minutes to avoid frequent drops during live sessions.
+    VOICE_TIMEOUT = 3600
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DISCORD)
