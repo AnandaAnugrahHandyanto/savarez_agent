@@ -15,16 +15,8 @@ import {
   treeTotals,
   widthByDepth
 } from '../lib/subagentTree.js'
-import {
-  compactPreview,
-  estimateTokensRough,
-  fmtK,
-  formatToolCall,
-  parseToolTrailResultLine,
-  pick,
-  thinkingPreview,
-  toolTrailLabel
-} from '../lib/text.js'
+import { compactPreview, estimateTokensRough, fmtK, formatToolCall, pick, thinkingPreview, toolTrailLabel } from '../lib/text.js'
+import { buildToolStreamSummary, classifyToolStreamTrailLine, toolStreamRune, type ToolStreamTone } from '../lib/toolStream.js'
 import type { Theme } from '../theme.js'
 import type {
   ActiveTool,
@@ -677,6 +669,8 @@ interface Group {
   details: DetailRow[]
   key: string
   label: string
+  rune: string
+  tone: ToolStreamTone
 }
 
 export const ToolTrail = memo(function ToolTrail({
@@ -783,22 +777,24 @@ export const ToolTrail = memo(function ToolTrail({
   const pushDetail = (row: DetailRow) => (groups.at(-1)?.details ?? meta).push(row)
 
   for (const [i, line] of trail.entries()) {
-    const parsed = parseToolTrailResultLine(line)
+    const classified = classifyToolStreamTrailLine(line)
 
-    if (parsed) {
+    if (classified.mark) {
       groups.push({
-        color: parsed.mark === '✗' ? t.color.error : t.color.cornsilk,
-        content: parsed.detail ? parsed.call : `${parsed.call} ${parsed.mark}`,
+        color: classified.tone === 'error' ? t.color.error : t.color.cornsilk,
+        content: classified.detail ? classified.label : `${classified.label} ${classified.mark}`,
         details: [],
         key: `tr-${i}`,
-        label: parsed.call
+        label: classified.label,
+        rune: classified.rune,
+        tone: classified.tone
       })
 
-      if (parsed.detail) {
+      if (classified.detail) {
         pushDetail({
-          color: parsed.mark === '✗' ? t.color.error : t.color.dim,
-          content: parsed.detail,
-          dimColor: parsed.mark !== '✗',
+          color: classified.tone === 'error' ? t.color.error : t.color.dim,
+          content: classified.detail,
+          dimColor: classified.tone !== 'error',
           key: `tr-${i}-d`
         })
       }
@@ -806,27 +802,30 @@ export const ToolTrail = memo(function ToolTrail({
       continue
     }
 
-    if (line.startsWith('drafting ')) {
-      const label = toolTrailLabel(line.slice(9).replace(/…$/, '').trim())
+    if (classified.tone === 'draft') {
+      const label = toolTrailLabel(classified.label)
 
       groups.push({
         color: t.color.cornsilk,
         content: label,
-        details: [{ color: t.color.dim, content: 'drafting...', dimColor: true, key: `tr-${i}-d` }],
+        details: [{ color: t.color.dim, content: classified.detail, dimColor: true, key: `tr-${i}-d` }],
         key: `tr-${i}`,
-        label
+        label,
+        rune: classified.rune,
+        tone: classified.tone
       })
 
       continue
     }
 
-    if (line === 'analyzing tool output…') {
+    if (classified.tone === 'analysis') {
       pushDetail({
         color: t.color.dim,
         dimColor: true,
         key: `tr-${i}`,
         content: groups.length ? (
           <>
+            <Text color={t.color.amber}>{classified.rune} </Text>
             <Spinner color={t.color.amber} variant="think" /> {line}
           </>
         ) : (
@@ -837,7 +836,7 @@ export const ToolTrail = memo(function ToolTrail({
       continue
     }
 
-    meta.push({ color: t.color.dim, content: line, dimColor: true, key: `tr-${i}` })
+    meta.push({ color: t.color.dim, content: `${classified.rune} ${line}`, dimColor: true, key: `tr-${i}` })
   }
 
   for (const tool of tools) {
@@ -848,6 +847,8 @@ export const ToolTrail = memo(function ToolTrail({
       key: tool.id,
       label,
       details: [],
+      rune: toolStreamRune('active'),
+      tone: 'active',
       content: (
         <>
           <Spinner color={t.color.amber} variant="tool" /> {label}
@@ -879,6 +880,16 @@ export const ToolTrail = memo(function ToolTrail({
   const thinkingTokensLabel = tokenCount > 0 ? `~${fmtK(tokenCount)} tokens` : null
 
   const toolTokensLabel = toolTokens !== undefined && toolTokens > 0 ? `~${fmtK(toolTokens)} tokens` : undefined
+  const activeToolCount = groups.filter(g => g.tone === 'active').length
+  const completedToolCount = groups.filter(g => g.tone === 'success').length
+  const failedToolCount = groups.filter(g => g.tone === 'error').length
+
+  const toolStreamSummary = buildToolStreamSummary({
+    active: activeToolCount,
+    completed: completedToolCount,
+    failed: failedToolCount,
+    tokensLabel: toolTokensLabel
+  })
 
   const totalTokensLabel = tokenCount > 0 && toolTokenCount > 0 ? `~${fmtK(totalTokenCount)} total` : null
   const delegateGroups = groups.filter(g => g.label.startsWith('Delegate Task'))
@@ -1021,9 +1032,9 @@ export const ToolTrail = memo(function ToolTrail({
             }
           }}
           open={openTools}
-          suffix={toolTokensLabel}
+          suffix={toolStreamSummary || undefined}
           t={t}
-          title="Tool calls"
+          title="Tool stream"
         />
       ),
       key: 'tools',
@@ -1042,7 +1053,7 @@ export const ToolTrail = memo(function ToolTrail({
                   color={group.color}
                   content={
                     <>
-                      <Text color={t.color.amber}>● </Text>
+                      <Text color={group.tone === 'error' ? t.color.error : t.color.amber}>{group.rune} </Text>
                       {group.content}
                     </>
                   }
