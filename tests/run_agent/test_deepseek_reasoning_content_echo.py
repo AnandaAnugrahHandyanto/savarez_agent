@@ -56,6 +56,16 @@ class TestNeedsDeepSeekToolReasoning:
         )
         assert agent._needs_deepseek_tool_reasoning() is True
 
+    def test_ark_coding_plan_endpoint(self) -> None:
+        """Ark Coding Plan endpoint (ark.cn-beijing.volces.com) follows
+        DeepSeek API conventions and requires reasoning_content echo."""
+        agent = _make_agent(
+            provider="custom",
+            model="glm-5.1",
+            base_url="https://ark.cn-beijing.volces.com/api/coding/v3",
+        )
+        assert agent._needs_deepseek_tool_reasoning() is True
+
     def test_provider_case_insensitive(self) -> None:
         agent = _make_agent(provider="DeepSeek", model="")
         assert agent._needs_deepseek_tool_reasoning() is True
@@ -88,13 +98,14 @@ class TestCopyReasoningContentForApi:
         agent._copy_reasoning_content_for_api(source, api_msg)
         assert api_msg.get("reasoning_content") == ""
 
-    def test_deepseek_assistant_no_tool_call_left_alone(self) -> None:
-        """Plain assistant turns without tool_calls don't get padded."""
+    def test_deepseek_assistant_no_tool_call_now_padded(self) -> None:
+        """Plain assistant turns without tool_calls ALSO get padded for DeepSeek
+        because the API validates the whole conversation history for consistency."""
         agent = _make_agent(provider="deepseek", model="deepseek-v4-flash")
         source = {"role": "assistant", "content": "hello"}
         api_msg: dict = {}
         agent._copy_reasoning_content_for_api(source, api_msg)
-        assert "reasoning_content" not in api_msg
+        assert api_msg.get("reasoning_content") == ""
 
     def test_deepseek_explicit_reasoning_content_preserved(self) -> None:
         """When reasoning_content is already set, it's copied verbatim."""

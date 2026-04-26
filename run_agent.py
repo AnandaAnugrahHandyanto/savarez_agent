@@ -7639,11 +7639,12 @@ class AIAgent:
             raw_reasoning_content = getattr(assistant_message, "reasoning_content", None)
             if raw_reasoning_content is not None:
                 msg["reasoning_content"] = _sanitize_surrogates(raw_reasoning_content)
-            elif msg.get("tool_calls") and self._needs_deepseek_tool_reasoning():
-                # DeepSeek thinking mode requires reasoning_content on every
-                # assistant tool-call message. Without it, replaying the
-                # persisted message causes HTTP 400. Include empty string
-                # as a defensive compatibility fallback (refs #15250).
+            elif self._needs_deepseek_tool_reasoning() or self._needs_kimi_tool_reasoning():
+                # DeepSeek / Kimi thinking mode requires reasoning_content on EVERY
+                # assistant message (not just tool-call ones).  An inconsistent
+                # mix (some messages with, some without) triggers HTTP 400 from
+                # the API.  Include empty string as a defensive compatibility
+                # fallback (refs #15250).
                 msg["reasoning_content"] = ""
 
         if hasattr(assistant_message, 'reasoning_details') and assistant_message.reasoning_details:
@@ -7738,8 +7739,12 @@ class AIAgent:
         """Return True when the current provider is DeepSeek thinking mode.
 
         DeepSeek V4 thinking mode requires ``reasoning_content`` on every
-        assistant tool-call turn; omitting it causes HTTP 400 when the
-        message is replayed in a subsequent API request (#15250).
+        assistant turn; omitting it causes HTTP 400 when the message is
+        replayed in a subsequent API request (#15250).
+
+        Detection covers: provider='deepseek', model name containing
+        'deepseek', api.deepseek.com host, and Ark Coding Plan endpoint
+        (ark.cn-beijing.volces.com) which follows DeepSeek API conventions.
         """
         provider = (self.provider or "").lower()
         model = (self.model or "").lower()
@@ -7747,6 +7752,7 @@ class AIAgent:
             provider == "deepseek"
             or "deepseek" in model
             or base_url_host_matches(self.base_url, "api.deepseek.com")
+            or base_url_host_matches(self.base_url, "ark.cn-beijing.volces.com")
         )
 
     def _copy_reasoning_content_for_api(self, source_msg: dict, api_msg: dict) -> None:
@@ -7765,10 +7771,11 @@ class AIAgent:
             return
 
         # Providers that require an echoed reasoning_content on every
-        # assistant tool-call turn. Detection logic lives in the per-provider
-        # helpers so both the creation path (_build_assistant_message) and
-        # this replay path stay in sync.
-        if source_msg.get("tool_calls") and (
+        # assistant turn (not just tool-call messages — DeepSeek validates
+        # the entire conversation history for consistency).  Detection logic
+        # lives in the per-provider helpers so both the creation path
+        # (_build_assistant_message) and this replay path stay in sync.
+        if (
             self._needs_kimi_tool_reasoning()
             or self._needs_deepseek_tool_reasoning()
         ):

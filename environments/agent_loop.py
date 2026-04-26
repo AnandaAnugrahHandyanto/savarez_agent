@@ -319,9 +319,13 @@ class HermesAgentLoop:
 
                 # Preserve reasoning_content for multi-turn chat template handling
                 # (e.g., Kimi-K2's template renders <think> blocks differently
-                # for history vs. the latest turn based on this field)
-                if reasoning:
-                    msg_dict["reasoning_content"] = reasoning
+                # for history vs. the latest turn based on this field).
+                # Always set reasoning_content -- DeepSeek and DeepSeek-compatible
+                # APIs (Ark Coding Plan, etc.) require reasoning_content on EVERY
+                # assistant message when thinking mode is enabled, even if the
+                # message had no reasoning.  Inconsistency (some messages with,
+                # some without) triggers a 400 error.
+                msg_dict["reasoning_content"] = reasoning or ""
 
                 messages.append(msg_dict)
 
@@ -492,8 +496,10 @@ class HermesAgentLoop:
                     "role": "assistant",
                     "content": assistant_msg.content or "",
                 }
-                if reasoning:
-                    msg_dict["reasoning_content"] = reasoning
+                # Always set reasoning_content for multi-turn consistency
+                # (same rationale as tool-call path above -- DeepSeek requires
+                # reasoning_content on every assistant message in thinking mode)
+                msg_dict["reasoning_content"] = reasoning or ""
                 messages.append(msg_dict)
 
                 turn_elapsed = _time.monotonic() - turn_start
