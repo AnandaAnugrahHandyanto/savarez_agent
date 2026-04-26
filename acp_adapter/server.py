@@ -12,6 +12,7 @@ import uuid
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
+from pathlib import Path
 from typing import Any, Deque, Optional
 
 import acp
@@ -152,11 +153,14 @@ _ROUTED_HISTORY_MAX_MESSAGES = 8
 # Roughly ~1500 tokens of history, leaving headroom for the wrapper text and
 # the force-routed tool's own output inside the downstream model budget.
 _ROUTED_HISTORY_MAX_CHARS = 6000
+_ROUTED_LOCAL_FILE_MAX_CHARS = 30000
+_ROUTED_LOCAL_FILE_MAX_COUNT = 3
 _ROUTE_FORENSICS_LOG = "route_forensics.jsonl"
 _ROUTE_FORENSICS_MAX_BYTES = 10 * 1024 * 1024
 _MOA_FORENSIC_ENV = "HERMES_MOA_FORENSIC_ANALYSIS"
 _MOA_FULL_FORENSICS_ENV = "HERMES_MOA_FULL_FORENSICS"
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)```", re.IGNORECASE)
+_ABSOLUTE_PATH_RE = re.compile(r"(?<!:)/(?:[^\s`\"'<>]+)")
 
 
 def _extract_text(
@@ -214,6 +218,33 @@ def _text_hash(text: str) -> str:
 def _route_turn_id_from_kwargs(kwargs: dict[str, Any]) -> str:
     supplied = kwargs.get("message_id") or kwargs.get("messageId")
     return str(supplied or uuid.uuid4()).strip()
+
+
+def _resolved_local_file_context(user_text: str) -> str:
+    blocks: list[str] = []
+    seen: set[str] = set()
+    for match in _ABSOLUTE_PATH_RE.finditer(user_text):
+        raw_path = match.group(0).rstrip(".,;:)]}")
+        if raw_path in seen:
+            continue
+        seen.add(raw_path)
+        path = Path(raw_path).expanduser()
+        try:
+            if not path.is_file():
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        truncated = len(text) > _ROUTED_LOCAL_FILE_MAX_CHARS
+        if truncated:
+            text = text[:_ROUTED_LOCAL_FILE_MAX_CHARS].rstrip()
+        suffix = "\n...[truncated by Hermes before routing]" if truncated else ""
+        blocks.append(f"--- BEGIN LOCAL FILE: {raw_path} ---\n{text}{suffix}\n--- END LOCAL FILE ---")
+        if len(blocks) >= _ROUTED_LOCAL_FILE_MAX_COUNT:
+            break
+    if not blocks:
+        return ""
+    return "Local file content resolved by Hermes before routing:\n\n" + "\n\n".join(blocks)
 
 
 def _extract_json_object(raw_text: str) -> dict[str, Any]:
@@ -393,6 +424,11 @@ def _build_routed_prompt(
     max_messages: int = _ROUTED_HISTORY_MAX_MESSAGES,
     max_chars: int = _ROUTED_HISTORY_MAX_CHARS,
 ) -> str:
+    local_file_context = _resolved_local_file_context(user_text)
+    current_request = f"User: {user_text}"
+    if local_file_context:
+        current_request = f"{current_request}\n\n{local_file_context}"
+
     recent_messages: list[tuple[str, str]] = []
     consumed = 0
 
@@ -421,7 +457,7 @@ def _build_routed_prompt(
             break
 
     if not recent_messages:
-        return user_text
+        return current_request
 
     recent_messages.reverse()
     transcript = "\n\n".join(f"{label}: {content}" for label, content in recent_messages)
@@ -429,7 +465,7 @@ def _build_routed_prompt(
         "Use the recent conversation context below when answering the current request. "
         "Do not ask for context that is already present unless it is still genuinely missing.\n\n"
         f"Recent conversation:\n{transcript}\n\n"
-        f"Current user request:\nUser: {user_text}"
+        f"Current user request:\n{current_request}"
     )
 
 

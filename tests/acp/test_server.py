@@ -498,6 +498,17 @@ class TestPrompt:
         assert huge_message not in routed
         assert routed.endswith("User: give me the answer")
 
+    def test_build_routed_prompt_includes_existing_local_file(self, tmp_path):
+        local_file = tmp_path / "review-me.md"
+        local_file.write_text("# Draft\n\nCheck this claim.", encoding="utf-8")
+
+        routed = _build_routed_prompt(f"review {local_file}", [])
+
+        assert "Local file content resolved by Hermes before routing:" in routed
+        assert f"--- BEGIN LOCAL FILE: {local_file} ---" in routed
+        assert "# Draft\n\nCheck this claim." in routed
+        assert routed.startswith(f"User: review {local_file}")
+
     @pytest.mark.asyncio
     async def test_prompt_returns_refusal_for_unknown_session(self, agent):
         prompt = [TextContentBlock(type="text", text="hello")]
