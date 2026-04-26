@@ -265,7 +265,12 @@ export default function ProfilesPage() {
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    // The app shell sets ``uppercase`` on every page by default; override it
+    // here because profile names, model slugs, and paths are case-sensitive
+    // — rendering ``gf`` as ``GF`` falsely suggests uppercase is allowed.
+    // Children that explicitly opt into ``uppercase`` (Badges, the Segmented
+    // control, our small section headers) still apply it to themselves.
+    <div className="flex flex-col gap-6 normal-case">
       <Toast toast={toast} />
 
       <DeleteConfirmDialog
