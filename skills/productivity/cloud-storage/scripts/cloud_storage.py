@@ -241,8 +241,12 @@ def main():
             print(result)
         elif isinstance(result, list):
             print_table(result)
+        elif isinstance(result, dict):
+            # Generic dict result (upload/download/delete/etc)
+            for k, v in result.items():
+                print(f"  {k:20s} {v}")
         else:
-            print_table([result]) if isinstance(result, dict) else print(result)
+            print(result)
 
 if __name__ == "__main__":
     main()

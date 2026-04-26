@@ -97,6 +97,28 @@ All commands go through the CLI script. Set a shorthand:
 CS="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/cloud-storage/scripts/cloud_storage.py"
 ```
 
+**Upload destination notes:**
+- `copyto` is used for single-file uploads, so the destination must include the filename:
+  ```bash
+  $CS upload /path/to/file.md onedrive:Documents/file.md   # ✅ correct
+  $CS upload /path/to/file.md onedrive:Documents/            # ❌ fails — needs filename
+  ```
+- For preserving the local filename, use the remote path + filename explicitly:
+  ```bash
+  $CS upload /path/to/file.md onedrive:Documents/$(basename file.md)
+  ```
+- To upload a whole folder recursively, use `--recursive` (this uses `copy`, not `copyto`):
+  ```bash
+  $CS upload /local/folder/ onedrive:Backups/folder/ --recursive
+  ```
+
+**Flag placement:**
+- `--format json` must come **before** the subcommand:
+  ```bash
+  $CS --format json list onedrive:          # ✅ correct
+  $CS list onedrive: --format json           # ❌ fails
+  ```
+
 ### Upload
 
 ```bash
