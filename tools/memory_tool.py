@@ -464,7 +464,7 @@ def memory_tool(
     action: str,
     target: str = "memory",
     content: str = None,
-    old_text: str = None,
+    old_string: str = None,
     store: Optional[MemoryStore] = None,
 ) -> str:
     """
@@ -484,16 +484,16 @@ def memory_tool(
         result = store.add(target, content)
 
     elif action == "replace":
-        if not old_text:
-            return tool_error("old_text is required for 'replace' action.", success=False)
+        if not old_string:
+            return tool_error("old_string is required for 'replace' action.", success=False)
         if not content:
             return tool_error("content is required for 'replace' action.", success=False)
-        result = store.replace(target, old_text, content)
+        result = store.replace(target, old_string, content)
 
     elif action == "remove":
-        if not old_text:
-            return tool_error("old_text is required for 'remove' action.", success=False)
-        result = store.remove(target, old_text)
+        if not old_string:
+            return tool_error("old_string is required for 'remove' action.", success=False)
+        result = store.remove(target, old_string)
 
     else:
         return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
@@ -531,8 +531,8 @@ MEMORY_SCHEMA = {
         "TWO TARGETS:\n"
         "- 'user': who the user is -- name, role, preferences, communication style, pet peeves\n"
         "- 'memory': your notes -- environment facts, project conventions, tool quirks, lessons learned\n\n"
-        "ACTIONS: add (new entry), replace (update existing -- old_text identifies it), "
-        "remove (delete -- old_text identifies it).\n\n"
+        "ACTIONS: add (new entry), replace (update existing -- old_string identifies it), "
+        "remove (delete -- old_string identifies it).\n\n"
         "SKIP: trivial/obvious info, things easily re-discovered, raw data dumps, and temporary task state."
     ),
     "parameters": {
@@ -552,7 +552,7 @@ MEMORY_SCHEMA = {
                 "type": "string",
                 "description": "The entry content. Required for 'add' and 'replace'."
             },
-            "old_text": {
+            "old_string": {
                 "type": "string",
                 "description": "Short unique substring identifying the entry to replace or remove."
             },
@@ -573,7 +573,7 @@ registry.register(
         action=args.get("action", ""),
         target=args.get("target", "memory"),
         content=args.get("content"),
-        old_text=args.get("old_text"),
+        old_string=args.get("old_string"),
         store=kw.get("store")),
     check_fn=check_memory_requirements,
     emoji="🧠",
