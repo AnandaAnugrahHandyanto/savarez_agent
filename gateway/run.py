@@ -6797,7 +6797,7 @@ class GatewayRunner:
         config_path = _hermes_home / "config.yaml"
         session_key = self._session_key_for_source(event.source)
         platform_key = _platform_config_key(event.source.platform)
-        self._show_reasoning = self._load_show_reasoning(platform_key)
+        show_reasoning = self._load_show_reasoning(platform_key)
         self._reasoning_config = self._resolve_session_reasoning_config(
             source=event.source,
             session_key=session_key,
@@ -6832,7 +6832,7 @@ class GatewayRunner:
                 level = "none (disabled)"
             else:
                 level = rc.get("effort", "medium")
-            display_state = "on ✓" if self._show_reasoning else "off"
+            display_state = "on ✓" if show_reasoning else "off"
             has_session_override = session_key in (getattr(self, "_session_reasoning_overrides", {}) or {})
             scope = "session override" if has_session_override else "global config"
             return (
