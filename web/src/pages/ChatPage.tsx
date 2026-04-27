@@ -604,8 +604,8 @@ export default function ChatPage() {
   //     model badge, tool-call list, model picker. Best-effort: if the
   //     sidecar fails to connect the terminal pane keeps working.
   //
-  // `normal-case` opts out of the dashboard's global `uppercase` rule on
-  // the root `<div>` in App.tsx — terminal output must preserve case.
+  // `normal-case` remains here as a local guard for terminal output; the
+  // dashboard shell itself preserves content casing.
   //
   // Mobile model/tools sheet is portaled to `document.body` so it stacks
   // above the app sidebar (`z-50`) and mobile chrome (`z-40`).  The main

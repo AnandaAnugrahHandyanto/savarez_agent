@@ -310,7 +310,7 @@ export default function App() {
   return (
     <div
       data-layout-variant={layoutVariant}
-      className="font-mondwest flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-black uppercase text-midground antialiased"
+      className="font-mondwest flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-black text-midground antialiased"
     >
       <SelectionSwitcher />
       <Backdrop />
@@ -435,7 +435,7 @@ export default function App() {
                           cn(
                             "group relative flex items-center gap-3",
                             "px-5 py-2.5",
-                            "font-mondwest text-[0.8rem] tracking-[0.12em]",
+                            "font-mondwest text-[0.8rem] tracking-[0.12em] uppercase",
                             "whitespace-nowrap transition-colors cursor-pointer",
                             "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
                             isActive
@@ -599,7 +599,7 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
                 className={cn(
                   "group relative flex w-full items-center gap-3",
                   "px-5 py-1.5",
-                  "font-mondwest text-[0.75rem] tracking-[0.1em]",
+                  "font-mondwest text-[0.75rem] tracking-[0.1em] uppercase",
                   "text-left whitespace-nowrap transition-opacity cursor-pointer",
                   "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
                   busy
