@@ -40,7 +40,7 @@ def make_approval_callback(
         timeout: Seconds to wait for a response before auto-denying.
     """
 
-    def _callback(command: str, description: str) -> str:
+    def _callback(command: str, description: str, **kwargs) -> str:
         options = [
             PermissionOption(option_id="allow_once", kind="allow_once", name="Allow once"),
             PermissionOption(option_id="allow_always", kind="allow_always", name="Allow always"),
