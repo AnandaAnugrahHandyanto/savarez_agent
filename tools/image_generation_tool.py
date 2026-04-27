@@ -39,6 +39,13 @@ from tools.tool_backend_helpers import (
     prefers_gateway,
 )
 
+# Gemini image generation via gemimg
+try:
+    from gemimg import GemImg
+    _GEMIMG_AVAILABLE = True
+except ImportError:
+    _GEMIMG_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -847,6 +854,61 @@ if __name__ == "__main__":
 
 
 # ---------------------------------------------------------------------------
+# Gemini / Nano Banana image generation
+# ---------------------------------------------------------------------------
+
+GEMINI_DEFAULT_MODEL = "gemini-2.5-flash-image"
+GEMINI_PRO_MODEL = "gemini-3-pro-image-preview"
+
+GEMINI_ASPECT_RATIO_MAP = {
+    "landscape": "16:9",
+    "square": "1:1",
+    "portrait": "9:16",
+}
+
+
+def check_gemini_image_requirements() -> bool:
+    """Check if gemimg is available and a Gemini API key is set."""
+    return _GEMIMG_AVAILABLE and bool(os.getenv("GEMINI_API_KEY"))
+
+
+def image_generate_gemini(
+    prompt: str,
+    aspect_ratio: str = "landscape",
+    model: str = GEMINI_DEFAULT_MODEL,
+) -> str:
+    """
+    Generate an image using Google's Gemini (Nano Banana) via gemimg.
+
+    Returns JSON: {"success": bool, "image": str | None, "error": str | None}
+    Image is a local file path saved to ~/.hermes/image_cache/.
+    """
+    if not _GEMIMG_AVAILABLE:
+        return json.dumps({"success": False, "image": None, "error": "gemimg not installed"})
+
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        return json.dumps({"success": False, "image": None, "error": "GEMINI_API_KEY not set"})
+
+    ar = GEMINI_ASPECT_RATIO_MAP.get(aspect_ratio.lower().strip(), "16:9")
+    save_dir = os.path.expanduser("~/.hermes/image_cache")
+    os.makedirs(save_dir, exist_ok=True)
+
+    try:
+        g = GemImg(api_key=api_key, model=model)
+        result = g.generate(prompt, aspect_ratio=ar, save_dir=save_dir)
+        if result is None or not result.image_paths:
+            return json.dumps({"success": False, "image": None, "error": "Gemini returned no image"})
+        # image_paths are full paths when save_dir is set
+        img_path = str(result.image_paths[0])
+        if not os.path.isabs(img_path):
+            img_path = os.path.join(save_dir, img_path)
+        return json.dumps({"success": True, "image": img_path, "error": None})
+    except Exception as e:
+        return json.dumps({"success": False, "image": None, "error": str(e)})
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 from tools.registry import registry, tool_error
@@ -998,5 +1060,56 @@ registry.register(
     check_fn=check_image_generation_requirements,
     requires_env=[],
     is_async=False,   # sync fal_client API to avoid "Event loop is closed" in gateway
+    emoji="🎨",
+)
+
+
+GEMINI_IMAGE_GENERATE_SCHEMA = {
+    "name": "gemini_image_generate",
+    "description": "Generate high-quality images from text prompts using Google's Gemini Nano Banana (Gemini 2.5 Flash Image). Excellent at following detailed, markdown-formatted prompts. Supports text-guided editing and nuanced composition. Returns a local file path to the generated PNG. Display it using MEDIA:<path>.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "prompt": {
+                "type": "string",
+                "description": "The text prompt describing the desired image. Supports markdown lists and detailed descriptions for high accuracy."
+            },
+            "aspect_ratio": {
+                "type": "string",
+                "enum": ["landscape", "square", "portrait"],
+                "description": "Image aspect ratio: 'landscape' (16:9), 'portrait' (9:16), 'square' (1:1).",
+                "default": "landscape"
+            },
+            "model": {
+                "type": "string",
+                "enum": ["gemini-2.5-flash-image", "gemini-3-pro-image-preview"],
+                "description": "Model to use. Default is Nano Banana (Flash). Use Pro for higher quality.",
+                "default": "gemini-2.0-flash-preview-image-generation"
+            }
+        },
+        "required": ["prompt"]
+    }
+}
+
+
+def _handle_gemini_image_generate(args, **kw):
+    prompt = args.get("prompt", "")
+    if not prompt:
+        return json.dumps({"error": "prompt is required"})
+    return image_generate_gemini(
+        prompt=prompt,
+        aspect_ratio=args.get("aspect_ratio", "landscape"),
+        model=args.get("model", GEMINI_DEFAULT_MODEL),
+    )
+
+
+registry.register(
+    name="gemini_image_generate",
+    toolset="image_gen",
+    schema=GEMINI_IMAGE_GENERATE_SCHEMA,
+    handler=_handle_gemini_image_generate,
+    check_fn=check_gemini_image_requirements,
+    requires_env=["GEMINI_API_KEY"],
+    is_async=False,
     emoji="🎨",
 )
