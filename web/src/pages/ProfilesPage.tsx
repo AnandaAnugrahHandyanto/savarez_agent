@@ -571,23 +571,25 @@ export default function ProfilesPage() {
                     {p.has_env && (
                       <Badge variant="outline">{t.profiles.hasEnv}</Badge>
                     )}
-                    {p.shared_tokens.map((s) => {
-                      const label =
-                        TOKEN_PLATFORM_LABEL[s.key] ?? s.key;
-                      return (
-                        <Badge
-                          key={s.key}
-                          variant="destructive"
-                          title={`${s.key} — ${t.profiles.sharedWith} ${s.with.join(", ")}`}
-                        >
-                          <AlertTriangle
-                            aria-hidden
-                            className="mr-1 h-3 w-3"
-                          />
-                          {`${t.profiles.tokenConflict} (${label})`}
-                        </Badge>
-                      );
-                    })}
+                    {p.shared_tokens.length > 0 && (
+                      <Badge
+                        variant="destructive"
+                        title={p.shared_tokens
+                          .map(
+                            (s) =>
+                              `${s.key} — ${t.profiles.sharedWith} ${s.with.join(", ")}`,
+                          )
+                          .join("\n")}
+                      >
+                        <AlertTriangle
+                          aria-hidden
+                          className="mr-1 h-3 w-3"
+                        />
+                        {`${t.profiles.tokenConflict} (${p.shared_tokens
+                          .map((s) => TOKEN_PLATFORM_LABEL[s.key] ?? s.key)
+                          .join(", ")})`}
+                      </Badge>
+                    )}
                   </div>
                   {isRenaming &&
                     (() => {
