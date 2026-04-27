@@ -1032,7 +1032,15 @@ async def _parallel_extract(urls: List[str]) -> List[Dict[str, Any]]:
     return results
 
 
-def web_search_tool(query: str, limit: int = 5) -> str:
+_TAVILY_VALID_TOPICS = ("general", "news")
+
+
+def web_search_tool(
+    query: str,
+    limit: int = 5,
+    topic: str = "general",
+    days: Optional[int] = None,
+) -> str:
     """
     Search the web for information using available search API backend.
 
@@ -1041,11 +1049,16 @@ def web_search_tool(query: str, limit: int = 5) -> str:
 
     Note: This function returns search result metadata only (URLs, titles, descriptions).
     Use web_extract_tool to get full content from specific URLs.
-    
+
     Args:
         query (str): The search query to look up
         limit (int): Maximum number of results to return (default: 5)
-    
+        topic (str): Search topic — ``"general"`` (default) or ``"news"``.
+                     Only honoured by the Tavily backend; ignored by others.
+        days (Optional[int]): When ``topic="news"``, restrict results to the
+                              last N days. Tavily-only.  Ignored when unset
+                              or when ``topic != "news"``.
+
     Returns:
         str: JSON string containing search results with the following structure:
              {
@@ -1062,21 +1075,42 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                      ]
                  }
              }
-    
+
     Raises:
         Exception: If search fails or API key is not set
     """
+    if topic not in _TAVILY_VALID_TOPICS:
+        return tool_error(
+            f"Invalid topic '{topic}'. Must be one of: {', '.join(_TAVILY_VALID_TOPICS)}.",
+            success=False,
+        )
+    if days is not None:
+        try:
+            days = int(days)
+        except (TypeError, ValueError):
+            return tool_error(
+                f"Invalid days value '{days}'. Must be a positive integer.",
+                success=False,
+            )
+        if days <= 0:
+            return tool_error(
+                f"days must be a positive integer (got {days}).",
+                success=False,
+            )
+
     debug_call_data = {
         "parameters": {
             "query": query,
-            "limit": limit
+            "limit": limit,
+            "topic": topic,
+            "days": days,
         },
         "error": None,
         "results_count": 0,
         "original_response_size": 0,
         "final_response_size": 0
     }
-    
+
     try:
         from tools.interrupt import is_interrupted
         if is_interrupted():
@@ -1103,13 +1137,21 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             return result_json
 
         if backend == "tavily":
-            logger.info("Tavily search: '%s' (limit: %d)", query, limit)
-            raw = _tavily_request("search", {
+            payload = {
                 "query": query,
                 "max_results": min(limit, 20),
                 "include_raw_content": False,
                 "include_images": False,
-            })
+                "topic": topic,
+            }
+            if topic == "news" and days is not None:
+                payload["days"] = days
+            logger.info(
+                "Tavily search: '%s' (limit: %d, topic: %s%s)",
+                query, limit, topic,
+                f", days: {days}" if (topic == "news" and days is not None) else "",
+            )
+            raw = _tavily_request("search", payload)
             response_data = _normalize_tavily_search_results(raw)
             debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
             result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
@@ -2054,6 +2096,16 @@ WEB_SEARCH_SCHEMA = {
             "query": {
                 "type": "string",
                 "description": "The search query to look up on the web"
+            },
+            "topic": {
+                "type": "string",
+                "enum": ["general", "news"],
+                "description": "Search topic. Use 'news' for time-sensitive queries (briefings, current events) — pairs with 'days' to bound recency. Defaults to 'general'. Tavily-only; ignored on other backends."
+            },
+            "days": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "When topic='news', restrict results to the last N days. Tavily-only; ignored when topic='general'."
             }
         },
         "required": ["query"]
@@ -2081,7 +2133,12 @@ registry.register(
     name="web_search",
     toolset="web",
     schema=WEB_SEARCH_SCHEMA,
-    handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=5),
+    handler=lambda args, **kw: web_search_tool(
+        args.get("query", ""),
+        limit=5,
+        topic=args.get("topic", "general"),
+        days=args.get("days"),
+    ),
     check_fn=check_web_api_key,
     requires_env=_web_requires_env(),
     emoji="🔍",

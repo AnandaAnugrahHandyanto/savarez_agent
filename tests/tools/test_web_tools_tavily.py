@@ -181,6 +181,104 @@ class TestWebSearchTavily:
             assert result["data"]["web"][0]["title"] == "Result"
 
 
+class TestWebSearchTavilyTopicAndDays:
+    """Tavily topic / days parameter plumbing (issue #16233)."""
+
+    def _post_payload(self, mock_post):
+        call_kwargs = mock_post.call_args
+        return call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+
+    def test_default_topic_is_general(self):
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"results": []}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("tools.web_tools._get_backend", return_value="tavily"), \
+             patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}), \
+             patch("tools.web_tools.httpx.post", return_value=mock_response) as mock_post, \
+             patch("tools.interrupt.is_interrupted", return_value=False):
+            from tools.web_tools import web_search_tool
+            web_search_tool("anything")
+            payload = self._post_payload(mock_post)
+            assert payload["topic"] == "general"
+            assert "days" not in payload
+
+    def test_news_topic_with_days_threads_through(self):
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"results": []}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("tools.web_tools._get_backend", return_value="tavily"), \
+             patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}), \
+             patch("tools.web_tools.httpx.post", return_value=mock_response) as mock_post, \
+             patch("tools.interrupt.is_interrupted", return_value=False):
+            from tools.web_tools import web_search_tool
+            web_search_tool("breaking story", topic="news", days=3)
+            payload = self._post_payload(mock_post)
+            assert payload["topic"] == "news"
+            assert payload["days"] == 3
+
+    def test_days_dropped_when_topic_is_general(self):
+        """days only meaningful for news; payload should not carry it otherwise."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"results": []}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("tools.web_tools._get_backend", return_value="tavily"), \
+             patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}), \
+             patch("tools.web_tools.httpx.post", return_value=mock_response) as mock_post, \
+             patch("tools.interrupt.is_interrupted", return_value=False):
+            from tools.web_tools import web_search_tool
+            web_search_tool("evergreen topic", topic="general", days=7)
+            payload = self._post_payload(mock_post)
+            assert payload["topic"] == "general"
+            assert "days" not in payload
+
+    def test_invalid_topic_rejected(self):
+        from tools.web_tools import web_search_tool
+        result = json.loads(web_search_tool("q", topic="research"))
+        assert result["success"] is False
+        assert "Invalid topic" in result.get("error", "")
+
+    def test_invalid_days_rejected(self):
+        from tools.web_tools import web_search_tool
+        result = json.loads(web_search_tool("q", topic="news", days=0))
+        assert result["success"] is False
+        assert "days" in result.get("error", "")
+
+        result = json.loads(web_search_tool("q", topic="news", days="abc"))
+        assert result["success"] is False
+        assert "days" in result.get("error", "")
+
+    def test_news_without_days_omits_days(self):
+        """topic='news' with no days set should still hit Tavily without injecting days."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"results": []}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("tools.web_tools._get_backend", return_value="tavily"), \
+             patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}), \
+             patch("tools.web_tools.httpx.post", return_value=mock_response) as mock_post, \
+             patch("tools.interrupt.is_interrupted", return_value=False):
+            from tools.web_tools import web_search_tool
+            web_search_tool("recent news", topic="news")
+            payload = self._post_payload(mock_post)
+            assert payload["topic"] == "news"
+            assert "days" not in payload
+
+
+class TestWebSearchSchema:
+    def test_schema_exposes_topic_and_days(self):
+        from tools.web_tools import WEB_SEARCH_SCHEMA
+        props = WEB_SEARCH_SCHEMA["parameters"]["properties"]
+        assert "topic" in props
+        assert props["topic"]["enum"] == ["general", "news"]
+        assert "days" in props
+        assert props["days"]["type"] == "integer"
+        # Neither should be required — backwards-compatible.
+        assert WEB_SEARCH_SCHEMA["parameters"]["required"] == ["query"]
+
+
 # ─── web_extract_tool (Tavily dispatch) ───────────────────────────────────────
 
 class TestWebExtractTavily:
