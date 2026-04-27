@@ -3,13 +3,61 @@ const BASE = "";
 import type { DashboardTheme } from "@/themes/types";
 
 // Ephemeral session token for protected endpoints.
-// Injected into index.html by the server — never fetched via API.
-declare global {
-  interface Window {
-    __HERMES_SESSION_TOKEN__?: string;
+// The server prints a one-time URL with `#tk=<token>`; we consume the
+// fragment on first load, persist the token in sessionStorage so reloads
+// keep working, and scrub the fragment from the address bar.
+const TOKEN_STORAGE_KEY = "hermes.sessionToken";
+let _sessionToken: string | null = null;
+
+function _consumeTokenFromHash(): string | null {
+  const params = new URLSearchParams(window.location.hash.slice(1));
+  const token = params.get("tk");
+  if (!token) return null;
+  params.delete("tk");
+  const rest = params.toString();
+  const newUrl =
+    window.location.pathname +
+    window.location.search +
+    (rest ? "#" + rest : "");
+  // Strip the token from the URL bar so it doesn't leak via browser
+  // history, screenshots, or accidental copy-paste.
+  window.history.replaceState(null, "", newUrl);
+  return token;
+}
+
+export function loadSessionToken(): string | null {
+  if (_sessionToken) return _sessionToken;
+  const fromHash = _consumeTokenFromHash();
+  if (fromHash) {
+    try {
+      window.sessionStorage.setItem(TOKEN_STORAGE_KEY, fromHash);
+    } catch {
+      // sessionStorage may be unavailable (private mode, etc.); fall back
+      // to in-memory only — reload will require the printed URL again.
+    }
+    _sessionToken = fromHash;
+    return _sessionToken;
+  }
+  try {
+    const stored = window.sessionStorage.getItem(TOKEN_STORAGE_KEY);
+    if (stored) {
+      _sessionToken = stored;
+      return _sessionToken;
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+function _clearSessionToken(): void {
+  _sessionToken = null;
+  try {
+    window.sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+  } catch {
+    // ignore
   }
 }
-let _sessionToken: string | null = null;
 const SESSION_HEADER = "X-Hermes-Session-Token";
 
 function setSessionHeader(headers: Headers, token: string): void {
@@ -21,11 +69,20 @@ function setSessionHeader(headers: Headers, token: string): void {
 export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
   // Inject the session token into all /api/ requests.
   const headers = new Headers(init?.headers);
-  const token = window.__HERMES_SESSION_TOKEN__;
+  const token = loadSessionToken();
   if (token) {
     setSessionHeader(headers, token);
   }
   const res = await fetch(`${BASE}${url}`, { ...init, headers });
+  if (res.status === 401) {
+    // Token is stale (server restarted → new token) or missing. Clear it
+    // so the user gets a consistent error rather than silent retries with
+    // a dead token.
+    _clearSessionToken();
+    throw new Error(
+      "401: session expired — reopen the dashboard via the URL printed by `hermes dashboard`",
+    );
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
     throw new Error(`${res.status}: ${text}`);
@@ -34,13 +91,11 @@ export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> 
 }
 
 async function getSessionToken(): Promise<string> {
-  if (_sessionToken) return _sessionToken;
-  const injected = window.__HERMES_SESSION_TOKEN__;
-  if (injected) {
-    _sessionToken = injected;
-    return _sessionToken;
-  }
-  throw new Error("Session token not available — page must be served by the Hermes dashboard server");
+  const token = loadSessionToken();
+  if (token) return token;
+  throw new Error(
+    "Session token not available — open the dashboard via the URL printed by `hermes dashboard`",
+  );
 }
 
 export const api = {

@@ -24,6 +24,7 @@ import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { Typography } from "@nous-research/ui";
 import { cn } from "@/lib/utils";
+import { loadSessionToken } from "@/lib/api";
 import { Copy, PanelRight, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -110,7 +111,7 @@ export default function ChatPage() {
   // Lazy-init: the missing-token check happens at construction so the effect
   // body doesn't have to setState (React 19's set-state-in-effect rule).
   const [banner, setBanner] = useState<string | null>(() =>
-    typeof window !== "undefined" && !window.__HERMES_SESSION_TOKEN__
+    typeof window !== "undefined" && !loadSessionToken()
       ? "Session token unavailable. Open this page through `hermes dashboard`, not directly."
       : null,
   );
@@ -216,7 +217,7 @@ export default function ChatPage() {
     const host = hostRef.current;
     if (!host) return;
 
-    const token = window.__HERMES_SESSION_TOKEN__;
+    const token = loadSessionToken();
     // Banner already initialised above; just bail before wiring xterm/WS.
     if (!token) {
       return;
@@ -756,8 +757,3 @@ export default function ChatPage() {
   );
 }
 
-declare global {
-  interface Window {
-    __HERMES_SESSION_TOKEN__?: string;
-  }
-}

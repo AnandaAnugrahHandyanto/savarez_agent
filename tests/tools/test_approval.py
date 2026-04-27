@@ -5,6 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch as mock_patch
 
+import pytest
+
 import tools.approval as approval_module
 from tools.approval import (
     _get_approval_mode,
@@ -906,3 +908,36 @@ class TestChmodExecuteCombo:
         cmd = "chmod +x script.sh"
         dangerous, _, _ = detect_dangerous_command(cmd)
         assert dangerous is False
+
+
+class TestDashboardExposureProtection:
+    """Prevent the agent from silently exposing the web dashboard on the network.
+
+    Asserts the flag/no-flag behavior only. Description prose is
+    documentation, not spec — reword freely without breaking these tests.
+    """
+
+    @pytest.mark.parametrize("cmd,expected", [
+        # hermes CLI — exposure flags must trigger approval
+        ("hermes dashboard --insecure", True),
+        ("hermes dashboard --no-open --port 9119 --host 0.0.0.0 --insecure", True),
+        ("hermes dashboard --host 0.0.0.0", True),
+        ("hermes dashboard --host=192.168.1.10", True),
+        ("hermes dashboard --host 10.0.0.5 --port 9119", True),
+        # python -m form — same rules
+        ("python -m hermes_cli.main dashboard --insecure", True),
+        ("python -m hermes_cli.main dashboard --host 0.0.0.0", True),
+        ("python -m hermes_cli dashboard --insecure", True),
+        # localhost binds (both short and long IPv6 loopback) — must NOT trigger
+        ("hermes dashboard", False),
+        ("hermes dashboard --no-open", False),
+        ("hermes dashboard --host 127.0.0.1", False),
+        ("hermes dashboard --host localhost --port 9120", False),
+        ("hermes dashboard --host ::1", False),
+        ("hermes dashboard --host 0:0:0:0:0:0:0:1", False),
+        ("python -m hermes_cli.main dashboard", False),
+        ("python -m hermes_cli.main dashboard --host 127.0.0.1", False),
+    ])
+    def test_dashboard_exposure(self, cmd, expected):
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is expected, f"unexpected verdict for {cmd!r}"

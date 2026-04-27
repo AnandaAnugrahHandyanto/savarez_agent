@@ -238,6 +238,13 @@ DANGEROUS_PATTERNS = [
     # a script is first made executable then immediately run. The script
     # content may contain dangerous commands that individual patterns miss.
     (r'\bchmod\s+\+x\b.*[;&|]+\s*\./', "chmod +x followed by immediate execution"),
+    # Dashboard network-exposure: --insecure or --host <non-local> publishes
+    # API keys and config on the network. Speed bump only — the authoritative
+    # gate is ``start_server`` in ``hermes_cli/web_server.py``.
+    (r'\bhermes\s+dashboard\b.*--insecure\b', "expose hermes dashboard to network (--insecure)"),
+    (r'\bhermes\s+dashboard\b.*--host[=\s]+(?!(?:127\.0\.0\.1|localhost|::1|0:0:0:0:0:0:0:1)\b)\S+', "bind hermes dashboard to non-localhost address"),
+    (r'\bhermes_cli(?:\.main)?\b.*\bdashboard\b.*--insecure\b', "expose hermes dashboard to network (python -m form)"),
+    (r'\bhermes_cli(?:\.main)?\b.*\bdashboard\b.*--host[=\s]+(?!(?:127\.0\.0\.1|localhost|::1|0:0:0:0:0:0:0:1)\b)\S+', "bind hermes dashboard to non-localhost address (python -m form)"),
 ]
 
 
