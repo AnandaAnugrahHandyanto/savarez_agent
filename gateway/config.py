@@ -54,6 +54,7 @@ class Platform(Enum):
     SLACK = "slack"
     SIGNAL = "signal"
     MATTERMOST = "mattermost"
+    ROCKETCHAT = "rocketchat"
     MATRIX = "matrix"
     HOMEASSISTANT = "homeassistant"
     EMAIL = "email"
@@ -825,6 +826,7 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
         Platform.DISCORD: "DISCORD_BOT_TOKEN",
         Platform.SLACK: "SLACK_BOT_TOKEN",
         Platform.MATTERMOST: "MATTERMOST_TOKEN",
+        Platform.ROCKETCHAT: "ROCKETCHAT_TOKEN",
         Platform.MATRIX: "MATRIX_ACCESS_TOKEN",
         Platform.WEIXIN: "WEIXIN_TOKEN",
     }
@@ -982,6 +984,29 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             platform=Platform.MATTERMOST,
             chat_id=mattermost_home,
             name=os.getenv("MATTERMOST_HOME_CHANNEL_NAME", "Home"),
+        )
+
+    # Rocket.Chat
+    rocketchat_token = os.getenv("ROCKETCHAT_TOKEN")
+    if rocketchat_token:
+        rocketchat_url = os.getenv("ROCKETCHAT_URL", "")
+        rocketchat_user_id = os.getenv("ROCKETCHAT_USER_ID", "")
+        if not rocketchat_url:
+            logger.warning("ROCKETCHAT_TOKEN set but ROCKETCHAT_URL is missing")
+        if not rocketchat_user_id:
+            logger.warning("ROCKETCHAT_TOKEN set but ROCKETCHAT_USER_ID is missing")
+        if Platform.ROCKETCHAT not in config.platforms:
+            config.platforms[Platform.ROCKETCHAT] = PlatformConfig()
+        config.platforms[Platform.ROCKETCHAT].enabled = True
+        config.platforms[Platform.ROCKETCHAT].token = rocketchat_token
+        config.platforms[Platform.ROCKETCHAT].extra["url"] = rocketchat_url
+        config.platforms[Platform.ROCKETCHAT].extra["user_id"] = rocketchat_user_id
+    rocketchat_home = os.getenv("ROCKETCHAT_HOME_CHANNEL")
+    if rocketchat_home and Platform.ROCKETCHAT in config.platforms:
+        config.platforms[Platform.ROCKETCHAT].home_channel = HomeChannel(
+            platform=Platform.ROCKETCHAT,
+            chat_id=rocketchat_home,
+            name=os.getenv("ROCKETCHAT_HOME_CHANNEL_NAME", "Home"),
         )
 
     # Matrix

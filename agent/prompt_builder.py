@@ -379,6 +379,16 @@ PLATFORM_HINTS = {
         "attachments, audio and video as file attachments. "
         "Image URLs in markdown format ![alt](url) are rendered as inline previews automatically."
     ),
+    "rocketchat": (
+        "You are in a Rocket.Chat workspace communicating with your user. "
+        "Rocket.Chat renders standard Markdown — headings, bold, italic, code "
+        "blocks, tables, and links all work. "
+        "You can send media files natively: include MEDIA:/absolute/path/to/file "
+        "in your response. Images (.jpg, .png, .webp) are uploaded as photo "
+        "attachments, audio and video as file attachments. "
+        "Threaded replies work via the tmid field — when you reply to a "
+        "threaded message the client keeps the conversation grouped."
+    ),
     "matrix": (
         "You are in a Matrix room communicating with your user. "
         "Matrix renders Markdown — bold, italic, code blocks, and links work; "

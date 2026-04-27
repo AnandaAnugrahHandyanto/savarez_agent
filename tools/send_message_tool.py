@@ -214,6 +214,7 @@ def _handle_send(args):
         "qqbot": Platform.QQBOT,
         "matrix": Platform.MATRIX,
         "mattermost": Platform.MATTERMOST,
+        "rocketchat": Platform.ROCKETCHAT,
         "homeassistant": Platform.HOMEASSISTANT,
         "dingtalk": Platform.DINGTALK,
         "feishu": Platform.FEISHU,
@@ -568,6 +569,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_sms(pconfig.api_key, chat_id, chunk)
         elif platform == Platform.MATTERMOST:
             result = await _send_mattermost(pconfig.token, pconfig.extra, chat_id, chunk)
+        elif platform == Platform.ROCKETCHAT:
+            result = await _send_rocketchat(pconfig.token, pconfig.extra, chat_id, chunk)
         elif platform == Platform.MATRIX:
             result = await _send_matrix(pconfig.token, pconfig.extra, chat_id, chunk)
         elif platform == Platform.HOMEASSISTANT:
@@ -1164,6 +1167,38 @@ async def _send_mattermost(token, extra, chat_id, message):
         return {"success": True, "platform": "mattermost", "chat_id": chat_id, "message_id": data.get("id")}
     except Exception as e:
         return _error(f"Mattermost send failed: {e}")
+
+
+async def _send_rocketchat(token, extra, chat_id, message):
+    """Send via Rocket.Chat REST API (chat.postMessage)."""
+    try:
+        import aiohttp
+    except ImportError:
+        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+    try:
+        base_url = (extra.get("url") or os.getenv("ROCKETCHAT_URL", "")).rstrip("/")
+        token = token or os.getenv("ROCKETCHAT_TOKEN", "")
+        user_id = extra.get("user_id") or os.getenv("ROCKETCHAT_USER_ID", "")
+        if not base_url or not token or not user_id:
+            return {"error": "Rocket.Chat not configured (ROCKETCHAT_URL, ROCKETCHAT_TOKEN, ROCKETCHAT_USER_ID required)"}
+        url = f"{base_url}/api/v1/chat.postMessage"
+        headers = {
+            "X-Auth-Token": token,
+            "X-User-Id": user_id,
+            "Content-Type": "application/json",
+        }
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+            async with session.post(url, headers=headers, json={"roomId": chat_id, "text": message}) as resp:
+                if resp.status not in (200, 201):
+                    body = await resp.text()
+                    return _error(f"Rocket.Chat API error ({resp.status}): {body}")
+                data = await resp.json()
+        if not data.get("success"):
+            return _error(f"Rocket.Chat API returned success=false: {data.get('error') or data}")
+        msg = data.get("message") or {}
+        return {"success": True, "platform": "rocketchat", "chat_id": chat_id, "message_id": msg.get("_id")}
+    except Exception as e:
+        return _error(f"Rocket.Chat send failed: {e}")
 
 
 async def _send_matrix(token, extra, chat_id, message):

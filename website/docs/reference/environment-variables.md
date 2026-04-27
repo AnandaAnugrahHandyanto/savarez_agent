@@ -321,6 +321,15 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `MATTERMOST_REQUIRE_MENTION` | Require `@mention` in channels (default: `true`). Set to `false` to respond to all messages. |
 | `MATTERMOST_FREE_RESPONSE_CHANNELS` | Comma-separated channel IDs where bot responds without `@mention` |
 | `MATTERMOST_REPLY_MODE` | Reply style: `thread` (threaded replies) or `off` (flat messages, default) |
+| `ROCKETCHAT_URL` | Rocket.Chat server URL (e.g. `https://rc.example.com`) |
+| `ROCKETCHAT_TOKEN` | Personal Access Token for the bot user (generate with "Ignore Two Factor" checked) |
+| `ROCKETCHAT_USER_ID` | Bot user's ID (shown alongside the PAT at creation; NOT the username) |
+| `ROCKETCHAT_ALLOWED_USERS` | Comma-separated Rocket.Chat user IDs allowed to message the bot |
+| `ROCKETCHAT_HOME_CHANNEL` | Room ID for proactive message delivery (cron, notifications) |
+| `ROCKETCHAT_HOME_CHANNEL_NAME` | Display name for the home channel (default: `Home`) |
+| `ROCKETCHAT_REQUIRE_MENTION` | Require `@mention` in channels (default: `true`). Set to `false` to respond to all messages. |
+| `ROCKETCHAT_FREE_RESPONSE_CHANNELS` | Comma-separated room IDs where bot responds without `@mention` |
+| `ROCKETCHAT_REPLY_MODE` | Reply style: `thread` (threaded replies via `tmid`) or `off` (flat messages, default) |
 | `MATRIX_HOMESERVER` | Matrix homeserver URL (e.g. `https://matrix.org`) |
 | `MATRIX_ACCESS_TOKEN` | Matrix access token for bot authentication |
 | `MATRIX_USER_ID` | Matrix user ID (e.g. `@hermes:matrix.org`) — required for password login, optional with access token |
