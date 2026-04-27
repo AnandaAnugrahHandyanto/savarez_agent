@@ -689,32 +689,42 @@ class TestAdapterBehavior(unittest.TestCase):
             adapter._on_reaction_event("im.message.reaction.created_v1", data)
         run_threadsafe.assert_called_once()
 
-    @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
-    def test_group_message_requires_mentions_even_when_policy_open(self):
+    def test_group_message_accepted_without_mention_when_require_mention_false(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
 
-        adapter = FeishuAdapter(PlatformConfig())
-        message = SimpleNamespace(mentions=[])
+        adapter = FeishuAdapter(PlatformConfig(extra={"require_mention": False}))
+        adapter._group_policy = "allowlist"
+        adapter._allowed_group_users = {"ou_any"}
         sender_id = SimpleNamespace(open_id="ou_any", user_id=None)
-        self.assertFalse(adapter._should_accept_group_message(message, sender_id, ""))
 
-        message_with_mention = SimpleNamespace(mentions=[SimpleNamespace(key="@_user_1")])
-        self.assertFalse(adapter._should_accept_group_message(message_with_mention, sender_id, ""))
+        # No mentions at all — should be accepted when require_mention is False
+        message_no_mention = SimpleNamespace(mentions=[], content="{}")
+        self.assertTrue(adapter._should_accept_group_message(message_no_mention, sender_id, "oc_chat_1"))
 
-    @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
-    def test_group_message_with_other_user_mention_is_rejected_when_bot_identity_unknown(self):
+        # With @_all — should also be accepted
+        message_all = SimpleNamespace(mentions=[], content='{"@_all":1}')
+        self.assertTrue(adapter._should_accept_group_message(message_all, sender_id, "oc_chat_1"))
+
+    def test_group_message_accepted_in_free_response_chats(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
 
-        adapter = FeishuAdapter(PlatformConfig())
+        adapter = FeishuAdapter(PlatformConfig(extra={
+            "require_mention": True,
+            "free_response_chats": ["oc_free_chat_1", "oc_free_chat_2"]
+        }))
+        adapter._group_policy = "allowlist"
+        adapter._allowed_group_users = {"ou_any"}
         sender_id = SimpleNamespace(open_id="ou_any", user_id=None)
-        other_mention = SimpleNamespace(
-            name="Other User",
-            id=SimpleNamespace(open_id="ou_other", user_id="u_other"),
-        )
 
-        self.assertFalse(adapter._should_accept_group_message(SimpleNamespace(mentions=[other_mention]), sender_id, ""))
+        # Chat in free_response_chats — accepted without mention
+        message = SimpleNamespace(mentions=[], content="{}")
+        self.assertTrue(adapter._should_accept_group_message(message, sender_id, "oc_free_chat_1"))
+        self.assertTrue(adapter._should_accept_group_message(message, sender_id, "oc_free_chat_2"))
+
+        # Chat NOT in free_response_chats — rejected without mention
+        self.assertFalse(adapter._should_accept_group_message(message, sender_id, "oc_normal_chat"))
 
     @patch.dict(
         os.environ,
@@ -1004,13 +1014,14 @@ class TestAdapterBehavior(unittest.TestCase):
             )
         )
 
-    @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
     def test_group_message_matches_bot_open_id_when_configured(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._bot_open_id = "ou_bot"
+        adapter._group_policy = "allowlist"
+        adapter._allowed_group_users = {"ou_any"}
         sender_id = SimpleNamespace(open_id="ou_any", user_id=None)
 
         bot_mention = SimpleNamespace(
@@ -1025,7 +1036,6 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertTrue(adapter._should_accept_group_message(SimpleNamespace(mentions=[bot_mention]), sender_id, ""))
         self.assertFalse(adapter._should_accept_group_message(SimpleNamespace(mentions=[other_mention]), sender_id, ""))
 
-    @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
     def test_group_message_matches_bot_name_when_only_name_available(self):
         """Name fallback engages when either side lacks an open_id. When BOTH
         the mention and the bot carry open_ids, IDs are authoritative — a
@@ -1037,6 +1047,8 @@ class TestAdapterBehavior(unittest.TestCase):
         # Name fallback is the only available signal for any mention.
         adapter = FeishuAdapter(PlatformConfig())
         adapter._bot_name = "Hermes Bot"
+        adapter._group_policy = "allowlist"
+        adapter._allowed_group_users = {"ou_any"}
         sender_id = SimpleNamespace(open_id="ou_any", user_id=None)
 
         name_only_mention = SimpleNamespace(
