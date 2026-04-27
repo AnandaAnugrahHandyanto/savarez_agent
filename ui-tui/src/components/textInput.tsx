@@ -25,6 +25,7 @@ const DIM_OFF = `${ESC}[22m`
 const FWD_DEL_RE = new RegExp(`${ESC}\\[3(?:[~$^]|;)`)
 const PRINTABLE = /^[ -~\u00a0-\uffff]+$/
 const BRACKET_PASTE = new RegExp(`${ESC}?\\[20[01]~`, 'g')
+const MULTI_CLICK_MS = 500
 
 const invert = (s: string) => INV + s + INV_OFF
 const dim = (s: string) => DIM + s + DIM_OFF
@@ -311,6 +312,7 @@ export function TextInput({
   const localRenderTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lineWidthRef = useRef(stringWidth(value.includes('\n') ? value.slice(value.lastIndexOf('\n') + 1) : value))
   const mouseAnchorRef = useRef<null | number>(null)
+  const lastClickRef = useRef<{ at: number; offset: number }>({ at: 0, offset: -1 })
   const undo = useRef<{ cursor: number; value: string }[]>([])
   const redo = useRef<{ cursor: number; value: string }[]>([])
 
@@ -338,11 +340,14 @@ export function TextInput({
     active: focus && termFocus && !selected
   })
 
-  // Hide the hardware cursor during a selection: prevents auto-wrap into
-  // the row below when inverted text exactly fills the column width, and
-  // avoids parking a ghost block on the first selected cell.
+  // Hide the hardware cursor when a selection is active (prevents auto-wrap
+  // into the next row when inverted text exactly fills the column width)
+  // or when the terminal loses focus (suppresses the hollow-rect ghost
+  // most terminals draw at the parked cursor position).
+  const hideHardwareCursor = focus && !!stdout?.isTTY && (!!selected || !termFocus)
+
   useEffect(() => {
-    if (!focus || !selected || !stdout?.isTTY) {
+    if (!hideHardwareCursor || !stdout) {
       return
     }
 
@@ -351,7 +356,7 @@ export function TextInput({
     return () => {
       stdout.write('\x1b[?25h')
     }
-  }, [focus, selected, stdout])
+  }, [hideHardwareCursor, stdout])
 
   const nativeCursor = focus && termFocus && !selected && !!stdout?.isTTY
 
@@ -1008,7 +1013,21 @@ export function TextInput({
         }
 
         e.stopImmediatePropagation?.()
-        startMouseSelection(offsetAt(e))
+        const offset = offsetAt(e)
+        const now = Date.now()
+        const last = lastClickRef.current
+        const isMultiClick = now - last.at < MULTI_CLICK_MS && offset === last.offset
+
+        lastClickRef.current = { at: now, offset }
+
+        if (isMultiClick && vRef.current.length > 0) {
+          mouseAnchorRef.current = null
+          selectAll()
+
+          return
+        }
+
+        startMouseSelection(offset)
       }}
       onMouseDrag={(e: MouseEventLite) => {
         if (!focus || e.button !== 0 || mouseAnchorRef.current === null) {
