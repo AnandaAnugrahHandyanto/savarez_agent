@@ -7190,13 +7190,38 @@ class AIAgent:
     # ── Per-turn primary restoration ─────────────────────────────────────
 
     def check_provider_health(self) -> bool:
-        """Probe the primary provider to check if it's reachable.
+        """Probe the *primary* provider to check if it's reachable.
 
-        Makes a lightweight API call (models.list) to verify connectivity.
-        Returns True if the provider responds, False otherwise.
+        Builds a temporary OpenAI client from the primary-runtime snapshot so
+        the probe always targets the primary endpoint, not the currently-active
+        fallback client.  Skipped (returns True) when the primary uses
+        ``anthropic_messages`` mode because the Anthropic SDK does not expose a
+        ``models.list`` endpoint and ``self.client`` is ``None`` in that mode —
+        ``_restore_primary_runtime`` already handles the reconnect there.
+
+        Returns True if the provider responds (or if no probe is needed),
+        False if the primary endpoint is unreachable.
         """
+        rt = getattr(self, "_primary_runtime", None)
+        if not rt:
+            return True  # No snapshot yet — treat as healthy
+
+        primary_api_mode = rt.get("api_mode", "")
+        if primary_api_mode == "anthropic_messages":
+            # Anthropic SDK has no public models.list endpoint; skip the probe
+            # and let _restore_primary_runtime attempt the reconnect directly.
+            return True
+
         try:
-            self.client.models.list()
+            probe_client = self._create_openai_client(
+                dict(rt["client_kwargs"]),
+                reason="health_check_probe",
+                shared=False,
+            )
+            try:
+                probe_client.models.list()
+            finally:
+                self._close_openai_client(probe_client, reason="health_check_probe", shared=False)
             return True
         except Exception:
             return False
@@ -7204,11 +7229,12 @@ class AIAgent:
     def try_recover_primary(self) -> bool:
         """Attempt to recover the primary provider if currently on fallback.
 
-        Called periodically (e.g., from _restore_primary_runtime) to
-        check if the primary has recovered. If healthy, triggers a full
-        restore.
+        Called at the start of each turn (from ``run_conversation``) to check
+        whether the primary has recovered.  If the health probe succeeds,
+        triggers a full restore via ``_restore_primary_runtime``.
 
-        Returns True if primary was recovered, False otherwise.
+        Returns True if primary was recovered (or was already active),
+        False if the primary is still unreachable.
         """
         if not self._fallback_activated:
             return True  # Already on primary
