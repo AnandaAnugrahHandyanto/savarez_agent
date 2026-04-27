@@ -645,3 +645,33 @@ class TestResolveChannelPromptComposite:
         }
         assert resolve_channel_prompt(extra, "5", "-1001") == "Thread prompt"
 
+
+class TestTelegramCallerContractCompositeKey:
+    """Mirror the (channel_id, parent_id) arg shape that
+    telegram.py:_build_message_event passes to resolve_channel_prompt,
+    pinning resolver behaviour against today's caller contract. Does
+    not invoke _build_message_event itself; a regression in the call
+    site has to be caught by the telegram-suite tests."""
+
+    def _telegram_call(self, extra: dict, chat_id: str, thread_id: str | None) -> str | None:
+        # Replicate the exact arg shape telegram.py passes today, line for line.
+        return resolve_channel_prompt(
+            extra,
+            thread_id or chat_id,
+            chat_id if thread_id else None,
+        )
+
+    def test_resolves_composite_key(self):
+        extra = {
+            "channel_prompts": {
+                "-1003742888118:5": "AI Villa ops",
+                "-1003953149701:5": "Design ai-villa",
+            }
+        }
+        assert self._telegram_call(extra, "-1003742888118", "5") == "AI Villa ops"
+        assert self._telegram_call(extra, "-1003953149701", "5") == "Design ai-villa"
+
+    def test_falls_through_to_chat_key_when_no_thread(self):
+        # DM or non-forum group: thread_id is None; only the chat-level key applies.
+        extra = {"channel_prompts": {"-1003742888118": "Group prompt"}}
+        assert self._telegram_call(extra, "-1003742888118", None) == "Group prompt"
