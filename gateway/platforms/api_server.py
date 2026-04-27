@@ -563,8 +563,13 @@ except ImportError:
 class _RateLimiter:
     """Simple sliding-window rate limiter per API key.
 
-    When max_requests is 0, rate limiting is disabled (all requests allowed).
-    Thread-safe for use with aiohttp's executor threads.
+    When max_requests is 0 (or negative), rate limiting is disabled (all
+    requests allowed).  Thread-safe for use with aiohttp's executor threads.
+
+    Memory management: keys whose timestamp lists become empty after pruning
+    are evicted from the internal dict so that the memory footprint is bounded
+    by the number of keys that have made requests *within the current window*,
+    not the total number of keys ever seen.
     """
 
     def __init__(self, max_requests: int = 0, window_seconds: int = 60):
@@ -581,34 +586,38 @@ class _RateLimiter:
         if self._max <= 0:
             return True  # Rate limiting disabled
 
-        import time
         now = time.time()
         cutoff = now - self._window
 
         with self._lock:
-            # Remove expired entries
+            # Prune expired entries and evict empty buckets to bound memory use.
             if key in self._buckets:
-                self._buckets[key] = [t for t in self._buckets[key] if t > cutoff]
-            else:
-                self._buckets[key] = []
+                active = [t for t in self._buckets[key] if t > cutoff]
+                if active:
+                    self._buckets[key] = active
+                else:
+                    del self._buckets[key]
 
             # Check limit
-            if len(self._buckets[key]) >= self._max:
+            bucket = self._buckets.get(key)
+            if bucket is not None and len(bucket) >= self._max:
                 return False
 
             # Record this request
+            if key not in self._buckets:
+                self._buckets[key] = []
             self._buckets[key].append(now)
             return True
 
     def retry_after(self, key: str) -> int:
         """Return seconds until the oldest request in the window expires."""
-        if self._max <= 0 or key not in self._buckets:
+        if self._max <= 0:
             return 0
-        import time
         with self._lock:
-            if not self._buckets[key]:
+            bucket = self._buckets.get(key)
+            if not bucket:
                 return 0
-            oldest = min(self._buckets[key])
+            oldest = min(bucket)
             return max(1, int(oldest + self._window - time.time()))
 
 
@@ -736,7 +745,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 # Auth OK — check rate limit
                 if not self._rate_limiter.is_allowed(token):
                     return web.json_response(
-                        {"error": {"message": "Rate limit exceeded", "type": "rate_limit_error"}},
+                        _openai_error(
+                            "Rate limit exceeded",
+                            err_type="rate_limit_error",
+                            code="rate_limit_exceeded",
+                        ),
                         status=429,
                         headers={"Retry-After": str(self._rate_limiter.retry_after(token))},
                     )
