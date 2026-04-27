@@ -35,6 +35,22 @@ Think of MCP as an adapter layer:
 
 That last part matters. Good MCP usage is not just “connect everything.” It is “connect the right thing, with the smallest useful surface.”
 
+## Choose transport based on where Hermes runs
+
+If the MCP server will be used from a shared Hermes gateway, a bot, or another always-on deployment, prefer **HTTP/StreamableHTTP via `url:` first** when the server offers it.
+
+Use `command:` stdio first when:
+
+- Hermes CLI and the MCP server live on the same machine
+- the integration depends on local filesystem or local OS access
+- you are prototyping quickly before deciding whether the server belongs in a shared gateway rollout
+
+| Deployment shape | Best default | Why |
+|---|---|---|
+| Local CLI on your laptop | `command` / stdio | Lowest setup friction for machine-local tools |
+| Shared Hermes gateway | `url` / HTTP/StreamableHTTP | Better long-lived reliability, clearer auth boundary, easier reloads and operations |
+| Remote/shared service | `url` / HTTP/StreamableHTTP | Reusable across multiple Hermes processes without spawning local helper CLIs |
+
 ## Step 1: install MCP support
 
 If you installed Hermes with the standard install script, MCP support is already included (the installer runs `uv pip install -e ".[all]"`).
@@ -362,6 +378,22 @@ Do this after changing:
 - enabled flags
 - resources/prompts toggles
 - auth headers / env
+
+## Gateway vs CLI rollout checklist
+
+Use this checklist when moving an MCP integration from a local experiment to something users will hit through the Hermes gateway.
+
+- [ ] **Run `hermes mcp test <name>` first** to prove the server connects outside the gateway.
+- [ ] **Run one read-only CLI smoke prompt** so you know the tools actually load in a normal Hermes session.
+- [ ] **Switch to `url:` HTTP/StreamableHTTP** for gateway-facing use if the MCP server supports it.
+- [ ] **Start with `tools.include`** for anything shared, sensitive, or destructive.
+- [ ] **Move auth out of interactive local state** and into stable `headers`, server config, or managed secrets.
+- [ ] **Set `connect_timeout` and `timeout`** to values that make sense for a long-lived bot.
+- [ ] **Restart or reload the gateway, then run `/reload-mcp`** and read the summary before testing with users.
+- [ ] **Confirm `/reload-mcp` shows connected servers and tool counts**. If it says `No MCP servers connected.`, treat that as a gateway/runtime failure even if CLI worked.
+- [ ] **Treat `hermes tools list --platform ...` as config exposure, not a live connectivity check**.
+- [ ] **Test a read-only prompt from the gateway surface first** before enabling write actions.
+- [ ] **Only expose destructive tools intentionally** after the read-only path is stable.
 
 ## Troubleshooting by symptom
 

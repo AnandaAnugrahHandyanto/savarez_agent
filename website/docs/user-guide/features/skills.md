@@ -8,9 +8,13 @@ description: "On-demand knowledge documents — progressive disclosure, agent-ma
 
 Skills are on-demand knowledge documents the agent can load when needed. They follow a **progressive disclosure** pattern to minimize token usage and are compatible with the [agentskills.io](https://agentskills.io/specification) open standard.
 
-All skills live in **`~/.hermes/skills/`** — the primary directory and source of truth. On fresh install, bundled skills are copied from the repo. Hub-installed and agent-created skills also go here. The agent can modify or delete any skill.
+Every Hermes profile has a **local writable skills home** at **`~/.hermes/skills/`** (or `$HERMES_HOME/skills/`). On fresh install, bundled skills are copied there. Hub-installed and agent-created skills also go there by default.
 
-You can also point Hermes at **external skill directories** — additional folders scanned alongside the local one. See [External Skill Directories](#external-skill-directories) below.
+Hermes can also scan **external skill directories** alongside the local one — for example, repo-owned folders like `.claude/skills/` or a shared team skills repo. See [External Skill Directories](#external-skill-directories) below.
+
+:::tip Repo-centric teams
+If you keep shared agent workflows inside the repository, see [Repo-Centric Shared Setup](/docs/user-guide/repo-centric-setup). Hermes can keep its writable state under `~/.hermes/` while loading git-tracked skills from `.claude/skills/`.
+:::
 
 See also:
 
@@ -168,7 +172,7 @@ See [Skill Settings](/docs/user-guide/configuration#skill-settings) and [Creatin
 ## Skill Directory Structure
 
 ```text
-~/.hermes/skills/                  # Single source of truth
+~/.hermes/skills/                  # Local read-write skills home
 ├── mlops/                         # Category directory
 │   ├── axolotl/
 │   │   ├── SKILL.md               # Main instructions (required)
@@ -199,16 +203,21 @@ Add `external_dirs` under the `skills` section in `~/.hermes/config.yaml`:
 skills:
   external_dirs:
     - ~/.agents/skills
-    - /home/shared/team-skills
+    - ~/src/acme-platform/.claude/skills
+    - /mnt/c/Users/alice/src/acme-platform/.claude/skills  # WSL path to a Windows checkout
     - ${SKILLS_REPO}/skills
 ```
 
 Paths support `~` expansion and `${VAR}` environment variable substitution.
 
+:::info
+If Hermes is running inside WSL, use Linux mount paths like `/mnt/c/Users/<you>/...` in `config.yaml`, not raw Windows paths like `C:\Users\<you>\...`.
+:::
+
 ### How it works
 
 - **Read-only**: External dirs are only scanned for skill discovery. When the agent creates or edits a skill, it always writes to `~/.hermes/skills/`.
-- **Local precedence**: If the same skill name exists in both the local dir and an external dir, the local version wins.
+- **Precedence**: If the same skill name exists in both the local dir and an external dir, the local version wins. If multiple external dirs contain the same skill name, Hermes resolves them in the order listed in `skills.external_dirs`.
 - **Full integration**: External skills appear in the system prompt index, `skills_list`, `skill_view`, and as `/skill-name` slash commands — no different from local skills.
 - **Non-existent paths are silently skipped**: If a configured directory doesn't exist, Hermes ignores it without errors. Useful for optional shared directories that may not be present on every machine.
 

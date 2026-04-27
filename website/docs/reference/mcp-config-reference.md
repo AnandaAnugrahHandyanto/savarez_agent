@@ -22,7 +22,7 @@ mcp_servers:
     env: {}
 
     # OR
-    url: "..."          # HTTP servers
+    url: "..."          # HTTP/StreamableHTTP servers (preferred for gateway/shared use)
     headers: {}
 
     enabled: true
@@ -42,7 +42,7 @@ mcp_servers:
 | `command` | string | stdio | Executable to launch |
 | `args` | list | stdio | Arguments for the subprocess |
 | `env` | mapping | stdio | Environment passed to the subprocess |
-| `url` | string | HTTP | Remote MCP endpoint |
+| `url` | string | HTTP | Remote MCP endpoint (HTTP/StreamableHTTP; preferred for gateway-facing deployments) |
 | `headers` | mapping | HTTP | Headers for remote server requests |
 | `enabled` | bool | both | Skip the server entirely when false |
 | `timeout` | number | both | Tool call timeout |
@@ -50,6 +50,14 @@ mcp_servers:
 | `tools` | mapping | both | Filtering and utility-tool policy |
 | `auth` | string | HTTP | Authentication method. Set to `oauth` to enable OAuth 2.1 with PKCE |
 | `sampling` | mapping | both | Server-initiated LLM request policy (see MCP guide) |
+
+## Transport choice
+
+- **`command` + `args` (stdio)**: best for local CLI-only integrations, especially when the server needs direct local machine access.
+- **`url` (HTTP/StreamableHTTP)**: preferred for gateway-facing, shared, or always-on deployments.
+- **If both `command` and `url` are present**, Hermes prefers `url` and treats the server as HTTP/StreamableHTTP.
+
+Practical rule: test locally however you like, but if the MCP server will back a shared Hermes gateway and it offers HTTP/StreamableHTTP, move to `url:` before rollout.
 
 ## `tools` policy keys
 
@@ -196,6 +204,14 @@ After changing MCP config, reload servers with:
 ```text
 /reload-mcp
 ```
+
+## Compact rollout checklist
+
+- Test the server in a local CLI session first.
+- Prefer `url:` for shared gateway deployments when the server supports HTTP/StreamableHTTP.
+- Start with `tools.include` for shared or destructive systems.
+- Verify auth, `connect_timeout`, and `timeout` before exposing it to users.
+- Use `/reload-mcp` and confirm the gateway summary after config changes.
 
 ## Tool naming
 

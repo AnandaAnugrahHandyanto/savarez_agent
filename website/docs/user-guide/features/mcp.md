@@ -13,7 +13,7 @@ If you have ever wanted Hermes to use a tool that already exists somewhere else,
 ## What MCP gives you
 
 - Access to external tool ecosystems without writing a native Hermes tool first
-- Local stdio servers and remote HTTP MCP servers in the same config
+- Local stdio servers and remote HTTP/StreamableHTTP MCP servers in the same config
 - Automatic tool discovery and registration at startup
 - Utility wrappers for MCP resources and prompts when supported by the server
 - Per-server filtering so you can expose only the MCP tools you actually want Hermes to see
@@ -72,9 +72,9 @@ Use stdio servers when:
 - you want low-latency access to local resources
 - you are following MCP server docs that show `command`, `args`, and `env`
 
-### HTTP servers
+### HTTP / StreamableHTTP servers
 
-HTTP MCP servers are remote endpoints Hermes connects to directly.
+HTTP/StreamableHTTP MCP servers are remote endpoints Hermes connects to directly.
 
 ```yaml
 mcp_servers:
@@ -89,6 +89,18 @@ Use HTTP servers when:
 - your organization exposes internal MCP endpoints
 - you do not want Hermes spawning a local subprocess for that integration
 
+:::tip Gateway-facing recommendation
+If the MCP server will back an always-on Hermes gateway, a shared bot, or another multi-user deployment, prefer **`url:` HTTP/StreamableHTTP transport first** when the server offers it. Use stdio first mainly for local CLI workflows and machine-local resources.
+:::
+
+## Transport choice: CLI vs gateway
+
+| Where Hermes will use the MCP server | Prefer | Why |
+|---|---|---|
+| Personal CLI session on the same machine | `command` / stdio or local HTTP | Fastest to prototype, easiest for local files and local runtimes |
+| Shared gateway or always-on bot | `url` / HTTP/StreamableHTTP | Cleaner separation, easier auth management, easier reloads, fewer local runtime dependencies |
+| Team service or remote worker | `url` / HTTP/StreamableHTTP | Better operational boundary and easier reuse across multiple Hermes instances |
+
 ## Basic configuration reference
 
 Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
@@ -100,7 +112,7 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 | `command` | string | Executable for a stdio MCP server |
 | `args` | list | Arguments for the stdio server |
 | `env` | mapping | Environment variables passed to the stdio server |
-| `url` | string | HTTP MCP endpoint |
+| `url` | string | HTTP/StreamableHTTP MCP endpoint |
 | `headers` | mapping | HTTP headers for remote servers |
 | `timeout` | number | Tool call timeout |
 | `connect_timeout` | number | Initial connection timeout |
