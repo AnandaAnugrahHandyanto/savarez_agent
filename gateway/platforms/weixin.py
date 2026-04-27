@@ -90,7 +90,7 @@ RETRY_DELAY_SECONDS = 2
 BACKOFF_DELAY_SECONDS = 30
 SESSION_EXPIRED_ERRCODE = -14
 # iLink error codes that retrying cannot resolve (e.g. message payload too large
-# or malformed request).  Returning -2 for these skips the backoff loop.
+# or malformed request). Receiving ret/errcode -2 fails fast without retrying.
 NON_RETRYABLE_ERRCODES = frozenset({-2})
 MESSAGE_DEDUP_TTL_SECONDS = 300
 

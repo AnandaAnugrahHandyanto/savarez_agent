@@ -415,7 +415,7 @@ class TestWeixinNonRetryableErrors:
             calls["n"] += 1
             if calls["n"] == 1:
                 raise RuntimeError("transient network error")
-            return None
+            return {"ret": 0}
 
         send_message_mock.side_effect = fail_then_succeed
         adapter = self._connected_adapter()
