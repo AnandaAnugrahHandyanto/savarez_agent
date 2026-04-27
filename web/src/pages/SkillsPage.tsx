@@ -7,15 +7,25 @@ import {
   ChevronRight,
   Filter,
   X,
+  History,
+  FileText,
+  CheckCircle2,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { SkillInfo, ToolsetInfo } from "@/lib/api";
+import type { SkillChangeDetail, SkillChangeEvent, SkillInfo, ToolsetInfo } from "@/lib/api";
+import {
+  formatSkillChangeTime,
+  latestChangeBySkill,
+  reasonKindLabel,
+  reviewStatusLabel,
+} from "@/lib/skillChanges";
 import { useToast } from "@/hooks/useToast";
 import { Toast } from "@/components/Toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
 
 /* ------------------------------------------------------------------ */
@@ -64,6 +74,10 @@ function prettyCategory(raw: string | null | undefined, generalLabel: string): s
 export default function SkillsPage() {
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [toolsets, setToolsets] = useState<ToolsetInfo[]>([]);
+  const [skillChanges, setSkillChanges] = useState<SkillChangeEvent[]>([]);
+  const [selectedChange, setSelectedChange] = useState<SkillChangeDetail | null>(null);
+  const [loadingChangeDetail, setLoadingChangeDetail] = useState(false);
+  const [reviewingChange, setReviewingChange] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
@@ -74,10 +88,11 @@ export default function SkillsPage() {
   const { t } = useI18n();
 
   useEffect(() => {
-    Promise.all([api.getSkills(), api.getToolsets()])
-      .then(([s, tsets]) => {
+    Promise.all([api.getSkills(), api.getToolsets(), api.getSkillChanges({ limit: 20 })])
+      .then(([s, tsets, changes]) => {
         setSkills(s);
         setToolsets(tsets);
+        setSkillChanges(changes);
       })
       .catch(() => showToast(t.common.loading, "error"))
       .finally(() => setLoading(false));
@@ -105,6 +120,36 @@ export default function SkillsPage() {
         next.delete(skill.name);
         return next;
       });
+    }
+  };
+
+  const handleSelectChange = async (change: SkillChangeEvent) => {
+    setLoadingChangeDetail(true);
+    try {
+      const detail = await api.getSkillChange(change.event_id);
+      setSelectedChange(detail);
+    } catch {
+      showToast(`Failed to load change for ${change.skill}`, "error");
+    } finally {
+      setLoadingChangeDetail(false);
+    }
+  };
+
+  const handleMarkReviewed = async (eventId: string) => {
+    setReviewingChange(eventId);
+    try {
+      const updated = await api.reviewSkillChange(eventId, "reviewed");
+      setSkillChanges((prev) =>
+        prev.map((event) => (event.event_id === eventId ? { ...event, ...updated } : event))
+      );
+      setSelectedChange((prev) =>
+        prev?.event_id === eventId ? { ...prev, ...updated, diff_text: prev.diff_text } : prev
+      );
+      showToast("Skill change marked reviewed", "success");
+    } catch {
+      showToast("Failed to mark skill change reviewed", "error");
+    } finally {
+      setReviewingChange(null);
     }
   };
 
@@ -162,6 +207,8 @@ export default function SkillsPage() {
   }, [skills]);
 
   const enabledCount = skills.filter((s) => s.enabled).length;
+  const latestChanges = useMemo(() => latestChangeBySkill(skillChanges), [skillChanges]);
+  const unreviewedChangeCount = skillChanges.filter((event) => event.review_status === "unreviewed").length;
 
   const filteredToolsets = useMemo(() => {
     return toolsets.filter(
@@ -274,6 +321,124 @@ export default function SkillsPage() {
         </div>
       )}
 
+      {/* Skill change ledger */}
+      <Card>
+        <CardHeader className="py-3 px-4">
+          <div className="flex items-center justify-between gap-3">
+            <CardTitle className="text-sm font-medium flex items-center gap-2">
+              <History className="h-4 w-4 text-muted-foreground" />
+              Skill change history
+            </CardTitle>
+            <Badge variant={unreviewedChangeCount > 0 ? "outline" : "secondary"} className="text-[10px]">
+              {unreviewedChangeCount} unreviewed
+            </Badge>
+          </div>
+        </CardHeader>
+        <CardContent className="px-4 pb-4 pt-0">
+          {skillChanges.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              No skill changes recorded yet. New ledger events will appear here with reasons and diffs.
+            </p>
+          ) : (
+            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.9fr)]">
+              <div className="grid gap-2">
+                {skillChanges.slice(0, 8).map((change) => (
+                  <button
+                    key={change.event_id}
+                    type="button"
+                    className={`text-left rounded-md border px-3 py-2 transition-colors hover:bg-muted/40 ${
+                      selectedChange?.event_id === change.event_id ? "border-primary/70 bg-primary/5" : "border-border"
+                    }`}
+                    onClick={() => handleSelectChange(change)}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono-ui text-xs text-foreground truncate">{change.skill}</span>
+                          <Badge variant="secondary" className="text-[10px] font-normal">
+                            {change.action}
+                          </Badge>
+                        </div>
+                        <p className="mt-1 text-xs text-muted-foreground line-clamp-2">
+                          {change.reason || reasonKindLabel(change.reason_kind)}
+                        </p>
+                      </div>
+                      <div className="shrink-0 text-right">
+                        <Badge
+                          variant={change.review_status === "unreviewed" ? "outline" : "secondary"}
+                          className="text-[10px]"
+                        >
+                          {reviewStatusLabel(change.review_status)}
+                        </Badge>
+                        <p className="mt-1 text-[10px] text-muted-foreground">
+                          {formatSkillChangeTime(change.timestamp)}
+                        </p>
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+
+              <div className="rounded-md border border-border bg-muted/20 p-3 min-h-[160px]">
+                {loadingChangeDetail ? (
+                  <div className="flex items-center justify-center py-10">
+                    <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                  </div>
+                ) : selectedChange ? (
+                  <div className="flex flex-col gap-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h3 className="font-mono-ui text-sm">{selectedChange.skill}</h3>
+                        <p className="text-xs text-muted-foreground">
+                          {selectedChange.action} · {reasonKindLabel(selectedChange.reason_kind)}
+                        </p>
+                      </div>
+                      {selectedChange.review_status !== "reviewed" && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={reviewingChange === selectedChange.event_id}
+                          onClick={() => handleMarkReviewed(selectedChange.event_id)}
+                        >
+                          <CheckCircle2 className="h-3.5 w-3.5" />
+                          Mark reviewed
+                        </Button>
+                      )}
+                    </div>
+
+                    <div className="text-xs text-muted-foreground">
+                      <p>{selectedChange.reason || reasonKindLabel(selectedChange.reason_kind)}</p>
+                      <p className="mt-1">
+                        Source: {selectedChange.source} · Actor: {selectedChange.actor}
+                      </p>
+                    </div>
+
+                    {selectedChange.changed_files.length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {selectedChange.changed_files.map((file) => (
+                          <Badge key={file} variant="secondary" className="text-[10px] font-mono">
+                            <FileText className="h-3 w-3" />
+                            {file}
+                          </Badge>
+                        ))}
+                      </div>
+                    )}
+
+                    <pre className="max-h-72 overflow-auto rounded bg-background/80 p-3 text-[11px] leading-relaxed text-muted-foreground">
+                      {selectedChange.diff_text || "No diff artifact recorded for this event."}
+                    </pre>
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    Select a change to inspect provenance, reason, files, and raw diff.
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
       {/* ═══════════════ Skills by Category ═══════════════ */}
       <section className="flex flex-col gap-3">
 
@@ -350,6 +515,14 @@ export default function SkillsPage() {
                               >
                                 {skill.name}
                               </span>
+                              {latestChanges.get(skill.name) && (
+                                <Badge
+                                  variant={latestChanges.get(skill.name)?.review_status === "unreviewed" ? "outline" : "secondary"}
+                                  className="text-[10px]"
+                                >
+                                  changed
+                                </Badge>
+                              )}
                             </div>
                             <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2">
                               {skill.description || t.skills.noDescription}

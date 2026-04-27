@@ -101,6 +101,22 @@ export const api = {
 
   // Skills & Toolsets
   getSkills: () => fetchJSON<SkillInfo[]>("/api/skills"),
+  getSkillChanges: (params: { skill?: string; limit?: number; unreviewed?: boolean } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.skill) qs.set("skill", params.skill);
+    if (params.limit !== undefined) qs.set("limit", String(params.limit));
+    if (params.unreviewed !== undefined) qs.set("unreviewed", String(params.unreviewed));
+    const query = qs.toString();
+    return fetchJSON<SkillChangeEvent[]>(`/api/skills/changes${query ? `?${query}` : ""}`);
+  },
+  getSkillChange: (eventId: string) =>
+    fetchJSON<SkillChangeDetail>(`/api/skills/changes/${encodeURIComponent(eventId)}`),
+  reviewSkillChange: (eventId: string, status = "reviewed", note?: string) =>
+    fetchJSON<SkillChangeEvent>(`/api/skills/changes/${encodeURIComponent(eventId)}/review`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status, note }),
+    }),
   toggleSkill: (name: string, enabled: boolean) =>
     fetchJSON<{ ok: boolean }>("/api/skills/toggle", {
       method: "PUT",
@@ -302,6 +318,31 @@ export interface SkillInfo {
   description: string;
   category: string;
   enabled: boolean;
+}
+
+export interface SkillChangeEvent {
+  event_id: string;
+  timestamp: string;
+  skill: string;
+  category: string | null;
+  action: string;
+  actor: string;
+  source: string;
+  session_id: string | null;
+  reason: string | null;
+  reason_kind: string;
+  before_hash: string | null;
+  after_hash: string | null;
+  changed_files: string[];
+  diff_path: string | null;
+  metadata: Record<string, unknown>;
+  review_status: "unreviewed" | "reviewed" | "needs_followup" | string;
+  reviewed_at: string | null;
+  review_note: string | null;
+}
+
+export interface SkillChangeDetail extends SkillChangeEvent {
+  diff_text?: string;
 }
 
 export interface ToolsetInfo {
