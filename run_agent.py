@@ -2628,15 +2628,11 @@ class AIAgent:
         # If same tool called N times consecutively, ask compression model
         consecutive = self._consecutive_tool_calls.get(tool_name, 0)
         if consecutive >= self._consecutive_threshold:
-            # Ask compression model: "Is the agent looping?"
-            is_looping = self._check_tool_loop(tool_name, result)
-            if is_looping:
-                return json.dumps({
-                    "error": f"[Circuit breaker] Tool '{tool_name}' called {consecutive} times consecutively. "
-                             f"The compression model judged this as repetitive/looping behavior. "
-                             f"STOP and try a completely different approach."
-                }, ensure_ascii=False)
-            # Compression model says "not looping" — reset counter and allow
+            # Ask compression model to judge; if unavailable, let main model self-reflect
+            loop_msg = self._check_tool_loop(tool_name, result)
+            if loop_msg is not None:
+                return loop_msg
+            # Not looping — reset counter and allow
             self._consecutive_tool_calls[tool_name] = 0
 
         # ── Layer 2: Failure check ──
@@ -2694,15 +2690,18 @@ class AIAgent:
 
         return None
 
-    def _check_tool_loop(self, tool_name: str, last_result: str) -> bool:
-        """Ask compression model to judge if the agent is looping/repeating.
+    def _check_tool_loop(self, tool_name: str, last_result: str) -> str | None:
+        """Check if the agent is looping by asking an auxiliary model.
 
-        Returns True if the compression model thinks the agent is looping.
-        Returns False if the calls seem purposeful.
+        Two strategies depending on configuration:
+        1. If compression model is available: ask it to judge (fast, cheap).
+        2. If not: return a special message that tells the main model to
+           self-reflect — letting it judge its own behavior.
 
-        This replaces the old "hard break on N consecutive calls" with
-        a language-model-level judgment — closer to how a human would
-        notice repetitive behavior.
+        Returns:
+        - None: calls are OK, reset counter and allow continuation.
+        - str: error message to return to the LLM (either hard break or
+           self-reflection prompt).
         """
         try:
             from agent.auxiliary_client import call_llm
@@ -2745,17 +2744,36 @@ class AIAgent:
                     "Loop detected: %s (%d consecutive calls, compression model confirmed)",
                     tool_name, consecutive,
                 )
+                return (
+                    f"[Circuit breaker] Tool '{tool_name}' called {consecutive} times "
+                    f"consecutively. The compression model judged this as repetitive/looping "
+                    f"behavior. STOP and try a completely different approach."
+                )
             else:
                 logger.debug(
                     "Not looping: %s (%d consecutive calls, compression model allowed)",
                     tool_name, consecutive,
                 )
-
-            return is_looping
+                return None
         except Exception as e:
-            # If compression model fails, be conservative — don't break
-            logger.debug("Loop check failed: %s", e)
-            return False
+            # Compression model not available or failed — fall back to
+            # letting the main model self-reflect
+            logger.debug(
+                "Loop check: compression model unavailable (%s), "
+                "using self-reflection fallback", e
+            )
+
+        # Fallback: no compression model — let the main model judge itself
+        consecutive = self._consecutive_tool_calls.get(tool_name, 0)
+        result_preview = last_result[:500] if last_result else "(empty)"
+        return (
+            f"[Tool called {consecutive} times consecutively] "
+            f"Tool '{tool_name}' has been called {consecutive} times in a row. "
+            f"Last result: {result_preview}\n\n"
+            f"Please pause and assess: are you making progress, or are you stuck in a loop? "
+            f"If the repeated calls are not producing useful results, "
+            f"try a completely different approach."
+        )
 
     def _get_tool_suggestion(self, tool_name: str, last_result: str) -> str | None:
         """Generate a suggestion when a tool keeps failing.
