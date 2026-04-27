@@ -248,6 +248,153 @@ _MAX_RECONNECT_RETRIES = 5
 _MAX_INITIAL_CONNECT_RETRIES = 3 # retries for the very first connection attempt
 _MAX_BACKOFF_SECONDS = 60
 
+_KNOWN_MCP_RUNTIME_PROFILES = {
+    "claude-context": {
+        "index_codebase": {
+            "runtime_dependencies": ["filesystem", "mcp_server", "vector_store"],
+            "execution_tags": ["filesystem", "network", "side_effect", "indexing_workflow"],
+        },
+        "search_code": {
+            "runtime_dependencies": ["filesystem", "mcp_server", "vector_store"],
+            "execution_tags": ["filesystem", "network", "indexing_workflow"],
+        },
+        "get_indexing_status": {
+            "runtime_dependencies": ["filesystem", "mcp_server"],
+            "execution_tags": ["filesystem", "indexing_workflow"],
+        },
+        "clear_index": {
+            "runtime_dependencies": ["filesystem", "mcp_server", "vector_store"],
+            "execution_tags": ["filesystem", "network", "side_effect", "destructive", "indexing_workflow"],
+        },
+    },
+    "scrapling": {
+        "get": {
+            "runtime_dependencies": ["mcp_server", "network"],
+            "execution_tags": ["network", "scraping"],
+        },
+        "fetch": {
+            "runtime_dependencies": ["mcp_server", "network", "browser_session"],
+            "execution_tags": ["network", "browser", "scraping", "side_effect"],
+        },
+        "stealthy_fetch": {
+            "runtime_dependencies": ["mcp_server", "network", "browser_session"],
+            "execution_tags": ["network", "browser", "scraping", "side_effect"],
+        },
+        "open_session": {
+            "runtime_dependencies": ["mcp_server", "browser_session"],
+            "execution_tags": ["browser", "scraping", "side_effect"],
+        },
+        "list_sessions": {
+            "runtime_dependencies": ["mcp_server", "browser_session"],
+            "execution_tags": ["browser", "scraping"],
+        },
+        "close_session": {
+            "runtime_dependencies": ["mcp_server", "browser_session"],
+            "execution_tags": ["browser", "scraping", "side_effect"],
+        },
+        "screenshot": {
+            "runtime_dependencies": ["mcp_server", "browser_session"],
+            "execution_tags": ["browser", "scraping"],
+        },
+    },
+}
+
+
+def _get_known_mcp_runtime_metadata(server_name: str, tool_name: str) -> dict:
+    """Return Hermes-side runtime metadata for known MCP server/tool pairs."""
+    server_profile = _KNOWN_MCP_RUNTIME_PROFILES.get(server_name, {})
+    return dict(server_profile.get(tool_name, {}))
+
+
+def _normalize_known_mcp_success_payload(server_name: str, tool_name: str, payload: dict, args: dict | None = None) -> dict:
+    """Return a normalized success payload for known MCP integrations.
+
+    Keeps the original MCP result intact and adds Hermes-side structured helpers
+    when a server/tool pair has a stable higher-level result shape.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    if payload.get("error") is not None:
+        return payload
+    args = args or {}
+
+    if server_name == "claude-context" and tool_name == "get_indexing_status":
+        structured = payload.get("structuredContent")
+        if isinstance(structured, dict):
+            state = str(structured.get("status") or structured.get("state") or "unknown").strip() or "unknown"
+            retrieval_status = "unknown"
+            if state == "indexing":
+                retrieval_status = "partial"
+            elif state == "indexed":
+                retrieval_status = "complete"
+            normalized = {
+                "codebase_path": args.get("path") or structured.get("path"),
+                "workflow": "index/status/search/clear",
+                "identity_scope": "absolute_path",
+                "state": state,
+                "retrieval_status": retrieval_status,
+            }
+            new_payload = dict(payload)
+            new_payload["repo_context_result"] = normalized
+            return new_payload
+
+    if server_name == "scrapling" and tool_name in {"get", "fetch", "stealthy_fetch"}:
+        structured = payload.get("structuredContent")
+        if isinstance(structured, dict):
+            content = structured.get("content")
+            joined = "\n\n".join(str(item) for item in content) if isinstance(content, list) else str(payload.get("result", "") or "")
+            caveats: list[str] = []
+            if args.get("css_selector"):
+                caveats.append("selector-targeted extraction")
+            if args.get("main_content_only"):
+                caveats.append("main-content-only extraction")
+            if tool_name == "stealthy_fetch":
+                caveats.append("stealth route used")
+            normalized = {
+                "source_url": structured.get("url") or args.get("url"),
+                "route_used": tool_name,
+                "title": None,
+                "content_text": joined,
+                "content_markdown": joined,
+                "selector_used": args.get("css_selector"),
+                "session_id": args.get("session_id"),
+                "screenshot_path": None,
+                "is_partial": bool(args.get("css_selector") or args.get("main_content_only")),
+                "caveats": caveats,
+            }
+            new_payload = dict(payload)
+            new_payload["scrape_result"] = normalized
+            return new_payload
+
+    if server_name == "scrapling" and tool_name in {"open_session", "close_session"}:
+        structured = payload.get("structuredContent")
+        if isinstance(structured, dict):
+            session_id = structured.get("session_id") or args.get("session_id")
+            normalized = {
+                "action": tool_name,
+                "session_id": session_id,
+                "source_url": structured.get("url") or args.get("url"),
+                "is_active": tool_name == "open_session",
+            }
+            new_payload = dict(payload)
+            new_payload["session_result"] = normalized
+            return new_payload
+
+    if server_name == "scrapling" and tool_name == "screenshot":
+        structured = payload.get("structuredContent")
+        if isinstance(structured, dict):
+            screenshot_path = structured.get("path") or structured.get("screenshot_path") or payload.get("result")
+            normalized = {
+                "session_id": args.get("session_id") or structured.get("session_id"),
+                "source_url": structured.get("url") or args.get("url"),
+                "screenshot_path": screenshot_path,
+            }
+            new_payload = dict(payload)
+            new_payload["screenshot_result"] = normalized
+            return new_payload
+
+    return payload
+
 # Environment variables that are safe to pass to stdio subprocesses
 _SAFE_ENV_KEYS = frozenset({
     "PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "SHELL", "TMPDIR",
@@ -1981,12 +2128,20 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             structured = getattr(result, "structuredContent", None)
             if structured is not None:
                 if text_result:
-                    return json.dumps({
+                    payload = {
                         "result": text_result,
                         "structuredContent": structured,
-                    }, ensure_ascii=False)
-                return json.dumps({"result": structured}, ensure_ascii=False)
-            return json.dumps({"result": text_result}, ensure_ascii=False)
+                    }
+                else:
+                    payload = {
+                        "result": structured,
+                        "structuredContent": structured,
+                    }
+                payload = _normalize_known_mcp_success_payload(server_name, tool_name, payload, args)
+                return json.dumps(payload, ensure_ascii=False)
+            payload = {"result": text_result}
+            payload = _normalize_known_mcp_success_payload(server_name, tool_name, payload, args)
+            return json.dumps(payload, ensure_ascii=False)
 
         def _call_once():
             return _run_on_mcp_loop(_call(), timeout=tool_timeout)
@@ -2619,6 +2774,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
 
         schema = _convert_mcp_schema(name, mcp_tool)
         tool_name_prefixed = schema["name"]
+        runtime_metadata = _get_known_mcp_runtime_metadata(name, mcp_tool.name)
 
         # Guard against collisions with built-in (non-MCP) tools.
         existing_toolset = registry.get_toolset_for_tool(tool_name_prefixed)
@@ -2638,6 +2794,8 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             check_fn=_make_check_fn(name),
             is_async=False,
             description=schema["description"],
+            runtime_dependencies=runtime_metadata.get("runtime_dependencies"),
+            execution_tags=runtime_metadata.get("execution_tags"),
         )
         registered_names.append(tool_name_prefixed)
 

@@ -1,17 +1,60 @@
 from types import SimpleNamespace
+from unittest.mock import patch
 
-from hermes_cli.status import show_status
+from hermes_cli.status import _health_reason, _overall_health_grade, show_status
+
+
+def test_overall_health_grade_levels():
+    assert _overall_health_grade(inference_ready=True, inference_blocked=False, api_key_count=0, platform_count=1, active_jobs=0) == "healthy"
+    assert _overall_health_grade(inference_ready=False, inference_blocked=True, api_key_count=0, platform_count=0, active_jobs=0) == "blocked"
+    assert _overall_health_grade(inference_ready=True, inference_blocked=False, api_key_count=0, platform_count=0, active_jobs=0) == "degraded"
+    assert _overall_health_grade(inference_ready=False, inference_blocked=False, api_key_count=0, platform_count=0, active_jobs=0) == "needs_setup"
+
+
+def test_health_reason_levels():
+    assert _health_reason(grade="healthy", inference_ready=True, inference_blocked=False, api_key_count=0, platform_count=1, active_jobs=1) == "inference OK, messaging configured, and automation running"
+    assert _health_reason(grade="blocked", inference_ready=False, inference_blocked=True, api_key_count=0, platform_count=0, active_jobs=0) == "configured inference path exists, but auth/runtime access is unavailable"
 
 
 def test_show_status_includes_tavily_key(monkeypatch, capsys, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setenv("TAVILY_API_KEY", "tvly-1234567890abcdef")
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-1...cdef")
 
     show_status(SimpleNamespace(all=False, deep=False))
 
     output = capsys.readouterr().out
+    assert "Quick Summary" in output
+    assert "Health:" in output
+    assert "Reason:" in output
+    assert "Degraded" in output
+    assert "API Access:" in output
     assert "Tavily" in output
     assert "tvly...cdef" in output
+
+
+def test_show_status_surfaces_repo_context_capability(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    with patch(
+        "hermes_cli.status._get_repo_context_capability_summary",
+        return_value=[
+            {
+                "name": "mcp_claude_context_index_codebase",
+                "group": "mcp-claude-context",
+                "readiness_status": "ready",
+                "identity_scope": "absolute_path",
+                "workflow": "index/status/search/clear",
+                "result_mode": "partial_or_complete",
+            }
+        ],
+    ):
+        show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert "Repo Context" in output
+    assert "mcp_claude_context_index_codebase" in output
+    assert "absolute_path" in output
+    assert "index/status/search/clear" in output
 
 
 def test_show_status_termux_gateway_section_skips_systemctl(monkeypatch, capsys, tmp_path):

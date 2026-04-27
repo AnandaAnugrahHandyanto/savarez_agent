@@ -70,6 +70,7 @@ else:
 from model_tools import (
     get_tool_definitions,
     get_toolset_for_tool,
+    get_tool_runtime_metadata,
     handle_function_call,
     check_toolset_requirements,
 )
@@ -86,6 +87,8 @@ from agent.error_classifier import classify_api_error, FailoverReason
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
+    EXECUTION_BOUNDARY_GUIDANCE, CLAUDE_CONTEXT_WORKFLOW_GUIDANCE,
+    SCRAPLING_WORKFLOW_GUIDANCE, build_mcp_workflow_guidance,
     build_nous_subscription_prompt,
 )
 from agent.model_metadata import (
@@ -279,6 +282,84 @@ _PATH_SCOPED_TOOLS = frozenset({"read_file", "write_file", "patch"})
 
 # Maximum number of concurrent worker threads for parallel tool execution.
 _MAX_TOOL_WORKERS = 8
+_EXECUTION_SIDE_EFFECT_TOOLS = frozenset({
+    "terminal",
+    "write_file",
+    "patch",
+    "browser_navigate",
+    "browser_click",
+    "browser_type",
+    "browser_press",
+    "send_message",
+    "cronjob",
+})
+
+
+def _tool_has_execution_tag(tool_name: str, tag: str) -> bool:
+    """Return True when a tool advertises *tag* in its runtime metadata.
+
+    Falls back to False when metadata is absent or malformed; callers can still
+    use the legacy hard-coded side-effect set as a compatibility safety net.
+    """
+    try:
+        metadata = get_tool_runtime_metadata(tool_name)
+    except Exception:
+        return False
+    tags = metadata.get("execution_tags") or []
+    return isinstance(tags, list) and tag in tags
+
+
+def _collect_execution_tags_for_tools(tool_names: List[str]) -> List[str]:
+    """Return stable execution tags aggregated across the given tools."""
+    ordered: List[str] = []
+    seen: set[str] = set()
+    for tool_name in tool_names or []:
+        try:
+            metadata = get_tool_runtime_metadata(tool_name)
+        except Exception:
+            metadata = {}
+        for tag in metadata.get("execution_tags") or []:
+            clean = str(tag or "").strip()
+            if not clean or clean in seen:
+                continue
+            ordered.append(clean)
+            seen.add(clean)
+    return ordered
+
+
+def _build_execution_checkpoint(stage: str, tool_names: List[str]) -> str:
+    """Build a concise review/checkpoint instruction from execution tags.
+
+    This is a first execution-policy landing: tool metadata affects the
+    checkpoint guidance the model sees after side-effect work.
+    """
+    tags = set(_collect_execution_tags_for_tools(tool_names))
+    base = {
+        "checkpoint": "run the tool work, then inspect results and verify before finalizing",
+        "review": "inspect changed files/results and verify before finalizing",
+    }.get(stage, "inspect results and verify before finalizing")
+
+    notes: List[str] = []
+    if "filesystem" in tags:
+        notes.append("check changed files/paths carefully")
+    if "process" in tags:
+        notes.append("confirm process/session state is healthy")
+    if "network" in tags:
+        notes.append("verify remote/API effects and returned state")
+    if "messaging" in tags:
+        notes.append("confirm the target boundary and message delivery result")
+    if "browser" in tags:
+        notes.append("re-check page/browser state before continuing")
+    if "scraping" in tags:
+        notes.append("verify scrape route/session provenance and note partial extraction caveats")
+    if "indexing_workflow" in tags:
+        notes.append("treat indexing/search results as partial until status confirms completion")
+    if "shell" in tags:
+        notes.append("review command output before trusting success")
+
+    if notes:
+        return f"{base}; {'; '.join(notes)}"
+    return base
 
 # Patterns that indicate a terminal command may modify/delete files.
 _DESTRUCTIVE_PATTERNS = re.compile(
@@ -1579,6 +1660,11 @@ class AIAgent:
         # In-memory todo list for task planning (one per agent/session)
         from tools.todo_tool import TodoStore
         self._todo_store = TodoStore()
+        self._execution_state = {
+            "stage": None,
+            "tools": [],
+            "checkpoint": "",
+        }
         
         # Load config once for memory, skills, and compression sections
         try:
@@ -4454,6 +4540,75 @@ class AIAgent:
             if not self.quiet_mode:
                 self._vprint(f"{self.log_prefix}📋 Restored {len(last_todo_response)} todo item(s) from history")
         _set_interrupt(False)
+
+    def _set_execution_state(self, stage: Optional[str], tools: List[str], checkpoint: str) -> None:
+        unique_tools = []
+        seen = set()
+        for tool in tools:
+            clean = str(tool or "").strip()
+            if not clean or clean in seen:
+                continue
+            unique_tools.append(clean)
+            seen.add(clean)
+        self._execution_state = {
+            "stage": stage,
+            "tools": unique_tools,
+            "checkpoint": str(checkpoint or "").strip(),
+        }
+
+    def _hydrate_execution_state(self, history: List[Dict[str, Any]]) -> None:
+        """Recover preserved execution-stage state from compressed history."""
+        marker = "[Execution state preserved across context compression]"
+        for msg in reversed(history):
+            if msg.get("role") != "user":
+                continue
+            content = str(msg.get("content", "") or "")
+            if marker not in content:
+                continue
+            stage_match = re.search(r"-\s*stage:\s*(.+)", content)
+            tools_match = re.search(r"-\s*tools:\s*(.+)", content)
+            next_match = re.search(r"-\s*next:\s*(.+)", content)
+            tools = []
+            if tools_match:
+                tools = [t.strip() for t in tools_match.group(1).split(",") if t.strip()]
+            self._set_execution_state(
+                stage_match.group(1).strip() if stage_match else None,
+                tools,
+                next_match.group(1).strip() if next_match else "",
+            )
+            break
+
+    def _format_execution_state_for_injection(self) -> Optional[str]:
+        stage = self._execution_state.get("stage")
+        tools = self._execution_state.get("tools") or []
+        checkpoint = self._execution_state.get("checkpoint", "")
+        if not stage or not tools:
+            return None
+        tool_list = ", ".join(tools)
+        lines = [
+            "[Execution state preserved across context compression]",
+            f"- stage: {stage}",
+            f"- tools: {tool_list}",
+        ]
+        if checkpoint:
+            lines.append(f"- next: {checkpoint}")
+        return "\n".join(lines)
+
+    def _side_effect_tools_in_batch(self, tool_calls) -> List[str]:
+        names = []
+        for tool_call in tool_calls or []:
+            name = getattr(getattr(tool_call, "function", None), "name", "")
+            if not name:
+                continue
+            if _tool_has_execution_tag(name, "side_effect") or name in _EXECUTION_SIDE_EFFECT_TOOLS:
+                names.append(name)
+        deduped = []
+        seen = set()
+        for name in names:
+            if name not in seen:
+                deduped.append(name)
+                seen.add(name)
+        return deduped
     
     @property
     def is_interrupted(self) -> bool:
@@ -4506,6 +4661,11 @@ class AIAgent:
             tool_guidance.append(SESSION_SEARCH_GUIDANCE)
         if "skill_manage" in self.valid_tool_names:
             tool_guidance.append(SKILLS_GUIDANCE)
+        if self.valid_tool_names.intersection({"terminal", "browser_navigate", "send_message", "browser_click", "write_file", "patch"}):
+            tool_guidance.append(EXECUTION_BOUNDARY_GUIDANCE)
+        mcp_workflow_guidance = build_mcp_workflow_guidance(self.valid_tool_names)
+        if mcp_workflow_guidance:
+            tool_guidance.append(mcp_workflow_guidance)
         if tool_guidance:
             prompt_parts.append(" ".join(tool_guidance))
 
@@ -8126,6 +8286,10 @@ class AIAgent:
         if todo_snapshot:
             compressed.append({"role": "user", "content": todo_snapshot})
 
+        execution_snapshot = self._format_execution_state_for_injection()
+        if execution_snapshot:
+            compressed.append({"role": "user", "content": execution_snapshot})
+
         self._invalidate_system_prompt()
         new_system_prompt = self._build_system_prompt(system_message)
         self._cached_system_prompt = new_system_prompt
@@ -8218,6 +8382,13 @@ class AIAgent:
         file reads/writes may do so only when their target paths do not overlap.
         """
         tool_calls = assistant_message.tool_calls
+        execution_tools = self._side_effect_tools_in_batch(tool_calls)
+        if execution_tools:
+            self._set_execution_state(
+                "checkpoint",
+                execution_tools,
+                _build_execution_checkpoint("checkpoint", execution_tools),
+            )
 
         # Allow _vprint during tool execution even with stream consumers
         self._executing_tools = True
@@ -8231,6 +8402,12 @@ class AIAgent:
                 assistant_message, messages, effective_task_id, api_call_count
             )
         finally:
+            if execution_tools:
+                self._set_execution_state(
+                    "review",
+                    execution_tools,
+                    _build_execution_checkpoint("review", execution_tools),
+                )
             self._executing_tools = False
 
     def _dispatch_delegate_task(self, function_args: dict) -> str:
@@ -9345,6 +9522,8 @@ class AIAgent:
         # recover the todo state from the most recent todo tool response in history)
         if conversation_history and not self._todo_store.has_items():
             self._hydrate_todo_store(conversation_history)
+        if conversation_history and not self._execution_state.get("stage"):
+            self._hydrate_execution_state(conversation_history)
         
         # Prefill messages (few-shot priming) are injected at API-call time only,
         # never stored in the messages list. This keeps them ephemeral: they won't

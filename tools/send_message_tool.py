@@ -1577,4 +1577,6 @@ registry.register(
     handler=send_message_tool,
     check_fn=_check_send_message,
     emoji="📨",
+    runtime_dependencies=["messaging_gateway"],
+    execution_tags=["messaging", "network", "external_delivery", "side_effect"],
 )

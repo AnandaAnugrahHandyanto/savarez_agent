@@ -176,6 +176,54 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
+EXECUTION_BOUNDARY_GUIDANCE = (
+    "When tools can affect external state, keep execution boundaries explicit. "
+    "Distinguish the local machine from a remote service or cloud sandbox before acting. "
+    "Distinguish logged-in browser/app state from public web content before assuming access. "
+    "Say clearly whether an action happens on the local machine, inside a remote service, "
+    "through a logged-in session, or by sending data out to another platform. "
+    "Treat messaging, browser clicks, file edits, and shell commands as real side effects; "
+    "for risky or destructive changes, follow the approval boundary instead of blurring ahead."
+)
+
+CLAUDE_CONTEXT_WORKFLOW_GUIDANCE = (
+    "When the claude-context MCP repo-retrieval tools are available, use them with an explicit "
+    "repo-index workflow instead of assuming code search is instant or complete. "
+    "Start with get_indexing_status for the target repo path, trigger index_codebase when the "
+    "repo is missing or stale, treat search_code results as partial while indexing is still in "
+    "progress, re-check get_indexing_status before relying on final retrieval, reserve "
+    "clear_index for explicit reset or recovery flows, and keep index/status/search/clear calls on the same absolute path."
+)
+
+SCRAPLING_WORKFLOW_GUIDANCE = (
+    "When the Scrapling MCP scraping tools are available, use them with an explicit scrape escalation ladder instead of "
+    "treating every page fetch as the same operation. Prefer get for public or static pages, escalate to fetch when the "
+    "page needs browser rendering or stateful interaction, and use stealthy_fetch only when lighter routes fail or the "
+    "site clearly needs stealth. Open sessions only for multi-step or stateful scraping, preserve selector/session/provenance "
+    "details in the result, and treat selector-targeted or main-content-only extraction as potentially partial output."
+)
+
+_MCP_WORKFLOW_GUIDANCE_BY_PREFIX = OrderedDict(
+    [
+        ("mcp_claude_context_", CLAUDE_CONTEXT_WORKFLOW_GUIDANCE),
+        ("mcp_scrapling_", SCRAPLING_WORKFLOW_GUIDANCE),
+    ]
+)
+
+
+def build_mcp_workflow_guidance(valid_tool_names: "set[str] | None" = None) -> str:
+    """Return applicable MCP workflow guidance blocks for the loaded tool names."""
+    valid_names = set(valid_tool_names or set())
+    if not valid_names:
+        return ""
+
+    selected = [
+        guidance
+        for prefix, guidance in _MCP_WORKFLOW_GUIDANCE_BY_PREFIX.items()
+        if any(name.startswith(prefix) for name in valid_names)
+    ]
+    return " ".join(selected)
+
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do "

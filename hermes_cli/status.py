@@ -20,6 +20,19 @@ from hermes_cli.runtime_provider import resolve_requested_provider
 from hermes_constants import OPENROUTER_MODELS_URL
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 
+
+def _get_repo_context_capability_summary() -> list[dict[str, str]]:
+    """Return read-only repo-context capability summaries for status output."""
+    try:
+        from tools.registry import discover_builtin_tools
+        discover_builtin_tools()
+        from agent.capability_catalog import summarize_repo_context_capabilities
+
+        return summarize_repo_context_capabilities()
+    except Exception:
+        return []
+
+
 def check_mark(ok: bool) -> str:
     if ok:
         return color("✓", Colors.GREEN)
@@ -65,18 +78,161 @@ def _configured_model_label(config: dict) -> str:
     return model or "(not set)"
 
 
-def _effective_provider_label() -> str:
-    """Return the provider label matching current CLI runtime resolution."""
+def _effective_provider_state() -> tuple[str, bool, bool]:
+    """Return provider label plus readiness/blocking flags."""
     requested = resolve_requested_provider()
     try:
         effective = resolve_provider(requested)
+        blocked = False
+        ready = True
     except AuthError:
         effective = requested or "auto"
+        blocked = bool(requested and requested != "auto")
+        ready = False
 
     if effective == "openrouter" and get_env_value("OPENAI_BASE_URL"):
         effective = "custom"
 
-    return provider_label(effective)
+    return provider_label(effective), ready, blocked
+
+
+def _count_configured_api_keys() -> int:
+    env_vars = [
+        "OPENROUTER_API_KEY",
+        "OPENAI_API_KEY",
+        "GLM_API_KEY",
+        "KIMI_API_KEY",
+        "MINIMAX_API_KEY",
+        "MINIMAX_CN_API_KEY",
+        "FIRECRAWL_API_KEY",
+        "TAVILY_API_KEY",
+        "BROWSER_USE_API_KEY",
+        "BROWSERBASE_API_KEY",
+        "FAL_KEY",
+        "TINKER_API_KEY",
+        "WANDB_API_KEY",
+        "ELEVENLABS_API_KEY",
+        "GITHUB_TOKEN",
+    ]
+    count = sum(1 for env_var in env_vars if get_env_value(env_var))
+    from hermes_cli.auth import get_anthropic_key
+    if get_anthropic_key():
+        count += 1
+    return count
+
+
+def _count_configured_platforms() -> int:
+    platform_envs = [
+        "TELEGRAM_BOT_TOKEN",
+        "DISCORD_BOT_TOKEN",
+        "WHATSAPP_ENABLED",
+        "SIGNAL_HTTP_URL",
+        "SLACK_BOT_TOKEN",
+        "EMAIL_ADDRESS",
+        "TWILIO_ACCOUNT_SID",
+        "DINGTALK_CLIENT_ID",
+        "FEISHU_APP_ID",
+        "WECOM_BOT_ID",
+        "WECOM_CALLBACK_CORP_ID",
+        "WEIXIN_ACCOUNT_ID",
+        "BLUEBUBBLES_SERVER_URL",
+        "QQ_APP_ID",
+    ]
+    return sum(1 for env_var in platform_envs if os.getenv(env_var, ""))
+
+
+def _count_active_jobs() -> tuple[int, int]:
+    jobs_file = get_hermes_home() / "cron" / "jobs.json"
+    if not jobs_file.exists():
+        return 0, 0
+    import json
+    try:
+        with open(jobs_file, encoding="utf-8") as f:
+            data = json.load(f)
+        jobs = data.get("jobs", [])
+        enabled_jobs = [j for j in jobs if j.get("enabled", True)]
+        return len(enabled_jobs), len(jobs)
+    except Exception:
+        return 0, 0
+
+
+def _health_grade_style(grade: str) -> tuple[str, str, str]:
+    mapping = {
+        "healthy": ("✓", "Healthy", Colors.GREEN),
+        "degraded": ("⚠", "Degraded", Colors.YELLOW),
+        "blocked": ("⛔", "Blocked", Colors.RED),
+        "needs_setup": ("✗", "Needs setup", Colors.RED),
+    }
+    return mapping.get(grade, ("⚠", grade, Colors.YELLOW))
+
+
+def _overall_health_grade(*, inference_ready: bool, inference_blocked: bool, api_key_count: int, platform_count: int, active_jobs: int) -> str:
+    if inference_ready and (platform_count > 0 or active_jobs > 0):
+        return "healthy"
+    if inference_blocked:
+        return "blocked"
+    if inference_ready or api_key_count > 0 or platform_count > 0 or active_jobs > 0:
+        return "degraded"
+    return "needs_setup"
+
+
+def _health_reason(*, grade: str, inference_ready: bool, inference_blocked: bool, api_key_count: int, platform_count: int, active_jobs: int) -> str:
+    if grade == "healthy":
+        if active_jobs > 0 and platform_count > 0:
+            return "inference OK, messaging configured, and automation running"
+        if active_jobs > 0:
+            return "inference OK and automation running"
+        return "inference OK and at least one delivery surface is configured"
+    if grade == "blocked":
+        return "configured inference path exists, but auth/runtime access is unavailable"
+    if grade == "degraded":
+        reasons = []
+        if inference_ready:
+            reasons.append("inference OK")
+        if api_key_count == 0:
+            reasons.append("no API keys configured")
+        if platform_count == 0:
+            reasons.append("no messaging platforms configured")
+        if active_jobs == 0:
+            reasons.append("no active automation")
+        return ", ".join(reasons[:3]) if reasons else "partial capability only"
+    return "missing usable inference setup and no active delivery/automation surfaces"
+
+
+def _print_quick_summary(config: dict) -> None:
+    model_label = _configured_model_label(config)
+    provider_label_text, provider_ready, provider_blocked = _effective_provider_state()
+    api_key_count = _count_configured_api_keys()
+    platform_count = _count_configured_platforms()
+    active_jobs, total_jobs = _count_active_jobs()
+    inference_ready = bool(model_label != "(not set)" and provider_ready)
+    inference_blocked = bool(model_label != "(not set)" and provider_blocked)
+    overall_grade = _overall_health_grade(
+        inference_ready=inference_ready,
+        inference_blocked=inference_blocked,
+        api_key_count=api_key_count,
+        platform_count=platform_count,
+        active_jobs=active_jobs,
+    )
+    overall_reason = _health_reason(
+        grade=overall_grade,
+        inference_ready=inference_ready,
+        inference_blocked=inference_blocked,
+        api_key_count=api_key_count,
+        platform_count=platform_count,
+        active_jobs=active_jobs,
+    )
+    grade_icon, grade_label, grade_color = _health_grade_style(overall_grade)
+
+    print()
+    print(color("◆ Quick Summary", Colors.CYAN, Colors.BOLD))
+    print(f"  Health:       {color(grade_icon, grade_color)} {color(grade_label, grade_color)}")
+    print(f"  Reason:       {overall_reason}")
+    print(f"  Inference:    {check_mark(inference_ready)} {provider_label_text} · {model_label}")
+    print(f"  API Access:   {check_mark(api_key_count > 0)} {api_key_count} API key source(s) configured")
+    print(f"  Messaging:    {check_mark(platform_count > 0)} {platform_count} platform(s) configured")
+    jobs_text = f"{active_jobs} active / {total_jobs} total" if total_jobs else "0 active"
+    print(f"  Automation:   {check_mark(active_jobs > 0)} {jobs_text}")
 
 
 from hermes_constants import is_termux as _is_termux
@@ -91,6 +247,27 @@ def show_status(args):
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
     print(color("│                 ⚕ Hermes Agent Status                  │", Colors.CYAN))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
+
+    try:
+        config = load_config()
+    except Exception:
+        config = {}
+
+    _print_quick_summary(config)
+
+    repo_context_capabilities = _get_repo_context_capability_summary()
+    if repo_context_capabilities:
+        print()
+        print(color("◆ Repo Context", Colors.CYAN, Colors.BOLD))
+        for item in repo_context_capabilities[:4]:
+            print(
+                "  "
+                f"{item['name']} · {item['group']} · {item['readiness_status']}"
+            )
+            print(
+                "    "
+                f"identity={item['identity_scope']} · workflow={item['workflow']} · results={item['result_mode']}"
+            )
     
     # =========================================================================
     # Environment
@@ -103,13 +280,9 @@ def show_status(args):
     env_path = get_env_path()
     print(f"  .env file:    {check_mark(env_path.exists())} {'exists' if env_path.exists() else 'not found'}")
 
-    try:
-        config = load_config()
-    except Exception:
-        config = {}
-
     print(f"  Model:        {_configured_model_label(config)}")
-    print(f"  Provider:     {_effective_provider_label()}")
+    provider_label_text, _, _ = _effective_provider_state()
+    print(f"  Provider:     {provider_label_text}")
     
     # =========================================================================
     # API Keys
@@ -389,17 +562,9 @@ def show_status(args):
     print()
     print(color("◆ Scheduled Jobs", Colors.CYAN, Colors.BOLD))
     
-    jobs_file = get_hermes_home() / "cron" / "jobs.json"
-    if jobs_file.exists():
-        import json
-        try:
-            with open(jobs_file, encoding="utf-8") as f:
-                data = json.load(f)
-                jobs = data.get("jobs", [])
-                enabled_jobs = [j for j in jobs if j.get("enabled", True)]
-                print(f"  Jobs:         {len(enabled_jobs)} active, {len(jobs)} total")
-        except Exception:
-            print("  Jobs:         (error reading jobs file)")
+    active_jobs, total_jobs = _count_active_jobs()
+    if total_jobs:
+        print(f"  Jobs:         {active_jobs} active, {total_jobs} total")
     else:
         print("  Jobs:         0")
     

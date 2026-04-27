@@ -21,7 +21,12 @@ from agent.codex_responses_adapter import _chat_messages_to_responses_input, _no
 import run_agent
 from run_agent import AIAgent
 from agent.error_classifier import FailoverReason
-from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+from agent.prompt_builder import (
+    DEFAULT_AGENT_IDENTITY,
+    EXECUTION_BOUNDARY_GUIDANCE,
+    CLAUDE_CONTEXT_WORKFLOW_GUIDANCE,
+    SCRAPLING_WORKFLOW_GUIDANCE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -857,6 +862,109 @@ class TestHydrateTodoStore:
         assert not agent._todo_store.has_items()
 
 
+class TestExecutionState:
+    def test_hydrates_from_preserved_history_marker(self, agent):
+        history = [
+            {
+                "role": "user",
+                "content": "[Execution state preserved across context compression]\n- stage: review\n- tools: terminal, write_file\n- next: inspect changed files and verify before finalizing",
+            }
+        ]
+
+        agent._hydrate_execution_state(history)
+
+        assert agent._execution_state["stage"] == "review"
+        assert agent._execution_state["tools"] == ["terminal", "write_file"]
+        assert "verify" in agent._execution_state["checkpoint"]
+
+    def test_build_execution_checkpoint_uses_runtime_tags(self, monkeypatch):
+        metadata_map = {
+            "terminal": {"execution_tags": ["shell", "filesystem", "process", "side_effect"]},
+            "send_message": {"execution_tags": ["messaging", "network", "side_effect"]},
+        }
+        monkeypatch.setattr(run_agent, "get_tool_runtime_metadata", lambda name: metadata_map.get(name, {}))
+
+        checkpoint = run_agent._build_execution_checkpoint("review", ["terminal", "send_message"])
+
+        assert checkpoint.startswith("inspect changed files/results and verify before finalizing")
+        assert "check changed files/paths carefully" in checkpoint
+        assert "confirm process/session state is healthy" in checkpoint
+        assert "verify remote/API effects and returned state" in checkpoint
+        assert "confirm the target boundary and message delivery result" in checkpoint
+        assert "review command output before trusting success" in checkpoint
+
+    def test_build_execution_checkpoint_mentions_scrape_provenance_for_scraping_tools(self, monkeypatch):
+        metadata_map = {
+            "mcp_scrapling_fetch": {"execution_tags": ["network", "browser", "scraping", "side_effect"]},
+        }
+        monkeypatch.setattr(run_agent, "get_tool_runtime_metadata", lambda name: metadata_map.get(name, {}))
+
+        checkpoint = run_agent._build_execution_checkpoint("review", ["mcp_scrapling_fetch"])
+
+        assert "verify remote/API effects and returned state" in checkpoint
+        assert "verify scrape route/session provenance and note partial extraction caveats" in checkpoint
+
+    def test_side_effect_tool_execution_updates_review_state(self, agent):
+        agent.valid_tool_names.add("terminal")
+        tc = _mock_tool_call(name="terminal", arguments='{"command":"pwd"}', call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+
+        with patch("run_agent.handle_function_call", return_value="/tmp"):
+            agent._execute_tool_calls(mock_msg, messages, "task-1")
+
+        assert agent._execution_state["stage"] == "review"
+        assert agent._execution_state["tools"] == ["terminal"]
+        snapshot = agent._format_execution_state_for_injection()
+        assert snapshot is not None
+        assert "Execution state preserved across context compression" in snapshot
+        assert "stage: review" in snapshot
+        assert "review command output before trusting success" in agent._execution_state["checkpoint"]
+        assert "check changed files/paths carefully" in agent._execution_state["checkpoint"]
+
+    def test_runtime_metadata_side_effect_tool_updates_review_state(self, agent, monkeypatch):
+        agent.valid_tool_names.add("custom_effect")
+        tc = _mock_tool_call(name="custom_effect", arguments='{}', call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+
+        monkeypatch.setattr(run_agent, "_tool_has_execution_tag", lambda name, tag: name == "custom_effect" and tag == "side_effect")
+        monkeypatch.setattr(run_agent, "get_tool_runtime_metadata", lambda name: {"execution_tags": ["network", "messaging", "side_effect"]} if name == "custom_effect" else {})
+
+        with patch("run_agent.handle_function_call", return_value='{"ok": true}'):
+            agent._execute_tool_calls(mock_msg, messages, "task-1")
+
+        assert agent._execution_state["stage"] == "review"
+        assert agent._execution_state["tools"] == ["custom_effect"]
+        assert "verify remote/API effects and returned state" in agent._execution_state["checkpoint"]
+        assert "confirm the target boundary and message delivery result" in agent._execution_state["checkpoint"]
+
+    def test_claude_context_mcp_tool_updates_review_state_from_runtime_metadata(self, agent, monkeypatch):
+        tool_name = "mcp_claude_context_index_codebase"
+        agent.valid_tool_names.add(tool_name)
+        tc = _mock_tool_call(name=tool_name, arguments='{"path":"."}', call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+
+        monkeypatch.setattr(
+            run_agent,
+            "get_tool_runtime_metadata",
+            lambda name: {
+                "runtime_dependencies": ["filesystem", "mcp_server", "vector_store"],
+                "execution_tags": ["filesystem", "network", "side_effect", "indexing_workflow"],
+            } if name == tool_name else {},
+        )
+
+        with patch("run_agent.handle_function_call", return_value='{"status": "indexing"}'):
+            agent._execute_tool_calls(mock_msg, messages, "task-1")
+
+        assert agent._execution_state["stage"] == "review"
+        assert agent._execution_state["tools"] == [tool_name]
+        assert "check changed files/paths carefully" in agent._execution_state["checkpoint"]
+        assert "verify remote/API effects and returned state" in agent._execution_state["checkpoint"]
+        assert "treat indexing/search results as partial until status confirms completion" in agent._execution_state["checkpoint"]
+
+
 class TestBuildSystemPrompt:
     def test_always_has_identity(self, agent):
         prompt = agent._build_system_prompt()
@@ -920,6 +1028,106 @@ class TestBuildSystemPrompt:
         assert "SKILLS_PROMPT" in prompt
         assert mock_skills.call_args.kwargs["available_tools"] == set(toolset_map)
         assert mock_skills.call_args.kwargs["available_toolsets"] == {"web", "skills"}
+
+    def test_includes_execution_boundary_guidance_when_side_effect_tools_loaded(self):
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("terminal", "browser_navigate", "send_message"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            prompt = agent._build_system_prompt()
+
+        assert EXECUTION_BOUNDARY_GUIDANCE in prompt
+
+    def test_includes_claude_context_workflow_guidance_when_tools_loaded(self):
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs(
+                    "mcp_claude_context_get_indexing_status",
+                    "mcp_claude_context_index_codebase",
+                    "mcp_claude_context_search_code",
+                ),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            prompt = agent._build_system_prompt()
+
+        assert CLAUDE_CONTEXT_WORKFLOW_GUIDANCE in prompt
+        assert "same absolute path" in prompt
+
+    def test_build_mcp_workflow_guidance_returns_claude_context_and_scrapling_blocks(self):
+        from agent.prompt_builder import build_mcp_workflow_guidance
+
+        guidance = build_mcp_workflow_guidance(
+            {
+                "mcp_claude_context_get_indexing_status",
+                "mcp_scrapling_fetch",
+                "terminal",
+            }
+        )
+
+        assert CLAUDE_CONTEXT_WORKFLOW_GUIDANCE in guidance
+        assert SCRAPLING_WORKFLOW_GUIDANCE in guidance
+        assert guidance.count(CLAUDE_CONTEXT_WORKFLOW_GUIDANCE) == 1
+        assert guidance.count(SCRAPLING_WORKFLOW_GUIDANCE) == 1
+
+    def test_build_mcp_workflow_guidance_empty_without_known_mcp_tools(self):
+        from agent.prompt_builder import build_mcp_workflow_guidance
+
+        assert build_mcp_workflow_guidance({"terminal", "send_message"}) == ""
+
+    def test_includes_scrapling_workflow_guidance_when_tools_loaded(self):
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs(
+                    "mcp_scrapling_get",
+                    "mcp_scrapling_fetch",
+                    "mcp_scrapling_stealthy_fetch",
+                    "mcp_scrapling_open_session",
+                ),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            prompt = agent._build_system_prompt()
+
+        assert SCRAPLING_WORKFLOW_GUIDANCE in prompt
+
+
+class TestExecutionBoundaryGuidance:
+    def test_mentions_local_remote_and_logged_in_boundaries(self):
+        lowered = EXECUTION_BOUNDARY_GUIDANCE.lower()
+        assert "local machine" in lowered
+        assert "remote service" in lowered
+        assert "logged-in" in lowered
+        assert "approval" in lowered
 
 
 class TestToolUseEnforcementConfig:

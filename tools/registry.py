@@ -74,17 +74,24 @@ def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
 
 
 class ToolEntry:
-    """Metadata for a single registered tool."""
+    """Metadata for a single registered tool.
+
+    ``runtime_dependencies`` and ``execution_tags`` are a first landing step
+    toward a more typed action/runtime model inspired by browser-use and other
+    agent runtimes. They let tools describe the runtime capabilities and guard
+    surfaces they rely on without changing the OpenAI tool schema itself.
+    """
 
     __slots__ = (
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
-        "max_result_size_chars",
+        "max_result_size_chars", "runtime_dependencies", "execution_tags",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
                  requires_env, is_async, description, emoji,
-                 max_result_size_chars=None):
+                 max_result_size_chars=None, runtime_dependencies=None,
+                 execution_tags=None):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -95,6 +102,8 @@ class ToolEntry:
         self.description = description
         self.emoji = emoji
         self.max_result_size_chars = max_result_size_chars
+        self.runtime_dependencies = list(runtime_dependencies or [])
+        self.execution_tags = list(execution_tags or [])
 
 
 class ToolRegistry:
@@ -185,8 +194,17 @@ class ToolRegistry:
         description: str = "",
         emoji: str = "",
         max_result_size_chars: int | float | None = None,
+        runtime_dependencies: list[str] | None = None,
+        execution_tags: list[str] | None = None,
     ):
-        """Register a tool.  Called at module-import time by each tool file."""
+        """Register a tool.  Called at module-import time by each tool file.
+
+        ``runtime_dependencies`` is for runtime capabilities the handler expects
+        (for example ``browser_session`` or ``filesystem``). ``execution_tags``
+        marks side-effect surfaces or guard domains (for example ``network`` or
+        ``destructive``) so future runtime/watchdog layers can reason about them
+        without scraping prose descriptions.
+        """
         with self._lock:
             existing = self._tools.get(name)
             if existing and existing.toolset != toolset:
@@ -222,6 +240,8 @@ class ToolRegistry:
                 description=description or schema.get("description", ""),
                 emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
+                runtime_dependencies=runtime_dependencies,
+                execution_tags=execution_tags,
             )
             if check_fn and toolset not in self._toolset_checks:
                 self._toolset_checks[toolset] = check_fn
@@ -311,6 +331,21 @@ class ToolRegistry:
     # ------------------------------------------------------------------
     # Query helpers  (replace redundant dicts in model_tools.py)
     # ------------------------------------------------------------------
+
+    def get_tool_runtime_metadata(self, name: str) -> Dict[str, object]:
+        """Return structured runtime metadata for a tool.
+
+        This keeps execution-surface hints out of the OpenAI-facing schema while
+        making them queryable for future dependency injection, watchdog, and
+        policy layers.
+        """
+        entry = self.get_entry(name)
+        if not entry:
+            return {}
+        return {
+            "runtime_dependencies": list(entry.runtime_dependencies),
+            "execution_tags": list(entry.execution_tags),
+        }
 
     def get_max_result_size(self, name: str, default: int | float | None = None) -> int | float:
         """Return per-tool max result size, or *default* (or global default)."""

@@ -2146,4 +2146,6 @@ registry.register(
     check_fn=check_terminal_requirements,
     emoji="💻",
     max_result_size_chars=100_000,
+    runtime_dependencies=["shell_session"],
+    execution_tags=["shell", "filesystem", "process", "side_effect"],
 )

@@ -1,5 +1,6 @@
 """Tests for model_tools.py — function call dispatch, agent-loop interception, legacy toolsets."""
 
+import importlib
 import json
 from unittest.mock import ANY, call, patch
 
@@ -8,6 +9,7 @@ import pytest
 from model_tools import (
     handle_function_call,
     get_all_tool_names,
+    get_tool_definitions,
     get_toolset_for_tool,
     _AGENT_LOOP_TOOLS,
     _LEGACY_TOOLSET_MAP,
@@ -257,6 +259,14 @@ class TestBackwardCompat:
         result = get_toolset_for_tool("totally_nonexistent_tool")
         assert result is None
 
+
+class TestImportSideEffects:
+    def test_skip_mcp_discovery_env_prevents_mcp_connection_attempts(self, monkeypatch):
+        monkeypatch.setenv("HERMES_SKIP_MCP_DISCOVERY", "1")
+        with patch("tools.mcp_tool.discover_mcp_tools", side_effect=AssertionError("should not be called")):
+            import model_tools as model_tools_module
+            importlib.reload(model_tools_module)
+
     def test_tool_to_toolset_map(self):
         assert isinstance(TOOL_TO_TOOLSET_MAP, dict)
         assert len(TOOL_TO_TOOLSET_MAP) > 0
@@ -303,3 +313,132 @@ class TestCoerceNumberInfNan:
         assert _coerce_number("42") == 42
         assert _coerce_number("3.14") == 3.14
         assert _coerce_number("1e3") == 1000
+
+
+class TestDynamicToolDescriptions:
+    def test_browser_navigate_mentions_scrapling_ladder_when_available(self):
+        browser_schema = {
+            "type": "function",
+            "function": {
+                "name": "browser_navigate",
+                "description": (
+                    "Navigate to a URL in the browser. Must be called before other browser tools. "
+                    "For simple information retrieval, prefer web_search or web_extract (faster, cheaper)."
+                ),
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+        scrapling_get = {
+            "type": "function",
+            "function": {
+                "name": "mcp_scrapling_get",
+                "description": "Static Scrapling fetch",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+        scrapling_fetch = {
+            "type": "function",
+            "function": {
+                "name": "mcp_scrapling_fetch",
+                "description": "Browser Scrapling fetch",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+        scrapling_stealth = {
+            "type": "function",
+            "function": {
+                "name": "mcp_scrapling_stealthy_fetch",
+                "description": "Stealth Scrapling fetch",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+
+        with patch("model_tools.registry.get_definitions", return_value=[browser_schema, scrapling_get, scrapling_fetch, scrapling_stealth]):
+            tools = get_tool_definitions(enabled_toolsets=["browser", "mcp"], quiet_mode=True)
+
+        desc = next(t["function"]["description"] for t in tools if t["function"]["name"] == "browser_navigate")
+        assert "mcp_scrapling_get" in desc
+        assert "mcp_scrapling_fetch" in desc
+        assert "mcp_scrapling_stealthy_fetch" in desc
+
+    def test_web_extract_mentions_scrapling_for_stateful_or_stealth_routes(self):
+        web_extract_schema = {
+            "type": "function",
+            "function": {
+                "name": "web_extract",
+                "description": "Extract content from web page URLs. If a URL fails or times out, use the browser tool to access it instead.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+        scrapling_fetch = {
+            "type": "function",
+            "function": {
+                "name": "mcp_scrapling_fetch",
+                "description": "Browser Scrapling fetch",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+        scrapling_stealth = {
+            "type": "function",
+            "function": {
+                "name": "mcp_scrapling_stealthy_fetch",
+                "description": "Stealth Scrapling fetch",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+
+        with patch("model_tools.registry.get_definitions", return_value=[web_extract_schema, scrapling_fetch, scrapling_stealth]):
+            tools = get_tool_definitions(enabled_toolsets=["web", "mcp"], quiet_mode=True)
+
+        desc = next(t["function"]["description"] for t in tools if t["function"]["name"] == "web_extract")
+        assert "mcp_scrapling_fetch" in desc
+        assert "mcp_scrapling_stealthy_fetch" in desc
+
+    def test_browser_navigate_mentions_open_session_for_stateful_scraping(self):
+        browser_schema = {
+            "type": "function",
+            "function": {
+                "name": "browser_navigate",
+                "description": "Navigate to a URL in the browser.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+        scrapling_get = {
+            "type": "function",
+            "function": {
+                "name": "mcp_scrapling_get",
+                "description": "Static Scrapling fetch",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+        scrapling_fetch = {
+            "type": "function",
+            "function": {
+                "name": "mcp_scrapling_fetch",
+                "description": "Browser Scrapling fetch",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+        scrapling_session = {
+            "type": "function",
+            "function": {
+                "name": "mcp_scrapling_open_session",
+                "description": "Open Scrapling browser session",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+        scrapling_shot = {
+            "type": "function",
+            "function": {
+                "name": "mcp_scrapling_screenshot",
+                "description": "Capture Scrapling screenshot",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+
+        with patch("model_tools.registry.get_definitions", return_value=[browser_schema, scrapling_get, scrapling_fetch, scrapling_session, scrapling_shot]):
+            tools = get_tool_definitions(enabled_toolsets=["browser", "mcp"], quiet_mode=True)
+
+        desc = next(t["function"]["description"] for t in tools if t["function"]["name"] == "browser_navigate")
+        assert "mcp_scrapling_open_session" in desc
+        assert "mcp_scrapling_screenshot" in desc

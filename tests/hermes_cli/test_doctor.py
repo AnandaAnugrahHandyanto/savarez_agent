@@ -13,7 +13,7 @@ import pytest
 import hermes_cli.doctor as doctor
 import hermes_cli.gateway as gateway_cli
 from hermes_cli import doctor as doctor_mod
-from hermes_cli.doctor import _has_provider_env_config
+from hermes_cli.doctor import _doctor_health_reason, _has_provider_env_config, _overall_doctor_health_grade
 
 
 class TestDoctorPlatformHints:
@@ -52,6 +52,16 @@ class TestProviderEnvDetection:
 
 
 class TestDoctorToolAvailabilityOverrides:
+    def test_doctor_overall_health_grade_levels(self):
+        assert _overall_doctor_health_grade(inference_ready=True, inference_blocked=False, config_ready=True, jobs_ok=True) == "healthy"
+        assert _overall_doctor_health_grade(inference_ready=False, inference_blocked=True, config_ready=True, jobs_ok=False) == "blocked"
+        assert _overall_doctor_health_grade(inference_ready=True, inference_blocked=False, config_ready=False, jobs_ok=False) == "degraded"
+        assert _overall_doctor_health_grade(inference_ready=False, inference_blocked=False, config_ready=False, jobs_ok=False) == "needs_setup"
+
+    def test_doctor_health_reason_levels(self):
+        assert _doctor_health_reason(grade="healthy", inference_ready=True, inference_blocked=False, config_ready=True, jobs_ok=True) == "runtime auth available, config present, and automation running"
+        assert _doctor_health_reason(grade="blocked", inference_ready=False, inference_blocked=True, config_ready=True, jobs_ok=False) == "configured inference path exists, but auth/runtime access is unavailable"
+
     def test_marks_honcho_available_when_configured(self, monkeypatch):
         monkeypatch.setattr(doctor, "_honcho_is_configured_for_doctor", lambda: True)
 
@@ -125,6 +135,84 @@ def test_run_doctor_sets_interactive_env_for_tool_checks(monkeypatch, tmp_path):
         doctor_mod.run_doctor(Namespace(fix=False))
 
     assert seen["interactive"] == "1"
+
+
+def test_run_doctor_sets_skip_mcp_discovery_env_for_tool_checks(monkeypatch, tmp_path):
+    project_root = tmp_path / "project"
+    hermes_home = tmp_path / ".hermes"
+    project_root.mkdir()
+    hermes_home.mkdir()
+
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", hermes_home)
+    monkeypatch.delenv("HERMES_SKIP_MCP_DISCOVERY", raising=False)
+
+    seen = {}
+
+    def fake_check_tool_availability(*args, **kwargs):
+        seen["skip_mcp"] = os.getenv("HERMES_SKIP_MCP_DISCOVERY")
+        raise SystemExit(0)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=fake_check_tool_availability,
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    with pytest.raises(SystemExit):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    assert seen["skip_mcp"] == "1"
+
+
+def test_doctor_surfaces_repo_context_capability(monkeypatch, tmp_path):
+    project_root = tmp_path / "project"
+    hermes_home = tmp_path / ".hermes"
+    project_root.mkdir()
+    hermes_home.mkdir()
+
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", hermes_home)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(hermes_home))
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+    except Exception:
+        pass
+
+    monkeypatch.setattr(
+        doctor_mod,
+        "_get_repo_context_capability_summary",
+        lambda: [
+            {
+                "name": "mcp_claude_context_index_codebase",
+                "group": "mcp-claude-context",
+                "readiness_status": "ready",
+                "identity_scope": "absolute_path",
+                "workflow": "index/status/search/clear",
+                "result_mode": "partial_or_complete",
+            }
+        ],
+    )
+
+    import io, contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    assert "Repo Context" in out
+    assert "mcp_claude_context_index_codebase" in out
+    assert "absolute_path" in out
+    assert "index/status/search/clear" in out
 
 
 def test_check_gateway_service_linger_warns_when_disabled(monkeypatch, tmp_path, capsys):
@@ -207,6 +295,11 @@ class TestDoctorMemoryProviderSection:
 
     def test_no_provider_shows_builtin_ok(self, monkeypatch, tmp_path):
         out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="")
+        assert "Health Summary" in out
+        assert "Health:" in out
+        assert "Reason:" in out
+        assert "Inference:" in out
+        assert "Automation:" in out
         assert "Memory Provider" in out
         assert "Built-in memory active" in out
         # Should NOT mention Honcho or Mem0 errors

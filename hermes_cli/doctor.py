@@ -34,6 +34,18 @@ from hermes_constants import OPENROUTER_MODELS_URL
 from utils import base_url_host_matches
 
 
+def _get_repo_context_capability_summary() -> list[dict[str, str]]:
+    """Return read-only repo-context capability summaries for doctor output."""
+    try:
+        from tools.registry import discover_builtin_tools
+        discover_builtin_tools()
+        from agent.capability_catalog import summarize_repo_context_capabilities
+
+        return summarize_repo_context_capabilities()
+    except Exception:
+        return []
+
+
 _PROVIDER_ENV_HINTS = (
     "OPENROUTER_API_KEY",
     "OPENAI_API_KEY",
@@ -130,6 +142,120 @@ def check_info(text: str):
     print(f"    {color('→', Colors.CYAN)} {text}")
 
 
+def _count_doctor_active_jobs() -> tuple[int, int]:
+    jobs_file = HERMES_HOME / "cron" / "jobs.json"
+    if not jobs_file.exists():
+        return 0, 0
+    try:
+        import json
+        with open(jobs_file, encoding="utf-8") as f:
+            data = json.load(f)
+        jobs = data.get("jobs", [])
+        enabled_jobs = [j for j in jobs if j.get("enabled", True)]
+        return len(enabled_jobs), len(jobs)
+    except Exception:
+        return 0, 0
+
+
+def _doctor_health_grade_style(grade: str) -> tuple[str, str, str]:
+    mapping = {
+        "healthy": ("✓", "Healthy", Colors.GREEN),
+        "degraded": ("⚠", "Degraded", Colors.YELLOW),
+        "blocked": ("⛔", "Blocked", Colors.RED),
+        "needs_setup": ("✗", "Needs setup", Colors.RED),
+    }
+    return mapping.get(grade, ("⚠", grade, Colors.YELLOW))
+
+
+def _overall_doctor_health_grade(*, inference_ready: bool, inference_blocked: bool, config_ready: bool, jobs_ok: bool) -> str:
+    if inference_ready and config_ready and jobs_ok:
+        return "healthy"
+    if inference_blocked:
+        return "blocked"
+    if inference_ready or config_ready or jobs_ok:
+        return "degraded"
+    return "needs_setup"
+
+
+def _doctor_health_reason(*, grade: str, inference_ready: bool, inference_blocked: bool, config_ready: bool, jobs_ok: bool) -> str:
+    if grade == "healthy":
+        return "runtime auth available, config present, and automation running"
+    if grade == "blocked":
+        return "configured inference path exists, but auth/runtime access is unavailable"
+    if grade == "degraded":
+        reasons = []
+        if inference_ready:
+            reasons.append("runtime auth available")
+        if not config_ready:
+            reasons.append("config files incomplete")
+        if not jobs_ok:
+            reasons.append("no active automation")
+        return ", ".join(reasons[:3]) if reasons else "partial health only"
+    return "missing usable inference setup and no active automation"
+
+
+def _print_doctor_health_summary() -> None:
+    env_path = HERMES_HOME / '.env'
+    config_path = HERMES_HOME / 'config.yaml'
+    active_jobs, total_jobs = _count_doctor_active_jobs()
+
+    try:
+        from hermes_cli.auth import get_codex_auth_status
+        codex_ready = bool(get_codex_auth_status().get("logged_in"))
+    except Exception:
+        codex_ready = False
+
+    has_provider_env = False
+    if env_path.exists():
+        try:
+            has_provider_env = _has_provider_env_config(env_path.read_text())
+        except Exception:
+            has_provider_env = False
+
+    configured_model = False
+    try:
+        import yaml as _yaml
+        if config_path.exists():
+            with open(config_path, encoding="utf-8") as f:
+                raw_cfg = _yaml.safe_load(f) or {}
+            model_cfg = raw_cfg.get("model")
+            if isinstance(model_cfg, dict):
+                configured_model = bool((model_cfg.get("default") or model_cfg.get("name") or "").strip())
+            elif isinstance(model_cfg, str):
+                configured_model = bool(model_cfg.strip())
+    except Exception:
+        configured_model = False
+
+    print()
+    print(color("◆ Health Summary", Colors.CYAN, Colors.BOLD))
+    inference_ready = codex_ready or has_provider_env
+    inference_blocked = bool(configured_model and not inference_ready)
+    inference_label = "runtime auth available" if inference_ready else ("configured but auth unavailable" if inference_blocked else "needs provider setup")
+    config_ready = env_path.exists() and config_path.exists()
+    jobs_label = f"{active_jobs} active / {total_jobs} total" if total_jobs else "0 scheduled jobs"
+    jobs_ok = active_jobs > 0
+    overall_grade = _overall_doctor_health_grade(
+        inference_ready=inference_ready,
+        inference_blocked=inference_blocked,
+        config_ready=config_ready,
+        jobs_ok=jobs_ok,
+    )
+    overall_reason = _doctor_health_reason(
+        grade=overall_grade,
+        inference_ready=inference_ready,
+        inference_blocked=inference_blocked,
+        config_ready=config_ready,
+        jobs_ok=jobs_ok,
+    )
+    grade_icon, grade_label, grade_color = _doctor_health_grade_style(overall_grade)
+    print(f"  Health:       {color(grade_icon, grade_color)} {color(grade_label, grade_color)}")
+    print(f"  Reason:       {overall_reason}")
+    print(f"  Inference:    {color('✓' if inference_ready else ('⛔' if inference_blocked else '⚠'), Colors.GREEN if inference_ready else (Colors.RED if inference_blocked else Colors.YELLOW))} {inference_label}")
+    config_label = "config + env present" if config_ready else "config files incomplete"
+    print(f"  Config:       {color('✓' if config_ready else '⚠', Colors.GREEN if config_ready else Colors.YELLOW)} {config_label}")
+    print(f"  Automation:   {color('✓' if jobs_ok else '⚠', Colors.GREEN if jobs_ok else Colors.YELLOW)} {jobs_label}")
+
+
 def _check_gateway_service_linger(issues: list[str]) -> None:
     """Warn when a systemd user gateway service will stop after logout."""
     try:
@@ -170,6 +296,7 @@ def run_doctor(args):
     # Doctor runs from the interactive CLI, so CLI-gated tool availability
     # checks (like cronjob management) should see the same context as `hermes`.
     os.environ.setdefault("HERMES_INTERACTIVE", "1")
+    os.environ.setdefault("HERMES_SKIP_MCP_DISCOVERY", "1")
     
     issues = []
     manual_issues = []  # issues that can't be auto-fixed
@@ -179,6 +306,18 @@ def run_doctor(args):
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
     print(color("│                 🩺 Hermes Doctor                        │", Colors.CYAN))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
+
+    _print_doctor_health_summary()
+
+    repo_context_capabilities = _get_repo_context_capability_summary()
+    if repo_context_capabilities:
+        print()
+        print(color("◆ Repo Context", Colors.CYAN, Colors.BOLD))
+        for item in repo_context_capabilities[:4]:
+            check_ok(f"{item['name']}", f"({item['group']} · {item['readiness_status']})")
+            check_info(
+                f"identity={item['identity_scope']} · workflow={item['workflow']} · results={item['result_mode']}"
+            )
     
     # =========================================================================
     # Check: Python version
