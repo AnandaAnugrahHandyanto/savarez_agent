@@ -720,7 +720,14 @@ DEFAULT_CONFIG = {
             "device": "cpu",  # cpu, cuda, or mps
         },
     },
-    
+
+    # Prepend a local timestamp to inbound gateway messages so the agent
+    # knows when each message was sent.  Uses the top-level `timezone` setting.
+    "message_timestamp": {
+        "enabled": False,           # Set true to enable
+        "format": "%m-%d %H:%M",    # strftime format string
+    },
+
     "stt": {
         "enabled": True,
         "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe)

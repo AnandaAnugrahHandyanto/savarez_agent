@@ -4248,6 +4248,30 @@ class GatewayRunner:
         # Reset per-call buffer; set only when native routing is chosen.
         self._pending_native_image_paths = []
 
+        # Prepend a local timestamp so the agent knows when the message
+        # was sent.  Controlled by config.yaml `message_timestamp` setting:
+        #   message_timestamp:
+        #     enabled: true           # default: false
+        #     format: "%m-%d %H:%M"   # strftime format (default shown)
+        # Uses the `timezone` from config.yaml / HERMES_TIMEZONE env var.
+        _ts_cfg = (self.config or {}).get("message_timestamp", {})
+        if isinstance(_ts_cfg, dict) and _ts_cfg.get("enabled", False):
+            try:
+                from datetime import datetime as _dt, timezone as _tz
+                _tz_name = os.environ.get("HERMES_TIMEZONE", "")
+                _tz_obj = _tz.utc
+                if _tz_name:
+                    try:
+                        from zoneinfo import ZoneInfo
+                        _tz_obj = ZoneInfo(_tz_name)
+                    except Exception:
+                        pass
+                _fmt = _ts_cfg.get("format", "%m-%d %H:%M")
+                _ts_str = _dt.now(_tz_obj).strftime(_fmt)
+                message_text = f"[{_ts_str}] {message_text}"
+            except Exception:
+                pass  # Non-fatal — skip timestamp on error
+
         _is_shared_multi_user = is_shared_multi_user_session(
             source,
             group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
