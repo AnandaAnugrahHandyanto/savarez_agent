@@ -404,6 +404,13 @@ class _CodexCompletionsAdapter:
             if role == "system":
                 instructions = content if isinstance(content, str) else str(content)
             else:
+                # The Codex Responses input endpoint accepts only assistant,
+                # developer, system, and user roles. Chat Completions histories
+                # can include `tool` messages; for auxiliary summarization/flush
+                # calls they are context only, so preserve them as user-visible
+                # transcript text instead of forwarding an invalid role.
+                if role not in {"assistant", "developer", "user"}:
+                    role = "user"
                 input_msgs.append({
                     "role": role,
                     "content": _convert_content_for_responses(content),
