@@ -899,7 +899,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 if db is not None:
                     history = db.get_messages_as_conversation(session_id)
             except Exception as e:
-                logger.warning("Failed to load session history for %s: %s", session_id, e)
+                logger.warning("Failed to load session history for %s: %s", session_id, redact_sensitive_text(str(e)))
                 history = []
         else:
             # Derive a stable session ID from the conversation fingerprint so
