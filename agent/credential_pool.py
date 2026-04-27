@@ -1130,6 +1130,12 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
     elif provider == "nous":
         state = _load_provider_state(auth_store, "nous")
         if state:
+            try:
+                from hermes_cli.auth import is_source_suppressed
+                if is_source_suppressed(provider, "device_code"):
+                    return changed, active_sources
+            except ImportError:
+                pass
             active_sources.add("device_code")
             changed |= _upsert_entry(
                 entries,
@@ -1154,6 +1160,12 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
             )
 
     elif provider == "openai-codex":
+        try:
+            from hermes_cli.auth import is_source_suppressed
+            if is_source_suppressed(provider, "device_code"):
+                return changed, active_sources
+        except ImportError:
+            pass
         state = _load_provider_state(auth_store, "openai-codex")
         tokens = state.get("tokens") if isinstance(state, dict) else None
         # Fallback: import from Codex CLI (~/.codex/auth.json) if Hermes auth
@@ -1266,7 +1278,7 @@ def _prune_stale_seeded_entries(entries: List[PooledCredential], active_sources:
         or entry.source in active_sources
         or not (
             entry.source.startswith("env:")
-            or entry.source in {"claude_code", "hermes_pkce"}
+            or entry.source in {"claude_code", "hermes_pkce", "device_code"}
         )
     ]
     if len(retained) == len(entries):

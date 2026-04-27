@@ -618,6 +618,98 @@ def test_auth_remove_env_seeded_does_not_resurrect(tmp_path, monkeypatch):
     assert not pool.has_credentials()
 
 
+def test_auth_remove_manual_device_code_codex_does_not_resurrect(tmp_path, monkeypatch):
+    """Removing a manual device-code credential should suppress singleton reseed."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {
+                        "access_token": "tok-codex",
+                        "refresh_token": "refresh-codex",
+                    }
+                }
+            },
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-1",
+                        "label": "personal",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": "tok-codex",
+                    }
+                ]
+            },
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_remove_command
+    from agent.credential_pool import load_pool
+
+    class _Args:
+        provider = "openai-codex"
+        target = "1"
+
+    auth_remove_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    suppressed = payload.get("suppressed_sources", {})
+    assert "device_code" in suppressed.get("openai-codex", [])
+
+    pool = load_pool("openai-codex")
+    assert not pool.has_credentials()
+
+
+def test_auth_remove_manual_device_code_nous_does_not_resurrect(tmp_path, monkeypatch):
+    """Nous manual device-code removal should also suppress singleton reseed."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "nous": {
+                    "access_token": "tok-nous",
+                    "refresh_token": "refresh-nous",
+                }
+            },
+            "credential_pool": {
+                "nous": [
+                    {
+                        "id": "cred-1",
+                        "label": "nous-personal",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": "tok-nous",
+                    }
+                ]
+            },
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_remove_command
+    from agent.credential_pool import load_pool
+
+    class _Args:
+        provider = "nous"
+        target = "1"
+
+    auth_remove_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    suppressed = payload.get("suppressed_sources", {})
+    assert "device_code" in suppressed.get("nous", [])
+
+    pool = load_pool("nous")
+    assert not pool.has_credentials()
+
+
 def test_auth_remove_manual_entry_does_not_touch_env(tmp_path, monkeypatch):
     """Removing a manually-added credential should NOT touch .env."""
     hermes_home = tmp_path / "hermes"

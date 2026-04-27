@@ -313,10 +313,11 @@ def auth_remove_command(args) -> None:
     if removed is None:
         raise SystemExit(f'No credential matching "{target}" for provider {provider}.')
     print(f"Removed {provider} credential #{index} ({removed.label})")
+    source_normalized = (removed.source or "").strip().lower()
 
     # If this was an env-seeded credential, also clear the env var from .env
     # so it doesn't get re-seeded on the next load_pool() call.
-    if removed.source.startswith("env:"):
+    if source_normalized.startswith("env:"):
         env_var = removed.source[len("env:"):]
         if env_var:
             from hermes_cli.config import remove_env_value
@@ -327,7 +328,7 @@ def auth_remove_command(args) -> None:
     # If this was a singleton-seeded credential (OAuth device_code, hermes_pkce),
     # clear the underlying auth store / credential file so it doesn't get
     # re-seeded on the next load_pool() call.
-    elif removed.source == "device_code" and provider in ("openai-codex", "nous"):
+    elif source_normalized == "device_code" and provider in ("openai-codex", "nous"):
         from hermes_cli.auth import (
             _load_auth_store, _save_auth_store, _auth_store_lock,
         )
@@ -338,6 +339,18 @@ def auth_remove_command(args) -> None:
                 del providers_dict[provider]
                 _save_auth_store(auth_store)
                 print(f"Cleared {provider} OAuth tokens from auth store")
+        # Re-load to prune stale singleton-seeded entries from the pool file.
+        load_pool(provider)
+
+    # Manual device-code credentials should not trigger auth-store wiping,
+    # but we still suppress singleton reseeding to avoid "remove then reappear".
+    elif source_normalized.endswith(":device_code") and provider in ("openai-codex", "nous"):
+        from hermes_cli.auth import suppress_credential_source
+        suppress_credential_source(provider, "device_code")
+        print("Suppressed device_code reseed for this provider.")
+        # Re-load after suppression so any currently seeded device_code entry
+        # is removed from persisted credential_pool.
+        load_pool(provider)
 
     elif removed.source == "hermes_pkce" and provider == "anthropic":
         from hermes_constants import get_hermes_home
