@@ -771,8 +771,11 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 if success and job.get("retry_state"):
                     job["retry_state"] = None
 
-                # Increment completed count
-                if job.get("repeat"):
+                # Increment completed count only on success — failed runs
+                # (including exhausted retries) must not consume the repeat
+                # budget, otherwise a repeat=1 job with retry_config could
+                # be deleted after all retries fail without ever succeeding.
+                if success and job.get("repeat"):
                     job["repeat"]["completed"] = job["repeat"].get("completed", 0) + 1
 
                     # Check if we've hit the repeat limit

@@ -860,6 +860,42 @@ class TestRetryOnFailure:
         # next_run_at should be a normal schedule time (not a backoff time)
         assert updated["next_run_at"] is not None
 
+    def test_failed_runs_do_not_consume_repeat_budget(self, tmp_cron_dir):
+        """Failed runs (including exhausted retries) must not count toward the
+        repeat limit — only successful completions should consume it.
+
+        Without this, a repeat=1 one-shot job with retry_config would be
+        deleted after all retries fail without ever succeeding.
+        """
+        # Create a one-shot job (repeat=1 by default for once schedules)
+        job = create_job(prompt="One-shot with retries", schedule="1h")
+        assert job["repeat"]["times"] == 1
+        self._inject_retry_config(job["id"], self._make_retry_config(
+            max_attempts=2, backoff_seconds=60, backoff_multiplier=2.0
+        ))
+
+        # Initial failure → retry 1
+        mark_job_run(job["id"], success=False, error="err 1")
+        assert get_job(job["id"]) is not None, "job deleted after first failure — should not be"
+        assert get_job(job["id"])["repeat"]["completed"] == 0
+
+        # Retry 1 fails → retry 2
+        mark_job_run(job["id"], success=False, error="err 2")
+        assert get_job(job["id"]) is not None, "job deleted after second failure — should not be"
+        assert get_job(job["id"])["repeat"]["completed"] == 0
+
+        # Retry 2 fails → exhausted, no more retries, but job must still exist
+        mark_job_run(job["id"], success=False, error="err 3")
+        updated = get_job(job["id"])
+        assert updated is not None, (
+            "job was deleted after exhausted retries — failed runs must not "
+            "consume the repeat budget"
+        )
+        assert updated["repeat"]["completed"] == 0, (
+            "completed count should be 0 — failures must not increment it"
+        )
+        assert updated["retry_state"] is None
+
     def test_backoff_cap_respected(self, tmp_cron_dir):
         """backoff_max_seconds caps the computed delay."""
         job = create_job(prompt="Capped backoff", schedule="every 1h")
