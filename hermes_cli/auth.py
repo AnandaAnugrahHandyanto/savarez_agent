@@ -2532,6 +2532,9 @@ def _poll_for_token(
 # Nous Portal — token refresh, agent key minting, model discovery
 # =============================================================================
 
+from tools.http_tools import retryable_post
+
+
 def _refresh_access_token(
     *,
     client: httpx.Client,
@@ -2539,14 +2542,27 @@ def _refresh_access_token(
     client_id: str,
     refresh_token: str,
 ) -> Dict[str, Any]:
-    response = client.post(
-        f"{portal_base_url}/api/oauth/token",
-        data={
-            "grant_type": "refresh_token",
-            "client_id": client_id,
-            "refresh_token": refresh_token,
-        },
-    )
+    url = f"{portal_base_url}/api/oauth/token"
+    data = {
+        "grant_type": "refresh_token",
+        "client_id": client_id,
+        "refresh_token": refresh_token,
+    }
+
+    try:
+        response = retryable_post(
+            client,
+            url,
+            data=data,
+            max_attempts=3,
+            base_delay=0.5,
+            backoff_factor=2.0,
+            max_delay=10.0,
+            logger_extra={"url": url, "client_id": client_id},
+        )
+    except Exception as exc:
+        logger.warning("Nous token refresh failed after retries url=%s error=%s", url, exc, exc_info=True)
+        raise
 
     if response.status_code == 200:
         payload = response.json()
@@ -2566,12 +2582,7 @@ def _refresh_access_token(
     relogin = code in {"invalid_grant", "invalid_token"}
 
     # Detect the OAuth 2.1 "refresh token reuse" signal from the Nous portal
-    # server and surface an actionable message.  This fires when an external
-    # process (health-check script, monitoring tool, custom self-heal hook)
-    # called POST /api/oauth/token with Hermes's refresh_token without
-    # persisting the rotated token back to auth.json — the server then
-    # retires the original RT, Hermes's next refresh uses it, and the whole
-    # session chain gets revoked as a token-theft signal (#15099).
+    # server and surface an actionable message.
     lowered = description.lower()
     if "reuse" in lowered or "reuse detected" in lowered:
         description = (
