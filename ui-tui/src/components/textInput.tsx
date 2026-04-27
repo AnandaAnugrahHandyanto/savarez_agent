@@ -974,7 +974,12 @@ export function TextInput({
         setCur(next)
         curRef.current = next
       }}
-      onMouseDown={(e: { button: number; localCol?: number; localRow?: number }) => {
+      onMouseDown={(e: {
+        button: number
+        localCol?: number
+        localRow?: number
+        stopImmediatePropagation?: () => void
+      }) => {
         if (!focus) {
           return
         }
@@ -982,6 +987,7 @@ export function TextInput({
         // Right-click to paste: route through the same hotkey path as
         // Alt+V so the composer's clipboard RPC (text or image) handles it.
         if (e.button === 2) {
+          e.stopImmediatePropagation?.()
           emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
 
           return
@@ -991,20 +997,30 @@ export function TextInput({
           return
         }
 
+        e.stopImmediatePropagation?.()
         const pos = mouseOffset(e)
         const next = offsetFromPosition(display, pos.row, pos.col, columns)
         startMouseSelection(next)
       }}
-      onMouseDrag={(e: { button: number; localCol?: number; localRow?: number }) => {
+      onMouseDrag={(e: {
+        button: number
+        localCol?: number
+        localRow?: number
+        stopImmediatePropagation?: () => void
+      }) => {
         if (!focus || e.button !== 0 || mouseAnchorRef.current === null) {
           return
         }
 
+        e.stopImmediatePropagation?.()
         const pos = mouseOffset(e)
         const next = offsetFromPosition(display, pos.row, pos.col, columns)
         dragMouseSelection(next)
       }}
-      onMouseUp={endMouseSelection}
+      onMouseUp={(e: { stopImmediatePropagation?: () => void }) => {
+        e.stopImmediatePropagation?.()
+        endMouseSelection()
+      }}
       marginLeft={capturePad ? -capturePad : undefined}
       paddingLeft={capturePad || undefined}
       ref={boxRef}

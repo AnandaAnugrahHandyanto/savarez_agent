@@ -124,10 +124,11 @@ const ComposerPane = memo(function ComposerPane({
   const ui = useStore($uiState)
   const isBlocked = useStore($isBlocked)
   const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
-  const pw = sh ? 2 : 3
+  const pw = 2
   const inputColumns = stableComposerColumns(composer.cols, pw)
   const inputHeight = inputVisualHeight(composer.input, inputColumns)
   const inputMouseRef = useRef<null | TextInputMouseApi>(null)
+
   const captureInputDrag = (e: { button: number; localCol?: number; localRow?: number; stopImmediatePropagation?: () => void }) => {
     if (e.button !== 0) {
       return
@@ -136,6 +137,7 @@ const ComposerPane = memo(function ComposerPane({
     e.stopImmediatePropagation?.()
     inputMouseRef.current?.startAtBeginning()
   }
+
   const dragIntoInput = (e: { button: number; localCol?: number; localRow?: number; stopImmediatePropagation?: () => void }) => {
     if (e.button !== 0) {
       return
@@ -201,7 +203,7 @@ const ComposerPane = memo(function ComposerPane({
           <>
             {composer.inputBuf.map((line, i) => (
               <Box key={i}>
-                <Box width={3}>
+                <Box width={2}>
                   <Text color={ui.theme.color.dim}>{i === 0 ? `${ui.theme.brand.prompt} ` : '  '}</Text>
                 </Box>
 
@@ -209,13 +211,13 @@ const ComposerPane = memo(function ComposerPane({
               </Box>
             ))}
 
-            <Box position="relative">
-              <Box
-                onMouseDown={captureInputDrag}
-                onMouseDrag={dragIntoInput}
-                onMouseUp={() => inputMouseRef.current?.end()}
-                width={pw}
-              >
+            <Box
+              onMouseDown={captureInputDrag}
+              onMouseDrag={dragIntoInput}
+              onMouseUp={() => inputMouseRef.current?.end()}
+              position="relative"
+            >
+              <Box width={pw}>
                 {sh ? (
                   <Text color={ui.theme.color.shellDollar}>$ </Text>
                 ) : (
