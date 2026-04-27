@@ -554,16 +554,21 @@ class SlackAdapter(BasePlatformAdapter):
 
             # Persist Slack-reported IANA timezone so session context can inject
             # it without a second API round-trip. Used by cron creation rules.
+            # Also persist the DM channel id so user-facing reminders scheduled
+            # by other profiles (e.g. Executor) can target this DM at fire time
+            # without re-resolving via Slack API.
             tz = user.get("tz", "")
-            if tz:
-                try:
-                    _artemis_dir = _Path(
-                        os.environ.get("HERMES_HOME", str(_Path.home() / ".hermes"))
-                    ) / "artemis" / user_id
-                    _artemis_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                _artemis_dir = _Path(
+                    os.environ.get("HERMES_HOME", str(_Path.home() / ".hermes"))
+                ) / "artemis" / user_id
+                _artemis_dir.mkdir(parents=True, exist_ok=True)
+                if tz:
                     (_artemis_dir / "slack_tz.txt").write_text(tz)
-                except Exception as e:
-                    logger.warning("[Slack] slack_tz.txt write failed for %s: %s", user_id, e)
+                if chat_id and chat_id.startswith("D"):
+                    (_artemis_dir / "slack_channel.txt").write_text(chat_id)
+            except Exception as e:
+                logger.warning("[Slack] artemis/<user>/ persist failed for %s: %s", user_id, e)
 
             return name
         except Exception as e:
