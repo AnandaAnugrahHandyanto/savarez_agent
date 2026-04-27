@@ -1358,6 +1358,20 @@ class BasePlatformAdapter(ABC):
         Default is a no-op for platforms with one-shot typing indicators.
         """
         pass
+
+    async def update_thread_title(
+        self,
+        chat_id: str,
+        thread_id: str,
+        title: str,
+    ) -> bool:
+        """Rename a platform-specific thread/topic when supported.
+
+        Default implementation is a no-op so callers can optimistically try
+        to sync session titles to platform threads without special-casing
+        every adapter.
+        """
+        return False
     
     async def send_image(
         self,
@@ -1732,13 +1746,19 @@ class BasePlatformAdapter(ABC):
 
         ``generation`` lets callers tie the callback to a specific gateway run
         generation so stale runs cannot clear callbacks owned by a fresher run.
+        Multiple callbacks may be registered for the same session; matching
+        callbacks run in registration order.
         """
         if not session_key or not callable(callback):
             return
-        if generation is None:
-            self._post_delivery_callbacks[session_key] = callback
+        entry: Any = callback if generation is None else (int(generation), callback)
+        existing = self._post_delivery_callbacks.get(session_key)
+        if existing is None:
+            self._post_delivery_callbacks[session_key] = entry
+        elif isinstance(existing, list):
+            existing.append(entry)
         else:
-            self._post_delivery_callbacks[session_key] = (int(generation), callback)
+            self._post_delivery_callbacks[session_key] = [existing, entry]
 
     def pop_post_delivery_callback(
         self,
@@ -1746,22 +1766,46 @@ class BasePlatformAdapter(ABC):
         *,
         generation: int | None = None,
     ) -> Callable | None:
-        """Pop a deferred callback, optionally requiring generation ownership."""
+        """Pop deferred callbacks, optionally requiring generation ownership."""
         if not session_key:
             return None
         entry = self._post_delivery_callbacks.get(session_key)
         if entry is None:
             return None
-        if isinstance(entry, tuple) and len(entry) == 2:
-            entry_generation, callback = entry
-            if generation is not None and int(entry_generation) != int(generation):
-                return None
+
+        entries = entry if isinstance(entry, list) else [entry]
+        matched: list[Callable] = []
+        remaining: list[Any] = []
+
+        for item in entries:
+            if isinstance(item, tuple) and len(item) == 2:
+                entry_generation, callback = item
+                if generation is not None and int(entry_generation) != int(generation):
+                    remaining.append(item)
+                    continue
+                if callable(callback):
+                    matched.append(callback)
+                continue
+
+            if generation is not None:
+                remaining.append(item)
+                continue
+            if callable(item):
+                matched.append(item)
+
+        if remaining:
+            self._post_delivery_callbacks[session_key] = remaining if len(remaining) > 1 else remaining[0]
+        else:
             self._post_delivery_callbacks.pop(session_key, None)
-            return callback if callable(callback) else None
-        if generation is not None:
+
+        if not matched:
             return None
-        self._post_delivery_callbacks.pop(session_key, None)
-        return entry if callable(entry) else None
+
+        def _run_all() -> None:
+            for callback in matched:
+                callback()
+
+        return _run_all
 
     # ── Processing lifecycle hooks ──────────────────────────────────────────
     # Subclasses override these to react to message processing events

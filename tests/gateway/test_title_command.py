@@ -1,11 +1,11 @@
-"""Tests for /title gateway slash command.
+"""Tests for gateway session-title flows.
 
-Tests the _handle_title_command handler (set/show session titles)
-across all gateway messenger platforms.
+Tests the /title handler plus native gateway session-title propagation
+for manual and auto-generated titles.
 """
 
-import os
-from unittest.mock import MagicMock, patch
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -15,13 +15,14 @@ from gateway.session import SessionSource
 
 
 def _make_event(text="/title", platform=Platform.TELEGRAM,
-                user_id="12345", chat_id="67890"):
+                user_id="12345", chat_id="67890", thread_id=None):
     """Build a MessageEvent for testing."""
     source = SessionSource(
         platform=platform,
         user_id=user_id,
         chat_id=chat_id,
         user_name="testuser",
+        thread_id=thread_id,
     )
     return MessageEvent(text=text, source=source)
 
@@ -33,6 +34,7 @@ def _make_runner(session_db=None):
     runner.adapters = {}
     runner._voice_mode = {}
     runner._session_db = session_db
+    runner._background_tasks = set()
 
     # Mock session_store that returns a session entry with a known session_id
     mock_session_entry = MagicMock()
@@ -69,6 +71,264 @@ class TestHandleTitleCommand:
         # Verify in DB
         assert db.get_session_title("test_session_123") == "My Research Project"
         db.close()
+
+    @pytest.mark.asyncio
+    async def test_set_title_renames_telegram_topic_when_in_thread(self, tmp_path):
+        """Telegram /title should schedule thread-title sync via the native callback path."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("test_session_123", "telegram")
+
+        runner = _make_runner(session_db=db)
+        adapter = MagicMock()
+        adapter.update_thread_title = AsyncMock(return_value=True)
+        runner.adapters[Platform.TELEGRAM] = adapter
+
+        event = _make_event(text="/title Indicative Topic", thread_id="470094")
+        result = await runner._handle_title_command(event)
+
+        adapter.register_post_delivery_callback.assert_called_once()
+        callback = adapter.register_post_delivery_callback.call_args.args[1]
+        callback()
+        await asyncio.sleep(0)
+        adapter.update_thread_title.assert_awaited_once_with("67890", "470094", "Indicative Topic")
+        assert "Telegram topic renamed too" not in result
+        assert db.get_session_title("test_session_123") == "Indicative Topic"
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_set_title_renames_telegram_general_topic_when_thread_is_one(self, tmp_path):
+        """Telegram General topic thread_id=1 should also use the deferred sync path."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("test_session_123", "telegram")
+
+        runner = _make_runner(session_db=db)
+        adapter = MagicMock()
+        adapter.update_thread_title = AsyncMock(return_value=True)
+        runner.adapters[Platform.TELEGRAM] = adapter
+
+        event = _make_event(text="/title Lobby", thread_id="1")
+        result = await runner._handle_title_command(event)
+
+        adapter.register_post_delivery_callback.assert_called_once()
+        callback = adapter.register_post_delivery_callback.call_args.args[1]
+        callback()
+        await asyncio.sleep(0)
+        adapter.update_thread_title.assert_awaited_once_with("67890", "1", "Lobby")
+        assert "Telegram topic renamed too" not in result
+        assert db.get_session_title("test_session_123") == "Lobby"
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_set_title_skips_telegram_topic_rename_without_thread(self, tmp_path):
+        """Telegram chats without a thread_id keep the existing DB-only behavior."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("test_session_123", "telegram")
+
+        runner = _make_runner(session_db=db)
+        adapter = MagicMock()
+        adapter.update_thread_title = AsyncMock(return_value=True)
+        runner.adapters[Platform.TELEGRAM] = adapter
+
+        event = _make_event(text="/title Plain Chat Title")
+        result = await runner._handle_title_command(event)
+
+        adapter.register_post_delivery_callback.assert_not_called()
+        assert db.get_session_title("test_session_123") == "Plain Chat Title"
+        db.close()
+
+
+class TestGatewayAutoTitleSync:
+    @pytest.mark.asyncio
+    async def test_auto_title_flow_uses_same_session_title_path(self, tmp_path):
+        """Gateway auto-title should persist title and sync Telegram thread title."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("test_session_123", "telegram")
+
+        runner = _make_runner(session_db=db)
+        adapter = MagicMock()
+        adapter.update_thread_title = AsyncMock(return_value=True)
+        runner.adapters[Platform.TELEGRAM] = adapter
+        source = _make_event(thread_id="470094").source
+
+        with patch("agent.title_generator.generate_title_if_missing", return_value="Auto Topic"):
+            await runner._auto_title_gateway_session(
+                session_id="test_session_123",
+                session_key="telegram:12345:67890",
+                source=source,
+                user_message="hello",
+                assistant_response="hi there",
+            )
+
+        assert db.get_session_title("test_session_123") == "Auto Topic"
+        adapter.update_thread_title.assert_awaited_once_with("67890", "470094", "Auto Topic")
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_auto_title_skips_platform_sync_when_no_thread(self, tmp_path):
+        """Gateway auto-title without a thread should remain DB-only."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("test_session_123", "telegram")
+
+        runner = _make_runner(session_db=db)
+        adapter = MagicMock()
+        adapter.update_thread_title = AsyncMock(return_value=True)
+        runner.adapters[Platform.TELEGRAM] = adapter
+        source = _make_event().source
+
+        with patch("agent.title_generator.generate_title_if_missing", return_value="Auto Session"):
+            await runner._auto_title_gateway_session(
+                session_id="test_session_123",
+                session_key="telegram:12345:67890",
+                source=source,
+                user_message="hello",
+                assistant_response="hi there",
+            )
+
+        assert db.get_session_title("test_session_123") == "Auto Session"
+        adapter.update_thread_title.assert_not_called()
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_auto_title_skips_overwriting_existing_manual_title(self, tmp_path):
+        """Gateway auto-title should not clobber a title set while generation was in flight."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("test_session_123", "telegram")
+        db.set_session_title("test_session_123", "Manual Title")
+
+        runner = _make_runner(session_db=db)
+        adapter = MagicMock()
+        adapter.update_thread_title = AsyncMock(return_value=True)
+        runner.adapters[Platform.TELEGRAM] = adapter
+        source = _make_event(thread_id="470094").source
+
+        with patch("agent.title_generator.generate_title_if_missing", return_value="Auto Topic"):
+            await runner._auto_title_gateway_session(
+                session_id="test_session_123",
+                session_key="telegram:12345:67890",
+                source=source,
+                user_message="hello",
+                assistant_response="hi there",
+            )
+
+        assert db.get_session_title("test_session_123") == "Manual Title"
+        adapter.update_thread_title.assert_not_called()
+        db.close()
+
+
+class TestGatewayTitleHelpers:
+    @pytest.mark.asyncio
+    async def test_sync_session_title_to_source_returns_false_without_adapter_or_updater(self):
+        runner = _make_runner()
+        source = _make_event(thread_id="470094").source
+
+        assert await runner._sync_session_title_to_source(source, "Title") is False
+
+        runner.adapters[Platform.TELEGRAM] = MagicMock()
+        assert await runner._sync_session_title_to_source(source, "Title") is False
+
+    @pytest.mark.asyncio
+    async def test_sync_session_title_to_source_handles_updater_errors(self):
+        runner = _make_runner()
+        source = _make_event(thread_id="470094").source
+        adapter = MagicMock()
+        adapter.update_thread_title = AsyncMock(side_effect=RuntimeError("boom"))
+        runner.adapters[Platform.TELEGRAM] = adapter
+
+        assert await runner._sync_session_title_to_source(source, "Title") is False
+
+    @pytest.mark.asyncio
+    async def test_schedule_session_title_sync_after_delivery_falls_back_to_adapter_dict(self):
+        runner = _make_runner()
+        source = _make_event(thread_id="470094").source
+        adapter = MagicMock()
+        adapter._post_delivery_callbacks = {}
+        del adapter.register_post_delivery_callback
+        adapter.update_thread_title = AsyncMock(return_value=True)
+        runner.adapters[Platform.TELEGRAM] = adapter
+
+        scheduled = runner._schedule_session_title_sync_after_delivery(
+            session_key="telegram:12345:67890",
+            source=source,
+            title="Title",
+        )
+
+        assert scheduled is True
+        callback = adapter._post_delivery_callbacks["telegram:12345:67890"]
+        callback()
+        await asyncio.sleep(0)
+        adapter.update_thread_title.assert_awaited_once_with("67890", "470094", "Title")
+
+    @pytest.mark.asyncio
+    async def test_apply_session_title_uses_only_if_missing_path(self, tmp_path):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("test_session_123", "telegram")
+
+        runner = _make_runner(session_db=db)
+        source = _make_event(thread_id="470094").source
+
+        changed = await runner._apply_session_title(
+            session_id="test_session_123",
+            source=source,
+            title="Initial",
+            only_if_missing=True,
+        )
+        unchanged = await runner._apply_session_title(
+            session_id="test_session_123",
+            source=source,
+            title="Second",
+            only_if_missing=True,
+        )
+
+        assert changed is True
+        assert unchanged is False
+        assert db.get_session_title("test_session_123") == "Initial"
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_maybe_schedule_gateway_auto_title_registers_post_delivery_callback(self):
+        runner = _make_runner(session_db=MagicMock())
+        source = _make_event(thread_id="470094").source
+        adapter = MagicMock()
+        runner.adapters[Platform.TELEGRAM] = adapter
+
+        with patch("agent.title_generator.should_auto_title", return_value=True):
+            runner._maybe_schedule_gateway_auto_title(
+                session_id="test_session_123",
+                session_key="telegram:12345:67890",
+                source=source,
+                user_message="hello",
+                assistant_response="hi",
+                conversation_history=[{"role": "user", "content": "hello"}],
+                generation=5,
+            )
+
+        adapter.register_post_delivery_callback.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_maybe_schedule_gateway_auto_title_launches_immediately_without_adapter_registration(self):
+        runner = _make_runner(session_db=MagicMock())
+        source = _make_event(thread_id="470094").source
+
+        with patch("agent.title_generator.should_auto_title", return_value=True), \
+             patch.object(runner, "_auto_title_gateway_session", AsyncMock()) as auto_title:
+            runner._maybe_schedule_gateway_auto_title(
+                session_id="test_session_123",
+                session_key=None,
+                source=source,
+                user_message="hello",
+                assistant_response="hi",
+                conversation_history=[{"role": "user", "content": "hello"}],
+            )
+            await asyncio.sleep(0)
+
+        auto_title.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_show_title_when_set(self, tmp_path):

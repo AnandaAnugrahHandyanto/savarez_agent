@@ -56,6 +56,26 @@ def generate_title(user_message: str, assistant_response: str, timeout: float = 
         return None
 
 
+def generate_title_if_missing(
+    session_db,
+    session_id: str,
+    user_message: str,
+    assistant_response: str,
+) -> Optional[str]:
+    """Return a generated title only if the session does not already have one."""
+    if not session_db or not session_id:
+        return None
+
+    try:
+        existing = session_db.get_session_title(session_id)
+        if existing:
+            return None
+    except Exception:
+        return None
+
+    return generate_title(user_message, assistant_response)
+
+
 def auto_title_session(
     session_db,
     session_id: str,
@@ -70,18 +90,12 @@ def auto_title_session(
     - session already has a title (user-set or previously auto-generated)
     - title generation fails
     """
-    if not session_db or not session_id:
-        return
-
-    # Check if title already exists (user may have set one via /title before first response)
-    try:
-        existing = session_db.get_session_title(session_id)
-        if existing:
-            return
-    except Exception:
-        return
-
-    title = generate_title(user_message, assistant_response)
+    title = generate_title_if_missing(
+        session_db,
+        session_id,
+        user_message,
+        assistant_response,
+    )
     if not title:
         return
 
@@ -90,6 +104,12 @@ def auto_title_session(
         logger.debug("Auto-generated session title: %s", title)
     except Exception as e:
         logger.debug("Failed to set auto-generated title: %s", e)
+
+
+def should_auto_title(conversation_history: list) -> bool:
+    """Return whether this history is still early enough for auto-titling."""
+    user_msg_count = sum(1 for m in (conversation_history or []) if m.get("role") == "user")
+    return user_msg_count <= 2
 
 
 def maybe_auto_title(
@@ -108,12 +128,7 @@ def maybe_auto_title(
     if not session_db or not session_id or not user_message or not assistant_response:
         return
 
-    # Count user messages in history to detect first exchange.
-    # conversation_history includes the exchange that just happened,
-    # so for a first exchange we expect exactly 1 user message
-    # (or 2 counting system). Be generous: generate on first 2 exchanges.
-    user_msg_count = sum(1 for m in (conversation_history or []) if m.get("role") == "user")
-    if user_msg_count > 2:
+    if not should_auto_title(conversation_history):
         return
 
     thread = threading.Thread(
