@@ -121,6 +121,7 @@ const ComposerPane = memo(function ComposerPane({
   composer,
   status
 }: Pick<AppLayoutProps, 'actions' | 'composer' | 'status'>) {
+  const PROMPT_CAPTURE_PAD = 4
   const ui = useStore($uiState)
   const isBlocked = useStore($isBlocked)
   const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
@@ -206,12 +207,12 @@ const ComposerPane = memo(function ComposerPane({
 
             <Box position="relative">
               <Box
-                marginLeft={-1}
+                marginLeft={-PROMPT_CAPTURE_PAD}
                 onMouseDown={captureInputDrag}
                 onMouseDrag={dragIntoInput}
                 onMouseUp={() => inputMouseRef.current?.end()}
-                paddingLeft={1}
-                width={pw + 1}
+                paddingLeft={PROMPT_CAPTURE_PAD}
+                width={pw + PROMPT_CAPTURE_PAD}
               >
                 {sh ? (
                   <Text color={ui.theme.color.shellDollar}>$ </Text>
