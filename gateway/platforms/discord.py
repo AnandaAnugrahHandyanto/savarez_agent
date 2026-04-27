@@ -57,6 +57,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_document_from_bytes,
     SUPPORTED_DOCUMENT_TYPES,
+    validate_inbound_media_size,
 )
 from tools.url_safety import is_safe_url
 
@@ -3060,7 +3061,12 @@ class DiscordAdapter(BasePlatformAdapter):
     # non-CDN URL into the ``att.url`` field. (issue #11345)
     # ------------------------------------------------------------------
 
-    async def _read_attachment_bytes(self, att) -> Optional[bytes]:
+    async def _read_attachment_bytes(
+        self,
+        att,
+        *,
+        media_type: str = "media",
+    ) -> Optional[bytes]:
         """Read an attachment via discord.py's authenticated bot session.
 
         Returns the raw bytes on success, or ``None`` if ``att`` doesn't
@@ -3068,11 +3074,15 @@ class DiscordAdapter(BasePlatformAdapter):
         should treat ``None`` as a signal to fall back to the URL-based
         downloaders.
         """
+        attachment_size = getattr(att, "size", None)
+        if attachment_size:
+            validate_inbound_media_size(int(attachment_size), media_type=media_type)
+
         reader = getattr(att, "read", None)
         if reader is None or not callable(reader):
             return None
         try:
-            return await reader()
+            raw_bytes = await reader()
         except Exception as e:
             logger.warning(
                 "[Discord] Authenticated attachment read failed for %s: %s",
@@ -3080,6 +3090,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 e,
             )
             return None
+        validate_inbound_media_size(len(raw_bytes), media_type=media_type)
+        return raw_bytes
 
     async def _cache_discord_image(self, att, ext: str) -> str:
         """Cache a Discord image attachment to local disk.
@@ -3089,7 +3101,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         Fallback: ``cache_image_from_url`` (plain httpx, SSRF-gated).
         """
-        raw_bytes = await self._read_attachment_bytes(att)
+        raw_bytes = await self._read_attachment_bytes(att, media_type="image")
         if raw_bytes is not None:
             try:
                 return cache_image_from_bytes(raw_bytes, ext=ext)
@@ -3108,7 +3120,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         Fallback: ``cache_audio_from_url`` (plain httpx, SSRF-gated).
         """
-        raw_bytes = await self._read_attachment_bytes(att)
+        raw_bytes = await self._read_attachment_bytes(att, media_type="audio")
         if raw_bytes is not None:
             try:
                 return cache_audio_from_bytes(raw_bytes, ext=ext)
@@ -3130,7 +3142,7 @@ class DiscordAdapter(BasePlatformAdapter):
         for passing the returned bytes to ``cache_document_from_bytes``
         (and, where applicable, for injecting text content).
         """
-        raw_bytes = await self._read_attachment_bytes(att)
+        raw_bytes = await self._read_attachment_bytes(att, media_type="document")
         if raw_bytes is not None:
             return raw_bytes
 
