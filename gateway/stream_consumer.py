@@ -360,7 +360,17 @@ class GatewayStreamConsumer:
                         self._last_sent_text = ""
                         self._last_edit_time = time.monotonic()
                         if got_done:
-                            self._final_response_sent = self._already_sent
+                            # If some chunks failed, _accumulated holds the
+                            # unsent remainder.  Attempt to deliver it now so
+                            # it is not silently dropped.  Only mark the
+                            # response as fully sent when _accumulated is empty
+                            # (all chunks delivered) or when the fallback send
+                            # succeeds; otherwise leave _final_response_sent
+                            # False so the gateway's own fallback path retries.
+                            if self._accumulated:
+                                await self._send_fallback_final(self._accumulated)
+                            else:
+                                self._final_response_sent = self._already_sent
                             return
                         if got_segment_break:
                             self._message_id = None

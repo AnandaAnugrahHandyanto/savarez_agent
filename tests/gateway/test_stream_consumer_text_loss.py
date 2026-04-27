@@ -98,3 +98,49 @@ class TestAccumulatedTextPreservation:
         assert consumer._accumulated != "", (
             "Unsent text should be preserved when a chunk fails"
         )
+
+    @pytest.mark.asyncio
+    async def test_partial_chunk_failure_does_not_suppress_gateway_fallback(self):
+        """When the first chunk is delivered but subsequent chunks fail,
+        _final_response_sent must NOT be True while unsent text remains.
+
+        If _final_response_sent were set True here, the gateway would mark
+        the response as already_sent and skip its own fallback delivery,
+        permanently losing the unsent remainder."""
+        call_count = 0
+        sent_contents = []
+
+        async def partial_fail_send(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            content = kwargs.get("content", "")
+            if call_count == 1:
+                sent_contents.append(content)
+                return SimpleNamespace(success=True, message_id="msg_1")
+            raise Exception("network error on second chunk")
+
+        adapter = _make_adapter(
+            max_len=4096,
+            send_fn=partial_fail_send,
+            truncate_fn=lambda text, limit: [text[:limit], text[limit:]],
+        )
+
+        cfg = StreamConsumerConfig(buffer_threshold=10)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config=cfg)
+
+        long_text = "A" * 4000
+        consumer._queue.put(long_text)
+        consumer._queue.put(_DONE)
+
+        await consumer.run()
+
+        # The gateway uses final_response_sent to decide whether to skip
+        # its own delivery.  When text remains unsent, it must be False so
+        # the gateway can retry delivery of the full response.
+        # (The fallback send attempt inside run() also fails because the
+        # mock raises on every call after the first, so the unsent tail
+        # never reaches the user via the consumer — the gateway must do it.)
+        assert not consumer._final_response_sent, (
+            "_final_response_sent must be False when unsent text remains, "
+            "so the gateway's fallback send path is not suppressed"
+        )
