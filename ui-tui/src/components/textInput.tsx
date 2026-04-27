@@ -1023,6 +1023,7 @@ export function TextInput({
         endMouseSelection()
       }}
       ref={boxRef}
+      width={columns}
     >
       <Text wrap="wrap-char">{rendered}</Text>
     </Box>
