@@ -527,7 +527,36 @@ class TestPrompt:
         assert "Local file content resolved by Hermes before routing:" in routed
         assert f"--- BEGIN LOCAL FILE: {local_file} ---" in routed
         assert "# Draft\n\nCheck this claim." in routed
-        assert routed.startswith(f"User: review {local_file}")
+        assert f"User: review {local_file}" in routed
+
+    def test_build_routed_prompt_includes_no_tool_framing_no_history(self):
+        """Routed prompt MUST include the no-tool-framing prefix even when
+        history is empty, so MoA reference models do not hallucinate
+        <tool_call>/<function=...> XML markup."""
+        routed = _build_routed_prompt("audit this report", [])
+
+        assert "OPERATING CONSTRAINTS" in routed
+        assert "no tools" in routed.lower()
+        assert "<tool_call>" in routed  # forbidden tokens listed in prefix
+        assert "<function=" in routed
+        assert "CONTENT TO ANALYZE" in routed
+        assert "User: audit this report" in routed
+
+    def test_build_routed_prompt_includes_no_tool_framing_with_history(self):
+        """Same prefix must apply when history is present."""
+        routed = _build_routed_prompt(
+            "is this AAA?",
+            [{"role": "user", "content": "previous turn"}],
+        )
+
+        assert "OPERATING CONSTRAINTS" in routed
+        assert "Recent conversation:" in routed
+        assert "User: is this AAA?" in routed
+        # Framing must precede the conversation transcript so the model reads
+        # the constraints before any prior turns.
+        assert routed.index("OPERATING CONSTRAINTS") < routed.index(
+            "Recent conversation:"
+        )
 
     @pytest.mark.asyncio
     async def test_prompt_returns_refusal_for_unknown_session(self, agent):
