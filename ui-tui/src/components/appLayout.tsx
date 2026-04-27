@@ -178,7 +178,7 @@ const ComposerPane = memo(function ComposerPane({
           {status.stickyPrompt}
         </Text>
       ) : (
-        <Text> </Text>
+        <Box height={1} />
       )}
 
       <StatusRulePane at="top" composer={composer} status={status} />
