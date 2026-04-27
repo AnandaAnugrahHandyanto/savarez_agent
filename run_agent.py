@@ -5079,12 +5079,21 @@ class AIAgent:
         return True
 
     def _apply_client_headers_for_base_url(self, base_url: str) -> None:
-        from agent.auxiliary_client import _AI_GATEWAY_HEADERS, _OR_HEADERS
+        from agent.auxiliary_client import (
+            _AI_GATEWAY_HEADERS,
+            _OR_HEADERS,
+            _WORKERS_AI_HEADERS,
+        )
 
         if base_url_host_matches(base_url, "openrouter.ai"):
             self._client_kwargs["default_headers"] = dict(_OR_HEADERS)
         elif base_url_host_matches(base_url, "ai-gateway.vercel.sh"):
             self._client_kwargs["default_headers"] = dict(_AI_GATEWAY_HEADERS)
+        elif (
+            base_url_host_matches(base_url, "api.cloudflare.com")
+            or base_url_host_matches(base_url, "gateway.ai.cloudflare.com")
+        ):
+            self._client_kwargs["default_headers"] = dict(_WORKERS_AI_HEADERS)
         elif base_url_host_matches(base_url, "api.githubcopilot.com"):
             from hermes_cli.models import copilot_default_headers
 

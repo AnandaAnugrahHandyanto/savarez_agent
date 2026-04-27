@@ -253,3 +253,35 @@ class TestWorkersAIProvidersModule:
         overlay = HERMES_OVERLAYS["workers-ai"]
         assert overlay.transport == "openai_chat"
         assert overlay.base_url_env_var == "WORKERS_AI_BASE_URL"
+
+
+# =============================================================================
+# Client-level User-Agent header
+# =============================================================================
+
+
+class TestWorkersAIClientHeaders:
+    """Both the direct Workers AI URL and the AI Gateway URL get a
+    `HermesAgent/{version}` User-Agent so traffic is identifiable in
+    the AI Gateway dashboard's request log."""
+
+    def _apply(self, base_url):
+        from run_agent import AIAgent
+        agent = AIAgent.__new__(AIAgent)
+        agent._client_kwargs = {}
+        agent._apply_client_headers_for_base_url(base_url)
+        return agent._client_kwargs.get("default_headers") or {}
+
+    def test_user_agent_set_for_direct_api(self):
+        headers = self._apply("https://api.cloudflare.com/client/v4/accounts/abc/ai/v1")
+        assert headers.get("User-Agent", "").startswith("HermesAgent/")
+
+    def test_user_agent_set_for_ai_gateway(self):
+        headers = self._apply(
+            "https://gateway.ai.cloudflare.com/v1/abc/gw/workers-ai/v1"
+        )
+        assert headers.get("User-Agent", "").startswith("HermesAgent/")
+
+    def test_does_not_leak_to_other_providers(self):
+        headers = self._apply("https://api.openai.com/v1")
+        assert "HermesAgent/" not in headers.get("User-Agent", "")
