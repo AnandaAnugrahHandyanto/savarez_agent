@@ -26,11 +26,16 @@ import importlib.util
 import logging
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 _MEMORY_PLUGINS_DIR = Path(__file__).parent
+
+# Cache provider instances so repeated load_memory_provider() calls
+# (e.g. when AIAgent is re-created per gateway message) reuse the same
+# object instead of allocating a fresh one each time.
+_provider_instance_cache: Dict[str, "MemoryProvider"] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -163,8 +168,19 @@ def load_memory_provider(name: str) -> Optional["MemoryProvider"]:
     (``$HERMES_HOME/plugins/<name>/``) directories.  Bundled takes
     precedence on name collisions.
 
+    Provider instances are cached so that repeated calls (e.g. when a
+    new AIAgent is created per gateway message) reuse the same object
+    instead of re-importing and re-allocating.  ``initialize()`` is
+    still called on every agent turn — providers that do expensive
+    one-time work (LLM summarisation, embedding model load) should
+    guard with an internal ``_initialized`` flag.
+
     Returns None if the provider is not found or fails to load.
     """
+    # Return cached instance if available
+    if name in _provider_instance_cache:
+        return _provider_instance_cache[name]
+
     provider_dir = find_provider_dir(name)
     if not provider_dir:
         logger.debug("Memory provider '%s' not found in bundled or user plugins", name)
@@ -173,6 +189,7 @@ def load_memory_provider(name: str) -> Optional["MemoryProvider"]:
     try:
         provider = _load_provider_from_dir(provider_dir)
         if provider:
+            _provider_instance_cache[name] = provider
             return provider
         logger.warning("Memory provider '%s' loaded but no provider instance found", name)
         return None
