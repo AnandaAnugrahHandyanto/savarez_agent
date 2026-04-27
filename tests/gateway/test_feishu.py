@@ -453,9 +453,8 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         payload = json.loads(captured["request"].request_body.content)
         self.assertEqual(payload["header"]["title"]["content"], "Hermes · 回复")
         self.assertEqual(payload["header"]["template"], "blue")
-        self.assertEqual(payload["elements"][0]["tag"], "div")
-        self.assertEqual(payload["elements"][0]["text"]["tag"], "lark_md")
-        self.assertEqual(payload["elements"][0]["text"]["content"], "hello default card")
+        self.assertEqual(payload["body"]["elements"][0]["tag"], "markdown")
+        self.assertEqual(payload["body"]["elements"][0]["content"], "hello default card")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_markdown_table_defaults_to_interactive_table_card(self):
@@ -499,18 +498,18 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         payload = json.loads(captured["request"].request_body.content)
         self.assertEqual(payload["header"]["title"]["content"], "Hermes · 回复")
         self.assertEqual(payload["header"]["template"], "blue")
-        self.assertEqual(payload["elements"][0]["tag"], "div")
-        self.assertEqual(payload["elements"][0]["text"]["content"], "基金排名")
-        self.assertEqual(payload["elements"][1]["tag"], "table")
+        self.assertEqual(payload["body"]["elements"][0]["tag"], "markdown")
+        self.assertEqual(payload["body"]["elements"][0]["content"], "基金排名")
+        self.assertEqual(payload["body"]["elements"][1]["tag"], "table")
         self.assertEqual(
-            payload["elements"][1]["columns"],
+            payload["body"]["elements"][1]["columns"],
             [
                 {"name": "col_0", "display_name": "名称", "data_type": "text"},
                 {"name": "col_1", "display_name": "收益", "data_type": "text"},
             ],
         )
         self.assertEqual(
-            payload["elements"][1]["rows"],
+            payload["body"]["elements"][1]["rows"],
             [
                 {"col_0": "A", "col_1": "10%"},
                 {"col_0": "B", "col_1": "8%"},
@@ -518,7 +517,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_send_and_edit_tool_progress_use_interactive_progress_card(self):
+    def test_send_and_edit_tool_progress_use_post_progress_message(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
 
@@ -570,14 +569,14 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
 
         self.assertTrue(send_result.success)
         self.assertTrue(edit_result.success)
-        self.assertEqual(captured["creates"][0].request_body.msg_type, "interactive")
+        self.assertEqual(captured["creates"][0].request_body.msg_type, "post")
         create_payload = json.loads(captured["creates"][0].request_body.content)
-        self.assertEqual(create_payload["header"]["title"]["content"], "Hermes · 工具执行中（2）")
-        self.assertEqual(create_payload["header"]["template"], "turquoise")
-        self.assertEqual(captured["updates"][0].request_body.msg_type, "interactive")
+        self.assertIn("Hermes · 工具执行中（2）", create_payload["zh_cn"]["content"][0][0]["text"])
+        self.assertIn('💻 terminal: "pwd"', create_payload["zh_cn"]["content"][0][0]["text"])
+        self.assertEqual(captured["updates"][0].request_body.msg_type, "post")
         update_payload = json.loads(captured["updates"][0].request_body.content)
-        self.assertEqual(update_payload["header"]["title"]["content"], "Hermes · 工具执行中（2）")
-        self.assertIn('📚 read_file: "/tmp/demo.txt"', update_payload["elements"][0]["text"]["content"])
+        self.assertIn("Hermes · 工具执行中（2）", update_payload["zh_cn"]["content"][0][0]["text"])
+        self.assertIn('📚 read_file: "/tmp/demo.txt"', update_payload["zh_cn"]["content"][0][0]["text"])
 
     @patch.dict(os.environ, {}, clear=True)
     def test_get_chat_info_uses_real_feishu_chat_api(self):
@@ -2566,7 +2565,7 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(captured["request"].request_body.msg_type, "interactive")
         payload = json.loads(captured["request"].request_body.content)
         self.assertEqual(payload["header"]["title"]["content"], "Hermes · 回复")
-        self.assertEqual(payload["elements"][0]["text"]["content"], "可以用 **粗体** 和 *斜体*。")
+        self.assertEqual(payload["body"]["elements"][0]["content"], "可以用 **粗体** 和 *斜体*。")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_keeps_fenced_code_blocks_inside_interactive_reply_card(self):
@@ -2617,7 +2616,7 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(captured["request"].request_body.msg_type, "interactive")
         payload = json.loads(captured["request"].request_body.content)
         self.assertEqual(payload["header"]["title"]["content"], "Hermes · 回复")
-        self.assertEqual(payload["elements"][0]["text"]["content"], content)
+        self.assertEqual(payload["body"]["elements"][0]["content"], content)
 
     @patch.dict(os.environ, {}, clear=True)
     def test_build_post_payload_keeps_fence_like_code_lines_inside_code_block(self):
@@ -2821,7 +2820,7 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(payload["header"]["title"]["content"], "Hermes · 回复")
         self.assertEqual(payload["header"]["template"], "blue")
         self.assertEqual(
-            payload["elements"][0]["text"]["content"],
+            payload["body"]["elements"][0]["content"],
             "---\n1. 第一项\n<u>下划线</u>\n~~删除线~~",
         )
 

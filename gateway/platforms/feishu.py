@@ -1693,7 +1693,12 @@ class FeishuAdapter(BasePlatformAdapter):
         if not isinstance(payload, dict):
             return False
         candidate = payload.get("card") if isinstance(payload.get("card"), dict) else payload
-        return isinstance(candidate, dict) and ("elements" in candidate or "header" in candidate)
+        # v2.0: body.elements; v1.0: root-level elements or header
+        return isinstance(candidate, dict) and (
+            "elements" in candidate
+            or "header" in candidate
+            or (isinstance(candidate.get("body"), dict) and "elements" in candidate.get("body", {}))
+        )
 
     def _normalize_interactive_payload(self, content: str) -> str:
         try:
@@ -1715,12 +1720,18 @@ class FeishuAdapter(BasePlatformAdapter):
     @staticmethod
     def _build_interactive_card_payload(*, title: str, template: str, elements: List[Dict[str, Any]]) -> str:
         card = {
-            "config": {"wide_screen_mode": True},
+            "schema": "2.0",
+            "config": {
+                "update_multi": True,
+                "width_mode": "fill",
+            },
             "header": {
                 "title": {"content": title, "tag": "plain_text"},
                 "template": template,
             },
-            "elements": elements or [{"tag": "div", "text": {"tag": "lark_md", "content": " "}}],
+            "body": {
+                "elements": elements or [{"tag": "markdown", "content": " "}],
+            },
         }
         return json.dumps(card, ensure_ascii=False)
 
@@ -1735,19 +1746,15 @@ class FeishuAdapter(BasePlatformAdapter):
         return self._build_interactive_card_payload(
             title=title,
             template=template,
-            elements=[{"tag": "div", "text": {"tag": "lark_md", "content": body}}],
+            elements=[{"tag": "markdown", "content": body}],
         )
 
-    def _build_tool_progress_card_payload(self, content: str, *, page_no: Optional[int] = None) -> str:
+    def _build_tool_progress_post_body(self, content: str, *, page_no: Optional[int] = None) -> str:
         title = "Hermes · 工具执行中"
         if page_no and page_no > 1:
             title += f"（{page_no}）"
         body = content.strip() or "_等待工具输出_"
-        return self._build_interactive_card_payload(
-            title=title,
-            template="turquoise",
-            elements=[{"tag": "div", "text": {"tag": "lark_md", "content": body}}],
-        )
+        return f"**{title}**\n{body}"
 
     def _build_table_card_payload(
         self,
@@ -1763,7 +1770,7 @@ class FeishuAdapter(BasePlatformAdapter):
         elements: List[Dict[str, Any]] = []
         intro = parsed.get("intro") or ""
         if intro:
-            elements.append({"tag": "div", "text": {"tag": "lark_md", "content": intro}})
+            elements.append({"tag": "markdown", "content": intro})
 
         headers = parsed.get("headers") or []
         columns = [
@@ -1781,7 +1788,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
         outro = parsed.get("outro") or ""
         if outro:
-            elements.append({"tag": "div", "text": {"tag": "lark_md", "content": outro}})
+            elements.append({"tag": "markdown", "content": outro})
 
         return self._build_interactive_card_payload(title=title, template=template, elements=elements)
 
@@ -1834,11 +1841,16 @@ class FeishuAdapter(BasePlatformAdapter):
             page_no = _coerce_int((metadata or {}).get("progress_page_no"), default=None, min_value=1)
             if page_no is None:
                 page_no = _coerce_int((render_state or {}).get("page_no"), default=1, min_value=1) or 1
-            primary = (
-                "interactive",
-                self._build_tool_progress_card_payload(content, page_no=page_no),
-                {"kind": "tool_progress", "page_no": page_no},
-            )
+            progress_content = self._build_tool_progress_post_body(content, page_no=page_no)
+            text_payload = json.dumps({"text": _strip_markdown_to_plain_text(progress_content)}, ensure_ascii=False)
+            return [
+                (
+                    "post",
+                    self._build_post_payload(progress_content),
+                    {"kind": "tool_progress", "page_no": page_no},
+                ),
+                ("text", text_payload, None),
+            ]
         elif _parse_first_markdown_table(content):
             primary = (
                 "interactive",
@@ -2014,26 +2026,32 @@ class FeishuAdapter(BasePlatformAdapter):
                 }
 
             card = {
-                "config": {"wide_screen_mode": True},
+                "schema": "2.0",
+                "config": {
+                    "update_multi": True,
+                    "width_mode": "fill",
+                },
                 "header": {
                     "title": {"content": "⚠️ Command Approval Required", "tag": "plain_text"},
                     "template": "orange",
                 },
-                "elements": [
-                    {
-                        "tag": "markdown",
-                        "content": f"```\n{cmd_preview}\n```\n**Reason:** {description}",
-                    },
-                    {
-                        "tag": "action",
-                        "actions": [
-                            _btn("✅ Allow Once", "approve_once", "primary"),
-                            _btn("✅ Session", "approve_session"),
-                            _btn("✅ Always", "approve_always"),
-                            _btn("❌ Deny", "deny", "danger"),
-                        ],
-                    },
-                ],
+                "body": {
+                    "elements": [
+                        {
+                            "tag": "markdown",
+                            "content": f"```\n{cmd_preview}\n```\n**Reason:** {description}",
+                        },
+                        {
+                            "tag": "action",
+                            "actions": [
+                                _btn("✅ Allow Once", "approve_once", "primary"),
+                                _btn("✅ Session", "approve_session"),
+                                _btn("✅ Always", "approve_always"),
+                                _btn("❌ Deny", "deny", "danger"),
+                            ],
+                        },
+                    ],
+                },
             }
 
             payload = json.dumps(card, ensure_ascii=False)
@@ -2063,17 +2081,23 @@ class FeishuAdapter(BasePlatformAdapter):
         icon = "❌" if choice == "deny" else "✅"
         label = _APPROVAL_LABEL_MAP.get(choice, "Resolved")
         return {
-            "config": {"wide_screen_mode": True},
+            "schema": "2.0",
+            "config": {
+                "update_multi": True,
+                "width_mode": "fill",
+            },
             "header": {
                 "title": {"content": f"{icon} {label}", "tag": "plain_text"},
                 "template": "red" if choice == "deny" else "green",
             },
-            "elements": [
-                {
-                    "tag": "markdown",
-                    "content": f"{icon} **{label}** by {user_name}",
-                },
-            ],
+            "body": {
+                "elements": [
+                    {
+                        "tag": "markdown",
+                        "content": f"{icon} **{label}** by {user_name}",
+                    },
+                ],
+            },
         }
 
     async def send_voice(
