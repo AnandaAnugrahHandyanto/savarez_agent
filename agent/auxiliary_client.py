@@ -2358,6 +2358,7 @@ _CLIENT_CACHE_MAX_SIZE = 64  # safety belt — evict oldest when exceeded
 def _client_cache_key(
     provider: str,
     *,
+    model: Optional[str] = None,
     async_mode: bool,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
@@ -2366,7 +2367,7 @@ def _client_cache_key(
 ) -> tuple:
     runtime = _normalize_main_runtime(main_runtime)
     runtime_key = tuple(runtime.get(field, "") for field in _MAIN_RUNTIME_FIELDS) if provider == "auto" else ()
-    return (provider, async_mode, base_url or "", api_key or "", api_mode or "", runtime_key)
+    return (provider, model or "", async_mode, base_url or "", api_key or "", api_mode or "", runtime_key)
 
 
 def _store_cached_client(cache_key: tuple, client: Any, default_model: Optional[str], *, bound_loop: Any = None) -> None:
@@ -2415,6 +2416,7 @@ def _refresh_nous_auxiliary_client(
 
     cache_key = _client_cache_key(
         cache_provider,
+        model=model,
         async_mode=async_mode,
         base_url=base_url,
         api_key=api_key,
@@ -2580,6 +2582,7 @@ def _get_cached_client(
     runtime = _normalize_main_runtime(main_runtime)
     cache_key = _client_cache_key(
         provider,
+        model=model,
         async_mode=async_mode,
         base_url=base_url,
         api_key=api_key,
