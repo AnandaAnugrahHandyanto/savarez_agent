@@ -8,7 +8,7 @@ description: "Set up Hermes Agent as a Google Chat bot"
 
 Hermes Agent integrates with Google Chat via Cloud Pub/Sub for inbound events and the Chat REST API for outbound messages. No additional relay server is needed — the adapter subscribes directly to a Pub/Sub subscription where Google Chat publishes native events, and replies via the Chat API with service-account credentials.
 
-This setup works with Google Workspace — both personal Workspace accounts and organization-managed ones.
+This setup requires a **Business or Enterprise** [Google Workspace](https://workspace.google.com/) account with access to [Google Chat](https://workspace.google.com/products/chat/).
 
 **Dependencies** (not bundled with Hermes):
 
@@ -29,32 +29,36 @@ pip install google-cloud-pubsub google-auth google-api-python-client
 Before setting up Hermes, you need:
 
 1. A **Google Cloud project** with billing enabled
-2. The **Google Chat API** enabled on that project
-3. A **service account** with the Chat Bots role
-4. A **Pub/Sub topic and subscription** for inbound events
+2. The **Google Chat API** and **Cloud Pub/Sub API** enabled on that project
+3. A **service account** with a downloaded JSON key
+4. A **Pub/Sub topic and pull subscription** for inbound events
 
 ## Step 1: Create a Google Chat App
 
 1. Go to the [Google Cloud Console](https://console.cloud.google.com/).
 2. Select or create a project.
 3. Navigate to **APIs & Services** → **Enable APIs and Services**.
-4. Search for **Google Chat API** and enable it.
+4. Search for and enable both:
+   - **Google Chat API**
+   - **Cloud Pub/Sub API**
 5. In the Chat API settings, click **Configuration**:
+   - Ensure **"Build this Chat app as a Google Workspace add-on"** is **unchecked**
    - **App name**: e.g., `Hermes Agent`
    - **Avatar URL**: optional
    - **Description**: optional
-   - **Connection settings**: select **Cloud Pub/Sub**
-   - **Pub/Sub topic name**: enter the topic you'll create in Step 3
+   - **Functionality**: select **Join spaces and group conversations**
+   - **Connection settings**: select **Cloud Pub/Sub** and enter the topic name you'll create in Step 3
+   - **Visibility**: select **Make this Google Chat app available to specific people and groups in your domain** and enter your email address
+   - **Logs**: optionally select **Log errors to Logging**
 
 ## Step 2: Create a Service Account
 
 1. In the Cloud Console, go to **IAM & Admin** → **Service Accounts**.
 2. Click **Create Service Account**.
 3. Give it a name (e.g., `hermes-chat-bot`).
-4. Grant the **Chat Bots** role.
-5. Click **Done**.
-6. Open the service account, go to **Keys** → **Add Key** → **Create new key** → **JSON**.
-7. Download the JSON key file and store it securely.
+4. Click **Done** — no special Chat-specific IAM role is needed. The adapter authenticates with the Chat API using the [`chat.bot` OAuth scope](https://developers.google.com/workspace/chat/authenticate-authorize-chat-app), which is self-granted at runtime.
+5. Open the service account, go to **Keys** → **Add Key** → **Create new key** → **JSON**.
+6. Download the JSON key file and store it securely.
 
 :::warning[Service Account Key Security]
 The JSON key file grants full access to the Chat bot. Never commit it to Git or share it publicly. Store it in a secure location and reference it via `GOOGLE_CHAT_CREDENTIALS`.
@@ -64,10 +68,11 @@ The JSON key file grants full access to the Chat bot. Never commit it to Git or 
 
 1. Go to **Pub/Sub** in the Cloud Console.
 2. Create a **topic** (e.g., `hermes-chat-inbound`).
-3. Grant the Chat API's service account (`chat-api-push@system.gserviceaccount.com`) the **Pub/Sub Publisher** role on this topic.
-4. Create a **subscription** on the topic (e.g., `hermes-chat-inbound-sub`).
+3. Grant the Chat API's internal service account (`chat-api-push@system.gserviceaccount.com`) the **Pub/Sub Publisher** role on this topic. This allows Google Chat to publish events to your topic.
+4. Create a **pull subscription** on the topic (e.g., `hermes-chat-inbound-sub`):
    - Delivery type: **Pull** (not Push)
    - Acknowledgment deadline: 60 seconds recommended
+5. Grant your service account (from Step 2) the **Pub/Sub Subscriber** role on the subscription. This allows the Hermes adapter to pull events.
 
 :::info
 The Google Chat API publishes events to your Pub/Sub topic automatically once configured. Your Hermes adapter pulls from the subscription — no webhook endpoint or public URL needed.
@@ -97,6 +102,9 @@ GOOGLE_CHAT_CREDENTIALS=/path/to/service-account-key.json
 
 # Access control
 GOOGLE_CHAT_ALLOWED_USERS=alice@example.com,bob@example.com
+
+# Bypass allowlist entirely (NOT recommended — use with caution)
+# GOOGLE_CHAT_ALLOW_ALL_USERS=true
 
 # Optional: home space for cron delivery
 # GOOGLE_CHAT_HOME_CHANNEL=spaces/AAAAxxxxxxxx
@@ -135,13 +143,19 @@ The adapter supports two authentication methods:
 | **Service Account JSON** | Local development, self-hosted deployments. Set `GOOGLE_CHAT_CREDENTIALS` to the key file path. |
 | **Application Default Credentials (ADC)** | Cloud Run, GCE, or environments with `gcloud auth application-default login`. Leave `GOOGLE_CHAT_CREDENTIALS` empty. |
 
+The adapter uses two OAuth scopes at runtime — no IAM roles are needed for these:
+
+- `https://www.googleapis.com/auth/chat.bot` — lets the app send and receive messages (self-granted, no admin approval required)
+- `https://www.googleapis.com/auth/pubsub` — lets the app pull events from the subscription
+
 ## Troubleshooting
 
 ### Bot is not responding
 
 **Cause**: Pub/Sub subscription is not receiving events, or the Chat app configuration is incorrect.
 
-**Fix**: 
+**Fix**:
+
 1. Verify the Chat API is enabled and the app is configured with the correct Pub/Sub topic.
 2. Check that the `chat-api-push@system.gserviceaccount.com` service account has Publisher access to your topic.
 3. Verify `GOOGLE_CHAT_GCP_PROJECT` and `GOOGLE_CHAT_PUBSUB_SUBSCRIPTION` match your setup.
@@ -149,11 +163,14 @@ The adapter supports two authentication methods:
 
 ### "Permission denied" errors
 
-**Cause**: Service account doesn't have the required roles.
+**Cause**: Missing IAM roles or OAuth scope issues.
 
-**Fix**: Ensure the service account has:
-- **Chat Bots** role (for sending messages)
-- **Pub/Sub Subscriber** role (for pulling events)
+**Fix**: Ensure:
+
+- Your service account has the **Pub/Sub Subscriber** role on the subscription (for pulling events)
+- The `chat-api-push@system.gserviceaccount.com` account has the **Pub/Sub Publisher** role on the topic (for Google Chat to publish events)
+- The Chat API is enabled and the Chat app is configured in the same GCP project as the service account
+- The `chat.bot` OAuth scope handles message sending automatically — no Chat-specific IAM role is needed
 
 ### "User not allowed" / Bot ignores you
 
