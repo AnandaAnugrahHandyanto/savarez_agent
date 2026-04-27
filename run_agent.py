@@ -819,7 +819,7 @@ def _make_plugin_stub_handler(tool_name: str, reason: str) -> callable:
     def _stub(**kwargs):
         return (
             f"Tool '{tool_name}' is unavailable: {reason}. "
-            f"Please check your configuration or use the built-in memory tools instead."
+            f"Please check your plugin configuration."
         )
     return _stub
 
@@ -1710,14 +1710,32 @@ class AIAgent:
                         self._memory_manager = None
             except Exception as _mpe:
                 logger.warning("Memory provider plugin init failed: %s", _mpe)
+                # Collect tool schemas from the partially-initialised manager
+                # (providers were added before initialize_all() failed) so that
+                # stubs carry accurate names.  Guard against the case where the
+                # exception fired before self._memory_manager was assigned.
+                _failed_schemas: list = []
+                if self._memory_manager is not None:
+                    try:
+                        _failed_schemas = self._memory_manager.get_all_tool_schemas()
+                    except Exception:
+                        pass
                 self._memory_manager = None
                 # Register stub tools so the LLM gets a clear message instead of "tool not found"
                 _stub_reason = str(_mpe)
                 self._plugin_stub_handlers = getattr(self, "_plugin_stub_handlers", {})
-                for _schema in (memory_manager_tool_schemas or []):
-                    _stub_fn = _schema if isinstance(_schema, dict) and "name" in _schema else {}
-                    _stub_name = _stub_fn.get("name", "unknown")
-                    _stub_desc = _stub_fn.get("description", "")
+                _existing_stub_names = {
+                    t.get("function", {}).get("name")
+                    for t in (self.tools or [])
+                    if isinstance(t, dict)
+                }
+                for _schema in _failed_schemas:
+                    if not isinstance(_schema, dict):
+                        continue
+                    _stub_name = _schema.get("name", "")
+                    if not _stub_name or _stub_name in _existing_stub_names:
+                        continue  # skip unnamed or already-registered tools
+                    _stub_desc = _schema.get("description", "")
                     _stub_handler = _make_plugin_stub_handler(_stub_name, _stub_reason)
                     _stub_schema = _make_plugin_stub_schema(_stub_name, _stub_desc)
                     self._plugin_stub_handlers[_stub_name] = _stub_handler
@@ -1725,6 +1743,7 @@ class AIAgent:
                     if self.tools is not None:
                         self.tools.append(_stub_schema)
                         self.valid_tool_names.add(_stub_name)
+                        _existing_stub_names.add(_stub_name)
 
         # Inject memory provider tool schemas into the tool surface.
         # Skip tools whose names already exist (plugins may register the
