@@ -10959,7 +10959,7 @@ class GatewayRunner:
                 if _timed_out_agent and hasattr(_timed_out_agent, "interrupt"):
                     _timed_out_agent.interrupt(_INTERRUPT_REASON_TIMEOUT)
                 # Record the timeout reason for the next message in this session.
-                if hasattr(self, "_session_interrupt_reasons"):
+                if hasattr(self, "_session_interrupt_reasons") and _is_control_interrupt_message(_INTERRUPT_REASON_TIMEOUT):
                     self._session_interrupt_reasons[session_key] = _INTERRUPT_REASON_TIMEOUT
 
                 _timeout_mins = int(_agent_timeout // 60) or 1
