@@ -334,16 +334,32 @@ export function TextInput({
   const layout = useMemo(() => cursorLayout(display, cur, columns), [columns, cur, display])
   const capturePad = Math.max(0, leftCaptureColumns)
 
-  // During selection we still anchor the hardware cursor inside the input
-  // box so it can't auto-wrap onto the row below when the rendered text
-  // exactly fills the column width (terminals advance the cursor past the
-  // last cell, which lands at col 0 of the next row and shows as a ghost
-  // block).
   const boxRef = useDeclaredCursor({
-    line: selected ? 0 : layout.line,
-    column: selected ? 0 : layout.column + capturePad,
-    active: focus && termFocus
+    line: layout.line,
+    column: layout.column + capturePad,
+    active: focus && termFocus && !selected
   })
+
+  // Hide the hardware cursor while an input selection is active so it can't
+  // auto-wrap below the prompt when the rendered (inverted) text exactly
+  // fills the row, and so it doesn't paint a ghost block on the first
+  // selected cell when we re-park it. Restore on unmount or when selection
+  // clears so the cursor reappears as soon as the user resumes typing.
+  useEffect(() => {
+    if (!focus || !stdout?.isTTY) {
+      return
+    }
+
+    if (!selected) {
+      return
+    }
+
+    stdout.write('\x1b[?25l')
+
+    return () => {
+      stdout.write('\x1b[?25h')
+    }
+  }, [focus, selected, stdout])
 
   const nativeCursor = focus && termFocus && !selected && !!stdout?.isTTY
 
