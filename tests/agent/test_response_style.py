@@ -64,3 +64,20 @@ def test_guard_preserves_exact_silent_marker():
     guarded = apply_response_style_guard(response, _cfg(), "telegram", "继续")
 
     assert guarded == "[SILENT]"
+
+
+def test_guard_preserves_silent_marker_with_boundary_whitespace():
+    response = "\n  [SILENT]\t\n"
+
+    guarded = apply_response_style_guard(response, _cfg(), "telegram", "继续")
+
+    assert guarded == "[SILENT]"
+
+
+def test_guard_does_not_treat_mixed_silent_content_as_control_marker():
+    response = "[SILENT]\nResult: PR state changed"
+
+    guarded = apply_response_style_guard(response, _cfg(), "telegram", "继续")
+
+    assert guarded != "[SILENT]"
+    assert "PR state changed" in guarded

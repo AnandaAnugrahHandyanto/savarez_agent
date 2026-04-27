@@ -140,8 +140,9 @@ def apply_response_style_guard(
     """
     if not response or not is_response_style_enabled(config, platform):
         return response
-    if response in _DELIVERY_CONTROL_MARKERS:
-        return response
+    stripped_response = response.strip()
+    if stripped_response in _DELIVERY_CONTROL_MARKERS:
+        return stripped_response
     if "MEDIA:" in response or "![" in response or _MEDIA_ONLY_RE.match(response):
         return response
     if user_message and _DETAIL_REQUEST_RE.search(user_message):
