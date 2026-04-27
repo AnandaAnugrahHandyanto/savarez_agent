@@ -3997,6 +3997,15 @@ class GatewayRunner:
         if canonical == "model":
             return await self._handle_model_command(event)
 
+        if canonical == "provider":
+            return await self._handle_provider_command(event)
+
+        if canonical == "topup":
+            return await self._handle_topup_command(event)
+
+        if canonical == "balance":
+            return await self._handle_balance_command(event)
+
         if canonical == "personality":
             return await self._handle_personality_command(event)
 
@@ -6186,6 +6195,297 @@ class GatewayRunner:
             lines.append("_(session only -- add `--global` to persist)_")
 
         return "\n".join(lines)
+
+    async def _handle_provider_command(self, event: MessageEvent) -> str:
+        """Handle /provider command - show available providers."""
+        import yaml
+        from hermes_cli.models import (
+            list_available_providers,
+            normalize_provider,
+            _PROVIDER_LABELS,
+        )
+
+        # Resolve current provider from config
+        current_provider = "openrouter"
+        model_cfg = {}
+        config_path = _hermes_home / 'config.yaml'
+        try:
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                model_cfg = cfg.get("model", {})
+                if isinstance(model_cfg, dict):
+                    current_provider = model_cfg.get("provider", current_provider)
+        except Exception:
+            pass
+
+        current_provider = normalize_provider(current_provider)
+        if current_provider == "auto":
+            try:
+                from hermes_cli.auth import resolve_provider as _resolve_provider
+                current_provider = _resolve_provider(current_provider)
+            except Exception:
+                current_provider = "openrouter"
+
+        # Detect custom endpoint from config base_url
+        if current_provider == "openrouter":
+            _cfg_base = model_cfg.get("base_url", "") if isinstance(model_cfg, dict) else ""
+            if _cfg_base and "openrouter.ai" not in _cfg_base:
+                current_provider = "custom"
+
+        current_label = _PROVIDER_LABELS.get(current_provider, current_provider)
+
+        lines = [
+            f"🔌 **Current provider:** {current_label} (`{current_provider}`)",
+            "",
+            "**Available providers:**",
+        ]
+
+        providers = list_available_providers()
+        for p in providers:
+            marker = " ← active" if p["id"] == current_provider else ""
+            auth = "✅" if p["authenticated"] else "❌"
+            aliases = f"  _(also: {', '.join(p['aliases'])})_" if p["aliases"] else ""
+            lines.append(f"{auth} `{p['id']}` — {p['label']}{aliases}{marker}")
+
+        lines.append("")
+        lines.append("Switch: `/model provider:model-name`")
+        lines.append("Setup: `hermes setup`")
+        return "\n".join(lines)
+
+    async def _ppq_ensure_account(self) -> "tuple[str, str | None]":
+        """Return (api_key, error_message). Creates account if none exists."""
+        from hermes_cli.config import get_env_value, save_env_value
+        api_key = get_env_value("PPQ_API_KEY") or os.getenv("PPQ_API_KEY", "")
+        if api_key:
+            return api_key, None
+        # Create account inline — one POST, no input needed
+        try:
+            import httpx
+            async with httpx.AsyncClient() as client:
+                resp = await client.post("https://api.ppq.ai/accounts/create", timeout=15.0)
+                resp.raise_for_status()
+                result = resp.json()
+            api_key = result.get("api_key", "")
+            credit_id = result.get("credit_id", "")
+            if not api_key:
+                return "", "Failed to create PPQ account: no API key returned."
+            save_env_value("PPQ_API_KEY", api_key)
+            return api_key, (
+                f"🆕 **PPQ account created!**\n\n"
+                f"**API Key:** `{api_key}`\n"
+                f"**Credit ID:** `{credit_id}`\n\n"
+                f"⚠️ Save both values — PPQ accounts are anonymous, there is no recovery.\n"
+                f"Enter the Credit ID at ppq.ai to access your account on the web."
+            )
+        except Exception as e:
+            return "", f"Failed to create PPQ account: {e}"
+
+    async def _handle_balance_command(self, event: MessageEvent) -> str:
+        """Handle /balance command — show PPQ account balance."""
+        api_key, account_msg = await self._ppq_ensure_account()
+        if not api_key:
+            return account_msg
+        try:
+            import httpx
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    "https://api.ppq.ai/credits/balance",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json={}, timeout=5.0,
+                )
+            balance_text = "Failed to fetch balance."
+            if resp.status_code == 200:
+                balance = resp.json().get("balance")
+                if balance is not None:
+                    balance_text = f"💰 **PPQ Balance:** ${float(balance):.2f}\n\nTop up: `/topup [amount]`"
+        except Exception as e:
+            balance_text = f"Failed to fetch balance: {e}"
+
+        if account_msg:
+            return f"{account_msg}\n\n{balance_text}"
+        return balance_text
+
+    async def _handle_topup_command(self, event: MessageEvent) -> str:
+        """Handle /topup command — create a Lightning invoice for PPQ top-up.
+
+        Usage:
+            /topup          — default $1 via Lightning
+            /topup 5        — $5 via Lightning
+            /topup 10 btc   — $10 via Bitcoin
+        """
+        api_key, account_msg = await self._ppq_ensure_account()
+        if not api_key:
+            return account_msg
+
+        raw_args = event.get_command_args().strip()
+        if not raw_args or raw_args.lower() == "help":
+            return (
+                "⚡ **PPQ Top-Up**\n\n"
+                "**Usage:**\n"
+                "`/topup 1` — $1 via Lightning (min $0.10)\n"
+                "`/topup 5 xmr` — $5 via Monero\n"
+                "`/topup 10 btc` — $10 via Bitcoin\n"
+                "`/topup 2 ltc` — $2 via Litecoin\n"
+                "`/topup 2 liquid` — $2 via Liquid/Aqua\n\n"
+                "`/balance` — check current balance"
+            )
+
+        args = raw_args.split()
+        amount = 0.0
+        method = "btc-lightning"
+        _method_aliases = {
+            "lightning": "btc-lightning",
+            "bitcoin": "btc",
+            "monero": "xmr",
+            "litecoin": "ltc",
+            "liquid": "lbtc",
+            "aqua": "lbtc",
+        }
+        _method_labels = {
+            "btc-lightning": "Lightning",
+            "btc": "Bitcoin",
+            "xmr": "Monero",
+            "ltc": "Litecoin",
+            "lbtc": "Liquid",
+        }
+        _method_minimums = {
+            "btc-lightning": 0.10,
+            "btc": 10,
+            "xmr": 5,
+            "ltc": 2,
+            "lbtc": 2,
+        }
+
+        if args:
+            try:
+                amount = float(args[0])
+            except ValueError:
+                return f"Invalid amount: `{args[0]}`. Usage: `/topup [amount] [lightning|btc|xmr|ltc]`"
+        if len(args) >= 2:
+            raw_method = args[1].lower()
+            method = _method_aliases.get(raw_method, raw_method)
+
+        method_label = _method_labels.get(method, method)
+        minimum = _method_minimums.get(method, 1)
+        if amount < minimum:
+            return f"Minimum for {method_label} is ${minimum}. Try `/topup {minimum} {method}` or use Lightning (min $0.10)."
+
+        try:
+            import httpx
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"https://api.ppq.ai/topup/create/{method}",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json={"amount": amount, "currency": "USD"},
+                    timeout=15.0,
+                )
+                resp.raise_for_status()
+                result = resp.json()
+        except Exception as e:
+            return f"Failed to create invoice: {e}"
+
+        invoice_id = result.get("invoice_id", "")
+        checkout_url = result.get("checkout_url", "")
+        lightning_invoice = result.get("lightning_invoice", "")
+
+        # Send QR code image for the payment string
+        pay_string = lightning_invoice or checkout_url
+        if pay_string:
+            try:
+                import segno
+                import tempfile
+                qr = segno.make(pay_string)
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+                    qr.save(f, scale=8, border=2)
+                    qr_path = f.name
+                adapter = self.adapters.get(event.source.platform)
+                if adapter:
+                    await adapter.send_image_file(
+                        event.source.chat_id, qr_path,
+                        caption=f"⚡ PPQ Top-Up: ${amount:.2f} via {method_label}",
+                    )
+                    os.unlink(qr_path)
+            except Exception as qr_err:
+                logger.warning("QR code generation failed: %s", qr_err)
+
+        lines = [f"⚡ **PPQ Top-Up: ${amount:.2f} via {method_label}**", ""]
+
+        if checkout_url:
+            lines.append(f"🔗 **Pay here:** {checkout_url}")
+            lines.append("")
+
+        if lightning_invoice:
+            lines.append("📋 **Lightning invoice:**")
+            lines.append(f"`{lightning_invoice}`")
+            lines.append("")
+
+        lines.append("**Other methods:** `/topup 10 btc` · `/topup 5 xmr` · `/topup 2 ltc` · `/topup 2 liquid`")
+
+        # Start background payment polling
+        if invoice_id:
+            asyncio.ensure_future(self._ppq_poll_payment(
+                api_key, invoice_id, amount, event.source.platform, event.source.chat_id,
+            ))
+
+        result_text = "\n".join(lines)
+        if account_msg:
+            # Send account creation notice first, then the invoice
+            adapter = self.adapters.get(event.source.platform)
+            if adapter:
+                await adapter.send(chat_id=event.source.chat_id, content=account_msg)
+        return result_text
+
+    async def _ppq_poll_payment(
+        self, api_key: str, invoice_id: str, amount: float,
+        platform, chat_id: str,
+    ):
+        """Poll PPQ for payment confirmation and send a message when paid."""
+        import httpx
+        for _ in range(90):  # 3 minutes
+            await asyncio.sleep(2)
+            try:
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(
+                        f"https://api.ppq.ai/topup/status/{invoice_id}",
+                        headers={"Authorization": f"Bearer {api_key}"},
+                        timeout=5.0,
+                    )
+                if resp.status_code == 200:
+                    status = resp.json().get("status", "").lower()
+                    if status in ("paid", "complete", "settled", "processing"):
+                        # Check new balance
+                        balance_str = ""
+                        try:
+                            async with httpx.AsyncClient() as client:
+                                br = await client.post(
+                                    "https://api.ppq.ai/credits/balance",
+                                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                                    json={}, timeout=5.0,
+                                )
+                            if br.status_code == 200:
+                                bal = br.json().get("balance")
+                                if bal is not None:
+                                    balance_str = f"\n💰 New balance: ${float(bal):.2f}"
+                        except Exception:
+                            pass
+                        adapter = self.adapters.get(platform)
+                        if adapter:
+                            await adapter.send(
+                                chat_id=chat_id,
+                                content=f"✅ **Payment received!** ${amount:.2f} added to your PPQ balance.{balance_str}",
+                            )
+                        return
+                    elif status in ("expired", "invalid"):
+                        adapter = self.adapters.get(platform)
+                        if adapter:
+                            await adapter.send(
+                                chat_id=chat_id,
+                                content=f"⏰ PPQ top-up invoice expired. Try `/topup {amount:.0f}` again.",
+                            )
+                        return
+            except Exception:
+                pass
 
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality command - list or set a personality."""
