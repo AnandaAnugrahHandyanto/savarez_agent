@@ -96,7 +96,12 @@ class TestResponseStoreThreading:
         store.close()
 
     def test_close_while_readers_active_does_not_raise(self):
-        """close() acquires the lock so it cannot race with an in-flight query."""
+        """close() acquires the lock so it cannot race with an in-flight query.
+
+        The reader runs concurrently with close() — we call close() while the
+        reader thread is still active, then join the reader afterward.  This
+        exercises the actual lock-ordering between close() and get().
+        """
         from gateway.platforms.api_server import ResponseStore
         import time as _time
 
@@ -118,9 +123,13 @@ class TestResponseStoreThreading:
         t = threading.Thread(target=reader)
         t.start()
         _time.sleep(0.02)  # Let the reader get going
+
+        # Call close() while the reader is still active — this is the race we
+        # want to exercise.  The lock ensures close() waits for any in-flight
+        # query to finish before closing the connection.
+        store.close()
         stop_flag.set()
         t.join()
-        # close() must not raise even if called concurrently with reads
-        store.close()
 
+        # No unhandled exceptions from the reader before close() was called.
         assert not errors, f"Errors during concurrent read/close: {errors}"
