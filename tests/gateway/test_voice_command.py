@@ -424,17 +424,60 @@ class TestSendVoiceReply:
 
         with patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result) as mock_tts, \
              patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+             patch("tools.tts_tool._load_tts_config", return_value={}), \
+             patch("tools.tts_tool._get_provider", return_value="edge"), \
              patch("os.path.isfile", return_value=True), \
              patch("os.unlink"), \
              patch("os.makedirs"):
             await runner._send_voice_reply(event, "Hello world")
 
         mock_tts.assert_called_once()
-        assert mock_tts.call_args.kwargs["output_path"].endswith(".ogg")
+        assert mock_tts.call_args.kwargs["output_path"].endswith(".mp3")
         mock_adapter.send_voice.assert_called_once()
         call_args = mock_adapter.send_voice.call_args
         assert call_args.kwargs.get("chat_id") == "123"
         assert call_args.kwargs.get("audio_path") == "/tmp/test.ogg"
+
+    @pytest.mark.asyncio
+    async def test_telegram_native_opus_provider_requests_ogg(self, runner):
+        mock_adapter = AsyncMock()
+        mock_adapter.send_voice = AsyncMock()
+        event = _make_event()
+        runner.adapters[event.source.platform] = mock_adapter
+        tts_result = json.dumps({"success": True, "file_path": "/tmp/test.ogg"})
+
+        with patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result) as mock_tts, \
+             patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+             patch("tools.tts_tool._load_tts_config", return_value={}), \
+             patch("tools.tts_tool._get_provider", return_value="elevenlabs"), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.unlink"), \
+             patch("os.makedirs"):
+            await runner._send_voice_reply(event, "Hello world")
+
+        assert mock_tts.call_args.kwargs["output_path"].endswith(".ogg")
+        mock_adapter.send_voice.assert_called_once()
+        assert mock_adapter.send_voice.call_args.kwargs.get("audio_path") == "/tmp/test.ogg"
+
+    @pytest.mark.asyncio
+    async def test_telegram_unknown_provider_uses_mp3_fallback(self, runner):
+        mock_adapter = AsyncMock()
+        mock_adapter.send_voice = AsyncMock()
+        event = _make_event()
+        runner.adapters[event.source.platform] = mock_adapter
+        tts_result = json.dumps({"success": True, "file_path": "/tmp/test.ogg"})
+
+        with patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result) as mock_tts, \
+             patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+             patch("tools.tts_tool._load_tts_config", return_value={}), \
+             patch("tools.tts_tool._get_provider", return_value="unknown"), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.unlink"), \
+             patch("os.makedirs"):
+            await runner._send_voice_reply(event, "Hello world")
+
+        assert mock_tts.call_args.kwargs["output_path"].endswith(".mp3")
+        assert mock_adapter.send_voice.call_args.kwargs.get("audio_path") == "/tmp/test.ogg"
 
     @pytest.mark.asyncio
     async def test_non_telegram_keeps_mp3_intermediate(self, runner):
@@ -448,6 +491,8 @@ class TestSendVoiceReply:
 
         with patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result) as mock_tts, \
              patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+             patch("tools.tts_tool._load_tts_config", return_value={}), \
+             patch("tools.tts_tool._get_provider", return_value="elevenlabs"), \
              patch("os.path.isfile", return_value=True), \
              patch("os.unlink"), \
              patch("os.makedirs"):
@@ -467,12 +512,15 @@ class TestSendVoiceReply:
 
         with patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result) as mock_tts, \
              patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+             patch("tools.tts_tool._load_tts_config", return_value={}), \
+             patch("tools.tts_tool._get_provider", return_value="edge"), \
              patch("os.path.isfile", return_value=True), \
              patch("os.unlink"), \
              patch("os.makedirs"):
             await runner._send_voice_reply(event, long_text)
 
-        assert len(mock_tts.call_args.kwargs["text"]) == 900
+        from gateway.run import RUNNER_AUTO_TTS_REPLY_MAX_CHARS
+        assert len(mock_tts.call_args.kwargs["text"]) == RUNNER_AUTO_TTS_REPLY_MAX_CHARS
 
     @pytest.mark.asyncio
     async def test_empty_text_after_strip_skips(self, runner):

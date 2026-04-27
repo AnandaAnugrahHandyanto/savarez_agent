@@ -33,6 +33,10 @@ from typing import Dict, Optional, Any, List
 
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 
+# GatewayRunner voice replies are sent before the text reply in live chat; keep
+# the historical shorter cap to avoid unexpectedly long/costly voice messages.
+RUNNER_AUTO_TTS_REPLY_MAX_CHARS = 900
+
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
 # long-lived gateways (each AIAgent holds LLM clients, tool schemas,
@@ -40,10 +44,6 @@ from agent.account_usage import fetch_account_usage, render_account_usage_lines
 # from _enforce_agent_cache_cap() and _session_expiry_watcher() below.
 _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
-
-# Keep automatic voice replies short enough for responsive gateway delivery and
-# provider character limits; the full text reply is still sent separately.
-AUTO_TTS_REPLY_MAX_CHARS = 900
 
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
@@ -6650,19 +6650,21 @@ class GatewayRunner:
         audio_path = None
         actual_path = None
         try:
-            from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
+            from tools.tts_tool import (
+                text_to_speech_tool,
+                _strip_markdown_for_tts,
+                preferred_voice_output_extension,
+            )
 
-            tts_text = _strip_markdown_for_tts(text[:AUTO_TTS_REPLY_MAX_CHARS])
+            tts_text = _strip_markdown_for_tts(text[:RUNNER_AUTO_TTS_REPLY_MAX_CHARS])
             if not tts_text:
                 return
 
-            # Telegram voice bubbles require OGG/Opus. If we hand TTS an
-            # explicit .mp3 path here, providers may respect it and Telegram
-            # will send an audio attachment instead of a voice note. Other
-            # platforms can keep the provider-neutral MP3 intermediate.
+            # Telegram voice bubbles require Opus. Providers that can emit
+            # Opus natively should receive .ogg; Edge/local providers receive
+            # .mp3 and may return a converted .ogg path after generation.
             _platform_raw = getattr(event.source.platform, "value", None) or getattr(event.source.platform, "name", None) or event.source.platform
-            _platform_value = str(_platform_raw).split(".")[-1].lower()
-            _voice_ext = ".ogg" if _platform_value == "telegram" else ".mp3"
+            _voice_ext = preferred_voice_output_extension(str(_platform_raw))
             audio_path = os.path.join(
                 tempfile.gettempdir(), "hermes_voice",
                 f"tts_reply_{_uuid.uuid4().hex[:12]}{_voice_ext}",
