@@ -21,6 +21,7 @@ def _clear_auth_env(monkeypatch) -> None:
         "MATTERMOST_ALLOWED_USERS",
         "MATRIX_ALLOWED_USERS",
         "DINGTALK_ALLOWED_USERS", "FEISHU_ALLOWED_USERS", "WECOM_ALLOWED_USERS",
+        "WEIXIN_ALLOWED_USERS", "WEIXIN_GROUP_ALLOWED_USERS",
         "QQ_ALLOWED_USERS", "QQ_GROUP_ALLOWED_USERS",
         "GATEWAY_ALLOWED_USERS",
         "TELEGRAM_ALLOW_ALL_USERS",
@@ -33,6 +34,7 @@ def _clear_auth_env(monkeypatch) -> None:
         "MATTERMOST_ALLOW_ALL_USERS",
         "MATRIX_ALLOW_ALL_USERS",
         "DINGTALK_ALLOW_ALL_USERS", "FEISHU_ALLOW_ALL_USERS", "WECOM_ALLOW_ALL_USERS",
+        "WEIXIN_ALLOW_ALL_USERS",
         "QQ_ALLOW_ALL_USERS",
         "GATEWAY_ALLOW_ALL_USERS",
     ):
@@ -196,6 +198,44 @@ def test_telegram_group_allowlist_authorizes_forum_chat_without_user_allowlist(m
     )
 
     assert runner._is_user_authorized(source) is True
+
+
+def test_weixin_group_allowlist_authorizes_group_chat_without_user_allowlist(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WEIXIN_GROUP_ALLOWED_USERS", "group@chatroom")
+
+    runner, _adapter = _make_runner(
+        Platform.WEIXIN,
+        GatewayConfig(platforms={Platform.WEIXIN: PlatformConfig(enabled=True)}),
+    )
+    source = SessionSource(
+        platform=Platform.WEIXIN,
+        user_id="wxid_member",
+        chat_id="group@chatroom",
+        user_name="tester",
+        chat_type="group",
+    )
+
+    assert runner._is_user_authorized(source) is True
+
+
+def test_weixin_group_allowlist_does_not_authorize_other_groups(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WEIXIN_GROUP_ALLOWED_USERS", "group@chatroom")
+
+    runner, _adapter = _make_runner(
+        Platform.WEIXIN,
+        GatewayConfig(platforms={Platform.WEIXIN: PlatformConfig(enabled=True)}),
+    )
+    source = SessionSource(
+        platform=Platform.WEIXIN,
+        user_id="wxid_member",
+        chat_id="other@chatroom",
+        user_name="tester",
+        chat_type="group",
+    )
+
+    assert runner._is_user_authorized(source) is False
 
 
 @pytest.mark.asyncio
