@@ -1591,30 +1591,43 @@ class BasePlatformAdapter(ABC):
             Tuple of (list of (path, is_voice) pairs, cleaned content with tags removed).
         """
         media = []
-        cleaned = content
-        
-        # Check for [[audio_as_voice]] directive
         has_voice_tag = "[[audio_as_voice]]" in content
-        cleaned = cleaned.replace("[[audio_as_voice]]", "")
-        
+
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
         # and quoted/backticked paths for LLM-formatted outputs.
         media_pattern = re.compile(
             r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
         )
+        matched_spans: list = []
         for match in media_pattern.finditer(content):
             path = match.group("path").strip()
             if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
                 path = path[1:-1].strip()
-            path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
-            if path:
-                media.append((os.path.expanduser(path), has_voice_tag))
+            # The \S+ fallback can swallow trailing punctuation, stray
+            # backticks from un-paired LLM markdown, and other noise.
+            # Strip aggressively, then verify the path resolves to a real
+            # file before treating it as media — otherwise the warning
+            # log fills with spurious "File not found" entries.
+            path = path.lstrip("`\"'").rstrip("`\"',.;:)}]").strip("`\"'")
+            if not path:
+                continue
+            expanded = os.path.expanduser(path)
+            if not os.path.isfile(expanded):
+                continue
+            media.append((expanded, has_voice_tag))
+            matched_spans.append(match.span())
 
-        # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
-        if media:
-            cleaned = media_pattern.sub('', cleaned)
+        # Strip verified MEDIA tags by span on the original content so indices
+        # stay aligned, then apply the [[audio_as_voice]] directive strip.
+        # MEDIA-looking text without an actual file is preserved verbatim.
+        cleaned = content
+        if matched_spans:
+            for start, end in reversed(matched_spans):
+                cleaned = cleaned[:start] + cleaned[end:]
+        cleaned = cleaned.replace("[[audio_as_voice]]", "")
+        if matched_spans or has_voice_tag:
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
-        
+
         return media, cleaned
 
     @staticmethod
