@@ -99,6 +99,49 @@ Auto-tracks and removes ephemeral files created during sessions — test scripts
 
 **Disabling again:** `hermes plugins disable disk-cleanup`.
 
+### rate-limiter
+
+Cross-session rate limit guard for side clients (Nous Portal, etc.) that prevents retry amplification when rate limits are hit.
+
+**Problem:** Each 429 (rate limit) error triggers up to 9 API calls per conversation turn (3 SDK retries × 3 Hermes retries). Every call counts against RPH, so this amplification can quickly exhaust rate limits.
+
+**How it works:**
+
+| Hook | Behaviour |
+|---|---|
+| `pre_llm_call` | Check if provider is currently rate-limited. If so, skip the request and return early. |
+| `post_llm_call` | If a 429 error is received, parse reset time from headers/error context and record to shared state file. |
+
+**Reset time parsing** (priority order):
+
+1. `x-ratelimit-reset-requests-1h` - hourly RPH window (most useful)
+2. `x-ratelimit-reset-requests` - per-minute RPM window
+3. `retry-after` - generic HTTP header
+4. Default cooldown: 5 minutes (300 seconds)
+
+**Slash commands** — `/ratelimit` available in both CLI and gateway sessions:
+
+```
+/ratelimit status    # Show current rate limit status
+/ratelimit clear     # Clear rate limit state manually
+/ratelimit enable    # Enable the rate limiter
+/ratelimit disable   # Disable the rate limiter
+/ratelimit set <s>   # Set default cooldown time (seconds)
+```
+
+**State** — everything lives at `$HERMES_HOME/rate_limits/`:
+
+| File | Contents |
+|---|---|
+| `nous.json` | Rate limit state with reset_at, recorded_at, and reset_seconds |
+| `config.json` | Rate limiter config with enabled status and default_cooldown |
+
+**Safety** — atomic writes (temp file + rename) for safe concurrent access. Expired entries are automatically cleaned up on read. State file is scoped to `$HERMES_HOME/rate_limits/`.
+
+**Enabling:** `hermes plugins enable rate-limiter` (or check the box in `hermes plugins`).
+
+**Disabling again:** `hermes plugins disable rate-limiter`.
+
 ## Adding a bundled plugin
 
 Bundled plugins are written exactly like any other Hermes plugin — see [Build a Hermes Plugin](/docs/guides/build-a-hermes-plugin). The only differences are:

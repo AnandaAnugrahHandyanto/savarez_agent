@@ -1,0 +1,11 @@
+name: rate-limiter
+version: 1.0.0
+description: >
+  Slash commands for the built-in rate limiter.
+  Core enforcement is always active via run_agent.py.
+  This plugin adds /ratelimit runtime controls.
+author: LVT382009
+provides_hooks:
+  - on_session_start
+provides_slash_commands:
+  - ratelimit

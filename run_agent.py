@@ -10217,11 +10217,42 @@ class AIAgent:
             api_kwargs = None  # Guard against UnboundLocalError in except handler
 
             while retry_count < max_retries:
+                # ── General rate limit guard ──────────────────────────────
+                # Check if the provider is currently rate-limited before making
+                # the API call. This prevents retry amplification and 429 errors.
+                # Works for all providers, not just Nous.
+                try:
+                    from plugins.rate_limiter.rate_limiter import (
+                        check_rate_limit_before_call,
+                        format_remaining as _fmt_remaining,
+                    )
+                    _remaining = check_rate_limit_before_call(
+                        provider=self.provider,
+                        model=self.model,
+                    )
+                    if _remaining is not None and _remaining > 0:
+                        _rate_msg = (
+                            f"{self.provider or 'Provider'} rate limit active — "
+                            f"resets in {_fmt_remaining(_remaining)}."
+                        )
+                        self._vprint(
+                            f"{self.log_prefix}⏳ {_rate_msg} Waiting...",
+                            force=True,
+                        )
+                        self._emit_status(f"⏳ {_rate_msg}")
+                        # Wait for the rate limit to reset
+                        import time as _time
+                        _time.sleep(min(_remaining, 60.0))  # Wait up to 60s
+                        # Retry after waiting
+                        continue
+                except ImportError:
+                    pass  # Rate limiter plugin not installed
+                except Exception as exc:
+                    logger.debug("Rate limit check failed: %s", exc)
+                    pass  # Never let rate guard break the agent loop
+
                 # ── Nous Portal rate limit guard ──────────────────────
-                # If another session already recorded that Nous is rate-
-                # limited, skip the API call entirely.  Each attempt
-                # (including SDK-level retries) counts against RPH and
-                # deepens the rate limit hole.
+                # Legacy Nous-specific rate limit guard (kept for backward compatibility)
                 if self.provider == "nous":
                     try:
                         from agent.nous_rate_guard import (
