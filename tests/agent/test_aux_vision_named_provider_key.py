@@ -134,3 +134,40 @@ class TestResolveTaskProviderModelCredentialLookup:
         assert provider == "custom"
         assert base_url == "https://api.deepseek.com/v1"
         assert api_key == "deepseek-key-456"
+
+    def test_uppercase_provider_name_normalizes_to_registry_key(self, monkeypatch):
+        """provider=ZAI (uppercase) must be lowercased before registry lookup."""
+        from agent.auxiliary_client import _resolve_task_provider_model
+
+        _patch_aux_config(
+            _make_task_config("ZAI", "https://open.bigmodel.cn/api/paas/v4"),
+            monkeypatch,
+        )
+
+        fake_creds = {"api_key": "zai-key-from-env"}
+        with patch(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            return_value=fake_creds,
+        ) as mock_creds:
+            provider, model, base_url, api_key, api_mode = _resolve_task_provider_model("vision")
+
+        mock_creds.assert_called_once_with("zai")
+        assert api_key == "zai-key-from-env"
+
+    def test_non_api_key_provider_does_not_raise(self, monkeypatch):
+        """OAuth/external providers (e.g. nous) must not raise; api_key returns None."""
+        from agent.auxiliary_client import _resolve_task_provider_model
+
+        _patch_aux_config(
+            _make_task_config("nous", "https://custom-nous-endpoint.example.com/v1"),
+            monkeypatch,
+        )
+
+        with patch(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+        ) as mock_creds:
+            provider, model, base_url, api_key, api_mode = _resolve_task_provider_model("vision")
+
+        mock_creds.assert_not_called()
+        assert provider == "custom"
+        assert api_key is None

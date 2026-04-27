@@ -3052,8 +3052,10 @@ def _resolve_task_provider_model(
                         PROVIDER_REGISTRY,
                         resolve_api_key_provider_credentials,
                     )
-                    if cfg_provider in PROVIDER_REGISTRY:
-                        creds = resolve_api_key_provider_credentials(cfg_provider)
+                    norm_provider = cfg_provider.lower()
+                    pconfig = PROVIDER_REGISTRY.get(norm_provider)
+                    if pconfig and getattr(pconfig, "auth_type", None) == "api_key":
+                        creds = resolve_api_key_provider_credentials(norm_provider)
                         resolved_key = str(creds.get("api_key", "")).strip() or None
                 except ImportError:
                     pass
