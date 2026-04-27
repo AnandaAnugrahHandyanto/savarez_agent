@@ -226,29 +226,46 @@ class TestIsWsl:
 
         hermes_constants._wsl_detected = None
 
+    def _patch_proc_open(self, read_data: str):
+        """Patch ``open`` where ``is_wsl()`` resolves it (Linux CI uses LOAD_GLOBAL)."""
+        import hermes_constants
+
+        return patch.object(
+            hermes_constants,
+            "open",
+            mock_open(read_data=read_data),
+            create=True,
+        )
+
     def test_wsl2_detected(self):
         content = "Linux version 5.15.0 (microsoft-standard-WSL2)"
-        with patch("builtins.open", mock_open(read_data=content)):
+        with self._patch_proc_open(content):
             assert _is_wsl() is True
 
     def test_wsl1_detected(self):
         content = "Linux version 4.4.0-microsoft-standard"
-        with patch("builtins.open", mock_open(read_data=content)):
+        with self._patch_proc_open(content):
             assert _is_wsl() is True
 
     def test_regular_linux(self):
         content = "Linux version 6.14.0-37-generic (buildd@lcy02-amd64-049)"
-        with patch("builtins.open", mock_open(read_data=content)):
+        with self._patch_proc_open(content):
             assert _is_wsl() is False
 
     def test_proc_version_missing(self):
-        with patch("builtins.open", side_effect=FileNotFoundError):
+        import hermes_constants
+
+        with patch.object(
+            hermes_constants,
+            "open",
+            side_effect=FileNotFoundError,
+            create=True,
+        ):
             assert _is_wsl() is False
 
     def test_result_is_cached(self):
-        import hermes_constants
         content = "Linux version 5.15.0 (microsoft-standard-WSL2)"
-        with patch("builtins.open", mock_open(read_data=content)) as m:
+        with self._patch_proc_open(content) as m:
             assert _is_wsl() is True
             assert _is_wsl() is True
             m.assert_called_once()  # only read once

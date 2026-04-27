@@ -105,9 +105,10 @@ def test_get_container_exec_info_defaults(monkeypatch):
         )
 
         monkeypatch.delenv("HERMES_DEV", raising=False)
+        # Align with real resolution (and conftest HERMES_HOME): patch alone can miss on CI.
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
-        with patch("hermes_constants.is_container", return_value=False), \
-             patch("hermes_cli.config.get_hermes_home", return_value=hermes_home):
+        with patch("hermes_constants.is_container", return_value=False):
             info = get_container_exec_info()
 
         assert info is not None
