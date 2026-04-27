@@ -1859,6 +1859,35 @@ def _normalize_vision_provider(provider: Optional[str]) -> str:
     return _normalize_aux_provider(provider)
 
 
+def _resolve_provider_api_key(provider: str) -> Optional[str]:
+    """Try to resolve an API key for a named provider from its credential pool.
+
+    Used when a named provider (e.g. ``zai``) is configured with a custom
+    ``base_url`` so that the provider's env-var key (``ZAI_API_KEY``) is
+    still consulted instead of falling back to the generic ``OPENAI_API_KEY``
+    pool.  Returns the resolved key, or None if unavailable.
+    """
+    try:
+        from hermes_cli.auth import (
+            PROVIDER_REGISTRY,
+            resolve_api_key_provider_credentials,
+        )
+    except ImportError:
+        return None
+
+    pconfig = PROVIDER_REGISTRY.get(provider)
+    if pconfig is None or pconfig.auth_type != "api_key":
+        return None
+
+    # _resolve_api_key_provider_secret checks env vars and auth store
+    try:
+        creds = resolve_api_key_provider_credentials(provider)
+        key = (creds.get("api_key") or "").strip()
+        return key or None
+    except Exception:
+        return None
+
+
 def _resolve_strict_vision_backend(provider: str) -> Tuple[Optional[Any], Optional[str]]:
     provider = _normalize_vision_provider(provider)
     if provider == "openrouter":
@@ -1933,6 +1962,11 @@ def resolve_vision_provider_client(
         return resolved_provider, sync_client, final_model
 
     if resolved_base_url:
+        # When a named provider accompanies a base_url (e.g. zai + custom
+        # endpoint), resolve credentials from that provider's pool first.
+        # Only fall back to "custom" for unrecognised providers.  Fixes #16290.
+        if requested and requested != "custom":
+            resolved_api_key = resolved_api_key or _resolve_provider_api_key(requested)
         client, final_model = resolve_provider_client(
             "custom",
             model=resolved_model,
@@ -2262,9 +2296,10 @@ def _resolve_task_provider_model(
       3. "auto" (full auto-detection chain)
 
     Returns (provider, model, base_url, api_key, api_mode) where model may
-    be None (use provider default). When base_url is set, provider is forced
-    to "custom" and the task uses that direct endpoint. api_mode is one of
-    "chat_completions", "codex_responses", or None (auto-detect).
+    be None (use provider default). When base_url is set *without* an
+    explicit provider, provider defaults to "custom".  When both provider
+    and base_url are configured, the named provider is preserved so that
+    its credential pool (e.g. ZAI_API_KEY) is consulted.
     """
     cfg_provider = None
     cfg_model = None
@@ -2283,6 +2318,11 @@ def _resolve_task_provider_model(
     resolved_model = model or cfg_model
     resolved_api_mode = cfg_api_mode
 
+    # When both provider and base_url are explicitly given, preserve the
+    # named provider so its credential pool is consulted.  Only force
+    # "custom" when base_url is set without a named provider.  Fixes #16290.
+    if base_url and provider:
+        return provider, resolved_model, base_url, api_key, resolved_api_mode
     if base_url:
         return "custom", resolved_model, base_url, api_key, resolved_api_mode
     if provider:
@@ -2291,6 +2331,11 @@ def _resolve_task_provider_model(
     if task:
         # Config.yaml is the primary source for per-task overrides.
         if cfg_base_url:
+            # When a named provider is configured alongside base_url, preserve
+            # the provider so its credential pool is consulted.  Only fall back
+            # to "custom" when no explicit provider is set.  Fixes #16290.
+            if cfg_provider and cfg_provider != "auto":
+                return cfg_provider, resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
             return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
         if cfg_provider and cfg_provider != "auto":
             return cfg_provider, resolved_model, None, None, resolved_api_mode
