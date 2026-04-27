@@ -257,6 +257,8 @@ class TestStartupGuard:
         env = {
             "TWILIO_ACCOUNT_SID": "ACtest",
             "TWILIO_AUTH_TOKEN": "tok",
+            "TWILIO_PHONE_NUMBER": "",
+            "SMS_WEBHOOK_URL": "",
         }
         with patch.dict(os.environ, env, clear=False):
             pc = PlatformConfig(enabled=True, api_key="tok")
