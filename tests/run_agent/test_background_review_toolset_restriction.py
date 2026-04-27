@@ -64,11 +64,21 @@ def test_background_review_does_not_narrow_toolset_schema():
     agent = _make_agent_stub(run_agent.AIAgent)
     captured = {}
 
-    def _capture_init(self, *args, **kwargs):
-        captured["enabled_toolsets"] = kwargs.get("enabled_toolsets", "UNSET")
-        raise RuntimeError("stop after capturing init args")
+    class _ReviewAgent:
+        def __init__(self, *args, **kwargs):
+            captured["enabled_toolsets"] = kwargs.get("enabled_toolsets", "UNSET")
+            self._session_messages = []
 
-    with patch.object(run_agent.AIAgent, "__init__", _capture_init), \
+        def run_conversation(self, *args, **kwargs):
+            return {"final_response": "", "messages": []}
+
+        def shutdown_memory_provider(self):
+            return None
+
+        def close(self):
+            return None
+
+    with patch("run_agent.AIAgent", _ReviewAgent), \
          patch("threading.Thread", _SyncThread):
         agent._spawn_background_review(
             messages_snapshot=[],

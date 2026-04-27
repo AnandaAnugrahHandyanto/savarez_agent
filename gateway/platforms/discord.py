@@ -4560,6 +4560,10 @@ class DiscordAdapter(BasePlatformAdapter):
 
         # When auto-threading kicked in, route responses to the new thread
         effective_channel = auto_threaded_channel or message.channel
+        message_guild = getattr(message, "guild", None) or getattr(
+            message.channel, "guild", None
+        )
+        message_guild_id = getattr(message_guild, "id", None)
 
         # Determine chat type
         if isinstance(message.channel, discord.DMChannel):
@@ -4590,7 +4594,7 @@ class DiscordAdapter(BasePlatformAdapter):
             thread_id=thread_id,
             chat_topic=chat_topic,
             is_bot=getattr(message.author, "bot", False),
-            guild_id=str(guild.id) if guild else None,
+            guild_id=str(message_guild_id) if message_guild_id is not None else None,
             parent_chat_id=parent_channel_id,
             message_id=str(message.id),
         )

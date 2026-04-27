@@ -8,13 +8,8 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from hermes_cli.config import (
-    DEFAULT_CONFIG,
-    reload_env,
-    redact_key,
-    _EXTRA_ENV_KEYS,
-    OPTIONAL_ENV_VARS,
-)
+import hermes_cli.config as config_module
+from hermes_cli.config import DEFAULT_CONFIG, redact_key, _EXTRA_ENV_KEYS
 
 
 # ---------------------------------------------------------------------------
@@ -29,9 +24,9 @@ class TestReloadEnv:
         """reload_env() adds vars from .env that are not in os.environ."""
         env_file = tmp_path / ".env"
         env_file.write_text("TEST_RELOAD_VAR=hello123\n")
-        with patch.dict(reload_env.__globals__, {"get_env_path": lambda: env_file}):
+        with patch.object(config_module, "get_env_path", return_value=env_file):
             os.environ.pop("TEST_RELOAD_VAR", None)
-            count = reload_env()
+            count = config_module.reload_env()
             assert count >= 1
             assert os.environ.get("TEST_RELOAD_VAR") == "hello123"
         os.environ.pop("TEST_RELOAD_VAR", None)
@@ -40,11 +35,11 @@ class TestReloadEnv:
         """reload_env() updates vars whose value changed on disk."""
         env_file = tmp_path / ".env"
         env_file.write_text("TEST_RELOAD_VAR=old_value\n")
-        with patch.dict(reload_env.__globals__, {"get_env_path": lambda: env_file}):
+        with patch.object(config_module, "get_env_path", return_value=env_file):
             os.environ["TEST_RELOAD_VAR"] = "old_value"
             # Now change the file
             env_file.write_text("TEST_RELOAD_VAR=new_value\n")
-            count = reload_env()
+            count = config_module.reload_env()
             assert count >= 1
             assert os.environ.get("TEST_RELOAD_VAR") == "new_value"
         os.environ.pop("TEST_RELOAD_VAR", None)
@@ -54,10 +49,10 @@ class TestReloadEnv:
         env_file = tmp_path / ".env"
         env_file.write_text("")  # empty .env
         # Pick a known key from OPTIONAL_ENV_VARS
-        known_key = next(iter(OPTIONAL_ENV_VARS.keys()))
-        with patch.dict(reload_env.__globals__, {"get_env_path": lambda: env_file}):
+        known_key = next(iter(config_module.OPTIONAL_ENV_VARS.keys()))
+        with patch.object(config_module, "get_env_path", return_value=env_file):
             os.environ[known_key] = "stale_value"
-            count = reload_env()
+            count = config_module.reload_env()
             assert known_key not in os.environ
             assert count >= 1
 
@@ -65,9 +60,9 @@ class TestReloadEnv:
         """reload_env() preserves non-Hermes env vars even when absent from .env."""
         env_file = tmp_path / ".env"
         env_file.write_text("")
-        with patch.dict(reload_env.__globals__, {"get_env_path": lambda: env_file}):
+        with patch.object(config_module, "get_env_path", return_value=env_file):
             os.environ["MY_CUSTOM_UNRELATED_VAR"] = "keep_me"
-            reload_env()
+            config_module.reload_env()
             assert os.environ.get("MY_CUSTOM_UNRELATED_VAR") == "keep_me"
         os.environ.pop("MY_CUSTOM_UNRELATED_VAR", None)
 

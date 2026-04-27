@@ -93,28 +93,27 @@ def test_get_container_exec_info_not_skipped_when_hermes_dev_zero(container_env,
     assert info is not None
 
 
-def test_get_container_exec_info_defaults():
+def test_get_container_exec_info_defaults(tmp_path, monkeypatch):
     """Falls back to defaults for missing keys."""
-    import tempfile
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("HERMES_DEV", raising=False)
+    (hermes_home / ".container-mode").write_text(
+        "# minimal file with no keys\n"
+    )
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        hermes_home = Path(tmpdir) / ".hermes"
-        hermes_home.mkdir()
-        (hermes_home / ".container-mode").write_text(
-            "# minimal file with no keys\n"
-        )
+    with patch("hermes_constants.is_container", return_value=False), \
+         patch.dict(get_container_exec_info.__globals__, {"get_hermes_home": lambda: hermes_home}), \
+         patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("HERMES_DEV", None)
+        info = get_container_exec_info()
 
-        with patch("hermes_constants.is_container", return_value=False), \
-             patch.dict(get_container_exec_info.__globals__, {"get_hermes_home": lambda: hermes_home}), \
-             patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("HERMES_DEV", None)
-            info = get_container_exec_info()
-
-        assert info is not None
-        assert info["backend"] == "docker"
-        assert info["container_name"] == "hermes-agent"
-        assert info["exec_user"] == "hermes"
-        assert info["hermes_bin"] == "/data/current-package/bin/hermes"
+    assert info is not None
+    assert info["backend"] == "docker"
+    assert info["container_name"] == "hermes-agent"
+    assert info["exec_user"] == "hermes"
+    assert info["hermes_bin"] == "/data/current-package/bin/hermes"
 
 
 def test_get_container_exec_info_docker_backend(container_env):

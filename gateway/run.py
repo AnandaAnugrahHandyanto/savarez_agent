@@ -15465,28 +15465,37 @@ class GatewayRunner:
         except Exception:
             pass
 
-        # Tool progress mode — resolved per-platform with env var fallback
-        _resolved_tp = resolve_display_setting(user_config, platform_key, "tool_progress")
-        _env_tp = os.getenv("HERMES_TOOL_PROGRESS_MODE")
-        _display_cfg = display_config if isinstance(display_config, dict) else {}
-        _platforms_cfg = _display_cfg.get("platforms") or {}
-        _platform_cfg = _platforms_cfg.get(platform_key) or {}
-        _legacy_tp_overrides = _display_cfg.get("tool_progress_overrides") or {}
-        _tool_progress_configured = (
-            "tool_progress" in _display_cfg
+        # Tool progress mode — resolved per-platform with env var fallback.
+        # Keep the deprecated env var able to override built-in platform
+        # defaults, but not explicit config.yaml choices.
+        _env_tool_progress_mode = os.getenv("HERMES_TOOL_PROGRESS_MODE")
+        _display_platforms = display_config.get("platforms")
+        _platform_display = (
+            _display_platforms.get(platform_key)
+            if isinstance(_display_platforms, dict)
+            else None
+        )
+        _legacy_tool_progress_overrides = display_config.get("tool_progress_overrides")
+        _explicit_tool_progress = (
+            "tool_progress" in display_config
             or (
-                isinstance(_platform_cfg, dict)
-                and "tool_progress" in _platform_cfg
+                isinstance(_platform_display, dict)
+                and "tool_progress" in _platform_display
             )
             or (
-                isinstance(_legacy_tp_overrides, dict)
-                and platform_key in _legacy_tp_overrides
+                isinstance(_legacy_tool_progress_overrides, dict)
+                and platform_key in _legacy_tool_progress_overrides
             )
         )
+        _resolved_tp = resolve_display_setting(user_config, platform_key, "tool_progress")
         progress_mode = (
-            _env_tp
-            if _env_tp and not _tool_progress_configured
-            else (_resolved_tp or _env_tp or "all")
+            _env_tool_progress_mode
+            if _env_tool_progress_mode and not _explicit_tool_progress
+            else None
+        ) or (
+            _resolved_tp
+            or _env_tool_progress_mode
+            or "all"
         )
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.

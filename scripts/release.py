@@ -372,6 +372,7 @@ AUTHOR_MAP = {
     "scott@scotttrinh.com": "scotttrinh",
     "quocanh261997@gmail.com": "quocanh261997",
     # contributors (from noreply pattern)
+    "davidzhe@gmail.com": "TheCookieLab",
     "david.vv@icloud.com": "davidvv",
     "wangqiang@wangqiangdeMac-mini.local": "xiaoqiang243",
     "snreynolds2506@gmail.com": "snreynolds",

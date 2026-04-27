@@ -890,6 +890,19 @@ class TestAgentCacheSpilloverLive:
             platform="telegram",
         )
 
+    def _lightweight_agent(self):
+        """Small cache participant for lock/cap stress without AIAgent startup."""
+        import time as _t
+
+        class _Agent:
+            def __init__(self):
+                self._last_activity_ts = _t.time()
+
+            def release_clients(self):
+                pass
+
+        return _Agent()
+
     def test_fill_to_cap_then_spillover(self, monkeypatch):
         """Fill to cap with real agents, insert one more, oldest evicted."""
         from gateway import run as gw_run
@@ -956,6 +969,57 @@ class TestAgentCacheSpilloverLive:
             except Exception:
                 pass
 
+    def test_concurrent_inserts_settle_at_cap(self, monkeypatch):
+        """Many concurrent cache inserts settle at CAP without deadlocking.
+
+        This test targets the cache lock and LRU cap path.  Full AIAgent
+        construction is intentionally excluded from the stress loop because
+        separate live spillover tests cover real agents, and constructor
+        cost can dominate CI workers before this test reaches the cache path.
+        """
+        from gateway import run as gw_run
+        import time as _t
+
+        CAP = 16
+        monkeypatch.setattr(gw_run, "_AGENT_CACHE_MAX_SIZE", CAP)
+        runner = self._runner()
+
+        N_THREADS = 8
+        PER_THREAD = 20  # 8 * 20 = 160 inserts into a 16-slot cache
+        start = threading.Barrier(N_THREADS)
+        errors = []
+
+        def worker(tid: int):
+            try:
+                start.wait(timeout=5)
+                for j in range(PER_THREAD):
+                    a = self._lightweight_agent()
+                    key = f"t{tid}-s{j}"
+                    with runner._agent_cache_lock:
+                        runner._agent_cache[key] = (a, "sig")
+                        runner._enforce_agent_cache_cap()
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=worker, args=(t,), daemon=True)
+            for t in range(N_THREADS)
+        ]
+        for t in threads:
+            t.start()
+        deadline = _t.monotonic() + 10
+        for t in threads:
+            t.join(timeout=max(0.0, deadline - _t.monotonic()))
+            assert not t.is_alive(), "Worker thread hung — possible deadlock?"
+        assert errors == []
+
+        # Let daemon cleanup threads settle.
+        _t.sleep(0.5)
+
+        assert len(runner._agent_cache) == CAP, (
+            f"Expected exactly {CAP} entries after concurrent inserts, "
+            f"got {len(runner._agent_cache)}."
+        )
 
     def test_evicted_session_next_turn_gets_fresh_agent(self, monkeypatch):
         """After eviction, the same session_key can insert a fresh agent.
