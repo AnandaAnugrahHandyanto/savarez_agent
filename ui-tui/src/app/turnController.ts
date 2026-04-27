@@ -423,7 +423,12 @@ class TurnController {
   recordMessageComplete(payload: { rendered?: string; reasoning?: string; text?: string }) {
     this.closeReasoningSegment()
 
-    const rawText = (payload.rendered ?? payload.text ?? this.bufRef).trimStart()
+    // Prefer raw text over `rendered` — the gateway may populate `rendered`
+    // with Rich-generated ANSI (cursor moves, line clears, color codes) when
+    // `final_response_markdown: render` is set. Ink's <Md> renderer cannot
+    // interpret those sequences and will display them as garbled output. Fall
+    // back to `rendered` only if the gateway didn't send `text`.
+    const rawText = (payload.text ?? payload.rendered ?? this.bufRef).trimStart()
     const split = splitReasoning(rawText)
     const finalText = finalTail(split.text, this.segmentMessages)
     const existingReasoning = this.reasoningText.trim() || String(payload.reasoning ?? '').trim()
@@ -508,7 +513,7 @@ class TurnController {
     return { finalMessages, finalText, wasInterrupted }
   }
 
-  recordMessageDelta({ rendered, text }: { rendered?: string; text?: string }) {
+  recordMessageDelta({ text }: { rendered?: string; text?: string }) {
     this.pruneTransient()
     this.endReasoningPhase()
 
@@ -516,7 +521,10 @@ class TurnController {
       return
     }
 
-    this.bufRef = rendered ?? this.bufRef + text
+    // Ignore `rendered` during streaming. It carries an *incomplete* Rich
+    // ANSI fragment and using it would replace the whole accumulated buffer
+    // with that fragment on every delta, dropping prior content.
+    this.bufRef = this.bufRef + text
 
     if (getUiState().streaming) {
       this.scheduleStreaming()

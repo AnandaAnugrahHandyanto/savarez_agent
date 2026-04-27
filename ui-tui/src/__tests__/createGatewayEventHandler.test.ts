@@ -474,4 +474,53 @@ describe('createGatewayEventHandler', () => {
 
     expect(getTurnState().activity).toMatchObject([{ text: 'boom', tone: 'error' }])
   })
+
+  // The gateway populates `payload.rendered` with Rich-generated ANSI when
+  // `final_response_markdown: render` is set. Ink's <Md> renderer cannot
+  // interpret those sequences and would display them as garbled output —
+  // overlapping text, color layering, escape artifacts. The TUI must prefer
+  // the raw `payload.text` so its own markdown renderer takes over.
+  it('prefers raw payload.text over rendered ANSI for the final assistant message', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    onEvent({
+      payload: {
+        rendered: '\x1b[1mhello\x1b[0m\x1b[A\x1b[K', // Rich ANSI: bold + cursor moves
+        text: '**hello**'
+      },
+      type: 'message.complete'
+    } as any)
+
+    const final = appended.find(msg => msg.role === 'assistant')
+    expect(final?.text).toBe('**hello**')
+    expect(final?.text).not.toContain('\x1b[')
+  })
+
+  it('ignores rendered fragment in message.delta and accumulates raw text', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: {}, type: 'message.start' } as any)
+
+    // Two delta ticks. `rendered` carries an *incomplete* Rich fragment on
+    // each tick — using it would replace the full accumulated buffer and
+    // drop prior content. Only `text` should accumulate.
+    onEvent({
+      payload: { rendered: '\x1b[1mhel', text: 'hel' },
+      type: 'message.delta'
+    } as any)
+    onEvent({
+      payload: { rendered: 'lo\x1b[0m', text: 'lo' },
+      type: 'message.delta'
+    } as any)
+    onEvent({
+      payload: { text: 'hello' }, // no rendered: confirms text path is canonical
+      type: 'message.complete'
+    } as any)
+
+    const final = appended.find(msg => msg.role === 'assistant')
+    expect(final?.text).toBe('hello')
+  })
 })
