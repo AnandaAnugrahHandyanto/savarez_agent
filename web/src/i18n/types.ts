@@ -269,6 +269,8 @@ export interface Translations {
     modelSaved: string;
     gatewayDidNotStart: string;
     checkLog: string;
+    tokenShared: string;
+    sharedWith: string;
   };
 
   // ── Skills page ──

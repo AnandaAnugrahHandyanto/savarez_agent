@@ -673,6 +673,47 @@ class TestNewEndpoints:
         )
         assert resp.status_code == 404
 
+    def test_profiles_listing_flags_shared_exclusive_tokens(self, monkeypatch):
+        """Two profiles holding the same WEIXIN_TOKEN must be flagged as
+        sharing it; an unrelated profile must not be flagged."""
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "_cleanup_gateway_service", lambda *a, **kw: None)
+
+        # Three profiles: two with identical Weixin token, one with a unique
+        # Telegram token (which therefore shares with nobody).
+        for name in ("share-a", "share-b", "share-c"):
+            self.client.post("/api/profiles", json={"name": name})
+
+        a_dir = profiles_mod.get_profile_dir("share-a")
+        b_dir = profiles_mod.get_profile_dir("share-b")
+        c_dir = profiles_mod.get_profile_dir("share-c")
+
+        (a_dir / ".env").write_text(
+            "WEIXIN_TOKEN=shared-weixin-12345\n", encoding="utf-8"
+        )
+        (b_dir / ".env").write_text(
+            'WEIXIN_TOKEN="shared-weixin-12345"\n'  # quoted, must still match
+            "TELEGRAM_BOT_TOKEN=unique-tg\n",
+            encoding="utf-8",
+        )
+        (c_dir / ".env").write_text(
+            "TELEGRAM_BOT_TOKEN=different-tg\n", encoding="utf-8"
+        )
+
+        listing = self.client.get("/api/profiles").json()
+        by_name = {p["name"]: p for p in listing["profiles"]}
+
+        assert by_name["share-a"]["shared_tokens"] == [
+            {"key": "WEIXIN_TOKEN", "with": ["share-b"]}
+        ]
+        assert by_name["share-b"]["shared_tokens"] == [
+            {"key": "WEIXIN_TOKEN", "with": ["share-a"]}
+        ]
+        assert by_name["share-c"]["shared_tokens"] == []
+
+        for name in ("share-a", "share-b", "share-c"):
+            self.client.delete(f"/api/profiles/{name}")
+
     def test_profiles_rename_always_tears_down_service(self, monkeypatch):
         """Regression: rename must call ``_cleanup_gateway_service`` even when
         ``_check_gateway_running`` reports False.

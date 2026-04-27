@@ -2142,11 +2142,86 @@ def _profile_to_dict(info) -> Dict[str, Any]:
     }
 
 
+# Bot-credential env vars that lock to a single gateway at runtime — sharing
+# the value across profiles guarantees only one gateway will succeed at
+# starting that platform. Keep this aligned with the platform adapters'
+# ``_acquire_platform_lock(...)`` calls in gateway/platforms/*.py.
+_EXCLUSIVE_TOKEN_ENV_KEYS = (
+    "WEIXIN_TOKEN",
+    "TELEGRAM_BOT_TOKEN",
+    "DISCORD_BOT_TOKEN",
+)
+
+
+def _read_env_subset(env_path: Path, keys: tuple) -> Dict[str, str]:
+    """Read a tiny subset of KEY=value pairs from a .env file.
+
+    Tolerates surrounding quotes and ignores comments. Returns only the keys
+    we asked for and only when their value is non-empty.
+    """
+    out: Dict[str, str] = {}
+    try:
+        text = env_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return out
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if key not in keys:
+            continue
+        value = value.strip()
+        if (value.startswith('"') and value.endswith('"')) or (
+            value.startswith("'") and value.endswith("'")
+        ):
+            value = value[1:-1]
+        if value:
+            out[key] = value
+    return out
+
+
+def _detect_shared_tokens(profiles_list) -> Dict[str, List[Dict[str, Any]]]:
+    """Return a map ``profile_name -> [{key, with}]`` for each exclusive
+    credential env var that two or more profiles set to the same value.
+
+    Trying to start two gateways with identical Weixin/Telegram/Discord
+    tokens always loses one of them to ``_acquire_platform_lock`` — surface
+    this on the dashboard before users hit it.
+    """
+    from collections import defaultdict
+    value_to_profiles: Dict[tuple, List[str]] = defaultdict(list)
+    for info in profiles_list:
+        env_path = info.path / ".env"
+        if not env_path.exists():
+            continue
+        env_values = _read_env_subset(env_path, _EXCLUSIVE_TOKEN_ENV_KEYS)
+        for key, value in env_values.items():
+            value_to_profiles[(key, value)].append(info.name)
+
+    result: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for (key, _value), names in value_to_profiles.items():
+        if len(names) < 2:
+            continue
+        for name in names:
+            result[name].append(
+                {"key": key, "with": [n for n in names if n != name]}
+            )
+    return dict(result)
+
+
 @app.get("/api/profiles")
 async def list_profiles_endpoint():
     from hermes_cli import profiles as profiles_mod
     active = profiles_mod.get_active_profile()
-    items = [_profile_to_dict(p) for p in profiles_mod.list_profiles()]
+    raw = profiles_mod.list_profiles()
+    shared_map = _detect_shared_tokens(raw)
+    items = []
+    for info in raw:
+        d = _profile_to_dict(info)
+        d["shared_tokens"] = shared_map.get(info.name, [])
+        items.append(d)
     return {"profiles": items, "active": active}
 
 

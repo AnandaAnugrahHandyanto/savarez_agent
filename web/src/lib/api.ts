@@ -472,6 +472,11 @@ export interface AnalyticsResponse {
   };
 }
 
+export interface ProfileSharedToken {
+  key: string;
+  with: string[];
+}
+
 export interface ProfileInfo {
   name: string;
   path: string;
@@ -482,6 +487,7 @@ export interface ProfileInfo {
   has_env: boolean;
   skill_count: number;
   alias_path: string | null;
+  shared_tokens: ProfileSharedToken[];
 }
 
 export interface ProfilesResponse {

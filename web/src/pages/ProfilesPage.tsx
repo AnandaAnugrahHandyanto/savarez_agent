@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  AlertTriangle,
   ChevronDown,
   ChevronRight,
   Download,
@@ -560,6 +561,23 @@ export default function ProfilesPage() {
                     </Badge>
                     {p.has_env && (
                       <Badge variant="outline">{t.profiles.hasEnv}</Badge>
+                    )}
+                    {p.shared_tokens.length > 0 && (
+                      <Badge
+                        variant="destructive"
+                        title={p.shared_tokens
+                          .map(
+                            (s) =>
+                              `${s.key} ${t.profiles.sharedWith} ${s.with.join(", ")}`,
+                          )
+                          .join("\n")}
+                      >
+                        <AlertTriangle
+                          aria-hidden
+                          className="mr-1 h-3 w-3"
+                        />
+                        {t.profiles.tokenShared}
+                      </Badge>
                     )}
                   </div>
                   {isRenaming &&
