@@ -159,7 +159,7 @@ class DaytonaEnvironment(BaseEnvironment):
             from tools.credential_files import get_credential_file_mounts, iter_skills_files
 
             for mount_entry in get_credential_file_mounts():
-                remote_path = mount_entry["container_path"].replace("/root/.hermes", container_base, 1)
+                remote_path = mount_entry["container_path"].replace("/home/hermes/.hermes", container_base, 1)
                 if self._upload_if_changed(mount_entry["host_path"], remote_path):
                     logger.debug("Daytona: synced credential %s", remote_path)
 

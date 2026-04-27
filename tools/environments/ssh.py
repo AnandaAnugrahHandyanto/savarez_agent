@@ -121,9 +121,9 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
             rsync_base.extend(["-e", ssh_opts])
             dest_prefix = f"{self.user}@{self.host}"
 
-            # Sync individual credential files (remap /root/.hermes to detected home)
+            # Sync individual credential files (remap /home/hermes/.hermes to detected home)
             for mount_entry in get_credential_file_mounts():
-                remote_path = mount_entry["container_path"].replace("/root/.hermes", container_base, 1)
+                remote_path = mount_entry["container_path"].replace("/home/hermes/.hermes", container_base, 1)
                 parent_dir = str(Path(remote_path).parent)
                 mkdir_cmd = self._build_ssh_command()
                 mkdir_cmd.append(f"mkdir -p {parent_dir}")

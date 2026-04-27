@@ -191,6 +191,7 @@ class StreamingConfig:
     edit_interval: float = 0.3    # Seconds between message edits
     buffer_threshold: int = 40    # Chars before forcing an edit
     cursor: str = " ▉"           # Cursor shown during streaming
+    final_as_new_message: bool = False  # Post final response as new message (triggers Slack notification)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -199,6 +200,7 @@ class StreamingConfig:
             "edit_interval": self.edit_interval,
             "buffer_threshold": self.buffer_threshold,
             "cursor": self.cursor,
+            "final_as_new_message": self.final_as_new_message,
         }
 
     @classmethod
@@ -211,6 +213,7 @@ class StreamingConfig:
             edit_interval=float(data.get("edit_interval", 0.3)),
             buffer_threshold=int(data.get("buffer_threshold", 40)),
             cursor=data.get("cursor", " ▉"),
+            final_as_new_message=data.get("final_as_new_message", False),
         )
 
 

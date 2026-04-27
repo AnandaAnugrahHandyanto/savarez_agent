@@ -40,16 +40,10 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
     cache_document_from_bytes,
 )
-
-
 logger = logging.getLogger(__name__)
-
-
 def check_slack_requirements() -> bool:
     """Check if Slack dependencies are available."""
     return SLACK_AVAILABLE
-
-
 class SlackAdapter(BasePlatformAdapter):
     """
     Slack bot adapter using Socket Mode.
@@ -84,6 +78,8 @@ class SlackAdapter(BasePlatformAdapter):
         self._seen_messages: Dict[str, float] = {}
         self._SEEN_TTL = 300   # 5 minutes
         self._SEEN_MAX = 2000  # prune threshold
+        # Track threads where bot has participated (no re-mention needed)
+        self._bot_participated_threads: set = self._load_participated_threads()
 
     async def connect(self) -> bool:
         """Connect to Slack via Socket Mode."""
@@ -170,6 +166,11 @@ class SlackAdapter(BasePlatformAdapter):
             async def handle_app_mention(event, say):
                 pass
 
+            # Auto-setup project when Sacha joins a new channel
+            @self._app.event("member_joined_channel")
+            async def handle_member_joined(event, say):
+                await self._handle_channel_join(event)
+
             # Register slash command handler
             @self._app.command("/hermes")
             async def handle_hermes_command(ack, command):
@@ -254,6 +255,12 @@ class SlackAdapter(BasePlatformAdapter):
                     if broadcast and i == 0:
                         kwargs["reply_broadcast"] = True
 
+                # Override display name if SLACK_DISPLAY_NAME is set
+                import os as _os
+                _display_name = _os.environ.get("SLACK_DISPLAY_NAME", "").strip()
+                if _display_name:
+                    kwargs["username"] = _display_name
+
                 last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
 
             return SendResult(
@@ -275,6 +282,9 @@ class SlackAdapter(BasePlatformAdapter):
         """Edit a previously sent Slack message."""
         if not self._app:
             return SendResult(success=False, error="Not connected")
+        if len(content) > self.MAX_MESSAGE_LENGTH:
+            content = content[:self.MAX_MESSAGE_LENGTH - 20] + " ... (tronque)"
+
         try:
             await self._get_client(chat_id).chat_update(
                 channel=chat_id,
@@ -319,6 +329,30 @@ class SlackAdapter(BasePlatformAdapter):
             # Silently ignore — may lack assistant:write scope or not be
             # in an assistant-enabled context. Falls back to reactions.
             logger.debug("[Slack] assistant.threads.setStatus failed: %s", e)
+
+    def _load_participated_threads(self) -> set:
+        import json as _j, os
+        try:
+            p = os.path.join(os.path.expanduser("~/.hermes"), "slack_threads.json")
+            with open(p) as f2:
+                return set(_j.load(f2))
+        except Exception:
+            return set()
+
+    def _save_participated_threads(self) -> None:
+        import json as _j, os
+        try:
+            p = os.path.join(os.path.expanduser("~/.hermes"), "slack_threads.json")
+            with open(p, "w") as f2:
+                _j.dump(list(self._bot_participated_threads), f2)
+        except Exception:
+            pass
+
+    def _record_bot_thread(self, channel_id: str, thread_ts: str) -> None:
+        key = channel_id + ":" + thread_ts
+        if key not in self._bot_participated_threads:
+            self._bot_participated_threads.add(key)
+            self._save_participated_threads()
 
     def _resolve_thread_ts(
         self,
@@ -730,6 +764,10 @@ class SlackAdapter(BasePlatformAdapter):
                     if v > cutoff
                 }
 
+        # DEBUG: log file events
+        if event.get("files") or event.get("subtype") == "file_share":
+            logger.warning("[Slack] FILE EVENT received: %s", json.dumps({k: v for k, v in event.items() if k not in ('blocks', 'attachments')}, default=str))
+
         # Ignore bot messages (including our own)
         if event.get("bot_id") or event.get("subtype") == "bot_message":
             return
@@ -763,13 +801,23 @@ class SlackAdapter(BasePlatformAdapter):
         else:
             thread_ts = event.get("thread_ts") or ts  # ts fallback for channels
 
-        # In channels, only respond if bot is mentioned
+        # In channels, respond based on require_mention / free_response_channels config
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
+        _require_mention = self.config.extra.get("require_mention", True) if self.config.extra else True
+        _free_raw = self.config.extra.get("free_response_channels", "") if self.config.extra else ""
+        _free_channels = set(c.strip() for c in str(_free_raw).split(",") if c.strip())
         if not is_dm and bot_uid:
-            if f"<@{bot_uid}>" not in text:
+            is_thread_reply = bool(event.get("thread_ts")) and event.get("thread_ts") != ts
+            thread_key = channel_id + ":" + event.get("thread_ts", "")
+            in_bot_thread = is_thread_reply and thread_key in self._bot_participated_threads
+            mentioned = f"<@{bot_uid}>" in text
+            in_free_channel = channel_id in _free_channels
+            has_files = bool(event.get("files", []))
+            if not mentioned and not in_bot_thread and _require_mention and not in_free_channel and not has_files:
                 return
             # Strip the bot mention from the text
-            text = text.replace(f"<@{bot_uid}>", "").strip()
+            if mentioned:
+                text = text.replace(f"<@{bot_uid}>", "").strip()
 
         # Determine message type
         msg_type = MessageType.TEXT
@@ -807,7 +855,7 @@ class SlackAdapter(BasePlatformAdapter):
                 except Exception as e:  # pragma: no cover - defensive logging
                     logger.warning("[Slack] Failed to cache audio from %s: %s", url, e, exc_info=True)
             elif url:
-                # Try to handle as a document attachment
+                # Accept ALL file types — let the agent decide what to do with them
                 try:
                     original_filename = f.get("name", "")
                     ext = ""
@@ -815,13 +863,12 @@ class SlackAdapter(BasePlatformAdapter):
                         _, ext = os.path.splitext(original_filename)
                         ext = ext.lower()
 
-                    # Fallback: reverse-lookup from MIME type
+                    # Fallback extension from MIME type
                     if not ext and mimetype:
                         mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
                         ext = mime_to_ext.get(mimetype, "")
-
-                    if ext not in SUPPORTED_DOCUMENT_TYPES:
-                        continue  # Skip unsupported file types silently
+                    if not ext:
+                        ext = ".bin"
 
                     # Check file size (Slack limit: 20 MB for bots)
                     file_size = f.get("size", 0)
@@ -835,7 +882,7 @@ class SlackAdapter(BasePlatformAdapter):
                     cached_path = cache_document_from_bytes(
                         raw_bytes, original_filename or f"document{ext}"
                     )
-                    doc_mime = SUPPORTED_DOCUMENT_TYPES[ext]
+                    doc_mime = SUPPORTED_DOCUMENT_TYPES.get(ext, mimetype or "application/octet-stream")
                     media_urls.append(cached_path)
                     media_types.append(doc_mime)
                     msg_type = MessageType.DOCUMENT
@@ -843,7 +890,8 @@ class SlackAdapter(BasePlatformAdapter):
 
                     # Inject text content for .txt/.md files (capped at 100 KB)
                     MAX_TEXT_INJECT_BYTES = 100 * 1024
-                    if ext in (".md", ".txt") and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                    TEXT_EXTS = {".md", ".txt", ".html", ".htm", ".csv", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".py", ".js", ".ts", ".jsx", ".tsx", ".css", ".sh", ".sql"}
+                    if (ext in TEXT_EXTS or mimetype.startswith("text/")) and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                         try:
                             text_content = raw_bytes.decode("utf-8")
                             display_name = original_filename or f"document{ext}"
@@ -891,6 +939,33 @@ class SlackAdapter(BasePlatformAdapter):
         # Replace 👀 with ✅ when done
         await self._remove_reaction(channel_id, ts, "eyes")
         await self._add_reaction(channel_id, ts, "white_check_mark")
+
+    async def _handle_channel_join(self, event: dict) -> None:
+        """Auto-setup project memory when Sacha joins a new channel."""
+        user_id = event.get("user", "")
+        channel_id = event.get("channel", "")
+
+        if user_id != self._bot_user_id:
+            return
+
+        try:
+            from channel_memory import auto_setup_channel
+            client = self._get_client(channel_id)
+            info = await client.conversations_info(channel=channel_id)
+            channel_name = info.get("channel", {}).get("name", channel_id)
+
+            project = auto_setup_channel(channel_id, channel_name)
+            if project:
+                await client.chat_postMessage(
+                    channel=channel_id,
+                    text=(
+                        f"Projet **{project}** initialise pour ce channel.\n"
+                        f"Memoire persistante activee — le contexte sera maintenu entre les threads."
+                    ),
+                )
+                logger.info("[Slack] Auto-setup project '%s' for channel %s (%s)", project, channel_name, channel_id)
+        except Exception as e:
+            logger.error("[Slack] Failed to auto-setup channel %s: %s", channel_id, e, exc_info=True)
 
     async def _handle_slash_command(self, command: dict) -> None:
         """Handle /hermes slash command."""

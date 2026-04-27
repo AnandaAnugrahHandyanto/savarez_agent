@@ -35,6 +35,7 @@ class StreamConsumerConfig:
     edit_interval: float = 0.3
     buffer_threshold: int = 40
     cursor: str = " ▉"
+    final_as_new: bool = False  # Post final response as new message instead of editing
 
 
 class GatewayStreamConsumer:
@@ -141,8 +142,20 @@ class GatewayStreamConsumer:
 
                 if got_done:
                     # Final edit without cursor
-                    if self._accumulated and self._message_id:
-                        await self._send_or_edit(self._accumulated)
+                    if self._accumulated:
+                        if self._message_id:
+                            await self._send_or_edit(self._accumulated)
+                        else:
+                            # No message_id (e.g. after overflow split reset) - send as new message
+                            _clean = self._clean_for_display(self._accumulated)
+                            if _clean.strip():
+                                result = await self.adapter.send(
+                                    chat_id=self.chat_id,
+                                    content=_clean,
+                                    metadata=self.metadata,
+                                )
+                                if result.success:
+                                    self._already_sent = True
                     return
 
                 await asyncio.sleep(0.05)  # Small yield to not busy-loop

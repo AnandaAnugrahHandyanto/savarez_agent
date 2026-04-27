@@ -403,6 +403,18 @@ class _AnthropicCompletionsAdapter:
         if temperature is not None:
             anthropic_kwargs["temperature"] = temperature
 
+        try:
+            from agent.anthropic_adapter import inject_claude_code_identity
+            inject_claude_code_identity(anthropic_kwargs)
+            import logging as _lg
+            _sys_preview = repr(anthropic_kwargs.get("system", ""))[:120]
+            _lg.getLogger(__name__).warning(
+                "CLAUDE_IDENTITY_INJECTED aux model=%s system=%s",
+                anthropic_kwargs.get("model"), _sys_preview,
+            )
+        except Exception as _e:
+            import logging as _lg
+            _lg.getLogger(__name__).warning("CLAUDE_IDENTITY_INJECT_FAIL aux: %s", _e)
         response = self._client.messages.create(**anthropic_kwargs)
         assistant_message, finish_reason = normalize_anthropic_response(response)
 
@@ -1111,7 +1123,10 @@ def resolve_provider_client(
         if provider == "anthropic":
             client, default_model = _try_anthropic()
             if client is None:
-                logger.warning("resolve_provider_client: anthropic requested but no Anthropic credentials found")
+                if os.getenv("HERMES_SLACK_CLAUDE_CODE_PRIMARY", "1").lower() in ("0", "false", "no"):
+                    logger.warning("resolve_provider_client: anthropic requested but no Anthropic credentials found")
+                else:
+                    logger.debug("resolve_provider_client: anthropic SDK credentials intentionally absent; Claude Code CLI primary is enabled")
                 return None, None
             final_model = model or default_model
             return (_to_async_client(client, final_model) if async_mode else (client, final_model))
