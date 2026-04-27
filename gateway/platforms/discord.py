@@ -1527,8 +1527,10 @@ class DiscordAdapter(BasePlatformAdapter):
                     logger.error("Voice playback error: %s", error)
                 loop.call_soon_threadsafe(done.set)
 
+                vc.speaking(False)
             source = discord.FFmpegPCMAudio(audio_path)
             source = discord.PCMVolumeTransformer(source, volume=1.0)
+            vc.speaking(True)
             vc.play(source, after=_after)
             try:
                 await asyncio.wait_for(done.wait(), timeout=self.PLAYBACK_TIMEOUT)
