@@ -123,6 +123,14 @@ class GatewayStreamConsumer:
             getattr(adapter, "REQUIRES_EDIT_FINALIZE", False) is True
         )
 
+        # Data URLs can be much larger than normal text, and streaming may
+        # deliver them in multiple chunks. Keep a small text prefix visible,
+        # but hold the image tag itself until it is complete so partial
+        # ``data:image/...;base64,...`` payloads are never sent as text.
+        self._pending_image_data_url = ""
+        self._pending_image_data_url_confirmed = False
+        self._data_url_prefix_buffer = ""
+
         # Think-block filter state (mirrors CLI's _stream_delta tag suppression)
         self._in_think_block = False
         self._think_buffer = ""
@@ -152,6 +160,9 @@ class GatewayStreamConsumer:
         self._message_id = None
         self._message_created_ts = None
         self._accumulated = ""
+        self._pending_image_data_url = ""
+        self._pending_image_data_url_confirmed = False
+        self._data_url_prefix_buffer = ""
         self._last_sent_text = ""
         self._fallback_final_send = False
         self._fallback_prefix = ""
@@ -278,6 +289,287 @@ class GatewayStreamConsumer:
             self._accumulated += self._think_buffer
             self._think_buffer = ""
 
+    @staticmethod
+    def _html_tag_end(text: str, start: int = 0) -> int:
+        """Return the exclusive end offset of an HTML tag, respecting quotes."""
+        quote = None
+        idx = start
+        while idx < len(text):
+            ch = text[idx]
+            if quote:
+                if ch == quote:
+                    quote = None
+            elif ch in {'"', "'"}:
+                quote = ch
+            elif ch == ">":
+                return idx + 1
+            idx += 1
+        return -1
+
+    @staticmethod
+    def _strip_html_image_data_urls(text: str) -> str:
+        """Remove explicit HTML image data URL tags with quote-aware parsing."""
+        lower = text.lower()
+        output: list[str] = []
+        pos = 0
+        while True:
+            start = lower.find("<img", pos)
+            if start == -1:
+                output.append(text[pos:])
+                break
+            output.append(text[pos:start])
+            end = GatewayStreamConsumer._html_tag_end(text, start)
+            if end == -1:
+                output.append(text[start:])
+                break
+            tag = text[start:end]
+            if GatewayStreamConsumer._html_img_has_data_image_attr(tag):
+                pos = end
+                closing = re.match(r'\s*</img>', text[pos:], re.IGNORECASE)
+                if closing:
+                    pos += closing.end()
+            else:
+                output.append(tag)
+                pos = end
+        return "".join(output)
+
+    @staticmethod
+    def _html_img_attrs(tag: str) -> list[tuple[str, str]]:
+        """Extract HTML attributes from an <img> tag without reading quoted text as markup."""
+        attrs: list[tuple[str, str]] = []
+        match = re.match(r'\s*<img\b', tag, re.IGNORECASE)
+        idx = match.end() if match else 0
+        length = len(tag)
+        while idx < length:
+            while idx < length and tag[idx].isspace():
+                idx += 1
+            if idx >= length or tag[idx] in ">/":
+                break
+            name_start = idx
+            while idx < length and (tag[idx].isalnum() or tag[idx] in "_:-"):
+                idx += 1
+            if idx == name_start:
+                idx += 1
+                continue
+            name = tag[name_start:idx].lower()
+            while idx < length and tag[idx].isspace():
+                idx += 1
+            value = ""
+            if idx < length and tag[idx] == "=":
+                idx += 1
+                while idx < length and tag[idx].isspace():
+                    idx += 1
+                if idx < length and tag[idx] in {'"', "'"}:
+                    quote = tag[idx]
+                    idx += 1
+                    value_start = idx
+                    while idx < length and tag[idx] != quote:
+                        idx += 1
+                    value = tag[value_start:idx]
+                    if idx < length:
+                        idx += 1
+                else:
+                    value_start = idx
+                    while idx < length and not tag[idx].isspace() and tag[idx] != ">":
+                        idx += 1
+                    value = tag[value_start:idx].rstrip("/")
+            attrs.append((name, value))
+        return attrs
+
+    @staticmethod
+    def _html_img_src(tag: str) -> str | None:
+        """Extract the real src attribute from a complete <img ...> tag fragment."""
+        for name, value in GatewayStreamConsumer._html_img_attrs(tag):
+            if name == "src":
+                return value
+        return None
+
+    @staticmethod
+    def _html_img_data_image_values(tag: str) -> list[str]:
+        """Return data:image values from URL-bearing img attributes only."""
+        values: list[str] = []
+        for name, value in GatewayStreamConsumer._html_img_attrs(tag):
+            lower_value = value.strip().lower()
+            stripped_value = value.strip()
+            if name in {"src", "data-src"} and lower_value.startswith("data:image/"):
+                values.append(stripped_value)
+            elif name == "srcset" and "data:image/" in lower_value:
+                values.append(stripped_value)
+        return values
+
+    @staticmethod
+    def _html_img_has_data_image_attr(tag: str) -> bool:
+        """Return True when a URL-bearing img attribute carries an image data URL."""
+        return bool(GatewayStreamConsumer._html_img_data_image_values(tag))
+
+    @staticmethod
+    def _partial_image_tag_start(text: str) -> tuple[int, str] | None:
+        """Return the start of a trailing partial Markdown/HTML image opener."""
+        lower = text.lower()
+        prefixes = ("![", "<im", "<i", "<")
+        for prefix in prefixes:
+            if lower.endswith(prefix):
+                return len(text) - len(prefix), prefix
+        return None
+
+    @staticmethod
+    def _pending_image_data_url_is_unsafe(text: str) -> bool:
+        """Return True when held-back text is an incomplete data URL payload."""
+        lower = text.lower()
+        if "data:image/" in lower or lower.lstrip().startswith("data:"):
+            return True
+        if re.search(r'!\[[^\]]*\]\(\s*<?\s*data:', lower, re.DOTALL):
+            return True
+        if lower.lstrip().startswith("<img"):
+            for name, value in GatewayStreamConsumer._html_img_attrs(text):
+                stripped = value.strip().lower()
+                if name in {"src", "data-src", "srcset"} and stripped.startswith("data:"):
+                    return True
+        return False
+
+    def _filter_image_data_urls(self, text: str, *, final: bool = False) -> str:
+        """Hold incomplete image data URL tags so streaming never leaks base64."""
+        marker = "data:image/"
+
+        if final:
+            # End-of-stream is the only point where an incomplete pending image
+            # tag is unrecoverable. Drop that tag instead of prepending it back
+            # into visible text and leaking a partial data URL. A short prefix
+            # buffer is only speculative (for example trailing "da"), so keep it.
+            if self._data_url_prefix_buffer:
+                text += self._data_url_prefix_buffer
+                self._data_url_prefix_buffer = ""
+            if self._pending_image_data_url and not self._pending_image_data_url_confirmed:
+                if not self._pending_image_data_url_is_unsafe(self._pending_image_data_url):
+                    text += self._pending_image_data_url
+            self._pending_image_data_url = ""
+            self._pending_image_data_url_confirmed = False
+        else:
+            if self._data_url_prefix_buffer:
+                text = self._data_url_prefix_buffer + text
+                self._data_url_prefix_buffer = ""
+            if self._pending_image_data_url:
+                text = self._pending_image_data_url + text
+                self._pending_image_data_url = ""
+                self._pending_image_data_url_confirmed = False
+
+        lower = text.lower()
+        idx = lower.find(marker)
+        if idx == -1:
+            if final:
+                return text
+
+            md_open = text.rfind("![")
+            html_open = lower.rfind("<img")
+            tag_start = max(md_open, html_open)
+            if tag_start != -1:
+                candidate = text[tag_start:]
+                is_html = lower.startswith("<img", tag_start)
+                tag_closed = self._html_tag_end(candidate) != -1 if is_html else ")" in candidate
+                if is_html and not tag_closed:
+                    self._pending_image_data_url = candidate
+                    self._pending_image_data_url_confirmed = "data:image/" in candidate.lower()
+                    return text[:tag_start]
+                if not tag_closed:
+                    markdown_url_pending = re.search(r'!\[[^\]]*\]\(\s*<?\s*$', candidate, re.IGNORECASE)
+                    if (
+                        marker.startswith(candidate.lower())
+                        or "data:" in candidate.lower()
+                        or markdown_url_pending
+                        or candidate.startswith("![")
+                    ):
+                        self._pending_image_data_url = candidate
+                        self._pending_image_data_url_confirmed = "data:image/" in candidate.lower()
+                        return text[:tag_start]
+
+            partial_start = self._partial_image_tag_start(text)
+            if partial_start is not None:
+                tag_start, _ = partial_start
+                self._pending_image_data_url = text[tag_start:]
+                self._pending_image_data_url_confirmed = False
+                return text[:tag_start]
+
+            max_prefix = min(len(marker) - 1, len(text))
+            hold = 0
+            for length in range(1, max_prefix + 1):
+                if marker.startswith(lower[-length:]):
+                    hold = length
+            if hold:
+                partial_start = len(text) - hold
+                md_tag_start = text.rfind("![", 0, partial_start + 1)
+                html_tag_start = lower.rfind("<img", 0, partial_start + 1)
+                tag_start = max(md_tag_start, html_tag_start)
+                if tag_start != -1:
+                    candidate = text[tag_start:]
+                    is_html = lower.startswith("<img", tag_start)
+                    tag_closed = self._html_tag_end(candidate) != -1 if is_html else ")" in candidate
+                    if not tag_closed:
+                        self._pending_image_data_url = candidate
+                        self._pending_image_data_url_confirmed = "data:image/" in candidate.lower()
+                        return text[:tag_start]
+                boundary_ok = (
+                    partial_start == 0
+                    or not (text[partial_start - 1].isalnum() or text[partial_start - 1] in "_-/.")
+                )
+                if boundary_ok:
+                    self._data_url_prefix_buffer = text[partial_start:]
+                    return text[:partial_start]
+            return text
+
+        tag_start = max(
+            text.rfind("![", 0, idx),
+            lower.rfind("<img", 0, idx),
+        )
+        if tag_start != -1 and text[tag_start:tag_start + 2] == "![":
+            prior_markdown_end = text.find(")", tag_start, idx)
+            if prior_markdown_end != -1:
+                tag_start = lower.rfind("<img", 0, idx)
+        if tag_start == -1:
+            # Unknown data URL shape. Hide the payload once detected rather
+            # than risk sending raw base64 as user-visible streaming text.
+            if final:
+                return text[:idx]
+            self._pending_image_data_url = text[idx:]
+            self._pending_image_data_url_confirmed = True
+            return text[:idx]
+
+        is_html = text[tag_start:tag_start + 4].lower() == "<img"
+        if is_html:
+            tag_end = self._html_tag_end(text, tag_start)
+            if tag_end == -1:
+                if final:
+                    return text[:tag_start]
+                self._pending_image_data_url = text[tag_start:]
+                self._pending_image_data_url_confirmed = "data:image/" in text[tag_start:].lower()
+                return text[:tag_start]
+            tag = text[tag_start:tag_end]
+            if marker not in tag.lower():
+                return text[:tag_end] + self._filter_image_data_urls(text[tag_end:], final=final)
+            closing = re.match(r'\s*</img>', text[tag_end:], re.IGNORECASE)
+            if closing:
+                tag_end += closing.end()
+        else:
+            tag_end = text.find(")", idx)
+            if tag_end == -1:
+                if final:
+                    return text[:tag_start]
+                self._pending_image_data_url = text[tag_start:]
+                self._pending_image_data_url_confirmed = "data:image/" in text[tag_start:].lower()
+                return text[:tag_start]
+            tag_end += 1
+            tag_body = text[tag_start:tag_end].lower()
+            if not tag_body.lstrip().startswith("![") or marker not in tag_body:
+                return text[:tag_end] + self._filter_image_data_urls(text[tag_end:], final=final)
+
+        return text[:tag_start] + self._filter_image_data_urls(text[tag_end:], final=final)
+
+    def _flush_image_data_url_buffer(self) -> None:
+        """Drop any incomplete buffered image data URL at stream end."""
+        if self._pending_image_data_url:
+            self._pending_image_data_url = ""
+        if self._data_url_prefix_buffer:
+            self._data_url_prefix_buffer = ""
+
     async def run(self) -> None:
         """Async task that drains the queue and edits the platform message."""
         # Platform message length limit — leave room for cursor + formatting
@@ -302,7 +594,14 @@ class GatewayStreamConsumer:
                         if isinstance(item, tuple) and len(item) == 2 and item[0] is _COMMENTARY:
                             commentary_text = item[1]
                             break
+                        before_len = len(self._accumulated)
                         self._filter_and_accumulate(item)
+                        suffix = self._accumulated[before_len:]
+                        if suffix or self._pending_image_data_url:
+                            self._accumulated = (
+                                self._accumulated[:before_len]
+                                + self._filter_image_data_urls(suffix)
+                            )
                     except queue.Empty:
                         break
 
@@ -311,6 +610,18 @@ class GatewayStreamConsumer:
                 # tag is not lost.
                 if got_done:
                     self._flush_think_buffer()
+                    self._accumulated = self._filter_image_data_urls(self._accumulated, final=True)
+                    self._flush_image_data_url_buffer()
+
+                if got_segment_break:
+                    if self._data_url_prefix_buffer and not self._pending_image_data_url:
+                        self._accumulated += self._data_url_prefix_buffer
+                        self._data_url_prefix_buffer = ""
+                    if self._pending_image_data_url and not self._pending_image_data_url_confirmed:
+                        if not self._pending_image_data_url_is_unsafe(self._pending_image_data_url):
+                            self._accumulated += self._pending_image_data_url
+                        self._pending_image_data_url = ""
+                        self._pending_image_data_url_confirmed = False
 
                 # Decide whether to flush an edit
                 now = time.monotonic()
@@ -328,6 +639,23 @@ class GatewayStreamConsumer:
                     )
 
                 current_update_visible = False
+                if (
+                    should_edit
+                    and self._accumulated
+                    and not got_done
+                    and not self._pending_image_data_url
+                    and not self._data_url_prefix_buffer
+                ):
+                    # Defence-in-depth for cross-chunk bare data URLs. Suffix-only
+                    # filtering can miss cases like previous text ending in
+                    # "xdata" followed by ":image/..."; clean the whole visible
+                    # buffer before any send/split so base64-only overflow chunks
+                    # cannot escape.
+                    self._accumulated = self._filter_image_data_urls(
+                        self._accumulated,
+                        final=got_segment_break,
+                    )
+
                 if should_edit and self._accumulated:
                     # Split overflow: if accumulated text exceeds the platform
                     # limit, split into properly sized chunks.
@@ -488,22 +816,43 @@ class GatewayStreamConsumer:
     # Matches the simple cleanup regex used by the non-streaming path in
     # gateway/platforms/base.py for post-processing.
     _MEDIA_RE = re.compile(r'''[`"']?MEDIA:\s*\S+[`"']?''')
+    _MARKDOWN_IMAGE_DATA_URL_RE = re.compile(
+        r'!\[[^\]]*\]\(\s*<?\s*data:image/[^,\)>\s]+(?:;[^,\)>\s]+)*,[^\)>]*?\s*>?\s*\)',
+        re.IGNORECASE | re.DOTALL,
+    )
+    @staticmethod
+    def _strip_image_data_urls(text: str) -> str:
+        """Remove explicit inline image data URL tags without guessing bare base64."""
+        if "data:image/" not in text.lower():
+            return text
+        text = GatewayStreamConsumer._MARKDOWN_IMAGE_DATA_URL_RE.sub("", text)
+        text = GatewayStreamConsumer._strip_html_image_data_urls(text)
+        idx = text.lower().find("data:image/")
+        if idx != -1:
+            text = text[:idx]
+        return text
 
     @staticmethod
     def _clean_for_display(text: str) -> str:
-        """Strip MEDIA: directives and internal markers from text before display.
+        """Strip MEDIA: directives, inline image data URLs, and internal markers from text before display.
 
         The streaming path delivers raw text chunks that may include
-        ``MEDIA:<path>`` tags and ``[[audio_as_voice]]`` directives meant for
-        the platform adapter's post-processing.  The actual media files are
-        delivered separately via ``_deliver_media_from_response()`` after the
-        stream finishes — we just need to hide the raw directives from the
-        user.
+        ``MEDIA:<path>`` tags, explicit image data URL tags, and
+        ``[[audio_as_voice]]`` directives meant for the platform adapter's
+        post-processing.  The actual media files are delivered separately via
+        ``_deliver_media_from_response()`` after the stream finishes — we just
+        need to hide raw directives/payloads from the user.
         """
-        if "MEDIA:" not in text and "[[audio_as_voice]]" not in text:
+        needs_cleanup = (
+            "MEDIA:" in text
+            or "[[audio_as_voice]]" in text
+            or "data:image/" in text.lower()
+        )
+        if not needs_cleanup:
             return text
         cleaned = text.replace("[[audio_as_voice]]", "")
         cleaned = GatewayStreamConsumer._MEDIA_RE.sub("", cleaned)
+        cleaned = GatewayStreamConsumer._strip_image_data_urls(cleaned)
         # Collapse excessive blank lines left behind by removed tags
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
         # Strip trailing whitespace/newlines but preserve leading content

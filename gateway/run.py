@@ -30,6 +30,7 @@ from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List
+from urllib.parse import urlsplit
 
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 
@@ -6654,7 +6655,7 @@ class GatewayRunner:
 
         try:
             media_files, _ = adapter.extract_media(response)
-            _, cleaned = adapter.extract_images(response)
+            images, cleaned = adapter.extract_images(response)
             local_files, _ = adapter.extract_local_files(cleaned)
 
             _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
@@ -6662,6 +6663,26 @@ class GatewayRunner:
             _AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a'}
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
             _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+
+            for image_url, alt_text in images:
+                try:
+                    ext = Path(image_url).suffix.lower()
+                    if urlsplit(str(image_url)).scheme:
+                        continue
+                    image_path = Path(os.path.expanduser(image_url))
+                    # Streaming display has already handled text. Only deliver
+                    # cached/local images here, which covers decoded data URL
+                    # images without duplicating remote HTTP markdown/HTML
+                    # images that may already have been visible in the stream.
+                    if ext in _IMAGE_EXTS and image_path.is_file():
+                        await adapter.send_image_file(
+                            chat_id=event.source.chat_id,
+                            image_path=str(image_path),
+                            caption=alt_text if alt_text else None,
+                            metadata=_thread_meta,
+                        )
+                except Exception as e:
+                    logger.warning("[%s] Post-stream image delivery failed: %s", adapter.name, e)
 
             for media_path, is_voice in media_files:
                 try:

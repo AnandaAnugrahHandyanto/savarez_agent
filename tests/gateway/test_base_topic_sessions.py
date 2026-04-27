@@ -1,6 +1,7 @@
 """Tests for BasePlatformAdapter topic-aware session handling."""
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +15,8 @@ class DummyTelegramAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="fake-token"), Platform.TELEGRAM)
         self.sent = []
+        self.image_files = []
+        self.remote_images = []
         self.typing = []
         self.processing_hooks = []
 
@@ -33,6 +36,30 @@ class DummyTelegramAdapter(BasePlatformAdapter):
             }
         )
         return SendResult(success=True, message_id="1")
+
+    async def send_image_file(self, chat_id, image_path, caption=None, reply_to=None, **kwargs) -> SendResult:
+        self.image_files.append(
+            {
+                "chat_id": chat_id,
+                "image_path": image_path,
+                "caption": caption,
+                "reply_to": reply_to,
+                "metadata": kwargs.get("metadata"),
+            }
+        )
+        return SendResult(success=True, message_id="img1")
+
+    async def send_image(self, chat_id, image_url, caption=None, reply_to=None, metadata=None) -> SendResult:
+        self.remote_images.append(
+            {
+                "chat_id": chat_id,
+                "image_url": image_url,
+                "caption": caption,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id="remote-img1")
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         self.typing.append({"chat_id": chat_id, "metadata": metadata})
@@ -143,6 +170,87 @@ class TestBasePlatformTopicSessions:
         assert adapter.processing_hooks == [
             ("start", "1"),
             ("complete", "1", ProcessingOutcome.SUCCESS),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_process_message_background_routes_data_url_image_as_local_file(self, tmp_path, monkeypatch):
+        from gateway.platforms import base as base_module
+
+        monkeypatch.setattr(base_module, "IMAGE_CACHE_DIR", tmp_path)
+        adapter = DummyTelegramAdapter()
+        typing_calls = []
+        png_data_url = (
+            "data:image/png;base64,"
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+            "AAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        )
+
+        async def handler(_event):
+            await asyncio.sleep(0)
+            return f"Generated image:\n![tiny]({png_data_url})\nDone."
+
+        async def hold_typing(_chat_id, interval=2.0, metadata=None):
+            typing_calls.append({"chat_id": _chat_id, "metadata": metadata})
+            await asyncio.Event().wait()
+
+        adapter.set_message_handler(handler)
+        adapter._keep_typing = hold_typing
+
+        event = _make_event("-1001", "17585")
+        await adapter._process_message_background(event, build_session_key(event.source))
+
+        assert adapter.sent == [
+            {
+                "chat_id": "-1001",
+                "content": "Generated image:\n\nDone.",
+                "reply_to": "1",
+                "metadata": {"thread_id": "17585"},
+            }
+        ]
+        assert len(adapter.image_files) == 1
+        image_delivery = adapter.image_files[0]
+        assert image_delivery["chat_id"] == "-1001"
+        assert image_delivery["caption"] == "tiny"
+        assert image_delivery["metadata"] == {"thread_id": "17585"}
+        image_path = Path(image_delivery["image_path"])
+        assert image_path.suffix == ".png"
+        assert image_path.is_file()
+        assert image_path.parent == tmp_path
+        assert adapter.remote_images == []
+        assert "data:image" not in adapter.sent[0]["content"]
+        assert "base64" not in adapter.sent[0]["content"]
+
+    @pytest.mark.asyncio
+    async def test_process_message_background_never_treats_remote_url_as_local_file(self, tmp_path, monkeypatch):
+        """Remote image URLs must not be uploaded as local files even if a matching path exists."""
+        adapter = DummyTelegramAdapter()
+        matching_local = tmp_path / "https:" / "example.com"
+        matching_local.mkdir(parents=True)
+        (matching_local / "image.png").write_bytes(b"not the remote image")
+        monkeypatch.chdir(tmp_path)
+
+        async def handler(_event):
+            await asyncio.sleep(0)
+            return "Remote image:\n![remote](https://example.com/image.png)"
+
+        async def hold_typing(_chat_id, interval=2.0, metadata=None):
+            await asyncio.Event().wait()
+
+        adapter.set_message_handler(handler)
+        adapter._keep_typing = hold_typing
+
+        event = _make_event("-1001", "17585")
+        await adapter._process_message_background(event, build_session_key(event.source))
+
+        assert adapter.image_files == []
+        assert adapter.remote_images == [
+            {
+                "chat_id": "-1001",
+                "image_url": "https://example.com/image.png",
+                "caption": "remote",
+                "reply_to": None,
+                "metadata": {"thread_id": "17585"},
+            }
         ]
 
     @pytest.mark.asyncio

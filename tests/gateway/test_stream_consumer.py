@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from gateway.platforms.base import BasePlatformAdapter
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 
@@ -75,6 +76,900 @@ class TestCleanForDisplay:
         assert "MEDIA:" not in result
         assert "generated" in result
         assert "for you." in result
+
+    def test_markdown_data_url_image_stripped(self):
+        """Streaming display must not leak explicit image data URL payloads."""
+        text = (
+            "Here is the image\n"
+            "![tiny](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ)\n"
+            "Done"
+        )
+        result = GatewayStreamConsumer._clean_for_display(text)
+        assert "data:image" not in result
+        assert "base64" not in result
+        assert "iVBOR" not in result
+        assert "Here is the image" in result
+        assert "Done" in result
+
+    def test_html_data_url_image_stripped(self):
+        """Streaming display strips HTML data URL image tags too."""
+        text = 'Before <img src = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"> After'
+        result = GatewayStreamConsumer._clean_for_display(text)
+        assert "data:image" not in result
+        assert "iVBOR" not in result
+        assert "Before" in result
+        assert "After" in result
+
+    def test_data_url_with_metadata_and_folded_payload_stripped(self):
+        """Streaming display handles valid data URL metadata and folded base64."""
+        text = (
+            "Before\n"
+            "![tiny](data:image/png;charset=utf-8;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ\r\n"
+            "AAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==)\n"
+            "After"
+        )
+        result = GatewayStreamConsumer._clean_for_display(text)
+        assert "data:image" not in result
+        assert "base64" not in result
+        assert "iVBOR" not in result
+        assert "Before" in result
+        assert "After" in result
+
+    def test_clean_for_display_strips_markdown_data_url_with_whitespace_and_angle_destination(self):
+        """Markdown data URL variants should be stripped from streaming cleanup."""
+        text = "before ![tiny]( <data:image/png;base64,iVBORw0KGgo> ) after"
+        result = GatewayStreamConsumer._clean_for_display(text)
+        assert result == "before  after"
+        assert "data:image" not in result
+        assert "iVBOR" not in result
+
+    @pytest.mark.asyncio
+    async def test_streaming_open_html_img_tag_is_held_until_complete(self):
+        """Do not send partial <img ...> tags split before src/data attrs."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_1",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+        for chunk in [
+            'HTML <img alt="x" ',
+            'src="',
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ",
+            '"> done',
+        ]:
+            consumer.on_delta(chunk)
+            await asyncio.sleep(0.1)
+        consumer.finish()
+        await task
+
+        visible_payloads = [call.kwargs.get("content", "") for call in adapter.send.await_args_list]
+        visible_payloads += [call.kwargs.get("content", "") for call in adapter.edit_message.await_args_list]
+        assert visible_payloads
+        assert all("<img" not in payload for payload in visible_payloads)
+        assert all("data:image" not in payload for payload in visible_payloads)
+        assert all("base64" not in payload for payload in visible_payloads)
+        assert all("iVBOR" not in payload for payload in visible_payloads)
+        assert visible_payloads[-1] == "HTML  done"
+
+    @pytest.mark.asyncio
+    async def test_streaming_open_html_img_srcset_data_url_is_held_until_complete(self):
+        """Hold split img tags even when the data URL is in srcset rather than src."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_1",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+        for chunk in [
+            'HTML <img alt="x" ',
+            'src="https://example.com/x.png" srcset="',
+            "data:image/png;base64,iVBORw0KGgo 1x",
+            '"> done',
+        ]:
+            consumer.on_delta(chunk)
+            await asyncio.sleep(0.1)
+        consumer.finish()
+        await task
+
+        visible_payloads = [call.kwargs.get("content", "") for call in adapter.send.await_args_list]
+        visible_payloads += [call.kwargs.get("content", "") for call in adapter.edit_message.await_args_list]
+        assert visible_payloads
+        assert all("<img" not in payload for payload in visible_payloads)
+        assert all("data:image" not in payload for payload in visible_payloads)
+        assert all("base64" not in payload for payload in visible_payloads)
+        assert visible_payloads[-1] == "HTML  done"
+
+    def test_bare_base64_text_not_stripped(self):
+        """Do not strip arbitrary base64-looking text outside explicit image data URLs."""
+        text = "raw text iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+        assert GatewayStreamConsumer._clean_for_display(text) == text
+
+    @pytest.mark.asyncio
+    async def test_streaming_partial_markdown_data_url_is_not_sent_before_complete(self):
+        """Do not leak partial data URL/base64 chunks while the image tag is still streaming."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_1",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+        for chunk in [
+            "Here is the image\n![tiny](",
+            "data:",
+            "ima",
+            "ge/png;charset=utf-8;base64,iVBORw0KGgo",
+            "AAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ)\nDone",
+        ]:
+            consumer.on_delta(chunk)
+            await asyncio.sleep(0.1)
+        consumer.finish()
+        await task
+
+        visible_payloads = [call.kwargs.get("content", "") for call in adapter.send.await_args_list]
+        visible_payloads += [call.kwargs.get("content", "") for call in adapter.edit_message.await_args_list]
+        assert visible_payloads
+        assert all("data:" not in payload for payload in visible_payloads)
+        assert all("data:image" not in payload for payload in visible_payloads)
+        assert all("base64" not in payload for payload in visible_payloads)
+        assert all("iVBOR" not in payload for payload in visible_payloads)
+        assert visible_payloads[-1] == "Here is the image\n\nDone"
+
+    @pytest.mark.asyncio
+    async def test_streaming_partial_html_data_url_is_not_sent_before_complete(self):
+        """HTML data URLs split after src= must not leak during streaming."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_1",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+        for chunk in [
+            'HTML image <img alt="x" src = "',
+            "data:",
+            "image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ",
+            '"> done',
+        ]:
+            consumer.on_delta(chunk)
+            await asyncio.sleep(0.1)
+        consumer.finish()
+        await task
+
+        visible_payloads = [call.kwargs.get("content", "") for call in adapter.send.await_args_list]
+        visible_payloads += [call.kwargs.get("content", "") for call in adapter.edit_message.await_args_list]
+        assert visible_payloads
+        assert all("data:" not in payload for payload in visible_payloads)
+        assert all("data:image" not in payload for payload in visible_payloads)
+        assert all("base64" not in payload for payload in visible_payloads)
+        assert all("iVBOR" not in payload for payload in visible_payloads)
+        assert visible_payloads[-1] == "HTML image  done"
+
+    @pytest.mark.asyncio
+    async def test_streaming_incomplete_data_url_is_dropped_at_finish(self):
+        """If the stream ends mid data URL, do not flush the pending payload as text."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_1",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+        for chunk in ["Intro ![tiny](", "data:", "ima"]:
+            consumer.on_delta(chunk)
+            await asyncio.sleep(0.1)
+        consumer.finish()
+        await task
+
+        visible_payloads = [call.kwargs.get("content", "") for call in adapter.send.await_args_list]
+        visible_payloads += [call.kwargs.get("content", "") for call in adapter.edit_message.await_args_list]
+        assert visible_payloads
+        assert all("data:" not in payload for payload in visible_payloads)
+        assert all("data:image" not in payload for payload in visible_payloads)
+        assert all("![tiny]" not in payload for payload in visible_payloads)
+        assert visible_payloads[-1] == "Intro "
+
+    @pytest.mark.asyncio
+    async def test_streaming_html_data_url_with_gt_before_src_does_not_leak(self):
+        """Quote-aware HTML buffering must ignore > inside attributes before src."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_1",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+        for chunk in [
+            'HTML image <img alt="x > y" src="',
+            "data:",
+            "image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ",
+            '"> done',
+        ]:
+            consumer.on_delta(chunk)
+            await asyncio.sleep(0.1)
+        consumer.finish()
+        await task
+
+        visible_payloads = [call.kwargs.get("content", "") for call in adapter.send.await_args_list]
+        visible_payloads += [call.kwargs.get("content", "") for call in adapter.edit_message.await_args_list]
+        assert visible_payloads
+        assert all("data:" not in payload for payload in visible_payloads)
+        assert all("data:image" not in payload for payload in visible_payloads)
+        assert all("base64" not in payload for payload in visible_payloads)
+        assert all("iVBOR" not in payload for payload in visible_payloads)
+        assert visible_payloads[-1] == "HTML image  done"
+
+    @pytest.mark.asyncio
+    async def test_streaming_html_data_url_with_gt_after_src_does_not_leave_fragment(self):
+        """Quote-aware HTML cleanup must ignore > inside later attributes too."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_1",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+        for chunk in [
+            'HTML image <img src="',
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ",
+            '" alt="x > y"> done',
+        ]:
+            consumer.on_delta(chunk)
+            await asyncio.sleep(0.1)
+        consumer.finish()
+        await task
+
+        visible_payloads = [call.kwargs.get("content", "") for call in adapter.send.await_args_list]
+        visible_payloads += [call.kwargs.get("content", "") for call in adapter.edit_message.await_args_list]
+        assert visible_payloads
+        assert all("data:image" not in payload for payload in visible_payloads)
+        assert all("base64" not in payload for payload in visible_payloads)
+        assert all("alt=\"x" not in payload for payload in visible_payloads)
+        assert visible_payloads[-1] == "HTML image  done"
+
+    @pytest.mark.asyncio
+    async def test_streaming_later_html_data_url_uses_nearest_tag_opener(self):
+        """A prior markdown image opener must not cause later HTML data URL text to be dropped."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_1",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+        for chunk in [
+            "Keep ![remote](https://example.com/a.png) before ",
+            '<img src="',
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ",
+            '"> after',
+        ]:
+            consumer.on_delta(chunk)
+            await asyncio.sleep(0.1)
+        consumer.finish()
+        await task
+
+        visible_payloads = [call.kwargs.get("content", "") for call in adapter.send.await_args_list]
+        visible_payloads += [call.kwargs.get("content", "") for call in adapter.edit_message.await_args_list]
+        assert visible_payloads
+        assert all("data:image" not in payload for payload in visible_payloads)
+        assert all("base64" not in payload for payload in visible_payloads)
+        assert visible_payloads[-1] == "Keep ![remote](https://example.com/a.png) before  after"
+
+    def test_clean_for_display_removes_html_data_url_with_closing_tag(self):
+        """HTML data URL cleanup should remove optional closing </img> too."""
+        text = 'before <img src="data:image/png;base64,iVBORw0KGgo" alt="x"></img> after'
+        assert GatewayStreamConsumer._clean_for_display(text) == "before  after"
+
+    def test_clean_for_display_ignores_src_text_inside_quoted_attribute(self):
+        """Quoted attribute text containing src= must not mask the real data URL src."""
+        text = (
+            'before <img alt="src=https://example.com/x.png" '
+            'src="data:image/png;base64,iVBORw0KGgo"> after'
+        )
+        assert GatewayStreamConsumer._clean_for_display(text) == "before  after"
+
+    def test_clean_for_display_removes_html_tag_with_data_image_srcset(self):
+        """Explicit data:image payloads in img srcset should not remain visible."""
+        text = (
+            'before <img src="https://example.com/x.png" '
+            'srcset="data:image/png;base64,iVBORw0KGgo 1x"> after'
+        )
+        assert GatewayStreamConsumer._clean_for_display(text) == "before  after"
+
+    @pytest.mark.asyncio
+    async def test_segment_break_preserves_speculative_data_url_prefix_text(self):
+        """A segment break after ordinary trailing d must not drop that character."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_1",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+        consumer.on_delta("hello d")
+        await asyncio.sleep(0.1)
+        consumer.on_delta(None)
+        consumer.finish()
+        await task
+
+        visible_payloads = [call.kwargs.get("content", "") for call in adapter.send.await_args_list]
+        visible_payloads += [call.kwargs.get("content", "") for call in adapter.edit_message.await_args_list]
+        assert visible_payloads
+        assert visible_payloads[-1] == "hello d"
+
+    @pytest.mark.asyncio
+    async def test_segment_break_preserves_speculative_image_opener_text(self):
+        """A tool boundary after ordinary image-like prefixes must not drop text."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_1",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+        consumer.on_delta("literal ![not image")
+        await asyncio.sleep(0.1)
+        consumer.on_delta(None)
+        consumer.finish()
+        await task
+
+        visible_payloads = [call.kwargs.get("content", "") for call in adapter.send.await_args_list]
+        visible_payloads += [call.kwargs.get("content", "") for call in adapter.edit_message.await_args_list]
+        assert visible_payloads
+        assert visible_payloads[-1] == "literal ![not image"
+
+    def test_clean_for_display_closed_html_before_bare_data_url_hides_payload(self):
+        """Cleanup must not associate a bare data URL with an already closed HTML tag."""
+        text = '<img src="https://example.com/a.png"> before data:image/png;base64,iVBORw0KGgo'
+        result = GatewayStreamConsumer._clean_for_display(text)
+        assert result == '<img src="https://example.com/a.png"> before'
+        assert "data:image" not in result
+        assert "base64" not in result
+
+    def test_clean_for_display_closed_markdown_before_bare_data_url_hides_payload(self):
+        """Cleanup must preserve closed Markdown image text before hiding a later bare data URL."""
+        text = "Keep ![remote](https://example.com/a.png) before data:image/png;base64,iVBORw0KGgo)"
+        result = GatewayStreamConsumer._clean_for_display(text)
+        assert result == "Keep ![remote](https://example.com/a.png) before"
+        assert "data:image" not in result
+        assert "base64" not in result
+
+    @pytest.mark.asyncio
+    async def test_streaming_closed_html_before_bare_data_url_keeps_prefix_and_hides_payload(self):
+        """A closed HTML img before a bare data URL must not make the payload visible."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_1",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+        for chunk in [
+            '<img src="https://example.com/a.png"> before ',
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ",
+        ]:
+            consumer.on_delta(chunk)
+            await asyncio.sleep(0.1)
+        consumer.finish()
+        await task
+
+        visible_payloads = [call.kwargs.get("content", "") for call in adapter.send.await_args_list]
+        visible_payloads += [call.kwargs.get("content", "") for call in adapter.edit_message.await_args_list]
+        assert visible_payloads
+        assert all("data:image" not in payload for payload in visible_payloads)
+        assert all("base64" not in payload for payload in visible_payloads)
+        assert visible_payloads[-1] == '<img src="https://example.com/a.png"> before '
+
+    @pytest.mark.asyncio
+    async def test_streaming_overflow_after_closed_html_before_bare_data_url_does_not_leak_base64_tail(self):
+        """Filtering must remove bare data URL from accumulated text before overflow splitting."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 640
+        adapter.truncate_message = BasePlatformAdapter.truncate_message
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_1",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        long_payload = "A" * 2400
+        task = asyncio.create_task(consumer.run())
+        consumer.on_delta(
+            '<img src="https://example.com/a.png"> before '
+            f"data:image/png;base64,{long_payload}"
+        )
+        await asyncio.sleep(0.1)
+        consumer.finish()
+        await task
+
+        visible_payloads = [call.kwargs.get("content", "") for call in adapter.send.await_args_list]
+        visible_payloads += [call.kwargs.get("content", "") for call in adapter.edit_message.await_args_list]
+        assert visible_payloads
+        assert all("data:image" not in payload for payload in visible_payloads)
+        assert all("base64" not in payload for payload in visible_payloads)
+        assert all("A" * 100 not in payload for payload in visible_payloads)
+        assert visible_payloads[-1] == '<img src="https://example.com/a.png"> before '
+
+    @pytest.mark.asyncio
+    async def test_streaming_html_data_url_src_with_leading_space_does_not_leak_on_overflow(self):
+        """Quoted HTML src values should be stripped before data URL detection."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 640
+        adapter.truncate_message = BasePlatformAdapter.truncate_message
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_1",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        long_payload = "A" * 2400
+        task = asyncio.create_task(consumer.run())
+        consumer.on_delta(f'Before <img src=" data:image/png;base64,{long_payload}"> After')
+        await asyncio.sleep(0.1)
+        consumer.finish()
+        await task
+
+        visible_payloads = [call.kwargs.get("content", "") for call in adapter.send.await_args_list]
+        visible_payloads += [call.kwargs.get("content", "") for call in adapter.edit_message.await_args_list]
+        assert visible_payloads
+        assert all("data:image" not in payload for payload in visible_payloads)
+        assert all("base64" not in payload for payload in visible_payloads)
+        assert all("A" * 100 not in payload for payload in visible_payloads)
+        assert visible_payloads[-1] == "Before  After"
+
+    @pytest.mark.asyncio
+    async def test_streaming_markdown_image_opener_split_before_data_url_does_not_leak_or_drop_suffix(self):
+        """Markdown image openers split across chunks should be held until removed."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_1",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+        for chunk in ["Here ![", "alt](", "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ", ") Done"]:
+            consumer.on_delta(chunk)
+            await asyncio.sleep(0.1)
+        consumer.finish()
+        await task
+
+        visible_payloads = [call.kwargs.get("content", "") for call in adapter.send.await_args_list]
+        visible_payloads += [call.kwargs.get("content", "") for call in adapter.edit_message.await_args_list]
+        assert visible_payloads
+        assert all("data:image" not in payload for payload in visible_payloads)
+        assert all("base64" not in payload for payload in visible_payloads)
+        assert all("![" not in payload for payload in visible_payloads)
+        assert visible_payloads[-1] == "Here  Done"
+
+    @pytest.mark.asyncio
+    async def test_streaming_html_img_opener_split_before_data_url_does_not_leak_or_drop_suffix(self):
+        """HTML <img openers split across chunks should be held until removed."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_1",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+        for chunk in ["Here <i", "mg src=\"", "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ", "\"> Done"]:
+            consumer.on_delta(chunk)
+            await asyncio.sleep(0.1)
+        consumer.finish()
+        await task
+
+        visible_payloads = [call.kwargs.get("content", "") for call in adapter.send.await_args_list]
+        visible_payloads += [call.kwargs.get("content", "") for call in adapter.edit_message.await_args_list]
+        assert visible_payloads
+        assert all("data:image" not in payload for payload in visible_payloads)
+        assert all("base64" not in payload for payload in visible_payloads)
+        assert all("<img" not in payload for payload in visible_payloads)
+        assert visible_payloads[-1] == "Here  Done"
+
+    @pytest.mark.asyncio
+    async def test_streaming_html_data_url_in_alt_does_not_leak_on_overflow(self):
+        """Non URL-bearing attributes containing data:image must not leak across split chunks."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 640
+        adapter.truncate_message = BasePlatformAdapter.truncate_message
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_1",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        long_payload = "A" * 2400
+        task = asyncio.create_task(consumer.run())
+        consumer.on_delta(
+            'Before <img src="https://example.com/a.png" '
+            f'alt="literal data:image/png;base64,{long_payload}"> After'
+        )
+        await asyncio.sleep(0.1)
+        consumer.finish()
+        await task
+
+        visible_payloads = [call.kwargs.get("content", "") for call in adapter.send.await_args_list]
+        visible_payloads += [call.kwargs.get("content", "") for call in adapter.edit_message.await_args_list]
+        assert visible_payloads
+        assert all("data:image" not in payload for payload in visible_payloads)
+        assert all("base64" not in payload for payload in visible_payloads)
+        assert all("A" * 100 not in payload for payload in visible_payloads)
+        assert visible_payloads[-1] == "Before  After"
+
+    @pytest.mark.asyncio
+    async def test_streaming_markdown_image_split_inside_alt_does_not_leak_or_show_partial(self):
+        """Markdown image tags split before ](data:image...) should be held, not streamed."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_1",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+        for chunk in [
+            "Here ![alt",
+            "](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ",
+            ") Done",
+        ]:
+            consumer.on_delta(chunk)
+            await asyncio.sleep(0.1)
+        consumer.finish()
+        await task
+
+        visible_payloads = [call.kwargs.get("content", "") for call in adapter.send.await_args_list]
+        visible_payloads += [call.kwargs.get("content", "") for call in adapter.edit_message.await_args_list]
+        assert visible_payloads
+        assert all("![alt" not in payload for payload in visible_payloads)
+        assert all("data:image" not in payload for payload in visible_payloads)
+        assert all("base64" not in payload for payload in visible_payloads)
+        assert visible_payloads[-1] == "Here  Done"
+
+    @pytest.mark.asyncio
+    async def test_streaming_same_chunk_closed_markdown_before_bare_data_url_preserves_markdown(self):
+        """Closed non-data Markdown image before a bare data URL must not be mis-associated."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_1",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+        consumer.on_delta(
+            "Keep ![remote](https://example.com/a.png) before "
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+        )
+        await asyncio.sleep(0.1)
+        consumer.finish()
+        await task
+
+        visible_payloads = [call.kwargs.get("content", "") for call in adapter.send.await_args_list]
+        visible_payloads += [call.kwargs.get("content", "") for call in adapter.edit_message.await_args_list]
+        assert visible_payloads
+        assert all("data:image" not in payload for payload in visible_payloads)
+        assert all("base64" not in payload for payload in visible_payloads)
+        assert visible_payloads[-1] == "Keep ![remote](https://example.com/a.png) before "
+
+    @pytest.mark.asyncio
+    async def test_streaming_speculative_image_prefix_restored_on_final_when_plain_text(self):
+        """Held speculative image prefixes should be restored if no data URL arrives."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_1",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+        consumer.on_delta("literal <i")
+        await asyncio.sleep(0.1)
+        consumer.finish()
+        await task
+
+        visible_payloads = [call.kwargs.get("content", "") for call in adapter.send.await_args_list]
+        visible_payloads += [call.kwargs.get("content", "") for call in adapter.edit_message.await_args_list]
+        assert visible_payloads
+        assert visible_payloads[-1] == "literal <i"
+
+    @pytest.mark.asyncio
+    async def test_streaming_closed_markdown_before_bare_data_url_keeps_prefix_and_hides_payload(self):
+        """A closed Markdown image before a bare data URL must not be removed."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_1",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+        for chunk in [
+            "Keep ![remote](https://example.com/a.png) before ",
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ)",
+        ]:
+            consumer.on_delta(chunk)
+            await asyncio.sleep(0.1)
+        consumer.finish()
+        await task
+
+        visible_payloads = [call.kwargs.get("content", "") for call in adapter.send.await_args_list]
+        visible_payloads += [call.kwargs.get("content", "") for call in adapter.edit_message.await_args_list]
+        assert visible_payloads
+        assert all("data:image" not in payload for payload in visible_payloads)
+        assert all("base64" not in payload for payload in visible_payloads)
+        assert visible_payloads[-1] == "Keep ![remote](https://example.com/a.png) before "
+
+    @pytest.mark.asyncio
+    async def test_streaming_closed_markdown_before_unknown_data_url_keeps_prefix(self):
+        """A closed markdown image before a later raw data URL should not lose the prefix."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_1",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+        for chunk in [
+            "Keep ![remote](https://example.com/a.png) before ",
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ",
+        ]:
+            consumer.on_delta(chunk)
+            await asyncio.sleep(0.1)
+        consumer.finish()
+        await task
+
+        visible_payloads = [call.kwargs.get("content", "") for call in adapter.send.await_args_list]
+        visible_payloads += [call.kwargs.get("content", "") for call in adapter.edit_message.await_args_list]
+        assert visible_payloads
+        assert all("data:image" not in payload for payload in visible_payloads)
+        assert visible_payloads[-1] == "Keep ![remote](https://example.com/a.png) before "
+
+    @pytest.mark.asyncio
+    async def test_streaming_bare_data_image_split_after_word_char_does_not_leak(self):
+        """Even if a prior chunk ended with xdata, a following :image must be hidden."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_1",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+        for chunk in ["xdata", ":image/png;base64,QUJD"]:
+            consumer.on_delta(chunk)
+            await asyncio.sleep(0.1)
+        consumer.finish()
+        await task
+
+        visible_payloads = [call.kwargs.get("content", "") for call in adapter.send.await_args_list]
+        visible_payloads += [call.kwargs.get("content", "") for call in adapter.edit_message.await_args_list]
+        assert visible_payloads
+        assert all("data:image" not in payload for payload in visible_payloads)
+        assert all("base64" not in payload for payload in visible_payloads)
+        assert all("QUJD" not in payload for payload in visible_payloads)
+        assert visible_payloads[-1] == "x"
+
+    @pytest.mark.asyncio
+    async def test_streaming_bare_data_image_split_after_word_char_long_payload_no_overflow_leak(self):
+        """Long split bare data:image payloads must not leak base64-only overflow chunks."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.truncate_message = BasePlatformAdapter.truncate_message
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_1",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        long_payload = "QUJD" * 1500
+        task = asyncio.create_task(consumer.run())
+        for chunk in ["xdata", f":image/png;base64,{long_payload}"]:
+            consumer.on_delta(chunk)
+            await asyncio.sleep(0.1)
+        consumer.finish()
+        await task
+
+        visible_payloads = [call.kwargs.get("content", "") for call in adapter.send.await_args_list]
+        visible_payloads += [call.kwargs.get("content", "") for call in adapter.edit_message.await_args_list]
+        assert visible_payloads
+        assert all("data:image" not in payload for payload in visible_payloads)
+        assert all("base64" not in payload for payload in visible_payloads)
+        assert all("QUJD" not in payload for payload in visible_payloads)
+        assert visible_payloads[-1] == "x"
+
+    @pytest.mark.asyncio
+    async def test_streaming_speculative_metadata_text_restored_on_final(self):
+        """Speculative image-open text with benign data: substring should be restored."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_1",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+        consumer.on_delta("literal ![metadata:")
+        await asyncio.sleep(0.1)
+        consumer.finish()
+        await task
+
+        visible_payloads = [call.kwargs.get("content", "") for call in adapter.send.await_args_list]
+        visible_payloads += [call.kwargs.get("content", "") for call in adapter.edit_message.await_args_list]
+        assert visible_payloads
+        assert visible_payloads[-1] == "literal ![metadata:"
+
+    @pytest.mark.asyncio
+    async def test_streaming_bare_data_image_split_across_chunks_does_not_leak(self):
+        """Bare data:image split as da + ta:image must fail closed during streaming."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_1",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+        for chunk in [
+            "prefix da",
+            "ta:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ)",
+        ]:
+            consumer.on_delta(chunk)
+            await asyncio.sleep(0.1)
+        consumer.finish()
+        await task
+
+        visible_payloads = [call.kwargs.get("content", "") for call in adapter.send.await_args_list]
+        visible_payloads += [call.kwargs.get("content", "") for call in adapter.edit_message.await_args_list]
+        assert visible_payloads
+        assert all("data:image" not in payload for payload in visible_payloads)
+        assert all("base64" not in payload for payload in visible_payloads)
+        assert all("iVBOR" not in payload for payload in visible_payloads)
+        assert visible_payloads[-1] == "prefix "
+
+    @pytest.mark.asyncio
+    async def test_streaming_html_data_src_before_real_data_src_does_not_leak(self):
+        """data-src must not be mistaken for src before a real data:image src."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_1",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+        for chunk in [
+            'HTML <img data-src="https://example.com/track.png" src="',
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ",
+            '"> done',
+        ]:
+            consumer.on_delta(chunk)
+            await asyncio.sleep(0.1)
+        consumer.finish()
+        await task
+
+        visible_payloads = [call.kwargs.get("content", "") for call in adapter.send.await_args_list]
+        visible_payloads += [call.kwargs.get("content", "") for call in adapter.edit_message.await_args_list]
+        assert visible_payloads
+        assert all("data:image" not in payload for payload in visible_payloads)
+        assert all("base64" not in payload for payload in visible_payloads)
+        assert all("iVBOR" not in payload for payload in visible_payloads)
+        assert visible_payloads[-1] == "HTML  done"
 
     def test_preserves_non_media_colons(self):
         """Normal colons and text with 'MEDIA' as a word aren't stripped."""

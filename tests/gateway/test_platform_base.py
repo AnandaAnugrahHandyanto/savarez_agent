@@ -1,6 +1,7 @@
 """Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
 import os
+from pathlib import Path
 from unittest.mock import patch
 
 from gateway.platforms.base import (
@@ -248,6 +249,319 @@ class TestExtractImages:
         assert images[0][0] == "https://fal.media/cat.png"
         # The PDF link must survive in cleaned content
         assert "![report](https://example.com/report.pdf)" in cleaned
+
+
+    def test_markdown_data_url_image_is_cached_and_removed(self, tmp_path, monkeypatch):
+        """Explicit image data URLs should become local image files, not visible base64 text."""
+        from gateway.platforms import base as base_module
+
+        monkeypatch.setattr(base_module, "IMAGE_CACHE_DIR", tmp_path)
+        png_data_url = (
+            "data:image/png;base64,"
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+            "AAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        )
+        content = f"Here is the image:\n![tiny]({png_data_url})\nDone."
+
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+
+        assert len(images) == 1
+        image_path, alt_text = images[0]
+        assert alt_text == "tiny"
+        assert image_path.endswith(".png")
+        assert Path(image_path).is_file()
+        assert Path(image_path).parent == tmp_path
+        assert "data:image" not in cleaned
+        assert "base64" not in cleaned
+        assert "Here is the image:" in cleaned
+        assert "Done." in cleaned
+
+    def test_markdown_data_url_image_with_whitespace_and_angle_destination_is_cached_and_removed(self, tmp_path, monkeypatch):
+        """Explicit Markdown data URL variants should not leak base64 text."""
+        from gateway.platforms import base as base_module
+
+        monkeypatch.setattr(base_module, "IMAGE_CACHE_DIR", tmp_path)
+        gif_data_url = "data:image/gif;base64,R0lGODlhAQABAAAAACw="
+        content = f"Before ![tiny]( <{gif_data_url}> ) After"
+
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+
+        assert len(images) == 1
+        image_path, alt_text = images[0]
+        assert alt_text == "tiny"
+        assert image_path.endswith(".gif")
+        assert Path(image_path).is_file()
+        assert "data:image" not in cleaned
+        assert "base64" not in cleaned
+        assert "R0lGOD" not in cleaned
+        assert "Before" in cleaned
+        assert "After" in cleaned
+
+
+    def test_html_data_url_image_is_cached_and_removed(self, tmp_path, monkeypatch):
+        """HTML image data URLs should also be converted to cached local files."""
+        from gateway.platforms import base as base_module
+
+        monkeypatch.setattr(base_module, "IMAGE_CACHE_DIR", tmp_path)
+        gif_data_url = "data:image/gif;base64,R0lGODlhAQABAAAAACw="
+        content = f'Before <img alt="x" src = "{gif_data_url}"> After'
+
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+
+        assert len(images) == 1
+        image_path, alt_text = images[0]
+        assert alt_text == ""
+        assert image_path.endswith(".gif")
+        assert Path(image_path).is_file()
+        assert "data:image" not in cleaned
+        assert "Before" in cleaned
+        assert "After" in cleaned
+
+    def test_html_data_url_with_gt_in_quoted_attribute_is_cached_and_removed(self, tmp_path, monkeypatch):
+        """Quote-aware HTML parsing should tolerate > inside attributes before src."""
+        from gateway.platforms import base as base_module
+
+        monkeypatch.setattr(base_module, "IMAGE_CACHE_DIR", tmp_path)
+        gif_data_url = "data:image/gif;base64,R0lGODlhAQABAAAAACw="
+        content = f'Before <img alt="x > y" src="{gif_data_url}"> After'
+
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+
+        assert len(images) == 1
+        image_path, _ = images[0]
+        assert image_path.endswith(".gif")
+        assert Path(image_path).is_file()
+        assert "data:image" not in cleaned
+        assert "R0lGOD" not in cleaned
+        assert "Before" in cleaned
+        assert "After" in cleaned
+
+    def test_html_data_url_with_quoted_src_text_before_real_src_is_cached_and_removed(self, tmp_path, monkeypatch):
+        """src= text inside another quoted attribute must not mask the real src."""
+        from gateway.platforms import base as base_module
+
+        monkeypatch.setattr(base_module, "IMAGE_CACHE_DIR", tmp_path)
+        gif_data_url = "data:image/gif;base64,R0lGODlhAQABAAAAACw="
+        content = f'Before <img alt="src=https://example.com/x.png" src="{gif_data_url}"> After'
+
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+
+        assert len(images) == 1
+        image_path, _ = images[0]
+        assert image_path.endswith(".gif")
+        assert Path(image_path).is_file()
+        assert "data:image" not in cleaned
+        assert "example.com" not in cleaned
+        assert "Before" in cleaned
+        assert "After" in cleaned
+
+    def test_html_data_url_with_data_src_before_real_src_is_cached_and_removed(self, tmp_path, monkeypatch):
+        """data-src/srcset attributes must not be mistaken for the real src."""
+        from gateway.platforms import base as base_module
+
+        monkeypatch.setattr(base_module, "IMAGE_CACHE_DIR", tmp_path)
+        gif_data_url = "data:image/gif;base64,R0lGODlhAQABAAAAACw="
+        content = (
+            'Before <img data-src="https://example.com/track.png" '
+            f'src="{gif_data_url}" srcset="https://example.com/other.png 2x"> After'
+        )
+
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+
+        assert len(images) == 1
+        image_path, _ = images[0]
+        assert image_path.endswith(".gif")
+        assert Path(image_path).is_file()
+        assert "example.com" not in cleaned
+        assert "data:image" not in cleaned
+        assert "R0lGOD" not in cleaned
+        assert "Before" in cleaned
+        assert "After" in cleaned
+
+    def test_html_data_url_in_alt_text_does_not_remove_remote_image(self):
+        """Non URL-bearing attributes mentioning data:image should not hide remote images."""
+        content = (
+            'Before <img src="https://example.com/a.png" '
+            'alt="literal data:image/png;base64,iVBORw0KGgo"> After'
+        )
+
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+
+        assert images == [("https://example.com/a.png", "")]
+        assert "Before" in cleaned
+        assert "After" in cleaned
+        assert "data:image" not in cleaned
+        assert "https://example.com/a.png" not in cleaned
+
+    def test_markdown_like_data_url_inside_html_alt_does_not_cache_or_strip_as_markdown(self):
+        """Markdown-looking data URLs inside HTML attributes are not body Markdown."""
+        content = (
+            'Before <img src="https://example.com/a.png" '
+            'alt="![x](data:image/gif;base64,R0lGODlhAQABAAAAACw=)"> After'
+        )
+
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+
+        assert images == [("https://example.com/a.png", "")]
+        assert "Before" in cleaned
+        assert "After" in cleaned
+        assert "data:image" not in cleaned
+        assert "R0lGOD" not in cleaned
+        assert "https://example.com/a.png" not in cleaned
+
+    def test_markdown_like_remote_url_inside_html_alt_does_not_extract_or_strip_as_markdown(self):
+        """Markdown-looking remote URLs inside HTML attributes are not body Markdown."""
+        content = (
+            'Before <img src="https://example.com/a.png" '
+            'alt="![x](https://example.com/hidden.png)"> After'
+        )
+
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+
+        assert images == [("https://example.com/a.png", "")]
+        assert "Before" in cleaned
+        assert "After" in cleaned
+        assert "hidden.png" not in cleaned
+        assert "https://example.com/a.png" not in cleaned
+
+    def test_html_data_url_src_with_leading_space_is_cached_and_removed(self, tmp_path, monkeypatch):
+        """Quoted URL-bearing attributes may contain incidental whitespace."""
+        from gateway.platforms import base as base_module
+
+        monkeypatch.setattr(base_module, "IMAGE_CACHE_DIR", tmp_path)
+        gif_data_url = "data:image/gif;base64,R0lGODlhAQABAAAAACw="
+        content = f'Before <img src="  {gif_data_url}  "> After'
+
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+
+        assert len(images) == 1
+        image_path, _ = images[0]
+        assert image_path.endswith(".gif")
+        assert Path(image_path).is_file()
+        assert "data:image" not in cleaned
+        assert "R0lGOD" not in cleaned
+        assert "Before" in cleaned
+        assert "After" in cleaned
+
+    def test_html_srcset_data_url_candidate_is_cached_and_removed(self, tmp_path, monkeypatch):
+        """srcset descriptors should be parsed so a data URL candidate can be cached."""
+        from gateway.platforms import base as base_module
+
+        monkeypatch.setattr(base_module, "IMAGE_CACHE_DIR", tmp_path)
+        gif_data_url = "data:image/gif;base64,R0lGODlhAQABAAAAACw="
+        content = f'Before <img srcset="{gif_data_url} 1x"> After'
+
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+
+        assert len(images) == 1
+        image_path, _ = images[0]
+        assert image_path.endswith(".gif")
+        assert Path(image_path).is_file()
+        assert "data:image" not in cleaned
+        assert "R0lGOD" not in cleaned
+        assert "Before" in cleaned
+        assert "After" in cleaned
+
+    def test_data_url_with_metadata_and_folded_payload_is_cached(self, tmp_path, monkeypatch):
+        """Valid data URL parameters and folded base64 should still be handled."""
+        from gateway.platforms import base as base_module
+
+        monkeypatch.setattr(base_module, "IMAGE_CACHE_DIR", tmp_path)
+        folded_png_data_url = (
+            "data:image/png;charset=utf-8;base64,"
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ\r\n"
+            "AAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        )
+        content = f"Before ![tiny]({folded_png_data_url}) After"
+
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+
+        assert len(images) == 1
+        image_path, alt_text = images[0]
+        assert alt_text == "tiny"
+        assert image_path.endswith(".png")
+        assert Path(image_path).is_file()
+        assert "data:image" not in cleaned
+        assert "base64" not in cleaned
+        assert "Before" in cleaned
+        assert "After" in cleaned
+
+    def test_data_url_mime_magic_mismatch_is_removed_not_cached(self, tmp_path, monkeypatch):
+        """Declared MIME must match decoded image bytes."""
+        from gateway.platforms import base as base_module
+
+        monkeypatch.setattr(base_module, "IMAGE_CACHE_DIR", tmp_path)
+        gif_bytes_declared_png = "data:image/png;base64,R0lGODlhAQABAAAAACw="
+        content = f"Mismatch ![bad]({gif_bytes_declared_png})"
+
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+
+        assert images == []
+        assert "data:image" not in cleaned
+        assert "R0lGOD" not in cleaned
+
+    def test_unsupported_image_data_url_is_removed_not_cached(self, tmp_path, monkeypatch):
+        """Unsupported explicit image data URLs must not leak even when not decoded."""
+        from gateway.platforms import base as base_module
+
+        monkeypatch.setattr(base_module, "IMAGE_CACHE_DIR", tmp_path)
+        svg_data_url = "data:image/svg+xml;base64,PHN2ZyBvbmxvYWQ9YWxlcnQoMSk+PC9zdmc+"
+        content = f'Before ![svg]({svg_data_url}) and <img src="{svg_data_url}"> After'
+
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+
+        assert images == []
+        assert "data:image" not in cleaned
+        assert "base64" not in cleaned
+        assert "PHN2" not in cleaned
+        assert "Before" in cleaned
+        assert "After" in cleaned
+
+    def test_invalid_data_url_image_is_removed_without_guessing_base64(self, tmp_path, monkeypatch):
+        """Bad explicit data URL image tags should not leak raw base64 text."""
+        from gateway.platforms import base as base_module
+
+        monkeypatch.setattr(base_module, "IMAGE_CACHE_DIR", tmp_path)
+        content = "Bad image: ![bad](data:image/png;base64,not-valid-base64@@@)"
+
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+
+        assert images == []
+        assert "data:image" not in cleaned
+        assert "not-valid-base64" not in cleaned
+
+    def test_bare_data_image_url_is_hidden_not_cached(self):
+        """Bare data:image URLs fail closed in outgoing text without guessing images."""
+        content = "before data:image/png;base64,AAAA after"
+
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+
+        assert images == []
+        assert cleaned == "before"
+        assert "data:image" not in cleaned
+        assert "base64" not in cleaned
+        assert "AAAA" not in cleaned
+
+    def test_html_alt_only_data_url_is_hidden_not_cached(self):
+        """An <img> tag with data:image only in non-source attrs should not leak payload."""
+        content = 'before <img alt="literal data:image/png;base64,AAAA"> after'
+
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+
+        assert images == []
+        assert cleaned == "before  after"
+        assert "data:image" not in cleaned
+        assert "base64" not in cleaned
+        assert "AAAA" not in cleaned
+
+    def test_bare_base64_text_is_not_treated_as_image(self):
+        """Only explicit data:image URLs are handled; arbitrary base64 text is preserved."""
+        content = "raw text iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+
+        assert images == []
+        assert cleaned == content
 
 
 # ---------------------------------------------------------------------------

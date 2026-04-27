@@ -6,6 +6,8 @@ and implement the required methods.
 """
 
 import asyncio
+import base64
+import binascii
 import inspect
 import ipaddress
 import logging
@@ -455,6 +457,15 @@ async def _ssrf_redirect_guard(response):
 # Default location: {HERMES_HOME}/cache/images/ (legacy: image_cache/)
 IMAGE_CACHE_DIR = get_hermes_dir("cache/images", "image_cache")
 
+_IMAGE_DATA_URL_EXTENSIONS = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+}
+_MAX_DATA_URL_IMAGE_BYTES = 20 * 1024 * 1024
+
 
 def get_image_cache_dir() -> Path:
     """Return the image cache directory, creating it if it doesn't exist."""
@@ -505,6 +516,89 @@ def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
     filepath = cache_dir / filename
     filepath.write_bytes(data)
     return str(filepath)
+
+
+def _image_bytes_match_mime(data: bytes, mime_type: str) -> bool:
+    """Return whether decoded image bytes match the declared data URL MIME."""
+    if mime_type == "image/png":
+        return data.startswith(b"\x89PNG\r\n\x1a\n")
+    if mime_type in {"image/jpeg", "image/jpg"}:
+        return data.startswith(b"\xff\xd8")
+    if mime_type == "image/gif":
+        return data.startswith((b"GIF87a", b"GIF89a"))
+    if mime_type == "image/webp":
+        return len(data) >= 12 and data.startswith(b"RIFF") and data[8:12] == b"WEBP"
+    return False
+
+
+def _cache_image_from_data_url(data_url: str) -> str | None:
+    """Decode an explicit image data URL into the controlled image cache."""
+    header, separator, payload = data_url.partition(",")
+    if not separator:
+        return None
+
+    metadata = header[5:] if header.lower().startswith("data:") else header
+    parts = [part.strip().lower() for part in metadata.split(";") if part.strip()]
+    if not parts or "base64" not in parts[1:]:
+        return None
+
+    mime_type = parts[0]
+    ext = _IMAGE_DATA_URL_EXTENSIONS.get(mime_type)
+    if not ext:
+        return None
+
+    payload = payload.replace("\r", "").replace("\n", "")
+
+    # Avoid decoding arbitrarily large inline payloads.  Base64 expands bytes
+    # by roughly 4/3; this check is intentionally conservative.
+    if len(payload) > ((_MAX_DATA_URL_IMAGE_BYTES + 2) // 3) * 4 + 8:
+        logger.warning("Skipping oversized image data URL (%s, %d base64 chars)", mime_type, len(payload))
+        return None
+
+    try:
+        image_bytes = base64.b64decode(payload, validate=True)
+    except (binascii.Error, ValueError):
+        logger.warning("Skipping invalid image data URL payload (%s, %d base64 chars)", mime_type, len(payload))
+        return None
+
+    if len(image_bytes) > _MAX_DATA_URL_IMAGE_BYTES:
+        logger.warning("Skipping oversized decoded image data URL (%s, %d bytes)", mime_type, len(image_bytes))
+        return None
+
+    if not _image_bytes_match_mime(image_bytes, mime_type):
+        logger.warning("Skipping image data URL with mismatched MIME type (%s)", mime_type)
+        return None
+
+    try:
+        return cache_image_from_bytes(image_bytes, ext)
+    except ValueError as exc:
+        logger.warning("Skipping non-image data URL payload (%s): %s", mime_type, exc)
+        return None
+
+
+def _first_data_image_srcset_candidate(value: str) -> str | None:
+    """Return the first data:image candidate from an HTML srcset value."""
+    marker = "data:image/"
+    lower = value.lower()
+    idx = lower.find(marker)
+    if idx == -1:
+        return None
+    header_end = value.find(",", idx)
+    if header_end == -1:
+        return None
+    payload_start = header_end + 1
+    payload_end = len(value)
+    for comma_match in re.finditer(",", value[payload_start:]):
+        comma_idx = payload_start + comma_match.start()
+        if re.match(r'\s*(?:https?:|data:image/)', value[comma_idx + 1:], re.IGNORECASE):
+            payload_end = comma_idx
+            break
+    header = value[idx:header_end].strip()
+    payload_and_descriptor = value[payload_start:payload_end].strip()
+    payload = payload_and_descriptor.split()[0] if payload_and_descriptor else ""
+    if not payload:
+        return None
+    return f"{header},{payload}"
 
 
 async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) -> str:
@@ -1441,44 +1535,173 @@ class BasePlatformAdapter(ABC):
         
         Finds patterns like:
         - ![alt text](https://example.com/image.png)
+        - ![alt text](data:image/png;base64,...)
         - <img src="https://example.com/image.png">
+        - <img src="data:image/png;base64,...">
         - <img src="https://example.com/image.png"></img>
         
         Args:
             content: The response text to scan.
         
         Returns:
-            Tuple of (list of (url, alt_text) pairs, cleaned content with image tags removed).
+            Tuple of (list of (url/path, alt_text) pairs, cleaned content with image tags removed).
         """
         images = []
         cleaned = content
+        tags_to_remove: list[tuple[int, int]] = []
         
-        # Match markdown images: ![alt](url)
+        # Match HTML img tags with a quote-aware scanner. A bare regex like
+        # ``[^>]*`` stops too early when another attribute contains a literal
+        # ``>`` inside quotes (for example: alt="x > y").
+        def _iter_html_img_tags(text: str):
+            pos = 0
+            while True:
+                match = re.search(r'<img\b', text[pos:], re.IGNORECASE)
+                if not match:
+                    break
+                start = pos + match.start()
+                idx = start
+                quote = None
+                while idx < len(text):
+                    ch = text[idx]
+                    if quote:
+                        if ch == quote:
+                            quote = None
+                    elif ch in {'"', "'"}:
+                        quote = ch
+                    elif ch == ">":
+                        end = idx + 1
+                        closing = re.match(r'\s*</img>', text[end:], re.IGNORECASE)
+                        if closing:
+                            end += closing.end()
+                        yield start, end, text[start:end]
+                        pos = end
+                        break
+                    idx += 1
+                else:
+                    break
+
+        html_img_tags = list(_iter_html_img_tags(content))
+        html_img_spans = [(start, end) for start, end, _ in html_img_tags]
+
+        def _inside_html_img_tag(position: int) -> bool:
+            return any(start <= position < end for start, end in html_img_spans)
+
+        # Match markdown images: ![alt](url). Markdown-looking text inside
+        # HTML <img> attributes is handled by the HTML path below, not this
+        # global regex.
         md_pattern = r'!\[([^\]]*)\]\((https?://[^\s\)]+)\)'
         for match in re.finditer(md_pattern, content):
+            if _inside_html_img_tag(match.start()):
+                continue
             alt_text = match.group(1)
             url = match.group(2)
             # Only extract URLs that look like actual images
             if any(url.lower().endswith(ext) or ext in url.lower() for ext in
                    ['.png', '.jpg', '.jpeg', '.gif', '.webp', 'fal.media', 'fal-cdn', 'replicate.delivery']):
                 images.append((url, alt_text))
+                tags_to_remove.append(match.span())
+
+        # Match markdown image data URLs. These are explicit inline image payloads,
+        # so remove them from displayed text even when the MIME type is not one
+        # we decode/cache. The whitelist is enforced inside
+        # _cache_image_from_data_url(). Markdown-like text inside HTML <img>
+        # attributes is handled by the HTML path below, not this global regex.
+        md_data_pattern = r'!\[([^\]]*)\]\(\s*<?\s*(data:image/[^,\)>\s]+(?:;[^,\)>\s]+)*,[^\)>]*?)\s*>?\s*\)'
+        for match in re.finditer(md_data_pattern, content, re.IGNORECASE | re.DOTALL):
+            if _inside_html_img_tag(match.start()):
+                continue
+            alt_text = match.group(1)
+            image_path = _cache_image_from_data_url(match.group(2).strip())
+            if image_path:
+                images.append((image_path, alt_text))
+            tags_to_remove.append(match.span())
+
+        def _html_img_attrs(tag: str) -> list[tuple[str, str]]:
+            attrs: list[tuple[str, str]] = []
+            match = re.match(r'\s*<img\b', tag, re.IGNORECASE)
+            idx = match.end() if match else 0
+            length = len(tag)
+            while idx < length:
+                while idx < length and tag[idx].isspace():
+                    idx += 1
+                if idx >= length or tag[idx] in ">/":
+                    break
+                name_start = idx
+                while idx < length and (tag[idx].isalnum() or tag[idx] in "_:-"):
+                    idx += 1
+                if idx == name_start:
+                    idx += 1
+                    continue
+                name = tag[name_start:idx].lower()
+                while idx < length and tag[idx].isspace():
+                    idx += 1
+                value = ""
+                if idx < length and tag[idx] == "=":
+                    idx += 1
+                    while idx < length and tag[idx].isspace():
+                        idx += 1
+                    if idx < length and tag[idx] in {'"', "'"}:
+                        quote = tag[idx]
+                        idx += 1
+                        value_start = idx
+                        while idx < length and tag[idx] != quote:
+                            idx += 1
+                        value = tag[value_start:idx]
+                        if idx < length:
+                            idx += 1
+                    else:
+                        value_start = idx
+                        while idx < length and not tag[idx].isspace() and tag[idx] != ">":
+                            idx += 1
+                        value = tag[value_start:idx].rstrip("/")
+                attrs.append((name, value))
+            return attrs
+
+        for start, end, tag in _iter_html_img_tags(content):
+            attrs = _html_img_attrs(tag)
+            src = next((value for name, value in attrs if name == "src"), "").strip()
+            src_lower = src.lower()
+            data_image_values = []
+            if src_lower.startswith("data:image/"):
+                data_image_values.append(src)
+            data_src = next((value for name, value in attrs if name == "data-src"), "").strip()
+            if data_src.lower().startswith("data:image/"):
+                data_image_values.append(data_src)
+            srcset = next((value for name, value in attrs if name == "srcset"), "").strip()
+            srcset_data_url = _first_data_image_srcset_candidate(srcset)
+            if srcset_data_url:
+                data_image_values.append(srcset_data_url)
+            if src_lower.startswith(("http://", "https://")) and not data_image_values:
+                images.append((src, ""))
+                tags_to_remove.append((start, end))
+            elif data_image_values:
+                image_path = None
+                for data_url in data_image_values:
+                    image_path = _cache_image_from_data_url(data_url)
+                    if image_path:
+                        break
+                if image_path:
+                    images.append((image_path, ""))
+                tags_to_remove.append((start, end))
+            elif "data:image/" in tag.lower():
+                tags_to_remove.append((start, end))
         
-        # Match HTML img tags: <img src="url"> or <img src="url"></img> or <img src="url"/>
-        html_pattern = r'<img\s+src=["\']?(https?://[^\s"\'<>]+)["\']?\s*/?>\s*(?:</img>)?'
-        for match in re.finditer(html_pattern, content):
-            url = match.group(1)
-            images.append((url, ""))
-        
-        # Remove only the matched image tags from content (not all markdown images)
-        if images:
-            extracted_urls = {url for url, _ in images}
-            def _remove_if_extracted(match):
-                url = match.group(2) if match.lastindex >= 2 else match.group(1)
-                return '' if url in extracted_urls else match.group(0)
-            cleaned = re.sub(md_pattern, _remove_if_extracted, cleaned)
-            cleaned = re.sub(html_pattern, _remove_if_extracted, cleaned)
+        if tags_to_remove:
+            pieces = []
+            last = 0
+            for start, end in sorted(tags_to_remove):
+                if start < last:
+                    continue
+                pieces.append(cleaned[last:start])
+                last = end
+            pieces.append(cleaned[last:])
+            cleaned = ''.join(pieces)
             # Clean up leftover blank lines
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
+        bare_data_idx = cleaned.lower().find("data:image/")
+        if bare_data_idx != -1:
+            cleaned = cleaned[:bare_data_idx].strip()
         
         return images, cleaned
     
@@ -2410,6 +2633,11 @@ class BasePlatformAdapter(ABC):
                 # Human-like pacing delay between text and media
                 human_delay = self._get_human_delay()
 
+                # Send extracted media files — route by file type
+                _AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a'}
+                _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
+                _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+
                 # Send extracted images as native attachments
                 if images:
                     logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
@@ -2423,8 +2651,21 @@ class BasePlatformAdapter(ABC):
                             safe_url_for_log(image_url),
                             alt_text[:30] if alt_text else "",
                         )
+                        image_ext = Path(image_url).suffix.lower()
+                        image_is_remote = bool(urlsplit(image_url).scheme)
+                        if (
+                            not image_is_remote
+                            and image_ext in _IMAGE_EXTS
+                            and os.path.isfile(os.path.expanduser(image_url))
+                        ):
+                            img_result = await self.send_image_file(
+                                chat_id=event.source.chat_id,
+                                image_path=os.path.expanduser(image_url),
+                                caption=alt_text if alt_text else None,
+                                metadata=_thread_metadata,
+                            )
                         # Route animated GIFs through send_animation for proper playback
-                        if self._is_animation_url(image_url):
+                        elif self._is_animation_url(image_url):
                             img_result = await self.send_animation(
                                 chat_id=event.source.chat_id,
                                 animation_url=image_url,
@@ -2442,11 +2683,6 @@ class BasePlatformAdapter(ABC):
                             logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
                     except Exception as img_err:
                         logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
-
-                # Send extracted media files — route by file type
-                _AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a'}
-                _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
-                _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 
                 for media_path, is_voice in media_files:
                     if human_delay > 0:
