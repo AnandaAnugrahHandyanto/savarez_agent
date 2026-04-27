@@ -5,6 +5,14 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 
+class TestOAuthClientId:
+    """Ensure the OAuth client_id matches the legacy OAuth App used by VS Code / Copilot CLI."""
+
+    def test_client_id_is_legacy_oauth_app(self):
+        from hermes_cli.copilot_auth import COPILOT_OAUTH_CLIENT_ID
+        assert COPILOT_OAUTH_CLIENT_ID == "Iv1.b507a08c87ecfe98"
+
+
 class TestTokenValidation:
     """Token type validation."""
 
