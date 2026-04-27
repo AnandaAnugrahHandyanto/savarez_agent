@@ -17,6 +17,7 @@ Backend compatibility:
 - Firecrawl: https://docs.firecrawl.dev/introduction (search, extract, crawl; direct or derived firecrawl-gateway.<domain> for Nous Subscribers)
 - Parallel: https://docs.parallel.ai (search, extract)
 - Tavily: https://tavily.com (search, extract, crawl)
+- SearchHive: https://docs.searchhive.dev (search, extract, crawl; open-source alternative with generous free tier)
 
 LLM Processing:
 - Uses OpenRouter API with Gemini 3 Flash Preview for intelligent content extraction
@@ -88,7 +89,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa"):
+    if configured in ("parallel", "firecrawl", "tavily", "exa", "searchhive"):
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -96,6 +97,7 @@ def _get_backend() -> str:
     # tool gateway is configured for Nous subscribers.
     backend_candidates = (
         ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL") or _is_tool_gateway_ready()),
+        ("searchhive", _has_env("SEARCHHIVE_API_KEY")),
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("tavily", _has_env("TAVILY_API_KEY")),
         ("exa", _has_env("EXA_API_KEY")),
@@ -117,6 +119,8 @@ def _is_backend_available(backend: str) -> bool:
         return check_firecrawl_api_key()
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
+    if backend == "searchhive":
+        return _has_env("SEARCHHIVE_API_KEY")
     return False
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
@@ -189,6 +193,7 @@ def _web_requires_env() -> list[str]:
         "TAVILY_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
+        "SEARCHHIVE_API_KEY",
     ]
     if managed_nous_tools_enabled():
         requires.extend(
@@ -239,6 +244,29 @@ def _get_firecrawl_client():
     _firecrawl_client = Firecrawl(**kwargs)
     _firecrawl_client_config = client_config
     return _firecrawl_client
+
+# ─── SearchHive Client ───────────────────────────────────────────────────────
+
+_searchhive_client = None
+
+
+def _get_searchhive_client():
+    """Get or create the SearchHive client (lazy initialization).
+
+    Uses SEARCHHIVE_API_KEY env var. Requires the ``searchhive-python`` package
+    (``pip install searchhive-python``).
+    """
+    global _searchhive_client
+    if _searchhive_client is None:
+        api_key = os.getenv("SEARCHHIVE_API_KEY", "").strip()
+        if not api_key:
+            raise ValueError(
+                "SEARCHHIVE_API_KEY environment variable not set. "
+                "Get your API key at https://searchhive.dev"
+            )
+        import searchhive
+        _searchhive_client = searchhive.SearchHive(api_key=api_key)
+    return _searchhive_client
 
 # ─── Parallel Client ─────────────────────────────────────────────────────────
 
@@ -838,6 +866,121 @@ Create a single, unified markdown summary."""
         return fallback
 
 
+# ─── SearchHive Search, Extract & Crawl Helpers ──────────────────────────────
+
+
+def _searchhive_search(query: str, limit: int = 5) -> dict:
+    """Search using the SearchHive SDK and return results as a dict."""
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return {"error": "Interrupted", "success": False}
+
+    logger.info("SearchHive search: '%s' (limit=%d)", query, limit)
+    response = _get_searchhive_client().swift_search(query, max_results=limit)
+
+    web_results = []
+    for sr in (getattr(response, "search_results", None) or []):
+        web_results.append({
+            "url": getattr(sr, "link", "") or "",
+            "title": getattr(sr, "title", "") or "",
+            "description": getattr(sr, "snippet", "") or "",
+            "position": getattr(sr, "position", 0) or 0,
+        })
+
+    return {"success": True, "data": {"web": web_results}}
+
+
+async def _searchhive_extract(urls: List[str]) -> List[Dict[str, Any]]:
+    """Extract content from URLs using the SearchHive SDK.
+
+    Returns a list of result dicts matching the structure expected by the
+    LLM post-processing pipeline (url, title, content, metadata).
+    """
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return [{"url": u, "error": "Interrupted", "title": ""} for u in urls]
+
+    logger.info("SearchHive extract: %d URL(s)", len(urls))
+    results: List[Dict[str, Any]] = []
+    for url in urls:
+        try:
+            response = _get_searchhive_client().scrape_forge(url)
+            content = getattr(response, "text", "") or ""
+            title = getattr(response, "title", "") or ""
+            metadata = getattr(response, "metadata", None) or {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            results.append({
+                "url": url,
+                "title": title,
+                "content": content,
+                "raw_content": content,
+                "metadata": metadata,
+            })
+        except Exception as e:
+            logger.warning("SearchHive scrape failed for %s: %s", url, str(e)[:100])
+            results.append({
+                "url": url,
+                "title": "",
+                "content": "",
+                "raw_content": "",
+                "error": str(e),
+                "metadata": {},
+            })
+    return results
+
+
+async def _searchhive_crawl(url: str, instructions: str = None) -> List[Dict[str, Any]]:
+    """Crawl/research a topic using the SearchHive SDK deep_dive.
+
+    Returns a list of result dicts matching the structure expected by the
+    LLM post-processing pipeline (url, title, content, metadata).
+    """
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return [{"url": url, "error": "Interrupted", "title": ""}]
+
+    logger.info("SearchHive deep_dive: '%s'", instructions or url)
+    results: List[Dict[str, Any]] = []
+    try:
+        query = instructions or url
+        response = _get_searchhive_client().deep_dive(query, max_pages=20)
+
+        # Add the summary as a result page
+        if getattr(response, "summary", None):
+            results.append({
+                "url": url,
+                "title": "Deep Dive Summary",
+                "content": response.summary,
+                "raw_content": response.summary,
+                "metadata": {},
+            })
+
+        # Add scraped content pages
+        for sc in (getattr(response, "scraped_content", None) or []):
+            page_url = getattr(sc, "url", url) or url
+            page_text = getattr(sc, "text", "") or ""
+            page_title = getattr(sc, "title", "") or ""
+            results.append({
+                "url": page_url,
+                "title": page_title,
+                "content": page_text,
+                "raw_content": page_text,
+                "metadata": {},
+            })
+    except Exception as e:
+        logger.warning("SearchHive deep_dive failed for '%s': %s", url, str(e)[:100])
+        results.append({
+            "url": url,
+            "title": "",
+            "content": "",
+            "raw_content": "",
+            "error": str(e),
+            "metadata": {},
+        })
+    return results
+
+
 def clean_base64_images(text: str) -> str:
     """
     Remove base64 encoded images from text to reduce token count and clutter.
@@ -1118,6 +1261,15 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             _debug.save()
             return result_json
 
+        if backend == "searchhive":
+            response_data = _searchhive_search(query, limit)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
         logger.info("Searching the web for: '%s' (limit: %d)", query, limit)
 
         response = _get_firecrawl_client().search(
@@ -1252,6 +1404,8 @@ async def web_extract_tool(
                     "include_images": False,
                 })
                 results = _normalize_tavily_documents(raw, fallback_url=safe_urls[0] if safe_urls else "")
+            elif backend == "searchhive":
+                results = await _searchhive_extract(safe_urls)
             else:
                 # ── Firecrawl extraction ──
                 # Determine requested formats for Firecrawl v2
@@ -1922,9 +2076,9 @@ def check_firecrawl_api_key() -> bool:
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in ("exa", "parallel", "firecrawl", "tavily"):
+    if configured in ("exa", "parallel", "firecrawl", "tavily", "searchhive"):
         return _is_backend_available(configured)
-    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily"))
+    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily", "searchhive"))
 
 
 def check_auxiliary_model() -> bool:

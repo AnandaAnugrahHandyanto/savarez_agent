@@ -289,6 +289,15 @@ TOOL_CATEGORIES = {
                     {"key": "FIRECRAWL_API_URL", "prompt": "Your Firecrawl instance URL (e.g., http://localhost:3002)"},
                 ],
             },
+            {
+                "name": "SearchHive",
+                "badge": "free tier",
+                "tag": "Open-source search, extract, and crawl — generous free tier",
+                "web_backend": "searchhive",
+                "env_vars": [
+                    {"key": "SEARCHHIVE_API_KEY", "prompt": "SearchHive API key", "url": "https://searchhive.dev"},
+                ],
+            },
         ],
     },
     "image_gen": {
