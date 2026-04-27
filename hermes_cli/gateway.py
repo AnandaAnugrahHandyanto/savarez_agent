@@ -879,7 +879,7 @@ def launchd_stop():
     subprocess.run(["launchctl", "stop", "ai.hermes.gateway"], check=True)
     print("✓ Service stopped")
 
-def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float = 5.0):
+def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float = 5.0) -> bool:
     """Wait for the gateway process (by saved PID) to exit.
 
     Uses the PID from the gateway.pid file — not launchd labels — so this
@@ -889,6 +889,12 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float = 5.0):
     Args:
         timeout: Total seconds to wait before giving up.
         force_after: Seconds of graceful waiting before sending SIGKILL.
+
+    Returns:
+        True when the gateway PID is gone, False when it is still alive
+        after the timeout. Callers must treat False as a hard failure and
+        avoid starting a fresh instance — two gateways racing over the PID
+        file and platform sockets is the source of intermittent failures.
     """
     import time
     from gateway.status import get_running_pid
@@ -900,23 +906,23 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float = 5.0):
     while time.monotonic() < deadline:
         pid = get_running_pid()
         if pid is None:
-            return  # Process exited cleanly.
+            return True
 
         if not force_sent and time.monotonic() >= force_deadline:
-            # Grace period expired — force-kill the specific PID.
             try:
                 os.kill(pid, signal.SIGKILL)
                 print(f"⚠ Gateway PID {pid} did not exit gracefully; sent SIGKILL")
             except (ProcessLookupError, PermissionError):
-                return  # Already gone or we can't touch it.
+                return True
             force_sent = True
 
         time.sleep(0.3)
 
-    # Timed out even after SIGKILL.
     remaining_pid = get_running_pid()
-    if remaining_pid is not None:
-        print(f"⚠ Gateway PID {remaining_pid} still running after {timeout}s — restart may fail")
+    if remaining_pid is None:
+        return True
+    print(f"✗ Gateway PID {remaining_pid} still running after {timeout}s — refusing to start a colliding instance")
+    return False
 
 
 def launchd_restart():
@@ -926,8 +932,89 @@ def launchd_restart():
         if e.returncode != 3:
             raise
         print("↻ launchd job was unloaded; skipping stop")
-    _wait_for_gateway_exit()
+    if not _wait_for_gateway_exit():
+        raise RuntimeError("Previous gateway PID did not exit; refusing to start colliding instance")
     launchd_start()
+
+
+# =============================================================================
+# Unified restart helper
+# =============================================================================
+
+class RestartResult:
+    """Outcome of a unified restart attempt. String values for easy logging/tests."""
+    NOT_RUNNING = "not_running"        # Gateway was not running; no-op.
+    OK = "ok"                          # Restart completed.
+    STOP_TIMEOUT = "stop_timeout"      # Old PID refused to exit; start aborted.
+    START_FAILED = "start_failed"      # Stop succeeded but start did not.
+    MANUAL_REQUIRED = "manual_required"  # Manual-mode gateway killed; user must rerun `hermes gateway run`.
+
+
+def restart_gateway(reason: str = "config change", quiet: bool = False) -> str:
+    """Idempotent restart that auto-detects systemd / launchd / manual mode.
+
+    Returns one of the ``RestartResult.*`` string constants so callers can
+    react (the auto-restart hook treats ``NOT_RUNNING`` as a clean no-op).
+
+    The systemd / launchd paths delegate to the existing helpers, which use
+    the OS service manager — that's strictly more reliable than racing on
+    the PID file ourselves. The manual path SIGTERMs the running process,
+    waits for the PID to clear, and asks the user to re-launch since there
+    is no clean way to daemonise a foreground ``hermes gateway run`` from
+    a sibling CLI invocation.
+    """
+    from gateway.status import get_running_pid, remove_pid_file
+
+    pid = get_running_pid()
+    if pid is None:
+        if not quiet:
+            print("ℹ Gateway is not running — no restart needed.")
+        return RestartResult.NOT_RUNNING
+
+    # Prefer systemd/launchd when a service is installed — they manage the
+    # PID file, port releases, and respawn semantics for us.
+    if is_linux() and (
+        get_systemd_unit_path(system=False).exists()
+        or get_systemd_unit_path(system=True).exists()
+    ):
+        try:
+            systemd_restart(system=False)
+            if not quiet:
+                print(f"✓ Gateway restarted to apply: {reason}")
+            return RestartResult.OK
+        except subprocess.CalledProcessError as exc:
+            print(f"✗ systemd restart failed: {exc}")
+            return RestartResult.START_FAILED
+
+    if is_macos() and get_launchd_plist_path().exists():
+        try:
+            launchd_restart()
+            if not quiet:
+                print(f"✓ Gateway restarted to apply: {reason}")
+            return RestartResult.OK
+        except (subprocess.CalledProcessError, RuntimeError) as exc:
+            print(f"✗ launchd restart failed: {exc}")
+            return RestartResult.START_FAILED
+
+    # Manual mode: stop the running gateway and ask the user to re-launch.
+    # Daemonising from inside a CLI subprocess is fragile (terminal control,
+    # signal handling, log redirection) and `hermes gateway run` is the
+    # documented foreground entry point — re-running it is one keystroke.
+    print(f"→ Stopping gateway (PID {pid}) to apply: {reason}")
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        print(f"⚠ Permission denied killing gateway PID {pid}")
+        return RestartResult.START_FAILED
+
+    if not _wait_for_gateway_exit(timeout=10.0, force_after=5.0):
+        return RestartResult.STOP_TIMEOUT
+
+    remove_pid_file()
+    print("ℹ Gateway was running manually — re-launch with: hermes gateway run")
+    return RestartResult.MANUAL_REQUIRED
 
 def launchd_status(deep: bool = False):
     plist_path = get_launchd_plist_path()
@@ -1825,7 +1912,12 @@ def gateway_command(args):
             if killed:
                 print(f"✓ Stopped {killed} gateway process(es)")
 
-            _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
+            if not _wait_for_gateway_exit(timeout=10.0, force_after=5.0):
+                # Old PID still alive — bail out instead of starting a
+                # colliding instance that races over the PID file and locks.
+                # That race is the source of the intermittent stop+start
+                # failures users report.
+                sys.exit(1)
 
             # Start fresh
             print("Starting gateway...")

@@ -1535,6 +1535,17 @@ def save_env_value(key: str, value: str):
         except OSError:
             pass
 
+    # Auto-restart the gateway when a credential / model env var changes,
+    # so the running daemon picks up the new value without the user having
+    # to remember `hermes gateway restart`. Lazy import + try/except so
+    # this never breaks save_env_value if the hook module is missing.
+    try:
+        from hermes_cli.config_hooks import is_sensitive_key, maybe_restart_gateway
+        if is_sensitive_key(key):
+            maybe_restart_gateway(reason=f"{key} changed", quiet=True)
+    except Exception:
+        pass
+
 
 def save_anthropic_oauth_token(value: str, save_fn=None):
     """Persist an Anthropic OAuth/setup token and clear the API-key slot."""
@@ -1835,6 +1846,20 @@ def set_config_value(key: str, value: str):
         save_env_value(_config_to_env_sync[key], str(value))
 
     print(f"✓ Set {key} = {value} in {config_path}")
+
+    # Trigger gateway restart when the user changed a runtime-sensitive
+    # config key (model, provider routing, fallback, etc.). API-key paths
+    # are already covered by save_env_value above.
+    _config_yaml_sensitive_prefixes = (
+        "model", "providers", "fallback_model", "auxiliary",
+        "compression",
+    )
+    if any(key == p or key.startswith(p + ".") for p in _config_yaml_sensitive_prefixes):
+        try:
+            from hermes_cli.config_hooks import maybe_restart_gateway
+            maybe_restart_gateway(reason=f"{key} changed", quiet=True)
+        except Exception:
+            pass
 
 
 # =============================================================================

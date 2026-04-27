@@ -3003,6 +3003,32 @@ def _coalesce_session_name_args(argv: list) -> list:
     return result
 
 
+def _add_restart_opt_out(parser):
+    """Attach --no-restart / --restart flags to a subparser.
+
+    These let the user override the auto-restart hook (which fires after
+    a credential or model change) when they want to defer or force the
+    behaviour. The actual decision lives in
+    ``hermes_cli.config_hooks.maybe_restart_gateway``; the flags only
+    populate ``args.no_restart`` so future call sites can read them.
+    """
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--no-restart",
+        dest="no_restart",
+        action="store_true",
+        default=False,
+        help="Do not auto-restart the gateway after this change.",
+    )
+    group.add_argument(
+        "--restart",
+        dest="no_restart",
+        action="store_false",
+        default=False,
+        help="Force gateway auto-restart (default behaviour).",
+    )
+
+
 def main():
     """Main entry point for hermes CLI."""
     parser = argparse.ArgumentParser(
@@ -3173,6 +3199,7 @@ For more help on a command:
         help="Select default model and provider",
         description="Interactively select your inference provider and default model"
     )
+    _add_restart_opt_out(model_parser)
     model_parser.set_defaults(func=cmd_model)
 
     # =========================================================================
@@ -3249,6 +3276,7 @@ For more help on a command:
         action="store_true",
         help="Reset configuration to defaults"
     )
+    _add_restart_opt_out(setup_parser)
     setup_parser.set_defaults(func=cmd_setup)
 
     # =========================================================================
@@ -3257,8 +3285,9 @@ For more help on a command:
     whatsapp_parser = subparsers.add_parser(
         "whatsapp",
         help="Set up WhatsApp integration",
-        description="Configure WhatsApp and pair via QR code"
+        description="Configure WhatsApp and pair via QR code",
     )
+    _add_restart_opt_out(whatsapp_parser)
     whatsapp_parser.set_defaults(func=cmd_whatsapp)
 
     # =========================================================================
@@ -3443,6 +3472,7 @@ For more help on a command:
     config_set = config_subparsers.add_parser("set", help="Set a configuration value")
     config_set.add_argument("key", nargs="?", help="Configuration key (e.g., model, terminal.backend)")
     config_set.add_argument("value", nargs="?", help="Value to set")
+    _add_restart_opt_out(config_set)
     
     # config path
     config_path = config_subparsers.add_parser("path", help="Print config file path")
@@ -4176,6 +4206,12 @@ For more help on a command:
         cmd_chat(args)
         return
     
+    # Propagate --no-restart to the auto-restart hook via env var, since
+    # the hook fires deep inside save_env_value / set_config_value where
+    # argparse args are not available.
+    if getattr(args, "no_restart", False):
+        os.environ["HERMES_NO_AUTO_RESTART"] = "1"
+
     # Execute the command
     if hasattr(args, 'func'):
         args.func(args)

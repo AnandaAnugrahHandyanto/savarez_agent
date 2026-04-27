@@ -388,3 +388,22 @@ def get_running_pid() -> Optional[int]:
 def is_gateway_running() -> bool:
     """Check if the gateway daemon is currently running."""
     return get_running_pid() is not None
+
+
+def wait_for_pid_clear(timeout: float = 10.0, poll_interval: float = 0.2) -> bool:
+    """Wait until ``get_running_pid()`` reports no live gateway process.
+
+    Returns True if the gateway PID became absent within ``timeout`` seconds,
+    False otherwise. Used by the restart helper to confirm a previous instance
+    has fully exited before launching a new one — without this check, a fresh
+    gateway can race against the dying instance over the PID file, scoped
+    locks, and platform sockets.
+    """
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if get_running_pid() is None:
+            return True
+        time.sleep(poll_interval)
+    return get_running_pid() is None
