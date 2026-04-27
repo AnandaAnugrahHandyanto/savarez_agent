@@ -1291,7 +1291,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "acp_command": getattr(agent, "acp_command", None) or None,
         "acp_args": getattr(agent, "acp_args", None) or None,
         "model": getattr(agent, "model", None) or _resolve_model(),
-        "max_iterations": int(cfg.get("max_turns", 25) or 25),
+        "max_iterations": int(cfg.get("agent", {}).get("max_turns") or cfg.get("max_turns") or 25),
         "enabled_toolsets": getattr(agent, "enabled_toolsets", None)
         or _load_enabled_toolsets(),
         "quiet_mode": True,
@@ -1347,7 +1347,10 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
     cfg = _load_cfg()
-    system_prompt = ((cfg.get("agent") or {}).get("system_prompt", "") or "").strip()
+    agent_cfg = cfg.get("agent") or {}
+    # Priority: agent.max_turns > root max_turns (backwards compat) > default 90
+    max_iterations = int(agent_cfg.get("max_turns") or cfg.get("max_turns") or 90)
+    system_prompt = (agent_cfg.get("system_prompt", "") or "").strip()
     model, requested_provider = _resolve_startup_runtime()
     runtime = resolve_runtime_provider(
         requested=requested_provider,
@@ -1355,6 +1358,7 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
     )
     return AIAgent(
         model=model,
+        max_iterations=max_iterations,
         provider=runtime.get("provider"),
         base_url=runtime.get("base_url"),
         api_key=runtime.get("api_key"),
@@ -4411,7 +4415,7 @@ def _(rid, params: dict) -> dict:
             {
                 "title": "Agent",
                 "rows": [
-                    ["Max Turns", str(cfg.get("max_turns", 25))],
+                    ["Max Turns", str(cfg.get("agent", {}).get("max_turns") or cfg.get("max_turns") or 90)],
                     ["Toolsets", ", ".join(cfg.get("enabled_toolsets", [])) or "all"],
                     ["Verbose", str(cfg.get("verbose", False))],
                 ],
