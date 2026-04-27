@@ -173,6 +173,7 @@ export interface InputHandlerActions {
   dispatchSubmission: (full: string) => void
   guardBusySessionSwitch: (what?: string) => boolean
   newSession: (msg?: string) => void
+  setClipboardNotice: (text: string) => void
   sys: (text: string) => void
 }
 
@@ -321,6 +322,7 @@ export interface AppLayoutProgressProps {
 }
 
 export interface AppLayoutStatusProps {
+  clipboardNotice: string
   cwdLabel: string
   goodVibesTick: number
   sessionStartedAt: null | number
