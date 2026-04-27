@@ -330,6 +330,25 @@ def test_orchestrate_swarm_posts_status_to_report_chat(hermes_home):
     assert api.send_message_as.call_count >= 2
 
 
+def test_orchestrate_swarm_surfaces_missing_parent_agent_clearly(hermes_home):
+    """Production path with parent_agent=None must raise an actionable error,
+    NOT let delegate_task fail deeper down with its generic message.
+    """
+    api = _stub_api()
+    coord = FleetCoordinator(manager_token="12345:ABC", api_client=api)
+    _seed_active_fleet(coord, ["worker_bot"])
+    with pytest.raises(FleetGuardrailError) as exc:
+        coord.orchestrate_swarm(
+            objective="X",
+            subtasks=[{"goal": "task", "bot_username": "worker_bot"}],
+            user_approved=True,
+            parent_agent=None,
+        )
+    msg = str(exc.value).lower()
+    assert "parent_agent" in msg
+    assert "gateway" in msg or "restart" in msg
+
+
 def test_orchestrate_swarm_rejects_empty_inputs(hermes_home):
     api = _stub_api()
     coord = FleetCoordinator(

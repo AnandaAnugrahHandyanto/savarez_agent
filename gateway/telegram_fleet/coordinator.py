@@ -590,6 +590,25 @@ class FleetCoordinator:
             raise FleetGuardrailError(
                 f"per_task_timeout_s must be positive, got {per_task_timeout_s}"
             )
+
+        # Surface the parent_agent threading bug clearly when it happens.
+        # Without this guard the swarm posts "▶ starting" and then comes back
+        # with delegate_task's generic "requires a parent agent context"
+        # error — useless to an operator who can't see the call stack.
+        # Threading chain: ``handle_function_call`` → ``registry.dispatch``
+        # → tool handler → here.  When that breaks (typical cause: gateway
+        # running a cached AIAgent from before the threading fix landed),
+        # parent_agent reaches us as None.  Skip when a test injected
+        # ``delegate_fn`` since those tests don't need a real agent.
+        if parent_agent is None and self._delegate_fn is None:
+            raise FleetGuardrailError(
+                "orchestrate_swarm called without a parent_agent context.  "
+                "This usually means the gateway is running a cached AIAgent "
+                "from before the parent_agent threading fix.  Restart the "
+                "gateway (`hermes gateway restart`) or update your install "
+                "to pull the latest fix on this PR."
+            )
+
         with self._lock:
             active = [c for c in self._roster.children if c.is_active()]
         if not active:
