@@ -19,6 +19,11 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+try:
+    import pwd
+except ImportError:  # pragma: no cover - Windows
+    pwd = None  # type: ignore[assignment]
+
 from hermes_constants import get_hermes_home
 from typing import Any, TYPE_CHECKING
 
@@ -27,7 +32,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-GLOBAL_CONFIG_PATH = Path.home() / ".honcho" / "config.json"
+
+def _machine_home() -> Path:
+    """Return the real user home, not a profile-scoped HOME override."""
+    try:
+        if pwd is not None:
+            return Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except Exception:
+        pass
+    return Path.home()
+
+
+GLOBAL_CONFIG_PATH = _machine_home() / ".honcho" / "config.json"
 HOST = "hermes"
 
 
@@ -68,7 +84,7 @@ def resolve_config_path() -> Path:
         return local_path
 
     # Default profile's config — host blocks accumulate here via setup/clone
-    default_path = Path.home() / ".hermes" / "honcho.json"
+    default_path = _machine_home() / ".hermes" / "honcho.json"
     if default_path != local_path and default_path.exists():
         return default_path
 

@@ -6,16 +6,12 @@ import os
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-import pytest
-
 from plugins.memory.honcho.client import (
     HonchoClientConfig,
-    get_honcho_client,
     reset_honcho_client,
     resolve_active_host,
     resolve_config_path,
     GLOBAL_CONFIG_PATH,
-    HOST,
 )
 
 
@@ -358,16 +354,75 @@ class TestResolveConfigPath:
         fake_home.mkdir()
 
         with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}), \
-             patch.object(Path, "home", return_value=fake_home):
+             patch.object(Path, "home", return_value=fake_home), \
+             patch("plugins.memory.honcho.client._machine_home", return_value=fake_home):
             result = resolve_config_path()
         assert result == GLOBAL_CONFIG_PATH
+
+    def test_profile_home_uses_machine_home_shared_config(self, tmp_path):
+        profile_root = tmp_path / "profiles" / "orcha"
+        profile_root.mkdir(parents=True)
+        profile_home = profile_root / "home"
+        profile_home.mkdir()
+
+        machine_home = tmp_path / "machine-home"
+        shared_cfg = machine_home / ".hermes" / "honcho.json"
+        shared_cfg.parent.mkdir(parents=True)
+        shared_cfg.write_text('{"baseUrl": "http://localhost:8000"}')
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(profile_root)}), \
+             patch.object(Path, "home", return_value=profile_home), \
+             patch("plugins.memory.honcho.client._machine_home", return_value=machine_home):
+            result = resolve_config_path()
+        assert result == shared_cfg
+
+    def test_machine_home_falls_back_to_path_home_when_pwd_unavailable(self, tmp_path):
+        fake_home = tmp_path / "fakehome"
+        fake_home.mkdir()
+
+        with patch.object(Path, "home", return_value=fake_home), \
+             patch("plugins.memory.honcho.client.pwd", None):
+            from plugins.memory.honcho.client import _machine_home
+            result = _machine_home()
+        assert result == fake_home
+
+    def test_from_global_config_uses_machine_home_shared_profile_block(self, tmp_path):
+        profile_root = tmp_path / "profiles" / "orcha"
+        profile_root.mkdir(parents=True)
+        profile_home = profile_root / "home"
+        profile_home.mkdir()
+
+        machine_home = tmp_path / "machine-home"
+        shared_cfg = machine_home / ".hermes" / "honcho.json"
+        shared_cfg.parent.mkdir(parents=True)
+        shared_cfg.write_text(json.dumps({
+            "baseUrl": "http://localhost:8000",
+            "hosts": {
+                "hermes.orcha": {
+                    "enabled": True,
+                    "workspace": "hermes",
+                    "aiPeer": "orcha",
+                }
+            },
+        }))
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(profile_root)}), \
+             patch.object(Path, "home", return_value=profile_home), \
+             patch("plugins.memory.honcho.client._machine_home", return_value=machine_home), \
+             patch("plugins.memory.honcho.client.resolve_active_host", return_value="hermes.orcha"):
+            config = HonchoClientConfig.from_global_config()
+        assert config.enabled is True
+        assert config.base_url == "http://localhost:8000"
+        assert config.workspace_id == "hermes"
+        assert config.ai_peer == "orcha"
 
     def test_falls_back_to_global_without_hermes_home_env(self, tmp_path):
         fake_home = tmp_path / "fakehome"
         fake_home.mkdir()
 
         with patch.dict(os.environ, {}, clear=False), \
-             patch.object(Path, "home", return_value=fake_home):
+             patch.object(Path, "home", return_value=fake_home), \
+             patch("plugins.memory.honcho.client._machine_home", return_value=fake_home):
             os.environ.pop("HERMES_HOME", None)
             result = resolve_config_path()
         assert result == GLOBAL_CONFIG_PATH
