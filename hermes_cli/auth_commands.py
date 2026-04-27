@@ -27,7 +27,11 @@ from agent.credential_pool import (
     load_pool,
 )
 import hermes_cli.auth as auth_mod
-from hermes_cli.auth import PROVIDER_REGISTRY
+from hermes_cli.auth import (
+    PROVIDER_REGISTRY,
+    suppress_credential_source,
+    unsuppress_credential_source,
+)
 from hermes_constants import OPENROUTER_BASE_URL
 
 
@@ -198,6 +202,7 @@ def auth_add_command(args) -> None:
             base_url=_provider_base_url(provider),
         )
         pool.add_entry(entry)
+        unsuppress_credential_source(provider, "hermes_pkce")
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
         return
 
@@ -225,6 +230,7 @@ def auth_add_command(args) -> None:
             "base_url": creds.get("inference_base_url"),
         })
         pool.add_entry(entry)
+        unsuppress_credential_source(provider, "device_code")
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
         return
 
@@ -247,6 +253,7 @@ def auth_add_command(args) -> None:
             last_refresh=creds.get("last_refresh"),
         )
         pool.add_entry(entry)
+        unsuppress_credential_source(provider, "device_code")
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
         return
 
@@ -267,6 +274,7 @@ def auth_add_command(args) -> None:
             base_url=creds.get("base_url"),
         )
         pool.add_entry(entry)
+        unsuppress_credential_source(provider, "qwen_cli")
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
         return
 
@@ -325,9 +333,9 @@ def auth_remove_command(args) -> None:
             if cleared:
                 print(f"Cleared {env_var} from .env")
 
-    # If this was a singleton-seeded credential (OAuth device_code, hermes_pkce),
-    # clear the underlying auth store / credential file so it doesn't get
-    # re-seeded on the next load_pool() call.
+    # Singleton-seeded OAuth (device_code for Codex/Nous): wipe provider state
+    # in auth.json so stale tokens are not re-seeded. Manual variants and
+    # Anthropic PKCE/Claude Code are handled in branches below.
     elif source_normalized == "device_code" and provider in ("openai-codex", "nous"):
         from hermes_cli.auth import (
             _load_auth_store, _save_auth_store, _auth_store_lock,
@@ -342,25 +350,33 @@ def auth_remove_command(args) -> None:
         # Re-load to prune stale singleton-seeded entries from the pool file.
         load_pool(provider)
 
-    # Manual device-code credentials should not trigger auth-store wiping,
-    # but we still suppress singleton reseeding to avoid "remove then reappear".
-    elif source_normalized.endswith(":device_code") and provider in ("openai-codex", "nous"):
-        from hermes_cli.auth import suppress_credential_source
-        suppress_credential_source(provider, "device_code")
-        print("Suppressed device_code reseed for this provider.")
-        # Re-load after suppression so any currently seeded device_code entry
-        # is removed from persisted credential_pool.
-        load_pool(provider)
+    # manual:device_code: suppress singleton reseeding only when no peer
+    # device_code entries remain (unsuppress via auth add).
+    elif source_normalized == "manual:device_code" and provider in ("openai-codex", "nous"):
+        remaining_device = [
+            e for e in pool.entries()
+            if (e.source or "").strip().lower() in {"device_code", "manual:device_code"}
+        ]
+        if not remaining_device:
+            suppress_credential_source(provider, "device_code")
+            print(f"Suppressed device_code reseed for {provider}.")
+            load_pool(provider)
 
-    elif removed.source == "hermes_pkce" and provider == "anthropic":
-        from hermes_constants import get_hermes_home
-        oauth_file = get_hermes_home() / ".anthropic_oauth.json"
-        if oauth_file.exists():
-            oauth_file.unlink()
-            print("Cleared Hermes Anthropic OAuth credentials")
+    elif source_normalized in {"hermes_pkce", "manual:hermes_pkce"} and provider == "anthropic":
+        remaining_pkce = [
+            e for e in pool.entries()
+            if (e.source or "").strip().lower() in {"hermes_pkce", "manual:hermes_pkce"}
+        ]
+        if not remaining_pkce:
+            from hermes_constants import get_hermes_home
+            oauth_file = get_hermes_home() / ".anthropic_oauth.json"
+            suppress_credential_source(provider, "hermes_pkce")
+            if oauth_file.exists():
+                oauth_file.unlink()
+                print("Cleared Hermes Anthropic OAuth credentials")
+            print("Suppressed hermes_pkce credential source — it will not be re-seeded.")
 
-    elif removed.source == "claude_code" and provider == "anthropic":
-        from hermes_cli.auth import suppress_credential_source
+    elif source_normalized in {"claude_code", "manual:claude_code"} and provider == "anthropic":
         suppress_credential_source(provider, "claude_code")
         print("Suppressed claude_code credential — it will not be re-seeded.")
         print("Note: Claude Code credentials still live in ~/.claude/.credentials.json")

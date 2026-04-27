@@ -214,3 +214,34 @@ class TestMatrixSyncAuthRetry:
 
         asyncio.run(run())
         assert call_count >= 2
+
+    def test_sync_error_without_unknown_token_retries_with_backoff(self):
+        """Non-auth SyncError responses should retry with sleep backoff."""
+        from gateway.platforms.matrix import MatrixAdapter
+        adapter = MatrixAdapter.__new__(MatrixAdapter)
+        adapter._closing = False
+
+        call_count = 0
+
+        class SyncError:
+            def __init__(self, message, errcode):
+                self.message = message
+                self.errcode = errcode
+
+        async def fake_sync(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 2:
+                adapter._closing = True
+            return SyncError("rate limited", "M_LIMIT_EXCEEDED")
+
+        adapter._client = MagicMock()
+        adapter._client.sync = fake_sync
+
+        async def run():
+            with patch("asyncio.sleep", new_callable=AsyncMock) as sleep_mock:
+                await adapter._sync_loop()
+                sleep_mock.assert_awaited()
+
+        asyncio.run(run())
+        assert call_count >= 2

@@ -23,6 +23,11 @@ def _jwt_with_email(email: str) -> str:
     return f"{header}.{payload}.signature"
 
 
+def _block_codex_cli_token_autoload(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent load_pool(openai-codex) from pulling ~/.codex tokens into the pool."""
+    monkeypatch.setattr("hermes_cli.auth._import_codex_cli_tokens", lambda: None)
+
+
 @pytest.fixture(autouse=True)
 def _clear_provider_env(monkeypatch):
     for key in (
@@ -95,6 +100,41 @@ def test_auth_add_anthropic_oauth_persists_pool_entry(tmp_path, monkeypatch):
     assert entry["expires_at_ms"] == 1711234567000
 
 
+def test_auth_add_anthropic_oauth_unsuppresses_hermes_pkce(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {},
+            "suppressed_sources": {"anthropic": ["hermes_pkce"]},
+        },
+    )
+    token = _jwt_with_email("claude@example.com")
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.run_hermes_oauth_login_pure",
+        lambda: {
+            "access_token": token,
+            "refresh_token": "refresh-token",
+            "expires_at_ms": 1711234567000,
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "anthropic"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    suppressed = payload.get("suppressed_sources", {})
+    assert "hermes_pkce" not in suppressed.get("anthropic", [])
+
+
 def test_auth_add_nous_oauth_persists_pool_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})
@@ -149,6 +189,63 @@ def test_auth_add_nous_oauth_persists_pool_entry(tmp_path, monkeypatch):
     assert entry["portal_base_url"] == "https://portal.example.com"
 
 
+def test_auth_add_nous_oauth_unsuppresses_device_code(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {},
+            "suppressed_sources": {"nous": ["device_code"]},
+        },
+    )
+    token = _jwt_with_email("nous@example.com")
+    monkeypatch.setattr(
+        "hermes_cli.auth._nous_device_code_login",
+        lambda **kwargs: {
+            "portal_base_url": "https://portal.example.com",
+            "inference_base_url": "https://inference.example.com/v1",
+            "client_id": "hermes-cli",
+            "scope": "inference:mint_agent_key",
+            "token_type": "Bearer",
+            "access_token": token,
+            "refresh_token": "refresh-token",
+            "obtained_at": "2026-03-23T10:00:00+00:00",
+            "expires_at": "2026-03-23T11:00:00+00:00",
+            "expires_in": 3600,
+            "agent_key": "ak-test",
+            "agent_key_id": "ak-id",
+            "agent_key_expires_at": "2026-03-23T10:30:00+00:00",
+            "agent_key_expires_in": 1800,
+            "agent_key_reused": False,
+            "agent_key_obtained_at": "2026-03-23T10:00:10+00:00",
+            "tls": {"insecure": False, "ca_bundle": None},
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "nous"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+        portal_url = None
+        inference_url = None
+        client_id = None
+        scope = None
+        no_browser = False
+        timeout = None
+        insecure = False
+        ca_bundle = None
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    suppressed = payload.get("suppressed_sources", {})
+    assert "device_code" not in suppressed.get("nous", [])
+
+
 def test_auth_add_codex_oauth_persists_pool_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})
@@ -182,6 +279,44 @@ def test_auth_add_codex_oauth_persists_pool_entry(tmp_path, monkeypatch):
     assert entry["source"] == "manual:device_code"
     assert entry["refresh_token"] == "refresh-token"
     assert entry["base_url"] == "https://chatgpt.com/backend-api/codex"
+
+
+def test_auth_add_codex_oauth_unsuppresses_device_code(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {},
+            "suppressed_sources": {"openai-codex": ["device_code"]},
+        },
+    )
+    token = _jwt_with_email("codex@example.com")
+    monkeypatch.setattr(
+        "hermes_cli.auth._codex_device_code_login",
+        lambda: {
+            "tokens": {
+                "access_token": token,
+                "refresh_token": "refresh-token",
+            },
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "last_refresh": "2026-03-23T10:00:00Z",
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "openai-codex"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    suppressed = payload.get("suppressed_sources", {})
+    assert "device_code" not in suppressed.get("openai-codex", [])
 
 
 def test_auth_remove_reindexes_priorities(tmp_path, monkeypatch):
@@ -237,6 +372,7 @@ def test_auth_remove_reindexes_priorities(tmp_path, monkeypatch):
 
 
 def test_auth_remove_accepts_label_target(tmp_path, monkeypatch):
+    _block_codex_cli_token_autoload(monkeypatch)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(
         tmp_path,
@@ -280,6 +416,7 @@ def test_auth_remove_accepts_label_target(tmp_path, monkeypatch):
 
 
 def test_auth_remove_prefers_exact_numeric_label_over_index(tmp_path, monkeypatch):
+    _block_codex_cli_token_autoload(monkeypatch)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(
         tmp_path,
@@ -620,19 +757,13 @@ def test_auth_remove_env_seeded_does_not_resurrect(tmp_path, monkeypatch):
 
 def test_auth_remove_manual_device_code_codex_does_not_resurrect(tmp_path, monkeypatch):
     """Removing a manual device-code credential should suppress singleton reseed."""
+    _block_codex_cli_token_autoload(monkeypatch)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(
         tmp_path,
         {
             "version": 1,
-            "providers": {
-                "openai-codex": {
-                    "tokens": {
-                        "access_token": "tok-codex",
-                        "refresh_token": "refresh-codex",
-                    }
-                }
-            },
+            "providers": {},
             "credential_pool": {
                 "openai-codex": [
                     {
@@ -665,6 +796,67 @@ def test_auth_remove_manual_device_code_codex_does_not_resurrect(tmp_path, monke
     assert not pool.has_credentials()
 
 
+def test_auth_remove_manual_device_code_keeps_pure_singleton_codex(tmp_path, monkeypatch):
+    """Removing manual:device_code must not suppress or wipe when device_code remains in pool."""
+    _block_codex_cli_token_autoload(monkeypatch)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {
+                        "access_token": "tok-singleton",
+                        "refresh_token": "refresh-singleton",
+                    }
+                }
+            },
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "c1",
+                        "label": "manual",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": "tok-manual",
+                    },
+                    {
+                        "id": "c2",
+                        "label": "singleton",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "source": "device_code",
+                        "access_token": "tok-singleton",
+                    },
+                ]
+            },
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_remove_command
+    from agent.credential_pool import load_pool
+
+    class _Args:
+        provider = "openai-codex"
+        target = "1"
+
+    auth_remove_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    suppressed = payload.get("suppressed_sources", {})
+    codex_suppressed = suppressed.get("openai-codex", [])
+    assert "device_code" not in codex_suppressed
+
+    assert "openai-codex" in payload.get("providers", {})
+
+    pool = load_pool("openai-codex")
+    labels = [e.label for e in pool.entries()]
+    assert "singleton" in labels
+    assert pool.has_credentials()
+
+
 def test_auth_remove_manual_device_code_nous_does_not_resurrect(tmp_path, monkeypatch):
     """Nous manual device-code removal should also suppress singleton reseed."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
@@ -672,12 +864,7 @@ def test_auth_remove_manual_device_code_nous_does_not_resurrect(tmp_path, monkey
         tmp_path,
         {
             "version": 1,
-            "providers": {
-                "nous": {
-                    "access_token": "tok-nous",
-                    "refresh_token": "refresh-nous",
-                }
-            },
+            "providers": {},
             "credential_pool": {
                 "nous": [
                     {
@@ -708,6 +895,34 @@ def test_auth_remove_manual_device_code_nous_does_not_resurrect(tmp_path, monkey
 
     pool = load_pool("nous")
     assert not pool.has_credentials()
+
+
+def test_codex_singleton_seed_skips_cli_import_when_suppressed(tmp_path, monkeypatch):
+    """Suppressed singleton source must bypass Codex CLI token auto-import."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "suppressed_sources": {"openai-codex": ["device_code"]},
+            "providers": {},
+            "credential_pool": {"openai-codex": []},
+        },
+    )
+
+    called = {"count": 0}
+
+    def _spy_import_codex_cli_tokens():
+        called["count"] += 1
+        return {"access_token": "tok", "refresh_token": "refresh"}
+
+    monkeypatch.setattr("hermes_cli.auth._import_codex_cli_tokens", _spy_import_codex_cli_tokens)
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    assert not pool.has_credentials()
+    assert called["count"] == 0
 
 
 def test_auth_remove_manual_entry_does_not_touch_env(tmp_path, monkeypatch):
@@ -787,3 +1002,40 @@ def test_auth_remove_claude_code_suppresses_reseed(tmp_path, monkeypatch):
     suppressed = updated.get("suppressed_sources", {})
     assert "anthropic" in suppressed
     assert "claude_code" in suppressed["anthropic"]
+
+
+def test_auth_remove_manual_hermes_pkce_suppresses_reseed(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    oauth_file = hermes_home / ".anthropic_oauth.json"
+    oauth_file.write_text('{"accessToken":"token"}')
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "pkce-1",
+                        "label": "pkce",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:hermes_pkce",
+                        "access_token": "token",
+                    }
+                ]
+            },
+        },
+    )
+
+    from types import SimpleNamespace
+    from hermes_cli.auth_commands import auth_remove_command
+
+    auth_remove_command(SimpleNamespace(provider="anthropic", target="1"))
+
+    updated = json.loads((hermes_home / "auth.json").read_text())
+    suppressed = updated.get("suppressed_sources", {})
+    assert "anthropic" in suppressed
+    assert "hermes_pkce" in suppressed["anthropic"]
+    assert not oauth_file.exists()

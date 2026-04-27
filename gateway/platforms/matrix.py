@@ -952,13 +952,67 @@ class MatrixAdapter(BasePlatformAdapter):
     async def _sync_loop(self) -> None:
         """Continuously sync with the homeserver."""
         client = self._client
-        # Resume from the token stored during the initial sync.
-        next_batch = await client.sync_store.get_next_batch()
+        sync_store = getattr(client, "sync_store", None)
+        next_batch = None
+        # Resume from the token stored during the initial sync when available.
+        getter = getattr(sync_store, "get_next_batch", None) if sync_store else None
+        if callable(getter):
+            try:
+                stored = getter()
+                if hasattr(stored, "__await__"):
+                    stored = await stored
+                if isinstance(stored, str) and stored.strip():
+                    next_batch = stored
+            except Exception as exc:
+                logger.debug("Matrix: failed to load sync token from store: %s", exc)
         while not self._closing:
             try:
-                sync_data = await client.sync(
-                    since=next_batch, timeout=30000,
+                if next_batch:
+                    sync_data = await client.sync(since=next_batch, timeout=30000)
+                else:
+                    sync_data = await client.sync(timeout=30000)
+
+                # Matrix clients may return a SyncError object instead of
+                # raising. Handle permanent auth failures and apply backoff for
+                # non-auth sync errors to avoid a tight retry loop.
+                raw_sync_message = getattr(sync_data, "message", None)
+                raw_sync_errcode = getattr(sync_data, "errcode", None)
+                sync_error_msg = (
+                    raw_sync_message.strip().lower()
+                    if isinstance(raw_sync_message, str)
+                    else ""
                 )
+                sync_errcode = (
+                    raw_sync_errcode.strip().upper()
+                    if isinstance(raw_sync_errcode, str)
+                    else ""
+                )
+                is_sync_error = (
+                    not isinstance(sync_data, dict)
+                    and (
+                        bool(sync_error_msg)
+                        or bool(sync_errcode)
+                        or sync_data.__class__.__name__.lower() == "syncerror"
+                    )
+                )
+                if is_sync_error:
+                    is_auth_error = (
+                        "m_unknown_token" in sync_error_msg
+                        or sync_errcode in {"M_UNKNOWN_TOKEN", "M_MISSING_TOKEN", "M_FORBIDDEN"}
+                    )
+                    if is_auth_error:
+                        logger.error(
+                            "Matrix: permanent auth error: %s — stopping sync",
+                            sync_errcode or sync_error_msg,
+                        )
+                        return
+                    logger.warning(
+                        "Matrix: sync returned error %s (%s) — retrying in 5s",
+                        sync_errcode or "unknown",
+                        sync_error_msg or "no message",
+                    )
+                    await asyncio.sleep(5)
+                    continue
                 if isinstance(sync_data, dict):
                     # Update joined rooms from sync response.
                     rooms_join = sync_data.get("rooms", {}).get("join", {})
@@ -970,7 +1024,14 @@ class MatrixAdapter(BasePlatformAdapter):
                     nb = sync_data.get("next_batch")
                     if nb:
                         next_batch = nb
-                        await client.sync_store.put_next_batch(nb)
+                        putter = getattr(sync_store, "put_next_batch", None) if sync_store else None
+                        if callable(putter):
+                            try:
+                                put_result = putter(nb)
+                                if hasattr(put_result, "__await__"):
+                                    await put_result
+                            except Exception as exc:
+                                logger.debug("Matrix: failed to persist sync token: %s", exc)
 
                     # Dispatch events to registered handlers so that
                     # _on_room_message / _on_reaction / _on_invite fire.
@@ -982,7 +1043,7 @@ class MatrixAdapter(BasePlatformAdapter):
                         logger.warning("Matrix: sync event dispatch error: %s", exc)
 
                 # Retry any buffered undecrypted events.
-                if self._pending_megolm:
+                if getattr(self, "_pending_megolm", None):
                     await self._retry_pending_decryptions()
 
             except asyncio.CancelledError:

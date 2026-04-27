@@ -731,6 +731,25 @@ def suppress_credential_source(provider_id: str, source: str) -> None:
         _save_auth_store(auth_store)
 
 
+def unsuppress_credential_source(provider_id: str, source: str) -> None:
+    """Remove a source from suppression so singleton seeding can resume."""
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        suppressed = auth_store.get("suppressed_sources")
+        if not isinstance(suppressed, dict):
+            return
+        provider_list = suppressed.get(provider_id)
+        if not isinstance(provider_list, list):
+            return
+        if source in provider_list:
+            provider_list.remove(source)
+            if not provider_list:
+                suppressed.pop(provider_id, None)
+            if not suppressed:
+                auth_store.pop("suppressed_sources", None)
+            _save_auth_store(auth_store)
+
+
 def is_source_suppressed(provider_id: str, source: str) -> bool:
     """Check if a credential source has been suppressed by the user."""
     try:
