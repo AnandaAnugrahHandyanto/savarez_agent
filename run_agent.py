@@ -5593,12 +5593,21 @@ class AIAgent:
         return True
 
     def _apply_client_headers_for_base_url(self, base_url: str) -> None:
-        from agent.auxiliary_client import _AI_GATEWAY_HEADERS, _OR_HEADERS
+        from agent.auxiliary_client import (
+            _AI_GATEWAY_HEADERS,
+            _OR_HEADERS,
+            _WORKERS_AI_HEADERS,
+        )
 
         if base_url_host_matches(base_url, "openrouter.ai"):
             self._client_kwargs["default_headers"] = dict(_OR_HEADERS)
         elif base_url_host_matches(base_url, "ai-gateway.vercel.sh"):
             self._client_kwargs["default_headers"] = dict(_AI_GATEWAY_HEADERS)
+        elif (
+            base_url_host_matches(base_url, "api.cloudflare.com")
+            or base_url_host_matches(base_url, "gateway.ai.cloudflare.com")
+        ):
+            self._client_kwargs["default_headers"] = dict(_WORKERS_AI_HEADERS)
         elif base_url_host_matches(base_url, "api.routermint.com"):
             self._client_kwargs["default_headers"] = _routermint_headers()
         elif base_url_host_matches(base_url, "api.githubcopilot.com"):
@@ -7541,6 +7550,10 @@ class AIAgent:
             or base_url_host_matches(self.base_url, "moonshot.ai")
             or base_url_host_matches(self.base_url, "moonshot.cn")
         )
+        _is_workers_ai = (
+            base_url_host_matches(self.base_url, "api.cloudflare.com")
+            or base_url_host_matches(self.base_url, "gateway.ai.cloudflare.com")
+        )
 
         # Temperature: _fixed_temperature_for_model may return OMIT_TEMPERATURE
         # sentinel (temperature omitted entirely), a numeric override, or None.
@@ -7609,6 +7622,7 @@ class AIAgent:
             is_github_models=_is_gh,
             is_nvidia_nim=_is_nvidia,
             is_kimi=_is_kimi,
+            is_workers_ai=_is_workers_ai,
             is_custom_provider=self.provider == "custom",
             ollama_num_ctx=self._ollama_num_ctx,
             provider_preferences=_prefs or None,

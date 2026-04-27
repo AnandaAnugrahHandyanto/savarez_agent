@@ -44,6 +44,10 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `KILOCODE_BASE_URL` | Override Kilo Code base URL (default: `https://api.kilo.ai/api/gateway`) |
 | `XIAOMI_API_KEY` | Xiaomi MiMo API key ([platform.xiaomimimo.com](https://platform.xiaomimimo.com)) |
 | `XIAOMI_BASE_URL` | Override Xiaomi MiMo base URL (default: `https://api.xiaomimimo.com/v1`) |
+| `CLOUDFLARE_API_TOKEN` | Cloudflare API token for Workers AI ([dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens), scope: Workers AI Read) |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID — required for Workers AI (find in dashboard sidebar) |
+| `CLOUDFLARE_GATEWAY_ID` | Optional AI Gateway slug — when set, routes Workers AI traffic through `gateway.ai.cloudflare.com` |
+| `WORKERS_AI_BASE_URL` | Override Workers AI base URL (skips auto-construction from account ID) |
 | `AZURE_FOUNDRY_API_KEY` | Azure AI Foundry / Azure OpenAI API key ([ai.azure.com](https://ai.azure.com/)) |
 | `AZURE_FOUNDRY_BASE_URL` | Azure AI Foundry endpoint URL (e.g. `https://<resource>.openai.azure.com/openai/v1` for OpenAI-style, or `https://<resource>.services.ai.azure.com/anthropic` for Anthropic-style) |
 | `AZURE_ANTHROPIC_KEY` | Azure Anthropic API key for `provider: anthropic` + `base_url` pointing at an Azure Foundry Claude deployment (alternative to `ANTHROPIC_API_KEY` when both Anthropic and Azure Anthropic are configured) |

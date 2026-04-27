@@ -62,6 +62,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "arcee-ai", "arceeai",
     "xai", "x-ai", "x.ai", "grok",
     "nvidia", "nim", "nvidia-nim", "nemotron",
+    "workers-ai", "cloudflare", "cf", "cloudflare-ai",
     "qwen-portal",
 })
 
@@ -208,6 +209,15 @@ DEFAULT_CONTEXT_LENGTHS = {
     "kimi": 262144,
     # Nemotron — NVIDIA's open-weights series (128K context across all sizes)
     "nemotron": 131072,
+    # Cloudflare Workers AI — only models whose context deviates from the
+    # substring fallbacks above (gemma-4-26b is covered by "gemma-4").
+    "@cf/meta/llama-4-scout-17b-16e-instruct": 128000,
+    "@cf/moonshotai/kimi-k2.5": 256000,
+    "@cf/moonshotai/kimi-k2.6": 256000,
+    "@cf/nvidia/nemotron-3-120b-a12b": 256000,
+    "@cf/openai/gpt-oss-120b": 128000,
+    "@cf/openai/gpt-oss-20b": 128000,
+    "@cf/zai-org/glm-4.7-flash": 131072,
     # Arcee
     "trinity": 262144,
     # OpenRouter
@@ -308,6 +318,8 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.xiaomimimo.com": "xiaomi",
     "xiaomimimo.com": "xiaomi",
     "ollama.com": "ollama-cloud",
+    "api.cloudflare.com": "workers-ai",
+    "gateway.ai.cloudflare.com": "workers-ai",
 }
 
 

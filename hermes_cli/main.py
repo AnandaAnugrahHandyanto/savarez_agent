@@ -1720,6 +1720,8 @@ def select_provider_and_model(args=None):
         _model_flow_stepfun(config, current_model)
     elif selected_provider == "bedrock":
         _model_flow_bedrock(config, current_model)
+    elif selected_provider == "workers-ai":
+        _model_flow_workers_ai(config, current_model)
     elif selected_provider == "azure-foundry":
         _model_flow_azure_foundry(config, current_model)
     elif selected_provider in (
@@ -2258,6 +2260,99 @@ def _model_flow_ai_gateway(config, current_model=""):
         print(f"Default model set to: {selected} (via Vercel AI Gateway)")
     else:
         print("No change.")
+
+
+def _model_flow_workers_ai(config, current_model=""):
+    """Cloudflare Workers AI: token + account ID, optional AI Gateway, then model."""
+    from hermes_cli.auth import (
+        _prompt_model_selection,
+        _resolve_workers_ai_base_url,
+        _save_model_choice,
+        deactivate_provider,
+    )
+    from hermes_cli.config import get_env_value, load_config, save_config, save_env_value
+    from hermes_cli.models import _PROVIDER_MODELS
+
+    print("Cloudflare Workers AI — OSS models on serverless GPU.")
+    print("Get an API token (Workers AI scope): "
+          "https://dash.cloudflare.com/profile/api-tokens")
+    print("Find your account ID in the dashboard sidebar.")
+    print()
+
+    token = get_env_value("CLOUDFLARE_API_TOKEN") or ""
+    if token:
+        print(f"  API token: {token[:8]}... ✓")
+    else:
+        try:
+            import getpass
+
+            token = getpass.getpass("CLOUDFLARE_API_TOKEN (or Enter to cancel): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+        if not token:
+            print("Cancelled.")
+            return
+        save_env_value("CLOUDFLARE_API_TOKEN", token)
+        print("  API token saved.")
+
+    account_id = get_env_value("CLOUDFLARE_ACCOUNT_ID") or ""
+    if account_id:
+        print(f"  Account ID: {account_id} ✓")
+    else:
+        try:
+            account_id = input("CLOUDFLARE_ACCOUNT_ID (or Enter to cancel): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+        if not account_id:
+            print("Cancelled.")
+            return
+        save_env_value("CLOUDFLARE_ACCOUNT_ID", account_id)
+        print("  Account ID saved.")
+
+    existing_gw = get_env_value("CLOUDFLARE_GATEWAY_ID") or ""
+    if existing_gw:
+        print(f"  AI Gateway: {existing_gw} ✓")
+    else:
+        print()
+        print("Optional: route through Cloudflare AI Gateway (caching, analytics, rate limiting).")
+        print("  Create one at https://dash.cloudflare.com/?to=/:account/ai/ai-gateway")
+        try:
+            answer = input("AI Gateway slug (or Enter to skip): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            answer = ""
+        if answer:
+            save_env_value("CLOUDFLARE_GATEWAY_ID", answer)
+            print(f"  AI Gateway slug saved: {answer}")
+            existing_gw = answer
+
+    print()
+
+    models_list = list(_PROVIDER_MODELS.get("workers-ai", []))
+    selected = _prompt_model_selection(models_list, current_model=current_model)
+    if not selected:
+        print("No change.")
+        return
+
+    _save_model_choice(selected)
+
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["provider"] = "workers-ai"
+    resolved_url = _resolve_workers_ai_base_url()
+    if resolved_url:
+        model["base_url"] = resolved_url
+    model["api_mode"] = "chat_completions"
+    save_config(cfg)
+    deactivate_provider()
+
+    via = f"via AI Gateway ({existing_gw})" if existing_gw else "direct API"
+    print(f"Default model set to: {selected} ({via})")
 
 
 def _model_flow_nous(config, current_model="", args=None):
@@ -7642,6 +7737,7 @@ For more help on a command:
             "xiaomi",
             "arcee",
             "nvidia",
+            "workers-ai",
         ],
         default=None,
         help="Inference provider (default: auto)",

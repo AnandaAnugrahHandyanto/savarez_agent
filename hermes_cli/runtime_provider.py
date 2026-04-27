@@ -221,6 +221,12 @@ def _resolve_runtime_from_pool_entry(
     elif provider == "copilot":
         api_mode = _copilot_runtime_api_mode(model_cfg, getattr(entry, "runtime_api_key", ""))
         base_url = base_url or PROVIDER_REGISTRY["copilot"].inference_base_url
+    elif provider == "workers-ai":
+        from hermes_cli.auth import _resolve_workers_ai_base_url
+        env_url = os.getenv("WORKERS_AI_BASE_URL", "").strip()
+        resolved = _resolve_workers_ai_base_url(env_url)
+        if resolved:
+            base_url = resolved
     elif provider == "azure-foundry":
         # Azure Foundry: read api_mode and base_url from config
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()

@@ -356,6 +356,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=(),
         base_url_env_var="BEDROCK_BASE_URL",
     ),
+    "workers-ai": ProviderConfig(
+        id="workers-ai",
+        name="Cloudflare Workers AI",
+        auth_type="api_key",
+        inference_base_url="https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1",
+        api_key_env_vars=("CLOUDFLARE_API_TOKEN",),
+        base_url_env_var="WORKERS_AI_BASE_URL",
+    ),
     "azure-foundry": ProviderConfig(
         id="azure-foundry",
         name="Azure Foundry",
@@ -422,6 +430,21 @@ def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) ->
     return default_url
 
 
+
+def _resolve_workers_ai_base_url(env_override: str = "") -> str:
+    """Construct the Workers AI base URL from env, or return "" if no account ID.
+
+    env_override > CLOUDFLARE_ACCOUNT_ID (+ optional CLOUDFLARE_GATEWAY_ID).
+    """
+    if env_override:
+        return env_override.rstrip("/")
+    account_id = os.getenv("CLOUDFLARE_ACCOUNT_ID", "").strip()
+    if not account_id:
+        return ""
+    gateway_id = os.getenv("CLOUDFLARE_GATEWAY_ID", "").strip()
+    if gateway_id:
+        return f"https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/workers-ai/v1"
+    return f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1"
 
 _PLACEHOLDER_SECRET_VALUES = {
     "*",
@@ -1133,6 +1156,7 @@ def resolve_provider(
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
         "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
         "aws": "bedrock", "aws-bedrock": "bedrock", "amazon-bedrock": "bedrock", "amazon": "bedrock",
+        "cloudflare": "workers-ai", "cf": "workers-ai", "cloudflare-ai": "workers-ai",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
         # Local server aliases — route through the generic custom provider
@@ -1185,6 +1209,11 @@ def resolve_provider(
         # hijack inference auto-selection unless the user explicitly chooses
         # Copilot/GitHub Models as the provider.
         if pid == "copilot":
+            continue
+        # CLOUDFLARE_API_TOKEN is commonly set for non-inference Cloudflare
+        # tools — only auto-select workers-ai when CLOUDFLARE_ACCOUNT_ID is
+        # also set (which is specific to Workers AI / AI Gateway).
+        if pid == "workers-ai" and not os.getenv("CLOUDFLARE_ACCOUNT_ID", "").strip():
             continue
         for env_var in pconfig.api_key_env_vars:
             if has_usable_secret(os.getenv(env_var, "")):
@@ -3470,6 +3499,14 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     elif provider_id == "zai":
         base_url = _resolve_zai_base_url(api_key, pconfig.inference_base_url, env_url)
+    elif provider_id == "workers-ai":
+        base_url = _resolve_workers_ai_base_url(env_url)
+        if not base_url:
+            raise AuthError(
+                "Workers AI requires CLOUDFLARE_ACCOUNT_ID (or WORKERS_AI_BASE_URL).",
+                provider=provider_id,
+                code="missing_account_id",
+            )
     elif env_url:
         base_url = env_url.rstrip("/")
     else:
