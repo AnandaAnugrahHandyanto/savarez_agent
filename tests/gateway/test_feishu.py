@@ -414,6 +414,172 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_send_defaults_to_interactive_reply_card(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_card_reply"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content="hello default card",
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].request_body.msg_type, "interactive")
+        payload = json.loads(captured["request"].request_body.content)
+        self.assertEqual(payload["header"]["title"]["content"], "Hermes · 回复")
+        self.assertEqual(payload["header"]["template"], "blue")
+        self.assertEqual(payload["elements"][0]["tag"], "div")
+        self.assertEqual(payload["elements"][0]["text"]["tag"], "lark_md")
+        self.assertEqual(payload["elements"][0]["text"]["content"], "hello default card")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_markdown_table_defaults_to_interactive_table_card(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_table_card"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        content = "基金排名\n\n| 名称 | 收益 |\n| --- | --- |\n| A | 10% |\n| B | 8% |"
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content=content,
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].request_body.msg_type, "interactive")
+        payload = json.loads(captured["request"].request_body.content)
+        self.assertEqual(payload["header"]["title"]["content"], "Hermes · 回复")
+        self.assertEqual(payload["header"]["template"], "blue")
+        self.assertEqual(payload["elements"][0]["tag"], "div")
+        self.assertEqual(payload["elements"][0]["text"]["content"], "基金排名")
+        self.assertEqual(payload["elements"][1]["tag"], "table")
+        self.assertEqual(
+            payload["elements"][1]["columns"],
+            [
+                {"name": "col_0", "display_name": "名称", "data_type": "text"},
+                {"name": "col_1", "display_name": "收益", "data_type": "text"},
+            ],
+        )
+        self.assertEqual(
+            payload["elements"][1]["rows"],
+            [
+                {"col_0": "A", "col_1": "10%"},
+                {"col_0": "B", "col_1": "8%"},
+            ],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_and_edit_tool_progress_use_interactive_progress_card(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"creates": [], "updates": []}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["creates"].append(request)
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_progress_card"),
+                )
+
+            def update(self, request):
+                captured["updates"].append(request)
+                return SimpleNamespace(success=lambda: True)
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            send_result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content='💻 terminal: "pwd"',
+                    metadata={
+                        "message_kind": "tool_progress",
+                        "progress_page_no": 2,
+                        "progress_total_count": 1,
+                    },
+                )
+            )
+            edit_result = asyncio.run(
+                adapter.edit_message(
+                    chat_id="oc_chat",
+                    message_id="om_progress_card",
+                    content='💻 terminal: "pwd"\n📚 read_file: "/tmp/demo.txt"',
+                )
+            )
+
+        self.assertTrue(send_result.success)
+        self.assertTrue(edit_result.success)
+        self.assertEqual(captured["creates"][0].request_body.msg_type, "interactive")
+        create_payload = json.loads(captured["creates"][0].request_body.content)
+        self.assertEqual(create_payload["header"]["title"]["content"], "Hermes · 工具执行中（2）")
+        self.assertEqual(create_payload["header"]["template"], "turquoise")
+        self.assertEqual(captured["updates"][0].request_body.msg_type, "interactive")
+        update_payload = json.loads(captured["updates"][0].request_body.content)
+        self.assertEqual(update_payload["header"]["title"]["content"], "Hermes · 工具执行中（2）")
+        self.assertIn('📚 read_file: "/tmp/demo.txt"', update_payload["elements"][0]["text"]["content"])
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_get_chat_info_uses_real_feishu_chat_api(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
@@ -2362,7 +2528,7 @@ class TestAdapterBehavior(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_send_uses_post_for_inline_markdown(self):
+    def test_send_uses_interactive_reply_card_for_inline_markdown(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
 
@@ -2397,13 +2563,13 @@ class TestAdapterBehavior(unittest.TestCase):
             )
 
         self.assertTrue(result.success)
-        self.assertEqual(captured["request"].request_body.msg_type, "post")
+        self.assertEqual(captured["request"].request_body.msg_type, "interactive")
         payload = json.loads(captured["request"].request_body.content)
-        elements = payload["zh_cn"]["content"][0]
-        self.assertEqual(elements, [{"tag": "md", "text": "可以用 **粗体** 和 *斜体*。"}])
+        self.assertEqual(payload["header"]["title"]["content"], "Hermes · 回复")
+        self.assertEqual(payload["elements"][0]["text"]["content"], "可以用 **粗体** 和 *斜体*。")
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_send_splits_fenced_code_blocks_into_separate_post_rows(self):
+    def test_send_keeps_fenced_code_blocks_inside_interactive_reply_card(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
 
@@ -2448,22 +2614,10 @@ class TestAdapterBehavior(unittest.TestCase):
             )
 
         self.assertTrue(result.success)
-        self.assertEqual(captured["request"].request_body.msg_type, "post")
+        self.assertEqual(captured["request"].request_body.msg_type, "interactive")
         payload = json.loads(captured["request"].request_body.content)
-        rows = payload["zh_cn"]["content"]
-        self.assertEqual(
-            rows,
-            [
-                [
-                    {
-                        "tag": "md",
-                        "text": "确认已入库 ✓\n文件路径：`/root/.hermes/profiles/agent_cto/cron/jobs.json`\n**解码后的内容：**",
-                    }
-                ],
-                [{"tag": "md", "text": "```json\n{\"cron\": \"list\"}\n```"}],
-                [{"tag": "md", "text": "后续说明仍应保留。"}],
-            ],
-        )
+        self.assertEqual(payload["header"]["title"]["content"], "Hermes · 回复")
+        self.assertEqual(payload["elements"][0]["text"]["content"], content)
 
     @patch.dict(os.environ, {}, clear=True)
     def test_build_post_payload_keeps_fence_like_code_lines_inside_code_block(self):
@@ -2542,6 +2696,8 @@ class TestAdapterBehavior(unittest.TestCase):
             def create(self, request):
                 captured["calls"].append(request)
                 if len(captured["calls"]) == 1:
+                    raise RuntimeError("content format of the interactive type is incorrect")
+                if len(captured["calls"]) == 2:
                     raise RuntimeError("content format of the post type is incorrect")
                 return SimpleNamespace(
                     success=lambda: True,
@@ -2568,10 +2724,11 @@ class TestAdapterBehavior(unittest.TestCase):
             )
 
         self.assertTrue(result.success)
-        self.assertEqual(captured["calls"][0].request_body.msg_type, "post")
-        self.assertEqual(captured["calls"][1].request_body.msg_type, "text")
+        self.assertEqual(captured["calls"][0].request_body.msg_type, "interactive")
+        self.assertEqual(captured["calls"][1].request_body.msg_type, "post")
+        self.assertEqual(captured["calls"][2].request_body.msg_type, "text")
         self.assertEqual(
-            captured["calls"][1].request_body.content,
+            captured["calls"][2].request_body.content,
             json.dumps({"text": "可以用 粗体 和 斜体。"}, ensure_ascii=False),
         )
 
@@ -2587,6 +2744,8 @@ class TestAdapterBehavior(unittest.TestCase):
             def create(self, request):
                 captured["calls"].append(request)
                 if len(captured["calls"]) == 1:
+                    return SimpleNamespace(success=lambda: False, code=230001, msg="content format of the interactive type is incorrect")
+                if len(captured["calls"]) == 2:
                     return SimpleNamespace(success=lambda: False, code=230001, msg="content format of the post type is incorrect")
                 return SimpleNamespace(
                     success=lambda: True,
@@ -2613,15 +2772,16 @@ class TestAdapterBehavior(unittest.TestCase):
             )
 
         self.assertTrue(result.success)
-        self.assertEqual(captured["calls"][0].request_body.msg_type, "post")
-        self.assertEqual(captured["calls"][1].request_body.msg_type, "text")
+        self.assertEqual(captured["calls"][0].request_body.msg_type, "interactive")
+        self.assertEqual(captured["calls"][1].request_body.msg_type, "post")
+        self.assertEqual(captured["calls"][2].request_body.msg_type, "text")
         self.assertEqual(
-            captured["calls"][1].request_body.content,
+            captured["calls"][2].request_body.content,
             json.dumps({"text": "可以用 粗体 和 斜体。"}, ensure_ascii=False),
         )
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_send_uses_post_for_advanced_markdown_lines(self):
+    def test_send_uses_interactive_reply_card_for_advanced_markdown_lines(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
 
@@ -2656,12 +2816,13 @@ class TestAdapterBehavior(unittest.TestCase):
             )
 
         self.assertTrue(result.success)
-        self.assertEqual(captured["request"].request_body.msg_type, "post")
+        self.assertEqual(captured["request"].request_body.msg_type, "interactive")
         payload = json.loads(captured["request"].request_body.content)
-        rows = payload["zh_cn"]["content"]
+        self.assertEqual(payload["header"]["title"]["content"], "Hermes · 回复")
+        self.assertEqual(payload["header"]["template"], "blue")
         self.assertEqual(
-            rows,
-            [[{"tag": "md", "text": "---\n1. 第一项\n<u>下划线</u>\n~~删除线~~"}]],
+            payload["elements"][0]["text"]["content"],
+            "---\n1. 第一项\n<u>下划线</u>\n~~删除线~~",
         )
 
 
