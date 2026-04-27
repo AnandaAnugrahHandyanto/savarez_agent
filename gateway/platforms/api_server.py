@@ -10,8 +10,10 @@ Exposes an HTTP server with endpoints:
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
 - POST /v1/runs/{run_id}/stop    — interrupt a running agent
-- GET  /health                     — health check
+- GET  /health                     — liveness probe (uptime + gateway state)
 - GET  /health/detailed            — rich status for cross-container dashboard probing
+- GET  /ready                      — readiness probe (503 when not running)
+- GET  /v1/status                  — comprehensive diagnostics (platforms, agents, uptime)
 
 Any OpenAI-compatible frontend (Open WebUI, LobeChat, LibreChat,
 AnythingLLM, NextChat, ChatBox, etc.) can connect to hermes-agent
@@ -764,20 +766,38 @@ class APIServerAdapter(BasePlatformAdapter):
     # HTTP Handlers
     # ------------------------------------------------------------------
 
+    # States that indicate the gateway process is alive and should not be restarted.
+    _LIVENESS_OK_STATES = frozenset({"starting", "running", "draining"})
+
     async def _handle_health(self, request: "web.Request") -> "web.Response":
-        """GET /health — liveness probe with uptime and gateway state."""
+        """GET /health — liveness probe with uptime and gateway state.
+
+        Returns 200 while the process is alive and in a transient or operational
+        state (starting / running / draining).  Returns 503 for terminal failure
+        states (startup_failed, stopped) so container orchestrators can restart
+        the process.  When the status file is missing or unreadable the response
+        is 200 to avoid false-positive restarts during first-boot.
+        """
         uptime = time.monotonic() - self._start_time
+        gateway_state = "unknown"
+        try:
+            status = read_runtime_status()
+            if status:
+                gateway_state = status.get("gateway_state", "unknown")
+        except Exception:
+            pass
         body: dict = {
             "status": "ok",
             "platform": "hermes-agent",
             "uptime_seconds": round(uptime, 1),
+            "gateway_state": gateway_state,
         }
-        try:
-            status = read_runtime_status()
-            if status:
-                body["gateway_state"] = status.get("gateway_state", "unknown")
-        except Exception:
-            body["gateway_state"] = "unknown"
+        # Return 503 only for terminal states where the gateway cannot recover
+        # without a restart.  Unknown/missing state is treated as alive to avoid
+        # spurious restarts during cold start before the status file is written.
+        if gateway_state not in self._LIVENESS_OK_STATES and gateway_state != "unknown":
+            body["status"] = "error"
+            return web.json_response(body, status=503)
         return web.json_response(body)
 
     async def _handle_ready(self, request: "web.Request") -> "web.Response":
@@ -817,8 +837,6 @@ class APIServerAdapter(BasePlatformAdapter):
         dashboard can display full status without needing a shared PID file or
         /proc access.  No authentication required.
         """
-        from gateway.status import read_runtime_status
-
         runtime = read_runtime_status() or {}
         return web.json_response({
             "status": "ok",

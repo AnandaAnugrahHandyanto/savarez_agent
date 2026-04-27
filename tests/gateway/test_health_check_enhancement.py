@@ -6,6 +6,7 @@ The health check system now provides:
   - GET /v1/status — comprehensive diagnostics (platforms, agents, config)
 """
 
+import asyncio
 import json
 import time
 from unittest.mock import patch, MagicMock
@@ -23,12 +24,11 @@ def _make_mock_request():
     return MagicMock()
 
 
-def _make_adapter():
-    """Create an APIServerAdapter with minimal config for testing."""
-    adapter = APIServerAdapter.__new__(APIServerAdapter)
-    adapter._start_time = time.monotonic()
-    adapter._config = {"api_key": "test", "allowed_users": [], "port": 8080}
-    return adapter
+def _make_instance():
+    """Create an APIServerAdapter instance with minimal state for testing."""
+    instance = APIServerAdapter.__new__(APIServerAdapter)
+    instance._start_time = time.monotonic()
+    return instance
 
 
 # ── /health tests ─────────────────────────────────────────────────────────
@@ -38,53 +38,61 @@ class TestHealthEndpoint:
     """Enhanced /health endpoint includes uptime and gateway state."""
 
     def test_health_returns_ok_status(self):
-        adapter = _make_adapter()
-        with patch.object(adapter, "_handle_health") as mock_handler:
-            # Actually call the real implementation
-            pass
-        # Call the real handler
-        adapter = _make_adapter()
-        # We need to test against the actual implementation, not a mock
-        # Import the handler method directly
-        from gateway.platforms.api_server import APIServerAdapter as _AS
-        # Create a real-ish instance
-        instance = _AS.__new__(_AS)
-        instance._start_time = time.monotonic()
-        # The handler is async, so we need to run it
-        import asyncio
-        response = asyncio.get_event_loop_policy().get_event_loop().run_until_complete(
-            instance._handle_health(_make_mock_request())
-        )
-        # aiohttp web.json_response stores the body internally
+        instance = _make_instance()
+        response = asyncio.run(instance._handle_health(_make_mock_request()))
         body = json.loads(response.text)
         assert body["status"] == "ok"
         assert "platform" in body
 
     def test_health_includes_uptime(self):
-        from gateway.platforms.api_server import APIServerAdapter as _AS
-        instance = _AS.__new__(_AS)
+        instance = _make_instance()
         instance._start_time = time.monotonic() - 100  # Started 100s ago
-        import asyncio
-        response = asyncio.get_event_loop_policy().get_event_loop().run_until_complete(
-            instance._handle_health(_make_mock_request())
-        )
+        response = asyncio.run(instance._handle_health(_make_mock_request()))
         body = json.loads(response.text)
         assert "uptime_seconds" in body
         assert body["uptime_seconds"] >= 99  # Allow small timing variance
 
     def test_health_includes_gateway_state(self):
-        from gateway.platforms.api_server import APIServerAdapter as _AS
-        instance = _AS.__new__(_AS)
-        instance._start_time = time.monotonic()
-        # Mock read_runtime_status to return a known state
+        instance = _make_instance()
         with patch("gateway.platforms.api_server.read_runtime_status") as mock_status:
             mock_status.return_value = {"gateway_state": "running"}
-            import asyncio
-            response = asyncio.get_event_loop_policy().get_event_loop().run_until_complete(
-                instance._handle_health(_make_mock_request())
-            )
+            response = asyncio.run(instance._handle_health(_make_mock_request()))
             body = json.loads(response.text)
             assert body.get("gateway_state") == "running"
+
+    def test_health_returns_503_for_startup_failed(self):
+        """Liveness probe must return 503 for terminal failure states."""
+        instance = _make_instance()
+        with patch("gateway.platforms.api_server.read_runtime_status") as mock_status:
+            mock_status.return_value = {"gateway_state": "startup_failed"}
+            response = asyncio.run(instance._handle_health(_make_mock_request()))
+            assert response.status == 503
+            body = json.loads(response.text)
+            assert body["status"] == "error"
+            assert body["gateway_state"] == "startup_failed"
+
+    def test_health_returns_503_for_stopped(self):
+        """Liveness probe must return 503 when gateway has stopped."""
+        instance = _make_instance()
+        with patch("gateway.platforms.api_server.read_runtime_status") as mock_status:
+            mock_status.return_value = {"gateway_state": "stopped"}
+            response = asyncio.run(instance._handle_health(_make_mock_request()))
+            assert response.status == 503
+
+    def test_health_returns_200_for_unknown_state(self):
+        """Missing or unreadable status file must not trigger a restart."""
+        instance = _make_instance()
+        with patch("gateway.platforms.api_server.read_runtime_status", return_value=None):
+            response = asyncio.run(instance._handle_health(_make_mock_request()))
+            assert response.status == 200
+
+    def test_health_returns_200_for_draining(self):
+        """Draining is a live transitional state — liveness probe stays green."""
+        instance = _make_instance()
+        with patch("gateway.platforms.api_server.read_runtime_status") as mock_status:
+            mock_status.return_value = {"gateway_state": "draining"}
+            response = asyncio.run(instance._handle_health(_make_mock_request()))
+            assert response.status == 200
 
 
 # ── /ready tests ──────────────────────────────────────────────────────────
@@ -94,55 +102,35 @@ class TestReadyEndpoint:
     """GET /ready returns 503 when gateway is not in 'running' state."""
 
     def test_ready_returns_200_when_running(self):
-        from gateway.platforms.api_server import APIServerAdapter as _AS
-        instance = _AS.__new__(_AS)
-        instance._start_time = time.monotonic()
+        instance = _make_instance()
         with patch("gateway.platforms.api_server.read_runtime_status") as mock_status:
             mock_status.return_value = {"gateway_state": "running"}
-            import asyncio
-            response = asyncio.get_event_loop_policy().get_event_loop().run_until_complete(
-                instance._handle_ready(_make_mock_request())
-            )
+            response = asyncio.run(instance._handle_ready(_make_mock_request()))
             assert response.status == 200
             body = json.loads(response.text)
             assert body["ready"] is True
 
     def test_ready_returns_503_when_starting(self):
-        from gateway.platforms.api_server import APIServerAdapter as _AS
-        instance = _AS.__new__(_AS)
-        instance._start_time = time.monotonic()
+        instance = _make_instance()
         with patch("gateway.platforms.api_server.read_runtime_status") as mock_status:
             mock_status.return_value = {"gateway_state": "starting"}
-            import asyncio
-            response = asyncio.get_event_loop_policy().get_event_loop().run_until_complete(
-                instance._handle_ready(_make_mock_request())
-            )
+            response = asyncio.run(instance._handle_ready(_make_mock_request()))
             assert response.status == 503
             body = json.loads(response.text)
             assert body["ready"] is False
 
     def test_ready_returns_503_when_draining(self):
-        from gateway.platforms.api_server import APIServerAdapter as _AS
-        instance = _AS.__new__(_AS)
-        instance._start_time = time.monotonic()
+        instance = _make_instance()
         with patch("gateway.platforms.api_server.read_runtime_status") as mock_status:
             mock_status.return_value = {"gateway_state": "draining"}
-            import asyncio
-            response = asyncio.get_event_loop_policy().get_event_loop().run_until_complete(
-                instance._handle_ready(_make_mock_request())
-            )
+            response = asyncio.run(instance._handle_ready(_make_mock_request()))
             assert response.status == 503
 
     def test_ready_returns_503_when_no_status_file(self):
-        from gateway.platforms.api_server import APIServerAdapter as _AS
-        instance = _AS.__new__(_AS)
-        instance._start_time = time.monotonic()
+        instance = _make_instance()
         with patch("gateway.platforms.api_server.read_runtime_status") as mock_status:
             mock_status.return_value = None
-            import asyncio
-            response = asyncio.get_event_loop_policy().get_event_loop().run_until_complete(
-                instance._handle_ready(_make_mock_request())
-            )
+            response = asyncio.run(instance._handle_ready(_make_mock_request()))
             assert response.status == 503
 
 
@@ -153,9 +141,7 @@ class TestStatusEndpoint:
     """GET /v1/status returns comprehensive gateway diagnostics."""
 
     def test_status_includes_platforms(self):
-        from gateway.platforms.api_server import APIServerAdapter as _AS
-        instance = _AS.__new__(_AS)
-        instance._start_time = time.monotonic()
+        instance = _make_instance()
         with patch("gateway.platforms.api_server.read_runtime_status") as mock_status:
             mock_status.return_value = {
                 "gateway_state": "running",
@@ -166,19 +152,14 @@ class TestStatusEndpoint:
                 "active_agents": 3,
                 "pid": 12345,
             }
-            import asyncio
-            response = asyncio.get_event_loop_policy().get_event_loop().run_until_complete(
-                instance._handle_status(_make_mock_request())
-            )
+            response = asyncio.run(instance._handle_status(_make_mock_request()))
             body = json.loads(response.text)
             assert "platforms" in body
             assert "telegram" in body["platforms"]
             assert "discord" in body["platforms"]
 
     def test_status_includes_active_agents_count(self):
-        from gateway.platforms.api_server import APIServerAdapter as _AS
-        instance = _AS.__new__(_AS)
-        instance._start_time = time.monotonic()
+        instance = _make_instance()
         with patch("gateway.platforms.api_server.read_runtime_status") as mock_status:
             mock_status.return_value = {
                 "gateway_state": "running",
@@ -186,23 +167,41 @@ class TestStatusEndpoint:
                 "active_agents": 5,
                 "pid": 12345,
             }
-            import asyncio
-            response = asyncio.get_event_loop_policy().get_event_loop().run_until_complete(
-                instance._handle_status(_make_mock_request())
-            )
+            response = asyncio.run(instance._handle_status(_make_mock_request()))
             body = json.loads(response.text)
             assert body["active_agents"] == 5
 
     def test_status_includes_uptime(self):
-        from gateway.platforms.api_server import APIServerAdapter as _AS
-        instance = _AS.__new__(_AS)
+        instance = _make_instance()
         instance._start_time = time.monotonic() - 200
         with patch("gateway.platforms.api_server.read_runtime_status") as mock_status:
             mock_status.return_value = {"gateway_state": "running", "platforms": {}, "pid": 12345}
-            import asyncio
-            response = asyncio.get_event_loop_policy().get_event_loop().run_until_complete(
-                instance._handle_status(_make_mock_request())
-            )
+            response = asyncio.run(instance._handle_status(_make_mock_request()))
             body = json.loads(response.text)
             assert "uptime_seconds" in body
             assert body["uptime_seconds"] >= 199
+
+    def test_status_does_not_expose_pid_or_argv(self):
+        """Sensitive process metadata must not appear in the /v1/status response."""
+        instance = _make_instance()
+        full_record = _build_runtime_status_record()
+        full_record["gateway_state"] = "running"
+        full_record["platforms"] = {}
+        full_record["active_agents"] = 0
+        with patch("gateway.platforms.api_server.read_runtime_status", return_value=full_record):
+            response = asyncio.run(instance._handle_status(_make_mock_request()))
+            body = json.loads(response.text)
+            assert "pid" not in body
+            assert "argv" not in body
+            assert "exit_reason" not in body
+            assert "restart_requested" not in body
+
+    def test_status_returns_200_when_status_file_unreadable(self):
+        """Status endpoint must degrade gracefully when status file is unavailable."""
+        instance = _make_instance()
+        with patch("gateway.platforms.api_server.read_runtime_status", side_effect=OSError("disk full")):
+            response = asyncio.run(instance._handle_status(_make_mock_request()))
+            assert response.status == 200
+            body = json.loads(response.text)
+            assert body["gateway_state"] == "unknown"
+            assert body["active_agents"] == 0
