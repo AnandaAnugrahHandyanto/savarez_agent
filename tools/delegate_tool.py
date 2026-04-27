@@ -2778,7 +2778,7 @@ DELEGATE_TASK_SCHEMA = {
                         "persona_provider": {
                             "type": "string",
                             "enum": ["claude", "cursor-agent"],
-                            "description": "Provider for a persona-backed external CLI child. Defaults to claude.",
+                            "description": "Canonical provider for a persona-backed external CLI child. If omitted, Hermes uses delegation.persona_provider when configured; otherwise persona-backed bridge routing is not inferred.",
                         },
                         "persona_model": {
                             "type": "string",
@@ -2882,7 +2882,7 @@ DELEGATE_TASK_SCHEMA = {
             "persona_provider": {
                 "type": "string",
                 "enum": ["claude", "cursor-agent"],
-                "description": "Provider for a persona-backed external CLI child. Defaults to claude.",
+                "description": "Canonical provider for a persona-backed external CLI child. If omitted, Hermes uses delegation.persona_provider when configured; otherwise persona-backed bridge routing is not inferred.",
             },
             "persona_model": {
                 "type": "string",

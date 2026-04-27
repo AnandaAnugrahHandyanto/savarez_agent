@@ -6,7 +6,7 @@ description: "When and how to use subagent delegation — patterns for parallel 
 
 # Delegation & Parallel Work
 
-Hermes can spawn isolated child agents to work on tasks in parallel. Each subagent gets its own conversation, terminal session, and toolset. Only the final summary comes back — intermediate tool calls never enter your context window.
+Hermes can spawn isolated child agents to work on tasks in parallel. Each child gets its own conversation and execution surface: embedded API children use Hermes toolsets, while bridge workers run local Claude Code or Cursor Agent sessions through the worker bridge. Only the final summary comes back — intermediate tool calls never enter your context window.
 
 For the full feature reference, see [Subagent Delegation](/docs/user-guide/features/delegation).
 
@@ -105,6 +105,8 @@ delegate_task(
 
 Use `persona_provider="cursor-agent"` for Cursor-backed code/test workers, for example with `persona_model="gpt-5.5-extra-high"` when that model is available locally. The local CLI owns its own auth in bridge mode.
 
+Only canonical persona provider names are accepted: `claude` and `cursor-agent`. If a call omits `persona_provider`, Hermes uses `delegation.persona_provider` when configured. If neither is set, plain delegation keeps the embedded API path, while a named `persona` is rejected instead of guessing a local CLI provider. To intentionally keep embedded API execution, omit `persona` or set `transport="embedded-api"`; in that embedded case the persona name is not expanded into local CLI context.
+
 Claude bridge workers receive a strict generated MCP config. Add shared memory MCPs such as Hindsight through `delegation.bridge_extra_mcp_servers` and allow only the specific memory tools needed by workers through `delegation.bridge_extra_allowed_tools`; this keeps unrelated project MCPs out of child sessions. Cursor bridge workers use workspace/global Cursor MCP config plus `--approve-mcps`, not Claude-style `--mcp-config` flags.
 
 :::warning The Context Problem
@@ -169,7 +171,7 @@ delegate_task(tasks=[
 ```
 
 :::tip
-Each subagent gets its own terminal session. They can work on the same project directory without stepping on each other — as long as they're editing different files. If two subagents might touch the same file, handle that file yourself after the parallel work completes.
+Each child gets its own execution surface. They can work on the same project directory without stepping on each other — as long as they're editing different files. If two children might touch the same file, handle that file yourself after the parallel work completes.
 :::
 
 ---
@@ -222,7 +224,8 @@ Choose toolsets based on what the subagent needs:
 | Task type | Toolsets | Why |
 |-----------|----------|-----|
 | Web research | `["web"]` | web_search + web_extract only |
-| Code work | `["terminal", "file"]` | Shell access + file operations |
+| Code work with embedded API children | `["terminal", "file"]` | Shell access + file operations |
+| Code work with local Claude/Cursor | `persona_provider` + `transport="bridge"` | CLI-owned auth, worker bridge, and local agent tools |
 | Full-stack | `["terminal", "file", "web"]` | Everything except messaging |
 | Read-only analysis | `["file"]` | Can only read files, no shell |
 
@@ -239,7 +242,7 @@ Restricting toolsets keeps the subagent focused and prevents accidental side eff
 
 ### Recommended Transport Patterns
 
-- **Review/test/code workers:** use `persona` with `persona_provider="claude"` or `persona_provider="cursor-agent"` and `transport="bridge"` when you need local CLI tools, interactive bridge follow-up, or CLI-owned auth.
+- **Review/test/code workers:** use `persona` with canonical `persona_provider="claude"` or `persona_provider="cursor-agent"` and `transport="bridge"` when you need local CLI tools, interactive bridge follow-up, or CLI-owned auth.
 - **Cheap parallel reasoning:** use embedded API workers with `delegation.default_transport: "embedded-api"` plus a lower-cost `delegation.model` and provider.
 - **Legacy CLI compatibility:** use `simple-pipe` only when you intentionally need the old one-shot subprocess behavior.
 - **OAuth/proxy experiments:** use `experimental-oauth` only by explicit config or per-call transport. It is not selected by `auto` and carries provider policy risk.
@@ -259,7 +262,7 @@ delegation:
   max_spawn_depth: 2
 ```
 
-- **Separate terminals** — each subagent gets its own terminal session with separate working directory and state
+- **Separate execution surfaces** — embedded API children get separate Hermes terminal state; bridge workers get separate local CLI/bridge sessions
 - **No conversation history** — subagents see only the `goal` and `context` the parent agent passes when calling `delegate_task`
 - **Default 50 iterations** — set `max_iterations` lower for simple tasks to save cost
 

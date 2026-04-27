@@ -818,7 +818,10 @@ delegation:
   #   project: "~/.hermes/personas/project"   # Defaults stay under HERMES_HOME; add external collections explicitly.
   #   shared:
   #     - "~/.hermes/personas/shared"
-  # persona_provider: "claude"                # Default provider for persona-backed local CLI children.
+  # persona_provider: "cursor-agent"          # Optional canonical provider for persona-backed local CLI children.
+                                              # Valid: "claude" or "cursor-agent". If unset, plain
+                                              # delegate_task keeps embedded API behavior unless a
+                                              # call explicitly supplies persona_provider/acp_command.
   # persona_workdir: "~/code/project"         # Optional default workdir for persona-backed bridge workers.
   # agent_orchestrator_dir: "~/.hermes/cache/agent-orchestrator"
                                               # Private IPC/cache root for bridge workers.
@@ -834,7 +837,10 @@ delegation:
 
   # Bridge-first local CLI setup:
   # default_transport: "auto"
-  # persona_provider: "claude"
+  # persona_provider: "cursor-agent"
+  # persona_routing:
+  #   defaults:
+  #     cursor-agent: "gpt-5.5-extra-high"
   # persona_workdir: "~/code/project"
   #
   # Embedded API-key setup:

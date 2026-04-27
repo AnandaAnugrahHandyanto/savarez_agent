@@ -181,6 +181,53 @@ class TestDelegatePersonas(unittest.TestCase):
             self.assertTrue(task["unsafe_allow_writes"])
             self.assertIn("--yolo", task["acp_args"])
 
+    def test_apply_persona_uses_configured_canonical_provider(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            personas = Path(tmp) / "personas"
+            workdir = Path(tmp) / "repo"
+            personas.mkdir()
+            workdir.mkdir()
+            _write_persona(personas, "verifier", "# Role\nVerify safely.")
+
+            task = apply_persona_to_task(
+                {"goal": "Verify", "persona": "verifier"},
+                cfg={
+                    "persona_dirs": {"project": str(personas)},
+                    "persona_provider": "cursor-agent",
+                    "persona_workdir": str(workdir),
+                },
+            )
+
+            self.assertEqual(task["acp_command"], "cursor-agent")
+            self.assertEqual(task["_persona_meta"]["provider"], "cursor-agent")
+            self.assertIn("gpt-5.5-extra-high", task["acp_args"])
+
+    def test_apply_persona_rejects_missing_provider_instead_of_guessing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            personas = Path(tmp) / "personas"
+            personas.mkdir()
+            _write_persona(personas, "verifier", "# Role\nVerify safely.")
+
+            with self.assertRaisesRegex(ValueError, "requires canonical persona_provider"):
+                apply_persona_to_task(
+                    {"goal": "Verify", "persona": "verifier"},
+                    cfg={"persona_dirs": {"project": str(personas)}},
+                )
+
+    def test_apply_persona_embedded_transport_does_not_require_provider(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            personas = Path(tmp) / "personas"
+            personas.mkdir()
+            _write_persona(personas, "verifier", "# Role\nVerify safely.")
+
+            task = {"goal": "Verify", "persona": "verifier", "transport": "embedded-api"}
+            result = apply_persona_to_task(
+                task,
+                cfg={"persona_dirs": {"project": str(personas)}},
+            )
+
+            self.assertEqual(result, task)
+
 
 class TestDelegateTaskPersonaIntegration(unittest.TestCase):
     @patch("tools.delegate_tool._resolve_delegation_credentials")
@@ -196,6 +243,7 @@ class TestDelegateTaskPersonaIntegration(unittest.TestCase):
             mock_cfg.return_value = {
                 "max_iterations": 45,
                 "persona_dirs": {"project": str(personas)},
+                "persona_provider": "cursor-agent",
             }
             mock_spawn.return_value = {
                 "session_id": "hermes-verifier",
@@ -236,6 +284,7 @@ class TestDelegateTaskPersonaIntegration(unittest.TestCase):
             mock_cfg.return_value = {
                 "max_iterations": 45,
                 "persona_dirs": {"project": str(personas)},
+                "persona_provider": "cursor-agent",
             }
 
             result = json.loads(
@@ -282,6 +331,7 @@ class TestDelegateTaskPersonaIntegration(unittest.TestCase):
             mock_cfg.return_value = {
                 "max_iterations": 45,
                 "persona_dirs": {"project": str(personas)},
+                "persona_provider": "cursor-agent",
             }
 
             result = json.loads(
@@ -332,6 +382,106 @@ class TestDelegateTaskPersonaIntegration(unittest.TestCase):
         _, kwargs = mock_build.call_args
         self.assertIsNone(kwargs.get("override_acp_command"))
         self.assertIsNone(kwargs.get("override_acp_args"))
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._load_config")
+    def test_delegate_task_persona_with_explicit_embedded_transport_keeps_embedded_path(self, mock_cfg, mock_creds):
+        with tempfile.TemporaryDirectory() as tmp:
+            personas = Path(tmp) / "personas"
+            personas.mkdir()
+            _write_persona(personas, "verifier", "# Role\nVerify safely.")
+            mock_cfg.return_value = {
+                "max_iterations": 45,
+                "persona_dirs": {"project": str(personas)},
+            }
+            mock_creds.return_value = {
+                "model": None,
+                "provider": None,
+                "base_url": None,
+                "api_key": None,
+                "api_mode": None,
+            }
+
+            with patch("tools.delegate_tool._build_child_agent") as mock_build, patch(
+                "tools.delegate_tool._run_single_child"
+            ) as mock_run:
+                child = MagicMock()
+                child._delegate_saved_tool_names = []
+                child._delegate_role = "leaf"
+                child._credential_pool = None
+                mock_build.return_value = child
+                mock_run.return_value = {
+                    "task_index": 0,
+                    "status": "completed",
+                    "summary": "done",
+                    "api_calls": 1,
+                    "duration_seconds": 0.1,
+                    "_child_role": "leaf",
+                }
+
+                result = json.loads(
+                    delegate_task(
+                        goal="Verify through embedded child",
+                        persona="verifier",
+                        transport="embedded-api",
+                        parent_agent=_make_parent(),
+                    )
+                )
+
+            self.assertEqual(result["results"][0]["status"], "completed")
+            _, kwargs = mock_build.call_args
+            self.assertIsNone(kwargs.get("override_acp_command"))
+            self.assertIsNone(kwargs.get("override_acp_args"))
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._load_config")
+    def test_delegate_task_persona_with_configured_embedded_transport_keeps_embedded_path(self, mock_cfg, mock_creds):
+        with tempfile.TemporaryDirectory() as tmp:
+            personas = Path(tmp) / "personas"
+            personas.mkdir()
+            _write_persona(personas, "verifier", "# Role\nVerify safely.")
+            mock_cfg.return_value = {
+                "max_iterations": 45,
+                "default_transport": "embedded-api",
+                "persona_dirs": {"project": str(personas)},
+            }
+            mock_creds.return_value = {
+                "model": None,
+                "provider": None,
+                "base_url": None,
+                "api_key": None,
+                "api_mode": None,
+            }
+
+            with patch("tools.delegate_tool._build_child_agent") as mock_build, patch(
+                "tools.delegate_tool._run_single_child"
+            ) as mock_run:
+                child = MagicMock()
+                child._delegate_saved_tool_names = []
+                child._delegate_role = "leaf"
+                child._credential_pool = None
+                mock_build.return_value = child
+                mock_run.return_value = {
+                    "task_index": 0,
+                    "status": "completed",
+                    "summary": "done",
+                    "api_calls": 1,
+                    "duration_seconds": 0.1,
+                    "_child_role": "leaf",
+                }
+
+                result = json.loads(
+                    delegate_task(
+                        goal="Verify through configured embedded child",
+                        persona="verifier",
+                        parent_agent=_make_parent(),
+                    )
+                )
+
+            self.assertEqual(result["results"][0]["status"], "completed")
+            _, kwargs = mock_build.call_args
+            self.assertIsNone(kwargs.get("override_acp_command"))
+            self.assertIsNone(kwargs.get("override_acp_args"))
 
 
 if __name__ == "__main__":

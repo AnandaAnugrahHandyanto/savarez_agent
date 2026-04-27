@@ -6,7 +6,7 @@ description: "Spawn isolated child agents for parallel workstreams with delegate
 
 # Subagent Delegation
 
-The `delegate_task` tool spawns child AIAgent instances with isolated context, restricted toolsets, and their own terminal sessions. Each child gets a fresh conversation and works independently — only its final summary enters the parent's context.
+The `delegate_task` tool spawns isolated child workers for parallel workstreams. Embedded API children run as native AIAgent instances with restricted toolsets, while bridge children run local Claude Code or Cursor Agent sessions. Each child gets a fresh conversation and works independently — only its final summary enters the parent's context.
 
 ## Single Task
 
@@ -138,7 +138,7 @@ Hermes supports four delegation transport/auth modes:
 - `simple-pipe`: legacy one-shot CLI compatibility for explicit `acp_command`/`acp_args` calls.
 - `experimental-oauth`: explicit opt-in for local OAuth/proxy experiments. It is never selected implicitly by `auto`; use it only when you deliberately control the proxy/provider and accept the service-policy risk.
 
-With `transport="auto"` or `delegation.default_transport: "auto"`, bridge-capable Claude/Cursor personas or `acp_command` values use `bridge`. Embedded API delegation happens when no bridge-capable command/persona is selected, or when you explicitly choose `embedded-api`.
+With `transport="auto"` or `delegation.default_transport: "auto"`, bridge-capable `acp_command` values and personas with a resolved `persona_provider` use `bridge`. Embedded API delegation happens when no bridge-capable command/persona provider is selected, or when you explicitly choose `embedded-api`.
 
 Claude Code bridge workers run with a strict per-session MCP config. By default that config contains only the worker bridge MCP so the child can report back to Hermes. If a deployment wants Claude bridge workers to use shared memory MCPs such as Hindsight, add them explicitly with `delegation.bridge_extra_mcp_servers` and expose only the required tools through `delegation.bridge_extra_allowed_tools`. Do not forward the whole project MCP surface unless every server is intended for child workers.
 
@@ -147,6 +147,8 @@ Cursor Agent bridge workers use the workspace/global Cursor MCP configuration (`
 ## Child Personas vs Parent Personality
 
 `SOUL.md` and `/personality` define the parent Hermes session. The optional `persona` field on `delegate_task` is different: it is per-child routing and context for a delegated worker. It can select a named reviewer/tester/researcher profile, a local CLI provider (`persona_provider="claude"` or `"cursor-agent"`), and a model/workdir without changing the parent agent's identity.
+
+Persona providers use canonical names only: `claude` or `cursor-agent`. Resolution order is per-task `persona_provider`, top-level `persona_provider`, `acp_command`, then `delegation.persona_provider` from config. Plain delegation without `persona` preserves embedded API behavior. A named `persona` without a resolved provider is rejected instead of silently guessing a local CLI provider. If you intentionally want embedded API execution, omit `persona` or set `transport="embedded-api"`; in that embedded case the persona name is not expanded into local CLI context.
 
 ```python
 delegate_task(
@@ -158,9 +160,9 @@ delegate_task(
 )
 ```
 
-## Model Override
+## Model and Persona Overrides
 
-You can configure a different model for subagents via `config.yaml` — useful for delegating simple tasks to cheaper/faster models:
+For embedded API children, configure a different provider/model via `config.yaml` — useful for delegating simple tasks to cheaper/faster models:
 
 ```yaml
 # In ~/.hermes/config.yaml
@@ -169,7 +171,18 @@ delegation:
   provider: "openrouter"              # Optional: route subagents to a different provider
 ```
 
-If omitted, subagents use the same model as the parent.
+If omitted, embedded API children use the same model as the parent. Bridge workers are different: local Claude Code and Cursor Agent children use their own CLI login/auth, and persona-backed calls can select local CLI routing with `persona_provider` and `persona_model`.
+
+```python
+delegate_task(
+    goal="Review the diff and return high-risk findings",
+    context="Project at /home/user/app. Verify the current git diff first.",
+    persona="code-reviewer",
+    persona_provider="cursor-agent",
+    persona_model="gpt-5.5-extra-high",
+    transport="bridge",
+)
+```
 
 ## Toolset Selection Tips
 
@@ -224,12 +237,13 @@ delegate_task(
 
 ## Key Properties
 
-- Each subagent gets its **own terminal session** (separate from the parent)
+- Each child gets its **own execution surface**: native terminal state for embedded API children, or a local CLI/bridge session for Claude Code and Cursor Agent workers
 - **Nested delegation is opt-in** — only `role="orchestrator"` children can delegate further, and only when `max_spawn_depth` is raised from its default of 1 (flat). Disable globally with `orchestrator_enabled: false`.
 - Leaf subagents **cannot** call: `delegate_task`, `clarify`, `memory`, `send_message`, `execute_code`. Orchestrator subagents retain `delegate_task` but still cannot use the other four.
 - **Interrupt propagation** — interrupting the parent interrupts all active children (including grandchildren under orchestrators)
 - Only the final summary enters the parent's context, keeping token usage efficient
-- Subagents inherit the parent's **API key, provider configuration, and credential pool** (enabling key rotation on rate limits)
+- Embedded API subagents use the configured delegation provider/model, falling back to the parent provider/model when unset
+- Bridge workers do **not** inherit or receive parent API keys; local Claude Code and Cursor Agent CLIs resolve their own auth
 
 ## Delegation vs execute_code
 
@@ -261,7 +275,10 @@ delegation:
 # Bridge-first local CLI workers:
 delegation:
   default_transport: "auto"
-  persona_provider: "claude"
+  persona_provider: "cursor-agent"
+  persona_routing:
+    defaults:
+      cursor-agent: "gpt-5.5-extra-high"
   persona_workdir: "/home/user/myproject"
   bridge_extra_mcp_servers:
     hindsight-prv:

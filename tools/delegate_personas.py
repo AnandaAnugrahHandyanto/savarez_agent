@@ -76,6 +76,7 @@ PROVIDER_BASE_ARGS: dict[str, list[str]] = {
     "claude": ["-p", "--output-format", "text"],
     "cursor-agent": ["-p", "--output-format", "text"],
 }
+CANONICAL_PERSONA_PROVIDERS = {"claude", "cursor-agent"}
 
 WRITE_PERSONA_PATTERNS = (
     "implementer",
@@ -478,16 +479,25 @@ def apply_persona_to_task(
         raise ValueError(f"delegation persona not found: {persona_name}")
 
     command_base = os.path.basename(str(top_level_acp_command or "")).lower()
-    command_provider = command_base if command_base in {"claude", "cursor-agent"} else None
-    provider = str(
+    command_provider = command_base if command_base in CANONICAL_PERSONA_PROVIDERS else None
+    provider_value = (
         task.get("persona_provider")
         or top_level_provider
         or command_provider
         or (cfg or {}).get("persona_provider")
-        or "claude"
     )
-    if provider not in {"claude", "cursor-agent"}:
-        raise ValueError("delegation persona provider must be 'claude' or 'cursor-agent'")
+    if not provider_value:
+        transport_value = str(task.get("transport") or top_level_transport or "").strip()
+        if transport_value in {"embedded-api", "embedded_api", "embedded", "api"}:
+            return dict(task)
+        raise ValueError(
+            "delegation persona requires canonical persona_provider 'claude' "
+            "or 'cursor-agent' (per task, top-level call, acp_command, or "
+            "delegation.persona_provider). Omit persona for embedded delegation."
+        )
+    provider = str(provider_value).strip()
+    if provider not in CANONICAL_PERSONA_PROVIDERS:
+        raise ValueError("delegation persona_provider must be canonical: 'claude' or 'cursor-agent'")
 
     workdir = str(task.get("workdir") or top_level_workdir or (cfg or {}).get("persona_workdir") or os.getcwd())
     workdir = str(_expand_path(workdir))
