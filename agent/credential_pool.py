@@ -900,6 +900,19 @@ class CredentialPool:
         status_code: Optional[int],
         error_context: Optional[Dict[str, Any]] = None,
     ) -> Optional[PooledCredential]:
+        """Mark current credential as exhausted and rotate to the next one.
+
+        Cost-protection guard: by default, do NOT silently rotate from an
+        OAuth credential to a paid API key. OAuth tokens use the user's
+        subscription quota (free), API keys bill per-token. Auto-fallback
+        means a single OAuth 401 silently routes every subsequent call
+        through the paid key, producing surprise charges.
+
+        The fallback is gated by HERMES_ALLOW_OAUTH_TO_APIKEY_FALLBACK=1.
+        When blocked, we emit a Slack alert (if configured) so the operator
+        knows to regenerate the OAuth token instead of paying for it.
+        """
+        import os as _os
         with self._lock:
             entry = self.current() or self._select_unlocked()
             if entry is None:
@@ -914,6 +927,23 @@ class CredentialPool:
             self._mark_exhausted(entry, status_code, error_context)
             self._current_id = None
             next_entry = self._select_unlocked()
+
+            _allow_paid_fallback = _os.getenv("HERMES_ALLOW_OAUTH_TO_APIKEY_FALLBACK", "").lower() in ("1", "true", "yes")
+            _was_oauth = (_auth_ex or "").lower() == "oauth"
+            _next_auth_str = (getattr(next_entry, "auth_type", "") or "").lower() if next_entry else ""
+            _is_paid_fallback = _was_oauth and _next_auth_str == "api_key"
+
+            if _is_paid_fallback and not _allow_paid_fallback:
+                _next_label = next_entry.label or next_entry.id[:8] if next_entry else "?"
+                logger.warning(
+                    "CRED_BLOCK_FALLBACK: OAuth %s exhausted (status=%s); refusing silent rotation "
+                    "to paid api_key %s. Set HERMES_ALLOW_OAUTH_TO_APIKEY_FALLBACK=1 to allow. "
+                    "Regenerate the OAuth token to restore service.",
+                    _label, status_code, _next_label,
+                )
+                self._notify_oauth_dead(_label, status_code, _next_label)
+                return None
+
             if next_entry:
                 _next_label = next_entry.label or next_entry.id[:8]
                 _next_auth = getattr(next_entry, "auth_type", "unknown")
@@ -963,6 +993,39 @@ class CredentialPool:
                 self._active_leases.pop(credential_id, None)
             else:
                 self._active_leases[credential_id] = count - 1
+
+    @staticmethod
+    def _notify_oauth_dead(oauth_label: str, status_code: Optional[int], paid_label: str) -> None:
+        """Send a Slack alert when OAuth is dead and paid fallback is blocked."""
+        import os as _os
+        try:
+            token = _os.getenv("SLACK_BOT_TOKEN", "")
+            channel = _os.getenv("SLACK_OPERATOR_DM", "") or _os.getenv("SLACK_HOME_CHANNEL", "")
+            if not token or not channel:
+                return
+            import urllib.request as _ur
+            import json as _json
+            msg = (
+                f":rotating_light: *Token OAuth mort* (`{oauth_label}` -- status {status_code}).\n"
+                f"Le fallback automatique vers la cle payante `{paid_label}` est *bloque* "
+                f"(protection anti-debit).\n"
+                f"Pour restaurer le service : regenerer un token OAuth via `claude /login` "
+                f"ou `claude setup-token`, puis mettre a jour `CLAUDE_CODE_OAUTH_TOKEN` dans `.env`.\n"
+                f"Pour autoriser le fallback ponctuellement : "
+                f"`HERMES_ALLOW_OAUTH_TO_APIKEY_FALLBACK=1`."
+            )
+            data = _json.dumps({"channel": channel, "text": msg}).encode()
+            req = _ur.Request(
+                "https://slack.com/api/chat.postMessage",
+                data=data,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+            )
+            _ur.urlopen(req, timeout=5)
+        except Exception:
+            pass
 
     def try_refresh_current(self) -> Optional[PooledCredential]:
         with self._lock:

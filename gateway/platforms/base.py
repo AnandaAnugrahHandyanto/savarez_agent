@@ -873,14 +873,27 @@ class MessageEvent:
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
     
+    # Keywords recognized as commands even WITHOUT the leading slash.
+    # Slack intercepts /approve and /deny as slash commands before they
+    # reach the bot, so users must type them without the slash.
+    _SLASH_FREE_COMMANDS = frozenset(["approve", "deny"])
+
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
-        return self.text.startswith("/")
-    
+        if self.text.startswith("/"):
+            return True
+        # Also accept approval/deny keywords without slash (Slack intercepts /approve)
+        first_word = self.text.strip().split(maxsplit=1)[0].lower() if self.text.strip() else ""
+        return first_word in self._SLASH_FREE_COMMANDS
+
     def get_command(self) -> Optional[str]:
         """Extract command name if this is a command message."""
         if not self.is_command():
             return None
+        if not self.text.startswith("/"):
+            # Slash-free command (e.g. "approve always", "deny")
+            parts = self.text.strip().split(maxsplit=1)
+            return parts[0].lower() if parts else None
         # Split on space and get first word, strip the /
         parts = self.text.split(maxsplit=1)
         raw = parts[0][1:].lower() if parts else None
@@ -890,11 +903,14 @@ class MessageEvent:
         if raw and "/" in raw:
             return None
         return raw
-    
+
     def get_command_args(self) -> str:
         """Get the arguments after a command."""
         if not self.is_command():
             return self.text
+        if not self.text.startswith("/"):
+            parts = self.text.strip().split(maxsplit=1)
+            return parts[1] if len(parts) > 1 else ""
         parts = self.text.split(maxsplit=1)
         args = parts[1] if len(parts) > 1 else ""
         # iOS auto-corrects -- to — (em dash) and - to – (en dash)

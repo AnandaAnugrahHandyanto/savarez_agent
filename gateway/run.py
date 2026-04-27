@@ -521,6 +521,46 @@ def _load_gateway_config() -> dict:
     return {}
 
 
+def _notify_oauth_health_failure(auth_type: str, source: str, status_code,
+                                  error_message: str) -> None:
+    """Send a Slack alert when the OAuth/API token fails validation at startup.
+
+    Best-effort: silently skipped if SLACK_BOT_TOKEN or a valid channel id
+    are not configured. Channel resolution order:
+    SLACK_OPERATOR_DM > SLACK_HOME_CHANNEL.
+    """
+    import os as _os, json as _json, urllib.request as _ur
+    try:
+        token = _os.getenv("SLACK_BOT_TOKEN", "")
+        channel = (_os.getenv("SLACK_OPERATOR_DM", "")
+                   or _os.getenv("SLACK_HOME_CHANNEL", ""))
+        if not token or not channel:
+            return
+        msg = (
+            f":warning: *OAUTH_HEALTH au demarrage : token invalide*\n"
+            f"- auth_type: `{auth_type}`\n"
+            f"- source: `{source}`\n"
+            f"- status_code: `{status_code}`\n"
+            f"- erreur: `{error_message[:160]}`\n\n"
+            f"Sacha ne pourra pas repondre tant que le token n'est pas regenere.\n"
+            f"Action : `docker exec -it hermes-ceo regen-oauth` "
+            f"(ou `claude setup-token` puis mettre a jour `CLAUDE_CODE_OAUTH_TOKEN` dans `.env`), "
+            f"puis `docker restart hermes-ceo`."
+        )
+        data = _json.dumps({"channel": channel, "text": msg}).encode()
+        req = _ur.Request(
+            "https://slack.com/api/chat.postMessage",
+            data=data,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+        )
+        _ur.urlopen(req, timeout=5)
+    except Exception:
+        pass
+
+
 def _resolve_gateway_model(config: dict | None = None) -> str:
     """Read model from config.yaml — single source of truth.
 
@@ -2414,6 +2454,51 @@ class GatewayRunner:
                     from agent.anthropic_adapter import _is_oauth_token
                     _startup_auth = "OAUTH" if _is_oauth_token(_startup_key) else "API_KEY"
                     logger.info("CRED_POOL: single credential auth_type=%s key=%s", _startup_auth, _startup_key[:20])
+
+                # ── OAUTH_HEALTH startup ping ──────────────────────────────
+                # Validate the resolved token by pinging the Anthropic API
+                # with a 1-token request. Catches dead OAuth tokens before
+                # any user message triggers a silent api_key fallback.
+                # Gated by HERMES_OAUTH_STARTUP_VALIDATE=0 to skip.
+                import os as _os_health
+                if _os_health.getenv("HERMES_OAUTH_STARTUP_VALIDATE", "1").lower() not in ("0", "false", "no"):
+                    try:
+                        from agent.anthropic_adapter import (
+                            validate_oauth_token, describe_token_source,
+                        )
+                        _hk = str(_startup_rt.get("api_key", "") or "")
+                        _hbase = _startup_rt.get("base_url")
+                        _hsrc = describe_token_source(_hk)
+                        # sk-ant-oat setup-tokens are accepted by the official
+                        # Claude Code CLI but not necessarily by raw SDK
+                        # /v1/messages. When CLI fallback is enabled, startup
+                        # validation through the SDK is a misleading false
+                        # negative, so skip the alert.
+                        if _hk.startswith("sk-ant-oat") and _os_health.getenv("HERMES_CLAUDE_CODE_CLI_FALLBACK", "1").lower() not in ("0", "false", "no"):
+                            logger.info(
+                                "OAUTH_HEALTH: status=skipped_setup_token source=%s reason=validated_by_claude_code_cli_path",
+                                _hsrc,
+                            )
+                            raise StopIteration
+                        _hres = validate_oauth_token(_hk, _hbase, timeout=8.0)
+                        _hauth = _hres.get("auth_type", "?")
+                        _hsc = _hres.get("status_code")
+                        if _hres.get("valid"):
+                            logger.info(
+                                "OAUTH_HEALTH: status=valid auth_type=%s source=%s status_code=%s",
+                                _hauth, _hsrc, _hsc,
+                            )
+                        else:
+                            _err = (_hres.get("error_message") or "")[:200]
+                            logger.error(
+                                "OAUTH_HEALTH: status=invalid auth_type=%s source=%s status_code=%s err=%s",
+                                _hauth, _hsrc, _hsc, _err,
+                            )
+                            _notify_oauth_health_failure(_hauth, _hsrc, _hsc, _err)
+                    except StopIteration:
+                        pass
+                    except Exception as _h_exc:
+                        logger.warning("OAUTH_HEALTH: check failed: %s", _h_exc)
             except Exception as _cp_exc:
                 logger.debug("Could not log credential pool: %s", _cp_exc)
         except Exception as e:

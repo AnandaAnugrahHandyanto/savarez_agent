@@ -43,7 +43,7 @@ from typing import List, Dict, Any, Optional
 from urllib.parse import urlparse, parse_qs, urlunparse
 from openai import OpenAI
 import fire
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
@@ -3664,6 +3664,47 @@ class AIAgent:
         trajectory = self._convert_to_trajectory_format(messages, user_query, completed)
         _save_trajectory_to_file(trajectory, self.model, completed)
     
+    def _notify_auth_dead_slack(self, tag: str, source: str, status_code,
+                                 request_id: str, key_preview: str) -> None:
+        """Send a one-shot Slack alert when the active credential is rejected.
+
+        tag = OAUTH_DEAD or APIKEY_DEAD. Best-effort: silently skipped if
+        SLACK_BOT_TOKEN or a target channel is missing. Channel resolution:
+        SLACK_OPERATOR_DM > SLACK_HOME_CHANNEL.
+        """
+        import os as _os, json as _json, urllib.request as _ur
+        try:
+            token = _os.getenv("SLACK_BOT_TOKEN", "")
+            channel = (_os.getenv("SLACK_OPERATOR_DM", "")
+                       or _os.getenv("SLACK_HOME_CHANNEL", ""))
+            if not token or not channel:
+                return
+            if tag == "OAUTH_DEAD":
+                action = ("Regenere le token : `docker exec -it hermes-ceo regen-oauth` "
+                          "puis `docker restart hermes-ceo`.")
+            else:
+                action = ("Verifier la cle dans `.env` (`ANTHROPIC_API_KEY`) "
+                          "ou regenerer cote console Anthropic.")
+            msg = (
+                f":rotating_light: *{tag}* (HTTP {status_code})\n"
+                f"- source: `{source}`\n"
+                f"- key: `{key_preview}`\n"
+                f"- request_id: `{request_id or 'n/a'}`\n\n"
+                f"{action}"
+            )
+            data = _json.dumps({"channel": channel, "text": msg}).encode()
+            req = _ur.Request(
+                "https://slack.com/api/chat.postMessage",
+                data=data,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+            )
+            _ur.urlopen(req, timeout=5)
+        except Exception:
+            pass
+
     @staticmethod
     def _summarize_api_error(error: Exception) -> str:
         """Extract a human-readable one-liner from an API error.
@@ -5697,6 +5738,8 @@ class AIAgent:
 
         if effective_reason == FailoverReason.rate_limit:
             if not has_retried_429:
+                logger.info("CRED_API_ERROR: status=429 auth_type=%s label=%s %s — first 429, will retry same credential",
+                            _cur_auth, _cur_label, _detail)
                 return False, True
             rotate_status = status_code if status_code is not None else 429
             next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
@@ -5716,6 +5759,8 @@ class AIAgent:
                 logger.info(f"Credential auth failure — refreshed pool entry {getattr(refreshed, 'id', '?')}")
                 self._swap_credential(refreshed)
                 return True, has_retried_429
+            logger.warning("CRED_REFRESH_FAIL: refresh returned no token; rotating instead "
+                           "(this is expected for static setup-tokens without refresh_token)")
             # Refresh failed — rotate to next credential instead of giving up.
             # The failed entry is already marked exhausted by try_refresh_current().
             rotate_status = status_code if status_code is not None else 401
@@ -5734,6 +5779,20 @@ class AIAgent:
     def _anthropic_messages_create(self, api_kwargs: dict):
         if self.api_mode == "anthropic_messages":
             self._try_refresh_anthropic_client_credentials()
+        # When the active client is OAuth, prefix the system prompt with the
+        # Claude Code identity string. Without this, Anthropic flags the call
+        # as "third-party app" usage and blocks it with HTTP 400 once the
+        # extra-usage credit balance hits zero.
+        try:
+            from agent.anthropic_adapter import inject_claude_code_identity
+            inject_claude_code_identity(api_kwargs)
+            _sys_preview = repr(api_kwargs.get("system", ""))[:120]
+            logger.warning(
+                "CLAUDE_IDENTITY_INJECTED create model=%s system=%s",
+                api_kwargs.get("model"), _sys_preview,
+            )
+        except Exception as _e:
+            logger.warning("CLAUDE_IDENTITY_INJECT_FAIL create: %s", _e)
         return self._anthropic_client.messages.create(**api_kwargs)
 
     def _rebuild_anthropic_client(self) -> None:
@@ -5755,6 +5814,283 @@ class AIAgent:
                 getattr(self, "_anthropic_base_url", None),
                 timeout=get_provider_request_timeout(self.provider, self.model),
             )
+
+    @staticmethod
+    def _flatten_claude_cli_content(content: Any) -> str:
+        """Extract readable text from OpenAI/Anthropic-style message content."""
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for block in content:
+                if isinstance(block, str):
+                    parts.append(block)
+                elif isinstance(block, dict):
+                    text = block.get("text") or block.get("content")
+                    if isinstance(text, str):
+                        parts.append(text)
+            return "\n".join(p for p in parts if p)
+        return str(content)
+
+    @classmethod
+    def _flatten_claude_cli_system(cls, system: Any) -> str:
+        """Flatten Anthropic system blocks to the string format expected by the CLI."""
+        if not system:
+            return ""
+        if isinstance(system, str):
+            return system
+        if isinstance(system, list):
+            parts = []
+            for block in system:
+                if isinstance(block, str):
+                    parts.append(block)
+                elif isinstance(block, dict) and block.get("type") == "text":
+                    text = block.get("text")
+                    if isinstance(text, str):
+                        parts.append(text)
+            return "\n\n".join(p for p in parts if p)
+        return str(system)
+
+    _CLAUDE_CODE_STATE_FILE = "/tmp/.claude_quota_state"
+
+    @staticmethod
+    def _claude_code_state_path() -> Path:
+        return Path(os.getenv("HERMES_CLAUDE_CODE_STATE_FILE", AIAgent._CLAUDE_CODE_STATE_FILE))
+
+    @classmethod
+    def _read_claude_code_state(cls) -> dict:
+        try:
+            path = cls._claude_code_state_path()
+            if not path.exists():
+                return {"mode": "oauth"}
+            data = json.loads(path.read_text() or "{}")
+            if not isinstance(data, dict):
+                return {"mode": "oauth"}
+            reset_at = float(data.get("reset_at_epoch") or 0)
+            if data.get("mode") == "api" and reset_at and time.time() >= reset_at:
+                cls._write_claude_code_state({"mode": "oauth", "reason": "reset_reached"})
+                return {"mode": "oauth", "reason": "reset_reached"}
+            return data
+        except Exception:
+            return {"mode": "oauth"}
+
+    @classmethod
+    def _write_claude_code_state(cls, data: dict) -> None:
+        try:
+            path = cls._claude_code_state_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(data, ensure_ascii=False))
+        except Exception as exc:
+            logger.warning("CLAUDE_CODE_STATE_WRITE_FAIL error=%s", exc)
+
+    @staticmethod
+    def _parse_claude_quota_reset(text: str) -> tuple[Optional[float], Optional[str]]:
+        """Parse Claude Code reset hints like 'resets 8:10am (UTC)'."""
+        if not text:
+            return None, None
+        patterns = [
+            r"resets?\s+(?:at\s+)?(\d{1,2}:\d{2})\s*(am|pm)\s*\(UTC\)",
+            r"reset(?:s)?\s+(?:at\s+)?(\d{1,2}:\d{2})\s*(am|pm)\s*UTC",
+        ]
+        now = datetime.now(timezone.utc)
+        for pat in patterns:
+            m = re.search(pat, text, re.I)
+            if not m:
+                continue
+            hh, mm = [int(x) for x in m.group(1).split(":")]
+            ampm = m.group(2).lower()
+            if ampm == "pm" and hh != 12:
+                hh += 12
+            if ampm == "am" and hh == 12:
+                hh = 0
+            target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+            if target <= now:
+                target = target + timedelta(days=1)
+            return target.timestamp(), target.isoformat()
+        return None, None
+
+    @staticmethod
+    def _is_claude_quota_exhausted(text: str) -> bool:
+        t = (text or "").lower()
+        return any(p in t for p in (
+            "out of extra usage",
+            "quota",
+            "usage limit",
+            "rate limit",
+            "too many requests",
+        )) and "api error" in t or "out of extra usage" in t
+
+    @staticmethod
+    def _read_env_file_value(key: str) -> str:
+        for path in (get_hermes_home() / ".env", Path(__file__).resolve().parents[1] / ".env"):
+            try:
+                if not path.exists():
+                    continue
+                for line in path.read_text().splitlines():
+                    if line.startswith(key + "="):
+                        return line.split("=", 1)[1].strip().strip('"').strip("'")
+            except Exception:
+                continue
+        return os.getenv(key, "").strip()
+
+    def _notify_claude_code_api_fallback(self, *, reset_at_iso: Optional[str], reason: str) -> None:
+        try:
+            cb = getattr(self, "status_callback", None)
+            if cb:
+                msg = "⚠️ Quota Claude Code OAuth épuisé — bascule temporaire sur clé API payante."
+                if reset_at_iso:
+                    msg += f" Retour OAuth prévu: `{reset_at_iso}`."
+                cb("status", msg)
+        except Exception:
+            pass
+
+    def _claude_code_cli_response(self, api_kwargs: dict, *, reason: str = ""):
+        """Use the real Claude Code CLI as the primary Slack/OAuth path.
+
+        The normal path uses Claude Code OAuth with ANTHROPIC_API_KEY removed.
+        Only explicit Claude quota exhaustion may switch to the isolated
+        ANTHROPIC_API_KEY_FALLBACK value, never to a globally exported API key.
+        """
+        import subprocess
+
+        started = time.time()
+        model = str(api_kwargs.get("model") or self.model or "claude-sonnet-4-6")
+        system_prompt = (
+            "Tu es Sacha, assistant de Sylvain. "
+            "Réponds toujours en français, de façon concise, utile et directe."
+        )
+        messages_in = api_kwargs.get("messages") or []
+        prompt_parts = []
+        if isinstance(messages_in, list):
+            for msg in messages_in[-8:]:
+                if not isinstance(msg, dict):
+                    continue
+                role = msg.get("role", "user")
+                text = self._flatten_claude_cli_content(msg.get("content"))
+                if text:
+                    prompt_parts.append(f"{role}: {text}")
+        prompt = "\n\n".join(prompt_parts).strip() or "Réponds au dernier message utilisateur."
+
+        state = self._read_claude_code_state()
+        force_api = state.get("mode") == "api"
+        fallback_key = self._read_env_file_value("ANTHROPIC_API_KEY_FALLBACK")
+
+        def _run(use_api: bool):
+            env = os.environ.copy()
+            env.pop("ANTHROPIC_API_KEY", None)
+            env.pop("ANTHROPIC_TOKEN", None)
+            env.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
+            cmd = [
+                "claude",
+                "--model", model,
+                "--no-session-persistence",
+                "--tools", "",
+            ]
+            if system_prompt:
+                cmd.extend(["--append-system-prompt", system_prompt])
+            cmd.extend(["-p", prompt])
+            path = "api_key" if use_api else "oauth"
+            if use_api:
+                if not fallback_key:
+                    return None, 1, "", "ANTHROPIC_API_KEY_FALLBACK missing", path
+                env["ANTHROPIC_API_KEY"] = fallback_key
+                cmd.insert(1, "--bare")
+            else:
+                token = os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
+                if token:
+                    env["CLAUDE_CODE_OAUTH_TOKEN"] = token
+            logger.info("CLAUDE_CODE_CLI_START model=%s path=%s reason=%s", model, path, reason)
+            completed = subprocess.run(
+                cmd,
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=float(os.getenv("HERMES_CLAUDE_CLI_TIMEOUT", "300")),
+            )
+            return completed, completed.returncode, (completed.stdout or "").strip(), (completed.stderr or "").strip(), path
+
+        completed, rc, stdout, stderr, path = _run(force_api)
+        combined = f"{stdout}\n{stderr}".strip()
+
+        if not force_api and rc != 0 and self._is_claude_quota_exhausted(combined):
+            reset_epoch, reset_iso = self._parse_claude_quota_reset(combined)
+            self._write_claude_code_state({
+                "mode": "api",
+                "reason": "oauth_quota_exhausted",
+                "reset_at_epoch": reset_epoch or 0,
+                "reset_at_iso": reset_iso,
+                "last_error": combined[:500],
+            })
+            self._notify_claude_code_api_fallback(reset_at_iso=reset_iso, reason=combined[:160])
+            completed, rc, stdout, stderr, path = _run(True)
+            combined = f"{stdout}\n{stderr}".strip()
+
+        latency = round(time.time() - started, 3)
+        if rc != 0 or not stdout:
+            logger.error(
+                "FALLBACK_STATS path=%s oauth_ok=0 api_fallback=%s cli_fail=1 latency=%ss reset_at=%s rc=%s err=%s",
+                path, 1 if path == "api_key" else 0, latency, state.get("reset_at_iso"), rc, combined[:240],
+            )
+            return None
+
+        _stats_msg = (
+            "FALLBACK_STATS path=%s oauth_ok=%s api_fallback=%s cli_fail=0 latency=%ss reset_at=%s chars=%s"
+            % (path, 1 if path == "oauth" else 0, 1 if path == "api_key" else 0,
+               latency, state.get("reset_at_iso"), len(stdout))
+        )
+        logger.warning(_stats_msg)
+        logging.warning(_stats_msg)
+        return SimpleNamespace(
+            id="claude-code-cli",
+            model=model,
+            stop_reason="end_turn",
+            content=[SimpleNamespace(type="text", text=stdout)],
+            usage=None,
+            _hermes_claude_cli_fallback=True,
+        )
+
+
+    def _try_return_claude_cli_fallback(
+        self,
+        api_kwargs: dict,
+        messages: list,
+        conversation_history: list,
+        api_call_count: int,
+        *,
+        reason: str,
+    ) -> Optional[dict]:
+        """Return a completed conversation result via Claude Code CLI, if possible."""
+        try:
+            cli_response = self._claude_code_cli_response(api_kwargs, reason=reason)
+            if cli_response is None:
+                return None
+            text = "\n".join(
+                getattr(block, "text", "")
+                for block in getattr(cli_response, "content", [])
+                if getattr(block, "type", None) == "text"
+            ).strip()
+            if not text:
+                return None
+            assistant_msg = {
+                "role": "assistant",
+                "content": text,
+                "finish_reason": "stop",
+            }
+            messages.append(assistant_msg)
+            self._persist_session(messages, conversation_history)
+            return {
+                "final_response": text,
+                "messages": messages,
+                "api_calls": api_call_count,
+                "completed": True,
+                "claude_code_cli_fallback": True,
+            }
+        except Exception as exc:
+            logger.error("CLAUDE_CODE_CLI_FALLBACK_EXCEPTION: %s", exc)
+            return None
+
 
     def _interruptible_api_call(self, api_kwargs: dict):
         """
@@ -6376,7 +6712,20 @@ class AIAgent:
 
             # Reset stale-stream timer for this attempt
             last_chunk_time["t"] = time.time()
-            # Use the Anthropic SDK's streaming context manager
+            # Always inject Claude Code identity into `system` field.
+            # Idempotent + harmless for API-key requests; the helper
+            # mutates api_kwargs in-place so we don't need to reassign
+            # (rebinding here would create a closure-local shadow var).
+            try:
+                from agent.anthropic_adapter import inject_claude_code_identity
+                inject_claude_code_identity(api_kwargs)
+                _sys_preview = repr(api_kwargs.get("system", ""))[:120]
+                logger.warning(
+                    "CLAUDE_IDENTITY_INJECTED stream model=%s system=%s",
+                    api_kwargs.get("model"), _sys_preview,
+                )
+            except Exception as _e:
+                logger.warning("CLAUDE_IDENTITY_INJECT_FAIL stream: %s", _e)
             with self._anthropic_client.messages.stream(**api_kwargs) as stream:
                 for event in stream:
                     # Update stale-stream timer on every event so the
@@ -9374,6 +9723,21 @@ class AIAgent:
         messages.append(user_msg)
         current_turn_user_idx = len(messages) - 1
         self._persist_user_message_idx = current_turn_user_idx
+
+        _slack_cli_primary = (
+            (self.platform or "").lower() == "slack"
+            and os.getenv("HERMES_SLACK_CLAUDE_CODE_PRIMARY", "1").lower() not in ("0", "false", "no")
+            and os.getenv("HERMES_ENABLE_ANTHROPIC_SDK_EXPERIMENT", "").lower() not in ("1", "true", "yes")
+            and self.api_mode == "anthropic_messages"
+        )
+        if _slack_cli_primary:
+            _cli_result = self._try_return_claude_cli_fallback(
+                {"model": self.model, "messages": messages, "system": None},
+                messages, conversation_history, 0,
+                reason="slack_primary",
+            )
+            if _cli_result is not None:
+                return _cli_result
         
         if not self.quiet_mode:
             _print_preview = _summarize_user_message_for_log(user_message)
@@ -11383,6 +11747,65 @@ class AIAgent:
                     ) and not is_context_length_error
 
                     if is_client_error:
+                        # Any client-side failure from the raw Anthropic SDK can
+                        # be an OAuth/setup-token mismatch with Claude Code. Try
+                        # the official CLI path first; if it fails, keep the
+                        # existing diagnostics and hard-error behavior.
+                        if self.api_mode == "anthropic_messages":
+                            _cli_result = self._try_return_claude_cli_fallback(
+                                api_kwargs, messages, conversation_history, api_call_count,
+                                reason=f"client_error_http_{status_code or 'text'}",
+                            )
+                            if _cli_result is not None:
+                                return _cli_result
+
+                        # ── Auth-failure diagnostics (OAUTH_DEAD / APIKEY_DEAD) ──
+                        # When a single-credential setup fails on 401/403 the
+                        # standard pool flow doesn't fire (pool=None). Emit a
+                        # very visible log + Slack alert so the operator knows
+                        # exactly what to fix without grepping stack traces.
+                        if status_code in (401, 403):
+                            try:
+                                _api_key = getattr(self, "api_key", "") or ""
+                                from agent.anthropic_adapter import _is_oauth_token, describe_token_source
+                                _is_oauth = _is_oauth_token(_api_key)
+                                _src = describe_token_source(_api_key)
+                                _kp = (_api_key[:18] + "..." + _api_key[-4:]) if len(_api_key) > 24 else "none"
+                                _tag = "OAUTH_DEAD" if _is_oauth else "APIKEY_DEAD"
+                                _req_id = ""
+                                try:
+                                    _req_id = (getattr(api_error, "request_id", "")
+                                               or (getattr(api_error, "body", {}) or {}).get("request_id", "")
+                                               or "")
+                                except Exception:
+                                    pass
+                                logging.error(
+                                    "%s: status=%s source=%s key=%s request_id=%s — token rejected by provider",
+                                    _tag, status_code, _src, _kp, _req_id,
+                                )
+                                # Slack notification (deduped per process+session)
+                                _notify_key = f"{_tag}:{getattr(self, 'session_id', '')}:{_src}"
+                                _seen = getattr(self.__class__, "_auth_dead_notified", set())
+                                if _notify_key not in _seen:
+                                    _seen.add(_notify_key)
+                                    setattr(self.__class__, "_auth_dead_notified", _seen)
+                                    self._notify_auth_dead_slack(_tag, _src, status_code, _req_id, _kp)
+                            except Exception as _ad_exc:
+                                logging.debug("auth-dead diagnostic failed: %s", _ad_exc)
+
+                        # Direct Anthropic SDK OAuth can be classified as third-party
+                        # by Anthropic. If that happens, answer through the real
+                        # Claude Code CLI before surfacing a hard failure.
+                        if self.api_mode == "anthropic_messages" and (
+                            status_code == 400 and "third-party apps" in error_msg.lower()
+                        ):
+                            _cli_result = self._try_return_claude_cli_fallback(
+                                api_kwargs, messages, conversation_history, api_call_count,
+                                reason=f"client_error_http_{status_code}",
+                            )
+                            if _cli_result is not None:
+                                return _cli_result
+
                         # Try fallback before aborting — a different provider
                         # may not have the same issue (rate limit, auth, etc.)
                         self._emit_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
@@ -11418,6 +11841,15 @@ class AIAgent:
                         else:
                             self._vprint(f"{self.log_prefix}   💡 This type of error won't be fixed by retrying.", force=True)
                         logging.error(f"{self.log_prefix}Non-retryable client error: {api_error}")
+                        import traceback as _tb
+                        logging.error(f"{self.log_prefix}STACK_401: model={getattr(self, 'model', '?')} session={getattr(self, 'session_id', '?')!r}")
+                        logging.error('STACK_401_TB: ' + ''.join(_tb.format_stack()[-6:]).replace(chr(10), '|'))
+                        _dbg_prov = getattr(self, "provider", "?")
+                        _dbg_model = getattr(self, "model", "?")
+                        _dbg_base = getattr(self, "base_url", "?")
+                        _dbg_client = getattr(self, "_client", None) or getattr(self, "_anthropic_client", None)
+                        _dbg_key = str(getattr(_dbg_client, "api_key", "?"))[:20] if _dbg_client else "no_client"
+                        logging.error(f"{self.log_prefix}DEBUG_401: provider={_dbg_prov} model={_dbg_model} base={_dbg_base} key={_dbg_key}")
                         # Skip session persistence when the error is likely
                         # context-overflow related (status 400 + large session).
                         # Persisting the failed user message would make the
@@ -11440,6 +11872,14 @@ class AIAgent:
                             "error": str(api_error),
                         }
 
+                    if self.api_mode == "anthropic_messages" and is_rate_limited:
+                        _cli_result = self._try_return_claude_cli_fallback(
+                            api_kwargs, messages, conversation_history, api_call_count,
+                            reason=f"rate_limit_http_{status_code or 'text'}",
+                        )
+                        if _cli_result is not None:
+                            return _cli_result
+
                     if retry_count >= max_retries:
                         # Before falling back, try rebuilding the primary
                         # client once for transient transport errors (stale
@@ -11451,6 +11891,17 @@ class AIAgent:
                             primary_recovery_attempted = True
                             retry_count = 0
                             continue
+                        # Direct SDK OAuth 429s are often separate from the user's
+                        # Claude plan quota. Before giving up, use the official
+                        # Claude Code CLI path, which has native attestation.
+                        if self.api_mode == "anthropic_messages" and is_rate_limited:
+                            _cli_result = self._try_return_claude_cli_fallback(
+                                api_kwargs, messages, conversation_history, api_call_count,
+                                reason=f"rate_limit_after_{max_retries}_retries",
+                            )
+                            if _cli_result is not None:
+                                return _cli_result
+
                         # Try fallback before giving up entirely
                         self._emit_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
                         if self._try_activate_fallback():

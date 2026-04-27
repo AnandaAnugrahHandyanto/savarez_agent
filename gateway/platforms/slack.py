@@ -46,8 +46,6 @@ from gateway.platforms.base import (
     safe_url_for_log,
     cache_document_from_bytes,
 )
-
-
 logger = logging.getLogger(__name__)
 
 
@@ -590,6 +588,12 @@ class SlackAdapter(BasePlatformAdapter):
                     if broadcast and i == 0:
                         kwargs["reply_broadcast"] = True
 
+                # Override display name if SLACK_DISPLAY_NAME is set
+                import os as _os
+                _display_name = _os.environ.get("SLACK_DISPLAY_NAME", "").strip()
+                if _display_name:
+                    kwargs["username"] = _display_name
+
                 last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
 
             # Track the sent message ts so we can auto-respond to thread
@@ -626,6 +630,9 @@ class SlackAdapter(BasePlatformAdapter):
         """Edit a previously sent Slack message."""
         if not self._app:
             return SendResult(success=False, error="Not connected")
+        if len(content) > self.MAX_MESSAGE_LENGTH:
+            content = content[:self.MAX_MESSAGE_LENGTH - 20] + " ... (tronque)"
+
         try:
             formatted = self.format_message(content)
             await self._get_client(chat_id).chat_update(
@@ -1715,7 +1722,7 @@ class SlackAdapter(BasePlatformAdapter):
                     else:
                         logger.warning("[Slack] Failed to cache audio from %s: %s", url, e, exc_info=True)
             elif url:
-                # Try to handle as a document attachment
+                # Accept ALL file types — let the agent decide what to do with them
                 try:
                     original_filename = f.get("name", "")
                     ext = ""
@@ -1723,13 +1730,12 @@ class SlackAdapter(BasePlatformAdapter):
                         _, ext = os.path.splitext(original_filename)
                         ext = ext.lower()
 
-                    # Fallback: reverse-lookup from MIME type
+                    # Fallback extension from MIME type
                     if not ext and mimetype:
                         mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
                         ext = mime_to_ext.get(mimetype, "")
-
-                    if ext not in SUPPORTED_DOCUMENT_TYPES:
-                        continue  # Skip unsupported file types silently
+                    if not ext:
+                        ext = ".bin"
 
                     # Check file size (Slack limit: 20 MB for bots)
                     file_size = f.get("size", 0)
@@ -1743,7 +1749,7 @@ class SlackAdapter(BasePlatformAdapter):
                     cached_path = cache_document_from_bytes(
                         raw_bytes, original_filename or f"document{ext}"
                     )
-                    doc_mime = SUPPORTED_DOCUMENT_TYPES[ext]
+                    doc_mime = SUPPORTED_DOCUMENT_TYPES.get(ext, mimetype or "application/octet-stream")
                     media_urls.append(cached_path)
                     media_types.append(doc_mime)
                     logger.debug("[Slack] Cached user document: %s", cached_path)
@@ -2203,6 +2209,33 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("[Slack] Failed to fetch thread parent text: %s", exc)
             return ""
+
+    async def _handle_channel_join(self, event: dict) -> None:
+        """Auto-setup project memory when Sacha joins a new channel."""
+        user_id = event.get("user", "")
+        channel_id = event.get("channel", "")
+
+        if user_id != self._bot_user_id:
+            return
+
+        try:
+            from channel_memory import auto_setup_channel
+            client = self._get_client(channel_id)
+            info = await client.conversations_info(channel=channel_id)
+            channel_name = info.get("channel", {}).get("name", channel_id)
+
+            project = auto_setup_channel(channel_id, channel_name)
+            if project:
+                await client.chat_postMessage(
+                    channel=channel_id,
+                    text=(
+                        f"Projet **{project}** initialise pour ce channel.\n"
+                        f"Memoire persistante activee — le contexte sera maintenu entre les threads."
+                    ),
+                )
+                logger.info("[Slack] Auto-setup project '%s' for channel %s (%s)", project, channel_name, channel_id)
+        except Exception as e:
+            logger.error("[Slack] Failed to auto-setup channel %s: %s", channel_id, e, exc_info=True)
 
     async def _handle_slash_command(self, command: dict) -> None:
         """Handle Slack slash commands.

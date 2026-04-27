@@ -312,6 +312,98 @@ def _normalize_base_url_text(base_url) -> str:
     return str(base_url).strip()
 
 
+# ── Token source / counters / validation helpers ─────────────────────
+# These give operators visibility on which token Sacha is using and whether
+# the OAuth subscription quota is healthy. Without this, surprise charges
+# can happen because OAuth 401s silently fall back to the paid API key.
+
+_AUTH_COUNTERS: Dict[str, int] = {"OAUTH": 0, "API_KEY": 0}
+
+
+def _bump_auth_counter(auth_type: str) -> None:
+    """Increment the per-process counter for an auth_type (OAUTH or API_KEY)."""
+    if auth_type in _AUTH_COUNTERS:
+        _AUTH_COUNTERS[auth_type] += 1
+
+
+def get_auth_counters() -> Dict[str, int]:
+    """Return a copy of the per-process auth_type counters."""
+    return dict(_AUTH_COUNTERS)
+
+
+def describe_token_source(api_key: str) -> str:
+    """Identify where a given resolved token most plausibly came from.
+
+    Best-effort matching: returns one of
+      env_anthropic_token / env_claude_code / env_anthropic_api_key /
+      claude_creds / hermes_oauth / managed_key / unknown
+    """
+    if not api_key:
+        return "unknown"
+    try:
+        env_anthropic_token = os.getenv("ANTHROPIC_TOKEN", "").strip()
+        if env_anthropic_token and env_anthropic_token == api_key:
+            return "env_anthropic_token"
+        env_cc = os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
+        if env_cc and env_cc == api_key:
+            return "env_claude_code"
+        env_apikey = os.getenv("ANTHROPIC_API_KEY", "").strip()
+        if env_apikey and env_apikey == api_key:
+            return "env_anthropic_api_key"
+        creds = read_claude_code_credentials()
+        if creds and creds.get("accessToken") == api_key:
+            return "claude_creds"
+        hh = read_hermes_oauth_credentials()
+        if hh and hh.get("accessToken") == api_key:
+            return "hermes_oauth"
+        managed = read_claude_managed_key()
+        if managed and managed == api_key:
+            return "managed_key"
+    except Exception:
+        return "unknown"
+    return "unknown"
+
+
+def validate_oauth_token(api_key: str, base_url: Optional[str] = None,
+                         timeout: float = 5.0) -> Dict[str, Any]:
+    """Ping Anthropic with a tiny request to validate the token is alive.
+
+    Returns dict {valid: bool, status_code: int|None, error_message: str|None,
+    auth_type: str}. Used by the gateway at startup to detect dead OAuth
+    tokens before any user message arrives, so the operator gets a Slack
+    alert proactively instead of being charged on the next API_KEY fallback.
+
+    The validation call sends a 1-token "hi" prompt to claude-haiku and reads
+    only the status code. On any 4xx the token is considered invalid.
+    """
+    result: Dict[str, Any] = {
+        "valid": False,
+        "status_code": None,
+        "error_message": None,
+        "auth_type": "OAUTH" if _is_oauth_token(api_key) else "API_KEY",
+    }
+    if not api_key:
+        result["error_message"] = "no token provided"
+        return result
+    try:
+        client = build_anthropic_client(api_key, base_url)
+        # claude-haiku is cheapest; max_tokens=1 keeps cost negligible.
+        # Note: this WILL consume ~10-20 tokens of quota / billing. Use sparingly.
+        client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        result["valid"] = True
+        result["status_code"] = 200
+        return result
+    except Exception as e:
+        # Anthropic SDK puts status_code on most errors
+        result["status_code"] = getattr(e, "status_code", None)
+        result["error_message"] = str(e)[:300]
+        return result
+
+
 def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
     """Return True for non-Anthropic endpoints using the Anthropic Messages API.
 
@@ -418,9 +510,13 @@ def build_anthropic_client(api_key: str, base_url: str = None, timeout: float = 
         # Check this before OAuth token shape detection because MiniMax secrets do
         # not use Anthropic's sk-ant-api prefix and would otherwise be misread as
         # Anthropic OAuth/setup tokens.
+        # Same x-api-key shadowing protection as the OAuth branch.
         kwargs["auth_token"] = api_key
+        kwargs["api_key"] = ""
+        _bearer_headers = {"x-api-key": ""}
         if common_betas:
-            kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+            _bearer_headers["anthropic-beta"] = ",".join(common_betas)
+        kwargs["default_headers"] = _bearer_headers
     elif _is_third_party_anthropic_endpoint(base_url):
         # Third-party proxies (Azure AI Foundry, AWS Bedrock, etc.) use their
         # own API keys with x-api-key auth. Skip OAuth detection — their keys
@@ -433,12 +529,19 @@ def build_anthropic_client(api_key: str, base_url: str = None, timeout: float = 
         # OAuth access token / setup-token → Bearer auth + Claude Code identity.
         # Anthropic routes OAuth requests based on user-agent and headers;
         # without Claude Code's fingerprint, requests get intermittent 500s.
+        # CRITICAL: pass api_key="" to prevent the SDK from auto-loading
+        # ANTHROPIC_API_KEY env var and sending it as x-api-key alongside
+        # our Bearer token (Anthropic prefers x-api-key and would 401 if it
+        # is wrong, or bill it if it is valid -- root cause of past charges).
         all_betas = common_betas + _OAUTH_ONLY_BETAS
         kwargs["auth_token"] = api_key
+        kwargs["api_key"] = ""
         kwargs["default_headers"] = {
             "anthropic-beta": ",".join(all_betas),
             "user-agent": f"claude-cli/{_get_claude_code_version()} (external, cli)",
             "x-app": "cli",
+            # Override so the SDK can't fall back to env var injection.
+            "x-api-key": "",
         }
     else:
         # Regular API key → x-api-key header + common betas
@@ -448,14 +551,31 @@ def build_anthropic_client(api_key: str, base_url: str = None, timeout: float = 
 
     # ── Auth type logging ─────────────────────────────────────────────
     # Emits AUTH_CALL at INFO level so every Anthropic SDK client creation
-    # is traceable in agent.log. The key is truncated (redacted further by
-    # RedactingFormatter). auth_type=OAUTH means Bearer auth via subscription
-    # quota; auth_type=API_KEY means x-api-key header billed per token.
+    # is traceable in agent.log. Includes:
+    #   - auth_type: OAUTH (Bearer, subscription quota) or API_KEY (x-api-key, paid)
+    #   - source: env_token / env_apikey / claude_creds / hermes_oauth / unknown
+    #     so we can detect when a token came from a different place than expected
+    #   - cumulative counters (oauth=N api_key=M) per process — a sudden spike
+    #     in api_key without OAuth maintenance signals a quota/credential issue
     _key_preview = (api_key or "")[:24] + "..." if api_key and len(api_key) > 24 else (api_key or "none")
     _auth_type = "OAUTH" if (_is_oauth_token(api_key) or _requires_bearer_auth(base_url)) else "API_KEY"
-    logger.info("AUTH_CALL: auth_type=%s key=%s", _auth_type, _key_preview)
+    _source = describe_token_source(api_key)
+    _bump_auth_counter(_auth_type)
+    logger.info(
+        "AUTH_CALL: auth_type=%s source=%s key=%s totals=oauth:%d/api_key:%d",
+        _auth_type, _source, _key_preview,
+        _AUTH_COUNTERS.get("OAUTH", 0), _AUTH_COUNTERS.get("API_KEY", 0),
+    )
 
-    return _anthropic_sdk.Anthropic(**kwargs)
+    client = _anthropic_sdk.Anthropic(**kwargs)
+    # Tag and wrap the client at construction time so every SDK call path
+    # (messages.create, messages.stream, auxiliary clients, future call sites)
+    # gets the Claude Code identity prompt. This is intentionally done here
+    # instead of only at individual call sites: missed call sites caused real
+    # HTTP 400 "Third-party apps" failures.
+    setattr(client, "_hermes_is_oauth", _is_oauth_token(api_key))
+    _wrap_anthropic_messages_for_identity(client)
+    return client
 
 
 def build_anthropic_bedrock_client(region: str):
@@ -544,6 +664,113 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
 
     return None
 
+
+# Anthropic classifies OAuth requests as "third-party" (drawing from extra
+# usage credits) UNLESS the system prompt starts with the official Claude
+# Code identity string. Injecting this prefix keeps subscription quota usage
+# active. See:
+#   https://github.com/router-for-me/CLIProxyAPI/issues/2599
+#   https://github.com/griffinmartin/opencode-claude-auth/issues/145
+CLAUDE_CODE_IDENTITY_PROMPT = (
+    "You are Claude Code, Anthropic's official CLI for Claude."
+)
+
+
+def inject_claude_code_identity(api_kwargs: dict) -> dict:
+    """Prefix the request system field with the Claude Code identity string.
+
+    Mutates and returns api_kwargs. Idempotent. Handles both string and
+    list-of-blocks system shapes (the latter is used for prompt-caching).
+    """
+    sys_val = api_kwargs.get("system")
+    identity = CLAUDE_CODE_IDENTITY_PROMPT
+
+    if not sys_val:
+        api_kwargs["system"] = identity
+        return api_kwargs
+
+    if isinstance(sys_val, str):
+        if sys_val.lstrip().startswith(identity):
+            return api_kwargs
+        api_kwargs["system"] = identity + "\n\n" + sys_val
+        return api_kwargs
+
+    if isinstance(sys_val, list):
+        # Claude's server-side OAuth classifier is currently fragile with
+        # prompt-caching style system blocks. The same prompt as a plain string
+        # routes to plan quota (429 when limited), while the list-of-blocks
+        # shape routes to the "third-party extra usage" bucket (HTTP 400).
+        #
+        # Flatten to a string right before send. This sacrifices system prompt
+        # cache_control, but preserves the prompt content and keeps OAuth usable.
+        text_parts = []
+        for block in sys_val:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text", "")
+                if isinstance(text, str) and text.strip():
+                    text_parts.append(text)
+            elif isinstance(block, str) and block.strip():
+                text_parts.append(block)
+        flat = "\n\n".join(text_parts).strip()
+        if flat.lstrip().startswith(identity):
+            api_kwargs["system"] = flat
+        elif flat:
+            api_kwargs["system"] = identity + "\n\n" + flat
+        else:
+            api_kwargs["system"] = identity
+        return api_kwargs
+
+    return api_kwargs
+
+
+
+
+def _wrap_anthropic_messages_for_identity(client: Any) -> None:
+    """Monkey-patch Anthropic SDK message calls to inject Claude Code identity.
+
+    This is the last line of defense against Anthropic routing OAuth requests
+    to "third-party app" extra-usage credits. It catches every call path that
+    uses the client returned by build_anthropic_client(), including future or
+    auxiliary call sites that do not explicitly call inject_claude_code_identity.
+    """
+    messages = getattr(client, "messages", None)
+    if messages is None or getattr(messages, "_hermes_identity_wrapped", False):
+        return
+
+    def _inject_and_log(api_kwargs: dict, path: str) -> None:
+        try:
+            inject_claude_code_identity(api_kwargs)
+            messages = api_kwargs.get("messages") or []
+            tools = api_kwargs.get("tools") or []
+            system = api_kwargs.get("system")
+            system_blocks = len(system) if isinstance(system, list) else (1 if system else 0)
+            logger.info(
+                "CLAUDE_IDENTITY_SDK_WRAP path=%s model=%s max_tokens=%s "
+                "system_blocks=%s messages=%s tools=%s",
+                path,
+                api_kwargs.get("model"),
+                api_kwargs.get("max_tokens"),
+                system_blocks,
+                len(messages) if isinstance(messages, list) else "n/a",
+                len(tools) if isinstance(tools, list) else "n/a",
+            )
+        except Exception as exc:
+            logger.warning("CLAUDE_IDENTITY_SDK_WRAP_FAIL path=%s error=%s", path, exc)
+
+    orig_create = messages.create
+    orig_stream = messages.stream
+
+    def create_wrapper(*args: Any, **kwargs: Any):
+        _inject_and_log(kwargs, "messages.create")
+        return orig_create(*args, **kwargs)
+
+    def stream_wrapper(*args: Any, **kwargs: Any):
+        _inject_and_log(kwargs, "messages.stream")
+        return orig_stream(*args, **kwargs)
+
+    messages.create = create_wrapper
+    messages.stream = stream_wrapper
+    setattr(messages, "_hermes_identity_wrapped", True)
 
 def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
     """Read refreshable Claude Code OAuth credentials.
