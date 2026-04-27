@@ -1006,6 +1006,24 @@ class TestKimiTemperatureOmitted:
         assert "temperature" not in kwargs
 
 
+class TestCodexResponsesTemperatureOmitted:
+    def test_codex_responses_endpoint_omits_temperature_for_flush_memory(self):
+        """ChatGPT Codex Responses backend rejects temperature, including flush-memory calls."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="openai-codex",
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "hello"}],
+            temperature=0.3,
+            max_tokens=5120,
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
+
+        assert "temperature" not in kwargs
+        assert kwargs["max_tokens"] == 5120
+
+
 # ---------------------------------------------------------------------------
 # async_call_llm payment / connection fallback (#7512 bug 2)
 # ---------------------------------------------------------------------------
