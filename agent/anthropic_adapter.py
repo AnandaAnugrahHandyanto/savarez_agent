@@ -1054,6 +1054,20 @@ def _sanitize_tool_id(tool_id: str) -> str:
     return sanitized or "tool_0"
 
 
+def _sanitize_input_schema(schema: Dict) -> Dict:
+    """Strip top-level oneOf/allOf/anyOf — Anthropic API rejects them."""
+    if not isinstance(schema, dict):
+        return {"type": "object", "properties": {}}
+    banned = {"oneOf", "allOf", "anyOf"}
+    if banned & schema.keys():
+        schema = {k: v for k, v in schema.items() if k not in banned}
+        if "type" not in schema:
+            schema["type"] = "object"
+        if schema.get("type") == "object" and "properties" not in schema:
+            schema["properties"] = {}
+    return schema
+
+
 def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
     """Convert OpenAI tool definitions to Anthropic format."""
     if not tools:
@@ -1061,10 +1075,11 @@ def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
     result = []
     for t in tools:
         fn = t.get("function", {})
+        schema = fn.get("parameters", {"type": "object", "properties": {}})
         result.append({
             "name": fn.get("name", ""),
             "description": fn.get("description", ""),
-            "input_schema": fn.get("parameters", {"type": "object", "properties": {}}),
+            "input_schema": _sanitize_input_schema(schema),
         })
     return result
 
