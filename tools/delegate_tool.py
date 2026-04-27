@@ -1524,7 +1524,10 @@ def _run_single_child(
                     if diagnostic_path:
                         _err += f" Diagnostic: {diagnostic_path}"
                 else:
-                    _tool_calls_count = len(_partial_events)
+                    # Use the actual API call count, not the capped partial_events
+                    # length (which is bounded at 50), so the message is accurate
+                    # even when more than 50 tool calls were made.
+                    _tool_calls_count = child_api_calls
                     _last_action_str = (
                         f" Last action: {_last_tool_name}" if _last_tool_name else ""
                     )
