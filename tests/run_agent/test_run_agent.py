@@ -1049,6 +1049,26 @@ class TestToolUseEnforcementConfig:
             prompt = a._build_system_prompt()
             assert TOOL_USE_ENFORCEMENT_GUIDANCE not in prompt
 
+    def test_never_omits_tools_from_api_kwargs(self):
+        """When enforcement='never', tools should NOT be in API kwargs."""
+        agent = self._make_agent(tool_use_enforcement="never")
+        assert agent.tools  # tools are still loaded internally
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert "tools" not in kwargs
+
+    def test_false_omits_tools_from_api_kwargs(self):
+        """When enforcement=False, tools should NOT be in API kwargs."""
+        agent = self._make_agent(tool_use_enforcement=False)
+        assert agent.tools
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert "tools" not in kwargs
+
+    def test_auto_includes_tools_in_api_kwargs(self):
+        """When enforcement='auto', tools should be included normally."""
+        agent = self._make_agent(tool_use_enforcement="auto")
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert "tools" in kwargs
+
 
 class TestInvalidateSystemPrompt:
     def test_clears_cache(self, agent):
