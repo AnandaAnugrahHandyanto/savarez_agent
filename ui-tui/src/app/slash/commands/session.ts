@@ -3,6 +3,7 @@ import type {
   BackgroundStartResponse,
   ConfigGetValueResponse,
   ConfigSetResponse,
+  DetachResponse,
   ImageAttachResponse,
   SessionBranchResponse,
   SessionCompressResponse,
@@ -334,6 +335,28 @@ export const sessionCommands: SlashCommand[] = [
 
         ctx.transcript.panel('Usage', sections)
       })
+    }
+  },
+
+  {
+    help: 'detach: leave agent running in background, free the terminal',
+    name: 'detach',
+    run: (_arg, ctx) => {
+      ctx.gateway.rpc<DetachResponse>('session.detach', { session_id: ctx.sid }).then(
+        ctx.guarded<DetachResponse>(r => {
+          if (!r?.session_key) {
+            return ctx.transcript.sys('nothing to detach')
+          }
+
+          if (r.running) {
+            ctx.transcript.sys(`detaching session ${r.session_key}...`)
+            ctx.transcript.sys(`agent continues in background (task ${r.task_id})`)
+          }
+
+          ctx.transcript.sys(`resume with: hermes --tui --resume ${r.session_key}`)
+          setTimeout(() => ctx.session.die(), 1500)
+        })
+      )
     }
   }
 ]
