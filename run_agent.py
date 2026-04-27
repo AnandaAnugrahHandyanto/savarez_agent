@@ -81,6 +81,7 @@ from tools.browser_tool import cleanup_browser
 
 # Agent internals extracted to agent/ package for modularity
 from agent.memory_manager import build_memory_context_block, sanitize_context
+from agent.memory_router import ActiveContextCapsule, ActiveContextCapsuleCache, MemoryRouter
 from agent.retry_utils import jittered_backoff
 from agent.error_classifier import classify_api_error, FailoverReason
 from agent.prompt_builder import (
@@ -1959,6 +1960,8 @@ class AIAgent:
             working_dir=os.getenv("TERMINAL_CWD") or None,
         )
         self._user_turn_count = 0
+        self._memory_router = MemoryRouter()
+        self._active_memory_capsules = ActiveContextCapsuleCache()
 
         # Cumulative token usage for the session
         self.session_prompt_tokens = 0
@@ -2078,6 +2081,7 @@ class AIAgent:
         
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0
+        self._active_memory_capsules = ActiveContextCapsuleCache()
 
         # Context engine reset (works for both built-in compressor and plugins)
         if hasattr(self, "context_compressor") and self.context_compressor:
@@ -4276,6 +4280,86 @@ class AIAgent:
             self._memory_manager.on_session_end(messages or [])
         except Exception:
             pass
+
+    def _prepare_external_memory_context_for_turn(self, original_user_message: Any) -> str:
+        """Prepare ephemeral external-memory context for the current turn.
+
+        Combines the existing warmed prefetch path with a lightweight router for
+        immediate recall. Returned text is injected into the current user message
+        at API-call time only; callers must not persist it.
+        """
+        memory_manager = getattr(self, "_memory_manager", None)
+        if not memory_manager or not isinstance(original_user_message, str):
+            return ""
+        query = original_user_message.strip()
+        if not query:
+            return ""
+
+        context_parts: list[str] = []
+
+        def _append_context(text: Any) -> None:
+            if not isinstance(text, str) or not text.strip():
+                return
+            if text not in context_parts:
+                context_parts.append(text)
+
+        route = None
+        capsules = None
+        current_turn = int(getattr(self, "_user_turn_count", 0) or 0)
+        try:
+            router = getattr(self, "_memory_router", None)
+            if router is None:
+                router = MemoryRouter()
+                self._memory_router = router
+            capsules = getattr(self, "_active_memory_capsules", None)
+            if capsules is None:
+                capsules = ActiveContextCapsuleCache()
+                self._active_memory_capsules = capsules
+            active_topic = capsules.active_topic(current_turn=current_turn)
+            route = router.classify(query, active_topic=active_topic)
+        except Exception:
+            route = None
+
+        # Warmed prefetch belongs to the next-turn fallback path. When the
+        # current message explicitly triggers fresh recall, suppress prefetch so
+        # stale context from a previous query cannot be mixed into this turn.
+        try:
+            if route is None or route.action in {"skip", "reuse_active_capsule"}:
+                _append_context(memory_manager.prefetch_all(query) or "")
+        except Exception:
+            pass
+
+        try:
+            if route is None:
+                return "\n\n".join(context_parts)
+            if route.action == "reuse_active_capsule" and route.topic and capsules is not None:
+                _append_context(capsules.get(route.topic, current_turn=current_turn))
+            elif route.action in {"domain_capsule", "hindsight_now"}:
+                if route.action == "hindsight_now" and not route.topic and capsules is not None:
+                    capsules.clear()
+                recall_text = memory_manager.recall_now_all(
+                    route.query or query,
+                    session_id=getattr(self, "session_id", "") or "",
+                    max_tokens=route.max_tokens,
+                ) or ""
+                context_text = recall_text
+                if not context_text:
+                    context_text = memory_manager.prefetch_all(query) or ""
+                _append_context(context_text)
+                if context_text and route.topic and capsules is not None:
+                    capsules.set(
+                        ActiveContextCapsule(
+                            topic=route.topic,
+                            text=context_text,
+                            sources=route.sources,
+                            created_turn=current_turn,
+                            last_used_turn=current_turn,
+                        )
+                    )
+        except Exception:
+            pass
+
+        return "\n\n".join(context_parts)
 
     def _sync_external_memory_for_turn(
         self,
@@ -9572,18 +9656,14 @@ class AIAgent:
             except Exception:
                 pass
 
-        # External memory provider: prefetch once before the tool loop.
+        # External memory provider: prepare once before the tool loop.
         # Reuse the cached result on every iteration to avoid re-calling
-        # prefetch_all() on each tool call (10 tool calls = 10x latency + cost).
+        # providers on each tool call (10 tool calls = 10x latency + cost).
         # Use original_user_message (clean input) — user_message may contain
         # injected skill content that bloats / breaks provider queries.
-        _ext_prefetch_cache = ""
-        if self._memory_manager:
-            try:
-                _query = original_user_message if isinstance(original_user_message, str) else ""
-                _ext_prefetch_cache = self._memory_manager.prefetch_all(_query) or ""
-            except Exception:
-                pass
+        _ext_prefetch_cache = self._prepare_external_memory_context_for_turn(
+            original_user_message
+        )
 
         while (api_call_count < self.max_iterations and self.iteration_budget.remaining > 0) or self._budget_grace_call:
             # Reset per-turn checkpoint dedup so each iteration can take one snapshot

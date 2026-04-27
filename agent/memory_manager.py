@@ -28,7 +28,6 @@ Usage in run_agent.py:
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import inspect
@@ -191,6 +190,37 @@ class MemoryManager:
             except Exception as e:
                 logger.debug(
                     "Memory provider '%s' prefetch failed (non-fatal): %s",
+                    provider.name, e,
+                )
+        return "\n\n".join(parts)
+
+    def recall_now_all(
+        self,
+        query: str,
+        *,
+        session_id: str = "",
+        max_tokens: Optional[int] = None,
+    ) -> str:
+        """Collect synchronous current-turn recall context from providers.
+
+        This complements ``prefetch_all()``: prefetch is a warmed next-turn
+        cache, while recall-now is used sparingly by the memory router when the
+        current message itself clearly needs past context. Provider failures are
+        non-fatal, matching the rest of the memory layer.
+        """
+        parts = []
+        for provider in self._providers:
+            try:
+                result = provider.recall_now(
+                    query,
+                    session_id=session_id,
+                    max_tokens=max_tokens,
+                )
+                if result and result.strip():
+                    parts.append(result)
+            except Exception as e:
+                logger.debug(
+                    "Memory provider '%s' recall_now failed (non-fatal): %s",
                     provider.name, e,
                 )
         return "\n\n".join(parts)

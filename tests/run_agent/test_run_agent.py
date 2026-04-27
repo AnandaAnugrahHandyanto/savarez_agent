@@ -4786,22 +4786,24 @@ class TestMemoryContextSanitization:
 
 
 class TestMemoryProviderTurnStart:
-    """run_conversation() must call memory_manager.on_turn_start() before prefetch_all().
+    """run_conversation() must tick memory providers before preparing context.
 
     Without this call, providers like Honcho never update _turn_count, so cadence
     checks (contextCadence, dialecticCadence) are always satisfied — every turn
     fires both context refresh and dialectic, ignoring the configured cadence.
     """
 
-    def test_on_turn_start_called_before_prefetch(self):
-        """Source-level check: on_turn_start appears before prefetch_all in run_conversation."""
+    def test_on_turn_start_called_before_memory_context_preparation(self):
+        """Source-level check: on_turn_start appears before recall/prefetch preparation."""
         import inspect
         src = inspect.getsource(AIAgent.run_conversation)
         # Find the actual method calls, not comments
         idx_turn_start = src.index(".on_turn_start(")
-        idx_prefetch = src.index(".prefetch_all(")
-        assert idx_turn_start < idx_prefetch, (
-            "on_turn_start() must be called before prefetch_all() in run_conversation "
+        idx_prepare = src.index("._prepare_external_memory_context_for_turn(")
+        helper_src = inspect.getsource(AIAgent._prepare_external_memory_context_for_turn)
+        assert ".prefetch_all(" in helper_src
+        assert idx_turn_start < idx_prepare, (
+            "on_turn_start() must be called before external memory context is prepared "
             "so that memory providers have the correct turn count for cadence checks"
         )
 

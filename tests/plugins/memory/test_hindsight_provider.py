@@ -522,6 +522,60 @@ class TestToolHandlers:
 
 
 # ---------------------------------------------------------------------------
+# recall_now tests
+# ---------------------------------------------------------------------------
+
+
+class TestRecallNow:
+    def test_recall_now_returns_bounded_context(self, provider_with_config):
+        p = provider_with_config(
+            recall_tags=["t1"],
+            recall_tags_match="all",
+            recall_types=["experience"],
+            recall_max_tokens=2048,
+        )
+
+        result = p.recall_now("На завтрак омлет", session_id="s1", max_tokens=800)
+
+        assert "Memory 1" in result
+        assert "Memory 2" in result
+        call_kwargs = p._client.arecall.call_args.kwargs
+        assert call_kwargs["bank_id"] == "test-bank"
+        assert call_kwargs["query"] == "На завтрак омлет"
+        assert call_kwargs["budget"] == "mid"
+        assert call_kwargs["max_tokens"] == 800
+        assert call_kwargs["tags"] == ["t1"]
+        assert call_kwargs["tags_match"] == "all"
+        assert call_kwargs["types"] == ["experience"]
+
+    def test_recall_now_clamps_requested_max_tokens_to_configured_cap(self, provider_with_config):
+        p = provider_with_config(recall_max_tokens=256)
+
+        p.recall_now("На завтрак омлет", max_tokens=800)
+
+        assert p._client.arecall.call_args.kwargs["max_tokens"] == 256
+
+    def test_recall_now_skips_tools_mode(self, provider_with_config):
+        p = provider_with_config(memory_mode="tools")
+
+        assert p.recall_now("query") == ""
+        p._client.arecall.assert_not_called()
+
+    def test_recall_now_skips_when_auto_recall_disabled(self, provider_with_config):
+        p = provider_with_config(auto_recall=False)
+
+        assert p.recall_now("query") == ""
+        p._client.arecall.assert_not_called()
+
+    def test_recall_now_truncates_long_query(self, provider_with_config):
+        p = provider_with_config(recall_max_input_chars=5)
+
+        p.recall_now("abcdefghij")
+
+        assert p._client.arecall.call_args.kwargs["query"] == "abcde"
+
+
+# ---------------------------------------------------------------------------
 # Prefetch tests
 # ---------------------------------------------------------------------------
 

@@ -1038,6 +1038,64 @@ class HindsightMemoryProvider(MemoryProvider):
             f"hindsight_retain to store facts."
         )
 
+    def _build_recall_kwargs(self, query: str, *, max_tokens: int | None = None) -> dict:
+        configured_cap = max(1, int(self._recall_max_tokens))
+        token_cap = configured_cap
+        if max_tokens is not None:
+            try:
+                token_cap = min(configured_cap, max(1, int(max_tokens)))
+            except (TypeError, ValueError):
+                token_cap = configured_cap
+        recall_kwargs: dict = {
+            "bank_id": self._bank_id,
+            "query": query,
+            "budget": self._budget,
+            "max_tokens": token_cap,
+        }
+        if self._recall_tags:
+            recall_kwargs["tags"] = self._recall_tags
+            recall_kwargs["tags_match"] = self._recall_tags_match
+        if self._recall_types:
+            recall_kwargs["types"] = self._recall_types
+        return recall_kwargs
+
+    def recall_now(
+        self,
+        query: str,
+        *,
+        session_id: str = "",
+        max_tokens: int | None = None,
+    ) -> str:
+        """Synchronously recall bounded context for the current user turn."""
+        if self._memory_mode == "tools":
+            logger.debug("Recall-now: skipped (tools-only mode)")
+            return ""
+        if not self._auto_recall:
+            logger.debug("Recall-now: skipped (auto_recall disabled)")
+            return ""
+        query = (query or "").strip()
+        if not query:
+            return ""
+        if session_id:
+            self._session_id = str(session_id).strip()
+        if self._recall_max_input_chars and len(query) > self._recall_max_input_chars:
+            query = query[:self._recall_max_input_chars]
+        try:
+            recall_kwargs = self._build_recall_kwargs(query, max_tokens=max_tokens)
+            logger.debug(
+                "Recall-now: calling recall (bank=%s, query_len=%d, budget=%s)",
+                self._bank_id,
+                len(query),
+                self._budget,
+            )
+            resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
+            if not getattr(resp, "results", None):
+                return ""
+            return "\n".join(f"- {r.text}" for r in resp.results if getattr(r, "text", ""))
+        except Exception as e:
+            logger.debug("Hindsight recall-now failed: %s", e, exc_info=True)
+            return ""
+
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             logger.debug("Prefetch: waiting for background thread to complete")
@@ -1204,7 +1262,7 @@ class HindsightMemoryProvider(MemoryProvider):
 
         def _sync():
             try:
-                client = self._get_client()
+                self._get_client()
                 item = self._build_retain_kwargs(
                     content,
                     context=self._retain_context,

@@ -103,6 +103,22 @@ class MemoryProvider(ABC):
         """
         return ""
 
+    def recall_now(
+        self,
+        query: str,
+        *,
+        session_id: str = "",
+        max_tokens: Optional[int] = None,
+    ) -> str:
+        """Synchronously recall context for the CURRENT turn.
+
+        This is the bounded, best-effort path used when the router detects a
+        memory-sensitive first turn (for example a domain trigger or explicit
+        reference to prior discussion). Providers that only support background
+        prefetch can keep the default empty implementation.
+        """
+        return ""
+
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         """Queue a background recall for the NEXT turn.
 
