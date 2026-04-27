@@ -2426,6 +2426,12 @@ class AIAgent:
                 "compression",
                 main_runtime=self._current_main_runtime(),
             )
+            # Be resilient to startup-time runtime resolution quirks.
+            # If runtime-scoped resolution returns empty, retry using only
+            # task config so valid custom auxiliary providers do not get
+            # reported as missing.
+            if client is None or not aux_model:
+                client, aux_model = get_text_auxiliary_client("compression")
             if client is None or not aux_model:
                 msg = (
                     "⚠ No auxiliary LLM provider configured — context "
