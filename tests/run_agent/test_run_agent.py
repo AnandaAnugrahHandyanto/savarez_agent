@@ -23,6 +23,7 @@ from run_agent import AIAgent
 from agent.error_classifier import FailoverReason
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY,
+    FINAL_RESPONSE_SUMMARY_GUIDANCE,
     RELATIONSHIP_CONTINUITY_GUIDANCE,
     RELATIONSHIP_CONTINUITY_LITE_GUIDANCE,
 )
@@ -886,6 +887,17 @@ class TestBuildSystemPrompt:
         prompt = agent._build_system_prompt()
         # Should contain current date info like "Conversation started:"
         assert "Conversation started:" in prompt
+
+    def test_includes_final_response_bottom_line_guidance(self, agent):
+        prompt = agent._build_system_prompt()
+        assert FINAL_RESPONSE_SUMMARY_GUIDANCE in prompt
+        assert prompt.index(FINAL_RESPONSE_SUMMARY_GUIDANCE) > prompt.index(RELATIONSHIP_CONTINUITY_LITE_GUIDANCE)
+        assert "## Bottom Line" in prompt
+        assert "**Summary:**" in prompt
+        assert "**Next step:**" in prompt
+        assert "**Need from you:**" in prompt
+        assert "**Suggested output:**" in prompt
+        assert "replying with `1`, `2`, `3`, or `4`" in prompt
 
     def _make_relationship_agent(self, relationship_continuity="auto"):
         with (

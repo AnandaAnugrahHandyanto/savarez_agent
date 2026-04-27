@@ -95,6 +95,7 @@ from agent.prompt_builder import (
     HERMES_AGENT_HELP_GUIDANCE,
     RELATIONSHIP_CONTINUITY_GUIDANCE,
     RELATIONSHIP_CONTINUITY_LITE_GUIDANCE,
+    FINAL_RESPONSE_SUMMARY_GUIDANCE,
     build_nous_subscription_prompt,
 )
 from agent.model_metadata import (
@@ -4713,6 +4714,8 @@ class AIAgent:
             # trivial turn. Set agent.relationship_continuity: always for the full
             # layer, or off to omit it entirely.
             prompt_parts.append(RELATIONSHIP_CONTINUITY_LITE_GUIDANCE)
+
+        prompt_parts.append(FINAL_RESPONSE_SUMMARY_GUIDANCE)
 
         # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
         # of the requested model. Inject explicit model identity into the system prompt

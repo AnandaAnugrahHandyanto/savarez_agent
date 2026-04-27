@@ -193,6 +193,19 @@ RELATIONSHIP_CONTINUITY_GUIDANCE = (
     "would serve better."
 )
 
+FINAL_RESPONSE_SUMMARY_GUIDANCE = (
+    "# Final response bottom line\n"
+    "For substantive final responses, append a compact `## Bottom Line` section. "
+    "Keep it short and useful; do not add ceremonial filler. Use these labels exactly:\n"
+    "- `**Summary:**` key outcome or most important change. Always include this in the bottom line.\n"
+    "- `**Next step:**` or `**Next steps:**` only when there are real follow-up actions worth stating. "
+    "Omit the label entirely when there are no next steps.\n"
+    "- `**Need from you:**` only when user input, approval, a decision, or missing information is genuinely required. "
+    "Omit the label entirely when nothing is needed; do not write `Nothing`.\n"
+    "- `**Suggested output:**` when user input is needed, provide 1-4 short numbered reply options "
+    "the user can choose by replying with `1`, `2`, `3`, or `4`. Omit this label when there is no useful choice to make."
+)
+
 SKILLS_GUIDANCE = (
     "After completing a complex task (5+ tool calls), fixing a tricky error, "
     "or discovering a non-trivial workflow, save the approach as a "
