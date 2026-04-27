@@ -14,6 +14,7 @@ Key design decisions:
 - Session source tagging ('cli', 'telegram', 'discord', etc.) for filtering
 """
 
+import atexit
 import json
 import logging
 import random
@@ -193,6 +194,10 @@ class SessionDB:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
 
+        # Ensure WAL checkpoint runs on process exit even if close() is never
+        # called explicitly (e.g. CLI/gateway crash or missing shutdown path).
+        atexit.register(self.close)
+
         self._init_schema()
 
     # ── Core write helper ──
@@ -275,15 +280,36 @@ class SessionDB:
 
         Attempts a PASSIVE WAL checkpoint first so that exiting processes
         help keep the WAL file from growing unbounded.
+
+        Safe to call multiple times — subsequent calls are no-ops once the
+        connection has been closed.  Also registered via ``atexit`` in
+        ``__init__`` so it runs automatically on process exit.
         """
         with self._lock:
             if self._conn:
                 try:
                     self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # Suppress ENOENT-like errors (DB file already removed) but
+                    # warn on anything unexpected so operators can investigate.
+                    msg = str(exc).lower()
+                    if "no such file" not in msg and "unable to open" not in msg:
+                        logger.warning(
+                            "WAL checkpoint failed during close (%s): %s",
+                            self.db_path,
+                            exc,
+                        )
                 self._conn.close()
                 self._conn = None
+
+    def __enter__(self) -> "SessionDB":
+        """Support use as a context manager: ``with SessionDB() as db:``."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Close the connection when exiting the context manager block."""
+        self.close()
+        return None
 
     def _init_schema(self):
         """Create tables and FTS if they don't exist, run migrations."""

@@ -11079,6 +11079,13 @@ class HermesCLI:
                     self._session_db.end_session(self.agent.session_id, "cli_close")
                 except (Exception, KeyboardInterrupt) as e:
                     logger.debug("Could not close session in DB: %s", e)
+            # WAL checkpoint + connection close so the WAL file doesn't grow
+            # unbounded across long-lived CLI sessions.
+            if hasattr(self, '_session_db') and self._session_db:
+                try:
+                    self._session_db.close()
+                except Exception as e:
+                    logger.debug("Could not close SessionDB connection: %s", e)
             # Plugin hook: on_session_end — safety net for interrupted exits.
             # run_conversation() already fires this per-turn on normal completion,
             # so only fire here if the agent was mid-turn (_agent_running) when
