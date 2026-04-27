@@ -142,6 +142,8 @@ With `transport="auto"` or `delegation.default_transport: "auto"`, bridge-capabl
 
 Claude Code bridge workers run with a strict per-session MCP config. By default that config contains only the worker bridge MCP so the child can report back to Hermes. If a deployment wants Claude bridge workers to use shared memory MCPs such as Hindsight, add them explicitly with `delegation.bridge_extra_mcp_servers` and expose only the required tools through `delegation.bridge_extra_allowed_tools`. Do not forward the whole project MCP surface unless every server is intended for child workers.
 
+Cursor Agent bridge workers use the workspace/global Cursor MCP configuration (`.cursor/mcp.json` or `~/.cursor/mcp.json`) together with `--approve-mcps`. Cursor Agent does not use Claude Code's `--mcp-config`, `--strict-mcp-config`, or `--allowedTools` flags; absence of those flags in Cursor process arguments is expected, not proof that MCPs are unavailable.
+
 ## Child Personas vs Parent Personality
 
 `SOUL.md` and `/personality` define the parent Hermes session. The optional `persona` field on `delegate_task` is different: it is per-child routing and context for a delegated worker. It can select a named reviewer/tester/researcher profile, a local CLI provider (`persona_provider="claude"` or `"cursor-agent"`), and a model/workdir without changing the parent agent's identity.

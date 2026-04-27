@@ -105,7 +105,7 @@ delegate_task(
 
 Use `persona_provider="cursor-agent"` for Cursor-backed code/test workers, for example with `persona_model="gpt-5.5-extra-high"` when that model is available locally. The local CLI owns its own auth in bridge mode.
 
-Claude bridge workers receive a strict generated MCP config. Add shared memory MCPs such as Hindsight through `delegation.bridge_extra_mcp_servers` and allow only the specific memory tools needed by workers through `delegation.bridge_extra_allowed_tools`; this keeps unrelated project MCPs out of child sessions.
+Claude bridge workers receive a strict generated MCP config. Add shared memory MCPs such as Hindsight through `delegation.bridge_extra_mcp_servers` and allow only the specific memory tools needed by workers through `delegation.bridge_extra_allowed_tools`; this keeps unrelated project MCPs out of child sessions. Cursor bridge workers use workspace/global Cursor MCP config plus `--approve-mcps`, not Claude-style `--mcp-config` flags.
 
 :::warning The Context Problem
 Subagents know **absolutely nothing** about your conversation. They start completely fresh. If you delegate "fix the bug we were discussing," the subagent has no idea what bug you mean. Always pass file paths, error messages, project structure, and constraints explicitly.

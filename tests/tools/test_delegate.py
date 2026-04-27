@@ -254,6 +254,31 @@ class TestBridgeTransportConfig(unittest.TestCase):
             self.assertIn("mcp__hindsight-prv__recall", allowed)
             self.assertIn("mcp__hindsight-prv__reflect", allowed)
 
+    def test_cursor_bridge_uses_workspace_mcp_config_not_claude_flags(self):
+        from tools.delegate_bridge_transport import _build_worker_command
+
+        with tempfile.TemporaryDirectory() as tmp:
+            command, args = _build_worker_command(
+                worker_type="cursor-agent",
+                model="gpt-5.5-extra-high",
+                prompt="test",
+                unsafe_allow_writes=False,
+                acp_args=[],
+                session_dir=Path(tmp) / "session",
+                root=Path(tmp) / "cache",
+                session_id="hermes-test",
+                bridge_server=Path(tmp) / "bridge-mcp" / "server.js",
+                cfg={},
+            )
+
+            self.assertEqual(command, "cursor-agent")
+            self.assertIn("--approve-mcps", args)
+            self.assertIn("--mode", args)
+            self.assertIn("plan", args)
+            self.assertNotIn("--mcp-config", args)
+            self.assertNotIn("--strict-mcp-config", args)
+            self.assertNotIn("--allowedTools", args)
+
     def test_bridge_status_reports_starting_before_ipc_dir_exists(self):
         from tools.delegate_bridge_transport import bridge_status
 
