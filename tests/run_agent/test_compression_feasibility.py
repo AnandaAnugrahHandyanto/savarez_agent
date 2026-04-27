@@ -273,6 +273,29 @@ def test_warns_when_no_auxiliary_provider(mock_get_client):
     assert agent._compression_warning is not None
 
 
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_uses_config_only_fallback_when_runtime_resolution_is_empty(mock_get_client):
+    """When runtime-scoped resolution is empty at startup, a second
+    config-only lookup should prevent false-positive 'no provider' warnings."""
+    agent = _make_agent()
+    mock_client = MagicMock()
+    mock_client.base_url = "https://coding.dashscope.aliyuncs.com/v1"
+    mock_client.api_key = "sk-test"
+    mock_get_client.side_effect = [
+        (None, None),  # runtime-scoped resolution path
+        (mock_client, "qwen3.6-plus"),  # config-only fallback path
+    ]
+
+    messages = []
+    agent._emit_status = lambda msg: messages.append(msg)
+
+    agent._check_compression_model_feasibility()
+
+    assert len(messages) == 0
+    assert agent._compression_warning is None
+    assert mock_get_client.call_count == 2
+
+
 def test_skips_check_when_compression_disabled():
     """No check performed when compression is disabled."""
     agent = _make_agent(compression_enabled=False)
