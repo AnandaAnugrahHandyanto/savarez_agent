@@ -29,6 +29,15 @@ describe('cursorLayout — word-wrap parity with Ink wrap mode', () => {
     expect(cursorLayout('abcdefghi', 8, 8)).toEqual({ column: 0, line: 1 })
   })
 
+  it('hard-wraps a long word when no whitespace boundary is available', () => {
+    expect(cursorLayout('abcdefghij', 10, 8)).toEqual({ column: 2, line: 1 })
+  })
+
+  it('accounts for wide graphemes at the column boundary', () => {
+    expect(cursorLayout('abc界', 4, 5)).toEqual({ column: 0, line: 1 })
+    expect(cursorLayout('abc界d', 5, 5)).toEqual({ column: 1, line: 1 })
+  })
+
   it('keeps the cursor stop for whitespace before a moved word', () => {
     expect(cursorLayout('hello wor', 6, 8)).toEqual({ column: 6, line: 0 })
   })
@@ -46,6 +55,8 @@ describe('cursorLayout — word-wrap parity with Ink wrap mode', () => {
 describe('input metrics helpers', () => {
   it('computes visual height from the wrapped cursor line', () => {
     expect(inputVisualHeight('abcdefgh', 8)).toBe(2)
+    expect(inputVisualHeight('hello wor', 8)).toBe(2)
+    expect(inputVisualHeight('hello world xx', 8)).toBe(3)
     expect(inputVisualHeight('one\ntwo', 40)).toBe(2)
   })
 
@@ -56,7 +67,7 @@ describe('input metrics helpers', () => {
   })
 })
 
-describe('offsetFromPosition — char-wrap inverse of cursorLayout', () => {
+describe('offsetFromPosition — word-wrap inverse of cursorLayout', () => {
   it('returns 0 for empty input', () => {
     expect(offsetFromPosition('', 0, 0, 10)).toBe(0)
   })
@@ -81,5 +92,14 @@ describe('offsetFromPosition — char-wrap inverse of cursorLayout', () => {
 
   it('maps clicks past a \\n into the target line', () => {
     expect(offsetFromPosition('one\ntwo', 1, 2, 40)).toBe(6)
+  })
+
+  it('round-trips every cursor stop used by cursorLayout', () => {
+    for (const value of ['hello wor ld', 'abcdefghij', 'one\ntwo', 'abc界d']) {
+      for (let offset = 0; offset <= value.length; offset += 1) {
+        const { line, column } = cursorLayout(value, offset, 8)
+        expect(offsetFromPosition(value, line, column, 8)).toBe(offset)
+      }
+    }
   })
 })

@@ -21,7 +21,11 @@ from agent.codex_responses_adapter import _chat_messages_to_responses_input, _no
 import run_agent
 from run_agent import AIAgent
 from agent.error_classifier import FailoverReason
-from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+from agent.prompt_builder import (
+    DEFAULT_AGENT_IDENTITY,
+    RELATIONSHIP_CONTINUITY_GUIDANCE,
+    RELATIONSHIP_CONTINUITY_LITE_GUIDANCE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -882,6 +886,56 @@ class TestBuildSystemPrompt:
         prompt = agent._build_system_prompt()
         # Should contain current date info like "Conversation started:"
         assert "Conversation started:" in prompt
+
+    def _make_relationship_agent(self, relationship_continuity="auto"):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("memory", "session_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": {"relationship_continuity": relationship_continuity}},
+            ),
+        ):
+            test_api_key = "test-" + "key-" + "1234567890"
+            agent = AIAgent(
+                api_key=test_api_key,
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            agent.client = MagicMock()
+            return agent
+
+    @pytest.mark.parametrize("mode", ["auto", None])
+    def test_relationship_continuity_auto_uses_lite_guidance_only(self, mode):
+        agent = self._make_relationship_agent(mode)
+
+        prompt = agent._build_system_prompt()
+
+        assert RELATIONSHIP_CONTINUITY_LITE_GUIDANCE in prompt
+        assert RELATIONSHIP_CONTINUITY_GUIDANCE not in prompt
+        assert prompt.count(RELATIONSHIP_CONTINUITY_LITE_GUIDANCE) == 1
+
+    @pytest.mark.parametrize("mode", ["always", "full", "true", "yes", "on", "1", True, 1])
+    def test_relationship_continuity_always_uses_full_guidance_once(self, mode):
+        agent = self._make_relationship_agent(mode)
+
+        prompt = agent._build_system_prompt()
+
+        assert RELATIONSHIP_CONTINUITY_GUIDANCE in prompt
+        assert RELATIONSHIP_CONTINUITY_LITE_GUIDANCE not in prompt
+        assert prompt.count(RELATIONSHIP_CONTINUITY_GUIDANCE) == 1
+
+    @pytest.mark.parametrize("mode", ["off", "false", "never", "no", "0", False, 0])
+    def test_relationship_continuity_off_skips_guidance(self, mode):
+        agent = self._make_relationship_agent(mode)
+
+        prompt = agent._build_system_prompt()
+
+        assert RELATIONSHIP_CONTINUITY_GUIDANCE not in prompt
+        assert RELATIONSHIP_CONTINUITY_LITE_GUIDANCE not in prompt
 
     def test_includes_nous_subscription_prompt(self, agent, monkeypatch):
         monkeypatch.setattr(run_agent, "build_nous_subscription_prompt", lambda tool_names: "NOUS SUBSCRIPTION BLOCK")

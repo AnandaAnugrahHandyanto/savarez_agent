@@ -93,6 +93,8 @@ from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE,
+    RELATIONSHIP_CONTINUITY_GUIDANCE,
+    RELATIONSHIP_CONTINUITY_LITE_GUIDANCE,
     build_nous_subscription_prompt,
 )
 from agent.model_metadata import (
@@ -1738,6 +1740,7 @@ class AIAgent:
         if not isinstance(_agent_section, dict):
             _agent_section = {}
         self._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
+        self._relationship_continuity = _agent_section.get("relationship_continuity", "auto")
 
         # App-level API retry count (wraps each model API call).  Default 3,
         # overridable via agent.api_max_retries in config.yaml.  See #11616.
@@ -4697,6 +4700,19 @@ class AIAgent:
         if self.provider:
             timestamp_line += f"\nProvider: {self.provider}"
         prompt_parts.append(timestamp_line)
+
+        _relationship_value = self._relationship_continuity
+        _relationship_mode = "auto" if _relationship_value is None else str(_relationship_value).lower().strip()
+        if _relationship_mode in ("always", "full", "true", "yes", "on", "1"):
+            prompt_parts.append(RELATIONSHIP_CONTINUITY_GUIDANCE)
+        elif _relationship_mode in ("off", "false", "never", "no", "0"):
+            pass
+        else:
+            # Default to a compact governor. It preserves the behavioural intent
+            # without paying the full relationship-continuity prompt cost on every
+            # trivial turn. Set agent.relationship_continuity: always for the full
+            # layer, or off to omit it entirely.
+            prompt_parts.append(RELATIONSHIP_CONTINUITY_LITE_GUIDANCE)
 
         # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
         # of the requested model. Inject explicit model identity into the system prompt
