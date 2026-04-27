@@ -450,11 +450,18 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             try:
                 current_mtime = os.path.getmtime(resolved_str)
                 if current_mtime == cached_mtime:
+                    # Return the hint in ``error`` (not ``content``) so it
+                    # never gets spliced into downstream tooling that treats
+                    # ``content`` as literal file text with line-number
+                    # prefixes (see ``subdir_hints`` in run_agent.py). Using
+                    # ``content`` caused the hint to accumulate inside the
+                    # file payload after repeated reads.
                     return json.dumps({
-                        "content": (
-                            "File unchanged since last read. The content from "
-                            "the earlier read_file result in this conversation is "
-                            "still current — refer to that instead of re-reading."
+                        "error": (
+                            "SKIP: File unchanged since last read. You already "
+                            "have this content from the earlier read_file call "
+                            "in this conversation — refer to that instead of "
+                            "re-reading."
                         ),
                         "path": path,
                         "dedup": True,
