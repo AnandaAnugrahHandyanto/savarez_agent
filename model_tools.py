@@ -596,10 +596,13 @@ def handle_function_call(
     # session_id so cross-session data leakage cannot occur.  The cache is
     # cleared at the start of every agent turn (via clear_memo_cache) so
     # stale results from prior turns are never served.
+    # Memoization is skipped when session_id is None (e.g. unit tests or
+    # direct CLI invocations without a session) to prevent unrelated callers
+    # from sharing a single "" cache bucket and observing each other's results.
     entry = registry.get_entry(function_name)
-    if entry and entry.can_memoize:
+    if entry and entry.can_memoize and session_id is not None:
         cache_key = _memo_key(function_name, function_args)
-        cached = _memo_get(session_id or "", cache_key)
+        cached = _memo_get(session_id, cache_key)
         if cached is not None:
             return cached
 
@@ -719,7 +722,8 @@ def handle_function_call(
         # Cache result for memoizable tools (skip error results).
         # Runs after transform_tool_result so we cache the final value.
         # Uses _memo_set which is session-scoped and LRU-bounded.
-        if entry and entry.can_memoize:
+        # session_id=None callers are excluded (see cache-lookup guard above).
+        if entry and entry.can_memoize and session_id is not None:
             try:
                 parsed = json.loads(result)
                 # Treat the result as an error only when the top-level
@@ -732,7 +736,7 @@ def handle_function_call(
                 )
                 if not is_error:
                     cache_key = _memo_key(function_name, function_args)
-                    _memo_set(session_id or "", cache_key, result)
+                    _memo_set(session_id, cache_key, result)
             except (json.JSONDecodeError, TypeError):
                 pass
 

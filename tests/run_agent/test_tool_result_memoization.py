@@ -388,3 +388,43 @@ class TestErrorEnvelopeHandling:
         finally:
             global_registry._tools.pop("_test_memo_real_error", None)
             clear_memo_cache(_TEST_SESSION)
+
+
+class TestNoneSessionIdSkipsMemoization:
+    """Memoization is skipped when session_id is None to prevent cross-caller contamination."""
+
+    def test_none_session_id_never_caches(self):
+        """Calls with session_id=None always invoke the handler — no shared bucket."""
+        call_count = 0
+
+        def counting_handler(args, **kw):
+            nonlocal call_count
+            call_count += 1
+            return json.dumps({"call": call_count})
+
+        reg = ToolRegistry()
+        reg.register(
+            name="_test_memo_none_session",
+            toolset="test",
+            schema={"name": "_test_memo_none_session", "description": "t"},
+            handler=counting_handler,
+            can_memoize=True,
+        )
+
+        from model_tools import registry as global_registry
+        global_registry._tools["_test_memo_none_session"] = reg._tools["_test_memo_none_session"]
+        clear_memo_cache()
+
+        try:
+            r1 = handle_function_call("_test_memo_none_session", {"x": 1}, session_id=None)
+            r2 = handle_function_call("_test_memo_none_session", {"x": 1}, session_id=None)
+            # session_id=None must bypass the cache — handler invoked both times
+            assert call_count == 2, (
+                f"Handler called {call_count} times; expected 2 (session_id=None must not cache). "
+                "Two unrelated callers with no session_id must not share a cache bucket."
+            )
+            assert json.loads(r1)["call"] == 1
+            assert json.loads(r2)["call"] == 2
+        finally:
+            global_registry._tools.pop("_test_memo_none_session", None)
+            clear_memo_cache()
