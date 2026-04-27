@@ -148,7 +148,10 @@ async function startSocket() {
 
     if (qr) {
       console.log('\n📱 Scan this QR code with WhatsApp on your phone:\n');
-      qrcode.generate(qr, { small: true });
+      try {
+        writeFileSync(path.join(process.env.HOME || '~', '.hermes', 'whatsapp', 'latest_qr.txt'), `${qr}\n`, 'utf8');
+      } catch {}
+      qrcode.generate(qr, { small: false });
       console.log('\nWaiting for scan...\n');
     }
 
