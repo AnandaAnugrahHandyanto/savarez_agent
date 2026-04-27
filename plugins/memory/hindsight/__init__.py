@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import threading
+from pathlib import Path
 
 from datetime import datetime, timezone
 from typing import Any, Dict, List
@@ -170,6 +171,18 @@ REFLECT_SCHEMA = {
 }
 
 
+def _user_profile_dir() -> Path:
+    """Resolve ``~`` for Hindsight's dot-paths. Prefer ``HOME`` / ``USERPROFILE`` so
+    tests can isolate state (on Windows, ``os.path.expanduser('~')`` may ignore
+    a monkeypatched ``HOME`` and still use the real profile directory).
+    """
+    for _key in ("HOME", "USERPROFILE"):
+        _raw = (os.environ.get(_key) or "").strip()
+        if _raw:
+            return Path(_raw)
+    return Path(os.path.expanduser("~"))
+
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -182,8 +195,6 @@ def _load_config() -> dict:
       2. ~/.hindsight/config.json             (legacy, shared)
       3. Environment variables
     """
-    from pathlib import Path
-
     # Profile-scoped path (preferred)
     profile_path = get_hermes_home() / "hindsight" / "config.json"
     if profile_path.exists():
@@ -193,7 +204,7 @@ def _load_config() -> dict:
             pass
 
     # Legacy shared path (backward compat)
-    legacy_path = Path.home() / ".hindsight" / "config.json"
+    legacy_path = _user_profile_dir() / ".hindsight" / "config.json"
     if legacy_path.exists():
         try:
             return json.loads(legacy_path.read_text(encoding="utf-8"))
@@ -308,9 +319,7 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
 
 
 def _embedded_profile_env_path(config: dict[str, Any]):
-    from pathlib import Path
-
-    return Path.home() / ".hindsight" / "profiles" / f"{_embedded_profile_name(config)}.env"
+    return _user_profile_dir() / ".hindsight" / "profiles" / f"{_embedded_profile_name(config)}.env"
 
 
 def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None):
@@ -592,10 +601,11 @@ class HindsightMemoryProvider(MemoryProvider):
             sys.stdout.write("  LLM API key: ")
             sys.stdout.flush()
             llm_key = getpass.getpass(prompt="") if sys.stdin.isatty() else sys.stdin.readline().strip()
-            # Always write explicitly (including empty) so the provider sees ""
-            # rather than a missing variable.  The daemon reads from .env at
-            # startup and fails when HINDSIGHT_LLM_API_KEY is unset.
-            env_writes["HINDSIGHT_LLM_API_KEY"] = llm_key
+            # When the user provides a new key, persist it. When blank, omit from
+            # env_writes so hermes .env is not clobbered to empty — the materialize
+            # step below re-reads HINDSIGHT_LLM_API_KEY from .env.
+            if llm_key:
+                env_writes["HINDSIGHT_LLM_API_KEY"] = llm_key
 
         # Step 4: Save everything
         provider_config["bank_id"] = "hermes"
