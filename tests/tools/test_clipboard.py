@@ -205,8 +205,25 @@ class TestMacosOsascript:
 
 class TestIsWsl:
     def setup_method(self):
-        # _is_wsl is now hermes_constants.is_wsl — reset its cache
+        """Reset WSL cache and deny WSLInterop so tests control /proc/version via mocks."""
         import hermes_constants
+
+        hermes_constants._wsl_detected = None
+
+        def _exists(path):
+            if str(path).replace("\\", "/").rstrip("/").endswith("WSLInterop"):
+                return False
+            return os.path.exists(path)
+
+        self._exists_patcher = patch.object(
+            hermes_constants.os.path, "exists", side_effect=_exists
+        )
+        self._exists_patcher.start()
+
+    def teardown_method(self):
+        self._exists_patcher.stop()
+        import hermes_constants
+
         hermes_constants._wsl_detected = None
 
     def test_wsl2_detected(self):

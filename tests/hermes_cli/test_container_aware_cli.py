@@ -93,7 +93,7 @@ def test_get_container_exec_info_not_skipped_when_hermes_dev_zero(container_env,
     assert info is not None
 
 
-def test_get_container_exec_info_defaults():
+def test_get_container_exec_info_defaults(monkeypatch):
     """Falls back to defaults for missing keys."""
     import tempfile
 
@@ -104,10 +104,10 @@ def test_get_container_exec_info_defaults():
             "# minimal file with no keys\n"
         )
 
+        monkeypatch.delenv("HERMES_DEV", raising=False)
+
         with patch("hermes_constants.is_container", return_value=False), \
-             patch("hermes_cli.config.get_hermes_home", return_value=hermes_home), \
-             patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("HERMES_DEV", None)
+             patch("hermes_cli.config.get_hermes_home", return_value=hermes_home):
             info = get_container_exec_info()
 
         assert info is not None

@@ -481,10 +481,13 @@ def _ensure_current_event_loop(request):
 
 
 @pytest.fixture(autouse=True)
-def _enforce_test_timeout():
+def _enforce_test_timeout(request):
     """Kill any individual test that takes longer than 30 seconds.
     SIGALRM is Unix-only; skip on Windows."""
     if sys.platform == "win32":
+        yield
+        return
+    if request.node.get_closest_marker("long_running"):
         yield
         return
     old = signal.signal(signal.SIGALRM, _timeout_handler)

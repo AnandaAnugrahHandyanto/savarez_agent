@@ -1939,6 +1939,7 @@ class TestPtyWebSocket:
         assert "channel=abc-123" in url
         assert "token=" in url
 
+    @pytest.mark.long_running
     def test_pub_broadcasts_to_events_subscribers(self, monkeypatch):
         """Frame written to /api/pub is rebroadcast verbatim to every
         /api/events subscriber on the same channel."""

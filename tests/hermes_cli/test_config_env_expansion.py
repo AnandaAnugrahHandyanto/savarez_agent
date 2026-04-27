@@ -67,12 +67,14 @@ class TestLoadConfigExpansion:
             "    token: ${TELEGRAM_BOT_TOKEN}\n"
             "plain: no-substitution\n"
         )
-        config_file = tmp_path / "config.yaml"
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir(parents=True)
+        config_file = hermes_home / "config.yaml"
         config_file.write_text(config_yaml)
 
         monkeypatch.setenv("GOOGLE_API_KEY", "gsk-test-key")
         monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "1234567:ABC-token")
-        monkeypatch.setattr("hermes_cli.config.get_config_path", lambda: config_file)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         config = load_config()
 
@@ -82,11 +84,13 @@ class TestLoadConfigExpansion:
 
     def test_load_config_unresolved_kept_verbatim(self, tmp_path, monkeypatch):
         config_yaml = "model:\n  api_key: ${NOT_SET_XYZ_123}\n"
-        config_file = tmp_path / "config.yaml"
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir(parents=True)
+        config_file = hermes_home / "config.yaml"
         config_file.write_text(config_yaml)
 
         monkeypatch.delenv("NOT_SET_XYZ_123", raising=False)
-        monkeypatch.setattr("hermes_cli.config.get_config_path", lambda: config_file)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         config = load_config()
 
