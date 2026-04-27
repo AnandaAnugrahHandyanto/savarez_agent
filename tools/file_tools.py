@@ -451,10 +451,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 current_mtime = os.path.getmtime(resolved_str)
                 if current_mtime == cached_mtime:
                     return json.dumps({
-                        "content": (
-                            "File unchanged since last read. The content from "
-                            "the earlier read_file result in this conversation is "
-                            "still current — refer to that instead of re-reading."
+                        "error": (
+                            "SKIP: File unchanged since last read. You already have "
+                            "this content from the earlier read_file result in this "
+                            "conversation. Refer to that instead of re-reading."
                         ),
                         "path": path,
                         "dedup": True,
