@@ -23,7 +23,13 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, List, NamedTuple, Optional
+from typing import TYPE_CHECKING, Any, List, NamedTuple, Optional
+
+if TYPE_CHECKING:
+    # Imported only for type hints — keeps the runtime import graph
+    # asymmetric (agent.* depends on hermes_cli.*, not the other way
+    # round) so loading hermes_cli stays cheap.
+    from agent.credential_pool import CredentialPool
 
 from hermes_cli.providers import (
     custom_provider_slug,
@@ -247,7 +253,7 @@ class ModelSwitchResult:
     # after a /model switch — without it, a 429 on the new provider rotates
     # within the original provider's pool (or skips rotation entirely and
     # falls through to the configured fallback model).  See #16678.
-    credential_pool: Optional[Any] = None
+    credential_pool: Optional["CredentialPool"] = None
 
 
 @dataclass

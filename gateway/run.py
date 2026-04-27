@@ -637,7 +637,10 @@ class GatewayRunner:
     _restart_detached: bool = False
     _restart_via_service: bool = False
     _stop_task: Optional[asyncio.Task] = None
-    _session_model_overrides: Dict[str, Dict[str, str]] = {}
+    # Values are mostly ``str`` (model/provider/api_key/base_url/api_mode)
+    # but ``credential_pool`` is a live ``CredentialPool`` instance, so the
+    # value type is widened to ``Any`` rather than ``str``.  See #16678.
+    _session_model_overrides: Dict[str, Dict[str, Any]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
     
     def __init__(self, config: Optional[GatewayConfig] = None):
@@ -710,8 +713,11 @@ class GatewayRunner:
         self._agent_cache_lock = _threading.Lock()
 
         # Per-session model overrides from /model command.
-        # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
-        self._session_model_overrides: Dict[str, Dict[str, str]] = {}
+        # Key: session_key.  Value: dict with model/provider/api_key/base_url/api_mode
+        # (all str) plus an optional ``credential_pool`` carrying the live
+        # ``CredentialPool`` for the target provider so future-turn 429
+        # rotation runs against the right pool.  See #16678.
+        self._session_model_overrides: Dict[str, Dict[str, Any]] = {}
         # Per-session reasoning effort overrides from /reasoning.
         # Key: session_key, Value: parsed reasoning config dict.
         self._session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
