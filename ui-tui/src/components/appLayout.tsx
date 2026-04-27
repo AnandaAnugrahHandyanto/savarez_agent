@@ -121,7 +121,6 @@ const ComposerPane = memo(function ComposerPane({
   composer,
   status
 }: Pick<AppLayoutProps, 'actions' | 'composer' | 'status'>) {
-  const PROMPT_CAPTURE_PAD = 4
   const ui = useStore($uiState)
   const isBlocked = useStore($isBlocked)
   const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
@@ -178,7 +177,12 @@ const ComposerPane = memo(function ComposerPane({
           {status.stickyPrompt}
         </Text>
       ) : (
-        <Box height={1} />
+        <Box
+          height={1}
+          onMouseDown={captureInputDrag}
+          onMouseDrag={dragIntoInput}
+          onMouseUp={() => inputMouseRef.current?.end()}
+        />
       )}
 
       <StatusRulePane at="top" composer={composer} status={status} />
@@ -207,12 +211,10 @@ const ComposerPane = memo(function ComposerPane({
 
             <Box position="relative">
               <Box
-                marginLeft={-PROMPT_CAPTURE_PAD}
                 onMouseDown={captureInputDrag}
                 onMouseDrag={dragIntoInput}
                 onMouseUp={() => inputMouseRef.current?.end()}
-                paddingLeft={PROMPT_CAPTURE_PAD}
-                width={pw + PROMPT_CAPTURE_PAD}
+                width={pw}
               >
                 {sh ? (
                   <Text color={ui.theme.color.shellDollar}>$ </Text>
