@@ -813,7 +813,18 @@ class DiscordAdapter(BasePlatformAdapter):
                 logger.info("[%s] Synced %d slash command(s) via bulk tree sync", self.name, len(synced))
                 return
 
-            summary = await asyncio.wait_for(self._safe_sync_slash_commands(), timeout=30)
+            # Plan first so we can size the execute timeout to the actual
+            # workload. Discord enforces ~5 command-management writes per
+            # 20-second window per app; large reconciles (mass prune +
+            # re-upsert) reliably blow a fixed 30 s budget under bucket
+            # pressure. (#16713)
+            plan = await asyncio.wait_for(
+                self._plan_slash_command_sync(), timeout=30
+            )
+            sync_budget = self._estimate_slash_sync_budget(plan["write_count"])
+            summary = await asyncio.wait_for(
+                self._execute_slash_command_sync(plan), timeout=sync_budget
+            )
             logger.info(
                 "[%s] Safely reconciled %d slash command(s): unchanged=%d updated=%d recreated=%d created=%d deleted=%d",
                 self.name,
@@ -825,7 +836,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 summary["deleted"],
             )
         except asyncio.TimeoutError:
-            logger.warning("[%s] Slash command sync timed out after 30s", self.name)
+            logger.warning(
+                "[%s] Slash command sync timed out — Discord rate-limit bucket "
+                "may be saturated; will retry on next reconnect",
+                self.name,
+            )
         except asyncio.CancelledError:
             raise
         except Exception as e:  # pragma: no cover - defensive logging
@@ -934,17 +949,38 @@ class DiscordAdapter(BasePlatformAdapter):
             "options": canonical["options"],
         }
 
-    async def _safe_sync_slash_commands(self) -> Dict[str, int]:
-        """Diff existing global commands and only mutate the commands that changed."""
+    # Discord's per-app command-management bucket is ~5 writes / 20 s.
+    # Use ~5 s/write so mass-prune-plus-upsert bursts don't blow the budget
+    # while still capping the total wait. (#16713)
+    _SLASH_SYNC_BASE_BUDGET_SECONDS = 30
+    _SLASH_SYNC_PER_WRITE_SECONDS = 5
+    _SLASH_SYNC_MAX_BUDGET_SECONDS = 600
+
+    @classmethod
+    def _estimate_slash_sync_budget(cls, write_count: int) -> int:
+        if write_count <= 0:
+            return cls._SLASH_SYNC_BASE_BUDGET_SECONDS
+        budget = cls._SLASH_SYNC_BASE_BUDGET_SECONDS + (
+            write_count * cls._SLASH_SYNC_PER_WRITE_SECONDS
+        )
+        return min(cls._SLASH_SYNC_MAX_BUDGET_SECONDS, budget)
+
+    async def _plan_slash_command_sync(self) -> Dict[str, Any]:
+        """Diff desired vs existing global commands without mutating anything.
+
+        Splitting the read-only diff from the writes lets the caller size the
+        execute-phase timeout to the actual workload. (#16713)
+        """
+        empty: Dict[str, Any] = {
+            "app_id": None,
+            "actions": [],
+            "deletes": [],
+            "unchanged": 0,
+            "total": 0,
+            "write_count": 0,
+        }
         if not self._client:
-            return {
-                "total": 0,
-                "unchanged": 0,
-                "updated": 0,
-                "recreated": 0,
-                "created": 0,
-                "deleted": 0,
-            }
+            return empty
 
         tree = self._client.tree
         app_id = getattr(self._client, "application_id", None) or getattr(getattr(self._client, "user", None), "id", None)
@@ -965,18 +1001,14 @@ class DiscordAdapter(BasePlatformAdapter):
             for command in existing_commands
         }
 
+        # action: ("create", desired) | ("update", current, desired) |
+        #         ("recreate", current, desired)
+        actions: list = []
         unchanged = 0
-        updated = 0
-        recreated = 0
-        created = 0
-        deleted = 0
-        http = self._client.http
-
         for key, desired in desired_by_key.items():
             current = existing_by_key.pop(key, None)
             if current is None:
-                await http.upsert_global_command(app_id, desired)
-                created += 1
+                actions.append(("create", None, desired))
                 continue
 
             current_existing_payload = self._existing_command_to_payload(current)
@@ -987,26 +1019,80 @@ class DiscordAdapter(BasePlatformAdapter):
                 continue
 
             if self._patchable_app_command_payload(current_existing_payload) == self._patchable_app_command_payload(desired):
+                actions.append(("recreate", current, desired))
+                continue
+
+            actions.append(("update", current, desired))
+
+        deletes = list(existing_by_key.values())
+
+        # ``recreate`` issues two writes (delete + upsert); everything else is one.
+        write_count = sum(2 if a[0] == "recreate" else 1 for a in actions) + len(deletes)
+
+        return {
+            "app_id": app_id,
+            "actions": actions,
+            "deletes": deletes,
+            "unchanged": unchanged,
+            "total": len(desired_payloads),
+            "write_count": write_count,
+        }
+
+    async def _execute_slash_command_sync(self, plan: Dict[str, Any]) -> Dict[str, int]:
+        """Apply a plan produced by ``_plan_slash_command_sync``."""
+        if not self._client or plan.get("app_id") is None:
+            return {
+                "total": plan.get("total", 0),
+                "unchanged": plan.get("unchanged", 0),
+                "updated": 0,
+                "recreated": 0,
+                "created": 0,
+                "deleted": 0,
+            }
+
+        app_id = plan["app_id"]
+        http = self._client.http
+        unchanged = plan["unchanged"]
+        updated = recreated = created = deleted = 0
+
+        for action in plan["actions"]:
+            kind = action[0]
+            if kind == "create":
+                _, _, desired = action
+                await http.upsert_global_command(app_id, desired)
+                created += 1
+            elif kind == "recreate":
+                _, current, desired = action
                 await http.delete_global_command(app_id, current.id)
                 await http.upsert_global_command(app_id, desired)
                 recreated += 1
-                continue
+            elif kind == "update":
+                _, current, desired = action
+                await http.edit_global_command(app_id, current.id, desired)
+                updated += 1
 
-            await http.edit_global_command(app_id, current.id, desired)
-            updated += 1
-
-        for current in existing_by_key.values():
+        for current in plan["deletes"]:
             await http.delete_global_command(app_id, current.id)
             deleted += 1
 
         return {
-            "total": len(desired_payloads),
+            "total": plan["total"],
             "unchanged": unchanged,
             "updated": updated,
             "recreated": recreated,
             "created": created,
             "deleted": deleted,
         }
+
+    async def _safe_sync_slash_commands(self) -> Dict[str, int]:
+        """Diff existing global commands and only mutate the commands that changed.
+
+        Kept for callers/tests that want a single-shot reconcile; the
+        post-connect path uses ``_plan_slash_command_sync`` +
+        ``_execute_slash_command_sync`` directly so it can size the timeout.
+        """
+        plan = await self._plan_slash_command_sync()
+        return await self._execute_slash_command_sync(plan)
 
     async def _add_reaction(self, message: Any, emoji: str) -> bool:
         """Add an emoji reaction to a Discord message."""

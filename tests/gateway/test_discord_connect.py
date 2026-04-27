@@ -655,3 +655,197 @@ async def test_safe_sync_detects_contexts_drift():
     fake_http.edit_global_command.assert_not_awaited()
     fake_http.delete_global_command.assert_awaited_once_with(999, 77)
     fake_http.upsert_global_command.assert_awaited_once_with(999, desired)
+
+
+# ---------------------------------------------------------------------------
+# Adaptive sync-budget regression coverage for #16713
+# ---------------------------------------------------------------------------
+
+
+def test_estimate_slash_sync_budget_scales_with_write_count():
+    """A mass-prune-plus-upsert reconcile (77 orphans + 30 desired) must get
+    a budget materially larger than the 30 s constant that blew up in
+    production. (#16713)"""
+    from gateway.platforms.discord import DiscordAdapter
+
+    # No work to do → just the base budget.
+    assert DiscordAdapter._estimate_slash_sync_budget(0) == DiscordAdapter._SLASH_SYNC_BASE_BUDGET_SECONDS
+
+    # Heavy reconcile reported in the bug — must exceed the old 30 s wall.
+    heavy = DiscordAdapter._estimate_slash_sync_budget(107)
+    assert heavy > 30, "old 30s constant blew up — adaptive budget must exceed it"
+    assert heavy <= DiscordAdapter._SLASH_SYNC_MAX_BUDGET_SECONDS
+
+
+def test_estimate_slash_sync_budget_caps_at_max():
+    from gateway.platforms.discord import DiscordAdapter
+
+    # Pathological case shouldn't lock the gateway forever.
+    assert (
+        DiscordAdapter._estimate_slash_sync_budget(10_000)
+        == DiscordAdapter._SLASH_SYNC_MAX_BUDGET_SECONDS
+    )
+
+
+def test_estimate_slash_sync_budget_is_monotonic():
+    from gateway.platforms.discord import DiscordAdapter
+
+    a = DiscordAdapter._estimate_slash_sync_budget(5)
+    b = DiscordAdapter._estimate_slash_sync_budget(50)
+    c = DiscordAdapter._estimate_slash_sync_budget(500)
+    assert a <= b <= c
+
+
+@pytest.mark.asyncio
+async def test_plan_slash_command_sync_counts_recreate_as_two_writes():
+    """``recreate`` issues delete + upsert, so its budget must reflect both
+    operations against Discord's per-app rate-limit bucket. (#16713)"""
+    from gateway.platforms.discord import DiscordAdapter
+
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    class _DesiredCommand:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def to_dict(self, tree):
+            assert tree is not None
+            return dict(self._payload)
+
+    class _ExistingCommand:
+        def __init__(self, command_id, payload):
+            self.id = command_id
+            self.name = payload["name"]
+            self.type = SimpleNamespace(value=payload["type"])
+            self._payload = payload
+
+        def to_dict(self):
+            return {"id": self.id, "application_id": 999, **self._payload}
+
+    # 1 recreate (contexts diff requires delete+upsert) + 1 orphan delete.
+    desired_recreate = {
+        "name": "ping",
+        "description": "Ping",
+        "type": 1,
+        "options": [],
+        "nsfw": False,
+        "dm_permission": True,
+        "default_member_permissions": None,
+        "contexts": [0, 1, 2],
+    }
+    existing_recreate = _ExistingCommand(
+        100,
+        {**desired_recreate, "contexts": [0]},
+    )
+    existing_orphan = _ExistingCommand(
+        101,
+        {
+            "name": "old",
+            "description": "to delete",
+            "type": 1,
+            "options": [],
+            "nsfw": False,
+            "dm_permission": True,
+            "default_member_permissions": None,
+        },
+    )
+
+    adapter._client = SimpleNamespace(
+        tree=SimpleNamespace(
+            get_commands=lambda: [_DesiredCommand(desired_recreate)],
+            fetch_commands=AsyncMock(
+                return_value=[existing_recreate, existing_orphan]
+            ),
+        ),
+        http=SimpleNamespace(
+            upsert_global_command=AsyncMock(),
+            edit_global_command=AsyncMock(),
+            delete_global_command=AsyncMock(),
+        ),
+        application_id=999,
+        user=SimpleNamespace(id=999),
+    )
+
+    plan = await adapter._plan_slash_command_sync()
+    # 1 recreate (= 2 writes) + 1 orphan delete (= 1 write) = 3 writes.
+    assert plan["write_count"] == 3
+    assert plan["total"] == 1
+    assert plan["unchanged"] == 0
+    assert len(plan["actions"]) == 1
+    assert plan["actions"][0][0] == "recreate"
+    assert len(plan["deletes"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_plan_then_execute_matches_safe_sync_summary():
+    """The plan + execute path must produce the same summary numbers as the
+    legacy single-shot ``_safe_sync_slash_commands`` so existing callers
+    that read the summary stay correct. (#16713)"""
+    from gateway.platforms.discord import DiscordAdapter
+
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    class _DesiredCommand:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def to_dict(self, tree):
+            return dict(self._payload)
+
+    class _ExistingCommand:
+        def __init__(self, command_id, payload):
+            self.id = command_id
+            self.name = payload["name"]
+            self.type = SimpleNamespace(value=payload["type"])
+            self._payload = payload
+
+        def to_dict(self):
+            return {"id": self.id, "application_id": 999, **self._payload}
+
+    desired = {
+        "name": "newcmd",
+        "description": "fresh",
+        "type": 1,
+        "options": [],
+        "nsfw": False,
+        "dm_permission": True,
+        "default_member_permissions": None,
+    }
+    orphan = _ExistingCommand(
+        201,
+        {
+            "name": "stale",
+            "description": "orphan",
+            "type": 1,
+            "options": [],
+            "nsfw": False,
+            "dm_permission": True,
+            "default_member_permissions": None,
+        },
+    )
+
+    adapter._client = SimpleNamespace(
+        tree=SimpleNamespace(
+            get_commands=lambda: [_DesiredCommand(desired)],
+            fetch_commands=AsyncMock(return_value=[orphan]),
+        ),
+        http=SimpleNamespace(
+            upsert_global_command=AsyncMock(),
+            edit_global_command=AsyncMock(),
+            delete_global_command=AsyncMock(),
+        ),
+        application_id=999,
+        user=SimpleNamespace(id=999),
+    )
+
+    plan = await adapter._plan_slash_command_sync()
+    summary_split = await adapter._execute_slash_command_sync(plan)
+
+    assert summary_split == {
+        "total": 1,
+        "unchanged": 0,
+        "updated": 0,
+        "recreated": 0,
+        "created": 1,
+        "deleted": 1,
+    }
