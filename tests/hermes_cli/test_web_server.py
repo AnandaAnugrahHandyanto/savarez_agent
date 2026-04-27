@@ -105,8 +105,11 @@ class TestWebServerEndpoints:
         """Create a TestClient and isolate the state DB under the test HERMES_HOME."""
         try:
             from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/uvicorn not installed")
+        try:
             from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
-        except (ImportError, SystemExit):
+        except SystemExit:
             pytest.skip("fastapi/uvicorn not installed")
 
         import hermes_state
@@ -426,8 +429,11 @@ class TestConfigRoundTrip:
     def _setup(self):
         try:
             from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/uvicorn not installed")
+        try:
             from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
-        except (ImportError, SystemExit):
+        except SystemExit:
             pytest.skip("fastapi/uvicorn not installed")
         self.client = TestClient(app)
         self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
@@ -559,8 +565,11 @@ class TestNewEndpoints:
     def _setup(self, monkeypatch, _isolate_hermes_home):
         try:
             from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/uvicorn not installed")
+        try:
             from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
-        except (ImportError, SystemExit):
+        except SystemExit:
             pytest.skip("fastapi/uvicorn not installed")
 
         import hermes_state
@@ -998,8 +1007,11 @@ class TestModelInfoEndpoint:
     def _setup(self):
         try:
             from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/uvicorn not installed")
+        try:
             from hermes_cli.web_server import app
-        except (ImportError, SystemExit):
+        except SystemExit:
             pytest.skip("fastapi/uvicorn not installed")
         self.client = TestClient(app)
 
@@ -1234,8 +1246,11 @@ class TestStatusRemoteGateway:
     def _setup_test_client(self):
         try:
             from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/uvicorn not installed")
+        try:
             from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
-        except (ImportError, SystemExit):
+        except SystemExit:
             pytest.skip("fastapi/uvicorn not installed")
 
         self.client = TestClient(app)
@@ -1797,8 +1812,11 @@ class TestPtyWebSocket:
     def _setup(self, monkeypatch, _isolate_hermes_home):
         try:
             from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/uvicorn not installed")
+        try:
             import hermes_cli.web_server as ws
-        except (ImportError, SystemExit):
+        except SystemExit:
             pytest.skip("fastapi/uvicorn not installed")
 
         # Avoid exec'ing the actual TUI in tests: every test below installs
