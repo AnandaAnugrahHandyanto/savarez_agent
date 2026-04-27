@@ -11,8 +11,8 @@ which handles discovery, dynamic client registration, PKCE, token exchange,
 refresh, and step-up authorization automatically.
 
 This module provides the glue:
-    - ``HermesTokenStorage``: persists tokens/client-info to disk so they
-      survive across process restarts.
+    - ``HermesTokenStorage``: persists tokens and refresh identity to disk so
+      they survive across process restarts.
     - Callback server: ephemeral localhost HTTP server to capture the OAuth
       redirect with the authorization code.
     - ``build_oauth_auth()``: entry point called by ``mcp_tool.py`` that wires
@@ -277,12 +277,13 @@ class HermesOAuthClientIdentity:
 
 
 class HermesTokenStorage:
-    """Persist OAuth tokens and client registration to JSON files.
+    """Persist OAuth tokens and refresh identity to JSON files.
 
     File layout::
 
-        HERMES_HOME/mcp-tokens/<server_name>.json         -- tokens
-        HERMES_HOME/mcp-tokens/<server_name>.client.json   -- client info
+        HERMES_HOME/mcp-tokens/<server_name>.json           -- tokens
+        HERMES_HOME/mcp-tokens/<server_name>.identity.json  -- refresh identity
+        HERMES_HOME/mcp-tokens/<server_name>.client.json    -- legacy registration cache (migration input only)
     """
 
     def __init__(self, server_name: str):

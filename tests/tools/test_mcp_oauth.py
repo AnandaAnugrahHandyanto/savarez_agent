@@ -143,10 +143,12 @@ class TestHermesTokenStorage:
         d = tmp_path / "mcp-tokens"
         d.mkdir(parents=True)
         (d / "test-server.json").write_text("{}")
+        (d / "test-server.identity.json").write_text("{}")
         (d / "test-server.client.json").write_text("{}")
 
         storage.remove()
         assert not (d / "test-server.json").exists()
+        assert not (d / "test-server.identity.json").exists()
         assert not (d / "test-server.client.json").exists()
 
     def test_has_cached_tokens(self, tmp_path, monkeypatch):
