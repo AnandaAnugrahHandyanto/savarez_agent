@@ -198,6 +198,65 @@ async def test_hermes_provider_forwards_401_triggers_refresh(tmp_path, monkeypat
     await flow.aclose()
 
 
+@pytest.mark.asyncio
+async def test_provider_initializes_refresh_identity_with_current_redirect_uri(tmp_path, monkeypatch):
+    """Restart bootstrap should synthesize client_info from current metadata, not a legacy redirect URI."""
+    import httpx
+    from mcp.shared.auth import OAuthClientMetadata, OAuthToken
+    from pydantic import AnyUrl
+
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+
+    assert _HERMES_PROVIDER_CLS is not None
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    reset_manager_for_tests()
+
+    storage = HermesTokenStorage("srv")
+    await storage.set_tokens(
+        OAuthToken(
+            access_token="cached-access",
+            token_type="Bearer",
+            expires_in=3600,
+            refresh_token="cached-refresh",
+        )
+    )
+
+    token_dir = tmp_path / "mcp-tokens"
+    token_dir.mkdir(parents=True, exist_ok=True)
+    (token_dir / "srv.client.json").write_text(
+        '{"client_id": "test-client", "client_secret": "test-secret", '
+        '"redirect_uris": ["http://127.0.0.1:11111/callback"], '
+        '"grant_types": ["authorization_code", "refresh_token"], '
+        '"response_types": ["code"], '
+        '"token_endpoint_auth_method": "client_secret_post"}'
+    )
+
+    metadata = OAuthClientMetadata(
+        redirect_uris=[AnyUrl("http://127.0.0.1:54321/callback")],
+        client_name="Hermes Agent",
+    )
+    provider = _HERMES_PROVIDER_CLS(
+        server_name="srv",
+        server_url="https://example.com/mcp",
+        client_metadata=metadata,
+        storage=storage,
+        redirect_handler=_noop_redirect,
+        callback_handler=_noop_callback,
+    )
+
+    req = httpx.Request("POST", "https://example.com/mcp")
+    flow = provider.async_auth_flow(req)
+    outbound = await flow.__anext__()
+
+    assert provider.context.client_info is not None
+    assert str(provider.context.client_info.redirect_uris[0]) == "http://127.0.0.1:54321/callback"
+    assert provider.context.client_info.client_id == "test-client"
+
+    await flow.aclose()
+
+
 async def _noop_redirect(_url: str) -> None:
     """Redirect handler that does nothing (won't be invoked in these tests)."""
     return None

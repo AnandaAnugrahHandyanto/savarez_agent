@@ -42,6 +42,7 @@ import sys
 import threading
 import time
 import webbrowser
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
@@ -168,6 +169,79 @@ def _write_json(path: Path, data: dict) -> None:
         raise
 
 
+@dataclass(frozen=True)
+class HermesOAuthClientIdentity:
+    """Minimal durable client state needed for token refresh across restarts."""
+
+    client_id: str
+    client_secret: str | None = None
+    token_endpoint_auth_method: str | None = None
+    scope: str | None = None
+
+    @classmethod
+    def from_data(cls, data: dict) -> "HermesOAuthClientIdentity":
+        client_id = data.get("client_id")
+        if not isinstance(client_id, str) or not client_id:
+            raise ValueError("client_id missing from stored OAuth client identity")
+        client_secret = data.get("client_secret")
+        token_endpoint_auth_method = data.get("token_endpoint_auth_method")
+        scope = data.get("scope")
+        return cls(
+            client_id=client_id,
+            client_secret=client_secret if isinstance(client_secret, str) else None,
+            token_endpoint_auth_method=(
+                token_endpoint_auth_method
+                if isinstance(token_endpoint_auth_method, str)
+                else None
+            ),
+            scope=scope if isinstance(scope, str) else None,
+        )
+
+    @classmethod
+    def from_client_info(
+        cls,
+        client_info: "OAuthClientInformationFull",
+    ) -> "HermesOAuthClientIdentity":
+        return cls(
+            client_id=client_info.client_id or "",
+            client_secret=client_info.client_secret,
+            token_endpoint_auth_method=client_info.token_endpoint_auth_method,
+            scope=client_info.scope,
+        )
+
+    def normalized_auth_method(self) -> str:
+        if self.token_endpoint_auth_method:
+            return self.token_endpoint_auth_method
+        if self.client_secret:
+            return "client_secret_post"
+        return "none"
+
+    def to_storage_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {"client_id": self.client_id}
+        if self.client_secret:
+            payload["client_secret"] = self.client_secret
+        auth_method = self.normalized_auth_method()
+        if auth_method:
+            payload["token_endpoint_auth_method"] = auth_method
+        if self.scope:
+            payload["scope"] = self.scope
+        return payload
+
+    def to_client_info(self, redirect_uri: str) -> "OAuthClientInformationFull":
+        payload: dict[str, Any] = {
+            "client_id": self.client_id,
+            "redirect_uris": [redirect_uri],
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+            "token_endpoint_auth_method": self.normalized_auth_method(),
+        }
+        if self.client_secret:
+            payload["client_secret"] = self.client_secret
+        if self.scope:
+            payload["scope"] = self.scope
+        return OAuthClientInformationFull.model_validate(payload)
+
+
 # ---------------------------------------------------------------------------
 # HermesTokenStorage -- persistent token/client-info on disk
 # ---------------------------------------------------------------------------
@@ -254,18 +328,29 @@ class HermesTokenStorage:
 
     # -- client info -------------------------------------------------------
 
-    async def get_client_info(self) -> "OAuthClientInformationFull | None":
+    async def get_client_identity(self) -> "HermesOAuthClientIdentity | None":
         data = _read_json(self._client_info_path())
         if data is None:
             return None
         try:
-            return OAuthClientInformationFull.model_validate(data)
+            return HermesOAuthClientIdentity.from_data(data)
+        except (ValueError, TypeError, KeyError) as exc:
+            logger.warning("Corrupt client info at %s -- ignoring: %s", self._client_info_path(), exc)
+            return None
+
+    async def get_client_info(self) -> "OAuthClientInformationFull | None":
+        identity = await self.get_client_identity()
+        if identity is None:
+            return None
+        try:
+            return identity.to_client_info("http://127.0.0.1/callback")
         except (ValueError, TypeError, KeyError) as exc:
             logger.warning("Corrupt client info at %s -- ignoring: %s", self._client_info_path(), exc)
             return None
 
     async def set_client_info(self, client_info: "OAuthClientInformationFull") -> None:
-        _write_json(self._client_info_path(), client_info.model_dump(mode="json", exclude_none=True))
+        identity = HermesOAuthClientIdentity.from_client_info(client_info)
+        _write_json(self._client_info_path(), identity.to_storage_dict())
         logger.debug("OAuth client info saved for %s", self._server_name)
 
     # -- cleanup -----------------------------------------------------------
@@ -515,7 +600,8 @@ def _maybe_preregister_client(
         info_dict["scope"] = cfg["scope"]
 
     client_info = OAuthClientInformationFull.model_validate(info_dict)
-    _write_json(storage._client_info_path(), client_info.model_dump(mode="json", exclude_none=True))
+    identity = HermesOAuthClientIdentity.from_client_info(client_info)
+    _write_json(storage._client_info_path(), identity.to_storage_dict())
     logger.debug("Pre-registered client_id=%s for '%s'", client_id, storage._server_name)
 
 
