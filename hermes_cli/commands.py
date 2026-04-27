@@ -948,13 +948,17 @@ class SlashCommandCompleter(Completer):
         self,
         skill_commands_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
         command_filter: Callable[[str], bool] | None = None,
+        model_providers_provider: Callable[[], list[dict[str, Any]]] | None = None,
     ) -> None:
         self._skill_commands_provider = skill_commands_provider
         self._command_filter = command_filter
+        self._model_providers_provider = model_providers_provider
         # Cached project file list for fuzzy @ completions
         self._file_cache: list[str] = []
         self._file_cache_time: float = 0.0
         self._file_cache_cwd: str = ""
+        self._model_provider_cache: list[dict[str, Any]] = []
+        self._model_provider_cache_time: float = 0.0
 
     def _command_allowed(self, slash_command: str) -> bool:
         if self._command_filter is None:
@@ -1332,38 +1336,115 @@ class SlashCommandCompleter(Completer):
         except Exception:
             pass
 
-    def _model_completions(self, sub_text: str, sub_lower: str):
-        """Yield completions for /model from config aliases + built-in aliases."""
-        seen = set()
-        # Config-based direct aliases (preferred — include provider info)
+    def _load_default_model_providers(self) -> list[dict[str, Any]]:
+        """Load authenticated model providers for /model completion."""
         try:
-            from hermes_cli.model_switch import (
-                _ensure_direct_aliases, DIRECT_ALIASES, MODEL_ALIASES,
+            from hermes_cli.config import get_compatible_custom_providers, load_config
+            from hermes_cli.model_switch import list_authenticated_providers
+
+            cfg = load_config()
+            model_cfg = cfg.get("model", {})
+            current_provider = ""
+            if isinstance(model_cfg, dict):
+                current_provider = str(model_cfg.get("provider", "") or "")
+            custom_providers = get_compatible_custom_providers(cfg)
+            return list_authenticated_providers(
+                current_provider=current_provider,
+                user_providers=cfg.get("providers"),
+                custom_providers=custom_providers,
+                max_models=80,
             )
-            _ensure_direct_aliases()
-            for name, da in DIRECT_ALIASES.items():
-                if name.startswith(sub_lower) and name != sub_lower:
-                    seen.add(name)
-                    yield Completion(
-                        name,
-                        start_position=-len(sub_text),
-                        display=name,
-                        display_meta=f"{da.model} ({da.provider})",
-                    )
-            # Built-in catalog aliases not already covered
-            for name in sorted(MODEL_ALIASES.keys()):
-                if name in seen:
-                    continue
-                if name.startswith(sub_lower) and name != sub_lower:
-                    identity = MODEL_ALIASES[name]
-                    yield Completion(
-                        name,
-                        start_position=-len(sub_text),
-                        display=name,
-                        display_meta=f"{identity.vendor}/{identity.family}",
-                    )
         except Exception:
-            pass
+            return []
+
+    def _get_model_completion_providers(self) -> list[dict[str, Any]]:
+        """Return cached authenticated providers used by /model completion."""
+        now = time.monotonic()
+        if (
+            self._model_provider_cache_time
+            and now - self._model_provider_cache_time < 15.0
+        ):
+            return self._model_provider_cache
+
+        try:
+            if self._model_providers_provider is not None:
+                providers = self._model_providers_provider() or []
+            else:
+                providers = self._load_default_model_providers()
+        except Exception:
+            providers = []
+
+        self._model_provider_cache = [
+            p for p in providers
+            if isinstance(p, dict) and p.get("slug") and isinstance(p.get("models"), list)
+        ]
+        self._model_provider_cache_time = now
+        return self._model_provider_cache
+
+    @staticmethod
+    def _model_completion_score(
+        model: str,
+        provider_slug: str,
+        query: str,
+        provider_index: int,
+        model_index: int,
+    ) -> tuple[int, int, int, str]:
+        """Sort exact/prefix matches first while preserving provider/model order."""
+        model_lower = model.lower()
+        provider_lower = provider_slug.lower()
+        if not query:
+            rank = 3
+        elif model_lower == query:
+            rank = 0
+        elif model_lower.startswith(query):
+            rank = 1
+        elif "/" in model_lower and model_lower.split("/", 1)[1].startswith(query):
+            rank = 1
+        else:
+            rank = 2
+        return (rank, provider_index, model_index, f"{provider_lower}:{model_lower}")
+
+    def _model_completions(self, sub_text: str, sub_lower: str):
+        """Yield /model completions from authenticated provider model catalogs."""
+        query = sub_lower.strip()
+        rows: list[tuple[tuple[int, int, int, str], str, str, str]] = []
+        seen: set[tuple[str, str]] = set()
+
+        for provider_index, provider in enumerate(self._get_model_completion_providers()):
+            slug = str(provider.get("slug") or "").strip()
+            if not slug:
+                continue
+            name = str(provider.get("name") or slug).strip() or slug
+            current = bool(provider.get("is_current"))
+            for model_index, raw_model in enumerate(provider.get("models") or []):
+                model = str(raw_model or "").strip()
+                if not model:
+                    continue
+                model_lower = model.lower()
+                if query and query not in model_lower:
+                    continue
+                key = (slug.lower(), model_lower)
+                if key in seen:
+                    continue
+                seen.add(key)
+                completion_text = f"{model} --provider {slug}"
+                meta = f"{name}  --provider {slug}"
+                if current:
+                    meta = f"current  {meta}"
+                rows.append((
+                    self._model_completion_score(model, slug, query, provider_index, model_index),
+                    completion_text,
+                    model,
+                    meta,
+                ))
+
+        for _, completion_text, display, meta in sorted(rows)[:80]:
+            yield Completion(
+                completion_text,
+                start_position=-len(sub_text),
+                display=display,
+                display_meta=meta,
+            )
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor

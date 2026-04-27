@@ -883,6 +883,52 @@ def test_complete_slash_surfaces_completer_error(monkeypatch):
     assert "no completer" in resp["error"]["message"]
 
 
+def test_complete_slash_reuses_model_provider_cache(monkeypatch):
+    server._clear_model_completion_provider_cache()
+    server._sessions["sid"] = _session(
+        agent=types.SimpleNamespace(provider="openai-codex")
+    )
+    calls = 0
+
+    def fake_list_authenticated_providers(**kwargs):
+        nonlocal calls
+        calls += 1
+        assert kwargs["current_provider"] == "openai-codex"
+        return [
+            {
+                "slug": "openai-codex",
+                "name": "OpenAI Codex",
+                "is_current": True,
+                "models": ["gpt-5.4"],
+            }
+        ]
+
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.list_authenticated_providers",
+        fake_list_authenticated_providers,
+    )
+    monkeypatch.setattr("agent.skill_commands.get_skill_commands", lambda: {})
+
+    try:
+        params = {"text": "/model gpt", "session_id": "sid"}
+        resp_1 = server.handle_request(
+            {"id": "1", "method": "complete.slash", "params": params}
+        )
+        resp_2 = server.handle_request(
+            {"id": "2", "method": "complete.slash", "params": params}
+        )
+
+        assert "error" not in resp_1
+        assert "error" not in resp_2
+        assert calls == 1
+        assert resp_1["result"]["items"][0]["text"] == (
+            "gpt-5.4 --provider openai-codex"
+        )
+    finally:
+        server._sessions.pop("sid", None)
+        server._clear_model_completion_provider_cache()
+
+
 def test_input_detect_drop_attaches_image(monkeypatch):
     fake_cli = types.ModuleType("cli")
     fake_cli._detect_file_drop = lambda raw: {

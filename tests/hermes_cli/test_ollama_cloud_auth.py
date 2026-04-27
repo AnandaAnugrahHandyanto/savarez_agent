@@ -185,65 +185,64 @@ class TestModelSwitchPersistence:
 # ---------------------------------------------------------------------------
 
 class TestModelTabCompletion:
-    """SlashCommandCompleter provides model alias completions for /model."""
+    """SlashCommandCompleter provides authenticated model completions for /model."""
 
-    def test_model_completions_yields_direct_aliases(self, monkeypatch):
-        """_model_completions yields direct aliases with model and provider info."""
+    @staticmethod
+    def _providers():
+        return [
+            {
+                "slug": "openai-codex",
+                "name": "OpenAI Codex",
+                "is_current": True,
+                "models": ["gpt-5.4", "gpt-5.4-mini"],
+            },
+            {
+                "slug": "openrouter",
+                "name": "OpenRouter",
+                "is_current": False,
+                "models": ["anthropic/claude-sonnet-4.6", "openai/gpt-5.4"],
+            },
+            {
+                "slug": "copilot",
+                "name": "GitHub Copilot",
+                "is_current": False,
+                "models": ["claude-sonnet-4.6", "gpt-5.4"],
+            },
+        ]
+
+    def test_model_completions_insert_explicit_provider(self):
+        """Completions use concrete authenticated models and include --provider."""
         from hermes_cli.commands import SlashCommandCompleter
-        from hermes_cli.model_switch import DirectAlias
-        import hermes_cli.model_switch as ms
 
-        test_aliases = {
-            "opus": DirectAlias("claude-opus-4-6", "anthropic", ""),
-            "qwen": DirectAlias("qwen3.5:397b", "custom", "https://ollama.com/v1"),
-        }
-        monkeypatch.setattr(ms, "DIRECT_ALIASES", test_aliases)
+        completer = SlashCommandCompleter(model_providers_provider=self._providers)
+        completions = list(completer._model_completions("sonnet", "sonnet"))
 
-        completer = SlashCommandCompleter()
-        completions = list(completer._model_completions("", ""))
+        texts = [c.text for c in completions]
+        assert "anthropic/claude-sonnet-4.6 --provider openrouter" in texts
+        assert "claude-sonnet-4.6 --provider copilot" in texts
+        assert "sonnet" not in texts
 
-        names = [c.text for c in completions]
-        assert "opus" in names
-        assert "qwen" in names
-
-    def test_model_completions_filters_by_prefix(self, monkeypatch):
-        """Completions filter by typed prefix."""
+    def test_model_completions_filter_by_model_substring(self):
+        """The search query matches model IDs, not provider aliases."""
         from hermes_cli.commands import SlashCommandCompleter
-        from hermes_cli.model_switch import DirectAlias
-        import hermes_cli.model_switch as ms
 
-        test_aliases = {
-            "opus": DirectAlias("claude-opus-4-6", "anthropic", ""),
-            "qwen": DirectAlias("qwen3.5:397b", "custom", "https://ollama.com/v1"),
-        }
-        monkeypatch.setattr(ms, "DIRECT_ALIASES", test_aliases)
+        completer = SlashCommandCompleter(model_providers_provider=self._providers)
+        completions = list(completer._model_completions("mini", "mini"))
 
-        completer = SlashCommandCompleter()
-        completions = list(completer._model_completions("o", "o"))
+        texts = [c.text for c in completions]
+        assert texts == ["gpt-5.4-mini --provider openai-codex"]
 
-        names = [c.text for c in completions]
-        assert "opus" in names
-        assert "qwen" not in names
-
-    def test_model_completions_shows_metadata(self, monkeypatch):
-        """Completions include model name and provider in display_meta."""
+    def test_model_completions_keep_same_model_from_multiple_providers(self):
+        """Duplicate model IDs stay distinct when providers differ."""
         from hermes_cli.commands import SlashCommandCompleter
-        from hermes_cli.model_switch import DirectAlias
-        import hermes_cli.model_switch as ms
 
-        test_aliases = {
-            "glm": DirectAlias("glm-4.7", "custom", "https://ollama.com/v1"),
-        }
-        monkeypatch.setattr(ms, "DIRECT_ALIASES", test_aliases)
+        completer = SlashCommandCompleter(model_providers_provider=self._providers)
+        completions = list(completer._model_completions("gpt-5.4", "gpt-5.4"))
 
-        completer = SlashCommandCompleter()
-        completions = list(completer._model_completions("g", "g"))
-
-        assert len(completions) >= 1
-        glm_comp = [c for c in completions if c.text == "glm"][0]
-        meta_str = str(glm_comp.display_meta)
-        assert "glm-4.7" in meta_str
-        assert "custom" in meta_str
+        texts = [c.text for c in completions]
+        assert "gpt-5.4 --provider openai-codex" in texts
+        assert "openai/gpt-5.4 --provider openrouter" in texts
+        assert "gpt-5.4 --provider copilot" in texts
 
 
 # ---------------------------------------------------------------------------

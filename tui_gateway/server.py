@@ -124,6 +124,11 @@ _stdout_lock = threading.Lock()
 _cfg_lock = threading.Lock()
 _cfg_cache: dict | None = None
 _cfg_mtime: float | None = None
+_model_completion_cache_lock = threading.Lock()
+_model_completion_provider_cache: dict[
+    tuple[str, str, float | None], tuple[float, list[dict]]
+] = {}
+_MODEL_COMPLETION_PROVIDER_CACHE_TTL_S = 15.0
 _SLASH_WORKER_TIMEOUT_S = max(
     5.0, float(os.environ.get("HERMES_TUI_SLASH_TIMEOUT_S", "45") or 45)
 )
@@ -481,6 +486,61 @@ def _save_cfg(cfg: dict):
             _cfg_mtime = None
 
 
+def _clear_model_completion_provider_cache(session_id: str | None = None) -> None:
+    with _model_completion_cache_lock:
+        if session_id is None:
+            _model_completion_provider_cache.clear()
+            return
+        for key in list(_model_completion_provider_cache):
+            if key[0] == session_id:
+                _model_completion_provider_cache.pop(key, None)
+
+
+def _model_completion_providers_for_session(session_id: str) -> list[dict]:
+    from hermes_cli.model_switch import list_authenticated_providers
+
+    cfg = _load_cfg()
+    session = _sessions.get(session_id)
+    agent = session.get("agent") if session else None
+    model_cfg = cfg.get("model", {})
+    user_providers = cfg.get("providers")
+    current_provider = getattr(agent, "provider", "") or ""
+    if not current_provider and isinstance(model_cfg, dict):
+        current_provider = str(model_cfg.get("provider", "") or "")
+
+    cache_key = (session_id or "", current_provider, _cfg_mtime)
+    now = time.monotonic()
+    with _model_completion_cache_lock:
+        cached = _model_completion_provider_cache.get(cache_key)
+        if cached and now - cached[0] < _MODEL_COMPLETION_PROVIDER_CACHE_TTL_S:
+            return copy.deepcopy(cached[1])
+
+    try:
+        from hermes_cli.config import get_compatible_custom_providers
+
+        custom_providers = get_compatible_custom_providers(cfg)
+    except Exception:
+        custom_providers = (
+            cfg.get("custom_providers")
+            if isinstance(cfg.get("custom_providers"), list)
+            else []
+        )
+    providers = list_authenticated_providers(
+        current_provider=current_provider,
+        user_providers=user_providers if isinstance(user_providers, dict) else {},
+        custom_providers=custom_providers,
+        max_models=80,
+    )
+
+    with _model_completion_cache_lock:
+        _model_completion_provider_cache[cache_key] = (now, copy.deepcopy(providers))
+        for key, (cached_at, _) in list(_model_completion_provider_cache.items()):
+            if now - cached_at > _MODEL_COMPLETION_PROVIDER_CACHE_TTL_S:
+                _model_completion_provider_cache.pop(key, None)
+
+    return providers
+
+
 def _set_session_context(session_key: str) -> list:
     try:
         from gateway.session_context import set_session_vars
@@ -799,6 +859,9 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
             os.environ["HERMES_TUI_PROVIDER"] = result.target_provider
     if persist_global:
         _persist_model_switch(result)
+        _clear_model_completion_provider_cache()
+    else:
+        _clear_model_completion_provider_cache(sid)
     return {"value": result.new_model, "warning": result.warning_message or ""}
 
 
@@ -1846,6 +1909,7 @@ def _(rid, params: dict) -> dict:
     session = _sessions.pop(sid, None)
     if not session:
         return _ok(rid, {"closed": False})
+    _clear_model_completion_provider_cache(str(sid or ""))
     try:
         from tools.approval import unregister_gateway_notify
 
@@ -3701,8 +3765,13 @@ def _(rid, params: dict) -> dict:
 
         from agent.skill_commands import get_skill_commands
 
+        session_id = str(params.get("session_id") or "")
+
         completer = SlashCommandCompleter(
-            skill_commands_provider=lambda: get_skill_commands()
+            skill_commands_provider=lambda: get_skill_commands(),
+            model_providers_provider=lambda: _model_completion_providers_for_session(
+                session_id
+            ),
         )
         doc = Document(text, len(text))
         items = [

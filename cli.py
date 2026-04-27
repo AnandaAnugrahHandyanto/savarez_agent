@@ -9753,10 +9753,22 @@ class HermesCLI:
         # Create the input area with multiline (shift+enter), autocomplete, and paste handling
         from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 
+        def _model_completion_providers():
+            from hermes_cli.config import get_compatible_custom_providers, load_config
+            from hermes_cli.model_switch import list_authenticated_providers
+
+            cfg = load_config()
+            return list_authenticated_providers(
+                current_provider=cli_ref.provider or "",
+                user_providers=cfg.get("providers"),
+                custom_providers=get_compatible_custom_providers(cfg),
+                max_models=80,
+            )
 
         _completer = SlashCommandCompleter(
             skill_commands_provider=lambda: _skill_commands,
             command_filter=cli_ref._command_available,
+            model_providers_provider=_model_completion_providers,
         )
         input_area = TextArea(
             height=Dimension(min=1, max=8, preferred=1),

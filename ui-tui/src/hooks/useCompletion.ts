@@ -1,6 +1,8 @@
+import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
 import type { CompletionItem } from '../app/interfaces.js'
+import { $uiState } from '../app/uiStore.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { CompletionResponse } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
@@ -8,6 +10,7 @@ import { asRpcResult } from '../lib/rpc.js'
 const TAB_PATH_RE = /((?:["']?(?:[A-Za-z]:[\\/]|\.{1,2}\/|~\/|\/|@|[^"'`\s]+\/))[^\s]*)$/
 
 export function useCompletion(input: string, blocked: boolean, gw: GatewayClient) {
+  const { sid } = useStore($uiState)
   const [completions, setCompletions] = useState<CompletionItem[]>([])
   const [compIdx, setCompIdx] = useState(0)
   const [compReplace, setCompReplace] = useState(0)
@@ -27,13 +30,16 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
       return
     }
 
-    if (input === ref.current) {
+    const isSlash = input.startsWith('/')
+    const requestSid = sid ?? null
+    const requestKey = isSlash ? `${input}\u0000${requestSid ?? ''}` : input
+
+    if (requestKey === ref.current) {
       return
     }
 
-    ref.current = input
+    ref.current = requestKey
 
-    const isSlash = input.startsWith('/')
     const pathWord = isSlash ? null : (input.match(TAB_PATH_RE)?.[1] ?? null)
 
     if (!isSlash && !pathWord) {
@@ -45,17 +51,17 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
     const pathReplace = input.length - (pathWord?.length ?? 0)
 
     const t = setTimeout(() => {
-      if (ref.current !== input) {
+      if (ref.current !== requestKey) {
         return
       }
 
       const req = isSlash
-        ? gw.request<CompletionResponse>('complete.slash', { text: input })
+        ? gw.request<CompletionResponse>('complete.slash', { text: input, session_id: requestSid })
         : gw.request<CompletionResponse>('complete.path', { word: pathWord })
 
       req
         .then(raw => {
-          if (ref.current !== input) {
+          if (ref.current !== requestKey) {
             return
           }
 
@@ -66,7 +72,7 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
           setCompReplace(isSlash ? (r?.replace_from ?? 1) : pathReplace)
         })
         .catch((e: unknown) => {
-          if (ref.current !== input) {
+          if (ref.current !== requestKey) {
             return
           }
 
@@ -83,7 +89,7 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
     }, 60)
 
     return () => clearTimeout(t)
-  }, [blocked, gw, input])
+  }, [blocked, gw, input, sid])
 
   return { completions, compIdx, setCompIdx, compReplace }
 }
