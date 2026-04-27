@@ -1914,6 +1914,7 @@ def delegate_task(
 
     # Load config
     cfg = _load_config()
+    default_transport = _configured_default_transport(cfg)
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     # Model-supplied max_iterations is ignored — the config value is authoritative
     # so users get predictable budgets. The kwarg is retained for internal callers
@@ -1978,7 +1979,7 @@ def delegate_task(
                 top_level_model=persona_model,
                 top_level_workdir=workdir,
                 top_level_compress=compress_persona or "auto",
-                top_level_transport=transport,
+                top_level_transport=transport or default_transport,
                 top_level_acp_command=acp_command,
                 top_level_acp_args=acp_args,
             )
@@ -1992,6 +1993,7 @@ def delegate_task(
             task=task,
             top_level_transport=transport,
             top_level_acp_command=acp_command,
+            default_transport=default_transport,
         )
         for task in task_list
     ]
@@ -2016,8 +2018,17 @@ def delegate_task(
     # for the non-ACP tasks while ACP children authenticate through their local
     # CLI and must not be blocked by delegation.base_url/provider API-key
     # validation.
-    all_tasks_use_explicit_acp = bool(acp_command) or all(
-        bool(task.get("acp_command")) for task in task_list if isinstance(task, dict)
+    api_backed_transports = {"embedded-api", "experimental-oauth"}
+    all_tasks_use_explicit_acp = (
+        not any(t in api_backed_transports for t in task_transports)
+        and (
+            bool(acp_command)
+            or all(
+                bool(task.get("acp_command"))
+                for task in task_list
+                if isinstance(task, dict)
+            )
+        )
     )
     if all_tasks_use_explicit_acp:
         creds = {
@@ -2059,13 +2070,17 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
-            task_acp_args = t.get("acp_args") if "acp_args" in t else None
-            selected_acp_command = t.get("acp_command") or acp_command or creds.get("command")
-            selected_acp_args = (
-                task_acp_args
-                if task_acp_args is not None
-                else (acp_args if acp_args is not None else creds.get("args"))
-            )
+            if task_transports[i] in api_backed_transports:
+                selected_acp_command = None
+                selected_acp_args = None
+            else:
+                task_acp_args = t.get("acp_args") if "acp_args" in t else None
+                selected_acp_command = t.get("acp_command") or acp_command or creds.get("command")
+                selected_acp_args = (
+                    task_acp_args
+                    if task_acp_args is not None
+                    else (acp_args if acp_args is not None else creds.get("args"))
+                )
             selected_unsafe_allow_writes = bool(
                 t.get("unsafe_allow_writes")
                 if "unsafe_allow_writes" in t
@@ -2446,9 +2461,37 @@ def _normalize_delegate_transport(value: Optional[str]) -> str:
         return "bridge"
     if transport in {"simple_pipe", "simple-pipe", "legacy"}:
         return "simple-pipe"
-    if transport in {"auto", "bridge", "simple-pipe"}:
+    if transport in {"embedded", "embedded_api", "embedded-api", "api"}:
+        return "embedded-api"
+    if transport in {
+        "experimental_oauth",
+        "experimental-oauth",
+        "oauth",
+        "oauth-proxy",
+        "proxy-oauth",
+        "subscription-oauth",
+    }:
+        return "experimental-oauth"
+    if transport in {"auto", "bridge", "simple-pipe", "embedded-api", "experimental-oauth"}:
         return transport
     return "auto"
+
+
+def _configured_default_transport(cfg: Optional[Dict[str, Any]]) -> str:
+    """Operator-level default for delegate_task transport/auth policy.
+
+    Per-call ``transport`` remains the highest-priority override.  The config
+    default is intentionally explicit: experimental OAuth/proxy paths are never
+    selected by plain auto inference unless the operator configured them here.
+    """
+
+    cfg = cfg or {}
+    return _normalize_delegate_transport(
+        cfg.get("default_transport")
+        or cfg.get("mode")
+        or cfg.get("transport")
+        or "auto"
+    )
 
 
 def _infer_delegate_transport(
@@ -2456,6 +2499,7 @@ def _infer_delegate_transport(
     task: Dict[str, Any],
     top_level_transport: Optional[str],
     top_level_acp_command: Optional[str],
+    default_transport: str = "auto",
 ) -> str:
     explicit = (
         task.get("transport")
@@ -2465,6 +2509,10 @@ def _infer_delegate_transport(
     transport = _normalize_delegate_transport(explicit)
     if transport != "auto":
         return transport
+
+    configured = _normalize_delegate_transport(default_transport)
+    if configured in {"embedded-api", "experimental-oauth", "simple-pipe"}:
+        return configured
 
     command = task.get("acp_command") if isinstance(task, dict) else None
     command_base = os.path.basename(str(command or top_level_acp_command or "")).lower()
@@ -2697,8 +2745,14 @@ DELEGATE_TASK_SCHEMA = {
                         },
                         "transport": {
                             "type": "string",
-                            "enum": ["auto", "simple-pipe", "bridge"],
-                            "description": "Per-task transport override. Use 'bridge' for native Agent Orchestrator-style Claude/Cursor interactive sessions.",
+                            "enum": [
+                                "auto",
+                                "simple-pipe",
+                                "bridge",
+                                "embedded-api",
+                                "experimental-oauth",
+                            ],
+                            "description": "Per-task transport override. Use 'bridge' for native Agent Orchestrator-style Claude/Cursor interactive sessions; use embedded-api or experimental-oauth only when deliberately selecting API/proxy-backed child auth.",
                         },
                         "role": {
                             "type": "string",
@@ -2781,12 +2835,21 @@ DELEGATE_TASK_SCHEMA = {
             },
             "transport": {
                 "type": "string",
-                "enum": ["auto", "simple-pipe", "bridge"],
+                "enum": [
+                    "auto",
+                    "simple-pipe",
+                    "bridge",
+                    "embedded-api",
+                    "experimental-oauth",
+                ],
                 "description": (
-                    "Transport selection for external CLI workers. 'auto' keeps "
-                    "the existing embedded/simple-pipe behavior. 'bridge' starts "
-                    "a native Claude/Cursor bridge session and returns a "
-                    "bridge_session_id for delegate_bridge_* follow-up tools."
+                    "Transport/auth selection. 'auto' prefers the local bridge "
+                    "for bridge-capable Claude/Cursor CLI commands or personas. "
+                    "'bridge' starts a native interactive session and returns a "
+                    "bridge_session_id for delegate_bridge_* follow-up tools. "
+                    "'embedded-api' uses Hermes' child AIAgent/API-key path. "
+                    "'experimental-oauth' is explicit opt-in for local OAuth/proxy "
+                    "experiments and is never selected implicitly by auto."
                 ),
             },
             "bridge_initial_wait_seconds": {

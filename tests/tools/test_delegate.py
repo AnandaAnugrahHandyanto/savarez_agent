@@ -28,6 +28,8 @@ from tools.delegate_tool import (
     MAX_DEPTH,
     check_delegate_requirements,
     delegate_task,
+    _infer_delegate_transport,
+    _normalize_delegate_transport,
     _build_child_agent,
     _build_child_progress_callback,
     _build_child_system_prompt,
@@ -92,6 +94,42 @@ class TestDelegateRequirements(unittest.TestCase):
 
 
 class TestBridgeTransportConfig(unittest.TestCase):
+    def test_transport_schema_exposes_all_modes(self):
+        top_enum = set(DELEGATE_TASK_SCHEMA["parameters"]["properties"]["transport"]["enum"])
+        task_enum = set(
+            DELEGATE_TASK_SCHEMA["parameters"]["properties"]["tasks"]["items"]["properties"]["transport"]["enum"]
+        )
+
+        expected = {"auto", "bridge", "simple-pipe", "embedded-api", "experimental-oauth"}
+        self.assertTrue(expected.issubset(top_enum))
+        self.assertTrue(expected.issubset(task_enum))
+
+    def test_auto_never_selects_experimental_oauth_implicitly(self):
+        task = {"goal": "think"}
+
+        self.assertEqual(
+            _infer_delegate_transport(
+                task=task,
+                top_level_transport=None,
+                top_level_acp_command=None,
+            ),
+            "auto",
+        )
+        self.assertEqual(
+            _infer_delegate_transport(
+                task=task,
+                top_level_transport=None,
+                top_level_acp_command=None,
+                default_transport="experimental-oauth",
+            ),
+            "experimental-oauth",
+        )
+
+    def test_mode_aliases_normalize_to_explicit_values(self):
+        self.assertEqual(_normalize_delegate_transport("embedded_api"), "embedded-api")
+        self.assertEqual(_normalize_delegate_transport("oauth-proxy"), "experimental-oauth")
+        self.assertEqual(_normalize_delegate_transport("agent-orchestrator"), "bridge")
+
     def test_cursor_bridge_config_bootstrap_writes_project_mcp_config(self):
         from tools.delegate_bridge_transport import ensure_cursor_bridge_config
 
@@ -1013,6 +1051,24 @@ class TestDelegationProviderIntegration(unittest.TestCase):
         self.assertIn("error", result)
         self.assertIn("Cannot resolve", result["error"])
         self.assertIn("nonexistent", result["error"])
+
+    @patch("tools.delegate_tool.spawn_bridge_session")
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_embedded_api_mode_raises_clear_api_key_errors(self, mock_creds, mock_cfg, mock_spawn):
+        mock_cfg.return_value = {
+            "default_transport": "embedded-api",
+            "model": "some-model",
+            "provider": "openrouter",
+        }
+        mock_creds.side_effect = ValueError("Cannot resolve delegation provider 'openrouter': OPENROUTER_API_KEY not set")
+
+        parent = _make_mock_parent(depth=0)
+        result = json.loads(delegate_task(goal="Should fail before child spawn", parent_agent=parent))
+
+        self.assertIn("error", result)
+        self.assertIn("OPENROUTER_API_KEY", result["error"])
+        mock_spawn.assert_not_called()
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")

@@ -52,6 +52,35 @@ def test_is_destructive_command_treats_install_as_mutating():
     assert run_agent._is_destructive_command("install template.env .env") is True
 
 
+def test_dispatch_delegate_task_forwards_persona_transport_fields(agent):
+    function_args = {
+        "goal": "Review the patch",
+        "context": "Use the current worktree.",
+        "toolsets": ["terminal", "file"],
+        "tasks": [{"goal": "Task A", "persona": "verifier"}],
+        "max_iterations": 7,
+        "acp_command": "cursor-agent",
+        "acp_args": ["-p", "--mode", "plan"],
+        "unsafe_allow_writes": True,
+        "transport": "bridge",
+        "bridge_initial_wait_seconds": 3,
+        "role": "orchestrator",
+        "persona": "security-reviewer",
+        "persona_provider": "cursor-agent",
+        "persona_model": "gpt-5.5-extra-high",
+        "workdir": "/tmp/project",
+        "compress_persona": "always",
+    }
+
+    with patch("tools.delegate_tool.delegate_task", return_value='{"results": []}') as mock_delegate:
+        assert agent._dispatch_delegate_task(function_args) == '{"results": []}'
+
+    _, kwargs = mock_delegate.call_args
+    for key, value in function_args.items():
+        assert kwargs[key] == value
+    assert kwargs["parent_agent"] is agent
+
+
 @pytest.fixture()
 def agent():
     """Minimal AIAgent with mocked OpenAI client and tool loading."""

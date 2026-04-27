@@ -183,9 +183,10 @@ class TestDelegatePersonas(unittest.TestCase):
 
 
 class TestDelegateTaskPersonaIntegration(unittest.TestCase):
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
     @patch("tools.delegate_tool.spawn_bridge_session")
     @patch("tools.delegate_tool._load_config")
-    def test_delegate_task_persona_defaults_to_bridge_without_credentials(self, mock_cfg, mock_spawn):
+    def test_delegate_task_persona_defaults_to_bridge_without_credentials(self, mock_cfg, mock_spawn, mock_creds):
         with tempfile.TemporaryDirectory() as tmp:
             personas = Path(tmp) / "personas"
             workdir = Path(tmp) / "repo"
@@ -223,6 +224,7 @@ class TestDelegateTaskPersonaIntegration(unittest.TestCase):
             self.assertIn("--mode", kwargs["acp_args"])
             self.assertIn("plan", kwargs["acp_args"])
             self.assertIn("# DELEGATED PERSONA: verifier", kwargs["context"])
+            mock_creds.assert_not_called()
 
     @patch("tools.delegate_tool.spawn_bridge_session")
     @patch("tools.delegate_tool._load_config")

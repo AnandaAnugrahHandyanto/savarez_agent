@@ -8247,7 +8247,15 @@ class AIAgent:
             max_iterations=function_args.get("max_iterations"),
             acp_command=function_args.get("acp_command"),
             acp_args=function_args.get("acp_args"),
+            unsafe_allow_writes=bool(function_args.get("unsafe_allow_writes", False)),
+            transport=function_args.get("transport"),
+            bridge_initial_wait_seconds=function_args.get("bridge_initial_wait_seconds"),
             role=function_args.get("role"),
+            persona=function_args.get("persona"),
+            persona_provider=function_args.get("persona_provider"),
+            persona_model=function_args.get("persona_model"),
+            workdir=function_args.get("workdir"),
+            compress_persona=function_args.get("compress_persona"),
             parent_agent=self,
         )
 

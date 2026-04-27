@@ -91,6 +91,20 @@ delegate_task(
 )
 ```
 
+For local Claude Code or Cursor Agent specialists, prefer named child personas through the bridge:
+
+```python
+delegate_task(
+    goal="Review src/auth/ for security issues and return findings only",
+    context="Project at /home/user/webapp. Verify the current files before trusting this context.",
+    persona="security-reviewer",
+    persona_provider="claude",
+    transport="bridge",
+)
+```
+
+Use `persona_provider="cursor-agent"` for Cursor-backed code/test workers, for example with `persona_model="gpt-5.5-extra-high"` when that model is available locally. The local CLI owns its own auth in bridge mode.
+
 :::warning The Context Problem
 Subagents know **absolutely nothing** about your conversation. They start completely fresh. If you delegate "fix the bug we were discussing," the subagent has no idea what bug you mean. Always pass file paths, error messages, project structure, and constraints explicitly.
 :::
@@ -218,6 +232,14 @@ Restricting toolsets keeps the subagent focused and prevents accidental side eff
 
 - **Default 3 parallel tasks**: batches default to 3 concurrent subagents (configurable via `delegation.max_concurrent_children` in config.yaml, no hard ceiling, only a floor of 1)
 - **Nested delegation is opt-in**: leaf subagents (default) cannot call `delegate_task`, `clarify`, `memory`, `send_message`, or `execute_code`. Orchestrator subagents (`role="orchestrator"`) retain `delegate_task` for further delegation, but only when `delegation.max_spawn_depth` is raised above the default of 1 (1-3 supported); the other four remain blocked. Disable globally via `delegation.orchestrator_enabled: false`.
+- **Transport choice is explicit**: `auto` prefers bridge for bridge-capable Claude/Cursor personas or commands; use `embedded-api` for cheap API-backed reasoning workers, `simple-pipe` for legacy one-shot CLI calls, and `experimental-oauth` only for deliberate local OAuth/proxy experiments.
+
+### Recommended Transport Patterns
+
+- **Review/test/code workers:** use `persona` with `persona_provider="claude"` or `persona_provider="cursor-agent"` and `transport="bridge"` when you need local CLI tools, interactive bridge follow-up, or CLI-owned auth.
+- **Cheap parallel reasoning:** use embedded API workers with `delegation.default_transport: "embedded-api"` plus a lower-cost `delegation.model` and provider.
+- **Legacy CLI compatibility:** use `simple-pipe` only when you intentionally need the old one-shot subprocess behavior.
+- **OAuth/proxy experiments:** use `experimental-oauth` only by explicit config or per-call transport. It is not selected by `auto` and carries provider policy risk.
 
 ### Tuning Concurrency and Depth
 

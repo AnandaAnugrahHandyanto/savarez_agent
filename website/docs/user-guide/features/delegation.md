@@ -129,6 +129,31 @@ When you provide a `tasks` array, subagents run in **parallel** using a thread p
 
 Single-task delegation runs directly without thread pool overhead.
 
+## Transport and Auth Modes
+
+Hermes supports four delegation transport/auth modes:
+
+- `bridge`: preferred for local Claude Code and Cursor Agent workers. Hermes starts the local CLI with a sanitized environment, sets up the worker bridge MCP, and lets that CLI resolve its own login/auth. Hermes does not inspect, copy, refresh, migrate, or inject OAuth tokens in this mode.
+- `embedded-api`: the native child `AIAgent` path. It uses `delegation.provider`, `delegation.base_url`, and `delegation.api_key` or provider environment variables.
+- `simple-pipe`: legacy one-shot CLI compatibility for explicit `acp_command`/`acp_args` calls.
+- `experimental-oauth`: explicit opt-in for local OAuth/proxy experiments. It is never selected implicitly by `auto`; use it only when you deliberately control the proxy/provider and accept the service-policy risk.
+
+With `transport="auto"` or `delegation.default_transport: "auto"`, bridge-capable Claude/Cursor personas or `acp_command` values use `bridge`. Embedded API delegation happens when no bridge-capable command/persona is selected, or when you explicitly choose `embedded-api`.
+
+## Child Personas vs Parent Personality
+
+`SOUL.md` and `/personality` define the parent Hermes session. The optional `persona` field on `delegate_task` is different: it is per-child routing and context for a delegated worker. It can select a named reviewer/tester/researcher profile, a local CLI provider (`persona_provider="claude"` or `"cursor-agent"`), and a model/workdir without changing the parent agent's identity.
+
+```python
+delegate_task(
+    goal="Review the OAuth callback handling",
+    context="Project at /home/user/app. Focus on src/auth/oauth.py.",
+    persona="security-reviewer",
+    persona_provider="claude",
+    transport="bridge",
+)
+```
+
 ## Model Override
 
 You can configure a different model for subagents via `config.yaml` — useful for delegating simple tasks to cheaper/faster models:
@@ -222,14 +247,22 @@ delegate_task(
 # In ~/.hermes/config.yaml
 delegation:
   max_iterations: 50                        # Max turns per child (default: 50)
+  # default_transport: "auto"               # auto, bridge, embedded-api, simple-pipe, experimental-oauth
   # max_concurrent_children: 3              # Parallel children per batch (default: 3)
   # max_spawn_depth: 1                      # Tree depth (1-3, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3 for three levels.
   # orchestrator_enabled: true              # Disable to force all children to leaf role.
   model: "google/gemini-3-flash-preview"             # Optional provider/model override
   provider: "openrouter"                             # Optional built-in provider
 
+# Bridge-first local CLI workers:
+delegation:
+  default_transport: "auto"
+  persona_provider: "claude"
+  persona_workdir: "/home/user/myproject"
+
 # Or use a direct custom endpoint instead of provider:
 delegation:
+  default_transport: "embedded-api"
   model: "qwen2.5-coder"
   base_url: "http://localhost:1234/v1"
   api_key: "local-key"
