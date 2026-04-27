@@ -44,7 +44,14 @@ PYTHON="$VENV/bin/python"
 # ── Ensure pytest-split is installed (required for shard-equivalent runs) ──
 if ! "$PYTHON" -c "import pytest_split" 2>/dev/null; then
   echo "→ installing pytest-split into $VENV"
-  "$PYTHON" -m pip install --quiet "pytest-split>=0.9,<1"
+  if command -v uv >/dev/null 2>&1; then
+    if ! uv pip install --quiet --python "$PYTHON" "pytest-split>=0.9,<1"; then
+      echo "→ uv install failed, falling back to pip" >&2
+      "$PYTHON" -m pip install --quiet "pytest-split>=0.9,<1"
+    fi
+  else
+    "$PYTHON" -m pip install --quiet "pytest-split>=0.9,<1"
+  fi
 fi
 
 # ── Hermetic environment ────────────────────────────────────────────────────
