@@ -583,7 +583,7 @@ class TestShouldProcessMessage:
 
 @pytest.fixture
 def _stub_chatbot_message(monkeypatch):
-    """Stub ChatbotMessage when the dingtalk-stream SDK isn't installed.
+    """Stub ChatbotMessage only when the dingtalk-stream SDK isn't installed.
 
     Production ``_IncomingHandler.process`` calls ``ChatbotMessage.from_dict()``;
     when the optional dependency is absent the symbol is bound to ``None`` and
@@ -591,7 +591,15 @@ def _stub_chatbot_message(monkeypatch):
     the SDK's field-mapping logic — they exercise the adapter's own fallback
     that pulls ``sessionWebhook`` straight off the raw data dict — so a stub
     that returns an empty namespace is enough to drive every assertion.
+
+    When the real SDK is installed, leave ``ChatbotMessage`` in place so dev
+    runs still exercise the SDK's actual ``from_dict`` mapping.
     """
+    from gateway.platforms import dingtalk as dingtalk_module
+
+    if dingtalk_module.ChatbotMessage is not None:
+        return
+
     class _StubChatbotMessage:
         @classmethod
         def from_dict(cls, data):
@@ -785,18 +793,26 @@ class _StubSdkModule:
 
 @pytest.fixture
 def _stub_card_sdk_models(monkeypatch):
-    """Stub the alibabacloud SDK module-level imports when the optional
+    """Stub the alibabacloud SDK module-level imports only when the optional
     dependencies are absent.  Production card paths reference
     ``tea_util_models``, ``dingtalk_card_models``, and ``dingtalk_robot_models``
     purely to construct request/header objects forwarded to the card-SDK
     methods (which the tests mock as ``AsyncMock``).  Returning placeholder
     namespaces lets the production code path execute end-to-end without the
     real SDK installed.
+
+    When the SDK is installed, leave the real model modules in place so dev
+    runs can still catch mismatches against the installed SDK.
     """
+    import gateway.platforms.dingtalk as dingtalk_module
+
     stub = _StubSdkModule()
-    monkeypatch.setattr("gateway.platforms.dingtalk.tea_util_models", stub)
-    monkeypatch.setattr("gateway.platforms.dingtalk.dingtalk_card_models", stub)
-    monkeypatch.setattr("gateway.platforms.dingtalk.dingtalk_robot_models", stub)
+    if getattr(dingtalk_module, "tea_util_models", None) is None:
+        monkeypatch.setattr("gateway.platforms.dingtalk.tea_util_models", stub)
+    if getattr(dingtalk_module, "dingtalk_card_models", None) is None:
+        monkeypatch.setattr("gateway.platforms.dingtalk.dingtalk_card_models", stub)
+    if getattr(dingtalk_module, "dingtalk_robot_models", None) is None:
+        monkeypatch.setattr("gateway.platforms.dingtalk.dingtalk_robot_models", stub)
 
 
 class TestCardLifecycle:
