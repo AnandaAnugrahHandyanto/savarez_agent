@@ -312,9 +312,19 @@ class ResponseStore:
         self._conn.execute(
             """CREATE TABLE IF NOT EXISTS conversations (
                 name TEXT PRIMARY KEY,
-                response_id TEXT NOT NULL
+                response_id TEXT NOT NULL,
+                session_id TEXT
             )"""
         )
+        # Idempotent migration for installs created before session_id column
+        # existed.  ADD COLUMN raises sqlite3.OperationalError if the column
+        # is already present, so swallow that case.
+        try:
+            self._conn.execute(
+                "ALTER TABLE conversations ADD COLUMN session_id TEXT"
+            )
+        except sqlite3.OperationalError:
+            pass
         self._conn.commit()
 
     def get(self, response_id: str) -> Optional[Dict[str, Any]]:
@@ -362,11 +372,34 @@ class ResponseStore:
         ).fetchone()
         return row[0] if row else None
 
-    def set_conversation(self, name: str, response_id: str) -> None:
-        """Map a conversation name to its latest response_id."""
+    def get_conversation_session_id(self, name: str) -> Optional[str]:
+        """Return the persisted Hermes session_id for a conversation name.
+
+        Survives LRU eviction of the underlying response row, so cold-start
+        with ``conversation=<slug>`` can continue the same Hermes session
+        even after the chained ``response_id`` is gone.
+        """
+        row = self._conn.execute(
+            "SELECT session_id FROM conversations WHERE name = ?", (name,)
+        ).fetchone()
+        return row[0] if row and row[0] else None
+
+    def set_conversation(
+        self,
+        name: str,
+        response_id: str,
+        session_id: Optional[str] = None,
+    ) -> None:
+        """Map a conversation name to its latest response_id and session_id.
+
+        ``session_id`` is persisted alongside ``response_id`` so that even when
+        the underlying response row is later evicted by the LRU policy, the
+        Hermes session for this conversation can still be recovered.
+        """
         self._conn.execute(
-            "INSERT OR REPLACE INTO conversations (name, response_id) VALUES (?, ?)",
-            (name, response_id),
+            "INSERT OR REPLACE INTO conversations "
+            "(name, response_id, session_id) VALUES (?, ?, ?)",
+            (name, response_id, session_id),
         )
         self._conn.commit()
 
@@ -1294,7 +1327,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_id": session_id,
             })
             if conversation:
-                self._response_store.set_conversation(conversation, response_id)
+                self._response_store.set_conversation(
+                    conversation, response_id, session_id
+                )
 
         def _persist_incomplete_if_needed() -> None:
             """Persist an ``incomplete`` snapshot if no terminal one was written.
@@ -1752,12 +1787,37 @@ class APIServerAdapter(BasePlatformAdapter):
         if not conversation_history and previous_response_id:
             stored = self._response_store.get(previous_response_id)
             if stored is None:
-                return web.json_response(_openai_error(f"Previous response not found: {previous_response_id}"), status=404)
-            conversation_history = list(stored.get("conversation_history", []))
-            stored_session_id = stored.get("session_id")
-            # If no instructions provided, carry forward from previous
-            if instructions is None:
-                instructions = stored.get("instructions")
+                # When the request used ``conversation=<slug>`` and the slug
+                # mapping pointed at a now-evicted response, fall back to the
+                # session_id persisted alongside the slug so the conversation
+                # keeps writing into the same Hermes session.  Without this,
+                # cold-start (gateway restart + LRU eviction) would either
+                # 404 the client (when the slug only stored response_id) or
+                # mint a fresh session, breaking client-side conversation
+                # continuity (#16517).
+                if conversation:
+                    fallback_session_id = (
+                        self._response_store.get_conversation_session_id(conversation)
+                    )
+                    if fallback_session_id:
+                        stored_session_id = fallback_session_id
+                    # Either way, drop the stale previous_response_id and
+                    # let this turn proceed with an empty history rather
+                    # than 404'ing.  Clients that need full history can
+                    # supply ``conversation_history`` explicitly.
+                else:
+                    return web.json_response(
+                        _openai_error(
+                            f"Previous response not found: {previous_response_id}"
+                        ),
+                        status=404,
+                    )
+            else:
+                conversation_history = list(stored.get("conversation_history", []))
+                stored_session_id = stored.get("session_id")
+                # If no instructions provided, carry forward from previous
+                if instructions is None:
+                    instructions = stored.get("instructions")
 
         # Append new input messages to history (all but the last become history)
         for msg in input_messages[:-1]:
@@ -1926,9 +1986,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_id": session_id,
             })
             # Update conversation mapping so the next request with the same
-            # conversation name automatically chains to this response
+            # conversation name automatically chains to this response.  We
+            # persist session_id alongside response_id so that even if the
+            # response row is evicted later (LRU), the conversation slug can
+            # still recover the Hermes session.
             if conversation:
-                self._response_store.set_conversation(conversation, response_id)
+                self._response_store.set_conversation(
+                    conversation, response_id, session_id
+                )
 
         return web.json_response(response_data)
 

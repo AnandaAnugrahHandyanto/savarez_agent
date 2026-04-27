@@ -2209,6 +2209,105 @@ class TestConversationParameter:
                 # Conversation mapping should NOT be set since store=false
                 assert adapter._response_store.get_conversation("ephemeral-chat") is None
 
+    @pytest.mark.asyncio
+    async def test_conversation_session_persisted_on_set(self, adapter):
+        """``set_conversation`` persists session_id alongside response_id (#16517)."""
+        adapter._response_store.set_conversation(
+            "persisted-chat", "resp_abc123", "session-xyz"
+        )
+        # New helper exposes session_id even when nothing else is in the store
+        assert (
+            adapter._response_store.get_conversation_session_id("persisted-chat")
+            == "session-xyz"
+        )
+        # Backward-compatible API still returns the response_id
+        assert (
+            adapter._response_store.get_conversation("persisted-chat")
+            == "resp_abc123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_conversation_continues_session_after_response_eviction(
+        self, adapter
+    ):
+        """Cold-start: when the chained response is LRU-evicted but the
+        ``conversation`` slug still resolves, the next turn must reuse the
+        persisted session_id instead of 404'ing or minting a new one (#16517).
+        """
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "Hello!", "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+                # Turn 1 — establish the conversation slug → session_id mapping.
+                resp1 = await cli.post(
+                    "/v1/responses",
+                    json={"input": "hi", "conversation": "stable-conv"},
+                )
+                assert resp1.status == 200
+                first_call = mock_run.call_args_list[0]
+                first_session_id = first_call.kwargs.get("session_id")
+                assert first_session_id is not None
+
+                # Simulate LRU eviction of the underlying response data while
+                # leaving the conversation slug mapping intact (the exact
+                # divergence the bug describes).
+                stored_response_id = adapter._response_store.get_conversation(
+                    "stable-conv"
+                )
+                assert stored_response_id is not None
+                deleted = adapter._response_store.delete(stored_response_id)
+                assert deleted is True
+                assert adapter._response_store.get(stored_response_id) is None
+                # But session_id is still recoverable from the conversation row
+                assert (
+                    adapter._response_store.get_conversation_session_id(
+                        "stable-conv"
+                    )
+                    == first_session_id
+                )
+
+                # Turn 2 — same slug, no explicit history.  Must succeed and
+                # reuse the same session_id (no 404, no fresh uuid).
+                mock_run.reset_mock()
+                mock_run.return_value = (
+                    {
+                        "final_response": "still here",
+                        "messages": [],
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+                )
+                resp2 = await cli.post(
+                    "/v1/responses",
+                    json={"input": "still there?", "conversation": "stable-conv"},
+                )
+                assert resp2.status == 200
+                second_call = mock_run.call_args_list[0]
+                assert second_call.kwargs.get("session_id") == first_session_id
+
+    @pytest.mark.asyncio
+    async def test_previous_response_id_still_404s_without_conversation(
+        self, adapter
+    ):
+        """Negative case: without a ``conversation`` slug to recover from,
+        an unresolvable ``previous_response_id`` must still 404.  The fallback
+        only kicks in when there is a slug to carry session continuity."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/responses",
+                json={
+                    "input": "follow up",
+                    "previous_response_id": "resp_does_not_exist",
+                },
+            )
+            assert resp.status == 404
+            data = await resp.json()
+            assert "Previous response not found" in data["error"]["message"]
+
 
 # ---------------------------------------------------------------------------
 # X-Hermes-Session-Id header (session continuity)
