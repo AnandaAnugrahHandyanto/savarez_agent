@@ -1532,7 +1532,8 @@ def _run_single_child(
                         f" Last action: {_last_tool_name}" if _last_tool_name else ""
                     )
                     _err = (
-                        f"Subagent timed out after {_tool_calls_count} tool call(s)."
+                        f"Subagent timed out after {child_timeout}s with "
+                        f"{_tool_calls_count} tool call(s)."
                         f"{_last_action_str}"
                     )
             else:
