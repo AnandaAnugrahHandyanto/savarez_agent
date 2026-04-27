@@ -212,6 +212,32 @@ export default function ChatPage() {
     termRef.current?.focus();
   };
 
+  // When navigated to /chat?new=1, send /new through the PTY to start a fresh session.
+  const newSessionTriggeredRef = useRef<string | null>(null);
+  useEffect(() => {
+    const newParam = searchParams.get("new");
+    if (!newParam || newParam === newSessionTriggeredRef.current) return;
+    newSessionTriggeredRef.current = newParam;
+
+    const sendNew = () => {
+      const ws = wsRef.current;
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.send("/new");
+        setTimeout(() => {
+          const s = wsRef.current;
+          if (s?.readyState === WebSocket.OPEN) s.send("\r");
+        }, 100);
+      }
+    };
+    // If WS isn't open yet (PTY still booting), retry after a short delay.
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      sendNew();
+    } else {
+      const timer = setTimeout(sendNew, 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [searchParams]);
+
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;

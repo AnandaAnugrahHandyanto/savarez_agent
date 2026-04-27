@@ -1564,9 +1564,6 @@ def _(rid, params: dict) -> dict:
             finally:
                 _clear_session_context(tokens)
 
-            db = _get_db()
-            if db is not None:
-                db.create_session(key, source="tui", model=_resolve_model())
             session["agent"] = agent
 
             try:
@@ -2243,6 +2240,16 @@ def _(rid, params: dict) -> dict:
 
             approval_token = set_current_session_key(session["session_key"])
             session_tokens = _set_session_context(session["session_key"])
+
+            # Create DB session record lazily on first user message.
+            db = _get_db()
+            if db is not None and not db.get_session(session["session_key"]):
+                db.create_session(
+                    session["session_key"],
+                    source="tui",
+                    model=_resolve_model(),
+                )
+
             cols = session.get("cols", 80)
             streamer = make_stream_renderer(cols)
             prompt = text

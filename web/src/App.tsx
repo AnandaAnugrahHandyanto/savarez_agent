@@ -31,6 +31,7 @@ import {
   Menu,
   MessageSquare,
   Package,
+  Plus,
   Puzzle,
   RotateCw,
   Settings,
@@ -69,6 +70,15 @@ import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 
 function RootRedirect() {
   return <Navigate to="/sessions" replace />;
+}
+
+/**
+ * Stand-in for the /chat route inside <Routes>.
+ * ChatPage is rendered separately, always mounted (see App body),
+ * so this just claims the URL slot to prevent the catch-all redirect.
+ */
+function ChatSlot() {
+  return null;
 }
 
 const CHAT_NAV_ITEM: NavItem = {
@@ -240,6 +250,7 @@ function buildRoutes(
 export default function App() {
   const { t } = useI18n();
   const { pathname } = useLocation();
+  const navigate = useNavigate();
   const { manifests } = usePlugins();
   const { theme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -252,7 +263,7 @@ export default function App() {
   const builtinRoutes = useMemo(
     () => ({
       ...BUILTIN_ROUTES_CORE,
-      ...(embeddedChat ? { "/chat": ChatPage } : {}),
+      ...(embeddedChat ? { "/chat": ChatSlot } : {}),
     }),
     [embeddedChat],
   );
@@ -426,7 +437,7 @@ export default function App() {
                     ? ((t.app.nav as Record<string, string>)[labelKey] ?? label)
                     : label;
                   return (
-                    <li key={path}>
+                    <li key={path} className={cn(path === "/chat" && "flex items-center")}>
                       <NavLink
                         to={path}
                         end={path === "/sessions"}
@@ -435,6 +446,7 @@ export default function App() {
                           cn(
                             "group relative flex items-center gap-3",
                             "px-5 py-2.5",
+                            path === "/chat" && "flex-1 min-w-0",
                             "font-mondwest text-[0.8rem] tracking-[0.12em]",
                             "whitespace-nowrap transition-colors cursor-pointer",
                             "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
@@ -467,6 +479,33 @@ export default function App() {
                           </>
                         )}
                       </NavLink>
+                      {embeddedChat && path === "/chat" && (
+                        <div className="group relative flex items-center">
+                          <span
+                            aria-hidden
+                            className="absolute inset-y-0.5 left-0 right-0 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover:opacity-5"
+                          />
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              navigate("/chat?new=1");
+                              closeMobile();
+                            }}
+                            title="New session"
+                            aria-label="Start a new session"
+                            className={cn(
+                              "relative z-10 flex items-center justify-center px-3 py-2.5",
+                              "text-midground/40 hover:text-midground",
+                              "opacity-40 group-hover:opacity-100",
+                              "transition-opacity duration-150 cursor-pointer",
+                              "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
+                            )}
+                          >
+                            <Plus className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      )}
                     </li>
                   );
                 })}
@@ -510,6 +549,17 @@ export default function App() {
                   (isDocsRoute || isChatRoute) && "min-h-0 flex flex-1 flex-col",
                 )}
               >
+                {embeddedChat && (
+                  <div
+                    className={
+                      isChatRoute
+                        ? "min-h-0 flex flex-1 flex-col"
+                        : "hidden"
+                    }
+                  >
+                    <ChatPage />
+                  </div>
+                )}
                 <Routes>
                   {routes.map(({ key, path, element }) => (
                     <Route key={key} path={path} element={element} />
