@@ -285,3 +285,54 @@ class TestWorkersAIClientHeaders:
     def test_does_not_leak_to_other_providers(self):
         headers = self._apply("https://api.openai.com/v1")
         assert "HermesAgent/" not in headers.get("User-Agent", "")
+# =============================================================================
+# Session-affinity header (chat_completions transport)
+# =============================================================================
+
+
+class TestSessionAffinityHeader:
+    """`x-session-affinity` is set per-request when the request is bound for
+    Workers AI and a session_id is present. Workers AI uses the header to
+    route same-session requests to the same replica so prefix caching can
+    stay warm across an agent loop."""
+
+    def _build(self, **params):
+        from agent.transports.chat_completions import ChatCompletionsTransport
+        return ChatCompletionsTransport().build_kwargs(
+            model="@cf/moonshotai/kimi-k2.6",
+            messages=[{"role": "user", "content": "hi"}],
+            **params,
+        )
+
+    def test_set_for_workers_ai_with_session_id(self):
+        kwargs = self._build(is_workers_ai=True, session_id="ses_abc123")
+        assert kwargs["extra_headers"]["x-session-affinity"] == "ses_abc123"
+
+    def test_absent_when_no_session_id(self):
+        kwargs = self._build(is_workers_ai=True)
+        assert "extra_headers" not in kwargs
+
+    def test_absent_for_non_workers_ai_provider(self):
+        """Affinity header is workers-ai-specific; other providers don't get it."""
+        kwargs = self._build(session_id="ses_abc123")
+        assert "extra_headers" not in kwargs
+
+    def test_merges_with_request_overrides_headers(self):
+        kwargs = self._build(
+            is_workers_ai=True,
+            session_id="ses_xyz",
+            request_overrides={"extra_headers": {"x-trace": "abc"}},
+        )
+        assert kwargs["extra_headers"]["x-trace"] == "abc"
+        assert kwargs["extra_headers"]["x-session-affinity"] == "ses_xyz"
+
+    def test_does_not_clobber_caller_provided_affinity(self):
+        kwargs = self._build(
+            is_workers_ai=True,
+            session_id="ses_internal",
+            request_overrides={
+                "extra_headers": {"x-session-affinity": "caller-override"}
+            },
+        )
+        assert kwargs["extra_headers"]["x-session-affinity"] == "caller-override"
+

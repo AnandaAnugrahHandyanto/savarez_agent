@@ -283,6 +283,18 @@ class ChatCompletionsTransport(ProviderTransport):
         if overrides:
             api_kwargs.update(overrides)
 
+        # x-session-affinity routes same-session requests to the same replica
+        # so Workers AI's prefix cache stays warm across an agent loop.
+        # https://developers.cloudflare.com/workers-ai/features/prompt-caching/
+        session_id = params.get("session_id")
+        if params.get("is_workers_ai") and session_id:
+            existing_headers = api_kwargs.get("extra_headers") or {}
+            if "x-session-affinity" not in existing_headers:
+                api_kwargs["extra_headers"] = {
+                    **existing_headers,
+                    "x-session-affinity": str(session_id),
+                }
+
         return api_kwargs
 
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:
