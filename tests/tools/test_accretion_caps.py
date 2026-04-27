@@ -129,6 +129,27 @@ class TestReadTrackerCaps:
             assert len(td["dedup"]) <= 3
             assert len(td["read_timestamps"]) <= 3
 
+    def test_live_read_backfills_missing_timestamp_container(self, tmp_path):
+        """A pre-cap tracker entry without read_timestamps stays compatible."""
+        from tools import file_tools as ft
+
+        p = tmp_path / "compat.txt"
+        p.write_text("compat\n" * 10)
+
+        with ft._read_tracker_lock:
+            ft._read_tracker["compat-task"] = {
+                "last_key": None,
+                "consecutive": 0,
+                "read_history": set(),
+                "dedup": {},
+            }
+
+        ft.read_file_tool(path=str(p), task_id="compat-task")
+
+        with ft._read_tracker_lock:
+            td = ft._read_tracker["compat-task"]
+            assert str(p) in td["read_timestamps"]
+
 
 class TestCompletionConsumedPrune:
     def test_prune_drops_completion_entry_with_expired_session(self):
