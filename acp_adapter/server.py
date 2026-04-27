@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import os
+import re
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Deque, Optional
@@ -29,6 +31,7 @@ from acp.schema import (
     McpServerStdio,
     ModelInfo,
     NewSessionResponse,
+    PromptCapabilities,
     PromptResponse,
     ResumeSessionResponse,
     SetSessionConfigOptionResponse,
@@ -78,6 +81,55 @@ _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="acp-agent")
 _LIST_SESSIONS_PAGE_SIZE = 50
 
 
+def _parse_line_range_from_uri(uri: str) -> tuple[int, int] | None:
+    """Parse line range from URI fragment.
+
+    Supported formats:
+      - file:///path.py#L13-L20
+      - file:///path.py#13-20
+      - file:///path.py:13:20
+    Returns (start, end) 1-indexed, or None.
+    """
+    if "#" in uri:
+        fragment = uri.split("#", 1)[1]  # after last #
+        m = re.match(r"L?(\d+)[-:,]L?(\d+)", fragment)
+        if m:
+            return int(m.group(1)), int(m.group(2))
+    if ":" in uri:
+        # Try file:///path.py:13:20  (note: colon in path after scheme)
+        rest = uri.split("://", 1)[-1] if "://" in uri else uri
+        # Find the last two colon-separated numbers
+        m = re.search(r":(\d+):(\d+)$", rest)
+        if m and not m.group(1).startswith("0"):
+            return int(m.group(1)), int(m.group(2))
+    return None
+
+
+def _extract_range_from_meta(
+    meta: dict[str, Any] | None,
+) -> tuple[int, int] | None:
+    """Extract (start, end) from a _meta dict.
+
+    Supports:
+      - {"range": {"start": 13, "end": 20}}
+      - {"start_line": 13, "end_line": 20}
+      - {"start": 13, "end": 20}
+    """
+    if not meta or not isinstance(meta, dict):
+        return None
+    r = meta.get("range")
+    if isinstance(r, dict):
+        start = r.get("start") or r.get("start_line")
+        end = r.get("end") or r.get("end_line")
+        if start and end:
+            return int(start), int(end)
+    start = meta.get("start_line") or meta.get("start")
+    end = meta.get("end_line") or meta.get("end")
+    if start and end:
+        return int(start), int(end)
+    return None
+
+
 def _extract_text(
     prompt: list[
         TextContentBlock
@@ -87,15 +139,203 @@ def _extract_text(
         | EmbeddedResourceContentBlock
     ],
 ) -> str:
-    """Extract plain text from ACP content blocks."""
+    """Extract plain text from ACP content blocks.
+
+    Handles:
+    - TextContentBlock: plain text
+    - EmbeddedResourceContentBlock (TextResourceContents): @-referenced files
+        with line range extraction from URI fragments, _meta, or annotations
+    - EmbeddedResourceContentBlock (BlobResourceContents) / ImageContentBlock:
+        saves images to /tmp/hermes_acp_img_* and embeds [Image: path]
+    - AudioContentBlock: saves audio to /tmp/hermes_acp_audio_* and embeds [Audio: path]
+    - ResourceContentBlock: reads file content from disk
+    """
+    from urllib.parse import urlparse
+
     parts: list[str] = []
+    img_counter = 0
+    audio_counter = 0
+
     for block in prompt:
+        # ---- TextContentBlock (plain text) ----
         if isinstance(block, TextContentBlock):
             parts.append(block.text)
-        elif hasattr(block, "text"):
+            continue
+
+        # ---- ImageContentBlock ----
+        if isinstance(block, ImageContentBlock):
+            img_counter += 1
+            mime = block.mime_type or "image/png"
+            ext = _mime_to_ext(mime, ".png")
+            fname = f"/tmp/hermes_acp_img_{img_counter}{ext}"
+            try:
+                data = base64.b64decode(block.data)
+                with open(fname, "wb") as f:
+                    f.write(data)
+                parts.append(f"[Image: {fname}]")
+            except Exception as exc:
+                logger.warning("Failed to save image block: %s", exc)
+            continue
+
+        # ---- AudioContentBlock ----
+        if isinstance(block, AudioContentBlock):
+            audio_counter += 1
+            mime = block.mime_type or "audio/wav"
+            ext = _mime_to_ext(mime, ".wav")
+            fname = f"/tmp/hermes_acp_audio_{audio_counter}{ext}"
+            try:
+                data = base64.b64decode(block.data)
+                with open(fname, "wb") as f:
+                    f.write(data)
+                parts.append(f"[Audio: {fname}]")
+            except Exception as exc:
+                logger.warning("Failed to save audio block: %s", exc)
+            continue
+
+        # ---- EmbeddedResourceContentBlock (@-referenced files) ----
+        if isinstance(block, EmbeddedResourceContentBlock):
+            resource = block.resource
+
+            # TextResourceContents
+            if hasattr(resource, "text"):
+                uri: str = getattr(resource, "uri", "") or ""
+                text: str = resource.text
+
+                # Try to extract line range from multiple sources
+                line_range = _parse_line_range_from_uri(uri)
+                if not line_range:
+                    line_range = _extract_range_from_meta(
+                        getattr(resource, "field_meta", None)
+                    )
+                if not line_range:
+                    line_range = _extract_range_from_meta(
+                        getattr(block, "field_meta", None)
+                    )
+                if not line_range:
+                    annotations = getattr(block, "annotations", None)
+                    if annotations:
+                        line_range = _extract_range_from_meta(
+                            getattr(annotations, "field_meta", None)
+                        )
+
+                if line_range:
+                    start, end = line_range
+                    # URI fragment (#L15:21): editor ALREADY clipped the text.
+                    # Don't re-clip — just annotate the label with the range.
+                    # _meta / annotations range: editor MAY have sent full file,
+                    # but the text is what the editor sent — trust it as-is.
+                    lines = text.splitlines(keepends=False)
+                    total = len(lines)
+                    # Only re-clip if total_lines matches what the full file would have
+                    # (heuristic: if total >> range span, assume full file was sent)
+                    range_span = end - start + 1
+                    if range_span > 0 and total > range_span * 2:
+                        # Full file was sent — clip to the range
+                        start = max(1, min(start, total))
+                        end = max(start, min(end, total))
+                        selected = lines[start - 1 : end]
+                        snippet = "\n".join(selected)
+                        file_label = f"[File: {uri} (lines {start}-{end}/{total})]"
+                        parts.append(f"{file_label}\n{snippet}")
+                    else:
+                        # Text is already clipped — just annotate
+                        file_label = f"[File: {uri} (lines {start}-{end})]"
+                        parts.append(f"{file_label}\n{text}")
+                else:
+                    _fname = os.path.basename(urlparse(uri).path) if uri else "file"
+                    file_label = f"[File: {uri}]" if uri else f"[Embedded file: {_fname}]"
+                    parts.append(f"{file_label}\n{text}")
+                continue
+
+            # BlobResourceContents (image/audio in embedded resources)
+            if hasattr(resource, "blob"):
+                uri = getattr(resource, "uri", "") or ""
+                mime_type = getattr(resource, "mime_type", None) or ""
+                blob_data = resource.blob
+
+                if mime_type.startswith("image/"):
+                    img_counter += 1
+                    ext = _mime_to_ext(mime_type, ".png")
+                    fname = f"/tmp/hermes_acp_img_{img_counter}{ext}"
+                    try:
+                        data = base64.b64decode(blob_data)
+                        with open(fname, "wb") as f:
+                            f.write(data)
+                        parts.append(f"[Image: {fname}]")
+                    except Exception as exc:
+                        logger.warning("Failed to save embedded image: %s", exc)
+                elif mime_type.startswith("audio/"):
+                    audio_counter += 1
+                    ext = _mime_to_ext(mime_type, ".wav")
+                    fname = f"/tmp/hermes_acp_audio_{audio_counter}{ext}"
+                    try:
+                        data = base64.b64decode(blob_data)
+                        with open(fname, "wb") as f:
+                            f.write(data)
+                        parts.append(f"[Audio: {fname}]")
+                    except Exception as exc:
+                        logger.warning("Failed to save embedded audio: %s", exc)
+                else:
+                    # Other binary blob — just note the URI
+                    parts.append(f"[Embedded blob: {uri or 'unknown'}] (mime: {mime_type})")
+                continue
+
+            # Fallback — unrecognized resource type
+            parts.append(f"[Embedded resource: unknown type]")
+            continue
+
+        # ---- ResourceContentBlock (file link to read from disk) ----
+        if isinstance(block, ResourceContentBlock):
+            uri = block.uri
+            parsed = urlparse(uri)
+            fpath = parsed.path
+            line_range = _parse_line_range_from_uri(uri)
+            try:
+                with open(fpath, "r") as f:
+                    content = f.read()
+                fname = os.path.basename(fpath)
+                if line_range:
+                    start, end = line_range
+                    lines = content.splitlines(keepends=False)
+                    total = len(lines)
+                    start = max(1, min(start, total))
+                    end = max(start, min(end, total))
+                    selected = lines[start - 1 : end]
+                    snippet = "\n".join(selected)
+                    parts.append(f"[File: {uri} (lines {start}-{end}/{total})]\n{snippet}")
+                else:
+                    parts.append(f"[File: {uri}]\n{content}")
+            except Exception as exc:
+                parts.append(f"[File: {uri}] (unreadable: {exc})")
+            continue
+
+        # ---- Catch-all for unknown blocks with text ----
+        if hasattr(block, "text"):
             parts.append(str(block.text))
-        # Non-text blocks are ignored for now.
+
     return "\n".join(parts)
+
+
+def _mime_to_ext(mime_type: str, fallback: str = ".bin") -> str:
+    """Map a MIME type to a file extension."""
+    _MIME_EXT_MAP = {
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/jpg": ".jpg",
+        "image/gif": ".gif",
+        "image/webp": ".webp",
+        "image/svg+xml": ".svg",
+        "image/bmp": ".bmp",
+        "audio/wav": ".wav",
+        "audio/wave": ".wav",
+        "audio/mpeg": ".mp3",
+        "audio/mp3": ".mp3",
+        "audio/mp4": ".m4a",
+        "audio/ogg": ".ogg",
+        "audio/flac": ".flac",
+        "audio/webm": ".webm",
+    }
+    return _MIME_EXT_MAP.get(mime_type, fallback)
 
 
 class HermesACPAgent(acp.Agent):
@@ -351,6 +591,11 @@ class HermesACPAgent(acp.Agent):
             agent_info=Implementation(name="hermes-agent", version=HERMES_VERSION),
             agent_capabilities=AgentCapabilities(
                 load_session=True,
+                prompt_capabilities=PromptCapabilities(
+                    image=True,
+                    audio=True,
+                    embedded_context=True,
+                ),
                 session_capabilities=SessionCapabilities(
                     fork=SessionForkCapabilities(),
                     list=SessionListCapabilities(),
