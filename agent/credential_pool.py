@@ -714,7 +714,11 @@ class CredentialPool:
                     self._persist()
                     self._sync_device_code_entry_to_auth_store(updated)
                     return updated
-            self._mark_exhausted(entry, None)
+            # Look up the current version of this entry — a sync method above
+            # may have replaced it in self._entries with updated tokens.  Using
+            # the stale ``entry`` object would overwrite those synced tokens.
+            current = next((e for e in self._entries if e.id == entry.id), entry)
+            self._mark_exhausted(current, None)
             return None
 
         updated = replace(

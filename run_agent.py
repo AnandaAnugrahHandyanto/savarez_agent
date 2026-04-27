@@ -5721,6 +5721,22 @@ class AIAgent:
             rotate_status = status_code if status_code is not None else 401
             next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
             if next_entry is not None:
+                cred_id = getattr(next_entry, "id", None)
+                seen_count = self._auth_rotation_seen.get(cred_id, 0)
+                self._auth_rotation_seen[cred_id] = seen_count + 1
+                if seen_count >= 1:
+                    # Already tried this credential once after auth failure —
+                    # stop rotating to prevent an infinite loop when the pool
+                    # keeps returning the same (broken) entry.
+                    logger.warning(
+                        "credential pool: entry %s returned %d times during auth recovery — giving up",
+                        cred_id, seen_count + 1,
+                    )
+                    self._emit_warning(
+                        "🔐 All credentials exhausted (auth failure). "
+                        "Run 'hermes login' to re-authenticate or check your API key."
+                    )
+                    return False, has_retried_429
                 logger.info(
                     "Credential %s (auth refresh failed) — rotated to pool entry %s",
                     rotate_status,
@@ -9882,6 +9898,7 @@ class AIAgent:
             copilot_auth_retry_attempted=False
             thinking_sig_retry_attempted = False
             has_retried_429 = False
+            self._auth_rotation_seen = {}  # credential ID → rotation count (prevents infinite auth loop)
             restart_with_compressed_messages = False
             restart_with_length_continuation = False
 
@@ -10586,6 +10603,7 @@ class AIAgent:
                         except Exception:
                             pass
                     self._touch_activity(f"API call #{api_call_count} completed")
+                    self._auth_rotation_seen = {}  # Reset on success
                     break  # Success, exit retry loop
 
                 except InterruptedError:
@@ -10810,8 +10828,9 @@ class AIAgent:
                     ):
                         codex_auth_retry_attempted = True
                         if self._try_refresh_codex_client_credentials(force=True):
-                            self._vprint(f"{self.log_prefix}🔐 Codex auth refreshed after 401. Retrying request...")
+                            self._emit_status("🔐 Codex auth refreshed after 401. Retrying request...")
                             continue
+                        self._emit_warning("🔐 Codex 401 — authentication failed. Run 'hermes login --provider codex' to re-authenticate.")
                     if (
                         self.api_mode == "chat_completions"
                         and self.provider == "nous"
@@ -10820,11 +10839,9 @@ class AIAgent:
                     ):
                         nous_auth_retry_attempted = True
                         if self._try_refresh_nous_client_credentials(force=True):
-                            print(f"{self.log_prefix}🔐 Nous agent key refreshed after 401. Retrying request...")
+                            self._emit_status("🔐 Nous agent key refreshed after 401. Retrying request...")
                             continue
                         # Credential refresh didn't help — show diagnostic info.
-                        # Most common causes: Portal OAuth expired/revoked,
-                        # account out of credits, or agent key blocked.
                         from hermes_constants import display_hermes_home as _dhh_fn
                         _dhh = _dhh_fn()
                         _body_text = ""
@@ -10834,15 +10851,16 @@ class AIAgent:
                                 _body_text = str(_body)[:200]
                         except Exception:
                             pass
-                        print(f"{self.log_prefix}🔐 Nous 401 — Portal authentication failed.")
-                        if _body_text:
-                            print(f"{self.log_prefix}   Response: {_body_text}")
-                        print(f"{self.log_prefix}   Most likely: Portal OAuth expired, account out of credits, or agent key revoked.")
-                        print(f"{self.log_prefix}   Troubleshooting:")
-                        print(f"{self.log_prefix}     • Re-authenticate: hermes login --provider nous")
-                        print(f"{self.log_prefix}     • Check credits / billing: https://portal.nousresearch.com")
-                        print(f"{self.log_prefix}     • Verify stored credentials: {_dhh}/auth.json")
-                        print(f"{self.log_prefix}     • Switch providers temporarily: /model <model> --provider openrouter")
+                        self._emit_warning("🔐 Nous 401 — Portal authentication failed. Re-authenticate: 'hermes login --provider nous'")
+                        logger.warning(
+                            "Nous 401 diagnostic: response=%s | "
+                            "Most likely: Portal OAuth expired, account out of credits, or agent key revoked. "
+                            "Troubleshooting: re-authenticate with 'hermes login --provider nous', "
+                            "check credits at https://portal.nousresearch.com, "
+                            "verify credentials in %s/auth.json, "
+                            "or switch providers: /model <model> --provider openrouter",
+                            _body_text, _dhh,
+                        )
                     if (
                         self.provider == "copilot"
                         and status_code == 401
@@ -10850,8 +10868,9 @@ class AIAgent:
                     ):
                         copilot_auth_retry_attempted = True
                         if self._try_refresh_copilot_client_credentials():
-                            self._vprint(f"{self.log_prefix}🔐 Copilot credentials refreshed after 401. Retrying request...")
+                            self._emit_status("🔐 Copilot credentials refreshed after 401. Retrying request...")
                             continue
+                        self._emit_warning("🔐 Copilot 401 — authentication failed. Run 'hermes login --provider copilot' to re-authenticate.")
                     if (
                         self.api_mode == "anthropic_messages"
                         and status_code == 401
@@ -10861,23 +10880,23 @@ class AIAgent:
                         anthropic_auth_retry_attempted = True
                         from agent.anthropic_adapter import _is_oauth_token
                         if self._try_refresh_anthropic_client_credentials():
-                            print(f"{self.log_prefix}🔐 Anthropic credentials refreshed after 401. Retrying request...")
+                            self._emit_status("🔐 Anthropic credentials refreshed after 401. Retrying request...")
                             continue
                         # Credential refresh didn't help — show diagnostic info
                         key = self._anthropic_api_key
                         auth_method = "Bearer (OAuth/setup-token)" if _is_oauth_token(key) else "x-api-key (API key)"
-                        print(f"{self.log_prefix}🔐 Anthropic 401 — authentication failed.")
-                        print(f"{self.log_prefix}   Auth method: {auth_method}")
-                        print(f"{self.log_prefix}   Token prefix: {key[:12]}..." if key and len(key) > 12 else f"{self.log_prefix}   Token: (empty or short)")
-                        print(f"{self.log_prefix}   Troubleshooting:")
+                        token_hint = f"{key[:12]}..." if key and len(key) > 12 else "(empty or short)"
+                        self._emit_warning(f"🔐 Anthropic 401 — authentication failed. Verify key at platform.claude.com or run 'claude /login'.")
                         from hermes_constants import display_hermes_home as _dhh_fn
                         _dhh = _dhh_fn()
-                        print(f"{self.log_prefix}     • Check ANTHROPIC_TOKEN in {_dhh}/.env for Hermes-managed OAuth/setup tokens")
-                        print(f"{self.log_prefix}     • Check ANTHROPIC_API_KEY in {_dhh}/.env for API keys or legacy token values")
-                        print(f"{self.log_prefix}     • For API keys: verify at https://platform.claude.com/settings/keys")
-                        print(f"{self.log_prefix}     • For Claude Code: run 'claude /login' to refresh, then retry")
-                        print(f"{self.log_prefix}     • Legacy cleanup: hermes config set ANTHROPIC_TOKEN \"\"")
-                        print(f"{self.log_prefix}     • Clear stale keys: hermes config set ANTHROPIC_API_KEY \"\"")
+                        logger.warning(
+                            "Anthropic 401 diagnostic: auth_method=%s token_prefix=%s | "
+                            "Troubleshooting: check ANTHROPIC_TOKEN or ANTHROPIC_API_KEY in %s/.env, "
+                            "verify API keys at https://platform.claude.com/settings/keys, "
+                            "run 'claude /login' to refresh, "
+                            "or clear stale keys with 'hermes config set ANTHROPIC_API_KEY \"\"'",
+                            auth_method, token_hint, _dhh,
+                        )
 
                     # ── Thinking block signature recovery ─────────────────
                     # Anthropic signs thinking blocks against the full turn
