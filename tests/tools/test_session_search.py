@@ -495,7 +495,11 @@ class TestSessionSearch:
 def _real_db(tmp_path):
     """Minimal real SessionDB for integration-style recent-sessions tests."""
     from hermes_state import SessionDB
-    return SessionDB(db_path=tmp_path / "state.db")
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        yield db
+    finally:
+        db.close()
 
 
 class TestListRecentSessionsCronFlood:
