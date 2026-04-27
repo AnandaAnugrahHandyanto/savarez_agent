@@ -308,6 +308,23 @@ from gateway.whatsapp_identity import (
 logger = logging.getLogger(__name__)
 
 
+def _is_plain_stop_override_message(message: str) -> bool:
+    """Return true for short human stop commands that must override resume notes.
+
+    Telegram users often type plain `stop!` rather than `/stop` when an agent
+    is already looping. If the previous transcript ended on tool output, the
+    auto-continue system note would otherwise tell the model to process that
+    stale work first, defeating the user's stop instruction.
+    """
+    normalized = re.sub(r"[^a-z0-9']+", " ", (message or "").lower()).strip()
+    if not normalized:
+        return False
+    if normalized in {"stop", "stop now", "please stop", "stop please"}:
+        return True
+    words = normalized.split()
+    return len(words) <= 12 and "stop" in words and "loop" in words
+
+
 # Sentinel placed into _running_agents immediately when a session starts
 # processing, *before* any await.  Prevents a second message for the same
 # session from bypassing the "already running" guard during the async gap
@@ -10448,7 +10465,9 @@ class GatewayRunner:
                 _resume_entry is not None and getattr(_resume_entry, "resume_pending", False)
             )
 
-            if _is_resume_pending:
+            _suppress_resume_note = _is_plain_stop_override_message(message)
+
+            if _is_resume_pending and not _suppress_resume_note:
                 _reason = getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
                 _reason_phrase = (
                     "a gateway restart"
@@ -10465,7 +10484,7 @@ class GatewayRunner:
                     f"message below.]\n\n"
                     + message
                 )
-            elif agent_history and agent_history[-1].get("role") == "tool":
+            elif agent_history and agent_history[-1].get("role") == "tool" and not _suppress_resume_note:
                 message = (
                     "[System note: Your previous turn was interrupted before you could "
                     "process the last tool result(s). The conversation history contains "

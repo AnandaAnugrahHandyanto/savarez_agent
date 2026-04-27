@@ -31,6 +31,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from gateway import run as gateway_run
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.session import SessionEntry, SessionSource, SessionStore
 from tests.gateway.restart_test_helpers import (
@@ -67,7 +68,9 @@ def _simulate_note_injection(
         resume_entry is not None and getattr(resume_entry, "resume_pending", False)
     )
 
-    if is_resume_pending:
+    suppress_resume_note = gateway_run._is_plain_stop_override_message(message)
+
+    if is_resume_pending and not suppress_resume_note:
         reason = getattr(resume_entry, "resume_reason", None) or "restart_timeout"
         reason_phrase = (
             "a gateway restart"
@@ -84,7 +87,7 @@ def _simulate_note_injection(
             f"message below.]\n\n"
             + message
         )
-    elif agent_history and agent_history[-1].get("role") == "tool":
+    elif agent_history and agent_history[-1].get("role") == "tool" and not suppress_resume_note:
         message = (
             "[System note: Your previous turn was interrupted before you could "
             "process the last tool result(s). The conversation history contains "
@@ -411,6 +414,27 @@ class TestResumePendingSystemNote:
         result = _simulate_note_injection(history, "ping", resume_entry=None)
         assert "[System note:" in result
         assert "tool result" in result
+
+    def test_resume_pending_stop_override_suppresses_restart_note(self):
+        entry = self._pending_entry(reason="restart_timeout")
+        result = _simulate_note_injection(
+            agent_history=[{"role": "assistant", "content": "in progress"}],
+            user_message="stop!",
+            resume_entry=entry,
+        )
+        assert result == "stop!"
+        assert "[System note:" not in result
+
+    def test_resume_pending_loop_stop_suppresses_restart_note(self):
+        entry = self._pending_entry(reason="restart_timeout")
+        message = "pk stop. you're in a loop STOP"
+        result = _simulate_note_injection(
+            agent_history=[{"role": "assistant", "content": "in progress"}],
+            user_message=message,
+            resume_entry=entry,
+        )
+        assert result == message
+        assert "[System note:" not in result
 
     def test_no_note_when_nothing_to_resume(self):
         history = [

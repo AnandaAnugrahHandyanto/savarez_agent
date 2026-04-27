@@ -9,6 +9,18 @@ finishes the interrupted work before addressing the new input.
 import pytest
 
 
+def _is_plain_stop_override_message(message: str) -> bool:
+    import re
+
+    normalized = re.sub(r"[^a-z0-9']+", " ", (message or "").lower()).strip()
+    if not normalized:
+        return False
+    if normalized in {"stop", "stop now", "please stop", "stop please"}:
+        return True
+    words = normalized.split()
+    return len(words) <= 12 and "stop" in words and "loop" in words
+
+
 def _simulate_auto_continue(agent_history: list, user_message: str) -> str:
     """Reproduce the auto-continue injection logic from _run_agent().
 
@@ -17,7 +29,8 @@ def _simulate_auto_continue(agent_history: list, user_message: str) -> str:
     gateway runner.
     """
     message = user_message
-    if agent_history and agent_history[-1].get("role") == "tool":
+    suppress_resume_note = _is_plain_stop_override_message(message)
+    if agent_history and agent_history[-1].get("role") == "tool" and not suppress_resume_note:
         message = (
             "[System note: Your previous turn was interrupted before you could "
             "process the last tool result(s). The conversation history contains "
@@ -79,6 +92,29 @@ class TestAutoDetection:
         ]
         result = _simulate_auto_continue(history, "continue")
         assert "[System note:" in result
+
+    def test_stop_override_does_not_get_tool_tail_note(self):
+        history = [
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "c1", "function": {"name": "terminal", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "c1", "content": "still running"},
+        ]
+        result = _simulate_auto_continue(history, "stop!")
+        assert result == "stop!"
+        assert "[System note:" not in result
+
+    def test_loop_stop_override_does_not_get_tool_tail_note(self):
+        history = [
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "c1", "function": {"name": "terminal", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "c1", "content": "still running"},
+        ]
+        message = "pk stop. you're in a loop STOP"
+        result = _simulate_auto_continue(history, message)
+        assert result == message
+        assert "[System note:" not in result
 
     def test_original_message_preserved_after_note(self):
         """The user's actual message must appear after the system note."""
