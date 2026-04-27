@@ -610,6 +610,10 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = {str(k): v for k, v in channel_prompts.items()}
                     else:
                         bridged["channel_prompts"] = channel_prompts
+                if plat == Platform.WHATSAPP:
+                    for key in ("bridge_port", "bridge_script", "session_path", "free_response_chats"):
+                        if key in platform_cfg:
+                            bridged[key] = platform_cfg[key]
                 if not bridged:
                     continue
                 plat_data = platforms_data.setdefault(plat.value, {})
