@@ -437,7 +437,33 @@ def remove_oauth_tokens(server_name: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _configure_callback_port(cfg: dict) -> int:
+def _get_registered_redirect_port(storage: "HermesTokenStorage | None") -> int | None:
+    """Return the cached loopback callback port from client registration."""
+    if storage is None:
+        return None
+
+    client_info = _read_json(storage._client_info_path())
+    if not client_info:
+        return None
+
+    redirect_uris = client_info.get("redirect_uris")
+    if not isinstance(redirect_uris, list) or not redirect_uris:
+        return None
+
+    redirect_uri = redirect_uris[0]
+    if not isinstance(redirect_uri, str):
+        return None
+
+    parsed = urlparse(redirect_uri)
+    if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"}:
+        return None
+    if parsed.path != "/callback" or parsed.port is None:
+        return None
+
+    return parsed.port
+
+
+def _configure_callback_port(cfg: dict, storage: "HermesTokenStorage | None" = None) -> int:
     """Pick or validate the OAuth callback port.
 
     Stores the resolved port into ``cfg['_resolved_port']`` so sibling
@@ -452,7 +478,11 @@ def _configure_callback_port(cfg: dict) -> int:
     """
     global _oauth_port
     requested = int(cfg.get("redirect_port", 0))
-    port = _find_free_port() if requested == 0 else requested
+    if requested == 0:
+        registered_port = _get_registered_redirect_port(storage)
+        port = registered_port if registered_port is not None else _find_free_port()
+    else:
+        port = requested
     cfg["_resolved_port"] = port
     _oauth_port = port  # legacy consumer: _wait_for_callback reads this
     return port
@@ -559,7 +589,7 @@ def build_oauth_auth(
             server_name,
         )
 
-    _configure_callback_port(cfg)
+    _configure_callback_port(cfg, storage)
     client_metadata = _build_client_metadata(cfg)
     _maybe_preregister_client(storage, cfg, client_metadata)
 

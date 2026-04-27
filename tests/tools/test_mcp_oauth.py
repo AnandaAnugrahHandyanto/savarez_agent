@@ -491,7 +491,42 @@ def test_configure_callback_port_uses_explicit_port():
     assert cfg["_resolved_port"] == 54321
 
 
-def test_build_oauth_auth_preserves_server_url_path():
+def test_build_oauth_auth_reuses_cached_registered_redirect_port(tmp_path, monkeypatch):
+    """A cached client registration keeps using its registered callback port."""
+    from tools import mcp_oauth
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    token_dir = tmp_path / "mcp-tokens"
+    token_dir.mkdir()
+    (token_dir / "supabase.client.json").write_text(json.dumps({
+        "client_id": "supabase-client",
+        "redirect_uris": ["http://127.0.0.1:58741/callback"],
+        "grant_types": ["authorization_code", "refresh_token"],
+        "response_types": ["code"],
+        "token_endpoint_auth_method": "none",
+    }))
+
+    captured: dict = {}
+
+    class _FakeProvider:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    with patch.object(mcp_oauth, "_OAUTH_AVAILABLE", True), \
+         patch.object(mcp_oauth, "OAuthClientProvider", _FakeProvider), \
+         patch.object(mcp_oauth, "_is_interactive", return_value=True), \
+         patch.object(mcp_oauth, "_maybe_preregister_client"):
+        build_oauth_auth(
+            server_name="supabase",
+            server_url="https://mcp.supabase.com/mcp?project_ref=abc123&read_only=true",
+            oauth_config={},
+        )
+
+    redirect_uri = str(captured["client_metadata"].redirect_uris[0])
+    assert redirect_uri == "http://127.0.0.1:58741/callback"
+
+
+def test_build_oauth_auth_preserves_server_url_path(tmp_path, monkeypatch):
     """server_url with path is forwarded to OAuthClientProvider unmodified.
 
     Regression for #16015: previously ``_parse_base_url`` stripped the path,
@@ -503,6 +538,7 @@ def test_build_oauth_auth_preserves_server_url_path():
     """
     from tools import mcp_oauth
 
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     captured: dict = {}
 
     class _FakeProvider:
@@ -512,9 +548,7 @@ def test_build_oauth_auth_preserves_server_url_path():
     with patch.object(mcp_oauth, "_OAUTH_AVAILABLE", True), \
          patch.object(mcp_oauth, "OAuthClientProvider", _FakeProvider), \
          patch.object(mcp_oauth, "_is_interactive", return_value=True), \
-         patch.object(mcp_oauth, "_maybe_preregister_client"), \
-         patch.object(mcp_oauth, "HermesTokenStorage") as mock_storage_cls:
-        mock_storage_cls.return_value = MagicMock(has_cached_tokens=lambda: True)
+         patch.object(mcp_oauth, "_maybe_preregister_client"):
         build_oauth_auth(
             server_name="notion",
             server_url="https://mcp.notion.com/mcp",
