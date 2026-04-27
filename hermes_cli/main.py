@@ -7835,6 +7835,7 @@ For more help on a command:
             "arcee",
             "gmi",
             "nvidia",
+            "tencent-tokenhub",
         ],
         default=None,
         help="Inference provider (default: auto)",
