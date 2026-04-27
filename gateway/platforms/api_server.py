@@ -575,7 +575,12 @@ class _AuthFailTracker:
         cutoff = time.time() - self._window
         with self._lock:
             active = [t for t in self._buckets.get(ip, []) if t > cutoff]
-            self._buckets[ip] = active
+            if active:
+                self._buckets[ip] = active
+            else:
+                # Remove empty buckets to prevent unbounded memory growth
+                # from distinct attacker IPs whose window has expired.
+                self._buckets.pop(ip, None)
             return len(active) >= self._max
 
     def record_failure(self, ip: str) -> None:
@@ -584,10 +589,10 @@ class _AuthFailTracker:
         now = time.time()
         cutoff = now - self._window
         with self._lock:
-            bucket = self._buckets.setdefault(ip, [])
             # Prune expired entries before appending so the bucket stays bounded.
-            self._buckets[ip] = [t for t in bucket if t > cutoff]
-            self._buckets[ip].append(now)
+            active = [t for t in self._buckets.get(ip, []) if t > cutoff]
+            active.append(now)
+            self._buckets[ip] = active
 
     def retry_after(self, ip: str) -> int:
         with self._lock:

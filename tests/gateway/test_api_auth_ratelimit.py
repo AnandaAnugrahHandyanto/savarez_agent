@@ -69,20 +69,28 @@ class TestAuthFailTrackerIsBlocked:
             tracker.record_failure("1.2.3.4")
         assert tracker.is_blocked("1.2.3.4") is True
 
-        # Simulate time advancing past the window
-        future = time.time() + 2  # 2 seconds ahead — past 1-second window
-        with patch("gateway.platforms.api_server.time") as mock_time:
-            mock_time.time.return_value = future
-            # Re-import the tracker's is_blocked which calls time.time() internally;
-            # but the tracker is already instantiated so we need to patch at the
-            # module level where time.time is called inside _AuthFailTracker.
-            # Instead, test via a fresh check with manipulated timestamps.
-            pass
-
         # Use a direct approach: manually age the timestamps
         with tracker._lock:
             tracker._buckets["1.2.3.4"] = [t - 2 for t in tracker._buckets["1.2.3.4"]]
         assert tracker.is_blocked("1.2.3.4") is False
+
+    def test_empty_buckets_removed_after_window_expiry(self):
+        """is_blocked() must remove the bucket entry for an IP once all its
+        timestamps have expired, preventing unbounded memory growth from
+        distinct attacker IPs."""
+        tracker = _AuthFailTracker(max_failures=10, window_seconds=1)
+        tracker.record_failure("2.2.2.2")
+
+        # Age the timestamp past the window
+        with tracker._lock:
+            tracker._buckets["2.2.2.2"] = [t - 2 for t in tracker._buckets["2.2.2.2"]]
+
+        # Calling is_blocked should prune the empty bucket
+        assert tracker.is_blocked("2.2.2.2") is False
+        with tracker._lock:
+            assert "2.2.2.2" not in tracker._buckets, (
+                "Empty bucket should be removed to prevent memory leak"
+            )
 
 
 class TestAuthFailTrackerRetryAfter:
