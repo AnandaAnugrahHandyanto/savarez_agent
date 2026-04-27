@@ -30,6 +30,7 @@ model:
   #   "ollama-cloud" - Ollama Cloud (requires: OLLAMA_API_KEY — https://ollama.com/settings)
   #   "kilocode"     - KiloCode gateway (requires: KILOCODE_API_KEY)
   #   "ai-gateway"   - Vercel AI Gateway (requires: AI_GATEWAY_API_KEY)
+  #   "workers-ai"   - Cloudflare Workers AI (requires: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID; optional CLOUDFLARE_GATEWAY_ID for AI Gateway routing)
   #
   # Local servers (LM Studio, Ollama, vLLM, llama.cpp):
   #   "custom"       - Any OpenAI-compatible endpoint. Set base_url below.

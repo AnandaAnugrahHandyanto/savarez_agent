@@ -163,6 +163,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_env_var="OLLAMA_BASE_URL",
     ),
+    "workers-ai": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("CLOUDFLARE_API_TOKEN",),
+        base_url_env_var="WORKERS_AI_BASE_URL",
+    ),
 }
 
 
@@ -293,6 +298,9 @@ ALIASES: Dict[str, str] = {
     "llamacpp": "local",
     "llama.cpp": "local",
     "llama-cpp": "local",
+
+    # workers-ai
+    "cloudflare": "workers-ai", "cf": "workers-ai", "cloudflare-ai": "workers-ai",
 }
 
 
@@ -309,6 +317,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",
+    "workers-ai": "Cloudflare Workers AI",
 }
 
 
