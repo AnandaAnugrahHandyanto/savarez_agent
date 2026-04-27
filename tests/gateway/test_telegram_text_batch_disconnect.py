@@ -72,7 +72,7 @@ class TestTextBatchDisconnectCleanup:
 
         # Task should have been cancelled (may need an event loop tick to complete)
         await asyncio.sleep(0)
-        assert task.cancelled() or task.done(), "Task should be cancelled after disconnect"
+        assert task.cancelled(), "Task should be cancelled after disconnect"
         # Dicts should be cleared
         assert len(adapter._pending_text_batch_tasks) == 0, (
             "_pending_text_batch_tasks should be empty after disconnect"
