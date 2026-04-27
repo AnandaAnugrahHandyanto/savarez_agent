@@ -33,7 +33,20 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 16
+
+def _date_to_timestamp_range(date: str):
+    """Return (start_ts, end_ts) Unix timestamps for a UTC calendar day.
+
+    ``date`` must be a string in YYYY-MM-DD format.  Returns a tuple of
+    floats representing the start (00:00:00 UTC) and end (00:00:00 UTC next
+    day) of the requested day.
+    """
+    dt = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    start_ts = dt.timestamp()
+    end_ts = start_ts + 86400.0
+    return start_ts, end_ts
+
+SCHEMA_VERSION = 17
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -346,6 +359,27 @@ CREATE INDEX IF NOT EXISTS idx_code_skill_runs_code_session_id ON code_skill_run
 CREATE INDEX IF NOT EXISTS idx_code_skill_runs_skill_name ON code_skill_runs(skill_name);
 CREATE INDEX IF NOT EXISTS idx_code_skill_runs_status ON code_skill_runs(status);
 CREATE INDEX IF NOT EXISTS idx_code_skill_runs_created_at ON code_skill_runs(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS tasks (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    description TEXT,
+    status TEXT NOT NULL DEFAULT 'todo',
+    priority TEXT NOT NULL DEFAULT 'medium',
+    agent_id TEXT,
+    session_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT,
+    run_id TEXT,
+    error_message TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_agent ON tasks(agent_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tasks_run ON tasks(run_id);
 """
 
 FTS_SQL = """
@@ -510,14 +544,23 @@ class SessionDB:
         """Create tables and FTS if they don't exist, run migrations."""
         cursor = self._conn.cursor()
 
-        cursor.executescript(SCHEMA_SQL)
+        # Create schema_version first so we can detect fresh vs existing DB
+        # before running executescript (which fails on existing DBs that have
+        # older table layouts missing columns referenced in SCHEMA_SQL indexes).
+        cursor.execute(
+            "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)"
+        )
+        self._conn.commit()
 
         # Check schema version and run migrations
         cursor.execute("SELECT version FROM schema_version LIMIT 1")
         row = cursor.fetchone()
         if row is None:
+            # Fresh database — safe to run full SCHEMA_SQL (all tables are new).
+            cursor.executescript(SCHEMA_SQL)
             cursor.execute(
-                "INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,)
+                "INSERT OR IGNORE INTO schema_version (version) VALUES (?)",
+                (SCHEMA_VERSION,),
             )
         else:
             current_version = row["version"] if isinstance(row, sqlite3.Row) else row[0]
@@ -945,6 +988,39 @@ class SessionDB:
                     except sqlite3.OperationalError:
                         pass
                 cursor.execute("UPDATE schema_version SET version = 16")
+            if current_version < 17:
+                # v17: add tasks table (previously absent from migration chain)
+                try:
+                    cursor.execute(
+                        """CREATE TABLE IF NOT EXISTS tasks (
+                            id TEXT PRIMARY KEY,
+                            title TEXT NOT NULL,
+                            description TEXT,
+                            status TEXT NOT NULL DEFAULT 'todo',
+                            priority TEXT NOT NULL DEFAULT 'medium',
+                            agent_id TEXT,
+                            session_id TEXT,
+                            created_at TEXT NOT NULL,
+                            updated_at TEXT NOT NULL,
+                            completed_at TEXT,
+                            run_id TEXT,
+                            error_message TEXT
+                        )"""
+                    )
+                except sqlite3.OperationalError:
+                    pass  # Already exists
+                for idx_sql in [
+                    "CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)",
+                    "CREATE INDEX IF NOT EXISTS idx_tasks_agent ON tasks(agent_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at DESC)",
+                    "CREATE INDEX IF NOT EXISTS idx_tasks_run ON tasks(run_id)",
+                ]:
+                    try:
+                        cursor.execute(idx_sql)
+                    except sqlite3.OperationalError:
+                        pass
+                cursor.execute("UPDATE schema_version SET version = 17")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -1761,6 +1837,24 @@ class SessionDB:
                 )
             else:
                 cursor = self._conn.execute("SELECT COUNT(*) FROM sessions")
+            return cursor.fetchone()[0]
+
+    def sessions_today_count(self, date: str) -> int:
+        """Count sessions started on the given date (YYYY-MM-DD, UTC)."""
+        start_ts, end_ts = _date_to_timestamp_range(date)
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT COUNT(*) FROM sessions WHERE started_at >= ? AND started_at < ?",
+                (start_ts, end_ts),
+            )
+            return cursor.fetchone()[0]
+
+    def active_sessions_count(self) -> int:
+        """Count sessions that have no ended_at (still open)."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT COUNT(*) FROM sessions WHERE ended_at IS NULL"
+            )
             return cursor.fetchone()[0]
 
     def message_count(self, session_id: str = None) -> int:
@@ -3339,6 +3433,221 @@ class ProviderRouterDB:
 
 
 # ---------------------------------------------------------------------------
+# TaskDB
+# ---------------------------------------------------------------------------
+
+
+class TaskDB:
+    """SQLite-backed storage for user-facing tasks."""
+
+    _WRITE_MAX_RETRIES = 15
+    _WRITE_RETRY_MIN_S = 0.020
+    _WRITE_RETRY_MAX_S = 0.150
+
+    def __init__(self, db_path: Path = None):
+        self.db_path = db_path or DEFAULT_DB_PATH
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        self._conn = sqlite3.connect(
+            str(self.db_path),
+            check_same_thread=False,
+            timeout=1.0,
+            isolation_level=None,
+        )
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA foreign_keys=ON")
+        self._init_schema()
+
+    def _init_schema(self):
+        cursor = self._conn.cursor()
+        try:
+            cursor.execute(
+                """CREATE TABLE IF NOT EXISTS tasks (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    description TEXT,
+                    status TEXT NOT NULL DEFAULT 'todo',
+                    priority TEXT NOT NULL DEFAULT 'medium',
+                    agent_id TEXT,
+                    session_id TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    run_id TEXT,
+                    error_message TEXT
+                )"""
+            )
+        except sqlite3.OperationalError:
+            pass
+        for idx_sql in [
+            "CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)",
+            "CREATE INDEX IF NOT EXISTS idx_tasks_agent ON tasks(agent_id)",
+            "CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id)",
+            "CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_tasks_run ON tasks(run_id)",
+        ]:
+            try:
+                cursor.execute(idx_sql)
+            except sqlite3.OperationalError:
+                pass
+        self._conn.commit()
+
+    def _execute_write(self, fn: Callable[[sqlite3.Connection], T]) -> T:
+        last_err: Optional[Exception] = None
+        for attempt in range(self._WRITE_MAX_RETRIES):
+            try:
+                with self._lock:
+                    self._conn.execute("BEGIN IMMEDIATE")
+                    try:
+                        result = fn(self._conn)
+                        self._conn.commit()
+                    except BaseException:
+                        try:
+                            self._conn.rollback()
+                        except Exception:
+                            pass
+                        raise
+                return result
+            except sqlite3.OperationalError as exc:
+                err_msg = str(exc).lower()
+                if "locked" in err_msg or "busy" in err_msg:
+                    last_err = exc
+                    if attempt < self._WRITE_MAX_RETRIES - 1:
+                        jitter = random.uniform(self._WRITE_RETRY_MIN_S, self._WRITE_RETRY_MAX_S)
+                        time.sleep(jitter)
+                        continue
+                raise
+        raise last_err or sqlite3.OperationalError("database is locked after max retries")
+
+    def _row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
+        return dict(row) if row else {}
+
+    def close(self):
+        with self._lock:
+            if self._conn:
+                try:
+                    self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                except Exception:
+                    pass
+                self._conn.close()
+                self._conn = None
+
+    def list_tasks(
+        self,
+        status: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM tasks WHERE 1=1"
+        params: list = []
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        if agent_id:
+            query += " AND agent_id = ?"
+            params.append(agent_id)
+        if session_id:
+            query += " AND session_id = ?"
+            params.append(session_id)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        with self._lock:
+            cursor = self._conn.execute(query, params)
+            return [self._row_to_dict(row) for row in cursor.fetchall()]
+
+    def create_task(
+        self,
+        task_id: str,
+        title: str,
+        description: Optional[str] = None,
+        priority: str = "medium",
+        agent_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        now = datetime.now(timezone.utc).isoformat()
+
+        def _do(conn):
+            conn.execute(
+                """INSERT INTO tasks
+                   (id, title, description, status, priority, agent_id,
+                    session_id, created_at, updated_at, run_id)
+                   VALUES (?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?)""",
+                (task_id, title, description, priority, agent_id, session_id, now, now, run_id),
+            )
+
+        self._execute_write(_do)
+        with self._lock:
+            cursor = self._conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
+            return self._row_to_dict(cursor.fetchone())
+
+    def update_task(
+        self,
+        task_id: str,
+        updates: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        if not updates:
+            return None
+        now = datetime.now(timezone.utc).isoformat()
+        allowed = {"title", "description", "status", "priority", "agent_id",
+                   "session_id", "run_id", "error_message", "completed_at"}
+        safe = {k: v for k, v in updates.items() if k in allowed}
+        if not safe:
+            return None
+
+        # Auto-set completed_at when status → done
+        if safe.get("status") == "done" and "completed_at" not in safe:
+            safe["completed_at"] = now
+
+        safe["updated_at"] = now
+        set_clause = ", ".join(f"{k} = ?" for k in safe)
+        values = list(safe.values()) + [task_id]
+
+        updated = [False]
+
+        def _do(conn):
+            cursor = conn.execute(
+                f"UPDATE tasks SET {set_clause} WHERE id = ?", values  # noqa: S608
+            )
+            updated[0] = cursor.rowcount > 0
+
+        self._execute_write(_do)
+        if not updated[0]:
+            return None
+        with self._lock:
+            cursor = self._conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
+            return self._row_to_dict(cursor.fetchone())
+
+    def delete_task(self, task_id: str) -> bool:
+        deleted = [False]
+
+        def _do(conn):
+            cursor = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+            deleted[0] = cursor.rowcount > 0
+
+        self._execute_write(_do)
+        return deleted[0]
+
+    def count_by_status(self) -> Dict[str, int]:
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT status, COUNT(*) FROM tasks GROUP BY status"
+            )
+            return {row[0]: row[1] for row in cursor.fetchall()}
+
+    def completed_today_count(self, date: str) -> int:
+        """Count tasks completed on the given date (YYYY-MM-DD prefix match)."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE status = 'done' AND completed_at LIKE ?",
+                (f"{date}%",),
+            )
+            return cursor.fetchone()[0]
+
+
+# ---------------------------------------------------------------------------
 # ApprovalDB
 # ---------------------------------------------------------------------------
 
@@ -3516,6 +3825,15 @@ class ApprovalDB:
 
     def get_pending_count(self) -> int:
         cursor = self._conn.execute("SELECT COUNT(*) FROM approvals WHERE status = 'pending'")
+        row = cursor.fetchone()
+        return row[0] if row else 0
+
+    def resolved_today_count(self, status: str, date: str) -> int:
+        """Count approvals resolved with *status* on the given day (YYYY-MM-DD prefix)."""
+        cursor = self._conn.execute(
+            "SELECT COUNT(*) FROM approvals WHERE status = ? AND resolved_at LIKE ?",
+            (status, f"{date}%"),
+        )
         row = cursor.fetchone()
         return row[0] if row else 0
 

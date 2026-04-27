@@ -1000,7 +1000,7 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 16
+        assert version == 17
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -1056,12 +1056,13 @@ class TestSchemaInit:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to v11
+        # Open with SessionDB — should migrate to latest SCHEMA_VERSION
         migrated_db = SessionDB(db_path=db_path)
 
-        # Verify migration
+        # Verify migration reached the current schema version
+        from hermes_state import SCHEMA_VERSION
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 16
+        assert cursor.fetchone()[0] == SCHEMA_VERSION
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
