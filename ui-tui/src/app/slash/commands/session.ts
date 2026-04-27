@@ -1,4 +1,5 @@
 import { attachedImageNotice, introMsg, toTranscriptMessages } from '../../../domain/messages.js'
+import { TUI_SESSION_MODEL_FLAG } from '../../../domain/slash.js'
 import type {
   BackgroundStartResponse,
   ConfigGetValueResponse,
@@ -14,6 +15,25 @@ import type { PanelSection } from '../../../types.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
+
+const TUI_SESSION_MODEL_RE = new RegExp(`(?:^|\\s)${TUI_SESSION_MODEL_FLAG}(?:\\s|$)`)
+const TUI_SESSION_STRIP_RE = new RegExp(`\\s*${TUI_SESSION_MODEL_FLAG}\\b\\s*`, 'g')
+
+const stripTuiSessionFlag = (trimmed: string) => trimmed.replace(TUI_SESSION_STRIP_RE, ' ').replace(/\s+/g, ' ').trim()
+
+const modelValueForConfigSet = (arg: string) => {
+  const trimmed = arg.trim()
+
+  if (!trimmed) {
+    return trimmed
+  }
+
+  if (TUI_SESSION_MODEL_RE.test(trimmed)) {
+    return stripTuiSessionFlag(trimmed)
+  }
+
+  return trimmed
+}
 
 export const sessionCommands: SlashCommand[] = [
   {
@@ -47,25 +67,27 @@ export const sessionCommands: SlashCommand[] = [
         return
       }
 
-      if (!arg) {
+      if (!arg.trim()) {
         return patchOverlayState({ modelPicker: true })
       }
 
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'model', session_id: ctx.sid, value: arg.trim() }).then(
-        ctx.guarded<ConfigSetResponse>(r => {
-          if (!r.value) {
-            return ctx.transcript.sys('error: invalid response: model switch')
-          }
+      ctx.gateway
+        .rpc<ConfigSetResponse>('config.set', { key: 'model', session_id: ctx.sid, value: modelValueForConfigSet(arg) })
+        .then(
+          ctx.guarded<ConfigSetResponse>(r => {
+            if (!r.value) {
+              return ctx.transcript.sys('error: invalid response: model switch')
+            }
 
-          ctx.transcript.sys(`model → ${r.value}`)
-          ctx.local.maybeWarn(r)
+            ctx.transcript.sys(`model → ${r.value}`)
+            ctx.local.maybeWarn(r)
 
-          patchUiState(state => ({
-            ...state,
-            info: state.info ? { ...state.info, model: r.value! } : { model: r.value!, skills: {}, tools: {} }
-          }))
-        })
-      )
+            patchUiState(state => ({
+              ...state,
+              info: state.info ? { ...state.info, model: r.value! } : { model: r.value!, skills: {}, tools: {} }
+            }))
+          })
+        )
     }
   },
 
