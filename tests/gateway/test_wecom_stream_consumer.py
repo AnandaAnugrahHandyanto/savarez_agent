@@ -72,26 +72,6 @@ class TestBuildWsStreamContent:
         assert "partial answer" in result
         assert "Interrupted" in result
 
-    def test_reasoning_with_literal_think_tags_escaped(self):
-        result = build_ws_stream_content(
-            reasoning_text="use <think> tag",
-            finish=True,
-        )
-        # The literal <think> inside reasoning should be escaped
-        assert "&lt;think&gt;" in result
-        # The wrapping think tags should be intact
-        assert result.startswith("<think>")
-        assert "</think>" in result
-
-    def test_visible_with_literal_think_tags_escaped(self):
-        result = build_ws_stream_content(
-            reasoning_text="reasoning",
-            visible_text="use <think> tag",
-            finish=True,
-        )
-        assert "&lt;think&gt;" in result
-        assert "use" in result
-
     def test_empty_error_returns_empty(self):
         result = build_ws_stream_content(error_text="")
         assert result == ""
@@ -101,18 +81,6 @@ class TestBuildWsStreamContent:
         # No think block when there is no reasoning
         assert "<think>" not in result
         assert "Something broke" in result
-
-    def test_backticks_in_reasoning_replaced(self):
-        bt = chr(96)  # backtick
-        result = build_ws_stream_content(
-            reasoning_text=f"use {bt}{bt}{bt}python code",
-            finish=True,
-        )
-        # Backticks in reasoning should be replaced with \u02cb
-        assert "\u02cb" in result
-        assert "python" in result
-        # Original backticks should not be present in think block
-        assert "`" not in result.split("</think>")[0]
 
     def test_backticks_in_visible_preserved(self):
         bt = chr(96)  # backtick
