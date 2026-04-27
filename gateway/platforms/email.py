@@ -28,6 +28,7 @@ from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
+from email.mime.image import MIMEImage
 from email import encoders
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -537,6 +538,129 @@ class EmailAdapter(BasePlatformAdapter):
         text = caption or ""
         text += f"\n\nImage: {image_url}"
         return await self.send(chat_id, text.strip(), reply_to)
+
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send a local image file as an email attachment."""
+        try:
+            loop = asyncio.get_running_loop()
+            message_id = await loop.run_in_executor(
+                None,
+                self._send_email_with_image_attachment,
+                chat_id,
+                caption or "",
+                image_path,
+            )
+            return SendResult(success=True, message_id=message_id)
+        except Exception as e:
+            logger.error("[Email] Send image failed: %s", e)
+            return SendResult(success=False, error=str(e))
+
+    def _send_email_with_image_attachment(
+        self,
+        to_addr: str,
+        body: str,
+        image_path: str,
+    ) -> str:
+        """Send an email with an image attachment."""
+        msg = MIMEMultipart()
+        msg["From"] = self._address
+        msg["To"] = to_addr
+
+        ctx = self._thread_context.get(to_addr, {})
+        subject = ctx.get("subject", "Hermes Agent")
+        if not subject.startswith("Re:"):
+            subject = f"Re: {subject}"
+        msg["Subject"] = subject
+
+        original_msg_id = ctx.get("message_id")
+        if original_msg_id:
+            msg["In-Reply-To"] = original_msg_id
+            msg["References"] = original_msg_id
+
+        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
+        msg["Message-ID"] = msg_id
+
+        if body:
+            msg.attach(MIMEText(body, "plain", "utf-8"))
+
+        # Attach image
+        p = Path(image_path)
+        with open(p, "rb") as f:
+            img = MIMEImage(f.read(), _subtype=p.suffix.lstrip(".").lower())
+            img.add_header("Content-Disposition", f"attachment; filename={p.name}")
+            msg.attach(img)
+
+        smtp = self._connect_smtp()
+        try:
+            smtp.send_message(msg)
+        finally:
+            self._close_smtp(smtp)
+
+        return msg_id
+
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send a local video file as an email attachment."""
+        try:
+            loop = asyncio.get_running_loop()
+            message_id = await loop.run_in_executor(
+                None,
+                self._send_email_with_attachment,
+                chat_id,
+                caption or "",
+                video_path,
+                None,
+            )
+            return SendResult(success=True, message_id=message_id)
+        except Exception as e:
+            logger.error("[Email] Send video failed: %s", e)
+            return SendResult(success=False, error=str(e))
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send a local audio file as an email attachment."""
+        try:
+            loop = asyncio.get_running_loop()
+            message_id = await loop.run_in_executor(
+                None,
+                self._send_email_with_attachment,
+                chat_id,
+                caption or "",
+                audio_path,
+                None,
+            )
+            return SendResult(success=True, message_id=message_id)
+        except Exception as e:
+            logger.error("[Email] Send voice failed: %s", e)
+            return SendResult(success=False, error=str(e))
+
+    async def play_tts(
+        self,
+        chat_id: str,
+        audio_path: str,
+        **kwargs,
+    ) -> SendResult:
+        """Send auto-TTS audio as an email attachment."""
+        return await self.send_voice(chat_id, audio_path, **kwargs)
 
     async def send_document(
         self,
