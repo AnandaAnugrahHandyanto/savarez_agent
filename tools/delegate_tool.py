@@ -1019,6 +1019,20 @@ def _build_child_agent(
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
+    child_providers_allowed = getattr(parent_agent, "providers_allowed", None)
+    child_providers_ignored = getattr(parent_agent, "providers_ignored", None)
+    child_providers_order = getattr(parent_agent, "providers_order", None)
+    child_provider_sort = getattr(parent_agent, "provider_sort", None)
+    if override_provider:
+        # Parent-level OpenRouter routing filters can silently force children
+        # back onto the parent's provider. When delegation.provider is set,
+        # route using the delegated provider without inherited OpenRouter-only
+        # constraints from the parent session.
+        child_providers_allowed = None
+        child_providers_ignored = None
+        child_providers_order = None
+        child_provider_sort = None
+
     child = AIAgent(
         base_url=effective_base_url,
         api_key=effective_api_key,
@@ -1042,10 +1056,10 @@ def _build_child_agent(
         thinking_callback=child_thinking_cb,
         session_db=getattr(parent_agent, "_session_db", None),
         parent_session_id=getattr(parent_agent, "session_id", None),
-        providers_allowed=parent_agent.providers_allowed,
-        providers_ignored=parent_agent.providers_ignored,
-        providers_order=parent_agent.providers_order,
-        provider_sort=parent_agent.provider_sort,
+        providers_allowed=child_providers_allowed,
+        providers_ignored=child_providers_ignored,
+        providers_order=child_providers_order,
+        provider_sort=child_provider_sort,
         tool_progress_callback=child_progress_cb,
         iteration_budget=None,  # fresh budget per subagent
     )
