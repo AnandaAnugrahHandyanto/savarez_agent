@@ -1515,9 +1515,14 @@ class WeixinAdapter(BasePlatformAdapter):
                     ret = resp.get("ret")
                     errcode = resp.get("errcode")
                     if (ret is not None and ret not in (0,)) or (errcode is not None and errcode not in (0,)):
+                        # Patch 006: widen token-invalid trigger to include ret=-2.
+                        # Observed in the wild: cron pushes fail with ret=-2 when the
+                        # cached context_token silently becomes stale. The tokenless
+                        # retry path below already handles this correctly.
+                        _TOKEN_INVALID_CODES = (SESSION_EXPIRED_ERRCODE, -2)
                         is_session_expired = (
-                            ret == SESSION_EXPIRED_ERRCODE
-                            or errcode == SESSION_EXPIRED_ERRCODE
+                            ret in _TOKEN_INVALID_CODES
+                            or errcode in _TOKEN_INVALID_CODES
                         )
                         # Session expired — strip token and retry once
                         if is_session_expired and not retried_without_token and context_token:
