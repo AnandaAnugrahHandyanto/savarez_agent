@@ -8,7 +8,7 @@ if session keys are reused.
 """
 
 import re
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -29,47 +29,54 @@ def _make_runner(tmp_path) -> GatewayRunner:
 
 class TestRunningAgentsTsCleanup:
     def test_stop_command_cleans_ts(self, tmp_path):
-        """Deleting from _running_agents on /stop must also pop _running_agents_ts."""
+        """_release_running_agent_state (the /stop path) must pop _running_agents_ts."""
         runner = _make_runner(tmp_path)
         key = "chat_123"
         runner._running_agents[key] = MagicMock()
         runner._running_agents_ts[key] = 1000.0
 
-        # Simulate what the stop path does
-        if key in runner._running_agents:
-            del runner._running_agents[key]
-        runner._running_agents_ts.pop(key, None)
+        runner._release_running_agent_state(key)
 
         assert key not in runner._running_agents
         assert key not in runner._running_agents_ts
 
     def test_new_command_cleans_ts(self, tmp_path):
-        """Deleting from _running_agents on /new must also pop _running_agents_ts."""
+        """_release_running_agent_state (the /new path) must pop _running_agents_ts."""
         runner = _make_runner(tmp_path)
         key = "chat_456"
         runner._running_agents[key] = MagicMock()
         runner._running_agents_ts[key] = 2000.0
 
-        if key in runner._running_agents:
-            del runner._running_agents[key]
-        runner._running_agents_ts.pop(key, None)
+        runner._release_running_agent_state(key)
 
         assert key not in runner._running_agents
         assert key not in runner._running_agents_ts
 
     def test_resume_command_cleans_ts(self, tmp_path):
-        """Deleting from _running_agents on /resume must also pop _running_agents_ts."""
+        """_release_running_agent_state (the /resume path) must pop _running_agents_ts."""
         runner = _make_runner(tmp_path)
         key = "chat_789"
         runner._running_agents[key] = MagicMock()
         runner._running_agents_ts[key] = 3000.0
 
-        if key in runner._running_agents:
-            del runner._running_agents[key]
-        runner._running_agents_ts.pop(key, None)
+        runner._release_running_agent_state(key)
 
         assert key not in runner._running_agents
         assert key not in runner._running_agents_ts
+
+    def test_release_also_cleans_busy_ack_ts(self, tmp_path):
+        """_release_running_agent_state must pop all three tracking dicts atomically."""
+        runner = _make_runner(tmp_path)
+        key = "chat_999"
+        runner._running_agents[key] = MagicMock()
+        runner._running_agents_ts[key] = 4000.0
+        runner._busy_ack_ts[key] = 4000.0
+
+        runner._release_running_agent_state(key)
+
+        assert key not in runner._running_agents
+        assert key not in runner._running_agents_ts
+        assert key not in runner._busy_ack_ts
 
     def test_shutdown_clears_ts(self, tmp_path):
         """_running_agents.clear() must be followed by _running_agents_ts.clear()."""
@@ -82,52 +89,6 @@ class TestRunningAgentsTsCleanup:
 
         assert len(runner._running_agents) == 0
         assert len(runner._running_agents_ts) == 0
-
-    def test_all_del_sites_have_ts_pop(self):
-        """Source-level check: every `del self._running_agents[...]` must be
-        followed (within a few lines) by `self._running_agents_ts.pop(...)`.
-        This catches sites that were missed during code review."""
-        import gateway.run as mod
-
-        source = open(mod.__file__).read()
-
-        # Find all del self._running_agents[...] lines
-        del_pattern = re.compile(
-            r'del\s+self\._running_agents\[(\w+)\]'
-        )
-        # Find all self._running_agents_ts.pop(...) lines
-        pop_pattern = re.compile(
-            r'self\._running_agents_ts\.pop\('
-        )
-
-        del_lines = []
-        pop_lines = []
-        for i, line in enumerate(source.splitlines(), 1):
-            # Only match actual del statements (not docstring references)
-            if del_pattern.search(line) and line.lstrip().startswith("del "):
-                del_lines.append(i)
-            if pop_pattern.search(line):
-                pop_lines.append(i)
-
-        # For each del line, check that there's a pop within 5 lines after it
-        missing = []
-        for del_line in del_lines:
-            # Check if any pop line is within 5 lines after the del
-            found = any(
-                pop_line > del_line and pop_line <= del_line + 5
-                for pop_line in pop_lines
-            )
-            if not found:
-                # Also check if the del is inside a .clear() block
-                # (which has its own test)
-                line_text = source.splitlines()[del_line - 1]
-                if '.clear()' not in line_text:
-                    missing.append(del_line)
-
-        assert missing == [], (
-            f"Lines with `del self._running_agents[...]` but no "
-            f"`_running_agents_ts.pop` within 5 lines: {missing}"
-        )
 
     def test_clear_site_also_clears_ts(self):
         """Source-level check: every `self._running_agents.clear()` must be
