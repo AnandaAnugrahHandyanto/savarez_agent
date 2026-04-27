@@ -6,7 +6,6 @@ coerce_tool_args() fixes these type mismatches by comparing argument values
 against the tool's JSON Schema before dispatch.
 """
 
-import pytest
 from unittest.mock import patch
 
 from model_tools import (
@@ -64,10 +63,10 @@ class TestCoerceNumber:
     def test_scientific_notation(self):
         assert _coerce_number("1e5") == 100000
 
-    def test_inf_stays_string_for_integer_only(self):
-        """Infinity should not be converted to int."""
+    def test_inf_stays_string(self):
+        """Infinity is not valid JSON and should stay as a string."""
         result = _coerce_number("inf")
-        assert result == float("inf")
+        assert result == "inf"
 
     def test_negative_float(self):
         assert _coerce_number("-2.5") == -2.5

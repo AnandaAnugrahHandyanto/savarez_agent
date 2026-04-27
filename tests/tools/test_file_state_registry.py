@@ -18,12 +18,16 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
+import shutil
 import tempfile
 import threading
 import time
 import unittest
 
 from tools import file_state
+from tools import file_tools as file_tools_module
+from tools import terminal_tool as terminal_tool_module
 from tools.file_tools import (
     read_file_tool,
     write_file_tool,
@@ -216,11 +220,60 @@ class FileToolsIntegrationTests(unittest.TestCase):
 
     def setUp(self) -> None:
         file_state.get_registry().clear()
-        self._tmpdir = tempfile.mkdtemp(prefix="hermes_file_state_int_")
+        self._env_snapshot = {
+            name: os.environ.get(name)
+            for name in (
+                "TERMINAL_ENV",
+                "TERMINAL_CWD",
+                "MODAL_TOKEN_ID",
+                "MODAL_TOKEN_SECRET",
+                "MODAL_ENVIRONMENT",
+            )
+        }
+        repo_root = Path(__file__).resolve().parents[2]
+        os.environ["TERMINAL_ENV"] = "local"
+        os.environ["TERMINAL_CWD"] = str(repo_root)
+        for name in ("MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET", "MODAL_ENVIRONMENT"):
+            os.environ.pop(name, None)
+
+        # File tool environment state is process-global. In a full xdist
+        # worker, an earlier test can leave the default task bound to a
+        # modal/docker backend, so force these integration checks onto a fresh
+        # local backend.
+        file_tools_module.clear_file_ops_cache()
+        with terminal_tool_module._env_lock:
+            terminal_tool_module._active_environments.pop("default", None)
+            terminal_tool_module._last_activity.pop("default", None)
+        with terminal_tool_module._creation_locks_lock:
+            terminal_tool_module._creation_locks.pop("default", None)
+
+        # macOS resolves /tmp to /private/var/..., which file_tools correctly
+        # blocks as a sensitive system prefix. Use a repo-local scratch root so
+        # these tests exercise file-state behavior, not path protection.
+        self._tmp_root = repo_root / ".pytest-file-state"
+        self._tmp_root.mkdir(exist_ok=True)
+        self._tmpdir = tempfile.mkdtemp(
+            prefix="hermes_file_state_int_",
+            dir=str(self._tmp_root),
+        )
 
     def tearDown(self) -> None:
-        import shutil
         shutil.rmtree(self._tmpdir, ignore_errors=True)
+        try:
+            self._tmp_root.rmdir()
+        except OSError:
+            pass
+        for name, value in self._env_snapshot.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        file_tools_module.clear_file_ops_cache()
+        with terminal_tool_module._env_lock:
+            terminal_tool_module._active_environments.pop("default", None)
+            terminal_tool_module._last_activity.pop("default", None)
+        with terminal_tool_module._creation_locks_lock:
+            terminal_tool_module._creation_locks.pop("default", None)
         file_state.get_registry().clear()
 
     def _write_seed(self, name: str, content: str = "seed\n") -> str:

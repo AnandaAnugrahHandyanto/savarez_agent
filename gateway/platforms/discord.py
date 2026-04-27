@@ -3305,6 +3305,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # For threads whose parent is a forum channel, inherit the parent's topic
         # so forum descriptions (e.g. project instructions) appear in the session context.
         chat_topic = self._get_effective_topic(message.channel, is_thread=is_thread)
+        message_guild = getattr(message, "guild", None) or getattr(message.channel, "guild", None)
 
         # Build source
         source = self.build_source(
@@ -3316,7 +3317,7 @@ class DiscordAdapter(BasePlatformAdapter):
             thread_id=thread_id,
             chat_topic=chat_topic,
             is_bot=getattr(message.author, "bot", False),
-            guild_id=str(message.guild.id) if message.guild else None,
+            guild_id=str(getattr(message_guild, "id", "")) if getattr(message_guild, "id", None) else None,
             parent_chat_id=parent_channel_id,
             message_id=str(message.id),
         )

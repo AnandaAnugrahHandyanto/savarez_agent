@@ -14,7 +14,7 @@ from typing import Any, Dict
 import pytest
 import yaml
 
-from hermes_cli.plugins import PluginManager, PluginManifest
+from hermes_cli.plugins import PluginManager
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -196,7 +196,7 @@ class TestKindField:
         )
         _enable(hermes_home, "p1")
 
-        with caplog.at_level("WARNING"):
+        with caplog.at_level("WARNING", logger="hermes_cli.plugins"):
             mgr = PluginManager()
             mgr.discover_and_load()
 
