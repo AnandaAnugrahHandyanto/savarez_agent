@@ -55,7 +55,9 @@ from gateway.platforms.base import (
     cache_image_from_bytes,
     cache_audio_from_url,
     cache_audio_from_bytes,
+    cache_video_from_bytes,
     cache_document_from_bytes,
+    SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES,
 )
 from tools.url_safety import is_safe_url
@@ -3132,6 +3134,25 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
         return await cache_audio_from_url(att.url, ext=ext)
 
+    async def _cache_discord_video(self, att, ext: str) -> str:
+        """Cache a Discord video attachment to local disk.
+
+        Primary path: ``att.read()`` + ``cache_video_from_bytes``
+        (authenticated, no SSRF gate).
+
+        Fallback: ``cache_video_from_url`` (plain httpx, SSRF-gated).
+        """
+        raw_bytes = await self._read_attachment_bytes(att)
+        if raw_bytes is not None:
+            try:
+                return cache_video_from_bytes(raw_bytes, ext=ext)
+            except Exception as e:
+                logger.debug(
+                    "[Discord] cache_video_from_bytes rejected att.read() data; falling back to URL: %s",
+                    e,
+                )
+        return await cache_video_from_url(att.url, ext=ext)
+
     async def _cache_discord_document(self, att, ext: str) -> bytes:
         """Download a Discord document attachment and return the raw bytes.
 
@@ -3354,6 +3375,25 @@ class DiscordAdapter(BasePlatformAdapter):
                     print(f"[Discord] Cached user audio: {cached_path}", flush=True)
                 except Exception as e:
                     print(f"[Discord] Failed to cache audio attachment: {e}", flush=True)
+                    media_urls.append(att.url)
+                    media_types.append(content_type)
+            elif content_type.startswith("video/") or (
+                att.filename and os.path.splitext(att.filename)[1].lower() in SUPPORTED_VIDEO_TYPES
+            ):
+                try:
+                    # Prefer content_type for ext; fall back to filename
+                    if content_type.startswith("video/"):
+                        ext = "." + content_type.split("/")[-1].split(";")[0]
+                    else:
+                        ext = os.path.splitext(att.filename)[1].lower()
+                    if ext not in SUPPORTED_VIDEO_TYPES:
+                        ext = ".mp4"
+                    cached_path = await self._cache_discord_video(att, ext)
+                    media_urls.append(cached_path)
+                    media_types.append(SUPPORTED_VIDEO_TYPES.get(ext, "video/mp4"))
+                    print(f"[Discord] Cached user video: {cached_path}", flush=True)
+                except Exception as e:
+                    print(f"[Discord] Failed to cache video attachment: {e}", flush=True)
                     media_urls.append(att.url)
                     media_types.append(content_type)
             else:

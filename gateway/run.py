@@ -10997,7 +10997,7 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     image/audio/document cache once per hour.
     """
     from cron.scheduler import tick as cron_tick
-    from gateway.platforms.base import cleanup_image_cache, cleanup_document_cache
+    from gateway.platforms.base import cleanup_image_cache, cleanup_video_cache, cleanup_document_cache
 
     IMAGE_CACHE_EVERY = 60   # ticks — once per hour at default 60s interval
     CHANNEL_DIR_EVERY = 5    # ticks — every 5 minutes
@@ -11034,6 +11034,12 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
                     logger.info("Image cache cleanup: removed %d stale file(s)", removed)
             except Exception as e:
                 logger.debug("Image cache cleanup error: %s", e)
+            try:
+                removed = cleanup_video_cache(max_age_hours=24)
+                if removed:
+                    logger.info("Video cache cleanup: removed %d stale file(s)", removed)
+            except Exception as e:
+                logger.debug("Video cache cleanup error: %s", e)
             try:
                 removed = cleanup_document_cache(max_age_hours=24)
                 if removed:
