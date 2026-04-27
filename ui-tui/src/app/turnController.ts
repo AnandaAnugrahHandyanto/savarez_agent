@@ -423,7 +423,7 @@ class TurnController {
   recordMessageComplete(payload: { rendered?: string; reasoning?: string; text?: string }) {
     this.closeReasoningSegment()
 
-    const rawText = (payload.rendered ?? payload.text ?? this.bufRef).trimStart()
+    const rawText = (payload.text ?? payload.rendered ?? this.bufRef).trimStart()
     const split = splitReasoning(rawText)
     const finalText = finalTail(split.text, this.segmentMessages)
     const existingReasoning = this.reasoningText.trim() || String(payload.reasoning ?? '').trim()
@@ -516,7 +516,7 @@ class TurnController {
       return
     }
 
-    this.bufRef = rendered ?? this.bufRef + text
+    this.bufRef = this.bufRef + text
 
     if (getUiState().streaming) {
       this.scheduleStreaming()

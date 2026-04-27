@@ -474,4 +474,31 @@ describe('createGatewayEventHandler', () => {
 
     expect(getTurnState().activity).toMatchObject([{ text: 'boom', tone: 'error' }])
   })
+
+  it('message.complete prefers text over rendered to avoid ANSI garble in TUI', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    onEvent({
+      payload: { text: 'plain markdown', rendered: '\x1b[A\x1b[K\x1b[31mANSI\x1b[0m' },
+      type: 'message.complete'
+    } as any)
+
+    const assistantMsg = appended.find(m => m.role === 'assistant')
+    expect(assistantMsg?.text).toBe('plain markdown')
+  })
+
+  it('message.delta accumulates raw text and ignores rendered ANSI fragments', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    onEvent({ payload: { text: 'hello ', rendered: '\x1b[A' }, type: 'message.delta' } as any)
+    onEvent({ payload: { text: 'world', rendered: '\x1b[K' }, type: 'message.delta' } as any)
+    onEvent({ payload: {}, type: 'message.complete' } as any)
+
+    const assistantMsg = appended.find(m => m.role === 'assistant')
+    expect(assistantMsg?.text).toBe('hello world')
+  })
 })
