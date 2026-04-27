@@ -160,6 +160,8 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
 _PROVIDER_VISION_MODELS: Dict[str, str] = {
     "xiaomi": "mimo-v2.5",
     "zai": "glm-5v-turbo",
+    "minimax": "MiniMax-VL-01",
+    "minimax-cn": "MiniMax-VL-01",
 }
 
 # OpenRouter app attribution headers
