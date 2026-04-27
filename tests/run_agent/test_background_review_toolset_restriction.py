@@ -8,6 +8,7 @@ effects (terminal, send_message, delegate_task, etc.).
 import threading
 from unittest.mock import patch
 
+import run_agent
 from run_agent import AIAgent
 
 
@@ -52,8 +53,11 @@ def test_background_review_agent_uses_restricted_toolsets():
         captured["enabled_toolsets"] = kwargs.get("enabled_toolsets")
         raise RuntimeError("stop after capturing init args")
 
+    # Patch Thread on the same ``threading`` module object ``run_agent`` uses
+    # (avoids CI edge cases where a global ``threading.Thread`` patch misses
+    # references held through ``import threading`` inside ``run_agent``).
     with patch.object(AIAgent, "__init__", _capture_init), \
-         patch("threading.Thread", _SyncThread):
+         patch.object(run_agent.threading, "Thread", _SyncThread):
         agent._spawn_background_review(
             messages_snapshot=[],
             review_memory=True,
