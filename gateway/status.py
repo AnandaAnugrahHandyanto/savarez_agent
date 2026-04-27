@@ -103,14 +103,60 @@ def _get_scope_lock_path(scope: str, identity: str) -> Path:
     return _get_lock_dir() / f"{scope}-{_scope_hash(identity)}.lock"
 
 
+def _get_process_start_time_via_ps(pid: int) -> Optional[int]:
+    """POSIX fallback using ``ps -o lstart=``.
+
+    Used on macOS where ``/proc/<pid>/stat`` does not exist. ``lstart`` is a
+    PID-recycle-stable absolute timestamp; we parse it into a Unix-epoch int
+    so callers keep doing the same equality comparison against the value
+    persisted in lock/PID metadata.
+    """
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+            # Force C locale so %a/%b month/day-of-week names are parseable.
+            env={"LC_ALL": "C", "LANG": "C", "PATH": os.environ.get("PATH", "")},
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    # ps lstart on BSD/macOS prints e.g. "Mon Apr 27 10:09:49 2026" (with a
+    # space-padded day for single-digit dates). Re-joining split() collapses
+    # the variable spacing so a single strptime format covers both cases.
+    parts = result.stdout.split()
+    if len(parts) < 5:
+        return None
+    try:
+        dt = datetime.strptime(" ".join(parts[:5]), "%a %b %d %H:%M:%S %Y")
+    except (ValueError, TypeError):
+        return None
+    return int(dt.replace(tzinfo=timezone.utc).timestamp())
+
+
 def _get_process_start_time(pid: int) -> Optional[int]:
-    """Return the kernel start time for a process when available."""
+    """Return the kernel start time for a process when available.
+
+    Used to detect PID reuse: if a recorded ``start_time`` differs from the
+    live process's current start time, the PID belongs to an unrelated
+    process and the on-disk metadata is stale. The Linux fast path reads
+    ``/proc/<pid>/stat`` directly; macOS, which has no ``/proc``, falls back
+    to ``ps -o lstart=``. Returning ``None`` on Windows or when both paths
+    fail preserves existing callers, which all guard with ``is not None``.
+    """
     stat_path = Path(f"/proc/{pid}/stat")
     try:
         # Field 22 in /proc/<pid>/stat is process start time (clock ticks).
         return int(stat_path.read_text().split()[21])
     except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
-        return None
+        pass
+    if sys.platform == "darwin":
+        return _get_process_start_time_via_ps(pid)
+    return None
 
 
 def get_process_start_time(pid: int) -> Optional[int]:

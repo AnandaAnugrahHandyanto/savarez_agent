@@ -475,6 +475,128 @@ class TestScopedLocks:
         assert reused_pid_lock.exists()
 
 
+class TestGetProcessStartTime:
+    """Regression coverage for #16586.
+
+    On macOS ``/proc/<pid>/stat`` does not exist, so the original Linux-only
+    reader returned ``None`` for every PID. Every caller guards with
+    ``is not None`` and silently skips PID-recycle staleness detection,
+    which means a recycled PID owned by an unrelated OS process (e.g.
+    ``FamilyControlsAgent`` after the gateway crashed) keeps the lock file
+    "alive" forever and blocks every subsequent gateway start.
+    """
+
+    def test_falls_back_to_ps_on_darwin(self, monkeypatch):
+        """On macOS we must call ``ps -o lstart=`` and return a stable int."""
+        monkeypatch.setattr(status.sys, "platform", "darwin")
+
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["kwargs"] = kwargs
+            return SimpleNamespace(returncode=0, stdout="Mon Apr 27 10:09:49 2026\n", stderr="")
+
+        monkeypatch.setattr(status.subprocess, "run", fake_run)
+
+        result = status._get_process_start_time(12345)
+
+        assert isinstance(result, int)
+        assert captured["cmd"][:3] == ["ps", "-o", "lstart="]
+        assert "12345" in captured["cmd"]
+        # C locale forced so %a/%b parse deterministically across systems.
+        assert captured["kwargs"].get("env", {}).get("LC_ALL") == "C"
+
+    def test_returns_none_when_ps_fails_on_darwin(self, monkeypatch):
+        """Missing PID → ps returns non-zero → we must yield ``None`` so the
+        existing ``current_start is not None`` guard short-circuits cleanly
+        instead of treating arbitrary text as a start time."""
+        monkeypatch.setattr(status.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            status.subprocess,
+            "run",
+            lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="ps: no such process"),
+        )
+
+        assert status._get_process_start_time(99999) is None
+
+    def test_returns_none_when_ps_output_unparseable(self, monkeypatch):
+        """Garbled ps output (truncated, locale leak) must yield ``None``
+        rather than partially-parsed garbage that would later be compared
+        against the persisted ``start_time`` integer."""
+        monkeypatch.setattr(status.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            status.subprocess,
+            "run",
+            lambda *a, **k: SimpleNamespace(returncode=0, stdout="weird\n", stderr=""),
+        )
+
+        assert status._get_process_start_time(99999) is None
+
+    def test_returns_none_when_ps_executable_missing(self, monkeypatch):
+        monkeypatch.setattr(status.sys, "platform", "darwin")
+
+        def boom(*args, **kwargs):
+            raise FileNotFoundError("ps not on PATH")
+
+        monkeypatch.setattr(status.subprocess, "run", boom)
+
+        assert status._get_process_start_time(1) is None
+
+    def test_distinct_ps_outputs_produce_distinct_ints(self, monkeypatch):
+        """A recycled PID has a different ``lstart`` than the original
+        process — the contract of this helper is that those map to different
+        integers so the equality check in ``acquire_scoped_lock`` flips
+        ``stale = True``."""
+        monkeypatch.setattr(status.sys, "platform", "darwin")
+
+        outputs = iter([
+            SimpleNamespace(returncode=0, stdout="Mon Apr 27 10:09:49 2026\n", stderr=""),
+            SimpleNamespace(returncode=0, stdout="Mon Apr 27 10:09:50 2026\n", stderr=""),
+        ])
+        monkeypatch.setattr(status.subprocess, "run", lambda *a, **k: next(outputs))
+
+        first = status._get_process_start_time(100)
+        second = status._get_process_start_time(100)
+
+        assert first is not None
+        assert second is not None
+        assert first != second
+
+    def test_acquire_scoped_lock_detects_pid_recycle_on_darwin(self, tmp_path, monkeypatch):
+        """End-to-end: a stale lock left by a crashed gateway whose PID has
+        been recycled to an unrelated live OS process must be reclaimed on
+        macOS, not block the next gateway start. This is the exact path the
+        issue reporter hit (PID 560 recycled to ``FamilyControlsAgent``)."""
+        monkeypatch.setattr(status.sys, "platform", "darwin")
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "slack-app-token-2bb80d537b1da3e3.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(json.dumps({
+            "pid": 560,
+            "start_time": 1700000000,  # original gateway's lstart epoch
+            "kind": "hermes-gateway",
+        }))
+
+        # PID 560 is alive (recycled to FamilyControlsAgent) — os.kill(pid, 0)
+        # succeeds. But its real lstart is now different, so ps reports a
+        # different timestamp.
+        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr(
+            status.subprocess,
+            "run",
+            lambda *a, **k: SimpleNamespace(returncode=0, stdout="Tue Apr 28 09:00:00 2026\n", stderr=""),
+        )
+
+        acquired, _ = status.acquire_scoped_lock(
+            "slack-app-token", "secret", metadata={"platform": "slack"}
+        )
+
+        assert acquired is True
+        payload = json.loads(lock_path.read_text())
+        assert payload["pid"] == os.getpid()
+
+
 class TestTakeoverMarker:
     """Tests for the --replace takeover marker.
 
