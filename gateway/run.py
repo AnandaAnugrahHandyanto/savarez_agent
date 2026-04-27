@@ -1875,12 +1875,28 @@ class GatewayRunner:
             self._cleanup_agent_resources(agent)
 
     def _cleanup_agent_resources(self, agent: Any) -> None:
-        """Best-effort cleanup for temporary or cached agent instances."""
+        """Best-effort cleanup for temporary or cached agent instances.
+
+        Loads the agent's session transcript from state.db so that
+        context engines (e.g. LCM) can persist messages via
+        ``on_session_end()`` before being torn down.  Without this,
+        ``/new`` and idle-expiry silently lose every session.
+        """
         if agent is None:
             return
         try:
             if hasattr(agent, "shutdown_memory_provider"):
-                agent.shutdown_memory_provider()
+                # Load transcript so context engines receive messages.
+                _sid = getattr(agent, "session_id", None)
+                _messages: list = []
+                if _sid:
+                    try:
+                        _messages = (
+                            self.session_store.load_transcript(_sid) or []
+                        )
+                    except Exception:
+                        pass
+                agent.shutdown_memory_provider(messages=_messages)
         except Exception:
             pass
         # Close tool resources (terminal sandboxes, browser daemons,
