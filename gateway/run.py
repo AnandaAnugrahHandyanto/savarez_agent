@@ -3742,6 +3742,12 @@ class GatewayRunner:
                 if qcmd.get("type") == "exec":
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
+                        # Append user-provided arguments to the command
+                        user_args = event.get_command_args().strip()
+                        if user_args:
+                            # shell-quote to avoid injection
+                            import shlex
+                            exec_cmd = exec_cmd + " " + shlex.quote(user_args)
                         try:
                             proc = await asyncio.create_subprocess_shell(
                                 exec_cmd,
