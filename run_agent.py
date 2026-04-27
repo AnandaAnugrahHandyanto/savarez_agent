@@ -5713,6 +5713,21 @@ class AIAgent:
         if effective_reason == FailoverReason.auth:
             refreshed = pool.try_refresh_current()
             if refreshed is not None:
+                cred_id = getattr(refreshed, "id", None)
+                seen_count = self._auth_rotation_seen.get(cred_id, 0)
+                self._auth_rotation_seen[cred_id] = seen_count + 1
+                if seen_count >= 1:
+                    # This credential was already refreshed/rotated once but
+                    # still produced a 401 — don't trust the refresh again.
+                    logger.warning(
+                        "credential pool: entry %s refreshed %d times during auth recovery — giving up",
+                        cred_id, seen_count + 1,
+                    )
+                    self._emit_warning(
+                        "🔐 All credentials exhausted (auth failure). "
+                        "Run 'hermes login' to re-authenticate or check your API key."
+                    )
+                    return False, has_retried_429
                 logger.info(f"Credential auth failure — refreshed pool entry {getattr(refreshed, 'id', '?')}")
                 self._swap_credential(refreshed)
                 return True, has_retried_429
@@ -5725,9 +5740,6 @@ class AIAgent:
                 seen_count = self._auth_rotation_seen.get(cred_id, 0)
                 self._auth_rotation_seen[cred_id] = seen_count + 1
                 if seen_count >= 1:
-                    # Already tried this credential once after auth failure —
-                    # stop rotating to prevent an infinite loop when the pool
-                    # keeps returning the same (broken) entry.
                     logger.warning(
                         "credential pool: entry %s returned %d times during auth recovery — giving up",
                         cred_id, seen_count + 1,
