@@ -110,7 +110,10 @@ class PtyBridge:
             raise PtyUnavailableError("Pseudo-terminals are unavailable.")
         # Let caller-supplied env fully override inheritance; if they pass
         # None we inherit the server's env (same semantics as subprocess).
-        spawn_env = os.environ.copy() if env is None else env
+        spawn_env = os.environ.copy() if env is None else dict(env)
+        # `tput` and curses consumers need TERM. Minimal CI shells often lack it,
+        # but a spawned PTY should still behave like a usable terminal.
+        spawn_env.setdefault("TERM", "xterm-256color")
         proc = ptyprocess.PtyProcess.spawn(  # type: ignore[union-attr]
             list(argv),
             cwd=cwd,

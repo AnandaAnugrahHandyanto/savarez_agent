@@ -39,12 +39,15 @@ import threading
 from types import SimpleNamespace
 import urllib.request
 import uuid
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, TYPE_CHECKING
 from urllib.parse import urlparse, parse_qs, urlunparse
 from openai import OpenAI
 import fire
 from datetime import datetime
 from pathlib import Path
+
+if TYPE_CHECKING:
+    from agent.rate_limit_tracker import RateLimitState
 
 from hermes_constants import get_hermes_home
 
@@ -6026,6 +6029,9 @@ class AIAgent:
                 return self._interruptible_api_call(api_kwargs)
             finally:
                 self._codex_on_first_delta = None
+
+        if self._interrupt_requested:
+            raise InterruptedError("Agent interrupted before streaming API call")
 
         # Bedrock Converse uses boto3's converse_stream() with real-time delta
         # callbacks — same UX as Anthropic and chat_completions streaming.
