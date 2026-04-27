@@ -59,7 +59,7 @@ RUN cd /opt/hermes/scripts/whatsapp-bridge &&\
     npm cache clean --force &&\
     rm -rf /tmp/* ~/.npm
 
-COPY web/package*.json /opt/hermes/web/
+COPY ./web/ /opt/hermes/web/
 RUN cd /opt/hermes/web &&\
     npm ci --no-audit &&\
     npm run build &&\
