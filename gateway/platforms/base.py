@@ -1555,6 +1555,30 @@ class BasePlatformAdapter(ABC):
             text = f"{caption}\n{text}"
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
 
+    async def send_file(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send a generic file attachment through the document path.
+
+        Some gateway flows call ``send_file()`` while adapters conventionally
+        implement ``send_document()``. Delegate here so native document
+        adapters inherit the correct behavior automatically.
+        """
+        return await self.send_document(
+            chat_id=chat_id,
+            file_path=file_path,
+            caption=caption,
+            file_name=file_name,
+            reply_to=reply_to,
+            **kwargs,
+        )
+
     async def send_image_file(
         self,
         chat_id: str,
