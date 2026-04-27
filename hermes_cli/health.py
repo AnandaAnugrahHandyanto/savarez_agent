@@ -8,7 +8,7 @@ cron job status, and maintenance recommendations.
 import os
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List
 
 
 def _fmt_bytes(n: int) -> str:
@@ -39,7 +39,7 @@ def _dir_size(path: Path) -> int:
 
 def _relative_time(ts) -> str:
     """Format a Unix timestamp or ISO string as a relative age."""
-    if not ts:
+    if ts is None:
         return "never"
     try:
         if isinstance(ts, str):
