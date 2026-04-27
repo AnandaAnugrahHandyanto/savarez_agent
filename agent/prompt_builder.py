@@ -470,7 +470,6 @@ WSL_ENVIRONMENT_HINT = (
     "the Windows username if needed."
 )
 
-
 def build_environment_hints() -> str:
     """Return environment-specific guidance for the system prompt.
 

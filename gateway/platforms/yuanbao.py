@@ -113,6 +113,7 @@ _OPERATION_SYSTEM = sys.platform
 
 DEFAULT_WS_GATEWAY_URL = "wss://bot-wss.yuanbao.tencent.com/wss/connection"
 DEFAULT_API_DOMAIN = "https://bot.yuanbao.tencent.com"
+DEFAULT_SOURCE = "web"
 
 HEARTBEAT_INTERVAL_SECONDS = 30.0
 CONNECT_TIMEOUT_SECONDS = 15.0
@@ -150,10 +151,75 @@ _YB_RES_REF_RE = re.compile(
 # Strip page indicators like (1/3) appended by BasePlatformAdapter
 _INDICATOR_RE = re.compile(r'\s*\(\d+/\d+\)$')
 
+# Strip a leading @mention inlined into the text fragment by some clients,
+# e.g. "@yuanbao-bot /reset" -> "/reset". Used as a fallback when the client
+# did not send a separate TIMCustomElem AT element, or when the AT text
+# prefix match failed to match due to subtle formatting differences.
+_LEADING_MENTION_RE = re.compile(r'^@\S+\s+')
+
 # Observed-media backfill: how many recent transcript messages to scan
 OBSERVED_MEDIA_BACKFILL_LOOKBACK = 50
 # Max number of resource references to resolve per inbound turn
 OBSERVED_MEDIA_BACKFILL_MAX_RESOLVE_PER_TURN = 12
+
+
+def _extract_addressed_slash_command_line(msg_body: list, bot_id: Optional[str]) -> Optional[str]:
+    """Return a normalized slash command line addressed to this bot.
+
+    Supports both common client layouts:
+      - ``[AT(bot), text(" /help")]``
+      - ``[text("/help "), AT(bot)]``
+
+    Returns ``None`` when the message is not confidently a bot-directed
+    slash command.
+    """
+    if not bot_id:
+        return None
+
+    at_entries: List[dict] = []
+    for elem in (msg_body or []):
+        if elem.get("msg_type") != "TIMCustomElem":
+            continue
+        data_str = (elem.get("msg_content") or {}).get("data", "")
+        if not data_str:
+            continue
+        try:
+            custom = json.loads(data_str)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if custom.get("elem_type") == 1002:
+            at_entries.append(custom)
+
+    # If any AT targets someone other than this bot, do not treat the turn
+    # as a slash command for us.
+    for entry in at_entries:
+        if entry.get("user_id") != bot_id:
+            return None
+
+    if not at_entries:
+        return None
+
+    mention_text = str(at_entries[0].get("text") or "")
+
+    text_parts: List[str] = []
+    for elem in (msg_body or []):
+        if elem.get("msg_type") != "TIMTextElem":
+            continue
+        part = (elem.get("msg_content") or {}).get("text", "")
+        if part:
+            text_parts.append(part)
+    text = "".join(text_parts)
+
+    cleaned_text = text
+    if mention_text and cleaned_text.startswith(mention_text):
+        cleaned_text = cleaned_text[len(mention_text):]
+    else:
+        cleaned_text = _LEADING_MENTION_RE.sub("", cleaned_text, count=1)
+
+    cleaned_text = cleaned_text.strip()
+    if cleaned_text.startswith('\uff0f'):
+        cleaned_text = '/' + cleaned_text[1:]
+    return cleaned_text if cleaned_text.startswith("/") else None
 
 class MarkdownProcessor:
     """Encapsulates all Markdown-related utilities for the Yuanbao platform.
@@ -771,7 +837,10 @@ class SignManager:
 
                 if response.status_code != 200:
                     body = response.text
-                    raise RuntimeError(f"Sign token API returned {response.status_code}: {body[:200]}")
+                    raise RuntimeError(
+                        f"Sign token API returned {response.status_code}: "
+                        f"headers={dict(response.headers)} body={body[:200]}"
+                    )
 
                 try:
                     result_data: dict[str, Any] = response.json()
@@ -846,6 +915,68 @@ class SignManager:
             }
 
         return dict(cls._cache[app_key])
+
+    # -- Public API: fetch bot detail --------------------------------------
+
+    BOT_DETAIL_PATH = "/api/v5/robotLogic/get-bot-detail"
+
+    @classmethod
+    async def fetch_bot_detail(
+        cls,
+        bot_id: str,
+        token: str,
+        source: str,
+        api_domain: str,
+        route_env: str = "",
+    ) -> str:
+        """Fetch bot detail and return owner_id (empty string on any error).
+
+        Calls POST /api/v5/robotLogic/get-bot-detail with bot_id and scene=2.
+        Returns the owner_id from data.bot.owner_id, or "" if unavailable.
+        This call is non-fatal — connection proceeds regardless of outcome.
+        """
+        url = f"{api_domain.rstrip('/')}{cls.BOT_DETAIL_PATH}"
+        headers: dict[str, str] = {
+            "Content-Type": "application/json",
+            "X-Token": token,
+            "X-ID": bot_id,
+            "X-Source": source,
+        }
+        if route_env:
+            headers["X-Route-Env"] = route_env
+        payload = {"bot_id": bot_id, "scene": 2}
+        try:
+            async with httpx.AsyncClient(timeout=cls.HTTP_TIMEOUT_S) as client:
+                resp = await client.post(url, json=payload, headers=headers)
+                if resp.status_code != 200:
+                    logger.error(
+                        "fetch_bot_detail HTTP error: status=%d headers=%s body=%s",
+                        resp.status_code, dict(resp.headers), resp.text[:200],
+                    )
+                    return ""
+                result = resp.json()
+            code = result.get("code", -1)
+            if code != 0:
+                logger.error(
+                    "get-bot-detail returned non-zero code=%s msg=%s",
+                    code, result.get("msg", ""),
+                )
+                return ""
+            owner_id = (result.get("bot") or {}).get("owner_id") or ""
+            if owner_id:
+                logger.info(
+                    "fetch_bot_detail success: bot_id=%s owner_id=%s",
+                    bot_id, owner_id,
+                )
+            else:
+                logger.warning(
+                    "fetch_bot_detail: owner_id missing in response bot: %s",
+                    result.get("bot"),
+                )
+            return str(owner_id) if owner_id else ""
+        except Exception as exc:
+            logger.error("fetch_bot_detail failed: %s", exc, exc_info=True)
+            return ""
 
     # -- Public API: force refresh -----------------------------------------
 
@@ -1560,51 +1691,6 @@ class AccessGuardMiddleware(InboundMiddleware):
         await next_fn()
 
 
-class AutoSetHomeMiddleware(InboundMiddleware):
-    """Auto-designate the first inbound conversation as Yuanbao home channel.
-
-    Triggers when no home channel is configured, or when an existing group-chat
-    home is superseded by the first DM (direct > group upgrade).
-    Silent: writes config.yaml and env, no user-facing message.
-    """
-
-    name = "auto-sethome"
-
-    async def handle(self, ctx: InboundContext, next_fn) -> None:
-        adapter = ctx.adapter
-        if not adapter._auto_sethome_done:
-            _cur_home = os.getenv("YUANBAO_HOME_CHANNEL", "")
-            _should_set = (
-                not _cur_home
-                or (_cur_home.startswith("group:") and ctx.chat_type == "dm")
-            )
-            if ctx.chat_type == "dm":
-                adapter._auto_sethome_done = True  # DM seen — no further upgrades needed
-            if _should_set:
-                try:
-                    from hermes_constants import get_hermes_home
-                    from utils import atomic_yaml_write
-                    import yaml
-
-                    _home = get_hermes_home()
-                    config_path = _home / "config.yaml"
-                    user_config: dict = {}
-                    if config_path.exists():
-                        with open(config_path, encoding="utf-8") as f:
-                            user_config = yaml.safe_load(f) or {}
-                    user_config["YUANBAO_HOME_CHANNEL"] = ctx.chat_id
-                    atomic_yaml_write(config_path, user_config)
-                    os.environ["YUANBAO_HOME_CHANNEL"] = str(ctx.chat_id)
-                    logger.info(
-                        "[%s] Auto-sethome: designated %s (%s) as Yuanbao home channel",
-                        adapter.name, ctx.chat_id, ctx.chat_name,
-                    )
-                    # Silent auto-sethome: no user-facing message, only log
-                except Exception as e:
-                    logger.warning("[%s] Auto-sethome failed: %s", adapter.name, e)
-        await next_fn()
-
-
 class ExtractContentMiddleware(InboundMiddleware):
     """Extract raw text and media refs from msg_body."""
 
@@ -1838,15 +1924,18 @@ class PlaceholderFilterMiddleware(InboundMiddleware):
 
 
 class OwnerCommandMiddleware(InboundMiddleware):
-    """Detect bot-owner slash commands in group chat.
+    """Detect bot-owner slash commands in group chat with @Bot.
 
-    Identifies in-group allowlisted slash commands and determines sender identity.
-    Owner commands skip @Bot detection; non-owner attempts are rejected.
+    Identifies allowlisted slash commands sent while mentioning the bot
+    (GroupAtGuard has already filtered non-@Bot group messages) and
+    determines sender identity. Owner commands are forwarded; non-owner
+    attempts are rejected with a reply.
     """
 
     name = "owner-command"
 
-    # Slash command allowlist that bot owner can execute in group without @Bot
+    # Slash command allowlist that bot owner can execute in group chat with
+    # @Bot (GroupAtGuard has already filtered non-@Bot group messages).
     ALLOWLIST: frozenset = frozenset({
         "/new", "/reset", "/retry", "/undo", "/stop",
         "/approve", "/deny", "/background", "/bg",
@@ -1869,6 +1958,8 @@ class OwnerCommandMiddleware(InboundMiddleware):
         msg_body: list,
         chat_type: str,
         from_account: str,
+        bot_id: Optional[str],
+        fallback_owner_id: str = "",
     ) -> Tuple[Optional[str], Optional[str], bool]:
         """Identify allowlisted slash commands and determine sender identity.
 
@@ -1880,26 +1971,23 @@ class OwnerCommandMiddleware(InboundMiddleware):
         if chat_type != "group" or not cls.ALLOWLIST:
             return None, None, False
 
-        # Extract TIMTextElem: only do command recognition with exactly one text segment
-        text_elems = [
-            e for e in (msg_body or [])
-            if e.get("msg_type") == "TIMTextElem"
-        ]
-        if len(text_elems) != 1:
+        # A group message without knowing our own bot_id cannot be confidently
+        # attributed — bail out defensively.
+        if not bot_id:
             return None, None, False
 
-        text = (text_elems[0].get("msg_content") or {}).get("text", "")
-        cmd_line = cls._rewrite_slash_command(text)
-        if not cmd_line.startswith("/"):
+        cmd_line = _extract_addressed_slash_command_line(msg_body, bot_id)
+        if not cmd_line:
             return None, None, False
         cmd = cmd_line.split(maxsplit=1)[0].lower()
         if cmd not in cls.ALLOWLIST:
             return None, None, False
 
-        # Sender identity check: bot owner <-> push.from_account == push.bot_owner_id
-        owner_id = (push or {}).get("bot_owner_id") or ""
-        # is_owner = bool(owner_id) and owner_id == from_account
-        is_owner = True
+        # Sender identity check: prefer per-push bot_owner_id; fall back to the
+        # owner_id resolved at connect time because group callbacks sometimes omit
+        # bot_owner_id entirely.
+        owner_id = (push or {}).get("bot_owner_id") or fallback_owner_id or ""
+        is_owner = bool(owner_id) and owner_id == from_account
         return cmd, cmd_line, is_owner
 
     async def handle(self, ctx: InboundContext, next_fn) -> None:
@@ -1909,6 +1997,8 @@ class OwnerCommandMiddleware(InboundMiddleware):
             msg_body=ctx.msg_body,
             chat_type=ctx.chat_type,
             from_account=ctx.from_account,
+            bot_id=adapter._bot_id,
+            fallback_owner_id=getattr(adapter, "_owner_id", "") or "",
         )
         if matched_cmd and not is_owner:
             # Non-owner tried an owner-only command — reject and stop
@@ -1924,8 +2014,8 @@ class OwnerCommandMiddleware(InboundMiddleware):
 
         if matched_cmd and is_owner and cmd_line:
             logger.info(
-                "[%s] Bot owner slash command: chat=%s from=%s cmd=%s",
-                adapter.name, ctx.chat_id, ctx.from_account, matched_cmd,
+                "[%s] Bot owner slash command: chat=%s from=%s cmd=%s via=%s",
+                adapter.name, ctx.chat_id, ctx.from_account, matched_cmd, "@bot",
             )
             ctx.owner_command = matched_cmd
             ctx.raw_text = cmd_line  # Override with clean command text
@@ -1951,10 +2041,7 @@ class BuildSourceMiddleware(InboundMiddleware):
 
 
 class GroupAtGuardMiddleware(InboundMiddleware):
-    """In group chat, observe non-@bot messages; only reply on @Bot.
-
-    Owner commands skip @Bot detection (owner doesn't need to @Bot).
-    """
+    """In group chat, observe non-@bot messages; only reply on @Bot."""
 
     name = "group-at-guard"
 
@@ -2053,7 +2140,7 @@ class GroupAtGuardMiddleware(InboundMiddleware):
 
     async def handle(self, ctx: InboundContext, next_fn) -> None:
         adapter = ctx.adapter
-        if ctx.chat_type == "group" and not ctx.owner_command and not self._is_at_bot(ctx.msg_body, adapter._bot_id):
+        if ctx.chat_type == "group" and not self._is_at_bot(ctx.msg_body, adapter._bot_id):
             self._observe_group_message(
                 adapter, ctx.source, ctx.sender_nickname or ctx.from_account, ctx.raw_text,
                 msg_id=ctx.msg_id or None,
@@ -2084,6 +2171,19 @@ class GroupAttributionMiddleware(InboundMiddleware):
     async def handle(self, ctx: InboundContext, next_fn) -> None:
         if ctx.chat_type == "group" and not ctx.owner_command:
             adapter = ctx.adapter
+            cmd_line = _extract_addressed_slash_command_line(ctx.msg_body, adapter._bot_id)
+            if cmd_line:
+                logger.info(
+                    "[%s] Group @bot slash command routed to gateway: chat=%s from=%s cmd=%s",
+                    adapter.name,
+                    ctx.chat_id,
+                    ctx.from_account,
+                    cmd_line.split(maxsplit=1)[0].lower(),
+                )
+                ctx.raw_text = cmd_line
+                await next_fn()
+                return
+
             ctx.channel_prompt = GroupAtGuardMiddleware._build_group_channel_prompt(
                 ctx.msg_body, adapter._bot_id,
             )
@@ -2192,7 +2292,7 @@ class MediaResolveMiddleware(InboundMiddleware):
 
         token_data = await adapter._get_cached_token()
         token = str(token_data.get("token") or "").strip()
-        source = str(token_data.get("source") or "web").strip() or "web"
+        source = str(token_data.get("source") or DEFAULT_SOURCE).strip() or DEFAULT_SOURCE
         bot_id = str(token_data.get("bot_id") or adapter._bot_id or adapter._app_key).strip()
         if not token or not bot_id:
             raise RuntimeError("missing token or bot_id for resource download")
@@ -2214,7 +2314,7 @@ class MediaResolveMiddleware(InboundMiddleware):
                         adapter._app_key, adapter._app_secret, adapter._api_domain,
                     )
                     token = str(token_data.get("token") or "").strip()
-                    source = str(token_data.get("source") or source or "web").strip() or "web"
+                    source = str(token_data.get("source") or source or DEFAULT_SOURCE).strip() or DEFAULT_SOURCE
                     bot_id = str(token_data.get("bot_id") or adapter._bot_id or adapter._app_key).strip()
                     if not token or not bot_id:
                         break
@@ -2223,7 +2323,11 @@ class MediaResolveMiddleware(InboundMiddleware):
                     headers["X-Source"] = source
                     continue
 
-                resp.raise_for_status()
+                if resp.status_code not in (200, 206):
+                    raise RuntimeError(
+                        f"resource/v1/download HTTP error: status={resp.status_code} "
+                        f"headers={dict(resp.headers)} body={resp.text[:200]}"
+                    )
                 payload = resp.json()
                 code = payload.get("code")
                 if code not in (None, 0):
@@ -2593,12 +2697,11 @@ class InboundPipelineBuilder:
         SkipSelfMiddleware,
         ChatRoutingMiddleware,
         AccessGuardMiddleware,
-        AutoSetHomeMiddleware,
         ExtractContentMiddleware,
         PlaceholderFilterMiddleware,
-        OwnerCommandMiddleware,
         BuildSourceMiddleware,
         GroupAtGuardMiddleware,
+        OwnerCommandMiddleware,
         GroupAttributionMiddleware,
         ClassifyMessageTypeMiddleware,
         QuoteContextMiddleware,
@@ -2614,6 +2717,40 @@ class InboundPipelineBuilder:
             pipeline.use(mw_cls())
         return pipeline
 
+def _apply_sethome(owner_id: str, adapter_name: str, label: str = "") -> None:
+    """Write *chat_id* as YUANBAO_HOME_CHANNEL to config.yaml and os.environ.
+
+    Silent: logs at INFO on success, WARNING on failure — no user-facing message.
+
+    Args:
+        chat_id:      The channel / user ID to designate as home.
+        adapter_name: Used only for log prefixing.
+        label:        Optional human-readable description appended to the log line.
+    """
+    try:
+        import yaml
+        from hermes_constants import get_hermes_home
+        from utils import atomic_yaml_write
+
+        chat_id = f"direct:{owner_id}"
+        _home = get_hermes_home()
+        config_path = _home / "config.yaml"
+        user_config: dict = {}
+        if config_path.exists():
+            with open(config_path, encoding="utf-8") as f:
+                user_config = yaml.safe_load(f) or {}
+        user_config["YUANBAO_HOME_CHANNEL"] = chat_id
+        atomic_yaml_write(config_path, user_config)
+        os.environ["YUANBAO_HOME_CHANNEL"] = str(chat_id)
+        _desc = f" ({label})" if label else ""
+        logger.info(
+            "[%s] Auto-sethome: designated %s%s as Yuanbao home channel",
+            adapter_name, chat_id, _desc,
+        )
+    except Exception as e:
+        logger.warning("[%s] Auto-sethome failed: %s", adapter_name, e)
+
+
 class ConnectionManager:
     """Manages the WebSocket connection lifecycle for YuanbaoAdapter.
 
@@ -2624,6 +2761,40 @@ class ConnectionManager:
       - Receive loop (frame dispatch)
       - Reconnect with exponential backoff
     """
+
+    @staticmethod
+    def _resolve_future(fut: "asyncio.Future", result=None, *, exception=None) -> None:
+        """Set result/exception on a Future, safely across event loops.
+
+        Tool handlers may run in a thread with a different event loop
+        (via _run_async → asyncio.run).  A plain fut.set_result() from
+        the main loop won't wake the await in the other loop's context.
+        Using call_soon_threadsafe posts the callback to the future's
+        own loop so the await resolves immediately.
+        """
+        if fut.done():
+            return
+
+        def _do():
+            if fut.done():
+                return
+            try:
+                if exception is not None:
+                    fut.set_exception(exception)
+                else:
+                    fut.set_result(result)
+            except asyncio.InvalidStateError:
+                pass
+
+        try:
+            fut_loop = fut.get_loop()
+            current_loop = asyncio.get_running_loop()
+            if fut_loop is not current_loop:
+                fut_loop.call_soon_threadsafe(_do)
+                return
+        except (RuntimeError, AttributeError):
+            pass
+        _do()
 
     def __init__(self, adapter: "YuanbaoAdapter") -> None:
         self._adapter = adapter
@@ -2738,6 +2909,31 @@ class ConnectionManager:
                 await self._cleanup_ws()
                 return False
 
+            # Step 3b: Fetch bot detail to obtain owner_id
+            owner_id = await SignManager.fetch_bot_detail(
+                bot_id=adapter._bot_id or "",
+                token=token_data.get("token", ""),
+                source=token_data.get("source", "") or DEFAULT_SOURCE,
+                api_domain=adapter._api_domain,
+                route_env=adapter._route_env,
+            )
+            if owner_id:
+                adapter._owner_id = owner_id
+                logger.info("[%s] Bot owner_id=%s", adapter.name, owner_id)
+                existing_home = os.getenv("YUANBAO_HOME_CHANNEL")
+                if existing_home:
+                    logger.info(
+                        "[%s] Skipping auto-sethome: YUANBAO_HOME_CHANNEL already set to %r",
+                        adapter.name, existing_home,
+                    )
+                else:
+                    _apply_sethome(owner_id, adapter.name)
+            else:
+                logger.warning(
+                    "[%s] fetch_bot_detail returned empty owner_id — auto-sethome skipped",
+                    adapter.name,
+                )
+
             # Step 4: Start background tasks
             self._reconnect_attempts = 0
             adapter._mark_connected()
@@ -2790,8 +2986,7 @@ class ConnectionManager:
         # Fail any pending ACK futures
         disc_exc = RuntimeError("YuanbaoAdapter disconnected")
         for fut in self._pending_acks.values():
-            if not fut.done():
-                fut.set_exception(disc_exc)
+            self._resolve_future(fut, exception=disc_exc)
         self._pending_acks.clear()
 
         # Clear refresh locks to avoid stale locks from a previous event loop
@@ -2812,7 +3007,7 @@ class ConnectionManager:
 
         token = token_data.get("token", "")
         uid = adapter._bot_id or token_data.get("bot_id", "")
-        source = token_data.get("source") or "bot"
+        source = token_data.get("source") or DEFAULT_SOURCE
         route_env = adapter._route_env or token_data.get("route_env", "") or ""
 
         msg_id = str(uuid.uuid4())
@@ -2909,7 +3104,6 @@ class ConnectionManager:
                     self._pending_pong = pong_future
                     self._pending_acks[msg_id] = pong_future
                     await self._ws.send(ping_bytes)
-                    logger.debug("[%s] PING sent (msg_id=%s)", adapter.name, msg_id)
                     try:
                         await asyncio.wait_for(pong_future, timeout=10.0)
                         self._consecutive_hb_timeouts = 0
@@ -2980,13 +3174,11 @@ class ConnectionManager:
 
         # HEARTBEAT_ACK
         if cmd_type == CMD_TYPE["Response"] and cmd == "ping":
-            logger.debug("[%s] HEARTBEAT_ACK received (msg_id=%s)", adapter.name, msg_id)
             if self._pending_pong is not None and not self._pending_pong.done():
-                self._pending_pong.set_result(True)
+                self._resolve_future(self._pending_pong, True)
             elif msg_id and msg_id in self._pending_acks:
                 fut = self._pending_acks.pop(msg_id)
-                if not fut.done():
-                    fut.set_result(True)
+                self._resolve_future(fut, True)
             return
 
         # Fire-and-forget heartbeat ACKs — server always responds but callers don't
@@ -2995,18 +3187,22 @@ class ConnectionManager:
             "send_group_heartbeat",
             "send_private_heartbeat",
         ):
-            logger.debug("[%s] Heartbeat ACK received: cmd=%s msg_id=%s", adapter.name, cmd, msg_id)
             return
 
         # Response to an outbound RPC call
         if cmd_type == CMD_TYPE["Response"]:
-            if msg_id and msg_id in self._pending_acks:
+            matched = msg_id and msg_id in self._pending_acks
+            logger.debug(
+                "[%s] Biz Response received: cmd=%s msg_id=%s status=%s data_len=%d matched=%s pending_keys=[%s]",
+                adapter.name, cmd, msg_id, head.get("status", "?"), len(data),
+                matched, ", ".join(list(self._pending_acks.keys())[:5]),
+            )
+            if matched:
                 fut = self._pending_acks.pop(msg_id)
-                if not fut.done():
-                    result = {"head": head}
-                    if data:
-                        result["data"] = data
-                    fut.set_result(result)
+                result = {"head": head}
+                if data:
+                    result["data"] = data
+                self._resolve_future(fut, result)
             else:
                 logger.debug(
                     "[%s] Unmatched Response: cmd=%s msg_id=%s",
@@ -3026,12 +3222,11 @@ class ConnectionManager:
 
             if msg_id and msg_id in self._pending_acks:
                 fut = self._pending_acks.pop(msg_id)
-                if not fut.done():
-                    try:
-                        decoded = decode_inbound_push(data) if data else {"head": head}
-                        fut.set_result(decoded)
-                    except Exception as exc:
-                        fut.set_exception(exc)
+                try:
+                    decoded = decode_inbound_push(data) if data else {"head": head}
+                    self._resolve_future(fut, decoded)
+                except Exception as exc:
+                    self._resolve_future(fut, exception=exc)
                 return
 
             # Genuine inbound message — dispatch to AI
@@ -3155,14 +3350,27 @@ class ConnectionManager:
         if self._ws is None:
             raise RuntimeError("Not connected")
 
+        logger.debug(
+            "[%s] send_biz_request: req_id=%s payload_len=%d timeout=%.1fs pending_acks=%d",
+            self._adapter.name, req_id, len(encoded_conn_msg), timeout,
+            len(self._pending_acks),
+        )
         loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
         self._pending_acks[req_id] = future
         try:
             await self._ws.send(encoded_conn_msg)
             result = await asyncio.wait_for(asyncio.shield(future), timeout=timeout)
+            logger.debug(
+                "[%s] send_biz_request OK: req_id=%s response_keys=%s",
+                self._adapter.name, req_id, list(result.keys()) if isinstance(result, dict) else type(result).__name__,
+            )
             return result
         except asyncio.TimeoutError:
+            logger.debug(
+                "[%s] send_biz_request TIMEOUT: req_id=%s (%.1fs elapsed)",
+                self._adapter.name, req_id, timeout,
+            )
             raise
         except Exception:
             raise
@@ -3559,24 +3767,37 @@ class GroupQueryService:
         """
         adapter = self._adapter
         if adapter._connection.ws is None:
+            logger.debug("[%s] query_group_info_raw: ws is None, skipping", adapter.name)
             return None
         encoded = encode_query_group_info(group_code)
         from gateway.platforms.yuanbao_proto import decode_conn_msg as _decode
         decoded = _decode(encoded)
         req_id = decoded["head"]["msg_id"]
+        logger.debug(
+            "[%s] query_group_info_raw: group=%s req_id=%s cmd=%s module=%s",
+            adapter.name, group_code, req_id,
+            decoded["head"].get("cmd", ""), decoded["head"].get("module", ""),
+        )
         try:
             response = await adapter._connection.send_biz_request(encoded, req_id=req_id)
             head = response.get("head", {})
             status = head.get("status", 0)
+            logger.debug(
+                "[%s] query_group_info_raw response: group=%s req_id=%s status=%d head=%s data_len=%d",
+                adapter.name, group_code, req_id, status, head,
+                len(response.get("data", b"")),
+            )
             if status != 0:
                 logger.warning("[%s] query_group_info failed: status=%d", adapter.name, status)
                 return None
             biz_data = response.get("data", b"") or response.get("body", b"")
             if biz_data and isinstance(biz_data, bytes):
-                return decode_query_group_info_rsp(biz_data)
+                result = decode_query_group_info_rsp(biz_data)
+                logger.debug("[%s] query_group_info_raw decoded: %s", adapter.name, result)
+                return result
             return {"group_code": group_code}
         except asyncio.TimeoutError:
-            logger.warning("[%s] query_group_info timeout: group=%s", adapter.name, group_code)
+            logger.warning("[%s] query_group_info timeout: group=%s req_id=%s", adapter.name, group_code, req_id)
             return None
         except Exception as exc:
             logger.warning("[%s] query_group_info failed: %s", adapter.name, exc)
@@ -3592,15 +3813,26 @@ class GroupQueryService:
         """
         adapter = self._adapter
         if adapter._connection.ws is None:
+            logger.debug("[%s] get_group_member_list_raw: ws is None, skipping", adapter.name)
             return None
         encoded = encode_get_group_member_list(group_code, offset=offset, limit=limit)
         from gateway.platforms.yuanbao_proto import decode_conn_msg as _decode
         decoded = _decode(encoded)
         req_id = decoded["head"]["msg_id"]
+        logger.debug(
+            "[%s] get_group_member_list_raw: group=%s offset=%d limit=%d req_id=%s cmd=%s module=%s",
+            adapter.name, group_code, offset, limit, req_id,
+            decoded["head"].get("cmd", ""), decoded["head"].get("module", ""),
+        )
         try:
             response = await adapter._connection.send_biz_request(encoded, req_id=req_id)
             head = response.get("head", {})
             status = head.get("status", 0)
+            logger.debug(
+                "[%s] get_group_member_list_raw response: group=%s req_id=%s status=%d head=%s data_len=%d",
+                adapter.name, group_code, req_id, status, head,
+                len(response.get("data", b"")),
+            )
             if status != 0:
                 logger.warning("[%s] get_group_member_list failed: status=%d", adapter.name, status)
                 return None
@@ -3609,11 +3841,18 @@ class GroupQueryService:
                 result = decode_get_group_member_list_rsp(biz_data)
             else:
                 result = {"members": [], "next_offset": 0, "is_complete": True}
+            member_count = len(result.get("members", [])) if result else 0
+            logger.debug(
+                "[%s] get_group_member_list_raw decoded: group=%s members=%d next_offset=%s is_complete=%s",
+                adapter.name, group_code, member_count,
+                result.get("next_offset") if result else "N/A",
+                result.get("is_complete") if result else "N/A",
+            )
             if result and result.get("members"):
                 adapter._member_cache[group_code] = (time.time(), result["members"])
             return result
         except asyncio.TimeoutError:
-            logger.warning("[%s] get_group_member_list timeout: group=%s", adapter.name, group_code)
+            logger.warning("[%s] get_group_member_list timeout: group=%s req_id=%s", adapter.name, group_code, req_id)
             return None
         except Exception as exc:
             logger.warning("[%s] get_group_member_list failed: %s", adapter.name, exc)
@@ -3723,12 +3962,10 @@ class HeartbeatManager:
                 )
             await conn.ws.send(encoded)
             status_name = "RUNNING" if heartbeat_val == WS_HEARTBEAT_RUNNING else "FINISH"
-            logger.debug(
-                "[%s] Reply heartbeat %s sent: chat=%s",
-                adapter.name, status_name, chat_id,
-            )
+            logger.debug("[%s] Reply heartbeat %s OK: chat=%s", adapter.name, status_name, chat_id)
         except Exception as exc:
-            logger.debug("[%s] send_heartbeat_once failed: %s", adapter.name, exc)
+            status_name = "RUNNING" if heartbeat_val == WS_HEARTBEAT_RUNNING else "FINISH"
+            logger.warning("[%s] Reply heartbeat %s failed: chat=%s %s", adapter.name, status_name, chat_id, exc)
 
     async def start(self, chat_id: str) -> None:
         """Start or renew the Reply Heartbeat periodic sender (RUNNING, every 2s)."""
@@ -4195,12 +4432,20 @@ class MessageSender:
         adapter: "YuanbaoAdapter", encoded: bytes, req_id: str,
     ) -> dict:
         """Send pre-encoded bytes via WS and return a normalised result dict."""
+        logger.debug(
+            "[%s] _dispatch_encoded: req_id=%s payload_len=%d",
+            adapter.name, req_id, len(encoded),
+        )
         try:
             response = await adapter._connection.send_biz_request(encoded, req_id=req_id)
-            return {"success": True, "msg_key": response.get("msg_id", "")}
+            result = {"success": True, "msg_key": response.get("msg_id", "")}
+            logger.debug("[%s] _dispatch_encoded OK: req_id=%s result=%s", adapter.name, req_id, result)
+            return result
         except asyncio.TimeoutError:
+            logger.debug("[%s] _dispatch_encoded TIMEOUT: req_id=%s", adapter.name, req_id)
             return {"success": False, "error": f"Request timeout after {DEFAULT_SEND_TIMEOUT}s"}
         except Exception as exc:
+            logger.debug("[%s] _dispatch_encoded ERROR: req_id=%s %s", adapter.name, req_id, exc)
             return {"success": False, "error": str(exc)}
 
     # -- Media validation ---------------------------------------------------
@@ -4409,6 +4654,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
         self._app_key: str = (_extra.get("app_id") or "").strip()
         self._app_secret: str = (_extra.get("app_secret") or "").strip()
         self._bot_id: Optional[str] = _extra.get("bot_id") or None
+        self._owner_id: str = ""
         self._ws_url: str = (_extra.get("ws_url") or DEFAULT_WS_GATEWAY_URL).strip()
         self._api_domain: str = (_extra.get("api_domain") or DEFAULT_API_DOMAIN).rstrip("/")
         self._route_env: str = (_extra.get("route_env") or "").strip()
@@ -4482,18 +4728,6 @@ class YuanbaoAdapter(BasePlatformAdapter):
 
         # Inbound message processing pipeline (middleware pattern)
         self._inbound_pipeline: InboundPipeline = InboundPipelineBuilder.build()
-
-        # ------------------------------------------------------------------
-        # Auto-sethome: first user to message the bot becomes the owner.
-        # If no home channel is configured, the first conversation will be
-        # automatically set as the home channel.  When the existing home
-        # channel is a group chat (group:xxx), it stays eligible for
-        # upgrade — the first DM will override it with direct:xxx.
-        # ------------------------------------------------------------------
-        _existing_home = os.getenv("YUANBAO_HOME_CHANNEL") or (
-            config.home_channel.chat_id if config.home_channel else ""
-        )
-        self._auto_sethome_done: bool = bool(_existing_home) and not _existing_home.startswith("group:")
 
     # ------------------------------------------------------------------
     # Task tracking helper
