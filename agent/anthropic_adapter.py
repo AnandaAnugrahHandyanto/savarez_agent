@@ -811,17 +811,45 @@ def resolve_anthropic_token() -> Optional[str]:
     """Resolve an Anthropic token from all available sources.
 
     Priority:
-      1. ANTHROPIC_TOKEN env var (OAuth/setup token saved by Hermes)
-      2. CLAUDE_CODE_OAUTH_TOKEN env var
-      3. Claude Code credentials (~/.claude.json or ~/.claude/.credentials.json)
+      1. Hermes credential pool (``~/.hermes/auth.json`` →
+         ``credential_pool.anthropic``) — OAuth tokens minted by Hermes'
+         own PKCE login flow. Entries are auto-refreshed when near
+         expiry. Env-sourced pool entries (``source="env:..."``) are
+         skipped here so the env-var priority logic below still runs.
+      2. ANTHROPIC_TOKEN env var (OAuth/setup token saved by Hermes)
+      3. CLAUDE_CODE_OAUTH_TOKEN env var
+      4. Claude Code credentials (~/.claude.json or ~/.claude/.credentials.json)
          — with automatic refresh if expired and a refresh token is available
-      4. ANTHROPIC_API_KEY env var (regular API key, or legacy fallback)
+      5. ANTHROPIC_API_KEY env var (regular API key, or legacy fallback)
 
     Returns the token string or None.
     """
+    # 1. Hermes credential pool — the live source of truth for tokens
+    #    minted via ``hermes login anthropic`` / the dashboard PKCE flow.
+    #    ``select()`` picks the best available entry and refreshes it if
+    #    it's near expiry, so callers always get a fresh token.
+    #
+    #    Skip env-sourced pool entries (``env:ANTHROPIC_TOKEN``, etc.) —
+    #    those are passthroughs of the env var, and the env-var branches
+    #    below have richer priority logic (``_prefer_refreshable_claude_code_token``)
+    #    that can upgrade a static env OAuth token to a refreshed
+    #    Claude Code token. Letting the pool win here would short-circuit
+    #    that upgrade.
+    try:
+        from agent.credential_pool import load_pool
+        pool = load_pool("anthropic")
+        entry = pool.select()
+        if entry and entry.access_token and not entry.source.startswith("env:"):
+            return entry.access_token
+    except Exception as exc:
+        # Pool lookup is best-effort — fall through to env/file sources
+        # if anything goes wrong (e.g. auth.json corruption during a
+        # concurrent write).
+        logger.debug("Credential-pool lookup failed for anthropic: %s", exc)
+
     creds = read_claude_code_credentials()
 
-    # 1. Hermes-managed OAuth/setup token env var
+    # 2. Hermes-managed OAuth/setup token env var
     token = os.getenv("ANTHROPIC_TOKEN", "").strip()
     if token:
         preferred = _prefer_refreshable_claude_code_token(token, creds)
@@ -829,7 +857,7 @@ def resolve_anthropic_token() -> Optional[str]:
             return preferred
         return token
 
-    # 2. CLAUDE_CODE_OAUTH_TOKEN (used by Claude Code for setup-tokens)
+    # 3. CLAUDE_CODE_OAUTH_TOKEN (used by Claude Code for setup-tokens)
     cc_token = os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
     if cc_token:
         preferred = _prefer_refreshable_claude_code_token(cc_token, creds)
@@ -837,12 +865,12 @@ def resolve_anthropic_token() -> Optional[str]:
             return preferred
         return cc_token
 
-    # 3. Claude Code credential file
+    # 4. Claude Code credential file
     resolved_claude_token = _resolve_claude_code_token_from_credentials(creds)
     if resolved_claude_token:
         return resolved_claude_token
 
-    # 4. Regular API key, or a legacy OAuth token saved in ANTHROPIC_API_KEY.
+    # 5. Regular API key, or a legacy OAuth token saved in ANTHROPIC_API_KEY.
     # This remains as a compatibility fallback for pre-migration Hermes configs.
     api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
     if api_key:
