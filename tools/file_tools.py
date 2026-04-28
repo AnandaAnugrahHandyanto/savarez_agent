@@ -17,6 +17,7 @@ from tools.file_operations import (
     normalize_search_pagination,
 )
 from tools import file_state
+from agent.file_safety import is_read_denied
 from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
@@ -477,6 +478,22 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         block_error = get_read_block_error(path)
         if block_error:
             return json.dumps({"error": block_error})
+
+        # ── Sensitive-path read guard ─────────────────────────────────
+        # Block reads of credential files (SSH keys, .env, ~/.aws, etc.).
+        # Pattern-based output redaction is best-effort and off by default
+        # (see agent/redact.py); this is the access-control floor.  The
+        # `terminal` tool with explicit user approval remains the escape
+        # hatch for cases where reading a credential file is intentional.
+        if is_read_denied(path):
+            return json.dumps({
+                "error": (
+                    f"Refusing to read sensitive credential path: {path}\n"
+                    "If you need this file's contents, ask the user to "
+                    "provide them directly, or use the terminal tool "
+                    "(which gates on user approval)."
+                ),
+            })
 
         # ── Dedup check ───────────────────────────────────────────────
         # If we already read this exact (path, offset, limit) and the
