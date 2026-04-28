@@ -579,6 +579,8 @@ AUTHOR_MAP = {
     "dontcallmejames@users.noreply.github.com": "dontcallmejames",
     "hekaru.agent@gmail.com": "hekaru-agent",
     "jas9000@gmail.com": "twozle",
+    # April 2026 auxiliary_client fix (#16950)
+    "ztexydt-cqh@example.com": "ztexydt-cqh",
 }
 
 
