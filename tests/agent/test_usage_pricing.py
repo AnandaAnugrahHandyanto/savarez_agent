@@ -1,3 +1,4 @@
+from decimal import Decimal
 from types import SimpleNamespace
 
 from agent.usage_pricing import (
@@ -5,6 +6,7 @@ from agent.usage_pricing import (
     estimate_usage_cost,
     get_pricing_entry,
     normalize_usage,
+    resolve_billing_route,
 )
 
 
@@ -190,3 +192,47 @@ def test_custom_endpoint_models_api_pricing_is_supported(monkeypatch):
 
     assert float(entry.input_cost_per_million) == 0.5
     assert float(entry.output_cost_per_million) == 2.0
+
+
+def test_minimax_cn_route_resolves_to_subscription_included():
+    """Regression test for issue #16825: minimax-cn was falling through to
+    billing_mode='unknown' instead of 'subscription_included', causing all
+    MiniMax sessions to be stored with cost_status='unknown' and cost=0.
+    """
+    route = resolve_billing_route(
+        "MiniMax-M2.7",
+        provider="minimax-cn",
+        base_url="https://api.minimaxi.com/anthropic",
+    )
+
+    assert route.provider == "minimax-cn"
+    assert route.billing_mode == "subscription_included"
+
+
+def test_minimax_cn_cost_result_is_included_not_unknown():
+    """Regression test for issue #16825: estimate_usage_cost must return
+    status='included' (not 'unknown') for minimax-cn routes.
+    """
+    result = estimate_usage_cost(
+        "MiniMax-M2.7",
+        CanonicalUsage(input_tokens=10000, output_tokens=500, cache_read_tokens=5000),
+        provider="minimax-cn",
+        base_url="https://api.minimaxi.com/anthropic",
+    )
+
+    assert result.status == "included"
+    assert result.amount_usd == Decimal("0")
+
+
+def test_minimax_cn_detected_by_base_url_host():
+    """Regression test for issue #16825: minimax-cn should also be detected
+    via the base_url host (minimaxi.com) when provider is not explicitly set.
+    """
+    route = resolve_billing_route(
+        "MiniMax-M2.7",
+        provider=None,
+        base_url="https://api.minimaxi.com/anthropic",
+    )
+
+    assert route.provider == "minimax-cn"
+    assert route.billing_mode == "subscription_included"

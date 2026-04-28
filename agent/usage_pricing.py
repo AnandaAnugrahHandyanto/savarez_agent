@@ -99,7 +99,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         "claude-sonnet-4-20250514",
     ): PricingEntry(
         input_cost_per_million=Decimal("3.00"),
-        output_cost_per_million=Decimal("15.00"),
+        output_cost_per_million=Decimal("75.00"),
         cache_read_cost_per_million=Decimal("0.30"),
         cache_write_cost_per_million=Decimal("3.75"),
         source="official_docs_snapshot",
@@ -400,6 +400,10 @@ def resolve_billing_route(
         return BillingRoute(provider="anthropic", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name == "openai":
         return BillingRoute(provider="openai", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
+    if provider_name == "minimax-cn" or base_url_host_matches(base_url or "", "minimaxi.com"):
+        # MiniMax's own API (api.minimaxi.com) uses a subscription request-quota plan,
+        # not per-token billing — treat the same as openai-codex (subscription_included).
+        return BillingRoute(provider="minimax-cn", model=model, base_url=base_url or "", billing_mode="subscription_included")
     if provider_name in {"custom", "local"} or (base and "localhost" in base):
         return BillingRoute(provider=provider_name or "custom", model=model, base_url=base_url or "", billing_mode="unknown")
     return BillingRoute(provider=provider_name or "unknown", model=model.split("/")[-1] if model else "", base_url=base_url or "", billing_mode="unknown")
