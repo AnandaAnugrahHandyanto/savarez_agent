@@ -178,7 +178,7 @@ Hermes supports a configured fallback model/provider pair, allowing runtime fail
 
 ### What does NOT support fallback
 
-- **Subagent delegation** (`tools/delegate_tool.py`): subagents inherit the parent's provider but not the fallback config
+- **Subagent delegation** (`tools/delegate_tool.py`): embedded API children resolve their configured delegation provider/model, falling back to the parent provider/model when unset; bridge workers use local CLI auth. Neither path inherits the parent's fallback config.
 - **Cron jobs** (`cron/`): run with a fixed provider, no fallback mechanism
 - **Auxiliary tasks**: use their own independent provider auto-detection chain (see Auxiliary model routing above)
 

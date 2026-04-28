@@ -147,10 +147,14 @@ DEFAULT_CONTEXT_LENGTHS = {
     "claude": 200000,
     # OpenAI — GPT-5 family (most have 400k; specific overrides first)
     # Source: https://developers.openai.com/api/docs/models
-    # GPT-5.5 (launched Apr 23 2026) is 1.05M on the direct OpenAI API and
-    # ChatGPT Codex OAuth caps it at 272K; both paths resolve via their own
-    # provider-aware branches (_resolve_codex_oauth_context_length + models.dev).
-    # This hardcoded value is only reached when every probe misses.
+    # GPT-5.5 (launched Apr 23 2026). Direct OpenAI is 1.05M; ChatGPT
+    # Codex OAuth caps lower (272k as of Apr 2026) and resolves through
+    # _resolve_codex_oauth_context_length(). Cursor CLI exposes named 1M
+    # variants that need explicit entries because they can arrive through
+    # local ACP/bridge marker URLs without live provider metadata.
+    "gpt-5.5-extra-high": 1000000,    # Cursor CLI: "GPT-5.5 1M Extra High"
+    "gpt-5.5-medium": 1000000,        # Cursor CLI: "GPT-5.5 1M"
+    "gpt-5.5-high": 1000000,          # Cursor CLI: "GPT-5.5 1M High"
     "gpt-5.5": 1050000,
     "gpt-5.4-nano": 400000,           # 400k (not 1.05M like full 5.4)
     "gpt-5.4-mini": 400000,           # 400k (not 1.05M like full 5.4)
@@ -1320,7 +1324,12 @@ def get_model_context_length(
     # /models endpoint may report a provider-imposed limit (e.g. Copilot
     # returns 128k) instead of the model's full context (400k).  models.dev
     # has the correct per-provider values and is checked at step 5+.
-    if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url):
+    is_acp_marker_url = str(base_url or "").lower().startswith("acp://")
+    if (
+        _is_custom_endpoint(base_url)
+        and not _is_known_provider_base_url(base_url)
+        and not is_acp_marker_url
+    ):
         context_length = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
         if context_length is not None:
             return context_length
@@ -1365,7 +1374,11 @@ def get_model_context_length(
     # This catches account-specific models (e.g. claude-opus-4.6-1m) that
     # don't exist in models.dev. For models that ARE in models.dev, this
     # returns the provider-enforced limit which is what users can actually use.
-    if effective_provider in ("copilot", "copilot-acp", "github-copilot"):
+    acp_marker = is_acp_marker_url
+    copilot_acp_marker = str(base_url or "").lower().startswith("acp://copilot")
+    if effective_provider in ("copilot", "copilot-acp", "github-copilot") and (
+        not acp_marker or copilot_acp_marker
+    ):
         try:
             from hermes_cli.models import get_copilot_model_context
             ctx = get_copilot_model_context(model, api_key=api_key)

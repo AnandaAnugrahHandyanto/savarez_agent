@@ -845,6 +845,7 @@ class AIAgent:
         api_mode: str = None,
         acp_command: str = None,
         acp_args: list[str] | None = None,
+        acp_allow_writes: bool = False,
         command: str = None,
         args: list[str] | None = None,
         model: str = "",
@@ -979,6 +980,7 @@ class AIAgent:
         self.provider = provider_name or ""
         self.acp_command = acp_command or command
         self.acp_args = list(acp_args or args or [])
+        self.acp_allow_writes = bool(acp_allow_writes)
         if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse"}:
             self.api_mode = api_mode
         elif self.provider == "openai-codex":
@@ -1349,6 +1351,7 @@ class AIAgent:
                 if self.provider == "copilot-acp":
                     client_kwargs["command"] = self.acp_command
                     client_kwargs["args"] = self.acp_args
+                    client_kwargs["allow_writes"] = self.acp_allow_writes
                 effective_base = base_url
                 if base_url_host_matches(effective_base, "openrouter.ai"):
                     client_kwargs["default_headers"] = {
@@ -6161,6 +6164,18 @@ class AIAgent:
             or getattr(self, "_stream_callback", None) is not None
         )
 
+    def _supports_streaming_api_call(self) -> bool:
+        """Return False for local ACP adapters that expose only create()."""
+        if self.provider == "copilot-acp":
+            return False
+        base_url = str(self.base_url or "").lower()
+        if base_url.startswith("acp://copilot") or base_url.startswith("acp+tcp://"):
+            return False
+        client = getattr(self, "client", None)
+        if client is not None and client.__class__.__name__ == "CopilotACPClient":
+            return False
+        return True
+
     def _interruptible_streaming_api_call(
         self, api_kwargs: dict, *, on_first_delta: callable = None
     ):
@@ -8110,6 +8125,31 @@ class AIAgent:
                 # as a defensive compatibility fallback (refs #15250).
                 msg["reasoning_content"] = ""
 
+        # Additive fallback (refs #16844, #16884). Streaming-only providers
+        # (glm, MiniMax, gpt-5.x via aigw, Anthropic via openai-compat shims)
+        # accumulate reasoning through ``delta.reasoning_content`` chunks
+        # but never land it on the message object as a top-level attribute,
+        # so neither branch above fires and the chain-of-thought is stored
+        # only under the internal ``reasoning`` key. When the user later
+        # replays that history through a DeepSeek-v4 / Kimi thinking model,
+        # the missing ``reasoning_content`` causes HTTP 400 ("The
+        # reasoning_content in the thinking mode must be passed back to the
+        # API.").
+        #
+        # Promote the already-sanitized streamed ``reasoning_text`` to
+        # ``reasoning_content`` at write time, but ONLY when no prior branch
+        # already set it AND we actually captured reasoning text. This
+        # preserves every existing behavior:
+        #   - SDK-exposed ``reasoning_content`` (OpenAI/Moonshot/DeepSeek SDK)
+        #     still wins.
+        #   - DeepSeek tool-call ""-pad (#15250) still fires.
+        #   - Non-thinking turns with no reasoning leave the field absent,
+        #     so ``_copy_reasoning_content_for_api``'s cross-provider leak
+        #     guard (#15748) and ``reasoning``→``reasoning_content``
+        #     promotion tiers still apply at replay time.
+        if "reasoning_content" not in msg and reasoning_text:
+            msg["reasoning_content"] = reasoning_text
+
         if hasattr(assistant_message, 'reasoning_details') and assistant_message.reasoning_details:
             # Pass reasoning_details back unmodified so providers (OpenRouter,
             # Anthropic, OpenAI) can maintain reasoning continuity across turns.
@@ -8614,7 +8654,15 @@ class AIAgent:
             max_iterations=function_args.get("max_iterations"),
             acp_command=function_args.get("acp_command"),
             acp_args=function_args.get("acp_args"),
+            unsafe_allow_writes=bool(function_args.get("unsafe_allow_writes", False)),
+            transport=function_args.get("transport"),
+            bridge_initial_wait_seconds=function_args.get("bridge_initial_wait_seconds"),
             role=function_args.get("role"),
+            persona=function_args.get("persona"),
+            persona_provider=function_args.get("persona_provider"),
+            persona_model=function_args.get("persona_model"),
+            workdir=function_args.get("workdir"),
+            compress_persona=function_args.get("compress_persona"),
             parent_agent=self,
         )
 
@@ -10416,6 +10464,8 @@ class AIAgent:
                     # attempt — switch to non-streaming for the rest of this
                     # session instead of re-failing every retry.
                     if getattr(self, "_disable_streaming", False):
+                        _use_streaming = False
+                    elif not self._supports_streaming_api_call():
                         _use_streaming = False
                     elif not self._has_stream_consumers():
                         # No display/TTS consumer. Still prefer streaming for

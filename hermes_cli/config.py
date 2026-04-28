@@ -67,6 +67,18 @@ _EXTRA_ENV_KEYS = frozenset({
     "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_DEVICE_ID", "MATRIX_HOME_ROOM",
     "MATRIX_REQUIRE_MENTION", "MATRIX_FREE_RESPONSE_ROOMS", "MATRIX_AUTO_THREAD", "MATRIX_DM_AUTO_THREAD",
     "MATRIX_RECOVERY_KEY",
+    # Langfuse observability plugin — optional tuning keys + standard SDK vars.
+    # Activation is via plugins.enabled (opt-in through `hermes plugins enable
+    # observability/langfuse` or `hermes tools → Langfuse`); credentials gate
+    # the plugin at runtime.
+    "HERMES_LANGFUSE_ENV",
+    "HERMES_LANGFUSE_RELEASE",
+    "HERMES_LANGFUSE_SAMPLE_RATE",
+    "HERMES_LANGFUSE_MAX_CHARS",
+    "HERMES_LANGFUSE_DEBUG",
+    "LANGFUSE_PUBLIC_KEY",
+    "LANGFUSE_SECRET_KEY",
+    "LANGFUSE_BASE_URL",
 })
 import yaml
 
@@ -1716,6 +1728,30 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
     },
 
+    # ── Langfuse observability ──
+    "HERMES_LANGFUSE_PUBLIC_KEY": {
+        "description": "Langfuse project public key (pk-lf-...)",
+        "prompt": "Langfuse public key",
+        "url": "https://cloud.langfuse.com",
+        "password": False,
+        "category": "tool",
+    },
+    "HERMES_LANGFUSE_SECRET_KEY": {
+        "description": "Langfuse project secret key (sk-lf-...)",
+        "prompt": "Langfuse secret key",
+        "url": "https://cloud.langfuse.com",
+        "password": True,
+        "category": "tool",
+    },
+    "HERMES_LANGFUSE_BASE_URL": {
+        "description": "Langfuse server URL (default: https://cloud.langfuse.com)",
+        "prompt": "Langfuse server URL (leave empty for cloud.langfuse.com)",
+        "url": None,
+        "password": False,
+        "category": "tool",
+        "advanced": True,
+    },
+
     # ── Messaging platforms ──
     "TELEGRAM_BOT_TOKEN": {
         "description": "Telegram bot token from @BotFather",
@@ -2212,14 +2248,21 @@ def _normalize_custom_provider_entry(
         "baseUrl": "base_url",
         "apiMode": "api_mode",
         "keyEnv": "key_env",
+        "apiKeyEnv": "key_env",  # alias — OpenClaw-compatible + docs variant
         "defaultModel": "default_model",
         "contextLength": "context_length",
         "rateLimitDelay": "rate_limit_delay",
     }
+    # api_key_env is a documented snake_case alias for key_env (see
+    # website/docs/guides/azure-foundry.md).  Normalize it up front so the
+    # rest of the normalizer treats it as the canonical field.
+    if "api_key_env" in entry and "key_env" not in entry:
+        entry["key_env"] = entry["api_key_env"]
     _KNOWN_KEYS = {
-        "name", "api", "url", "base_url", "api_key", "key_env",
+        "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env",
         "api_mode", "transport", "model", "default_model", "models",
         "context_length", "rate_limit_delay",
+        "request_timeout_seconds", "stale_timeout_seconds",
     }
     for camel, snake in _CAMEL_ALIASES.items():
         if camel in entry and snake not in entry:
@@ -2471,6 +2514,9 @@ _KNOWN_ROOT_KEYS = {
 _VALID_CUSTOM_PROVIDER_FIELDS = {
     "name", "base_url", "api_key", "api_mode", "model", "models",
     "context_length", "rate_limit_delay",
+    # key_env is read at runtime by runtime_provider.py and auxiliary_client.py
+    # — include it here so the set accurately describes the supported schema.
+    "key_env",
 }
 
 # Fields that look like they should be inside custom_providers, not at root
@@ -2547,10 +2593,32 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                         "Add the API endpoint URL, e.g.: base_url: https://api.example.com/v1",
                     ))
 
-    # ── fallback_model must be a top-level dict with provider + model ────
+    # ── fallback_model: single dict OR list of dicts (chain) ─────────────
     fb = config.get("fallback_model")
     if fb is not None:
-        if not isinstance(fb, dict):
+        if isinstance(fb, list):
+            # Chain fallback — validate each entry
+            for i, entry in enumerate(fb):
+                if not isinstance(entry, dict):
+                    issues.append(ConfigIssue(
+                        "error",
+                        f"fallback_model[{i}] should be a dict, got {type(entry).__name__}",
+                        "Each entry needs provider + model",
+                    ))
+                else:
+                    if not entry.get("provider"):
+                        issues.append(ConfigIssue(
+                            "warning",
+                            f"fallback_model[{i}] is missing 'provider' field",
+                            "Add: provider: openrouter (or another provider)",
+                        ))
+                    if not entry.get("model"):
+                        issues.append(ConfigIssue(
+                            "warning",
+                            f"fallback_model[{i}] is missing 'model' field",
+                            "Add: model: <model-name>",
+                        ))
+        elif not isinstance(fb, dict):
             issues.append(ConfigIssue(
                 "error",
                 f"fallback_model should be a dict with 'provider' and 'model', got {type(fb).__name__}",
@@ -3482,7 +3550,12 @@ def save_config(config: Dict[str, Any]):
     if not sec or sec.get("redact_secrets") is None:
         parts.append(_SECURITY_COMMENT)
     fb = normalized.get("fallback_model", {})
-    if not fb or not isinstance(fb, dict) or not (fb.get("provider") and fb.get("model")):
+    fb_is_valid = False
+    if isinstance(fb, list):
+        fb_is_valid = any(isinstance(e, dict) and e.get("provider") and e.get("model") for e in fb)
+    elif isinstance(fb, dict):
+        fb_is_valid = bool(fb.get("provider") and fb.get("model"))
+    if not fb_is_valid:
         parts.append(_FALLBACK_COMMENT)
 
     atomic_yaml_write(

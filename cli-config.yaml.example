@@ -818,6 +818,14 @@ code_execution:
 # Supports single tasks and batch mode (default 3 parallel, configurable).
 delegation:
   max_iterations: 50                          # Max tool-calling turns per child (default: 50)
+  # default_transport: "auto"                 # Transport/auth policy: auto, bridge, embedded-api,
+                                              # simple-pipe, or experimental-oauth.
+                                              # auto prefers the local Claude/Cursor bridge when a
+                                              # bridge-capable persona or acp_command is selected.
+                                              # embedded-api uses delegation.provider/base_url/api_key.
+                                              # simple-pipe is the legacy one-shot CLI compatibility path.
+                                              # experimental-oauth is explicit opt-in for local
+                                              # OAuth/proxy experiments; Hermes never selects it from auto.
   # max_concurrent_children: 3                # Max parallel child agents per batch (default: 3, floor: 1, no ceiling).
                                               # WARNING: values above 10 multiply API cost linearly.
   # max_spawn_depth: 1                        # Delegation tree depth cap (range: 1-3, default: 1 = flat).
@@ -833,6 +841,51 @@ delegation:
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
   #                                           # Resolves full credentials (base_url, api_key) automatically.
   #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax
+  # persona_dirs:                             # Optional native delegate_task persona pools.
+  #   project: "~/.hermes/personas/project"   # Defaults stay under HERMES_HOME; add external collections explicitly.
+  #   shared:
+  #     - "~/.hermes/personas/shared"
+  # persona_provider: "cursor-agent"          # Optional canonical provider for persona-backed local CLI children.
+                                              # Valid: "claude" or "cursor-agent". If unset, plain
+                                              # delegate_task keeps embedded API behavior unless a
+                                              # call explicitly supplies persona_provider/acp_command.
+  # persona_workdir: "~/code/project"         # Optional default workdir for persona-backed bridge workers.
+  # agent_orchestrator_dir: "~/.hermes/cache/agent-orchestrator"
+                                              # Private IPC/cache root for bridge workers.
+  # bridge_extra_mcp_servers:                 # Optional extra MCPs for Claude bridge workers.
+  #   hindsight-prv:                          # Keep this allowlisted; do not forward every project MCP.
+  #     type: http
+  #     url: "http://localhost:8888/mcp/prv/"
+  # bridge_extra_allowed_tools:
+  #   - "mcp__hindsight-prv__retain"
+  #   - "mcp__hindsight-prv__sync_retain"
+  #   - "mcp__hindsight-prv__recall"
+  #   - "mcp__hindsight-prv__reflect"
+
+  # Bridge-first local CLI setup:
+  # default_transport: "auto"
+  # persona_provider: "cursor-agent"
+  # persona_routing:
+  #   defaults:
+  #     cursor-agent: "gpt-5.5-extra-high"
+  # persona_workdir: "~/code/project"
+  #
+  # Embedded API-key setup:
+  # default_transport: "embedded-api"
+  # model: "google/gemini-3-flash-preview"
+  # provider: "openrouter"
+  #
+  # Simple-pipe compatibility:
+  # default_transport: "simple-pipe"
+  # Use only with explicit acp_command/acp_args delegate_task calls.
+  #
+  # Experimental OAuth/proxy setup:
+  # default_transport: "experimental-oauth"
+  # provider: "custom"
+  # base_url: "http://127.0.0.1:1234/v1"
+  # api_key: "local-proxy-key"
+  # WARNING: this is deliberate local experimentation. Bridge mode does not
+  # inspect, copy, refresh, migrate, or inject OAuth tokens; local CLIs own auth.
 
 # =============================================================================
 # Honcho Integration (Cross-Session User Modeling)

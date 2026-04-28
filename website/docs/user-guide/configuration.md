@@ -485,6 +485,26 @@ tool_output:
   max_lines: 500
 ```
 
+## Global Toolset Disable
+
+To suppress specific toolsets across the CLI and every gateway platform in one
+place, list their names under `agent.disabled_toolsets`:
+
+```yaml
+agent:
+  disabled_toolsets:
+    - memory       # hide memory tools + MEMORY_GUIDANCE injection
+    - web          # no web_search / web_extract anywhere
+```
+
+This applies **after** per-platform tool config (`platform_toolsets` written by
+`hermes tools`), so a toolset listed here is always removed — even if a
+platform's saved config still lists it. Use this when you want a single
+switch for "turn X off everywhere" rather than editing 15+ platform rows in
+the `hermes tools` UI.
+
+Leaving the list empty, or omitting the key, is a no-op.
+
 ## Git Worktree Isolation
 
 Enable isolated git worktrees for running multiple agents in parallel on the same repo:
@@ -1418,6 +1438,7 @@ Configure subagent behavior for the delegate tool:
 
 ```yaml
 delegation:
+  # default_transport: "auto"               # auto, bridge, embedded-api, simple-pipe, experimental-oauth
   # model: "google/gemini-3-flash-preview"  # Override model (empty = inherit parent)
   # provider: "openrouter"                  # Override provider (empty = inherit parent)
   # base_url: "http://localhost:1234/v1"    # Direct OpenAI-compatible endpoint (takes precedence over provider)
@@ -1425,9 +1446,28 @@ delegation:
   max_concurrent_children: 3                # Parallel children per batch (floor 1, no ceiling). Also via DELEGATION_MAX_CONCURRENT_CHILDREN env var.
   max_spawn_depth: 1                        # Delegation tree depth cap (1-3, clamped). 1 = flat (default): parent spawns leaves that cannot delegate. 2 = orchestrator children can spawn leaf grandchildren. 3 = three levels.
   orchestrator_enabled: true                # Global kill switch. When false, role="orchestrator" is ignored and every child is forced to leaf regardless of max_spawn_depth.
+  # persona_dirs:                           # Optional native delegate_task persona pools
+  #   project: "~/.hermes/personas/project"
+  # persona_provider: "cursor-agent"        # Optional canonical provider for persona-backed local CLI children
+                                            # Valid: "claude" or "cursor-agent". If unset, plain
+                                            # delegate_task keeps embedded API behavior unless a
+                                            # call explicitly supplies persona_provider/acp_command.
+  # persona_workdir: "~/code/project"       # Optional default workdir for persona-backed bridge workers
+  # bridge_extra_mcp_servers:               # Extra MCPs for Claude bridge workers only
+  #   hindsight-prv:
+  #     type: http
+  #     url: "http://localhost:8888/mcp/prv/"
+  # bridge_extra_allowed_tools:
+  #   - "mcp__hindsight-prv__recall"
 ```
 
-**Subagent provider:model override:** By default, subagents inherit the parent agent's provider and model. Set `delegation.provider` and `delegation.model` to route subagents to a different provider:model pair — e.g., use a cheap/fast model for narrowly-scoped subtasks while your primary agent runs an expensive reasoning model.
+**Transport selection:** `delegation.default_transport: "auto"` prefers `bridge` for bridge-capable Claude/Cursor personas or commands. Use `embedded-api` for native API-key child agents, `simple-pipe` only for legacy one-shot CLI compatibility, and `experimental-oauth` only for explicit local proxy/OAuth experiments.
+
+**Bridge personas:** `persona`, `persona_provider`, `persona_model`, and `persona_workdir` route a delegated child to a named local Claude Code or Cursor Agent persona without changing the parent `SOUL.md` or `/personality`. `persona_provider` uses canonical names only: `claude` or `cursor-agent`. If omitted, Hermes uses `delegation.persona_provider` when configured; if neither is set, plain delegation keeps embedded API behavior. Bridge workers own their local CLI auth; Hermes does not inspect, copy, refresh, migrate, or inject OAuth tokens.
+
+**Worker MCPs:** Claude bridge workers receive a strict generated MCP config. Add shared worker memory MCPs with `bridge_extra_mcp_servers` and expose only the needed tools with `bridge_extra_allowed_tools`. Cursor bridge workers use workspace/global Cursor MCP config plus `--approve-mcps`; they do not use Claude Code's `--mcp-config` flags.
+
+**Embedded provider:model override:** By default, embedded API subagents inherit the parent agent's provider and model. Set `delegation.provider` and `delegation.model` to route embedded API subagents to a different provider:model pair — e.g., use a cheap/fast model for narrowly-scoped subtasks while your primary agent runs an expensive reasoning model.
 
 **Direct endpoint override:** If you want the obvious custom-endpoint path, set `delegation.base_url`, `delegation.api_key`, and `delegation.model`. That sends subagents directly to that OpenAI-compatible endpoint and takes precedence over `delegation.provider`. If `delegation.api_key` is omitted, Hermes falls back to `OPENAI_API_KEY` only.
 

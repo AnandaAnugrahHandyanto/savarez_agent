@@ -52,6 +52,35 @@ def test_is_destructive_command_treats_install_as_mutating():
     assert run_agent._is_destructive_command("install template.env .env") is True
 
 
+def test_dispatch_delegate_task_forwards_persona_transport_fields(agent):
+    function_args = {
+        "goal": "Review the patch",
+        "context": "Use the current worktree.",
+        "toolsets": ["terminal", "file"],
+        "tasks": [{"goal": "Task A", "persona": "verifier"}],
+        "max_iterations": 7,
+        "acp_command": "cursor-agent",
+        "acp_args": ["-p", "--mode", "plan"],
+        "unsafe_allow_writes": True,
+        "transport": "bridge",
+        "bridge_initial_wait_seconds": 3,
+        "role": "orchestrator",
+        "persona": "security-reviewer",
+        "persona_provider": "cursor-agent",
+        "persona_model": "gpt-5.5-extra-high",
+        "workdir": "/tmp/project",
+        "compress_persona": "always",
+    }
+
+    with patch("tools.delegate_tool.delegate_task", return_value='{"results": []}') as mock_delegate:
+        assert agent._dispatch_delegate_task(function_args) == '{"results": []}'
+
+    _, kwargs = mock_delegate.call_args
+    for key, value in function_args.items():
+        assert kwargs[key] == value
+    assert kwargs["parent_agent"] is agent
+
+
 @pytest.fixture()
 def agent():
     """Minimal AIAgent with mocked OpenAI client and tool loading."""
@@ -1396,6 +1425,62 @@ class TestBuildAssistantMessage:
         msg = _mock_assistant_msg(content=None)
         result = agent._build_assistant_message(msg, "stop")
         assert result["content"] == ""
+
+    def test_streaming_only_reasoning_promoted_to_reasoning_content(self, agent):
+        """Refs #16844 / #16884. Streaming-only providers (glm, MiniMax,
+        gpt-5.x via aigw, Anthropic via openai-compat shims) accumulate
+        reasoning through delta chunks but never expose
+        ``reasoning_content`` as a top-level attribute on the finalized
+        message — only ``reasoning`` (or the internal accumulator).
+
+        Without write-side promotion, the persisted message stores the
+        chain-of-thought under the internal ``reasoning`` key and omits
+        ``reasoning_content``. When the user later replays that history
+        through a DeepSeek-v4 / Kimi thinking model, the missing field
+        causes HTTP 400 ("The reasoning_content in the thinking mode
+        must be passed back to the API.").
+
+        Fix: when ``reasoning_content`` wasn't written by an earlier
+        branch AND we captured reasoning text from streaming deltas,
+        promote it to ``reasoning_content`` at write time.
+        """
+        # SDK-style object that exposes ``reasoning`` but NOT
+        # ``reasoning_content`` — the streaming-only provider shape.
+        msg = _mock_assistant_msg(content="answer", reasoning="hidden thinking")
+        assert not hasattr(msg, "reasoning_content")
+
+        result = agent._build_assistant_message(msg, "stop")
+
+        assert result["reasoning"] == "hidden thinking"
+        assert result["reasoning_content"] == "hidden thinking"
+
+    def test_sdk_reasoning_content_still_wins_over_fallback(self, agent):
+        """Additive fallback must not override SDK-supplied reasoning_content.
+
+        When both ``reasoning`` and ``reasoning_content`` are present, the
+        SDK's own ``reasoning_content`` is authoritative (may carry
+        structured data the accumulator doesn't have).
+        """
+        msg = _mock_assistant_msg(
+            content="answer",
+            reasoning="summary only",
+            reasoning_content="structured provider scratchpad",
+        )
+        result = agent._build_assistant_message(msg, "stop")
+        assert result["reasoning_content"] == "structured provider scratchpad"
+
+    def test_no_reasoning_text_leaves_field_absent(self, agent):
+        """Non-thinking turns with no reasoning leave reasoning_content absent.
+
+        This preserves ``_copy_reasoning_content_for_api``'s downstream
+        tiers at replay time — cross-provider leak guard (#15748),
+        promote-from-``reasoning``, and DeepSeek/Kimi ""-pad — which
+        would all be bypassed if we eagerly wrote ``reasoning_content=""``
+        on every assistant turn regardless of provider.
+        """
+        msg = _mock_assistant_msg(content="plain answer")
+        result = agent._build_assistant_message(msg, "stop")
+        assert "reasoning_content" not in result
 
     def test_tool_call_extra_content_preserved(self, agent):
         """Gemini thinking models attach extra_content with thought_signature
@@ -3866,6 +3951,56 @@ def test_aiagent_uses_copilot_acp_client():
     assert mock_acp_client.call_args.kwargs["api_key"] == "copilot-acp"
     assert mock_acp_client.call_args.kwargs["command"] == "/usr/local/bin/copilot"
     assert mock_acp_client.call_args.kwargs["args"] == ["--acp", "--stdio"]
+
+
+def test_copilot_acp_agent_disables_streaming_api_call():
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+        patch("agent.copilot_acp_client.CopilotACPClient") as mock_acp_client,
+    ):
+        mock_acp_client.return_value = MagicMock()
+
+        agent = AIAgent(
+            api_key="copilot-acp",
+            base_url="acp://copilot",
+            provider="copilot-acp",
+            acp_command="/usr/local/bin/copilot",
+            acp_args=["--acp", "--stdio"],
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert agent._supports_streaming_api_call() is False
+
+
+def test_aiagent_passes_acp_allow_writes_to_copilot_client():
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+        patch("agent.copilot_acp_client.CopilotACPClient") as mock_acp_client,
+    ):
+        agent = AIAgent(
+            api_key="copilot-acp",
+            base_url="acp://copilot",
+            provider="copilot-acp",
+            acp_command="claude",
+            acp_args=["-p", "--permission-mode", "acceptEdits"],
+            acp_allow_writes=True,
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert agent.acp_allow_writes is True
+    assert mock_acp_client.call_args.kwargs["allow_writes"] is True
+
+
+def test_regular_agent_supports_streaming_api_call(agent):
+    assert agent._supports_streaming_api_call() is True
 
 
 def test_quiet_spinner_allowed_with_explicit_print_fn(agent):
