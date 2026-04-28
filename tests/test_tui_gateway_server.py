@@ -3010,3 +3010,51 @@ def test_browser_manage_disconnect_drops_env_and_cleans(monkeypatch):
     assert "BROWSER_CDP_URL" not in os.environ
     # Two cleanups: once before env removal, once after, matching connect.
     assert cleanup_count["n"] == 2
+
+
+# ── config.get indicator normalization ───────────────────────────────
+
+
+def test_config_get_indicator_returns_known_value_verbatim(monkeypatch):
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"display": {"tui_status_indicator": "emoji"}}
+    )
+    resp = server.handle_request(
+        {"id": "1", "method": "config.get", "params": {"key": "indicator"}}
+    )
+    assert resp["result"] == {"value": "emoji"}
+
+
+def test_config_get_indicator_normalizes_casing_and_whitespace(monkeypatch):
+    """Hand-edited config.yaml stays consistent with what the TUI shows.
+
+    Frontend's `normalizeIndicatorStyle` lowercases + trims, so config.get
+    must do the same — otherwise `/indicator` prints 'EMOJI ' while the
+    UI is actually rendering the kaomoji default."""
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"display": {"tui_status_indicator": " EMOJI "}}
+    )
+    resp = server.handle_request(
+        {"id": "1", "method": "config.get", "params": {"key": "indicator"}}
+    )
+    assert resp["result"] == {"value": "emoji"}
+
+
+def test_config_get_indicator_falls_back_to_default_for_unknown(monkeypatch):
+    """An unknown value in config.yaml falls back to the same default
+    the frontend uses (`_INDICATOR_DEFAULT`)."""
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"display": {"tui_status_indicator": "rainbow"}}
+    )
+    resp = server.handle_request(
+        {"id": "1", "method": "config.get", "params": {"key": "indicator"}}
+    )
+    assert resp["result"] == {"value": "kaomoji"}
+
+
+def test_config_get_indicator_falls_back_when_unset(monkeypatch):
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"display": {}})
+    resp = server.handle_request(
+        {"id": "1", "method": "config.get", "params": {"key": "indicator"}}
+    )
+    assert resp["result"] == {"value": "kaomoji"}
