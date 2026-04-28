@@ -2111,7 +2111,7 @@ class AIAgent:
         # this, but we guard here so any direct callers (future code paths,
         # tests) can't reintroduce the double-/v1 404 bug.
         if (
-            api_mode == "anthropic_messages"
+            api_mode in ("anthropic_messages", "chat_completions", "codex_responses")
             and new_provider in ("opencode-zen", "opencode-go")
             and isinstance(base_url, str)
             and base_url
