@@ -40,6 +40,12 @@ from agent.account_usage import fetch_account_usage, render_account_usage_lines
 # from _enforce_agent_cache_cap() and _session_expiry_watcher() below.
 _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
+_PROGRESS_EDIT_INTERVAL_SECONDS = 1.5
+_PROGRESS_POLL_INTERVAL_SECONDS = 0.3
+_PROGRESS_TYPING_RESTORE_DELAY_SECONDS = 0.3
+_FEISHU_PROGRESS_CARD_MAX_LINES = 12
+_FEISHU_PROGRESS_CARD_MAX_CHARS = 3500
+_FEISHU_PROGRESS_CARD_MAX_EDITS = 40
 
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
@@ -9840,7 +9846,30 @@ class GatewayRunner:
             progress_msg_id = None   # ID of the progress message to edit
             can_edit = True          # False once an edit fails (platform doesn't support it)
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
-            _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
+            progress_page_no = 1
+            progress_total_count = 0
+            progress_edit_count = 0
+
+            def _progress_message_metadata(page_no: int, total_count: int):
+                if source.platform != Platform.FEISHU:
+                    return _progress_metadata
+                payload = dict(_progress_metadata or {})
+                payload["message_kind"] = "tool_progress"
+                payload["progress_page_no"] = page_no
+                payload["progress_total_count"] = max(1, total_count)
+                return payload
+
+            def _should_rotate_progress_card(next_line: str) -> bool:
+                if source.platform != Platform.FEISHU or progress_msg_id is None:
+                    return False
+                projected_lines = len(progress_lines) + 1
+                projected_chars = len("\n".join(progress_lines + [next_line]))
+                projected_edits = progress_edit_count + 1
+                return (
+                    projected_lines > _FEISHU_PROGRESS_CARD_MAX_LINES
+                    or projected_chars > _FEISHU_PROGRESS_CARD_MAX_CHARS
+                    or projected_edits > _FEISHU_PROGRESS_CARD_MAX_EDITS
+                )
 
             while True:
                 try:
@@ -9878,14 +9907,35 @@ class GatewayRunner:
                         msg = progress_lines[-1] if progress_lines else base_msg
                     else:
                         msg = raw
+                        if _should_rotate_progress_card(msg):
+                            progress_page_no += 1
+                            progress_total_count += 1
+                            progress_lines = [msg]
+                            progress_edit_count = 0
+                            if not _run_still_current():
+                                return
+                            result = await adapter.send(
+                                chat_id=source.chat_id,
+                                content=msg,
+                                metadata=_progress_message_metadata(progress_page_no, progress_total_count),
+                            )
+                            if result.success and result.message_id:
+                                progress_msg_id = result.message_id
+                            _last_edit_ts = time.monotonic()
+                            if _PROGRESS_TYPING_RESTORE_DELAY_SECONDS > 0:
+                                await asyncio.sleep(_PROGRESS_TYPING_RESTORE_DELAY_SECONDS)
+                            if _run_still_current():
+                                await adapter.send_typing(source.chat_id, metadata=_progress_metadata)
+                            continue
                         progress_lines.append(msg)
+                        progress_total_count += 1
 
                     # Throttle edits: batch rapid tool updates into fewer
                     # API calls to avoid hitting Telegram flood control.
                     # (grammY auto-retry pattern: proactively rate-limit
                     # instead of reacting to 429s.)
                     _now = time.monotonic()
-                    _remaining = _PROGRESS_EDIT_INTERVAL - (_now - _last_edit_ts)
+                    _remaining = _PROGRESS_EDIT_INTERVAL_SECONDS - (_now - _last_edit_ts)
                     if _remaining > 0:
                         # Wait out the throttle interval, then loop back to
                         # drain any additional queued messages before sending
@@ -9915,27 +9965,44 @@ class GatewayRunner:
                                     adapter.name,
                                 )
                             can_edit = False
-                            await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
+                            await adapter.send(
+                                chat_id=source.chat_id,
+                                content=msg,
+                                metadata=_progress_message_metadata(progress_page_no, progress_total_count),
+                            )
+                        else:
+                            progress_edit_count += 1
                     else:
                         if can_edit:
                             # First tool: send all accumulated text as new message
                             full_text = "\n".join(progress_lines)
-                            result = await adapter.send(chat_id=source.chat_id, content=full_text, metadata=_progress_metadata)
+                            result = await adapter.send(
+                                chat_id=source.chat_id,
+                                content=full_text,
+                                metadata=_progress_message_metadata(progress_page_no, progress_total_count),
+                            )
                         else:
                             # Editing unsupported: send just this line
-                            result = await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
+                            result = await adapter.send(
+                                chat_id=source.chat_id,
+                                content=msg,
+                                metadata=_progress_message_metadata(progress_page_no, progress_total_count),
+                            )
                         if result.success and result.message_id:
                             progress_msg_id = result.message_id
+                            if can_edit:
+                                progress_edit_count = 0
 
                     _last_edit_ts = time.monotonic()
 
                     # Restore typing indicator
-                    await asyncio.sleep(0.3)
+                    if _PROGRESS_TYPING_RESTORE_DELAY_SECONDS > 0:
+                        await asyncio.sleep(_PROGRESS_TYPING_RESTORE_DELAY_SECONDS)
                     if _run_still_current():
                         await adapter.send_typing(source.chat_id, metadata=_progress_metadata)
 
                 except queue.Empty:
-                    await asyncio.sleep(0.3)
+                    await asyncio.sleep(_PROGRESS_POLL_INTERVAL_SECONDS)
                 except asyncio.CancelledError:
                     # Drain remaining queued messages
                     while not progress_queue.empty():
