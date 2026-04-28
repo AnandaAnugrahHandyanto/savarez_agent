@@ -92,15 +92,21 @@ class _VikingClient:
             raise ImportError("httpx is required for OpenViking: pip install httpx")
 
     def _headers(self) -> dict:
-        h = {
+        # User API Key: OV server parses account/user from the key itself,
+        # rejecting X-OpenViking-Account / X-OpenViking-User overrides (403).
+        if self._api_key:
+            return {
+                "Content-Type": "application/json",
+                "X-API-Key": self._api_key,
+                "X-OpenViking-Agent": self._agent,
+            }
+        # Root key or no key: send all context headers.
+        return {
             "Content-Type": "application/json",
             "X-OpenViking-Account": self._account,
             "X-OpenViking-User": self._user,
             "X-OpenViking-Agent": self._agent,
         }
-        if self._api_key:
-            h["X-API-Key"] = self._api_key
-        return h
 
     def _url(self, path: str) -> str:
         return f"{self._endpoint}{path}"
