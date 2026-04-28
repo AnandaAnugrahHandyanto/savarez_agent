@@ -653,6 +653,9 @@
       # login-shell snapshot (which rebuilds PATH from NixOS profiles) sees
       # them.  The systemd service PATH also includes them for direct access.
       (lib.mkIf (cfg.extraPackages != []) {
+        # listOf options are merged by the NixOS module system — this appends to
+        # any packages the operator assigned to this user externally (e.g. when
+        # createUser = false and the user definition lives elsewhere in the config).
         users.users.${cfg.user}.packages = cfg.extraPackages;
       })
 
