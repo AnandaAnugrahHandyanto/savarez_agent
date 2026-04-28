@@ -16,9 +16,14 @@ import re
 import shutil
 import subprocess
 import threading
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from tools.lean_ctx_client import (
+    LeanCtxClient,
+    LeanCtxRuntimeConfig,
+    load_config_from_hermes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,14 +83,7 @@ _UNSAFE_TERMINAL_RE = re.compile(
 )
 
 
-@dataclass(frozen=True)
-class LeanCtxRoutingConfig:
-    enabled: bool = False
-    command: str = "lean-ctx"
-    env: dict[str, str] | None = None
-    timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS
-    route_file_tools: bool = True
-    route_terminal: bool = True
+LeanCtxRoutingConfig = LeanCtxRuntimeConfig
 
 
 def route_read_file(
@@ -254,8 +252,13 @@ def reset_session_savings() -> None:
 
 
 def run_diagnostic_command(kind: str, *, cwd: Path | None = None) -> dict[str, Any]:
-    """Run an on-demand read-only lean-ctx diagnostic subcommand."""
-    normalized = (kind or "status").strip().lower().replace("_", "-")
+    """Run an on-demand lean-ctx operator command."""
+    raw = (kind or "help").strip()
+    parts = raw.split()
+    normalized = (parts[0] if parts else "help").strip().lower().replace("_", "-")
+    args = parts[1:]
+    if normalized in {"help", "?"}:
+        return {"ok": True, "kind": "help", "data": _diagnostic_help()}
     if normalized == "savings":
         return {"ok": True, "kind": "savings", "data": get_session_savings()}
 
@@ -264,6 +267,57 @@ def run_diagnostic_command(kind: str, *, cwd: Path | None = None) -> dict[str, A
         return {"ok": False, "error": "lean_ctx is inactive in config"}
     if not shutil.which(cfg.command):
         return {"ok": False, "error": f"{cfg.command!r} not found on PATH"}
+    client = LeanCtxClient(cfg, cwd=(cwd or Path.cwd()).resolve())
+
+    if normalized == "router":
+        return {
+            "ok": True,
+            "kind": "router",
+            "data": {
+                "enabled": cfg.enabled,
+                "command": cfg.command,
+                "route_file_tools": cfg.route_file_tools,
+                "route_terminal": cfg.route_terminal,
+                "mcp_available": client.mcp_available(),
+                "session_savings": get_session_savings(),
+                "safe_terminal_routing": "read-oriented commands are eligible; mutating/destructive commands stay native",
+            },
+        }
+    if normalized == "tools":
+        if not client.mcp_available():
+            return {"ok": False, "error": "Python mcp package is not available"}
+        try:
+            tools = client.list_tools(cwd=(cwd or Path.cwd()).resolve())
+        except Exception as exc:
+            return {"ok": False, "error": f"lean-ctx tools probe failed: {type(exc).__name__}"}
+        return {
+            "ok": True,
+            "kind": "tools",
+            "data": {
+                "available": tools,
+                "author_workflow": [
+                    "ctx_session",
+                    "ctx_knowledge",
+                    "ctx_intent",
+                    "ctx_overview",
+                    "ctx_preload",
+                    "ctx_smart_read",
+                    "ctx_fill",
+                    "ctx_delta",
+                    "ctx_graph",
+                ],
+            },
+        }
+    if normalized == "session":
+        return _run_mcp_operator(client, "session", "ctx_session", args, default_action="status", cwd=cwd)
+    if normalized in {"memory", "knowledge"}:
+        return _run_mcp_operator(client, "memory", "ctx_knowledge", args, default_action="status", cwd=cwd)
+    if normalized in {"agent", "agents"}:
+        return _run_mcp_operator(client, "agent", "ctx_agent", args, default_action="status", cwd=cwd)
+    if normalized == "task":
+        return _run_mcp_operator(client, "task", "ctx_task", args, default_action="status", cwd=cwd)
+    if normalized == "graph":
+        return _run_mcp_operator(client, "graph", "ctx_graph", args, default_action="status", cwd=cwd)
 
     commands: dict[str, list[str]] = {
         "status": ["status", "--json"],
@@ -272,16 +326,35 @@ def run_diagnostic_command(kind: str, *, cwd: Path | None = None) -> dict[str, A
         "gain": ["gain", "--json"],
         "cache": ["cache", "stats"],
         "doctor": ["doctor", "--json"],
+        "watch": ["watch", "--help"],
+        "shell": ["shell", "--help"],
+        "proxy": ["proxy", "start", "--help"],
     }
     if normalized not in commands:
         return {
             "ok": False,
             "error": "unknown diagnostic",
-            "allowed": sorted(["savings", *commands]),
+            "allowed": sorted(
+                [
+                    "help",
+                    "savings",
+                    "router",
+                    "tools",
+                    "session",
+                    "memory",
+                    "agent",
+                    "task",
+                    "graph",
+                    *commands,
+                ]
+            ),
         }
+    command_args = commands[normalized]
+    if args and normalized in {"cache"}:
+        command_args = ["cache", *args]
     output = _run_lean_ctx_command(
         cfg,
-        commands[normalized],
+        command_args,
         cwd=(cwd or Path.cwd()).resolve(),
         timeout=cfg.timeout_seconds,
     )
@@ -292,6 +365,59 @@ def run_diagnostic_command(kind: str, *, cwd: Path | None = None) -> dict[str, A
     except json.JSONDecodeError:
         data = output
     return {"ok": True, "kind": normalized, "data": data}
+
+
+def _diagnostic_help() -> dict[str, Any]:
+    return {
+        "usage": "/leanctx [help|savings|status|tools|router|session|memory|agent|task|graph|gain|cache|doctor]",
+        "author_workflow": "Session -> knowledge wakeup/status -> intent -> overview/preload -> smart reads/fill/delta -> graph/status.",
+        "commands": {
+            "savings": "Hermes current-session lean-ctx token savings.",
+            "status": "lean-ctx status --json plus runtime availability.",
+            "tools": "MCP tool names exposed by the configured lean-ctx binary.",
+            "router": "Hermes routing config and current savings.",
+            "session [action] [text]": "Run ctx_session, default action=status.",
+            "memory [action] [text]": "Run ctx_knowledge, default action=status.",
+            "agent [action] [text]": "Run ctx_agent, default action=status.",
+            "task [action] [text]": "Run ctx_task, default action=status.",
+            "graph [action] [text]": "Run ctx_graph, default action=status.",
+            "gain": "lean-ctx gain --json.",
+            "cache [stats|...]": "lean-ctx cache stats or a specific cache subcommand.",
+            "doctor": "lean-ctx doctor --json.",
+        },
+    }
+
+
+def _run_mcp_operator(
+    client: LeanCtxClient,
+    kind: str,
+    tool_name: str,
+    args: list[str],
+    *,
+    default_action: str,
+    cwd: Path | None,
+) -> dict[str, Any]:
+    if not client.mcp_available():
+        return {"ok": False, "error": "Python mcp package is not available"}
+    action = args[0] if args else default_action
+    value = " ".join(args[1:]).strip()
+    payload: dict[str, Any] = {"action": action}
+    if value:
+        payload.update({"value": value, "query": value, "text": value, "task": value})
+    try:
+        output = client.call_tool(
+            tool_name,
+            payload,
+            cwd=(cwd or Path.cwd()).resolve(),
+            timeout=client.config.timeout_seconds,
+        )
+    except Exception as exc:
+        return {"ok": False, "error": f"{tool_name} failed: {type(exc).__name__}"}
+    try:
+        data: Any = json.loads(output)
+    except json.JSONDecodeError:
+        data = output
+    return {"ok": True, "kind": kind, "tool": tool_name, "data": data}
 
 
 def _resolve_search_path(path: str, cwd: Path) -> Path:
@@ -339,39 +465,11 @@ def _extract_savings(text: str) -> dict[str, float] | None:
 
 
 def _load_routing_config() -> LeanCtxRoutingConfig:
-    try:
-        from hermes_cli.config import load_config
-
-        raw = load_config().get("lean_ctx")
-    except Exception:
-        raw = None
-    if not isinstance(raw, dict):
-        return LeanCtxRoutingConfig(enabled=False)
-    command = str(raw.get("command") or "lean-ctx")
-    enabled = raw.get("enabled", "auto")
-    if enabled is False:
-        return LeanCtxRoutingConfig(enabled=False)
-    if isinstance(enabled, str) and enabled.strip().lower() == "auto" and not shutil.which(command):
-        return LeanCtxRoutingConfig(enabled=False)
-    env = {str(k): str(v) for k, v in (raw.get("env") or {}).items()}
-    return LeanCtxRoutingConfig(
-        enabled=True,
-        command=command,
-        env=env or None,
-        timeout_seconds=float(raw.get("timeout_seconds", _DEFAULT_TIMEOUT_SECONDS)),
-        route_file_tools=bool(raw.get("route_file_tools", True)),
-        route_terminal=bool(raw.get("route_terminal", True)),
-    )
+    return load_config_from_hermes(which=shutil.which)
 
 
 def _available(cfg: LeanCtxRoutingConfig) -> bool:
-    if not shutil.which(cfg.command):
-        return False
-    try:
-        import mcp  # noqa: F401
-    except Exception:
-        return False
-    return True
+    return LeanCtxClient(cfg).available(require_mcp=True)
 
 
 def _build_env(extra: dict[str, str] | None) -> dict[str, str]:
@@ -388,20 +486,12 @@ def _run_lean_ctx_command(
     cwd: Path,
     timeout: int | float | None = None,
 ) -> str | None:
-    proc = subprocess.run(
-        [cfg.command, *args],
-        cwd=str(cwd),
-        env=_build_env(cfg.env),
-        text=True,
-        capture_output=True,
-        timeout=timeout or cfg.timeout_seconds,
-        check=False,
-    )
-    output = (proc.stdout or "").strip()
-    if proc.returncode != 0:
-        logger.debug("lean-ctx command failed: %s", (proc.stderr or output).strip())
+    result = LeanCtxClient(cfg, cwd=cwd).run_cli(args, cwd=cwd, timeout=timeout)
+    if isinstance(result, str):
+        return result
+    if result is None:
         return None
-    return output
+    return json.dumps(result, ensure_ascii=False)
 
 
 def _call_mcp_tool(
@@ -411,12 +501,11 @@ def _call_mcp_tool(
     *,
     cwd: Path,
 ) -> str:
-    return _run_coro_sync(
-        asyncio.wait_for(
-            _call_mcp_tool_async(cfg, tool_name, arguments, cwd=cwd),
-            timeout=cfg.timeout_seconds,
-        ),
-        timeout_seconds=cfg.timeout_seconds + 1.0,
+    return LeanCtxClient(cfg, cwd=cwd).call_tool(
+        tool_name,
+        arguments,
+        cwd=cwd,
+        timeout=cfg.timeout_seconds,
     )
 
 

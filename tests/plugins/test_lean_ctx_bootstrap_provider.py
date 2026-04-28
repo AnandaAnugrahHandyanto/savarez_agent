@@ -35,11 +35,18 @@ def test_provider_builds_first_turn_packet_with_overview_and_symbols(tmp_path):
     )
 
     assert "LEAN-CTX BOOTSTRAP CONTEXT" in context
+    assert "ctx_knowledge:wakeup" in context
     assert "ctx_overview result" in context
     assert "ctx_symbol:dispatchTask" in context
     assert [call[0] for call in calls] == [
+        "ctx_session",
+        "ctx_session",
+        "ctx_knowledge",
+        "ctx_knowledge",
+        "ctx_intent",
         "ctx_overview",
         "ctx_preload",
+        "ctx_graph",
         "ctx_handoff",
         "ctx_symbol",
         "ctx_callers",
@@ -57,7 +64,7 @@ def test_provider_builds_delegation_packet_with_separate_budget(tmp_path):
     provider = LeanCtxBootstrapProvider(
         LeanCtxConfig(
             command="lean-ctx",
-            delegation_max_chars=800,
+            delegation_max_chars=1200,
             max_chars=6000,
             timeout_seconds=1,
         ),
@@ -73,10 +80,16 @@ def test_provider_builds_delegation_packet_with_separate_budget(tmp_path):
     assert "LEAN-CTX DELEGATION CONTEXT" in context
     assert "Focus on persona routing" in context
     assert "ctx_symbol:dispatchTask" in context
-    assert len(context) <= 800
+    assert len(context) <= 1200
     assert [call[0] for call in calls] == [
+        "ctx_session",
+        "ctx_session",
+        "ctx_knowledge",
+        "ctx_knowledge",
+        "ctx_intent",
         "ctx_overview",
         "ctx_preload",
+        "ctx_graph",
         "ctx_handoff",
         "ctx_symbol",
         "ctx_callers",

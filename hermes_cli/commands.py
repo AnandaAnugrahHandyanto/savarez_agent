@@ -153,8 +153,12 @@ COMMAND_REGISTRY: list[CommandDef] = [
                "Tools & Skills", cli_only=True),
     CommandDef("leanctx", "Show lean-ctx savings and diagnostics",
                "Tools & Skills", cli_only=True,
-               args_hint="[savings|status|token-report|gain|cache|doctor]",
-               subcommands=("savings", "status", "token-report", "gain", "cache", "doctor")),
+               args_hint="[help|savings|status|tools|router|session|memory|agent|task|graph|gain|cache|doctor]",
+               subcommands=(
+                   "help", "savings", "status", "tools", "router", "session",
+                   "memory", "agent", "task", "graph", "token-report", "gain",
+                   "cache", "doctor",
+               )),
 
     # Info
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",

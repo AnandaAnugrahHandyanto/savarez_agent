@@ -331,9 +331,10 @@ compression:
 # =============================================================================
 # lean-ctx bootstrap is config-driven. With `enabled: auto`, Hermes activates
 # this layer when the configured `lean-ctx` command is available on PATH. Hermes
-# asks lean-ctx for first-turn code context using ctx_overview, ctx_preload,
-# ctx_handoff, and symbol/caller probes, then appends the result to the current
-# user message as ephemeral request context. When route_* is enabled, the
+# follows the lean-ctx author workflow: ctx_session load/task, ctx_knowledge
+# wakeup/status, ctx_intent, ctx_overview, ctx_preload, ctx_graph status,
+# ctx_handoff, and bounded symbol/caller probes. It appends the result to the
+# current user message as ephemeral request context. When route_* is enabled, the
 # visible read_file/search_files/terminal tools can route eligible local
 # foreground operations through lean-ctx with native fallback. Routed commands
 # keep Hermes' normal safety checks and expose compact current-session savings
@@ -349,6 +350,15 @@ compression:
 #   route_terminal: true
 #   first_turn_only: true
 #   code_task_only: false
+#   include_session: true
+#   include_knowledge: true
+#   include_intent: true
+#   include_overview: true
+#   include_preload: true
+#   include_graph_status: true
+#   include_handoff: true
+#   include_symbols: true
+#   include_callers: true
 #   max_chars: 12000
 #   # Caps only the lean-ctx packet added to delegated child tasks.
 #   delegation_max_chars: 6000

@@ -23,6 +23,7 @@ _skill_commands: Dict[str, Dict[str, Any]] = {}
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
+_NATIVE_COMMAND_SHADOWS = {"lean-ctx", "leanctx"}
 
 def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
     """Load a skill by name/path and return (loaded_payload, skill_dir, display_name)."""
@@ -263,6 +264,9 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     cmd_name = _SKILL_INVALID_CHARS.sub('', cmd_name)
                     cmd_name = _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')
                     if not cmd_name:
+                        continue
+                    if cmd_name in _NATIVE_COMMAND_SHADOWS:
+                        logger.debug("Skipping /%s skill command; Hermes provides it natively", cmd_name)
                         continue
                     _skill_commands[f"/{cmd_name}"] = {
                         "name": name,

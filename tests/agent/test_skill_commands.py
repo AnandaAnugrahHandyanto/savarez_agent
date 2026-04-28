@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 import tools.skills_tool as skills_tool_module
 from agent.skill_commands import (
     build_preloaded_skills_prompt,
@@ -55,6 +57,17 @@ class TestScanSkillCommands:
             result = scan_skill_commands()
         assert "/my-skill" in result
         assert result["/my-skill"]["name"] == "my-skill"
+
+    def test_native_leanctx_command_shadows_skill_aliases(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "lean-ctx")
+            _make_skill(tmp_path, "leanctx")
+            _make_skill(tmp_path, "other-skill")
+            result = scan_skill_commands()
+
+        assert "/lean-ctx" not in result
+        assert "/leanctx" not in result
+        assert "/other-skill" in result
 
     def test_empty_dir(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):

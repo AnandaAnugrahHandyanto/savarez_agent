@@ -4444,7 +4444,7 @@ class HermesCLI:
     def _handle_leanctx_command(self, cmd_original: str) -> None:
         """Show diagnostics for Hermes' native lean-ctx routing layer."""
         parts = cmd_original.split(maxsplit=1)
-        subcommand = parts[1].strip() if len(parts) > 1 else "savings"
+        subcommand = parts[1].strip() if len(parts) > 1 else "help"
         try:
             from tools.lean_ctx_router import run_diagnostic_command
 
