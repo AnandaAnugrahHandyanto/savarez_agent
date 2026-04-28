@@ -678,6 +678,14 @@ def load_gateway_config() -> GatewayConfig:
                 if "dm_mention_threads" in matrix_cfg and not os.getenv("MATRIX_DM_MENTION_THREADS"):
                     os.environ["MATRIX_DM_MENTION_THREADS"] = str(matrix_cfg["dm_mention_threads"]).lower()
 
+            # Feishu settings → env vars (env vars take precedence)
+            feishu_cfg = yaml_cfg.get("feishu", {})
+            if isinstance(feishu_cfg, dict):
+                if "home_channel" in feishu_cfg and not os.getenv("FEISHU_HOME_CHANNEL"):
+                    os.environ["FEISHU_HOME_CHANNEL"] = str(feishu_cfg["home_channel"])
+                if "home_channel_name" in feishu_cfg and not os.getenv("FEISHU_HOME_CHANNEL_NAME"):
+                    os.environ["FEISHU_HOME_CHANNEL_NAME"] = str(feishu_cfg["home_channel_name"])
+
     except Exception as e:
         logger.warning(
             "Failed to process config.yaml — falling back to .env / gateway.json values. "
