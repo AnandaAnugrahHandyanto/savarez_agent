@@ -413,14 +413,23 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["source"] == "GLM_API_KEY"
 
     def test_resolve_copilot_with_github_token(self, monkeypatch):
-        monkeypatch.setenv("GITHUB_TOKEN", "gh-env-secret")
+        monkeypatch.setenv("GITHUB_TOKEN", "gho_env_secret")
         creds = resolve_api_key_provider_credentials("copilot")
         assert creds["provider"] == "copilot"
-        assert creds["api_key"] == "gh-env-secret"
+        assert creds["api_key"] == "gho_env_secret"
         assert creds["base_url"] == "https://api.githubcopilot.com"
         assert creds["source"] == "GITHUB_TOKEN"
 
     def test_resolve_copilot_with_gh_cli_fallback(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.copilot_auth._try_gh_cli_token", lambda: "gho_cli_secret")
+        creds = resolve_api_key_provider_credentials("copilot")
+        assert creds["provider"] == "copilot"
+        assert creds["api_key"] == "gho_cli_secret"
+        assert creds["base_url"] == "https://api.githubcopilot.com"
+        assert creds["source"] == "gh auth token"
+
+    def test_resolve_copilot_skips_invalid_env_token(self, monkeypatch):
+        monkeypatch.setenv("GITHUB_TOKEN", "gh-env-secret")
         monkeypatch.setattr("hermes_cli.copilot_auth._try_gh_cli_token", lambda: "gho_cli_secret")
         creds = resolve_api_key_provider_credentials("copilot")
         assert creds["provider"] == "copilot"
