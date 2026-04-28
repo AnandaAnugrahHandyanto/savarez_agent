@@ -33,6 +33,29 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional
 
+# --- caveman-llm semantic compression integration ---
+_CAVEMAN_AVAILABLE = False
+try:
+    from caveman_llm.src.compress_llm import compress_llm, CompressionOptions, is_sensitive_content, CompressionError, segment
+    _CAVEMAN_AVAILABLE = True
+except ImportError:
+    try:
+        caveman_src = Path(get_hermes_home()) / "projects" / "caveman-compression" / "caveman-llm" / "src"
+        if caveman_src.is_dir():
+            import sys
+            sys.path.insert(0, str(caveman_src))
+            from compress_llm import compress_llm, CompressionOptions, is_sensitive_content, CompressionError, segment
+            _CAVEMAN_AVAILABLE = True
+    except ImportError:
+        pass
+# Ensure symbols always exist for patching even when both imports fail
+if not _CAVEMAN_AVAILABLE:
+    compress_llm = None
+    CompressionOptions = None
+    is_sensitive_content = None
+    CompressionError = Exception
+    segment = None
+
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 msvcrt = None
 try:
@@ -262,7 +285,7 @@ class MemoryStore:
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
-        return self._success_response(target, "Entry added.")
+        return self._success_response(target, "Entry added.", entry_index=len(entries) - 1, action="add")
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
         """Find entry containing old_text substring, replace it with new_content."""
@@ -320,7 +343,7 @@ class MemoryStore:
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
-        return self._success_response(target, "Entry replaced.")
+        return self._success_response(target, "Entry replaced.", entry_index=idx, action="replace")
 
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
         """Remove the entry containing old_text substring."""
@@ -371,7 +394,7 @@ class MemoryStore:
 
     # -- Internal helpers --
 
-    def _success_response(self, target: str, message: str = None) -> Dict[str, Any]:
+    def _success_response(self, target: str, message: str = None, *, entry_index: int = None, action: str = None) -> Dict[str, Any]:
         entries = self._entries_for(target)
         current = self._char_count(target)
         limit = self._char_limit(target)
@@ -384,6 +407,10 @@ class MemoryStore:
             "usage": f"{pct}% — {current:,}/{limit:,} chars",
             "entry_count": len(entries),
         }
+        if entry_index is not None:
+            resp["entry_index"] = entry_index
+        if action:
+            resp["action"] = action
         if message:
             resp["message"] = message
         return resp
@@ -459,6 +486,86 @@ class MemoryStore:
         except (OSError, IOError) as e:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")
 
+def _backup_original_async(original_text: str, store_result: dict, *, target: str) -> None:
+    """Fire-and-forget backup of pre-compression original text.
+
+    Writes an encrypted JSONL record to ~/.hermes/backups/compression/YYYY-MM-DD.jsonl.
+    Each line is a self-contained encrypted backup entry using Fernet (AES-128-CBC + HMAC).
+    Never raises — all errors are caught and logged to stderr.
+    """
+    import json
+    import datetime
+    import threading
+    import os
+    from pathlib import Path
+
+    # Import Fernet only inside the backup thread to avoid unnecessary import cost
+    # when backup is disabled. cryptography is a core dependency.
+    try:
+        from cryptography.fernet import Fernet, InvalidToken
+    except ImportError:
+        # cryptography not installed — backup disabled
+        return
+
+    def _do_backup() -> None:
+        backup_key_b64 = os.getenv("HERMES_BACKUP_KEY")
+        if not backup_key_b64:
+            # Backup explicitly disabled — user didn't set key
+            # This is an explicit opt-out, not an error
+            return
+
+        # Build backup record (unencrypted fields only)
+        record = {
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "target": target,
+            "action": store_result.get("action"),
+            "entry_index": store_result.get("entry_index"),
+            "store_success": store_result.get("success", False),
+            "store_entry_count": store_result.get("entry_count", 0),
+            "original_length": len(original_text),
+            "compression_engine": "caveman-llm",
+        }
+
+        # Encrypt the original text if key is available
+        original_enc = None
+        if backup_key_b64:
+            try:
+                f = Fernet(backup_key_b64.encode())
+                original_enc = f.encrypt(original_text.encode()).decode()
+                record["original_enc"] = original_enc
+            except Exception as e:
+                # Invalid key format or encryption failed
+                # Log to stderr (Hermes logger may not be available in this thread)
+                print(f"[WARN] caveman-backup: encryption failed: {e}", file=__import__('sys').stderr)
+                record["backup_error"] = "encryption_failed"
+                # Still write record (without encrypted data) to maintain audit trail
+        else:
+            # No key — skip backup entirely (user opted out)
+            return
+
+        # Write to daily rolling file
+        try:
+            backup_dir = Path(__import__('hermes_constants').get_hermes_home()) / "backups" / "compression"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            backup_file = backup_dir / f"{datetime.datetime.now(datetime.timezone.utc):%Y-%m-%d}.jsonl"
+
+            # Atomic append: each line is a self-contained record
+            # Opening with "a" and writing a single line is atomic on POSIX
+            line = json.dumps(record, ensure_ascii=False) + "\n"
+            with open(backup_file, "a", encoding="utf-8") as fh:
+                fh.write(line)
+                fh.flush()
+                os.fsync(fh.fileno())  # durability: force to disk
+
+        except OSError as e:
+            print(f"[ERROR] caveman-backup: disk write failed: {e}", file=__import__('sys').stderr)
+        except Exception as e:
+            print(f"[ERROR] caveman-backup: unexpected error: {e}", file=__import__('sys').stderr)
+
+    thread = threading.Thread(target=_do_backup, daemon=True, name="caveman-backup")
+    thread.start()
+
+
 
 def memory_tool(
     action: str,
@@ -478,6 +585,50 @@ def memory_tool(
     if target not in ("memory", "user"):
         return tool_error(f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False)
 
+    # --- caveman-llm compression gate (opt-in via HERMES_COMPRESS=1) ---
+    original_content: str | None = None
+
+    def _should_compress() -> bool:
+        if not _CAVEMAN_AVAILABLE:
+            return False
+        if os.getenv("HERMES_COMPRESS") != "1":
+            return False
+        if action not in ("add", "replace"):
+            return False
+        if not content:
+            return False
+        try:
+            max_size = int(os.getenv("CAVEMAN_MAX_SIZE", "500000"))
+        except (TypeError, ValueError):
+            max_size = 500000
+        if len(content) > max_size:
+            return False
+        try:
+            is_sens, _ = is_sensitive_content(content)
+            if is_sens:
+                return False
+        except Exception:
+            return False
+        try:
+            seg = segment(content[:2000])
+            threshold = float(os.getenv("CAVEMAN_PROSE_RATIO", "0.20"))
+            if getattr(seg, "prose_ratio", 0.0) < threshold:
+                return False
+        except Exception:
+            return False
+        return True
+
+    if _should_compress():
+        try:
+            compressed = compress_llm(content, options=CompressionOptions())
+            original_content = content
+            content = compressed.text
+        except CompressionError:
+            original_content = None
+        except Exception:
+            original_content = None
+
+    # --- dispatch to store ---
     if action == "add":
         if not content:
             return tool_error("Content is required for 'add' action.", success=False)
@@ -497,6 +648,13 @@ def memory_tool(
 
     else:
         return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
+
+    # --- backup original if compression applied ---
+    if original_content is not None and result.get("success") is True:
+        try:
+            _backup_original_async(original_content, result, target=target)
+        except Exception:
+            pass
 
     return json.dumps(result, ensure_ascii=False)
 

@@ -108,6 +108,32 @@ All documentation lives at **[hermes-agent.nousresearch.com/docs](https://hermes
 
 ---
 
+## Compression Integration
+
+Hermes Agent integrates the **caveman-llm** semantic compression skill to reduce token usage on prose-heavy memory entries while preserving all technical content (code, URLs, paths, IDs) exactly.
+
+**Opt-in:** Set `HERMES_COMPRESS=1` in your environment before starting Hermes.
+
+```bash
+export HERMES_COMPRESS=1
+hermes
+```
+
+**Encrypted backup:** Every original (pre-compression) memory entry is backed up to an encrypted JSONL file for recovery. Set `HERMES_BACKUP_KEY`:
+
+```bash
+# Generate a Fernet key once (store it safely)
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+
+export HERMES_BACKUP_KEY=gAAAAABm...  # your key here
+```
+
+Backup location: `$HERMES_HOME/backups/compression/YYYY-MM-DD.jsonl`
+
+Full documentation → [caveman-llm skill](https://github.com/NousResearch/hermes-agent/tree/main/caveman-compression/caveman-llm/SKILL.md)
+
+---
+
 ## Migrating from OpenClaw
 
 If you're coming from OpenClaw, Hermes can automatically import your settings, memories, skills, and API keys.
