@@ -260,6 +260,23 @@ def _resolve_cdp_override(cdp_url: str) -> str:
     return raw
 
 
+def _is_cdp_discovery_shorthand(cdp_url: str) -> bool:
+    """Return True for CDP inputs that must resolve through /json/version."""
+    raw = (cdp_url or "").strip()
+    if not raw:
+        return False
+
+    lowered = raw.lower()
+    if "/devtools/browser/" in lowered:
+        return False
+    if lowered.startswith(("http://", "https://")):
+        return True
+    if lowered.startswith(("ws://", "wss://")):
+        host_and_path = raw.split("://", 1)[1].rstrip("/")
+        return "/" not in host_and_path
+    return False
+
+
 def _get_cdp_override() -> str:
     """Return a normalized CDP URL override, or empty string.
 
