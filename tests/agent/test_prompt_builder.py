@@ -23,6 +23,7 @@ from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
+    COPILOT_REMOTE_DELEGATION_GUIDANCE,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
@@ -353,6 +354,24 @@ class TestBuildSkillsSystemPrompt:
 
         assert "web-search" in result
         assert "old-tool" not in result
+
+    def test_rebuilds_prompt_when_disabled_skills_change(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "tools" / "cached-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: cached-skill\ndescription: Cached skill\n---\n"
+        )
+
+        first = build_skills_system_prompt()
+        assert "cached-skill" in first
+
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n  disabled: [cached-skill]\n"
+        )
+
+        second = build_skills_system_prompt()
+        assert "cached-skill" not in second
 
     def test_includes_setup_needed_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -771,6 +790,42 @@ class TestPromptBuilderConstants:
         assert "cron" in PLATFORM_HINTS
         assert "cli" in PLATFORM_HINTS
 
+    def test_cli_hint_does_not_suggest_media_tags(self):
+        # Regression: MEDIA:/path tags are intercepted only by messaging
+        # gateway platforms. On the CLI they render as literal text and
+        # confuse users. The CLI hint must steer the agent away from them.
+        cli_hint = PLATFORM_HINTS["cli"]
+        assert "MEDIA:" in cli_hint, (
+            "CLI hint should mention MEDIA: in order to tell the agent "
+            "NOT to use it (negative guidance)."
+        )
+        # Must contain explicit "don't" language near the MEDIA reference.
+        assert any(
+            marker in cli_hint.lower()
+            for marker in ("do not emit media", "not intercepted", "do not", "don't")
+        ), "CLI hint should explicitly discourage MEDIA: tags."
+        # Messaging hints should still advertise MEDIA: positively (sanity
+        # check that this test is calibrated correctly).
+        assert "include MEDIA:" in PLATFORM_HINTS["telegram"]
+
+    def test_platform_hints_mattermost(self):
+        hint = PLATFORM_HINTS["mattermost"]
+        assert "Mattermost" in hint
+        assert "MEDIA:" in hint
+        assert "Markdown" in hint
+
+    def test_platform_hints_matrix(self):
+        hint = PLATFORM_HINTS["matrix"]
+        assert "Matrix" in hint
+        assert "MEDIA:" in hint
+        assert "Markdown" in hint
+
+    def test_platform_hints_feishu(self):
+        hint = PLATFORM_HINTS["feishu"]
+        assert "Feishu" in hint
+        assert "MEDIA:" in hint
+        assert "Markdown" in hint
+
 
 # =========================================================================
 # Environment hints
@@ -992,6 +1047,20 @@ class TestToolUseEnforcementGuidance:
 
     def test_enforcement_models_is_tuple(self):
         assert isinstance(TOOL_USE_ENFORCEMENT_MODELS, tuple)
+
+
+class TestCopilotRemoteDelegationGuidance:
+    def test_guidance_defaults_code_writing_to_copilot_remote(self):
+        text = COPILOT_REMOTE_DELEGATION_GUIDANCE.lower()
+        assert "default execution" in text
+        assert "code" in text
+        assert "copilot_remote(action=\"launch\")" in text
+
+    def test_guidance_discourages_local_implementation_first(self):
+        text = COPILOT_REMOTE_DELEGATION_GUIDANCE.lower()
+        assert "do not implement locally" in text
+        assert "terminal" in text
+        assert "patch" in text
 
 
 class TestOpenAIModelExecutionGuidance:

@@ -2,8 +2,9 @@
 name: requesting-code-review
 description: >
   Pre-commit verification pipeline — static security scan, baseline-aware
-  quality gates, independent reviewer subagent, and auto-fix loop. Use after
-  code changes and before committing, pushing, or opening a PR.
+  quality gates, fresh independent review contexts, and an auto-fix loop. Use
+  after `/copilot_remote`-driven or manual code changes and before committing,
+  pushing, or opening a PR.
 version: 2.0.0
 author: Hermes Agent (adapted from obra/superpowers + MorAlekss)
 license: MIT
@@ -19,6 +20,20 @@ Automated verification pipeline before code lands. Static scans, baseline-aware
 quality gates, an independent reviewer subagent, and an auto-fix loop.
 
 **Core principle:** No agent should verify its own work. Fresh context finds what you miss.
+
+## Copilot-First Routing
+
+This skill assumes `/copilot_remote` is the default execution path for software-development
+work in Hermes. Keep the independent-review separation in this skill even when
+`/copilot_remote` is doing the main execution; the reviewer and fixer should still use
+fresh contexts.
+
+Before any `/copilot_remote` launch in this workflow, inspect the current workspace for a
+`repos/` directory and resolve which repo contains the code under review. Hermes
+Copilot must run inside one of those repos to work reliably. If the repo is obvious,
+launch from that repo root. If not, pass `--repo <name>` or `--repo-path <absolute-path>`
+explicitly so review and fix contexts attach to the correct repository instead of the
+wrapper workspace.
 
 ## When to Use
 
@@ -126,7 +141,7 @@ Quick scan before dispatching the reviewer:
 
 ## Step 5 — Independent reviewer subagent
 
-Call `delegate_task` directly — it is NOT available inside execute_code or scripts.
+Open a fresh review context via `/copilot_remote` by default. If `/copilot_remote` is unavailable, fall back to `delegate_task` directly — it is NOT available inside execute_code or scripts.
 
 The reviewer gets ONLY the diff and static scan results. No shared context with
 the implementer. Fail-closed: unparseable response = fail.

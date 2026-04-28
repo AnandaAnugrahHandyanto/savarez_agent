@@ -152,7 +152,13 @@ MEMORY_GUIDANCE = (
     "Do NOT save task progress, session outcomes, completed-work logs, or temporary TODO "
     "state to memory; use session_search to recall those from past transcripts. "
     "If you've discovered a new way to do something, solved a problem that could be "
-    "necessary later, save it as a skill with the skill tool."
+    "necessary later, save it as a skill with the skill tool.\n"
+    "Write memories as declarative facts, not instructions to yourself. "
+    "'User prefers concise responses' ✓ — 'Always respond concisely' ✗. "
+    "'Project uses pytest with xdist' ✓ — 'Run tests with pytest -n 4' ✗. "
+    "Imperative phrasing gets re-read as a directive in later sessions and can "
+    "cause repeated work or override the user's current request. Procedures and "
+    "workflows belong in skills, not memory."
 )
 
 SESSION_SEARCH_GUIDANCE = (
@@ -201,14 +207,37 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "without acting are not acceptable."
 )
 
+COPILOT_REMOTE_DELEGATION_GUIDANCE = (
+    "# Copilot remote delegation\n"
+    "When the copilot_remote tool is available, it is the default execution "
+    "path for user requests that ask Hermes to write, create, build, edit, "
+    "fix, implement, refactor, test, or otherwise change code, websites, "
+    "documentation files, configuration, scripts, or repository files.\n"
+    "For these implementation requests, call copilot_remote(action=\"launch\") "
+    "as the first implementation action after only the minimum context needed "
+    "to write a complete prompt. Do not implement locally with terminal, "
+    "read_file, write_file, patch, execute_code, or delegate_task first unless "
+    "the user explicitly asks Hermes to do the work itself instead of Copilot.\n"
+    "If the target repository is clear, pass repo or repo_path. If it is not "
+    "clear, omit repo fields and let Hermes route from the prompt. Ask a "
+    "clarifying question only when the task itself is too ambiguous to describe.\n"
+    "Do not run terminal Copilot probes such as `copilot --help`, `copilot "
+    "version`, login checks, smoke tests, or ACP checks before launching; "
+    "copilot_remote owns launch validation and returns an error if Copilot is "
+    "unavailable.\n"
+    "Use normal tools directly for explanation, planning, code review without "
+    "edits, diagnostics/status checks, or non-code tasks. After launching, "
+    "report the job_id, repo, state, and connect_command. For follow-up status, "
+    "use copilot_remote(action=\"list\") or copilot_remote(action=\"show\")."
+)
+
 # Model name substrings that trigger tool-use enforcement guidance.
 # Add new patterns here when a model family needs explicit steering.
 TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok")
 
-# OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes
+# OpenAI GPT-family execution guidance.  Addresses known failure modes
 # where GPT models abandon work on partial results, skip prerequisite lookups,
 # hallucinate instead of using tools, and declare "done" without verification.
-# Inspired by patterns from OpenAI's GPT-5.4 prompting guide & OpenClaw PR #38953.
 OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "# Execution discipline\n"
     "<tool_persistence>\n"
@@ -292,11 +321,11 @@ GOOGLE_MODEL_OPERATIONAL_GUIDANCE = (
 )
 
 # Model name substrings that should use the 'developer' role instead of
-# 'system' for the system prompt.  OpenAI's newer models (GPT-5, Codex)
+# 'system' for the system prompt.  Some newer OpenAI models
 # give stronger instruction-following weight to the 'developer' role.
 # The swap happens at the API boundary in _build_api_kwargs() so internal
 # message representation stays consistent ("system" everywhere).
-DEVELOPER_ROLE_MODELS = ("gpt-5", "codex")
+DEVELOPER_ROLE_MODELS = ("gpt-5",)
 
 PLATFORM_HINTS = {
     "whatsapp": (
@@ -360,7 +389,13 @@ PLATFORM_HINTS = {
     ),
     "cli": (
         "You are a CLI AI Agent. Try not to use markdown but simple text "
-        "renderable inside a terminal."
+        "renderable inside a terminal. "
+        "File delivery: there is no attachment channel — the user reads your "
+        "response directly in their terminal. Do NOT emit MEDIA:/path tags "
+        "(those are only intercepted on messaging platforms like Telegram, "
+        "Discord, Slack, etc.; on the CLI they render as literal text). "
+        "When referring to a file you created or changed, just state its "
+        "absolute path in plain text; the user can open it from there."
     ),
     "sms": (
         "You are communicating via SMS. Keep responses concise and use plain text "
@@ -373,6 +408,32 @@ PLATFORM_HINTS = {
         "appear as text messages. You can send media files natively: include "
         "MEDIA:/absolute/path/to/file in your response. Images (.jpg, .png, "
         ".heic) appear as photos and other files arrive as attachments."
+    ),
+    "mattermost": (
+        "You are in a Mattermost workspace communicating with your user. "
+        "Mattermost renders standard Markdown — headings, bold, italic, code "
+        "blocks, and tables all work. "
+        "You can send media files natively: include MEDIA:/absolute/path/to/file "
+        "in your response. Images (.jpg, .png, .webp) are uploaded as photo "
+        "attachments, audio and video as file attachments. "
+        "Image URLs in markdown format ![alt](url) are rendered as inline previews automatically."
+    ),
+    "matrix": (
+        "You are in a Matrix room communicating with your user. "
+        "Matrix renders Markdown — bold, italic, code blocks, and links work; "
+        "the adapter converts your Markdown to HTML for rich display. "
+        "You can send media files natively: include MEDIA:/absolute/path/to/file "
+        "in your response. Images (.jpg, .png, .webp) are sent as inline photos, "
+        "audio (.ogg, .mp3) as voice/audio messages, video (.mp4) inline, "
+        "and other files as downloadable attachments."
+    ),
+    "feishu": (
+        "You are in a Feishu (Lark) workspace communicating with your user. "
+        "Feishu renders Markdown in messages — bold, italic, code blocks, and "
+        "links are supported. "
+        "You can send media files natively: include MEDIA:/absolute/path/to/file "
+        "in your response. Images (.jpg, .png, .webp) are uploaded and displayed "
+        "inline, audio files as voice messages, and other files as attachments."
     ),
     "weixin": (
         "You are on Weixin/WeChat. Markdown formatting is supported, so you may use it when "
@@ -399,6 +460,29 @@ PLATFORM_HINTS = {
         "and emoji. You can send media files natively: include MEDIA:/absolute/path/to/file in "
         "your response. Images are sent as native photos, and other files arrive as downloadable "
         "documents."
+    ),
+    "yuanbao": (
+        "You are on Yuanbao (腾讯元宝), a Chinese AI assistant platform. "
+        "Markdown formatting is supported (code blocks, tables, bold/italic). "
+        "You CAN send media files natively — to deliver a file to the user, include "
+        "MEDIA:/absolute/path/to/file in your response. The file will be sent as a native "
+        "Yuanbao attachment: images (.jpg, .png, .webp, .gif) are sent as photos, "
+        "and other files (.pdf, .docx, .txt, .zip, etc.) arrive as downloadable documents "
+        "(max 50 MB). You can also include image URLs in markdown format ![alt](url) and "
+        "they will be downloaded and sent as native photos. "
+        "Do NOT tell the user you lack file-sending capability — use MEDIA: syntax "
+        "whenever a file delivery is appropriate.\n\n"
+        "Stickers (贴纸 / 表情包 / TIM face): Yuanbao has a built-in sticker catalogue. "
+        "When the user sends a sticker (you see '[emoji: 名称]' in their message) or asks "
+        "you to send/reply-with a 贴纸/表情/表情包, you MUST use the sticker tools:\n"
+        "  1. Call yb_search_sticker with a Chinese keyword (e.g. '666', '比心', '吃瓜', "
+        "     '捂脸', '合十') to discover matching sticker_ids.\n"
+        "  2. Call yb_send_sticker with the chosen sticker_id or name — this sends a real "
+        "     TIMFaceElem that renders as a native sticker in the chat.\n"
+        "DO NOT draw sticker-like PNGs with execute_code/Pillow/matplotlib and then send "
+        "them via MEDIA: or send_image_file. That produces a fake low-quality 'sticker' "
+        "image and is the WRONG path. Bare Unicode emoji in text is also not a substitute "
+        "— when a sticker is the right response, use yb_send_sticker."
     ),
 }
 
@@ -546,6 +630,19 @@ def _build_snapshot_entry(
 # Skills index
 # =========================================================================
 
+PROMPT_HIDDEN_CODING_AGENT_SKILLS = frozenset({
+    "blackbox",
+    "claude-code",
+    "codex",
+    "opencode",
+})
+
+
+def _skill_hidden_from_prompt(*names: str) -> bool:
+    """Return True for bundled third-party coding-agent skills hidden from prompts."""
+    return any((name or "").strip().lower() in PROMPT_HIDDEN_CODING_AGENT_SKILLS for name in names)
+
+
 def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
     """Read a SKILL.md once and return platform compatibility, frontmatter, and description.
 
@@ -629,20 +726,20 @@ def build_skills_system_prompt(
         or get_session_env("HERMES_SESSION_PLATFORM")
         or ""
     )
+    disabled = get_disabled_skill_names()
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
+        tuple(sorted(disabled)),
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
         if cached is not None:
             _SKILLS_PROMPT_CACHE.move_to_end(cache_key)
             return cached
-
-    disabled = get_disabled_skill_names()
 
     # ── Layer 2: disk snapshot ────────────────────────────────────────
     snapshot = _load_skills_snapshot(skills_dir)
@@ -659,6 +756,8 @@ def build_skills_system_prompt(
             category = entry.get("category") or "general"
             frontmatter_name = entry.get("frontmatter_name") or skill_name
             platforms = entry.get("platforms") or []
+            if _skill_hidden_from_prompt(skill_name, frontmatter_name):
+                continue
             if not skill_matches_platform({"platforms": platforms}):
                 continue
             if frontmatter_name in disabled or skill_name in disabled:
@@ -670,7 +769,7 @@ def build_skills_system_prompt(
             ):
                 continue
             skills_by_category.setdefault(category, []).append(
-                (skill_name, entry.get("description", ""))
+                (frontmatter_name, entry.get("description", ""))
             )
         category_descriptions = {
             str(k): str(v)
@@ -686,6 +785,8 @@ def build_skills_system_prompt(
             if not is_compatible:
                 continue
             skill_name = entry["skill_name"]
+            if _skill_hidden_from_prompt(skill_name, entry["frontmatter_name"]):
+                continue
             if entry["frontmatter_name"] in disabled or skill_name in disabled:
                 continue
             if not _skill_should_show(
@@ -695,7 +796,7 @@ def build_skills_system_prompt(
             ):
                 continue
             skills_by_category.setdefault(entry["category"], []).append(
-                (skill_name, entry["description"])
+                (entry["frontmatter_name"], entry["description"])
             )
 
         # Read category-level DESCRIPTION.md files
@@ -738,9 +839,12 @@ def build_skills_system_prompt(
                     continue
                 entry = _build_snapshot_entry(skill_file, ext_dir, frontmatter, desc)
                 skill_name = entry["skill_name"]
-                if skill_name in seen_skill_names:
+                frontmatter_name = entry["frontmatter_name"]
+                if _skill_hidden_from_prompt(skill_name, frontmatter_name):
                     continue
-                if entry["frontmatter_name"] in disabled or skill_name in disabled:
+                if frontmatter_name in seen_skill_names:
+                    continue
+                if frontmatter_name in disabled or skill_name in disabled:
                     continue
                 if not _skill_should_show(
                     extract_skill_conditions(frontmatter),
@@ -748,9 +852,9 @@ def build_skills_system_prompt(
                     available_toolsets,
                 ):
                     continue
-                seen_skill_names.add(skill_name)
+                seen_skill_names.add(frontmatter_name)
                 skills_by_category.setdefault(entry["category"], []).append(
-                    (skill_name, entry["description"])
+                    (frontmatter_name, entry["description"])
                 )
             except Exception as e:
                 logger.debug("Error reading external skill %s: %s", skill_file, e)
@@ -802,6 +906,11 @@ def build_skills_system_prompt(
             "Skills also encode the user's preferred approach, conventions, and quality standards "
             "for tasks like code review, planning, and testing — load them even for tasks you "
             "already know how to do, because the skill defines how it should be done here.\n"
+            "Whenever the user asks you to configure, set up, install, enable, disable, modify, "
+            "or troubleshoot Hermes Agent itself — its CLI, config, models, providers, tools, "
+            "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "
+            "first. It has the actual commands (e.g. `hermes config set …`, `hermes tools`, "
+            "`hermes setup`) so you don't have to guess or invent workarounds.\n"
             "If a skill has issues, fix it with skill_manage(action='patch').\n"
             "After difficult/iterative tasks, offer to save as a skill. "
             "If a skill you loaded was missing steps, had wrong commands, or needed "
@@ -973,22 +1082,6 @@ def _load_agents_md(cwd_path: Path) -> str:
     return ""
 
 
-def _load_claude_md(cwd_path: Path) -> str:
-    """CLAUDE.md / claude.md — cwd only."""
-    for name in ["CLAUDE.md", "claude.md"]:
-        candidate = cwd_path / name
-        if candidate.exists():
-            try:
-                content = candidate.read_text(encoding="utf-8").strip()
-                if content:
-                    content = _scan_context_content(content, name)
-                    result = f"## {name}\n\n{content}"
-                    return _truncate_content(result, "CLAUDE.md")
-            except Exception as e:
-                logger.debug("Could not read %s: %s", candidate, e)
-    return ""
-
-
 def _load_cursorrules(cwd_path: Path) -> str:
     """.cursorrules + .cursor/rules/*.mdc — cwd only."""
     cursorrules_content = ""
@@ -1025,11 +1118,18 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
     Priority (first found wins — only ONE project context type is loaded):
       1. .hermes.md / HERMES.md  (walk to git root)
       2. AGENTS.md / agents.md   (cwd only)
-      3. CLAUDE.md / claude.md   (cwd only)
-      4. .cursorrules / .cursor/rules/*.mdc  (cwd only)
+      3. .cursorrules / .cursor/rules/*.mdc  (cwd only)
 
     SOUL.md from HERMES_HOME is independent and always included when present.
     Each context source is capped at 20,000 chars.
+
+    .. note::
+       ``CLAUDE.md`` / ``claude.md`` was removed from this priority list as
+       part of the SWE-skill consolidation that moved Claude/Codex/Opencode
+       delegation to the new ``copilot`` toolset (see
+       ``website/docs/user-guide/features/copilot-remote.md``). Projects
+       relying on ``CLAUDE.md`` for repo conventions should rename to
+       ``AGENTS.md`` (already in the priority list above) or ``.hermes.md``.
 
     When *skip_soul* is True, SOUL.md is not included here (it was already
     loaded via ``load_soul_md()`` for the identity slot).
@@ -1044,7 +1144,6 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
     project_context = (
         _load_hermes_md(cwd_path)
         or _load_agents_md(cwd_path)
-        or _load_claude_md(cwd_path)
         or _load_cursorrules(cwd_path)
     )
     if project_context:

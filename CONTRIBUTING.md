@@ -9,7 +9,7 @@ Thank you for contributing to Hermes Agent! This guide covers everything you nee
 We value contributions in this order:
 
 1. **Bug fixes** — crashes, incorrect behavior, data loss. Always top priority.
-2. **Cross-platform compatibility** — Windows, macOS, different Linux distros, different terminal emulators. We want Hermes to work everywhere.
+2. **Cross-platform compatibility** — macOS, different Linux distros, and WSL2 on Windows. We want Hermes to work everywhere.
 3. **Security hardening** — shell injection, prompt injection, path traversal, privilege escalation. See [Security](#security-considerations).
 4. **Performance and robustness** — retry logic, error handling, graceful degradation.
 5. **New skills** — but only broadly useful ones. See [Should it be a Skill or a Tool?](#should-it-be-a-skill-or-a-tool)
@@ -55,10 +55,10 @@ If your skill is specialized, community-contributed, or niche, it's better suite
 
 | Requirement | Notes |
 |-------------|-------|
-| **Git** | With `--recurse-submodules` support |
+| **Git** | With `--recurse-submodules` support, and the `git-lfs` extension installed |
 | **Python 3.11+** | uv will install it if missing |
 | **uv** | Fast Python package manager ([install](https://docs.astral.sh/uv/)) |
-| **Node.js 18+** | Optional — needed for browser tools and WhatsApp bridge |
+| **Node.js 20+** | Optional — needed for browser tools and WhatsApp bridge (matches root `package.json` engines) |
 
 ### Clone and install
 
@@ -88,7 +88,7 @@ cp cli-config.yaml.example ~/.hermes/config.yaml
 touch ~/.hermes/.env
 
 # Add at minimum an LLM provider key:
-echo 'OPENROUTER_API_KEY=sk-or-v1-your-key' >> ~/.hermes/.env
+echo "OPENROUTER_API_KEY=***" >> ~/.hermes/.env
 ```
 
 ### Run
@@ -119,7 +119,8 @@ hermes-agent/
 ├── cli.py                    # HermesCLI class — interactive TUI, prompt_toolkit integration
 ├── model_tools.py            # Tool orchestration (thin layer over tools/registry.py)
 ├── toolsets.py               # Tool groupings and presets (hermes-cli, hermes-telegram, etc.)
-├── hermes_state.py           # SQLite session database with FTS5 full-text search, session titles
+├── hermes_state.py           # SQLite session database with FTS5 full-text search, session titles, copilot remote jobs
+├── copilot_remote/             # Repo router + detached GitHub Copilot remote session lifecycle
 ├── batch_runner.py           # Parallel batch processing for trajectory generation
 │
 ├── agent/                    # Agent internals (extracted modules)
@@ -138,6 +139,7 @@ hermes-agent/
 │   ├── models.py                 # OpenRouter model selection lists
 │   ├── banner.py                 # Welcome banner, ASCII art
 │   ├── commands.py               # Central slash command registry (CommandDef), autocomplete, gateway helpers
+│   ├── copilot_cmd.py            # `hermes copilot` + `/copilot_remote` command handlers
 │   ├── callbacks.py              # Interactive callbacks (clarify, sudo, approval)
 │   ├── doctor.py                 # Diagnostics
 │   ├── skills_hub.py             # Skills Hub CLI + /skills slash command
@@ -190,7 +192,8 @@ hermes-agent/
 | `~/.hermes/auth.json` | OAuth credentials (Nous Portal) |
 | `~/.hermes/skills/` | All active skills (bundled + hub-installed + agent-created) |
 | `~/.hermes/memories/` | Persistent memory (MEMORY.md, USER.md) |
-| `~/.hermes/state.db` | SQLite session database |
+| `~/.hermes/state.db` | SQLite session database + Copilot remote records |
+| `~/.hermes/logs/` | Runtime logs, including `copilot-<job_id>.log` PTY captures for detached Copilot sessions |
 | `~/.hermes/sessions/` | JSON session logs |
 | `~/.hermes/cron/` | Scheduled job data |
 | `~/.hermes/whatsapp/session/` | WhatsApp bridge credentials |
@@ -515,7 +518,7 @@ See `hermes_cli/skin_engine.py` for the full schema and existing skins as exampl
 
 ## Cross-Platform Compatibility
 
-Hermes runs on Linux, macOS, and Windows. When writing code that touches the OS:
+Hermes runs on Linux, macOS, and WSL2 on Windows. When writing code that touches the OS:
 
 ### Critical rules
 
@@ -597,7 +600,7 @@ refactor/description   # Code restructuring
 
 1. **Run tests**: `pytest tests/ -v`
 2. **Test manually**: Run `hermes` and exercise the code path you changed
-3. **Check cross-platform impact**: If you touch file I/O, process management, or terminal handling, consider Windows and macOS
+3. **Check cross-platform impact**: If you touch file I/O, process management, or terminal handling, consider macOS, Linux, and WSL2
 4. **Keep PRs focused**: One logical change per PR. Don't mix a bug fix with a refactor with a new feature.
 
 ### PR description

@@ -20,22 +20,22 @@ This page is the top-level map of Hermes Agent internals. Use it to orient yours
            │              │                       │
            ▼              ▼                       ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                     AIAgent (run_agent.py)                           │
-│                                                                      │
-│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐                │
-│  │ Prompt        │ │ Provider     │ │ Tool         │                │
-│  │ Builder       │ │ Resolution   │ │ Dispatch     │                │
-│  │ (prompt_      │ │ (runtime_    │ │ (model_      │                │
-│  │  builder.py)  │ │  provider.py)│ │  tools.py)   │                │
-│  └──────┬───────┘ └──────┬───────┘ └──────┬───────┘                │
-│         │                │                │                          │
-│  ┌──────┴───────┐ ┌──────┴───────┐ ┌──────┴───────┐                │
-│  │ Compression  │ │ 3 API Modes  │ │ Tool Registry│                │
-│  │ & Caching    │ │ chat_compl.  │ │ (registry.py)│                │
-│  │              │ │ codex_resp.  │ │ 47 tools     │                │
-│  │              │ │ anthropic    │ │ 19 toolsets  │                │
-│  └──────────────┘ └──────────────┘ └──────────────┘                │
-└─────────────────────────────────────────────────────────────────────┘
+│                     AIAgent (run_agent.py)                          │
+│                                                                     │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐               │
+│  │ Prompt       │  │ Provider     │  │ Tool         │               │
+│  │ Builder      │  │ Resolution   │  │ Dispatch     │               │
+│  │ (prompt_     │  │ (runtime_    │  │ (model_      │               │
+│  │  builder.py) │  │  provider.py)│  │  tools.py)   │               │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘               │
+│         │                 │                 │                       │
+│  ┌──────┴───────┐  ┌──────┴───────┐  ┌──────┴───────┐               │
+│  │ Compression  │  │ 3 API Modes  │  │ Tool Registry│               │
+│  │ & Caching    │  │ chat_compl.  │  │ (registry.py)│               │
+│  │              │  │ codex_resp.  │  │ 47 tools     │               │
+│  │              │  │ anthropic    │  │ 19 toolsets  │               │
+│  └──────────────┘  └──────────────┘  └──────────────┘               │
+└─────────┴─────────────────┴─────────────────┴───────────────────────┘
            │                                    │
            ▼                                    ▼
 ┌───────────────────┐              ┌──────────────────────┐
@@ -57,6 +57,7 @@ hermes-agent/
 ├── model_tools.py            # Tool discovery, schema collection, dispatch
 ├── toolsets.py               # Tool groupings and platform presets
 ├── hermes_state.py           # SQLite session/state database with FTS5
+├── copilot_remote/             # Repo router, detached launcher, and completion hooks for Copilot remote jobs
 ├── hermes_constants.py       # HERMES_HOME, profile-aware paths
 ├── batch_runner.py           # Batch trajectory generation
 │
@@ -79,6 +80,7 @@ hermes-agent/
 │   ├── main.py               # Entry point — all `hermes` subcommands (~6,000 lines)
 │   ├── config.py             # DEFAULT_CONFIG, OPTIONAL_ENV_VARS, migration
 │   ├── commands.py           # COMMAND_REGISTRY — central slash command definitions
+│   ├── copilot_cmd.py        # `hermes copilot` + `/copilot_remote` remote job lifecycle
 │   ├── auth.py               # PROVIDER_REGISTRY, credential resolution
 │   ├── runtime_provider.py   # Provider → api_mode + credentials
 │   ├── models.py             # Model catalog, provider model lists
@@ -159,6 +161,17 @@ Platform event → Adapter.on_message() → MessageEvent
     → deliver response back through adapter
 ```
 
+### Copilot Remote Job
+
+```text
+CLI subcommand or /copilot_remote launch
+  → optional repo routing via copilot_remote/router.py
+  → SessionDB.create_copilot_remote()
+  → launch_copilot() spawns detached `copilot -i --remote`
+  → best-effort remote task ID + prompt verification
+  → complete_job.py marks the job done or failed on exit
+```
+
 ### Cron Job
 
 ```text
@@ -218,7 +231,7 @@ Central tool registry (`tools/registry.py`) with 47 registered tools across 19 t
 
 ### Session Persistence
 
-SQLite-based session storage with FTS5 full-text search. Sessions have lineage tracking (parent/child across compressions), per-platform isolation, and atomic writes with contention handling.
+SQLite-based session storage with FTS5 full-text search. Sessions have lineage tracking (parent/child across compressions), per-platform isolation, and atomic writes with contention handling. The same database also stores `copilot_remote` rows for detached GitHub Copilot session lifecycle metadata.
 
 → [Session Storage](./session-storage.md)
 
@@ -233,6 +246,10 @@ Long-running process with 18 platform adapters, unified session routing, user au
 Three discovery sources: `~/.hermes/plugins/` (user), `.hermes/plugins/` (project), and pip entry points. Plugins register tools, hooks, and CLI commands through a context API. Two specialized plugin types exist: memory providers (`plugins/memory/`) and context engines (`plugins/context_engine/`). Both are single-select — only one of each can be active at a time, configured via `hermes plugins` or `config.yaml`.
 
 → [Plugin Guide](/docs/guides/build-a-hermes-plugin), [Memory Provider Plugin](./memory-provider-plugin.md)
+
+### Copilot Remote Jobs
+
+`copilot_remote/` manages repo routing, detached `copilot -i --remote` launches under a PTY, remote task handle extraction, prompt steering, and completion updates via `complete_job.py`. User entry points live in `hermes_cli/copilot_cmd.py` and surface as both `hermes copilot ...` and `/copilot_remote ...`.
 
 ### Cron
 

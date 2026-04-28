@@ -27,6 +27,10 @@ hermes [global-options] <command> [subcommand/options]
 | `--worktree`, `-w` | Start in an isolated git worktree for parallel-agent workflows. |
 | `--yolo` | Bypass dangerous-command approval prompts. |
 | `--pass-session-id` | Include the session ID in the agent's system prompt. |
+| `--ignore-user-config` | Ignore `~/.hermes/config.yaml` and fall back to built-in defaults. Credentials in `.env` are still loaded. |
+| `--ignore-rules` | Skip auto-injection of `AGENTS.md`, `SOUL.md`, `.cursorrules`, memory, and preloaded skills. |
+| `--tui` | Launch the [TUI](../user-guide/tui.md) instead of the classic CLI. Equivalent to `HERMES_TUI=1`. |
+| `--dev` | With `--tui`: run the TypeScript sources directly via `tsx` instead of the prebuilt bundle (for TUI contributors). |
 
 ## Top-level commands
 
@@ -37,10 +41,12 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes gateway` | Run or manage the messaging gateway service. |
 | `hermes setup` | Interactive setup wizard for all or part of the configuration. |
 | `hermes whatsapp` | Configure and pair the WhatsApp bridge. |
+| `hermes slack` | Slack helpers (currently: generate the app manifest with every command as a native slash). |
 | `hermes auth` | Manage credentials — add, list, remove, reset, set strategy. Handles OAuth flows for Codex/Nous/Anthropic. |
 | `hermes login` / `logout` | **Deprecated** — use `hermes auth` instead. |
 | `hermes status` | Show agent, auth, and platform status. |
 | `hermes cron` | Inspect and tick the cron scheduler. |
+| `hermes copilot` | Launch, list, and inspect tracked GitHub Copilot remote sessions. |
 | `hermes webhook` | Manage dynamic webhook subscriptions for event-driven activation. |
 | `hermes doctor` | Diagnose config and dependency issues. |
 | `hermes dump` | Copy-pasteable setup summary for support/debugging. |
@@ -61,9 +67,6 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes insights` | Show token/cost/activity analytics. |
 | `hermes claw` | OpenClaw migration helpers. |
 | `hermes dashboard` | Launch the web dashboard for managing config, API keys, and sessions. |
-| `hermes debug` | Debug tools — upload logs and system info for support. |
-| `hermes backup` | Back up Hermes home directory to a zip file. |
-| `hermes import` | Restore a Hermes backup from a zip file. |
 | `hermes profile` | Manage profiles — multiple isolated Hermes instances. |
 | `hermes completion` | Print shell completion scripts (bash/zsh). |
 | `hermes version` | Show version information. |
@@ -83,7 +86,7 @@ Common options:
 | `-q`, `--query "..."` | One-shot, non-interactive prompt. |
 | `-m`, `--model <model>` | Override the model for this run. |
 | `-t`, `--toolsets <csv>` | Enable a comma-separated set of toolsets. |
-| `--provider <provider>` | Force a provider: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot-acp`, `copilot`, `anthropic`, `gemini`, `huggingface`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `kilocode`, `xiaomi`, `arcee`. |
+| `--provider <provider>` | Force a provider: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot-acp`, `copilot`, `anthropic`, `gemini`, `google-gemini-cli`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `kilocode`, `xiaomi`, `arcee`, `alibaba`, `deepseek`, `nvidia`, `ollama-cloud`, `xai` (alias `grok`), `qwen-oauth`, `bedrock`, `opencode-zen`, `opencode-go`, `ai-gateway`, `azure-foundry`. |
 | `-s`, `--skills <name>` | Preload one or more skills for the session (can be repeated or comma-separated). |
 | `-v`, `--verbose` | Verbose output. |
 | `-Q`, `--quiet` | Programmatic mode: suppress banner/spinner/tool previews. |
@@ -93,6 +96,8 @@ Common options:
 | `--checkpoints` | Enable filesystem checkpoints before destructive file changes. |
 | `--yolo` | Skip approval prompts. |
 | `--pass-session-id` | Pass the session ID into the system prompt. |
+| `--ignore-user-config` | Ignore `~/.hermes/config.yaml` and use built-in defaults. Credentials in `.env` are still loaded. Useful for isolated CI runs, reproducible bug reports, and third-party integrations. |
+| `--ignore-rules` | Skip auto-injection of `AGENTS.md`, `SOUL.md`, `.cursorrules`, persistent memory, and preloaded skills. Combine with `--ignore-user-config` for a fully isolated run. |
 | `--source <tag>` | Session source tag for filtering (default: `cli`). Use `tool` for third-party integrations that should not appear in user session lists. |
 | `--max-turns <N>` | Maximum tool-calling iterations per conversation turn (default: 90, or `agent.max_turns` in config). |
 
@@ -105,6 +110,7 @@ hermes chat --provider openrouter --model anthropic/claude-sonnet-4.6
 hermes chat --toolsets web,terminal,skills
 hermes chat --quiet -q "Return only JSON"
 hermes chat --worktree -q "Review this repo and open a PR"
+hermes chat --ignore-user-config --ignore-rules -q "Repro without my personal setup"
 ```
 
 ## `hermes model`
@@ -183,10 +189,14 @@ Use `hermes gateway run` instead of `hermes gateway start` — WSL's systemd sup
 ## `hermes setup`
 
 ```bash
-hermes setup [model|tts|terminal|gateway|tools|agent] [--non-interactive] [--reset]
+hermes setup [model|tts|terminal|gateway|tools|agent] [--non-interactive] [--reset] [--quick] [--reconfigure]
 ```
 
-Use the full wizard or jump into one section:
+**First run:** launches the first-time wizard.
+
+**Returning user (already configured):** drops straight into the full reconfigure wizard — every prompt shows your current value as its default, press Enter to keep or type a new value. No menu.
+
+Jump into one section instead of the full wizard:
 
 | Section | Description |
 |---------|-------------|
@@ -200,8 +210,10 @@ Options:
 
 | Option | Description |
 |--------|-------------|
+| `--quick` | On returning-user runs: only prompt for items that are missing or unset. Skip items you already have configured. |
 | `--non-interactive` | Use defaults / environment values without prompts. |
 | `--reset` | Reset configuration to defaults before setup. |
+| `--reconfigure` | Backwards-compat alias — bare `hermes setup` on an existing install now does this by default. |
 
 ## `hermes whatsapp`
 
@@ -210,6 +222,33 @@ hermes whatsapp
 ```
 
 Runs the WhatsApp pairing/setup flow, including mode selection and QR-code pairing.
+
+## `hermes slack`
+
+```bash
+hermes slack manifest              # print manifest to stdout
+hermes slack manifest --write      # write to ~/.hermes/slack-manifest.json
+hermes slack manifest --slashes-only  # just the features.slash_commands array
+```
+
+Generates a Slack app manifest that registers every gateway command in
+`COMMAND_REGISTRY` (`/btw`, `/stop`, `/model`, …) as a first-class
+Slack slash command — matching Discord and Telegram parity. Paste the
+output into your Slack app config at
+[https://api.slack.com/apps](https://api.slack.com/apps) → your app →
+**Features → App Manifest → Edit**, then **Save**. Slack prompts for
+reinstall if scopes or slash commands changed.
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--write [PATH]` | stdout | Write to a file instead of stdout. Bare `--write` writes `$HERMES_HOME/slack-manifest.json`. |
+| `--name NAME` | `Hermes` | Bot display name in Slack. |
+| `--description DESC` | default blurb | Bot description shown in the Slack app directory. |
+| `--slashes-only` | off | Emit only `features.slash_commands` for merging into a manually-maintained manifest. |
+
+Run `hermes slack manifest --write` again after `hermes update` to pick
+up any new commands.
+
 
 ## `hermes login` / `hermes logout` *(Deprecated)*
 
@@ -261,6 +300,58 @@ hermes cron <list|create|edit|pause|resume|run|remove|status|tick>
 | `remove` | Delete a scheduled job. |
 | `status` | Check whether the cron scheduler is running. |
 | `tick` | Run due jobs once and exit. |
+
+## `hermes copilot`
+
+```bash
+hermes copilot <launch|list|show>
+```
+
+Launch and inspect GitHub Copilot remote sessions that Hermes tracks as jobs. See [Copilot Remote Jobs](/docs/user-guide/features/copilot-remote) for the full workflow and troubleshooting.
+
+### `hermes copilot launch`
+
+```bash
+hermes copilot launch [options] "<prompt>"
+```
+
+If `--repo` is omitted, Hermes uses the repo router to scan `HERMES_WORKSPACE_PATH/repos/`, summarize README content, and pick the best repo for the prompt. Launches are detached: Hermes stores the job, prints reconnect commands, and returns immediately while Copilot keeps running.
+
+| Option | Description |
+|--------|-------------|
+| `--repo <slug>` | Skip routing and target a specific repo |
+| `--repo-path <abs-path>` | Required with `--repo`; absolute repo path visible to the active environment |
+| `--model <name>` | Ask Copilot CLI to use a specific model |
+| `--dry-run` | Simulate the launch without spawning Copilot |
+| `--signal-source <name>` | Advanced metadata for where the launch came from |
+| `--signal-ref <value>` | Advanced reference such as a ticket ID |
+
+### `hermes copilot list`
+
+```bash
+hermes copilot list [--state running|done|failed] [--limit N]
+```
+
+List tracked jobs. Alias: `hermes copilot ls`.
+
+### `hermes copilot show`
+
+```bash
+hermes copilot show <job-id>
+```
+
+Show repo, prompt preview, state, exit code, error text, and the best connect or resume handle Hermes captured for that job.
+
+Examples:
+
+```bash
+hermes copilot launch "Audit the webhook retry path in fridai-backend"
+hermes copilot launch --repo fridai-backend --repo-path /workspace/repos/proservice/fridai-backend "Patch the EventBridge retry bug"
+hermes copilot list --state running
+hermes copilot show <job-id>
+```
+
+Job records live in `~/.hermes/state.db`. Detached launch logs go to `~/.hermes/logs/copilot-<job-id>.log`. If Hermes cannot verify prompt delivery or resolve the exported remote task ID, it prints a warning instead of silently pretending the remote session is fully attached.
 
 ## `hermes webhook`
 
@@ -579,6 +670,8 @@ hermes skills inspect official/security/1password
 hermes skills inspect skills-sh/vercel-labs/json-render/json-render-react
 hermes skills install official/migration/openclaw-migration
 hermes skills install skills-sh/anthropics/skills/pdf --force
+hermes skills install https://sharethis.chat/SKILL.md                     # Direct URL (single-file SKILL.md)
+hermes skills install https://example.com/SKILL.md --name my-skill        # Override name when frontmatter has none
 hermes skills check
 hermes skills update
 hermes skills config
@@ -589,6 +682,7 @@ Notes:
 - `--force` does not override a `dangerous` scan verdict.
 - `--source skills-sh` searches the public `skills.sh` directory.
 - `--source well-known` lets you point Hermes at a site exposing `/.well-known/skills/index.json`.
+- Passing an `http(s)://…/*.md` URL installs a single-file SKILL.md directly. When frontmatter has no `name:` and the URL slug isn't a valid identifier, an interactive terminal prompts for a name; non-interactive surfaces (`/skills install` inside the TUI, gateway platforms) require `--name <x>` instead.
 
 ## `hermes honcho`
 

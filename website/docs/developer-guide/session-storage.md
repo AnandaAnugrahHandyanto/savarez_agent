@@ -14,6 +14,7 @@ Source file: `hermes_state.py`
 ├── sessions          — Session metadata, token counts, billing
 ├── messages          — Full message history per session
 ├── messages_fts      — FTS5 virtual table for full-text search
+├── copilot_remote      — Detached Copilot remote session lifecycle metadata
 └── schema_version    — Single-row table tracking migration state
 ```
 
@@ -22,6 +23,7 @@ Key design decisions:
 - **FTS5 virtual table** for fast text search across all session messages
 - **Session lineage** via `parent_session_id` chains (compression-triggered splits)
 - **Source tagging** (`cli`, `telegram`, `discord`, etc.) for platform filtering
+- **Detached Copilot remote tracking** via `copilot_remote` rows (separate from transcripts)
 - Batch runner and RL trajectories are NOT stored here (separate systems)
 
 
@@ -82,8 +84,10 @@ CREATE TABLE IF NOT EXISTS messages (
     token_count INTEGER,
     finish_reason TEXT,
     reasoning TEXT,
+    reasoning_content TEXT,
     reasoning_details TEXT,
-    codex_reasoning_items TEXT
+    codex_reasoning_items TEXT,
+    codex_message_items TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
@@ -91,9 +95,39 @@ CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestam
 
 Notes:
 - `tool_calls` is stored as a JSON string (serialized list of tool call objects)
-- `reasoning_details` and `codex_reasoning_items` are stored as JSON strings
+- `reasoning_details`, `codex_reasoning_items`, and `codex_message_items` are stored as JSON strings
 - `reasoning` stores the raw reasoning text for providers that expose it
 - Timestamps are Unix epoch floats (`time.time()`)
+
+### Copilot Remote Table
+
+```sql
+CREATE TABLE IF NOT EXISTS copilot_remote (
+    id TEXT PRIMARY KEY,
+    hermes_session_id TEXT REFERENCES sessions(id),
+    repo_slug TEXT NOT NULL,
+    repo_path TEXT NOT NULL,
+    prompt TEXT,
+    signal_source TEXT,
+    signal_ref TEXT,
+    connect_handle TEXT,
+    state TEXT NOT NULL DEFAULT 'running',
+    exit_code INTEGER,
+    created_at REAL NOT NULL,
+    finished_at REAL,
+    error_text TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_copilot_remote_state ON copilot_remote(state);
+CREATE INDEX IF NOT EXISTS idx_copilot_remote_repo ON copilot_remote(repo_slug, state);
+```
+
+Notes:
+- `id` is the Hermes-side job ID and primary lookup key
+- `connect_handle` stores the reconnect handle that Hermes extracts from the Copilot CLI's stdout/log output (used by `hermes copilot show` to emit `copilot --connect=<handle>`)
+- `signal_source` and `signal_ref` are caller-supplied metadata only (e.g. `--signal-source=jira`, `--signal-ref=PROJ-123`); they are never used as the reconnect handle
+- `hermes_session_id` can link a launch back to the Hermes chat session that created it
+- This table stores lifecycle metadata only; Copilot transcripts remain outside `state.db`
 
 ### FTS5 Full-Text Search
 
@@ -128,7 +162,7 @@ END;
 
 ## Schema Version and Migrations
 
-Current schema version: **6**
+Current schema version: **12**
 
 The `schema_version` table stores a single integer. On initialization,
 `_init_schema()` checks the current version and applies migrations sequentially:
@@ -141,6 +175,12 @@ The `schema_version` table stores a single integer. On initialization,
 | 4 | Add unique index on `title` (NULLs allowed, non-NULL must be unique) |
 | 5 | Add billing columns: `cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens`, `billing_provider`, `billing_base_url`, `billing_mode`, `estimated_cost_usd`, `actual_cost_usd`, `cost_status`, `cost_source`, `pricing_version` |
 | 6 | Add reasoning columns to messages: `reasoning`, `reasoning_details`, `codex_reasoning_items` |
+| 7 | Add `reasoning_content` to messages and introduce the first `copilot_remote` table |
+| 8 | Add `api_call_count` to sessions and simplify Copilot remote storage |
+| 9 | Add `codex_message_items` column to messages for Codex Responses message id/phase replay |
+| 10 | Remove `copilot_session_id`; Hermes job IDs become the canonical Copilot remote key |
+| 11 | Rename legacy `copilot_jobs` storage to `copilot_remote` |
+| 12 | Add `connect_handle` column to `copilot_remote` and split it from `signal_ref` (caller metadata vs. launcher-extracted reconnect handle); best-effort backfill from `signal_ref` for in-flight rows |
 
 Each migration uses `ALTER TABLE ADD COLUMN` wrapped in try/except to handle
 the column-already-exists case (idempotent). The version number is bumped after
@@ -235,6 +275,27 @@ session_id = db.resolve_session_by_title("Fix Docker Build")
 # Auto-generate next title in lineage
 next_title = db.get_next_title_in_lineage("Fix Docker Build")
 # Returns: "Fix Docker Build #2"
+```
+
+### Create and Manage Copilot Remote
+
+```python
+job_id = db.create_copilot_remote(
+    job_id="job_123",
+    repo_slug="fridai-backend",
+    repo_path="/workspace/repos/proservice/fridai-backend",
+    prompt="Patch the failing webhook retry path",
+    signal_source="cli",
+    signal_ref="PROJ-123",       # caller-supplied metadata (e.g. Jira ticket)
+)
+
+# After the launcher extracts the Copilot reconnect handle from CLI stdout:
+db.update_copilot_remote_connect_handle(job_id, "task-123")
+
+job = db.get_copilot_remote(job_id)
+running_jobs = db.list_copilot_remote(state="running", limit=20)
+
+db.finish_copilot_remote(job_id, state="done", exit_code=0)
 ```
 
 
