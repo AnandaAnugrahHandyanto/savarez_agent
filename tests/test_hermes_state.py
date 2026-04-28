@@ -2128,3 +2128,98 @@ class TestAutoMaintenance:
         assert not (sessions_dir / "old.jsonl").exists()
         assert (sessions_dir / "active.jsonl").exists()
 
+
+# =========================================================================
+# WAL checkpoint on close — regression tests for B4
+# =========================================================================
+
+class TestWALCheckpointOnClose:
+    """Verify that close() runs a WAL checkpoint and that the WAL file is
+    flushed (or absent) after close.  Also covers atexit registration and
+    context-manager support added as part of the B4 fix."""
+
+    def test_close_checkpoints_wal(self, tmp_path):
+        """After writing data and calling close(), the WAL file should be
+        empty or absent — meaning the checkpoint transferred all WAL frames
+        back into the main DB file."""
+        db_path = tmp_path / "wal_test.db"
+        db = SessionDB(db_path=db_path)
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(session_id="s1", role="user", content="hello WAL test")
+
+        # WAL file may or may not exist before close, but after close + checkpoint
+        # it should be empty (0 bytes) or absent entirely.
+        db.close()
+
+        wal_path = db_path.parent / (db_path.name + "-wal")
+        if wal_path.exists():
+            assert wal_path.stat().st_size == 0, (
+                f"WAL file should be empty after close(), got {wal_path.stat().st_size} bytes"
+            )
+
+    def test_close_is_idempotent(self, tmp_path):
+        """Calling close() multiple times must not raise."""
+        db_path = tmp_path / "idempotent.db"
+        db = SessionDB(db_path=db_path)
+        db.create_session(session_id="s1", source="cli")
+        db.close()
+        db.close()  # second call must be a no-op
+
+    def test_context_manager_closes_connection(self, tmp_path):
+        """Using SessionDB as a context manager must close the connection on exit."""
+        db_path = tmp_path / "ctx_mgr.db"
+        with SessionDB(db_path=db_path) as db:
+            db.create_session(session_id="s1", source="cli")
+            db.append_message(session_id="s1", role="user", content="context manager test")
+            assert db._conn is not None
+
+        # After __exit__, connection must be closed.
+        assert db._conn is None
+
+    def test_context_manager_closes_on_exception(self, tmp_path):
+        """Context manager must close the connection even when an exception is raised."""
+        db_path = tmp_path / "ctx_exc.db"
+        with pytest.raises(ValueError):
+            with SessionDB(db_path=db_path) as db:
+                db.create_session(session_id="s1", source="cli")
+                raise ValueError("simulated error")
+
+        assert db._conn is None
+
+    def test_atexit_registered(self, tmp_path):
+        """atexit.register(self.close) must be called during __init__."""
+        import atexit
+        import inspect
+        from hermes_state import SessionDB as _SessionDB
+        src = inspect.getsource(_SessionDB.__init__)
+        assert "atexit.register" in src, (
+            "SessionDB.__init__ must call atexit.register(self.close) "
+            "to ensure WAL checkpoint on process exit"
+        )
+
+    def test_wal_checkpoint_pragma_return_value(self, tmp_path):
+        """PRAGMA wal_checkpoint should report that pages were checkpointed.
+
+        Checks the return value (busy, log, checkpointed) directly so we
+        confirm SQLite itself considers the checkpoint successful.
+        """
+        import sqlite3
+        db_path = tmp_path / "pragma_test.db"
+        db = SessionDB(db_path=db_path)
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(session_id="s1", role="user", content="pragma check")
+
+        # Run checkpoint manually before close to inspect the return value.
+        with db._lock:
+            result = db._conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+        # result is (busy, log, checkpointed): busy==0 means no other readers
+        # blocked the checkpoint; log and checkpointed should be equal when
+        # the checkpoint fully drained the WAL.
+        assert result is not None, "PRAGMA wal_checkpoint returned nothing"
+        busy, log, checkpointed = result[0], result[1], result[2]
+        assert busy == 0, f"WAL checkpoint was blocked (busy={busy})"
+        assert log == checkpointed, (
+            f"Not all WAL pages were checkpointed: log={log}, checkpointed={checkpointed}"
+        )
+        db.close()
+
