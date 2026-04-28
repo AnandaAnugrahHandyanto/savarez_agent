@@ -812,6 +812,129 @@ def check_image_generation_requirements() -> bool:
 
 
 # ---------------------------------------------------------------------------
+
+# --------------------------------------------------------------------------
+# Image Editor (image-to-image / inpainting)
+# --------------------------------------------------------------------------
+def image_edit_tool(
+    prompt: str,
+    image_url: str,
+    aspect_ratio: str = DEFAULT_ASPECT_RATIO,
+) -> str:
+    """Edit or inpaint an existing image using the configured FAL model.
+
+    Uses FAL's ``fal_edit`` endpoint (image-to-image) to apply the prompt
+    as an instruction on the source image.
+
+    Returns a JSON string with ``{"success": bool, "image": url | None,
+    "error": str}``.
+    """
+    model_id, meta = _resolve_fal_model()
+
+    debug_call_data = {
+        "model": model_id,
+        "parameters": {
+            "prompt": prompt,
+            "image_url": image_url,
+            "aspect_ratio": aspect_ratio,
+        },
+        "error": None,
+        "success": False,
+        "images_generated": 0,
+        "generation_time": 0,
+    }
+
+    start_time = datetime.datetime.now()
+
+    try:
+        if not prompt or not isinstance(prompt, str) or len(prompt.strip()) == 0:
+            raise ValueError("prompt is required and must be a non-empty string")
+        if not image_url or not isinstance(image_url, str):
+            raise ValueError("image_url is required and must be a valid URL")
+
+        if not (fal_key_configured() or _resolve_managed_fal_gateway()):
+            message = "FAL_KEY environment variable not set"
+            if managed_nous_tools_enabled():
+                message += " and managed FAL gateway is unavailable"
+            raise ValueError(message)
+
+        aspect_lc = (aspect_ratio or DEFAULT_ASPECT_RATIO).lower().strip()
+        if aspect_lc not in VALID_ASPECT_RATIOS:
+            logger.warning(
+                "Invalid aspect_ratio '%s', defaulting to '%s'",
+                aspect_ratio, DEFAULT_ASPECT_RATIO,
+            )
+            aspect_lc = DEFAULT_ASPECT_RATIO
+
+        overrides: Dict[str, Any] = {"image_url": image_url}
+        arguments = _build_fal_payload(
+            model_id, prompt, aspect_lc, overrides=overrides,
+        )
+
+        logger.info(
+            "Editing image with %s (%s) — prompt: %s, source: %s",
+            meta.get("display", model_id), model_id, prompt[:80], image_url[:80],
+        )
+
+        handler = _submit_fal_request(model_id + "/edit", arguments=arguments)
+        result = handler.get()
+
+        generation_time = (datetime.datetime.now() - start_time).total_seconds()
+
+        if not result or "images" not in result:
+            raise ValueError("Invalid response from FAL.ai API — no images returned")
+
+        images = result.get("images", [])
+        if not images:
+            raise ValueError("No images were returned from edit request")
+
+        formatted_images = []
+        for img in images:
+            if not (isinstance(img, dict) and "url" in img):
+                continue
+            formatted_images.append({
+                "url": img["url"],
+                "width": img.get("width", 0),
+                "height": img.get("height", 0),
+            })
+
+        if not formatted_images:
+            raise ValueError("No valid image URLs returned from API")
+
+        logger.info(
+            "Edited %s image(s) in %.1fs via %s",
+            len(formatted_images), generation_time, model_id,
+        )
+
+        debug_call_data.update(
+            {
+                "success": True,
+                "images_generated": len(formatted_images),
+                "generation_time": generation_time,
+            }
+        )
+        _debug.log_call("image_edit_tool", debug_call_data)
+
+        return json.dumps(
+            {
+                "success": True,
+                "image": formatted_images[0]["url"],
+                "images": formatted_images,
+            },
+            indent=2,
+        )
+
+    except Exception as exc:
+        debug_call_data["error"] = str(exc)
+        _debug.log_call("image_edit_tool", debug_call_data)
+        error_type = type(exc).__name__
+        logger.warning("image_edit failed: %s", exc)
+        return json.dumps(
+            {"success": False, "error": str(exc), "error_type": error_type},
+            indent=2,
+        )
+
+
 # Demo / CLI entry point
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
@@ -988,6 +1111,34 @@ def _handle_image_generate(args, **kw):
         prompt=prompt,
         aspect_ratio=aspect_ratio,
     )
+
+
+
+def _handle_image_edit(args, **kw):
+    prompt = args.get("prompt", "")
+    if not prompt:
+        return tool_error("prompt is required for image editing")
+    image_url = args.get("image_url", "")
+    if not image_url:
+        return tool_error("image_url is required for image editing")
+    aspect_ratio = args.get("aspect_ratio", "square")
+    return image_edit_tool(
+        prompt=prompt,
+        image_url=image_url,
+        aspect_ratio=aspect_ratio,
+    )
+
+
+registry.register(
+    name="image_edit",
+    toolset="image_gen",
+    schema=IMAGE_EDIT_SCHEMA,
+    handler=_handle_image_edit,
+    check_fn=check_image_generation_requirements,
+    requires_env=[],
+    is_async=False,
+    emoji="🖼️",
+)
 
 
 registry.register(

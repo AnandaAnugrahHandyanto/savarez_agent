@@ -54,7 +54,7 @@ CONFIGURABLE_TOOLSETS = [
     ("file",            "📁 File Operations",           "read, write, patch, search"),
     ("code_execution",  "⚡ Code Execution",            "execute_code"),
     ("vision",          "👁️  Vision / Image Analysis",  "vision_analyze"),
-    ("image_gen",       "🎨 Image Generation",          "image_generate"),
+    ("image_gen",       "🎨 Image Generation",          "image_generate, image_edit"),
     ("moa",             "🧠 Mixture of Agents",         "mixture_of_agents"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
     ("skills",          "📚 Skills",                    "list, view, manage"),
