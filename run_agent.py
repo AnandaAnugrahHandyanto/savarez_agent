@@ -703,6 +703,41 @@ def _sanitize_tools_non_ascii(tools: list) -> bool:
     return _sanitize_structure_non_ascii(tools)
 
 
+def _strip_images_from_messages(messages: list) -> bool:
+    """Remove image_url content parts from all messages in-place.
+
+    Called when a server signals it does not support images (e.g.
+    "Only 'text' content type is supported.").  Mutates messages so the
+    next API call sends text only.
+
+    Returns True if any image parts were removed.
+    """
+    found = False
+    to_delete = []
+    for i, msg in enumerate(messages):
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        new_parts = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") in ("image_url", "image", "input_image"):
+                found = True
+            else:
+                new_parts.append(part)
+        if len(new_parts) < len(content):
+            if new_parts:
+                msg["content"] = new_parts
+            else:
+                # Entire message was images — drop it (user messages added for
+                # image delivery only, e.g. the deferred injection messages).
+                to_delete.append(i)
+    for i in reversed(to_delete):
+        del messages[i]
+    return found
+
+
 def _sanitize_structure_non_ascii(payload: Any) -> bool:
     """Strip non-ASCII characters from nested dict/list payloads in-place."""
     found = False
@@ -8169,9 +8204,22 @@ class AIAgent:
                 else:
                     function_result += subdir_hints
 
+            # Unwrap _multimodal dicts to an OpenAI-style content list so any
+            # vision-capable provider receives [{type:text},{type:image_url}]
+            # rather than a raw Python dict.  The Anthropic adapter already
+            # accepts content lists; vision-capable OpenAI-compatible servers
+            # (mlx-vlm, GPT-4o, …) accept image_url in tool messages natively.
+            # Text-only servers that reject images are handled by the adaptive
+            # _vision_supported recovery in the API retry loop.
+            # String results pass through unchanged.
+            _tool_content = (
+                function_result["content"]
+                if _is_multimodal_tool_result(function_result)
+                else function_result
+            )
             tool_msg = {
                 "role": "tool",
-                "content": function_result,
+                "content": _tool_content,
                 "tool_call_id": tc.id,
             }
             messages.append(tool_msg)
@@ -8483,9 +8531,15 @@ class AIAgent:
                     logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
                 tool_duration = time.time() - tool_start_time
 
-            result_preview = function_result if self.verbose_logging else (
-                function_result[:200] if len(function_result) > 200 else function_result
-            )
+            if isinstance(function_result, str):
+                result_preview = function_result if self.verbose_logging else (
+                    function_result[:200] if len(function_result) > 200 else function_result
+                )
+                _result_len = len(function_result)
+            else:
+                # Multimodal dict result (_multimodal=True) — not sliceable as string
+                result_preview = function_result
+                _result_len = len(str(function_result))
 
             # Log tool errors to the persistent error log so [error] tags
             # in the UI always have a corresponding detailed entry on disk.
@@ -8493,7 +8547,7 @@ class AIAgent:
             if _is_error_result:
                 logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
             else:
-                logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, len(function_result))
+                logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, _result_len)
 
             if self.tool_progress_callback:
                 try:
@@ -8533,9 +8587,16 @@ class AIAgent:
                 else:
                     function_result += subdir_hints
 
+            # Unwrap _multimodal dicts to an OpenAI-style content list
+            # (see parallel path for rationale). String results pass through.
+            _tool_content = (
+                function_result["content"]
+                if _is_multimodal_tool_result(function_result)
+                else function_result
+            )
             tool_msg = {
                 "role": "tool",
-                "content": function_result,
+                "content": _tool_content,
                 "tool_call_id": tool_call.id
             }
             messages.append(tool_msg)
@@ -8551,7 +8612,8 @@ class AIAgent:
                     print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s")
                     print(self._wrap_verbose("Result: ", function_result))
                 else:
-                    response_preview = function_result[:self.log_prefix_chars] + "..." if len(function_result) > self.log_prefix_chars else function_result
+                    _fr_str = function_result if isinstance(function_result, str) else str(function_result)
+                    response_preview = _fr_str[:self.log_prefix_chars] + "..." if len(_fr_str) > self.log_prefix_chars else _fr_str
                     print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s - {response_preview}")
 
             if self._interrupt_requested and i < len(assistant_message.tool_calls):
@@ -8580,7 +8642,6 @@ class AIAgent:
         # applied to sequential execution as well.
         if num_tools_seq > 0:
             self._apply_pending_steer_to_tool_results(messages, num_tools_seq)
-
 
 
     def _handle_max_iterations(self, messages: list, api_call_count: int) -> str:
@@ -8831,6 +8892,11 @@ class AIAgent:
         self._last_content_tools_all_housekeeping = False
         self._mute_post_response = False
         self._unicode_sanitization_passes = 0
+        # True until the server rejects an image_url content part with an error
+        # like "Only 'text' content type is supported."  Set to False on first
+        # rejection and kept False for the rest of the session so we never re-send
+        # images to a text-only endpoint.  Scoped per `_run()` call, not per instance.
+        self._vision_supported = True
 
         # Pre-turn connection health check: detect and clean up dead TCP
         # connections left over from provider outages or dropped streams.
@@ -10269,6 +10335,43 @@ class AIAgent:
                                     force=True,
                                 )
                             continue
+
+                    # ── Image-rejection recovery ──────────────────────────────
+                    # Some providers (mlx-lm, text-only endpoints) reject any
+                    # message that contains image_url content with an error like
+                    # "Only 'text' content type is supported."  On first hit,
+                    # strip all images from the message list, mark the session
+                    # as vision-unsupported, and retry with text only.
+                    _err_body = ""
+                    try:
+                        _err_body = str(getattr(api_error, "body", None) or
+                                        getattr(api_error, "message", None) or
+                                        str(api_error))
+                    except Exception:
+                        pass
+                    _IMAGE_REJECTION_PHRASES = (
+                        "only 'text' content type is supported",
+                        "only text content type is supported",
+                        "image_url is not supported",
+                        "multimodal is not supported",
+                        "vision is not supported",
+                        "does not support images",
+                    )
+                    if (
+                        getattr(self, "_vision_supported", True)
+                        and any(p in _err_body.lower() for p in _IMAGE_REJECTION_PHRASES)
+                    ):
+                        self._vision_supported = False
+                        _imgs_removed = _strip_images_from_messages(messages)
+                        if isinstance(api_messages, list):
+                            _strip_images_from_messages(api_messages)
+                        self._vprint(
+                            f"{self.log_prefix}⚠️  Server rejected image content — "
+                            f"switching to text-only mode for this session"
+                            + (". Stripped images from history and retrying." if _imgs_removed else "."),
+                            force=True,
+                        )
+                        continue
 
                     status_code = getattr(api_error, "status_code", None)
                     error_context = self._extract_api_error_context(api_error)
