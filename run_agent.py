@@ -6143,10 +6143,16 @@ class AIAgent:
 
         try:
             max_workers = min(num_tools, _MAX_TOOL_WORKERS)
+            # Snapshot ContextVars so per-tool threads can see the calling
+            # session's chat_id / platform / etc. ThreadPoolExecutor does not
+            # propagate ContextVars; without this, tools like cronjob create
+            # see ContextVar defaults (None) and produce origin-less jobs.
+            import contextvars as _cv
+            _tool_ctx = _cv.copy_context()
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = []
                 for i, (tc, name, args) in enumerate(parsed_calls):
-                    f = executor.submit(_run_tool, i, tc, name, args)
+                    f = executor.submit(_tool_ctx.run, _run_tool, i, tc, name, args)
                     futures.append(f)
 
                 # Wait for all to complete (exceptions are captured inside _run_tool)

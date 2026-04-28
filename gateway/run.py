@@ -7176,8 +7176,14 @@ class GatewayRunner:
             _agent_timeout_raw = float(os.getenv("HERMES_AGENT_TIMEOUT", 1800))
             _agent_timeout = _agent_timeout_raw if _agent_timeout_raw > 0 else None
             loop = asyncio.get_event_loop()
+            # Snapshot session-scope ContextVars (chat_id / platform / etc.) so
+            # they reach the thread pool. Default executor does not propagate
+            # ContextVars; without this, tools running in the agent thread see
+            # ContextVar defaults (None) and produce origin-less cron jobs etc.
+            import contextvars as _cv
+            _agent_ctx = _cv.copy_context()
             _executor_task = asyncio.ensure_future(
-                loop.run_in_executor(None, run_sync)
+                loop.run_in_executor(None, _agent_ctx.run, run_sync)
             )
 
             _inactivity_timeout = False
