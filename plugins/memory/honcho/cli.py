@@ -54,16 +54,32 @@ def clone_honcho_for_profile(profile_name: str) -> bool:
     if peer_name:
         new_block["peerName"] = peer_name
 
-    # AI peer is profile-specific; workspace is shared so all profiles
-    # see the same user context, sessions, and project history.
+    # AI peer is profile-specific; workspace is also profile-specific
+    # so each user has completely isolated memory on Honcho Cloud.
     # Use the bare profile name as the peer identity (not the host key)
     # because Honcho's peer ID pattern is ^[a-zA-Z0-9_-]+$ (no dots).
     new_block["aiPeer"] = profile_name
-    new_block["workspace"] = default_block.get("workspace") or cfg.get("workspace") or HOST
+    new_block["workspace"] = f"{profile_name}-workspace"
     new_block["enabled"] = default_block.get("enabled", True)
 
     cfg.setdefault("hosts", {})[new_host] = new_block
-    _write_config(cfg)
+
+    # Write to the profile's local honcho.json so it is fully self-contained.
+    # If the profile dir already has a honcho.json, write there. Otherwise
+    # write to root (for the case where the profile dir doesn't exist yet).
+    # During normal `hermes profile create` the profile dir is created first,
+    # so the profile-local path wins in practice.
+    profile_home = get_hermes_home()
+    root_home = Path.home() / ".hermes"
+    profile_honcho = profile_home / "honcho.json"
+    write_path: Path
+    if profile_home != root_home:
+        # Profile-specific HERMES_HOME — write to the profile-local path
+        write_path = profile_honcho
+    else:
+        # Default profile — write to root
+        write_path = Path.home() / ".hermes" / "honcho.json"
+    _write_config(cfg, write_path)
 
     # Eagerly create the peer in Honcho so it exists before first message
     _ensure_peer_exists(new_host)

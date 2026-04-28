@@ -3326,24 +3326,40 @@ def load_config() -> Dict[str, Any]:
     """Load configuration from ~/.hermes/config.yaml."""
     ensure_hermes_home()
     config_path = get_config_path()
-    
+
     config = copy.deepcopy(DEFAULT_CONFIG)
-    
+
+    user_config = {}
+    config_loaded = False
+
     if config_path.exists():
         try:
             with open(config_path, encoding="utf-8") as f:
                 user_config = yaml.safe_load(f) or {}
-
-            if "max_turns" in user_config:
-                agent_user_config = dict(user_config.get("agent") or {})
-                if agent_user_config.get("max_turns") is None:
-                    agent_user_config["max_turns"] = user_config["max_turns"]
-                user_config["agent"] = agent_user_config
-                user_config.pop("max_turns", None)
-
-            config = _deep_merge(config, user_config)
+            config_loaded = True
         except Exception as e:
             print(f"Warning: Failed to load config: {e}")
+
+    # If the profile has no config.yaml, fall back to the root Hermes config.
+    # This lets non-default profiles inherit settings like memory.provider
+    # without needing their own config.yaml.
+    if not config_loaded:
+        root_config_path = Path.home() / ".hermes" / "config.yaml"
+        if root_config_path != config_path and root_config_path.exists():
+            try:
+                with open(root_config_path, encoding="utf-8") as f:
+                    user_config = yaml.safe_load(f) or {}
+            except Exception as e:
+                print(f"Warning: Failed to load root config: {e}")
+
+    if "max_turns" in user_config:
+        agent_user_config = dict(user_config.get("agent") or {})
+        if agent_user_config.get("max_turns") is None:
+            agent_user_config["max_turns"] = user_config["max_turns"]
+        user_config["agent"] = agent_user_config
+        user_config.pop("max_turns", None)
+
+    config = _deep_merge(config, user_config)
 
     normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
     expanded = _expand_env_vars(normalized)
