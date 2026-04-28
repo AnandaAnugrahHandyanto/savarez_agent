@@ -180,6 +180,17 @@ class TestCLIStatusBar:
         text = cli_obj._build_status_bar_text(width=120)
         assert "$" not in text  # cost is never shown in status bar
 
+    def test_lean_ctx_status_visible_when_active_without_savings(self):
+        assert HermesCLI._format_lean_ctx_status({"active": True, "tokens_saved": 0}) == "lctx: 0%"
+
+    def test_lean_ctx_status_shows_compression_rate_when_available(self):
+        assert (
+            HermesCLI._format_lean_ctx_status(
+                {"active": True, "tokens_saved": 1500, "compression_rate": 75}
+            )
+            == "lctx: 75%"
+        )
+
     def test_build_status_bar_text_collapses_for_narrow_terminal(self):
         cli_obj = _attach_agent(
             _make_cli(),
@@ -336,7 +347,6 @@ class TestStatusBarWidthSource:
     """Ensure status bar fragments don't overflow the terminal width."""
 
     def _make_wide_cli(self):
-        from datetime import datetime, timedelta
         cli_obj = _attach_agent(
             _make_cli(),
             prompt_tokens=100_000,
@@ -376,7 +386,7 @@ class TestStatusBarWidthSource:
         mock_app = MagicMock()
         mock_app.output.get_size.return_value = MagicMock(columns=120)
 
-        with patch("prompt_toolkit.application.get_app", return_value=mock_app) as mock_get_app, \
+        with patch("prompt_toolkit.application.get_app", return_value=mock_app), \
              patch("shutil.get_terminal_size") as mock_shutil:
             cli_obj._get_status_bar_fragments()
 
