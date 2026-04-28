@@ -206,6 +206,8 @@ async def test_handle_message_persists_agent_token_counts(monkeypatch):
             "input_tokens": 120,
             "output_tokens": 45,
             "model": "openai/test-model",
+            "provider": "openai",
+            "context_length": 100000,
         }
     )
 
@@ -221,6 +223,9 @@ async def test_handle_message_persists_agent_token_counts(monkeypatch):
     runner.session_store.update_session.assert_called_once_with(
         session_entry.session_key,
         last_prompt_tokens=80,
+        model="openai/test-model",
+        model_provider="openai",
+        context_tokens=100000,
     )
 
 
