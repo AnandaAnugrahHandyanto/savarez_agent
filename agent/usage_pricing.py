@@ -99,7 +99,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         "claude-sonnet-4-20250514",
     ): PricingEntry(
         input_cost_per_million=Decimal("3.00"),
-        output_cost_per_million=Decimal("75.00"),
+        output_cost_per_million=Decimal("15.00"),
         cache_read_cost_per_million=Decimal("0.30"),
         cache_write_cost_per_million=Decimal("3.75"),
         source="official_docs_snapshot",
