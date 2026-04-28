@@ -1775,6 +1775,14 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
             resolved_provider = "custom"
             explicit_base_url = runtime_base_url
             explicit_api_key = runtime_api_key or None
+        elif runtime_base_url:
+            # Named provider with a user-overridden base_url (#16719) — forward
+            # it so the PROVIDER_REGISTRY branch can honor it instead of falling
+            # back to pconfig.inference_base_url.  Without this, configuring
+            # provider=zai + base_url=https://custom/v1 silently sends auxiliary
+            # traffic to z.ai's default endpoint.
+            explicit_base_url = runtime_base_url
+            explicit_api_key = runtime_api_key or None
         client, resolved = resolve_provider_client(
             resolved_provider,
             main_model,
@@ -2047,7 +2055,21 @@ def resolve_provider_client(
     # ── Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
     if provider == "custom":
         if explicit_base_url:
-            custom_base = _to_openai_base_url(explicit_base_url).strip()
+            # When the endpoint speaks Anthropic Messages, preserve the
+            # /anthropic suffix — _to_openai_base_url would rewrite it to /v1
+            # and the AnthropicAuxiliaryClient wrapping below would then point
+            # at a route that doesn't exist (#17086).  Mirrors the same guard
+            # in _try_custom_endpoint() and the named-provider branches.
+            _raw_explicit = explicit_base_url.strip().rstrip("/")
+            _is_anthropic_endpoint = (
+                api_mode == "anthropic_messages"
+                or _endpoint_speaks_anthropic_messages(_raw_explicit)
+            )
+            custom_base = (
+                _raw_explicit
+                if _is_anthropic_endpoint
+                else _to_openai_base_url(_raw_explicit).strip()
+            )
             custom_key = (
                 (explicit_api_key or "").strip()
                 or os.getenv("OPENAI_API_KEY", "").strip()
@@ -2203,7 +2225,13 @@ def resolve_provider_client(
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode else (client, final_model))
 
         creds = resolve_api_key_provider_credentials(provider)
-        api_key = str(creds.get("api_key", "")).strip()
+        # Honor explicit_base_url / explicit_api_key forwarded by _resolve_auto
+        # when a named provider has a user-overridden base_url (#16719).
+        # Without this, "provider: zai, base_url: https://custom/v1" silently
+        # routes auxiliary traffic to zai's default endpoint.
+        _explicit_base = (explicit_base_url or "").strip().rstrip("/")
+        _explicit_key = (explicit_api_key or "").strip()
+        api_key = _explicit_key or str(creds.get("api_key", "")).strip()
         if not api_key:
             tried_sources = list(pconfig.api_key_env_vars)
             if provider == "copilot":
@@ -2213,8 +2241,21 @@ def resolve_provider_client(
                          provider, ", ".join(tried_sources))
             return None, None
 
-        base_url = _to_openai_base_url(
-            str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
+        _resolved_base = (
+            _explicit_base
+            or str(creds.get("base_url", "")).strip().rstrip("/")
+            or pconfig.inference_base_url
+        )
+        # Skip the /anthropic → /v1 rewrite when the endpoint speaks Anthropic
+        # Messages, same reasoning as the custom branch above (#17086).
+        _is_anthropic_endpoint = (
+            api_mode == "anthropic_messages"
+            or _endpoint_speaks_anthropic_messages(_resolved_base)
+        )
+        base_url = (
+            _resolved_base
+            if _is_anthropic_endpoint
+            else _to_openai_base_url(_resolved_base)
         )
 
         default_model = _API_KEY_PROVIDER_AUX_MODELS.get(provider, "")

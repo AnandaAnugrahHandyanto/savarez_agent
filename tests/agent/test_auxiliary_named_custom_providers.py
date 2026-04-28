@@ -230,6 +230,138 @@ class TestResolveProviderClientModelNormalization:
         assert model == "anthropic/claude-sonnet-4.6"
 
 
+class TestExplicitBaseUrlForNamedProvider:
+    """#16719: PROVIDER_REGISTRY branch must honor explicit_base_url /
+    explicit_api_key forwarded by _resolve_auto, instead of always falling
+    back to pconfig.inference_base_url."""
+
+    def test_explicit_base_url_overrides_provider_default(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"default": "glm-5.1", "provider": "zai"},
+        })
+        with (
+            patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={
+                "api_key": "creds-key",
+                "base_url": "https://api.z.ai/api/paas/v4",
+            }),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, model = resolve_provider_client(
+                "zai",
+                "glm-5.1",
+                explicit_base_url="https://custom-zai.example.com/v1",
+                explicit_api_key="explicit-key",
+            )
+
+        assert client is not None
+        assert model == "glm-5.1"
+        kwargs = mock_openai.call_args.kwargs
+        assert kwargs["base_url"] == "https://custom-zai.example.com/v1"
+        assert kwargs["api_key"] == "explicit-key"
+
+    def test_falls_back_to_creds_when_no_explicit(self, tmp_path):
+        """Regression: existing behavior preserved when explicit_* not given."""
+        _write_config(tmp_path, {
+            "model": {"default": "glm-5.1", "provider": "zai"},
+        })
+        with (
+            patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={
+                "api_key": "creds-key",
+                "base_url": "https://api.z.ai/api/paas/v4",
+            }),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, _ = resolve_provider_client("zai", "glm-5.1")
+
+        kwargs = mock_openai.call_args.kwargs
+        assert "api.z.ai" in kwargs["base_url"]
+        assert kwargs["api_key"] == "creds-key"
+
+
+class TestAnthropicMessagesPreservesPath:
+    """#17086: when api_mode=anthropic_messages or the URL ends in /anthropic,
+    the /anthropic suffix must NOT be rewritten to /v1 — the AnthropicAuxiliary
+    wrapper expects to talk to the original /anthropic surface."""
+
+    def test_custom_branch_keeps_anthropic_suffix_with_explicit_api_mode(self, tmp_path):
+        from unittest.mock import patch as _patch
+        with _patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
+            mock_build.return_value = MagicMock(name="anthropic_sdk_client")
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, _ = resolve_provider_client(
+                "custom",
+                "claude-3-5",
+                explicit_base_url="http://localhost:6655/anthropic/",
+                explicit_api_key="k",
+                api_mode="anthropic_messages",
+            )
+        assert client is not None
+        # build_anthropic_client must be called with the original /anthropic
+        # path, not the rewritten /v1.
+        called_base = mock_build.call_args.args[1] if mock_build.call_args.args else \
+            mock_build.call_args.kwargs.get("base_url", "")
+        assert called_base.endswith("/anthropic"), (
+            f"Anthropic adapter must receive the /anthropic path, got: {called_base!r}"
+        )
+
+    def test_custom_branch_rewrites_when_no_anthropic_signal(self, tmp_path):
+        """Regression: non-Anthropic /anthropic URLs (none in practice, but
+        guard against the gate misfiring) — when api_mode is unset and
+        endpoint isn't recognized as Anthropic, no rewrite should happen
+        either, since the URL doesn't end in /anthropic."""
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, _ = resolve_provider_client(
+                "custom",
+                "gpt-4o",
+                explicit_base_url="https://api.example.com/v1",
+                explicit_api_key="k",
+            )
+        assert client is not None
+        assert mock_openai.call_args.kwargs["base_url"] == "https://api.example.com/v1"
+
+
+class TestResolveAutoForwardsBaseUrlForNamedProvider:
+    """#16719: _resolve_auto must forward main_runtime.base_url as
+    explicit_base_url for ANY provider, not just 'custom' / 'custom:*'.
+    Without this, configuring `provider: zai, base_url: <custom>` silently
+    routes auxiliary traffic to z.ai's default endpoint."""
+
+    def test_named_provider_with_custom_base_url_forwards(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"default": "glm-5.1", "provider": "zai"},
+        })
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+        ) as mock_resolve:
+            mock_resolve.return_value = (MagicMock(), "glm-5.1")
+            from agent.auxiliary_client import _resolve_auto
+
+            _resolve_auto(main_runtime={
+                "provider": "zai",
+                "model": "glm-5.1",
+                "base_url": "https://custom-zai.example.com/v1",
+                "api_key": "user-key",
+                "api_mode": "",
+            })
+
+        assert mock_resolve.called
+        kwargs = mock_resolve.call_args.kwargs
+        assert kwargs["explicit_base_url"] == "https://custom-zai.example.com/v1"
+        assert kwargs["explicit_api_key"] == "user-key"
+        # provider stays "zai" — not rewritten to "custom".
+        assert mock_resolve.call_args.args[0] == "zai"
+
+
 class TestResolveVisionProviderClientModelNormalization:
     """Vision auto-routing should reuse the same provider-specific normalization."""
 
