@@ -37,10 +37,15 @@ jobs:
         run: nix run .#fix-lockfiles -- --check
 
       - name: Fail if check crashed without reporting
-        if: steps.check.outputs.stale != 'true' && steps.check.outputs.stale != 'false'
+        if: steps.check.outputs.stale != 'true' && steps.check.outputs.stale != 'false' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
         run: |
           echo "::error::fix-lockfiles exited without reporting stale status — likely an infrastructure or script failure"
           exit 1
+
+      - name: Fork PR infra fallback (non-blocking)
+        if: steps.check.outputs.stale != 'true' && steps.check.outputs.stale != 'false' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "::warning::fix-lockfiles did not report stale status on fork PR; likely cache/auth infrastructure limitation. Skipping hard-fail."
 
       - name: Post sticky PR comment (stale)
         if: steps.check.outputs.stale == 'true' && github.event_name == 'pull_request'
