@@ -111,8 +111,12 @@ class ChatCompletionsTransport(ProviderTransport):
             # Temperature
             fixed_temperature: Any — from _fixed_temperature_for_model()
             omit_temperature: bool
-            # Reasoning
-            supports_reasoning: bool
+            # Reasoning / Thinking (mode string unifies multiple providers)
+            #   "generic" — extra_body.reasoning (OpenRouter, Nous, GitHub Models)
+            #   "kimi"    — top-level reasoning_effort + extra_body.thinking (Kimi/Moonshot)
+            #   "deepseek" — top-level reasoning_effort + extra_body.thinking (DeepSeek direct API)
+            supports_reasoning: bool      # kept for backward compat; consumers should prefer thinking_mode
+            thinking_mode: str | None     # one of None, "generic", "kimi", "deepseek"
             github_reasoning_extra: dict | None
             # Claude on OpenRouter/Nous max output
             anthropic_max_output: int | None
@@ -204,20 +208,12 @@ class ChatCompletionsTransport(ProviderTransport):
         elif anthropic_max_out is not None:
             api_kwargs["max_tokens"] = anthropic_max_out
 
-        # Kimi: top-level reasoning_effort (unless thinking disabled)
-        if is_kimi:
-            _kimi_thinking_off = bool(
-                reasoning_config
-                and isinstance(reasoning_config, dict)
-                and reasoning_config.get("enabled") is False
-            )
-            if not _kimi_thinking_off:
-                _kimi_effort = "medium"
-                if reasoning_config and isinstance(reasoning_config, dict):
-                    _e = (reasoning_config.get("effort") or "").strip().lower()
-                    if _e in ("low", "medium", "high"):
-                        _kimi_effort = _e
-                api_kwargs["reasoning_effort"] = _kimi_effort
+        # ── Thinking / Reasoning parameters ────────────────────────────
+        # Unified via thinking_mode so each provider uses a single branch.
+        # Backward compat: if thinking_mode is not set, falls back to
+        # is_kimi / supports_reasoning flags.
+        thinking_mode = params.get("thinking_mode")
+        supports_reasoning = params.get("supports_reasoning", False)
 
         # extra_body assembly
         extra_body: Dict[str, Any] = {}
@@ -230,18 +226,49 @@ class ChatCompletionsTransport(ProviderTransport):
         if provider_prefs and is_openrouter:
             extra_body["provider"] = provider_prefs
 
-        # Kimi extra_body.thinking
-        if is_kimi:
-            _kimi_thinking_enabled = True
-            if reasoning_config and isinstance(reasoning_config, dict):
-                if reasoning_config.get("enabled") is False:
-                    _kimi_thinking_enabled = False
+        # ── Kimi: top-level reasoning_effort + extra_body.thinking ─────
+        if thinking_mode == "kimi" or (thinking_mode is None and is_kimi):
+            _k_thinking_off = bool(
+                reasoning_config
+                and isinstance(reasoning_config, dict)
+                and reasoning_config.get("enabled") is False
+            )
+            if not _k_thinking_off:
+                _k_effort = "medium"
+                if reasoning_config and isinstance(reasoning_config, dict):
+                    _e = (reasoning_config.get("effort") or "").strip().lower()
+                    if _e in ("low", "medium", "high"):
+                        _k_effort = _e
+                api_kwargs["reasoning_effort"] = _k_effort
             extra_body["thinking"] = {
-                "type": "enabled" if _kimi_thinking_enabled else "disabled",
+                "type": "enabled" if not _k_thinking_off else "disabled",
             }
 
-        # Reasoning
-        if params.get("supports_reasoning", False):
+        # ── DeepSeek: top-level reasoning_effort + extra_body.thinking ─
+        # DeepSeek V4-Pro/V4-Flash use {high, max} for effort and require
+        # thinking.type in extra_body.  Temperature/top_p are not supported
+        # while thinking is active.
+        elif thinking_mode == "deepseek":
+            _ds_thinking_off = bool(
+                reasoning_config
+                and isinstance(reasoning_config, dict)
+                and reasoning_config.get("enabled") is False
+            )
+            if not _ds_thinking_off:
+                _ds_effort = "max"
+                if reasoning_config and isinstance(reasoning_config, dict):
+                    _e = (reasoning_config.get("effort") or "").strip().lower()
+                    if _e in ("high", "max"):
+                        _ds_effort = _e
+                api_kwargs["reasoning_effort"] = _ds_effort
+                # DeepSeek does not support temperature/top_p with thinking
+                api_kwargs.pop("temperature", None)
+            extra_body["thinking"] = {
+                "type": "enabled" if not _ds_thinking_off else "disabled",
+            }
+
+        # ── Generic reasoning (OpenRouter / Nous / GitHub Models) ─────
+        if supports_reasoning:
             if is_github_models:
                 gh_reasoning = params.get("github_reasoning_extra")
                 if gh_reasoning is not None:

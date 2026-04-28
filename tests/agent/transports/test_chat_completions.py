@@ -292,6 +292,100 @@ class TestChatCompletionsKimi:
         assert "type" not in kw["tools"][0]["function"]["parameters"]["properties"]["q"]
 
 
+class TestChatCompletionsDeepSeek:
+    """DeepSeek thinking mode via the thinking_mode='deepseek' parameter."""
+
+    def test_deepseek_thinking_enabled(self, transport):
+        kw = transport.build_kwargs(
+            model="deepseek-v4-pro",
+            messages=[{"role": "user", "content": "Hi"}],
+            thinking_mode="deepseek",
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw["extra_body"]["thinking"] == {"type": "enabled"}
+        assert kw["reasoning_effort"] == "max"
+
+    def test_deepseek_thinking_disabled(self, transport):
+        kw = transport.build_kwargs(
+            model="deepseek-v4-pro",
+            messages=[{"role": "user", "content": "Hi"}],
+            thinking_mode="deepseek",
+            reasoning_config={"enabled": False},
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw["extra_body"]["thinking"] == {"type": "disabled"}
+        assert "reasoning_effort" not in kw
+
+    def test_deepseek_thinking_custom_effort(self, transport):
+        kw = transport.build_kwargs(
+            model="deepseek-v4-pro",
+            messages=[{"role": "user", "content": "Hi"}],
+            thinking_mode="deepseek",
+            reasoning_config={"effort": "high"},
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw["extra_body"]["thinking"] == {"type": "enabled"}
+        assert kw["reasoning_effort"] == "high"
+
+    def test_deepseek_thinking_removes_temperature(self, transport):
+        kw = transport.build_kwargs(
+            model="deepseek-v4-pro",
+            messages=[{"role": "user", "content": "Hi"}],
+            thinking_mode="deepseek",
+            fixed_temperature=0.7,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert "temperature" not in kw
+        assert kw["extra_body"]["thinking"] == {"type": "enabled"}
+
+
+class TestChatCompletionsThinkingModeUnified:
+    """Test that thinking_mode='kimi' works the same as the old is_kimi=True flag."""
+
+    def test_kimi_via_thinking_mode_effort(self, transport):
+        kw = transport.build_kwargs(
+            model="kimi-k2",
+            messages=[{"role": "user", "content": "Hi"}],
+            thinking_mode="kimi",
+            reasoning_config={"effort": "high"},
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw["reasoning_effort"] == "high"
+        assert kw["extra_body"]["thinking"] == {"type": "enabled"}
+
+    def test_kimi_via_thinking_mode_disabled(self, transport):
+        kw = transport.build_kwargs(
+            model="kimi-k2",
+            messages=[{"role": "user", "content": "Hi"}],
+            thinking_mode="kimi",
+            reasoning_config={"enabled": False},
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert "reasoning_effort" not in kw
+        assert kw["extra_body"]["thinking"] == {"type": "disabled"}
+
+    def test_thinking_mode_none_falls_back_to_is_kimi(self, transport):
+        """When thinking_mode is not set, is_kimi flag still works."""
+        kw = transport.build_kwargs(
+            model="kimi-k2",
+            messages=[{"role": "user", "content": "Hi"}],
+            is_kimi=True,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw["reasoning_effort"] == "medium"
+        assert kw["extra_body"]["thinking"] == {"type": "enabled"}
+
+    def test_generic_thinking_mode_none_with_supports_reasoning(self, transport):
+        """When thinking_mode is None, supports_reasoning flag still works."""
+        kw = transport.build_kwargs(
+            model="deepseek/deepseek-v4",
+            messages=[{"role": "user", "content": "Hi"}],
+            supports_reasoning=True,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw.get("extra_body", {}).get("reasoning") == {"enabled": True, "effort": "medium"}
+
+
 class TestChatCompletionsValidate:
 
     def test_none(self, transport):

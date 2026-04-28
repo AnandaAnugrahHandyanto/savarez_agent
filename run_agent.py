@@ -7866,11 +7866,15 @@ class AIAgent:
         )
         _is_nous = "nousresearch" in self._base_url_lower
         _is_nvidia = "integrate.api.nvidia.com" in self._base_url_lower
+        # thinking_mode replaces is_kimi — the transport branch selects Kimi
+        # or DeepSeek semantics from a single string value.  is_kimi is kept
+        # here only for the max_tokens default (32000) in build_kwargs.
         _is_kimi = (
             base_url_host_matches(self.base_url, "api.kimi.com")
             or base_url_host_matches(self.base_url, "moonshot.ai")
             or base_url_host_matches(self.base_url, "moonshot.cn")
         )
+        _thinking_mode = self._thinking_provider()
 
         # Temperature: _fixed_temperature_for_model may return OMIT_TEMPERATURE
         # sentinel (temperature omitted entirely), a numeric override, or None.
@@ -7933,6 +7937,7 @@ class AIAgent:
             ephemeral_max_output_tokens=_ephemeral_out,
             max_tokens_param_fn=self._max_tokens_param,
             reasoning_config=self.reasoning_config,
+            thinking_mode=_thinking_mode,
             request_overrides=self.request_overrides,
             session_id=getattr(self, "session_id", None),
             model_lower=(self.model or "").lower(),
@@ -7954,6 +7959,28 @@ class AIAgent:
             github_reasoning_extra=self._github_models_reasoning_extra_body() if _is_gh else None,
             anthropic_max_output=_ant_max,
         )
+
+    def _thinking_provider(self) -> str | None:
+        """Return a thinking_mode identifier for directly-routed providers
+        that use thinking/reasoning_effort (Kimi, DeepSeek, etc.).
+
+        Returns None for aggregator routes (OpenRouter, Nous, GitHub Models)
+        that use the generic extra_body.reasoning path instead.
+
+        Design intent:
+          Each provider uses exactly one branch for thinking params.
+          Adding a new provider means one elif here + one elif in the
+          transport's build_kwargs.  No flag proliferation.
+        """
+        if (
+            base_url_host_matches(self._base_url_lower, "api.kimi.com")
+            or base_url_host_matches(self._base_url_lower, "moonshot.ai")
+            or base_url_host_matches(self._base_url_lower, "moonshot.cn")
+        ):
+            return "kimi"
+        if base_url_host_matches(self._base_url_lower, "api.deepseek.com"):
+            return "deepseek"
+        return None
 
     def _supports_reasoning_extra_body(self) -> bool:
         """Return True when reasoning extra_body is safe to send for this route/model.
