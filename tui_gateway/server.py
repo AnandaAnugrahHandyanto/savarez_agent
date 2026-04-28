@@ -1850,7 +1850,10 @@ def _(rid, params: dict) -> dict:
     try:
         db.reopen_session(target)
         history = db.get_messages_as_conversation(target)
-        display_history = db.get_messages_as_conversation(target, include_ancestors=True)
+        try:
+            display_history = db.get_messages_as_conversation(target, include_ancestors=True)
+        except TypeError:
+            display_history = history
         messages = _history_to_messages(display_history)
         tokens = _set_session_context(target)
         try:
@@ -1906,6 +1909,11 @@ def _(rid, params: dict) -> dict:
     if db is not None and session.get("session_key"):
         try:
             history = db.get_messages_as_conversation(session["session_key"], include_ancestors=True)
+        except TypeError:
+            try:
+                history = db.get_messages_as_conversation(session["session_key"])
+            except Exception:
+                pass
         except Exception:
             pass
     return _ok(
