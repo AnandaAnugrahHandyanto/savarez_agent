@@ -231,6 +231,55 @@ class TestRunAgentViaProxy:
     """Test the actual proxy HTTP forwarding logic."""
 
     @pytest.mark.asyncio
+    async def test_streaming_consumer_replies_to_originating_message(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        runner = _make_runner()
+        runner.config.streaming.enabled = True
+        source = _make_source(platform=Platform.FEISHU)
+        source.thread_id = "omt_thread_1"
+
+        resp = _FakeSSEResponse(
+            status=200,
+            sse_chunks=[
+                'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n',
+                "data: [DONE]\n\n",
+            ],
+        )
+        session = _FakeSession(resp)
+
+        adapter = MagicMock()
+        adapter.SUPPORTS_MESSAGE_EDITING = True
+        adapter.send_typing = AsyncMock()
+        runner.adapters[source.platform] = adapter
+
+        consumer_ctor = MagicMock()
+        consumer = MagicMock()
+        consumer.run = AsyncMock()
+        consumer.on_delta = MagicMock()
+        consumer.finish = MagicMock()
+        consumer.final_response_sent = False
+        consumer_ctor.return_value = consumer
+
+        with (
+            patch("gateway.run._load_gateway_config", return_value={}),
+            _patch_aiohttp(session),
+            patch("aiohttp.ClientTimeout"),
+            patch("gateway.stream_consumer.GatewayStreamConsumer", consumer_ctor),
+        ):
+            await runner._run_agent_via_proxy(
+                message="hello",
+                context_prompt="",
+                history=[],
+                source=source,
+                session_id="sess-1",
+                event_message_id="om_parent_1",
+            )
+
+        consumer_ctor.assert_called_once()
+        assert consumer_ctor.call_args.kwargs["metadata"] == {"thread_id": "omt_thread_1"}
+        assert consumer_ctor.call_args.kwargs["reply_to"] == "om_parent_1"
+
+    @pytest.mark.asyncio
     async def test_builds_correct_request(self, monkeypatch):
         monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
         monkeypatch.setenv("GATEWAY_PROXY_KEY", "test-key-123")

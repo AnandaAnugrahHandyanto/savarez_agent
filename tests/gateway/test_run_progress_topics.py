@@ -65,6 +65,62 @@ class NonEditingProgressCaptureAdapter(ProgressCaptureAdapter):
         raise AssertionError("non-editable adapters should not receive edit_message calls")
 
 
+class ApprovalCaptureAdapter(ProgressCaptureAdapter):
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform)
+        self.approval_calls = []
+        self.paused_typing = []
+
+    def pause_typing_for_chat(self, chat_id) -> None:
+        self.paused_typing.append(chat_id)
+
+    async def send_exec_approval(
+        self,
+        chat_id,
+        command,
+        session_key,
+        description="dangerous command",
+        metadata=None,
+        reply_to=None,
+    ) -> SendResult:
+        self.approval_calls.append(
+            {
+                "chat_id": chat_id,
+                "command": command,
+                "session_key": session_key,
+                "description": description,
+                "metadata": metadata,
+                "reply_to": reply_to,
+            }
+        )
+        return SendResult(success=True, message_id="approval-1")
+
+
+class MediaCaptureAdapter(ProgressCaptureAdapter):
+    async def send_document(
+        self,
+        chat_id,
+        file_path,
+        caption=None,
+        file_name=None,
+        reply_to=None,
+        metadata=None,
+        **kwargs,
+    ) -> SendResult:
+        text = f"📎 File: {file_path}"
+        if caption:
+            text = f"{caption}\n{text}"
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "content": text,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id="media-1")
+
+
 class FakeAgent:
     def __init__(self, **kwargs):
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
@@ -127,6 +183,19 @@ class DelayedInterimAgent:
         time.sleep(0.45)
         self.interim_assistant_callback("second interim")
         time.sleep(0.1)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class LongRunningAgent:
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        time.sleep(0.25)
         return {
             "final_response": "done",
             "messages": [],
@@ -203,6 +272,52 @@ async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_pa
     ]
     assert adapter.edits
     assert all(call["metadata"] == {"thread_id": "17585"} for call in adapter.typing)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_progress_replies_to_originating_feishu_message(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401 - register terminal emoji for this fake-agent test
+
+    adapter = ProgressCaptureAdapter(platform=Platform.FEISHU)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    source = SessionSource(
+        platform=Platform.FEISHU,
+        chat_id="oc_chat_1",
+        chat_type="group",
+        thread_id="omt_thread_1",
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-feishu-1",
+        session_key="agent:main:feishu:group:oc_chat_1:omt_thread_1",
+        event_message_id="om_parent_1",
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent == [
+        {
+            "chat_id": "oc_chat_1",
+            "content": '💻 terminal: "pwd"',
+            "reply_to": "om_parent_1",
+            "metadata": {"thread_id": "omt_thread_1"},
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -476,6 +591,27 @@ class BackgroundReviewAgent:
         }
 
 
+class ApprovalCallbackAgent:
+    def __init__(self, **kwargs):
+        self.gateway_session_key = kwargs.get("gateway_session_key")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        import tools.approval as approval_mod
+
+        approval_mod._gateway_notify_cbs[self.gateway_session_key](
+            {
+                "command": "rm -rf /tmp/demo",
+                "description": "dangerous command",
+            }
+        )
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class VerboseAgent:
     """Agent that emits a tool call with args whose JSON exceeds 200 chars."""
     LONG_CODE = "x" * 300
@@ -509,6 +645,7 @@ async def _run_with_agent(
     chat_id="-1001",
     chat_type="group",
     thread_id="17585",
+    event_message_id=None,
     adapter_cls=ProgressCaptureAdapter,
 ):
     if config_data:
@@ -555,6 +692,7 @@ async def _run_with_agent(
         source=source,
         session_id=session_id,
         session_key=session_key,
+        event_message_id=event_message_id,
     )
     return adapter, result
 
@@ -571,6 +709,33 @@ async def test_run_agent_surfaces_real_interim_commentary(monkeypatch, tmp_path)
 
     assert result.get("already_sent") is not True
     assert any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_interim_commentary_replies_to_originating_feishu_message(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CommentaryAgent,
+        session_id="sess-commentary-feishu-reply",
+        config_data={"display": {"interim_assistant_messages": True}},
+        platform=Platform.FEISHU,
+        chat_id="oc_chat_1",
+        chat_type="group",
+        thread_id="omt_thread_1",
+        event_message_id="om_parent_1",
+    )
+
+    assert result.get("already_sent") is not True
+    commentary_calls = [call for call in adapter.sent if call["content"] == "I'll inspect the repo first."]
+    assert commentary_calls == [
+        {
+            "chat_id": "oc_chat_1",
+            "content": "I'll inspect the repo first.",
+            "reply_to": "om_parent_1",
+            "metadata": {"thread_id": "omt_thread_1"},
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -709,6 +874,38 @@ async def test_run_agent_previewed_final_marks_already_sent(monkeypatch, tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_post_stream_media_file_replies_to_originating_feishu_message():
+    adapter = MediaCaptureAdapter(platform=Platform.FEISHU)
+    runner = _make_runner(adapter)
+    event = MessageEvent(
+        text="报告已生成。",
+        message_type=MessageType.TEXT,
+        source=SessionSource(
+            platform=Platform.FEISHU,
+            chat_id="oc_chat_1",
+            chat_type="group",
+            thread_id="omt_thread_1",
+        ),
+        message_id="om_parent_1",
+    )
+
+    await runner._deliver_media_from_response(
+        "报告已生成。\nMEDIA:/tmp/report.pdf",
+        event,
+        adapter,
+    )
+
+    assert adapter.sent == [
+        {
+            "chat_id": "oc_chat_1",
+            "content": "📎 File: /tmp/report.pdf",
+            "reply_to": "om_parent_1",
+            "metadata": {"thread_id": "omt_thread_1"},
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_run_agent_matrix_streaming_omits_cursor(monkeypatch, tmp_path):
     adapter, result = await _run_with_agent(
         monkeypatch,
@@ -762,6 +959,90 @@ async def test_run_agent_defers_background_review_notification_until_release(mon
 
     assert result["final_response"] == "done"
     assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_run_agent_background_review_replies_to_originating_message_after_release(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        BackgroundReviewAgent,
+        session_id="sess-bg-review-reply",
+        platform=Platform.FEISHU,
+        chat_id="oc_chat_1",
+        chat_type="group",
+        thread_id="omt_thread_1",
+        event_message_id="om_parent_1",
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent == []
+    assert len(adapter._post_delivery_callbacks) == 1
+
+    release_cb = next(iter(adapter._post_delivery_callbacks.values()))
+    release_cb()
+    await asyncio.sleep(0.05)
+
+    assert adapter.sent == [
+        {
+            "chat_id": "oc_chat_1",
+            "content": "💾 Skill 'prospect-scanner' created.",
+            "reply_to": "om_parent_1",
+            "metadata": {"thread_id": "omt_thread_1"},
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_approval_buttons_reply_to_originating_feishu_message(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ApprovalCallbackAgent,
+        session_id="sess-approval-feishu-reply",
+        platform=Platform.FEISHU,
+        chat_id="oc_chat_1",
+        chat_type="group",
+        thread_id="omt_thread_1",
+        event_message_id="om_parent_1",
+        adapter_cls=ApprovalCaptureAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.paused_typing == ["oc_chat_1"]
+    assert adapter.approval_calls == [
+        {
+            "chat_id": "oc_chat_1",
+            "command": "rm -rf /tmp/demo",
+            "session_key": "agent:main:feishu:group:oc_chat_1:omt_thread_1",
+            "description": "dangerous command",
+            "metadata": {"thread_id": "omt_thread_1"},
+            "reply_to": "om_parent_1",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_long_running_notification_replies_to_originating_message(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "0.05")
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        LongRunningAgent,
+        session_id="sess-long-running-reply",
+        platform=Platform.FEISHU,
+        chat_id="oc_chat_1",
+        chat_type="group",
+        thread_id="omt_thread_1",
+        event_message_id="om_parent_1",
+    )
+
+    assert result["final_response"] == "done"
+    heartbeat_calls = [call for call in adapter.sent if call["content"].startswith("⏳ Still working...")]
+    assert heartbeat_calls
+    assert heartbeat_calls[0]["reply_to"] == "om_parent_1"
+    assert heartbeat_calls[0]["metadata"] == {"thread_id": "omt_thread_1"}
 
 
 @pytest.mark.asyncio
