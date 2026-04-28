@@ -943,6 +943,7 @@ DEFAULT_CONFIG = {
     "security": {
         "allow_private_urls": False,  # Allow requests to private/internal IPs (for OpenWrt, proxies, VPNs)
         "redact_secrets": False,
+        "display_redaction_only": False,
         "tirith_enabled": True,
         "tirith_path": "tirith",
         "tirith_timeout": 5,
@@ -3371,6 +3372,7 @@ _SECURITY_COMMENT = """
 #
 # security:
 #   redact_secrets: true
+#   display_redaction_only: true  # redact in chat/logs only; real values pass to tools
 #   tirith_enabled: true
 #   tirith_path: "tirith"
 #   tirith_timeout: 5
@@ -3408,6 +3410,7 @@ _COMMENTED_SECTIONS = """
 #
 # security:
 #   redact_secrets: true
+#   display_redaction_only: true  # redact in chat/logs only; real values pass to tools
 
 # ── Fallback Model ────────────────────────────────────────────────────
 # Automatic provider failover when primary is unavailable.
