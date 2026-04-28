@@ -238,6 +238,27 @@ _MCP_MESSAGE_HANDLER_SUPPORTED = _check_message_handler_support()
 if _MCP_AVAILABLE and not _MCP_MESSAGE_HANDLER_SUPPORTED:
     logger.debug("MCP SDK does not support message_handler -- dynamic tool discovery disabled")
 
+try:
+    from hermes_mcp.parallel_bootstrap import run_parallel_mcp_discovery
+    from hermes_mcp.stdio_lifecycle import (
+        ToolListChangeCoalescer,
+        ascii_safe_for_logs,
+        list_tools_with_backoff,
+    )
+    _HERMES_MCP_LIFECYCLE = True
+except ImportError:
+    run_parallel_mcp_discovery = None  # type: ignore[assignment,misc]
+    ToolListChangeCoalescer = None  # type: ignore[assignment,misc]
+    list_tools_with_backoff = None  # type: ignore[assignment,misc]
+
+    def ascii_safe_for_logs(text: str, max_len: int = 4096) -> str:  # type: ignore[misc]
+        if not isinstance(text, str):
+            text = str(text)
+        safe = text.encode("ascii", "replace").decode("ascii")
+        return safe if len(safe) <= max_len else safe[: max_len - 3] + "..."
+
+    _HERMES_MCP_LIFECYCLE = False
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -247,6 +268,7 @@ _DEFAULT_CONNECT_TIMEOUT = 60    # seconds for initial connection per server
 _MAX_RECONNECT_RETRIES = 5
 _MAX_INITIAL_CONNECT_RETRIES = 3 # retries for the very first connection attempt
 _MAX_BACKOFF_SECONDS = 60
+_TOOL_LIST_NOTIFY_DEBOUNCE_S = 0.12
 
 # Environment variables that are safe to pass to stdio subprocesses
 _SAFE_ENV_KEYS = frozenset({
@@ -868,6 +890,7 @@ class MCPServerTask:
         "_task", "_ready", "_shutdown_event", "_reconnect_event",
         "_tools", "_error", "_config",
         "_sampling", "_registered_tool_names", "_auth_type", "_refresh_lock",
+        "_tool_list_coalescer", "_last_stable_tool_names",
     )
 
     def __init__(self, name: str):
@@ -890,6 +913,14 @@ class MCPServerTask:
         self._registered_tool_names: list[str] = []
         self._auth_type: str = ""
         self._refresh_lock = asyncio.Lock()
+        self._last_stable_tool_names: tuple[str, ...] = ()
+        self._tool_list_coalescer: Optional[Any] = None
+        if _HERMES_MCP_LIFECYCLE and ToolListChangeCoalescer is not None:
+            self._tool_list_coalescer = ToolListChangeCoalescer(
+                _TOOL_LIST_NOTIFY_DEBOUNCE_S,
+                self._refresh_tools,
+                logger,
+            )
 
     def _is_http(self) -> bool:
         """Check if this server uses HTTP transport."""
@@ -916,7 +947,10 @@ class MCPServerTask:
                                 "MCP server '%s': received tools/list_changed notification",
                                 self.name,
                             )
-                            await self._refresh_tools()
+                            if self._tool_list_coalescer is not None:
+                                await self._tool_list_coalescer.signal()
+                            else:
+                                await self._refresh_tools()
                         case PromptListChangedNotification():
                             logger.debug("MCP server '%s': prompts/list_changed (ignored)", self.name)
                         case ResourceListChangedNotification():
@@ -937,12 +971,42 @@ class MCPServerTask:
         """
         from tools.registry import registry
 
+        if self.session is None:
+            return
+
         async with self._refresh_lock:
             # Capture old tool names for change diff
             old_tool_names = set(self._registered_tool_names)
+            snapshot = tuple(self._registered_tool_names)
 
-            # 1. Fetch current tool list from server
-            tools_result = await self.session.list_tools()
+            # 1. Fetch current tool list from server (bounded; may restart stdio)
+            try:
+                if _HERMES_MCP_LIFECYCLE and list_tools_with_backoff is not None:
+                    op_to = float(
+                        self._config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+                    )
+                    op_to = max(5.0, min(op_to, 120.0))
+                    tools_result = await list_tools_with_backoff(
+                        lambda: self.session.list_tools(),
+                        op_timeout=op_to,
+                        log=logger,
+                        server_name=self.name,
+                    )
+                else:
+                    tools_result = await self.session.list_tools()
+            except Exception as exc:
+                safe_snap = ascii_safe_for_logs(",".join(snapshot))
+                safe_name = ascii_safe_for_logs(self.name)
+                logger.error(
+                    "MCP server '%s': list_tools failed after retries; "
+                    "reconnecting transport. last_snapshot=%s err=%s",
+                    safe_name,
+                    safe_snap,
+                    ascii_safe_for_logs(str(exc)),
+                )
+                self._reconnect_event.set()
+                return
+
             new_mcp_tools = tools_result.tools if hasattr(tools_result, "tools") else []
 
             # 2. Deregister old tools from the central registry
@@ -954,6 +1018,7 @@ class MCPServerTask:
             self._registered_tool_names = _register_server_tools(
                 self.name, self, self._config
             )
+            self._last_stable_tool_names = tuple(self._registered_tool_names)
 
             # 5. Log what changed (user-visible notification)
             new_tool_names = set(self._registered_tool_names)
@@ -961,19 +1026,24 @@ class MCPServerTask:
             removed = old_tool_names - new_tool_names
             changes = []
             if added:
-                changes.append(f"added: {', '.join(sorted(added))}")
+                added_s = ", ".join(ascii_safe_for_logs(x) for x in sorted(added))
+                changes.append(f"added: {added_s}")
             if removed:
-                changes.append(f"removed: {', '.join(sorted(removed))}")
+                rem_s = ", ".join(ascii_safe_for_logs(x) for x in sorted(removed))
+                changes.append(f"removed: {rem_s}")
             if changes:
+                log_line = ascii_safe_for_logs("; ".join(changes))
                 logger.warning(
                     "MCP server '%s': tools changed dynamically — %s. "
                     "Verify these changes are expected.",
-                    self.name, "; ".join(changes),
+                    self.name,
+                    log_line,
                 )
             else:
                 logger.info(
                     "MCP server '%s': dynamically refreshed %d tool(s) (no changes)",
-                    self.name, len(self._registered_tool_names),
+                    self.name,
+                    len(self._registered_tool_names),
                 )
 
     async def _wait_for_lifecycle_event(self) -> str:
@@ -1343,6 +1413,8 @@ class MCPServerTask:
         """Signal the Task to exit and wait for clean resource teardown."""
         from tools.registry import registry
 
+        if self._tool_list_coalescer is not None:
+            self._tool_list_coalescer.cancel()
         self._shutdown_event.set()
         # Defensive: if _wait_for_lifecycle_event is blocking, we need ANY
         # event to unblock it. _shutdown_event alone is sufficient (the
@@ -2698,6 +2770,7 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
 
     registered_names = _register_server_tools(name, server, config)
     server._registered_tool_names = list(registered_names)
+    server._last_stable_tool_names = tuple(registered_names)
 
     transport_type = "HTTP" if "url" in config else "stdio"
     logger.info(
@@ -2753,20 +2826,37 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
 
     async def _discover_all():
         server_names = list(new_servers.keys())
-        # Connect to all servers in PARALLEL
-        results = await asyncio.gather(
-            *(_discover_one(name, cfg) for name, cfg in new_servers.items()),
-            return_exceptions=True,
-        )
-        for name, result in zip(server_names, results):
-            if isinstance(result, Exception):
-                command = new_servers.get(name, {}).get("command")
-                logger.warning(
-                    "Failed to connect to MCP server '%s'%s: %s",
-                    name,
-                    f" (command={command})" if command else "",
-                    _format_connect_error(result),
-                )
+        if _HERMES_MCP_LIFECYCLE and run_parallel_mcp_discovery is not None:
+            discovered = await run_parallel_mcp_discovery(
+                new_servers,
+                _discover_one,
+                default_connect_timeout=_DEFAULT_CONNECT_TIMEOUT,
+                log=logger,
+            )
+            for name in server_names:
+                _n, result = discovered[name]
+                if isinstance(result, Exception):
+                    command = new_servers.get(name, {}).get("command")
+                    logger.warning(
+                        "Failed to connect to MCP server '%s'%s: %s",
+                        name,
+                        f" (command={command})" if command else "",
+                        _format_connect_error(result),
+                    )
+        else:
+            results = await asyncio.gather(
+                *(_discover_one(name, cfg) for name, cfg in new_servers.items()),
+                return_exceptions=True,
+            )
+            for name, result in zip(server_names, results):
+                if isinstance(result, Exception):
+                    command = new_servers.get(name, {}).get("command")
+                    logger.warning(
+                        "Failed to connect to MCP server '%s'%s: %s",
+                        name,
+                        f" (command={command})" if command else "",
+                        _format_connect_error(result),
+                    )
 
     # Per-server timeouts are handled inside _discover_and_register_server.
     # The outer timeout is generous: 120s total for parallel discovery.

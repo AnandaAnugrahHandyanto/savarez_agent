@@ -6,7 +6,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tools.mcp_tool import MCPServerTask, _register_server_tools
+from tools.mcp_tool import (
+    MCPServerTask,
+    _TOOL_LIST_NOTIFY_DEBOUNCE_S,
+    _register_server_tools,
+)
 from tools.registry import ToolRegistry
 
 
@@ -87,13 +91,14 @@ class TestMessageHandler:
 
         from mcp.types import ServerNotification, ToolListChangedNotification
 
-        server = MCPServerTask("notif_srv")
         with patch.object(MCPServerTask, "_refresh_tools", new_callable=AsyncMock) as mock_refresh:
+            server = MCPServerTask("notif_srv")
             handler = server._make_message_handler()
             notification = ServerNotification(
                 root=ToolListChangedNotification(method="notifications/tools/list_changed")
             )
             await handler(notification)
+            await asyncio.sleep(_TOOL_LIST_NOTIFY_DEBOUNCE_S + 0.08)
             mock_refresh.assert_awaited_once()
 
     @pytest.mark.asyncio
