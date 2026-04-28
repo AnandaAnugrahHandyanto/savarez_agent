@@ -436,7 +436,39 @@ def load_cli_config() -> Dict[str, Any]:
         try:
             with open(config_path, "r", encoding="utf-8") as f:
                 file_config = yaml.safe_load(f) or {}
-            
+
+            # Profile inheritance: when HERMES_HOME points at a profile
+            # directory (e.g. ``hermes --profile xuangu chat``), the profile
+            # config usually only overrides a few fields (e.g. ``discord:``)
+            # and expects ``model:`` / ``custom_providers:`` / ``providers:``
+            # / ``delegation:`` / ``fallback_model:`` to inherit from the root
+            # ``~/.hermes/config.yaml`` — the same way ``hermes_cli.config.
+            # load_config`` does for every other command (status, model, run,
+            # platform gateway, cron subagents).  Without this merge, profile-
+            # scoped ``hermes chat -q`` would silently fall through to the
+            # empty defaults below and produce ``No inference provider
+            # configured`` even when the root config is perfectly valid.
+            try:
+                from hermes_cli.config import _apply_profile_model_inheritance
+
+                # ``_apply_profile_model_inheritance`` is a no-op when
+                # ``config_path`` is NOT under a ``profiles/<name>/`` dir
+                # (it returns the user_config unchanged), so the root-level
+                # stale-key fallback logic further below keeps its meaning.
+                # We intentionally skip ``_normalize_root_model_keys`` here
+                # — that normalizer would promote legacy root-level
+                # ``provider:`` into ``model.provider`` and defeat the
+                # "stale root key is only a FALLBACK" protection that the
+                # downstream code in this function relies on.
+                file_config = _apply_profile_model_inheritance(
+                    file_config, config_path
+                )
+            except Exception:
+                # Inheritance is best-effort — if the private helper moves
+                # or raises, keep the pre-existing yaml-only behavior so
+                # ``chat`` never fails to start due to this merge.
+                pass
+
             _file_has_terminal_config = "terminal" in file_config
 
             # Handle model config - can be string (new format) or dict (old format)
