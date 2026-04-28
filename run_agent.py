@@ -100,9 +100,15 @@ from agent.model_metadata import (
     estimate_tokens_rough, estimate_messages_tokens_rough, estimate_request_tokens_rough,
     get_next_probe_tier, parse_context_limit_from_error,
     parse_available_output_tokens_from_error,
-    save_context_length, is_local_endpoint,
+    save_context_length,
     query_ollama_num_ctx,
 )
+from agent.local_provider import (
+    is_local_provider,
+    compute_stream_stale_timeout,
+    compute_api_call_stale_timeout,
+)
+from agent.provider_health import maybe_log_local_provider_health
 from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
@@ -1793,6 +1799,7 @@ class AIAgent:
 
         # Store for reuse in switch_model (so config override persists across model switches)
         self._config_context_length = _config_context_length
+        self._model_yaml_cfg = _model_cfg if isinstance(_model_cfg, dict) else {}
 
         # Resolve custom_providers list once for reuse below (startup
         # context-length override and plugin context-engine init).
@@ -1999,7 +2006,9 @@ class AIAgent:
                 self._ollama_num_ctx = int(_ollama_num_ctx_override)
             except (TypeError, ValueError):
                 logger.debug("Invalid ollama_num_ctx config value: %r", _ollama_num_ctx_override)
-        if self._ollama_num_ctx is None and self.base_url and is_local_endpoint(self.base_url):
+        if self._ollama_num_ctx is None and self.base_url and is_local_provider(
+            self.base_url, model_cfg=self._model_yaml_cfg,
+        ):
             try:
                 _detected = query_ollama_num_ctx(self.model, self.base_url, api_key=self.api_key or "")
                 if _detected and _detected > 0:
@@ -2939,7 +2948,7 @@ class AIAgent:
             return False
         if "ollama" in self._base_url_lower or ":11434" in self._base_url_lower:
             return True
-        return bool(self.base_url and is_local_endpoint(self.base_url))
+        return bool(is_local_provider(self.base_url, model_cfg=self._model_yaml_cfg))
 
     def _should_treat_stop_as_truncated(
         self,
@@ -6286,7 +6295,9 @@ class AIAgent:
                 # prefill on large contexts before producing the first token.
                 # Auto-increase the httpx read timeout unless the user explicitly
                 # overrode HERMES_STREAM_READ_TIMEOUT.
-                if _stream_read_timeout == 120.0 and self.base_url and is_local_endpoint(self.base_url):
+                if _stream_read_timeout == 120.0 and self.base_url and is_local_provider(
+                    self.base_url, model_cfg=getattr(self, "_model_yaml_cfg", None) or {},
+                ):
                     _stream_read_timeout = _base_timeout
                     logger.debug(
                         "Local provider detected (%s) — stream read timeout raised to %.0fs",
@@ -6333,6 +6344,10 @@ class AIAgent:
             reasoning_parts: list = []
             usage_obj = None
             for chunk in stream:
+                # Any chunk delivered by the SDK advances the outer stale
+                # watchdog, including usage-only or empty-choice keep-alives.
+                # Gaps with no iterator progress still rely on local-provider
+                # timeouts (see agent.local_provider.compute_stream_stale_timeout).
                 last_chunk_time["t"] = time.time()
                 self._touch_activity("receiving stream response")
 
@@ -6833,25 +6848,20 @@ class AIAgent:
                     self._close_request_openai_client(request_client, reason="stream_request_complete")
 
         _stream_stale_timeout_base = float(os.getenv("HERMES_STREAM_STALE_TIMEOUT", 180.0))
-        # Local providers (Ollama, oMLX, llama-cpp) can take 300+ seconds
-        # for prefill on large contexts.  Disable the stale detector unless
-        # the user explicitly set HERMES_STREAM_STALE_TIMEOUT.
-        if _stream_stale_timeout_base == 180.0 and self.base_url and is_local_endpoint(self.base_url):
-            _stream_stale_timeout = float("inf")
-            logger.debug("Local provider detected (%s) — stale stream timeout disabled", self.base_url)
-        else:
-            # Scale the stale timeout for large contexts: slow models (like Opus)
-            # can legitimately think for minutes before producing the first token
-            # when the context is large.  Without this, the stale detector kills
-            # healthy connections during the model's thinking phase, producing
-            # spurious RemoteProtocolError ("peer closed connection").
-            _est_tokens = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
-            if _est_tokens > 100_000:
-                _stream_stale_timeout = max(_stream_stale_timeout_base, 300.0)
-            elif _est_tokens > 50_000:
-                _stream_stale_timeout = max(_stream_stale_timeout_base, 240.0)
-            else:
-                _stream_stale_timeout = _stream_stale_timeout_base
+        _mc = getattr(self, "_model_yaml_cfg", None) or {}
+        _stream_stale_timeout = compute_stream_stale_timeout(
+            base_url=self.base_url,
+            model_cfg=_mc if isinstance(_mc, dict) else {},
+            stream_stale_timeout_base=_stream_stale_timeout_base,
+            messages=api_kwargs.get("messages", []) or [],
+        )
+        if is_local_provider(self.base_url, model_cfg=_mc if isinstance(_mc, dict) else {}):
+            logger.debug(
+                "Local provider — stream stale timeout set to %s (base env %.0fs)",
+                "inf" if _stream_stale_timeout == float("inf") else f"{_stream_stale_timeout:.0f}s",
+                _stream_stale_timeout_base,
+            )
+        maybe_log_local_provider_health(self)
 
         t = threading.Thread(target=_call, daemon=True)
         t.start()

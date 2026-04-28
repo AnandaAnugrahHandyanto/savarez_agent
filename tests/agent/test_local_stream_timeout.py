@@ -11,6 +11,11 @@ import pytest
 from unittest.mock import patch
 
 from agent.model_metadata import is_local_endpoint
+from agent.local_provider import (
+    is_local_provider,
+    compute_stream_stale_timeout,
+    compute_api_call_stale_timeout,
+)
 
 
 class TestLocalStreamReadTimeout:
@@ -128,3 +133,57 @@ class TestIsLocalEndpoint:
     def test_near_but_not_cgnat_is_remote(self, url):
         """Hosts adjacent to but outside 100.64.0.0/10 must not match."""
         assert is_local_endpoint(url) is False
+
+
+class TestIsLocalProvider:
+    """Explicit local flag + env override beyond is_local_endpoint."""
+
+    def test_local_inference_config_marks_public_url(self):
+        assert is_local_provider(
+            "https://llm.internal.example/v1",
+            model_cfg={"local_inference": True},
+        )
+
+    def test_force_env_marks_remote_url(self, monkeypatch):
+        monkeypatch.setenv("HERMES_FORCE_LOCAL_PROVIDER", "1")
+        assert is_local_provider("https://api.openai.com/v1", model_cfg=None)
+
+    def test_compute_stream_stale_local_default_not_180(self, monkeypatch):
+        monkeypatch.delenv("HERMES_LOCAL_STREAM_STALE_TIMEOUT", raising=False)
+        t = compute_stream_stale_timeout(
+            base_url="http://127.0.0.1:11434/v1",
+            model_cfg=None,
+            stream_stale_timeout_base=180.0,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        assert t == 3600.0
+
+    def test_compute_stream_stale_local_inf_via_env(self, monkeypatch):
+        monkeypatch.setenv("HERMES_LOCAL_STREAM_STALE_TIMEOUT", "0")
+        t = compute_stream_stale_timeout(
+            base_url="http://127.0.0.1:11434/v1",
+            model_cfg=None,
+            stream_stale_timeout_base=180.0,
+            messages=[{"role": "user", "content": "x" * 400_000}],
+        )
+        assert t == float("inf")
+
+    def test_compute_stream_stale_remote_keeps_180_small_context(self, monkeypatch):
+        monkeypatch.delenv("HERMES_FORCE_LOCAL_PROVIDER", raising=False)
+        t = compute_stream_stale_timeout(
+            base_url="https://api.openai.com/v1",
+            model_cfg=None,
+            stream_stale_timeout_base=180.0,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        assert t == 180.0
+
+    def test_compute_api_call_local_default(self, monkeypatch):
+        monkeypatch.delenv("HERMES_LOCAL_API_CALL_STALE_TIMEOUT", raising=False)
+        t = compute_api_call_stale_timeout(
+            base_url="http://localhost:8080/v1",
+            model_cfg=None,
+            stale_base=300.0,
+            messages=[{"role": "user", "content": "a"}],
+        )
+        assert t == 3600.0
