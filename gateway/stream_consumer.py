@@ -52,6 +52,11 @@ class StreamConsumerConfig:
     # openclaw/openclaw#72038.  Default 0 = always edit in place (legacy
     # behavior).  The gateway enables this selectively per-platform.
     fresh_final_after_seconds: float = 0.0
+    # Use Telegram's sendMessageDraft API for streaming (Bot API 9.3+).
+    # Draft mode avoids flood-control limits on edit_message_text and
+    # provides smoother animations.  Only works in private chats (int chat_id).
+    # The adapter must expose send_draft_message() for this to take effect.
+    draft_transport: bool = False
 
 
 class GatewayStreamConsumer:
@@ -123,6 +128,16 @@ class GatewayStreamConsumer:
             getattr(adapter, "REQUIRES_EDIT_FINALIZE", False) is True
         )
 
+        # Draft transport: use sendMessageDraft instead of edit_message_text.
+        # Only activated when config.draft_transport is True AND the adapter
+        # exposes a send_draft_message() method.
+        self._draft_mode = (
+            self.cfg.draft_transport
+            and callable(getattr(adapter, "send_draft_message", None))
+        )
+        # draft_id for the current streaming segment (must be non-zero int).
+        self._draft_id: int = 0
+
         # Think-block filter state (mirrors CLI's _stream_delta tag suppression)
         self._in_think_block = False
         self._think_buffer = ""
@@ -155,6 +170,8 @@ class GatewayStreamConsumer:
         self._last_sent_text = ""
         self._fallback_final_send = False
         self._fallback_prefix = ""
+        # Reset draft_id so the next segment gets a fresh draft
+        self._draft_id = 0
 
     def on_delta(self, text: str) -> None:
         """Thread-safe callback — called from the agent's worker thread.
@@ -390,10 +407,19 @@ class GatewayStreamConsumer:
                     # the next segment (tool progress, next chunk) creates a
                     # new message below it.  got_done has its own finalize
                     # path below so we don't finalize here for it.
-                    current_update_visible = await self._send_or_edit(
-                        display_text,
-                        finalize=got_segment_break,
-                    )
+                    if self._draft_mode and got_segment_break and self._accumulated:
+                        # Draft mode segment break: send accumulated text as a
+                        # real message so it survives when the subsequent
+                        # commentary (tool progress) closes the ephemeral draft
+                        # on the Telegram client.  Without this the draft text
+                        # vanishes the instant a real message is posted.
+                        await self._send_new_chunk(self._accumulated, None)
+                        current_update_visible = True
+                    else:
+                        current_update_visible = await self._send_or_edit(
+                            display_text,
+                            finalize=got_segment_break,
+                        )
                     self._last_edit_time = time.monotonic()
 
                 if got_done:
@@ -404,6 +430,13 @@ class GatewayStreamConsumer:
                     if self._accumulated:
                         if self._fallback_final_send:
                             await self._send_fallback_final(self._accumulated)
+                        elif self._draft_mode:
+                            # Draft mode: don't claim final delivery.
+                            # The gateway must send a real message to
+                            # dismiss the ephemeral draft on the Telegram
+                            # client.  The real message also gets proper
+                            # MarkdownV2 formatting (draft was plain text).
+                            pass
                         elif (
                             current_update_visible
                             and not self._adapter_requires_finalize
@@ -457,7 +490,7 @@ class GatewayStreamConsumer:
                         self._accumulated
                         and not current_update_visible
                         and self._message_id
-                        and self._message_id != "__no_edit__"
+                        and self._message_id not in ("__no_edit__", "__draft__")
                     ):
                         await self._flush_segment_tail_on_edit_failure()
                     self._reset_segment_state(preserve_no_edit=True)
@@ -713,7 +746,7 @@ class GatewayStreamConsumer:
         Called when entering fallback mode so the user doesn't see a stuck
         cursor (▉) in the partial message.
         """
-        if not self._message_id or self._message_id == "__no_edit__":
+        if not self._message_id or self._message_id in ("__no_edit__", "__draft__"):
             return
         prefix = self._visible_prefix()
         if not prefix or not prefix.strip():
@@ -764,7 +797,7 @@ class GatewayStreamConsumer:
         threshold = getattr(self.cfg, "fresh_final_after_seconds", 0.0) or 0.0
         if threshold <= 0:
             return False
-        if not self._message_id or self._message_id == "__no_edit__":
+        if not self._message_id or self._message_id in ("__no_edit__", "__draft__"):
             return False
         if self._message_created_ts is None:
             return False
@@ -796,7 +829,7 @@ class GatewayStreamConsumer:
         # is best-effort; platforms that don't implement ``delete_message``
         # just leave the preview behind (still an acceptable outcome —
         # the visible final timestamp is the important part).
-        if old_message_id and old_message_id != "__no_edit__":
+        if old_message_id and old_message_id not in ("__no_edit__", "__draft__"):
             delete_fn = getattr(self.adapter, "delete_message", None)
             if delete_fn is not None:
                 try:
@@ -823,6 +856,59 @@ class GatewayStreamConsumer:
         self._last_sent_text = text
         self._final_response_sent = True
         return True
+
+    async def _send_or_edit_draft(self, text: str, *, finalize: bool = False) -> bool:
+        """Draft-transport variant of _send_or_edit.
+
+        Uses Telegram's sendMessageDraft API (Bot API 9.3+) which:
+        - Has no flood-control limits (unlike edit_message_text ~30/s cap)
+        - Animates changes smoothly on the client side
+        - Only works in private chats (int chat_id)
+
+        On any failure, disables draft mode and falls through to the caller
+        which will retry via the standard _message_id / edit path.
+        """
+        # Skip if text is identical to what we last sent via draft
+        if text == self._last_sent_text and not (
+            finalize and self._adapter_requires_finalize
+        ):
+            return True
+
+        # Ensure we have a draft_id for this segment
+        if self._draft_id == 0:
+            self._draft_id = max(
+                int(time.monotonic() * 1000) % (2**31), 1
+            )
+
+        try:
+            result = await self.adapter.send_draft_message(
+                chat_id=self.chat_id,
+                draft_id=self._draft_id,
+                content=text,
+            )
+            if result.success:
+                self._already_sent = True
+                self._last_sent_text = text
+                # Mark _message_id as non-None so the caller treats us as
+                # "already streaming" (prevents re-entering first-send path).
+                # We use a sentinel since draft doesn't return a message_id.
+                if self._message_id is None:
+                    self._message_id = "__draft__"
+                    self._message_created_ts = time.monotonic()
+                return True
+            else:
+                logger.debug(
+                    "Draft send failed (%s), skipping update: %s",
+                    result.error, text[:60],
+                )
+                # Don't fall back — stay in draft mode to avoid visual glitch
+                return False
+        except Exception as e:
+            logger.debug(
+                "Draft send exception, skipping update: %s", e,
+            )
+            # Don't fall back — stay in draft mode to avoid visual glitch
+            return False
 
     async def _send_or_edit(self, text: str, *, finalize: bool = False) -> bool:
         """Send or edit the streaming message.
@@ -864,6 +950,13 @@ class GatewayStreamConsumer:
                 and len(_visible_stripped) < _MIN_NEW_MSG_CHARS):
             return True  # too short for a standalone message — accumulate more
         try:
+            # ── Draft transport path (Telegram sendMessageDraft) ──
+            # Draft mode uses sendMessageDraft API which has no flood-control
+            # limits and provides smoother streaming animations.  Falls back
+            # to standard edit_message_text on any error.
+            if self._draft_mode:
+                return await self._send_or_edit_draft(text, finalize=finalize)
+
             if self._message_id is not None:
                 if self._edit_supported:
                     # Skip if text is identical to what we last sent.
