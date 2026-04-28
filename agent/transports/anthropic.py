@@ -10,6 +10,17 @@ from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse
 
 
+def _normalize_tool_name(name: str, *, strip_tool_prefix: bool = False) -> str:
+    """Map provider tool names back to the registered Hermes tool name."""
+    if not strip_tool_prefix or not name.startswith("mcp_"):
+        return name
+
+    stripped = name[4:]
+    if stripped and stripped[0].isupper():
+        stripped = stripped[0].lower() + stripped[1:]
+    return stripped
+
+
 class AnthropicTransport(ProviderTransport):
     """Transport for api_mode='anthropic_messages'.
 
@@ -102,7 +113,10 @@ class AnthropicTransport(ProviderTransport):
                 tool_calls.append(
                     ToolCall(
                         id=block.id,
-                        name=block.name,
+                        name=_normalize_tool_name(
+                            block.name,
+                            strip_tool_prefix=kwargs.get("strip_tool_prefix", False),
+                        ),
                         arguments=json.dumps(block.input),
                     )
                 )
