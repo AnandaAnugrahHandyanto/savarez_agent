@@ -43,13 +43,18 @@ if [ "$(id -u)" = "0" ]; then
 
     # Single-file bind mounts can hide root-owned host files inside an otherwise
     # hermes-owned data dir. Repair those before dropping privileges; after gosu
-    # an ordinary user cannot chown even a file it can read.
+    # an ordinary user cannot chown even a file it can read. Must run here (as
+    # root) rather than after gosu — a non-root caller like
+    # `docker run -u $(id -u):$(id -g)` hits "Operation not permitted" (#15865).
     for managed_file in "$HERMES_HOME/.env" "$HERMES_HOME/config.yaml" "$HERMES_HOME/SOUL.md" "$HERMES_HOME/honcho.json"; do
         if [ -f "$managed_file" ]; then
             chown hermes:hermes "$managed_file" 2>/dev/null || \
                 echo "Warning: could not chown $managed_file before privilege drop"
         fi
     done
+    if [ -f "$HERMES_HOME/config.yaml" ]; then
+        chmod 640 "$HERMES_HOME/config.yaml" 2>/dev/null || true
+    fi
 
     echo "Dropping root privileges"
     exec gosu hermes "$0" "$@"
@@ -75,13 +80,6 @@ fi
 # config.yaml
 if [ ! -f "$HERMES_HOME/config.yaml" ]; then
     cp "$INSTALL_DIR/cli-config.yaml.example" "$HERMES_HOME/config.yaml"
-fi
-
-# Ensure the main config file remains accessible to the hermes runtime user
-# even if it was edited on the host after initial ownership setup.
-if [ -f "$HERMES_HOME/config.yaml" ]; then
-    chmod 640 "$HERMES_HOME/config.yaml" 2>/dev/null || \
-        echo "Warning: could not chmod $HERMES_HOME/config.yaml"
 fi
 
 # SOUL.md
