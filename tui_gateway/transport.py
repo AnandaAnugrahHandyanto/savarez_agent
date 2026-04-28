@@ -120,8 +120,26 @@ class StdioTransport:
             stream = self._stream_getter()
             try:
                 stream.write(line)
-            except (BrokenPipeError, ValueError):
-                # ValueError: I/O operation on closed file.
+            except BrokenPipeError:
+                return False
+            except UnicodeEncodeError:
+                # Non-UTF-8 stdout encoding — this is a real bug in the
+                # host environment (pythonioencoding mismatch, locale,
+                # etc.), NOT a closed pipe.  Log loudly with exc_info
+                # so it doesn't masquerade as a disconnect, but drop
+                # the frame so the dispatcher loop survives.
+                logger.warning(
+                    "StdioTransport: stdout encoding cannot represent payload "
+                    "(check PYTHONIOENCODING/locale)", exc_info=True,
+                )
+                return False
+            except ValueError as e:
+                # `ValueError` from a closed file genuinely means
+                # "peer gone" — narrow to that case so other ValueErrors
+                # (which would indicate logic bugs) still surface.
+                if "closed file" in str(e):
+                    return False
+                logger.warning("StdioTransport: unexpected ValueError on write", exc_info=True)
                 return False
             except OSError as e:
                 logger.debug("StdioTransport write failed: %s", e)
@@ -137,7 +155,12 @@ class StdioTransport:
             if not _DISABLE_FLUSH:
                 try:
                     stream.flush()
-                except (BrokenPipeError, ValueError):
+                except BrokenPipeError:
+                    return False
+                except ValueError as e:
+                    if "closed file" in str(e):
+                        return False
+                    logger.warning("StdioTransport: unexpected ValueError on flush", exc_info=True)
                     return False
                 except OSError as e:
                     logger.debug("StdioTransport flush failed: %s", e)

@@ -94,6 +94,39 @@ def test_write_json_closed_stream_returns_false(server):
     assert server.write_json({"x": 1}) is False
 
 
+def test_write_json_unicode_encode_error_does_not_masquerade_as_closed(server, caplog):
+    """A non-UTF-8 stdout encoding raises UnicodeEncodeError (a ValueError
+    subclass) — it must be logged with exc_info, not silently swallowed
+    as 'peer gone'.  Otherwise, a misconfigured PYTHONIOENCODING/locale
+    looks like a clean disconnect and the bug stays hidden."""
+    import logging
+
+    class _AsciiOnly:
+        def write(self, line):
+            line.encode("ascii")  # raises UnicodeEncodeError on non-ascii
+        def flush(self): pass
+
+    server._real_stdout = _AsciiOnly()
+    with caplog.at_level(logging.WARNING, logger="tui_gateway.transport"):
+        assert server.write_json({"msg": "héllo"}) is False
+    assert any("encoding" in r.message.lower() for r in caplog.records)
+
+
+def test_write_json_unrelated_value_error_logs_loudly(server, caplog):
+    """Only ValueError("...closed file...") should be treated as peer gone.
+    Any other ValueError likely indicates a logic bug and must surface."""
+    import logging
+
+    class _BadValue:
+        def write(self, _): raise ValueError("something else entirely")
+        def flush(self): pass
+
+    server._real_stdout = _BadValue()
+    with caplog.at_level(logging.WARNING, logger="tui_gateway.transport"):
+        assert server.write_json({"x": 1}) is False
+    assert any("unexpected ValueError" in r.message for r in caplog.records)
+
+
 def test_write_json_oserror_on_flush_returns_false(server):
     """A flush that raises OSError must not strand the lock or crash."""
     written = []
