@@ -20,6 +20,7 @@ from agent.skill_utils import (
     extract_skill_description,
     get_all_skills_dirs,
     get_disabled_skill_names,
+    get_hidden_skills_from_index,
     iter_skill_index_files,
     parse_frontmatter,
     skill_matches_platform,
@@ -685,6 +686,7 @@ def build_skills_system_prompt(
         or ""
     )
     disabled = get_disabled_skill_names()
+    hidden = get_hidden_skills_from_index()
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
@@ -692,6 +694,7 @@ def build_skills_system_prompt(
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
         tuple(sorted(disabled)),
+        tuple(sorted(hidden)),
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -718,6 +721,8 @@ def build_skills_system_prompt(
                 continue
             if frontmatter_name in disabled or skill_name in disabled:
                 continue
+            if frontmatter_name in hidden or skill_name in hidden or category in hidden:
+                continue
             if not _skill_should_show(
                 entry.get("conditions") or {},
                 available_tools,
@@ -742,6 +747,8 @@ def build_skills_system_prompt(
                 continue
             skill_name = entry["skill_name"]
             if entry["frontmatter_name"] in disabled or skill_name in disabled:
+                continue
+            if entry["frontmatter_name"] in hidden or skill_name in hidden or entry["category"] in hidden:
                 continue
             if not _skill_should_show(
                 extract_skill_conditions(frontmatter),
@@ -798,6 +805,8 @@ def build_skills_system_prompt(
                     continue
                 if frontmatter_name in disabled or skill_name in disabled:
                     continue
+                if frontmatter_name in hidden or skill_name in hidden or category in hidden:
+                    continue
                 if not _skill_should_show(
                     extract_skill_conditions(frontmatter),
                     available_tools,
@@ -828,23 +837,50 @@ def build_skills_system_prompt(
     if not skills_by_category:
         result = ""
     else:
+        # ── Read config for compression toggle ──────────────────────
+        _compress_skills_index = False
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            _compress_skills_index = cfg.get("skills", {}).get("compress_index", False)
+        except Exception:
+            pass
+
         index_lines = []
-        for category in sorted(skills_by_category.keys()):
-            cat_desc = category_descriptions.get(category, "")
-            if cat_desc:
-                index_lines.append(f"  {category}: {cat_desc}")
-            else:
-                index_lines.append(f"  {category}:")
-            # Deduplicate and sort skills within each category
+        if _compress_skills_index:
+            # Compact format: comma-separated skill names, no descriptions
+            index_lines.append("<available_skills compact>")
+            all_skills = []
             seen = set()
-            for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
-                if name in seen:
-                    continue
-                seen.add(name)
-                if desc:
-                    index_lines.append(f"    - {name}: {desc}")
+            for category in sorted(skills_by_category.keys()):
+                for name, _ in sorted(skills_by_category[category], key=lambda x: x[0]):
+                    if name not in seen:
+                        seen.add(name)
+                        all_skills.append(name)
+            # Group into lines of ~10 skills each for readability
+            for i in range(0, len(all_skills), 10):
+                chunk = all_skills[i:i+10]
+                index_lines.append("  " + ", ".join(chunk))
+            index_lines.append("</available_skills>")
+            skill_index_xml = "\n".join(index_lines) + "\n"
+        else:
+            for category in sorted(skills_by_category.keys()):
+                cat_desc = category_descriptions.get(category, "")
+                if cat_desc:
+                    index_lines.append(f"  {category}: {cat_desc}")
                 else:
-                    index_lines.append(f"    - {name}")
+                    index_lines.append(f"  {category}:")
+                # Deduplicate and sort skills within each category
+                seen = set()
+                for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
+                    if name in seen:
+                        continue
+                    seen.add(name)
+                    if desc:
+                        index_lines.append(f"    - {name}: {desc}")
+                    else:
+                        index_lines.append(f"    - {name}")
+            skill_index_xml = "\n".join(index_lines) + "\n"
 
         result = (
             "## Skills (mandatory)\n"
@@ -868,10 +904,8 @@ def build_skills_system_prompt(
             "If a skill you loaded was missing steps, had wrong commands, or needed "
             "pitfalls you discovered, update it before finishing.\n"
             "\n"
-            "<available_skills>\n"
-            + "\n".join(index_lines) + "\n"
-            "</available_skills>\n"
-            "\n"
+            + skill_index_xml
+            + "\n"
             "Only proceed without loading a skill if genuinely none are relevant to the task."
         )
 
