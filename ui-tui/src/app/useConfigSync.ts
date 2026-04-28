@@ -10,7 +10,7 @@ import type {
 } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
 
-import type { StatusBarMode } from './interfaces.js'
+import type { BusyInputMode, StatusBarMode } from './interfaces.js'
 import { turnController } from './turnController.js'
 import { patchUiState } from './uiStore.js'
 
@@ -23,6 +23,18 @@ const STATUSBAR_ALIAS: Record<string, StatusBarMode> = {
 
 export const normalizeStatusBar = (raw: unknown): StatusBarMode =>
   raw === false ? 'off' : typeof raw === 'string' ? (STATUSBAR_ALIAS[raw.trim().toLowerCase()] ?? 'top') : 'top'
+
+const BUSY_MODES = new Set<BusyInputMode>(['interrupt', 'queue', 'steer'])
+
+export const normalizeBusyInputMode = (raw: unknown): BusyInputMode => {
+  if (typeof raw !== 'string') {
+    return 'interrupt'
+  }
+
+  const v = raw.trim().toLowerCase() as BusyInputMode
+
+  return BUSY_MODES.has(v) ? v : 'interrupt'
+}
 
 const MTIME_POLL_MS = 5000
 
@@ -43,6 +55,7 @@ export const applyDisplay = (cfg: ConfigFullResponse | null, setBell: (v: boolea
 
   setBell(!!d.bell_on_complete)
   patchUiState({
+    busyInputMode: normalizeBusyInputMode(d.busy_input_mode),
     compact: !!d.tui_compact,
     detailsMode: resolveDetailsMode(d),
     detailsModeCommandOverride: false,

@@ -53,6 +53,7 @@ export type CommandDispatchResponse =
 
 export interface ConfigDisplayConfig {
   bell_on_complete?: boolean
+  busy_input_mode?: 'interrupt' | 'queue' | 'steer' | string
   details_mode?: string
   inline_diffs?: boolean
   sections?: Record<string, string>

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $uiState, resetUiState } from '../app/uiStore.js'
-import { applyDisplay, normalizeStatusBar } from '../app/useConfigSync.js'
+import { applyDisplay, normalizeBusyInputMode, normalizeStatusBar } from '../app/useConfigSync.js'
 
 describe('applyDisplay', () => {
   beforeEach(() => {
@@ -158,5 +158,52 @@ describe('normalizeStatusBar', () => {
     expect(normalizeStatusBar('TOP')).toBe('top')
     expect(normalizeStatusBar('  on  ')).toBe('top')
     expect(normalizeStatusBar('OFF')).toBe('off')
+  })
+})
+
+describe('normalizeBusyInputMode', () => {
+  it('passes through the canonical CLI parity values', () => {
+    expect(normalizeBusyInputMode('queue')).toBe('queue')
+    expect(normalizeBusyInputMode('steer')).toBe('steer')
+    expect(normalizeBusyInputMode('interrupt')).toBe('interrupt')
+  })
+
+  it('trims and lowercases input', () => {
+    expect(normalizeBusyInputMode(' Queue ')).toBe('queue')
+    expect(normalizeBusyInputMode('STEER')).toBe('steer')
+  })
+
+  it('defaults to interrupt for missing/unknown values (matches Python _load_busy_input_mode)', () => {
+    expect(normalizeBusyInputMode(undefined)).toBe('interrupt')
+    expect(normalizeBusyInputMode(null)).toBe('interrupt')
+    expect(normalizeBusyInputMode('')).toBe('interrupt')
+    expect(normalizeBusyInputMode('drop')).toBe('interrupt')
+    expect(normalizeBusyInputMode(42)).toBe('interrupt')
+  })
+})
+
+describe('applyDisplay → busy_input_mode', () => {
+  beforeEach(() => {
+    resetUiState()
+  })
+
+  it('threads display.busy_input_mode into $uiState', () => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: { busy_input_mode: 'queue' } } }, setBell)
+    expect($uiState.get().busyInputMode).toBe('queue')
+
+    applyDisplay({ config: { display: { busy_input_mode: 'steer' } } }, setBell)
+    expect($uiState.get().busyInputMode).toBe('steer')
+  })
+
+  it('falls back to interrupt when value is missing or invalid', () => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: {} } }, setBell)
+    expect($uiState.get().busyInputMode).toBe('interrupt')
+
+    applyDisplay({ config: { display: { busy_input_mode: 'drop' } } }, setBell)
+    expect($uiState.get().busyInputMode).toBe('interrupt')
   })
 })
