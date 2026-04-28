@@ -150,17 +150,95 @@ class TestMemoryManager:
         mgr.add_provider(p2)
         assert [p.name for p in mgr.providers] == ["builtin", "external"]
 
-    def test_second_external_rejected(self):
-        """Only one non-builtin provider is allowed."""
+    def test_accepts_multiple_external_providers(self):
+        """MemoryManager should accept multiple external providers."""
         mgr = MemoryManager()
         builtin = FakeMemoryProvider("builtin")
         ext1 = FakeMemoryProvider("mem0")
         ext2 = FakeMemoryProvider("hindsight")
         mgr.add_provider(builtin)
         mgr.add_provider(ext1)
+        mgr.add_provider(ext2)
+        assert [p.name for p in mgr.providers] == ["builtin", "mem0", "hindsight"]
+        assert len(mgr.providers) == 3
+
+    def test_rejects_duplicate_provider_name(self):
+        """MemoryManager should reject duplicate provider names."""
+        mgr = MemoryManager()
+        builtin = FakeMemoryProvider("builtin")
+        ext1 = FakeMemoryProvider("mem0")
+        ext2 = FakeMemoryProvider("mem0")  # duplicate name
+        mgr.add_provider(builtin)
+        mgr.add_provider(ext1)
         mgr.add_provider(ext2)  # should be rejected
         assert [p.name for p in mgr.providers] == ["builtin", "mem0"]
         assert len(mgr.providers) == 2
+        # The second "mem0" should be the rejected one
+        assert mgr.providers[1] is ext1  # first one wins
+
+    def test_remove_provider(self):
+        """MemoryManager.remove_provider() should deregister a provider."""
+        mgr = MemoryManager()
+        builtin = FakeMemoryProvider("builtin", tools=[
+            {"name": "builtin_tool", "description": "Builtin", "parameters": {}},
+        ])
+        ext = FakeMemoryProvider("ext", tools=[
+            {"name": "ext_recall", "description": "External", "parameters": {}},
+        ])
+        mgr.add_provider(builtin)
+        mgr.add_provider(ext)
+        assert len(mgr.providers) == 2
+        assert mgr.has_tool("ext_recall")
+
+        # Remove the external provider
+        result = mgr.remove_provider("ext")
+        assert result is True
+        assert len(mgr.providers) == 1
+        assert [p.name for p in mgr.providers] == ["builtin"]
+        assert not mgr.has_tool("ext_recall")
+        assert ext.shutdown_called
+
+    def test_remove_provider_nonexistent(self):
+        """remove_provider returns False for unknown provider names."""
+        mgr = MemoryManager()
+        result = mgr.remove_provider("nonexistent")
+        assert result is False
+
+    def test_remove_provider_builtin_rejected(self):
+        """Cannot remove the builtin provider."""
+        mgr = MemoryManager()
+        builtin = FakeMemoryProvider("builtin")
+        mgr.add_provider(builtin)
+        result = mgr.remove_provider("builtin")
+        assert result is False
+        assert len(mgr.providers) == 1
+
+    def test_remove_provider_cleans_up_tool_routing(self):
+        """Removing a provider should remove its tools from routing."""
+        mgr = MemoryManager()
+        ext = FakeMemoryProvider("ext", tools=[
+            {"name": "ext_recall", "description": "Recall", "parameters": {}},
+            {"name": "ext_retain", "description": "Retain", "parameters": {}},
+        ])
+        mgr.add_provider(ext)
+        assert mgr.has_tool("ext_recall")
+        assert mgr.has_tool("ext_retain")
+
+        mgr.remove_provider("ext")
+        assert not mgr.has_tool("ext_recall")
+        assert not mgr.has_tool("ext_retain")
+
+    def test_add_provider_after_remove(self):
+        """A provider with the same name can be added after removal."""
+        mgr = MemoryManager()
+        ext1 = FakeMemoryProvider("ext")
+        mgr.add_provider(ext1)
+        mgr.remove_provider("ext")
+
+        ext2 = FakeMemoryProvider("ext")
+        mgr.add_provider(ext2)
+        assert len(mgr.providers) == 1
+        assert mgr.providers[0] is ext2
 
     def test_system_prompt_merges_blocks(self):
         mgr = MemoryManager()
