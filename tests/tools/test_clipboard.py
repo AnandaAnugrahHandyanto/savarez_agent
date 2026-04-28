@@ -229,25 +229,28 @@ class TestIsWsl:
 
     @contextmanager
     def _mock_proc_version(self, *, read_data: str | None = None, open_exc=None):
-        """Patch ``hermes_constants._builtin_open`` and ``builtins.open`` together.
+        """Patch ``/proc/version`` reads and a non-WSL ``platform.uname().release``.
 
-        Some CI / interpreter builds resolve ``open`` via builtins even when the
-        source uses ``from builtins import open as _builtin_open``; patching both
-        plus ``sys.modules['hermes_constants']`` avoids duplicate-module edge cases.
+        Real CI runners (e.g. Linux GitHub) may publish a release string that
+        intersects the WSL heuristics or resolve ``open`` only via
+        ``hermes_constants._builtin_open``; pin uname and patch by module path.
         """
+        from types import SimpleNamespace
+
         import hermes_constants
 
-        hc = sys.modules["hermes_constants"]
-        if open_exc is not None:
-            with patch.object(hc, "_builtin_open", side_effect=open_exc), patch(
-                "builtins.open", side_effect=open_exc
-            ):
-                yield None
-            return
-        assert read_data is not None
-        m = mock_open(read_data=read_data)
-        with patch.object(hc, "_builtin_open", m), patch("builtins.open", m):
-            yield m
+        fake_uname = SimpleNamespace(release="6.8.0-generic")
+        with patch.object(hermes_constants.platform, "uname", return_value=fake_uname):
+            if open_exc is not None:
+                with patch("hermes_constants._builtin_open", side_effect=open_exc), patch(
+                    "builtins.open", side_effect=open_exc
+                ):
+                    yield None
+                return
+            assert read_data is not None
+            m = mock_open(read_data=read_data)
+            with patch("hermes_constants._builtin_open", m), patch("builtins.open", m):
+                yield m
 
     def test_wsl2_detected(self):
         content = "Linux version 5.15.0 (microsoft-standard-WSL2)"

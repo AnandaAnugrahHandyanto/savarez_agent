@@ -3351,7 +3351,8 @@ class AIAgent:
         forked conversation. Writes directly to the shared memory/skill stores.
         Never modifies the main conversation history or produces user-visible output.
         """
-        import threading
+        # Use module-level ``threading`` so tests can patch ``run_agent.threading.Thread``.
+        # A local ``import threading`` here would bind a different local name and miss patches.
 
         # Pick the right prompt based on which triggers fired
         if review_memory and review_skills:

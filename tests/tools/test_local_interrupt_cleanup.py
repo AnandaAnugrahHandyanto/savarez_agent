@@ -19,6 +19,14 @@ import time
 
 import pytest
 
+
+# Requires POSIX session/job control: getpgid/killpg and bash sleep pipeline
+# semantics. Windows LocalEnvironment snapshots use different temp paths too.
+POSIX_PG = pytest.mark.skipif(
+    not hasattr(os, "getpgid"),
+    reason="POSIX process groups required (getpgid/killpg)",
+)
+
 from tools.environments.local import LocalEnvironment
 
 
@@ -37,6 +45,7 @@ def _pgid_still_alive(pgid: int) -> bool:
         return False
 
 
+@POSIX_PG
 def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
     """When KeyboardInterrupt arrives mid-poll, the subprocess group must be
     killed before the exception is re-raised."""
