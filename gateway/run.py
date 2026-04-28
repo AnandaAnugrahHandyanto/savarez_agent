@@ -4828,6 +4828,30 @@ class GatewayRunner:
                                                 "Failed to deliver compression-failure warning to user: %s",
                                                 _werr,
                                             )
+                                    # Separately: if the user's CONFIGURED aux
+                                    # model failed and we recovered by falling
+                                    # back to the main model, tell them — a
+                                    # misconfigured auxiliary.compression.model
+                                    # is something only they can fix, and
+                                    # silent recovery would hide it.
+                                    elif _comp is not None and getattr(_comp, "_last_aux_model_failure_model", None):
+                                        _aux_model = getattr(_comp, "_last_aux_model_failure_model", "")
+                                        _aux_err = getattr(_comp, "_last_aux_model_failure_error", None) or "unknown error"
+                                        _aux_msg = (
+                                            f"ℹ️ Configured compression model `{_aux_model}` "
+                                            f"failed ({_aux_err}). Recovered using your main "
+                                            "model — context is intact — but you may want to "
+                                            "check `auxiliary.compression.model` in config.yaml."
+                                        )
+                                        try:
+                                            _adapter = self.adapters.get(source.platform)
+                                            if _adapter and source.chat_id:
+                                                await _adapter.send(source.chat_id, _aux_msg, metadata=_hyg_meta)
+                                        except Exception as _werr:
+                                            logger.warning(
+                                                "Failed to deliver aux-model-fallback notice to user: %s",
+                                                _werr,
+                                            )
                                 finally:
                                     self._cleanup_agent_resources(_hyg_agent)
 
@@ -6360,18 +6384,10 @@ class GatewayRunner:
         
         env_key = f"{platform_name.upper()}_HOME_CHANNEL"
         
-        # Save to config.yaml
+        # Save to .env so it persists across restarts
         try:
-            import yaml
-            config_path = _hermes_home / 'config.yaml'
-            user_config = {}
-            if config_path.exists():
-                with open(config_path, encoding="utf-8") as f:
-                    user_config = yaml.safe_load(f) or {}
-            user_config[env_key] = chat_id
-            atomic_yaml_write(config_path, user_config)
-            # Also set in the current environment so it takes effect immediately
-            os.environ[env_key] = str(chat_id)
+            from hermes_cli.config import save_env_value
+            save_env_value(env_key, str(chat_id))
         except Exception as e:
             return f"Failed to save home channel: {e}"
         
@@ -7377,6 +7393,11 @@ class GatewayRunner:
                 _summary_failed = bool(getattr(compressor, "_last_summary_fallback_used", False))
                 _dropped_count = int(getattr(compressor, "_last_summary_dropped_count", 0) or 0)
                 _summary_err = getattr(compressor, "_last_summary_error", None)
+                # Separately: did the user's CONFIGURED aux model fail
+                # and we recovered via main?  Surface that as an info
+                # note so they can fix their config.
+                _aux_fail_model = getattr(compressor, "_last_aux_model_failure_model", None)
+                _aux_fail_err = getattr(compressor, "_last_aux_model_failure_error", None)
             finally:
                 self._cleanup_agent_resources(tmp_agent)
             lines = [f"🗜️ {summary['headline']}"]
@@ -7391,6 +7412,13 @@ class GatewayRunner:
                     f"{_dropped_count} historical message(s) were removed and replaced "
                     "with a placeholder; earlier context is no longer recoverable. "
                     "Consider checking your auxiliary.compression model configuration."
+                )
+            elif _aux_fail_model:
+                lines.append(
+                    f"ℹ️ Configured compression model `{_aux_fail_model}` failed "
+                    f"({_aux_fail_err or 'unknown error'}). Recovered using your main "
+                    "model — context is intact — but you may want to check "
+                    "`auxiliary.compression.model` in config.yaml."
                 )
             return "\n".join(lines)
         except Exception as e:
@@ -10005,7 +10033,7 @@ class GatewayRunner:
         # Bridge sync status_callback → async adapter.send for context pressure
         _status_adapter = self.adapters.get(source.platform)
         _status_chat_id = source.chat_id
-        _status_thread_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+        _status_thread_metadata = {"thread_id": _progress_thread_id, "mention_user_id": source.user_id} if _progress_thread_id else {"mention_user_id": source.user_id}
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
@@ -10672,6 +10700,13 @@ class GatewayRunner:
                         final_response,
                         all_msgs,
                         failure_callback=_title_failure_cb,
+                        main_runtime={
+                            "model": getattr(agent, "model", None),
+                            "provider": getattr(agent, "provider", None),
+                            "base_url": getattr(agent, "base_url", None),
+                            "api_key": getattr(agent, "api_key", None),
+                            "api_mode": getattr(agent, "api_mode", None),
+                        } if agent else None,
                     )
                 except Exception:
                     pass
@@ -11634,6 +11669,19 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         return False
     atexit.register(remove_pid_file)
     atexit.register(release_gateway_runtime_lock)
+
+    # MCP tool discovery — run in an executor so the asyncio event loop
+    # stays responsive even when a configured MCP server is slow or
+    # unreachable.  discover_mcp_tools() uses a blocking 120s wait
+    # internally; calling it from the loop thread would freeze platform
+    # heartbeats (Discord shard, Telegram polling) until it returned.
+    # See #16856.
+    try:
+        from tools.mcp_tool import discover_mcp_tools
+        _loop = asyncio.get_running_loop()
+        await _loop.run_in_executor(None, discover_mcp_tools)
+    except Exception as e:
+        logger.debug("MCP tool discovery failed: %s", e)
 
     # Start the gateway
     success = await runner.start()

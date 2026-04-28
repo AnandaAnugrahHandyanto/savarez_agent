@@ -148,6 +148,31 @@ def _append_text_to_content(content: Any, text: str, *, prepend: bool = False) -
     return text + rendered if prepend else rendered + text
 
 
+def _strip_image_parts_from_parts(parts: Any) -> Any:
+    """Strip image parts from an OpenAI-style content-parts list.
+
+    Returns a new list with image_url / image / input_image parts replaced
+    by a text placeholder, or None if the list had no images (callers
+    skip the replacement in that case). Used by the compressor to prune
+    old computer_use screenshots.
+    """
+    if not isinstance(parts, list):
+        return None
+    had_image = False
+    out = []
+    for part in parts:
+        if not isinstance(part, dict):
+            out.append(part)
+            continue
+        ptype = part.get("type")
+        if ptype in ("image", "image_url", "input_image"):
+            had_image = True
+            out.append({"type": "text", "text": "[screenshot removed to save context]"})
+        else:
+            out.append(part)
+    return out if had_image else None
+
+
 def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
     """Shrink long string values inside a tool-call arguments JSON blob while
     preserving JSON validity.
@@ -340,6 +365,8 @@ class ContextCompressor(ContextEngine):
         self._last_summary_error = None
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = False
+        self._last_aux_model_failure_error = None
+        self._last_aux_model_failure_model = None
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
 
@@ -448,6 +475,12 @@ class ContextCompressor(ContextEngine):
         # (gateway hygiene, /compress) can surface a visible warning.
         self._last_summary_dropped_count: int = 0
         self._last_summary_fallback_used: bool = False
+        # When a user-configured summary model fails and we recover by
+        # retrying on the main model, record the failure so gateway /
+        # CLI callers can still warn the user even though compression
+        # succeeded.  Silent recovery would hide the broken config.
+        self._last_aux_model_failure_error: Optional[str] = None
+        self._last_aux_model_failure_model: Optional[str] = None
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -558,8 +591,10 @@ class ContextCompressor(ContextEngine):
             if msg.get("role") != "tool":
                 continue
             content = msg.get("content") or ""
-            # Skip multimodal content (list of content blocks)
+            # Multimodal content — dedupe by the text summary if available.
             if isinstance(content, list):
+                continue
+            if isinstance(content, dict) and content.get("_multimodal"):
                 continue
             if len(content) < 200:
                 continue
@@ -577,8 +612,20 @@ class ContextCompressor(ContextEngine):
             if msg.get("role") != "tool":
                 continue
             content = msg.get("content", "")
-            # Skip multimodal content (list of content blocks)
+            # Multimodal content (base64 screenshots etc.): strip the image
+            # payload — keep a lightweight text placeholder in its place.
+            # Without this, an old computer_use screenshot (~1MB base64 +
+            # ~1500 real tokens) survives every compression pass forever.
             if isinstance(content, list):
+                stripped = _strip_image_parts_from_parts(content)
+                if stripped is not None:
+                    result[i] = {**msg, "content": stripped}
+                    pruned += 1
+                continue
+            if isinstance(content, dict) and content.get("_multimodal"):
+                summary = content.get("text_summary") or "[screenshot removed to save context]"
+                result[i] = {**msg, "content": f"[screenshot removed] {summary[:200]}"}
+                pruned += 1
                 continue
             if not content or content == _PRUNED_TOOL_PLACEHOLDER:
                 continue
@@ -907,6 +954,14 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                     "Falling back to main model '%s' for compression.",
                     self.summary_model, e, self.model,
                 )
+                # Record the aux-model failure so callers can warn the user
+                # even if the retry-on-main succeeds — a misconfigured aux
+                # model is something the user needs to fix.
+                _err_text = str(e).strip() or e.__class__.__name__
+                if len(_err_text) > 220:
+                    _err_text = _err_text[:217].rstrip() + "..."
+                self._last_aux_model_failure_error = _err_text
+                self._last_aux_model_failure_model = self.summary_model
                 self.summary_model = ""  # empty = use main model
                 self._summary_failure_cooldown_until = 0.0  # no cooldown
                 return self._generate_summary(turns_to_summarize, focus_topic=focus_topic)  # retry immediately
@@ -931,6 +986,14 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                     "Retrying on main model '%s' before giving up.",
                     self.summary_model, e, self.model,
                 )
+                # Record the aux-model failure (see 404 branch above) — user
+                # should know their configured model is broken even if main
+                # recovers the call.
+                _err_text = str(e).strip() or e.__class__.__name__
+                if len(_err_text) > 220:
+                    _err_text = _err_text[:217].rstrip() + "..."
+                self._last_aux_model_failure_error = _err_text
+                self._last_aux_model_failure_model = self.summary_model
                 self.summary_model = ""  # empty = use main model
                 self._summary_failure_cooldown_until = 0.0
                 return self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
@@ -1232,6 +1295,8 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = False
         self._last_summary_error = None
+        self._last_aux_model_failure_error = None
+        self._last_aux_model_failure_model = None
         n_messages = len(messages)
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self.protect_first_n + 3 + 1
