@@ -375,6 +375,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k2.5",
         "glm-5.1",
         "glm-5",
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
         "mimo-v2.5-pro",
         "mimo-v2.5",
         "mimo-v2-pro",
@@ -2432,7 +2434,7 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
     - GPT-5 / Codex models on Zen use ``/v1/responses``
     - Claude models on Zen use ``/v1/messages``
     - MiniMax models on Go use ``/v1/messages``
-    - GLM / Kimi on Go use ``/v1/chat/completions``
+    - GLM / Kimi / MiMo on Go use ``/v1/chat/completions``
     - Other Zen models (Gemini, GLM, Kimi, MiniMax, Qwen, etc.) use
       ``/v1/chat/completions``
 

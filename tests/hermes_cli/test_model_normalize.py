@@ -23,12 +23,19 @@ class TestIssue5211OpenCodeGoDotPreservation:
         ("minimax-m2.7", "minimax-m2.7"),
         ("minimax-m2.5", "minimax-m2.5"),
         ("glm-4.5", "glm-4.5"),
+        ("mimo-v2.5", "mimo-v2.5"),
+        ("mimo-v2.5-pro", "mimo-v2.5-pro"),
+        ("kimi-k2.6", "kimi-k2.6"),
         ("kimi-k2.5", "kimi-k2.5"),
         ("some-model-1.0.3", "some-model-1.0.3"),
     ])
     def test_opencode_go_preserves_dots(self, model, expected):
         result = normalize_model_for_provider(model, "opencode-go")
         assert result == expected, f"Expected {expected!r}, got {result!r}"
+
+    def test_opencode_go_strips_matching_provider_prefix(self):
+        result = normalize_model_for_provider("opencode-go/kimi-k2.6", "opencode-go")
+        assert result == "kimi-k2.6"
 
     def test_opencode_go_not_in_dot_to_hyphen_set(self):
         """opencode-go must NOT be in the dot-to-hyphen provider set."""

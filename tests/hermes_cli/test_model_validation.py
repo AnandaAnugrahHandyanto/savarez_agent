@@ -410,7 +410,10 @@ class TestCopilotNormalization:
         assert opencode_model_api_mode("opencode-go", "glm-5") == "chat_completions"
         assert opencode_model_api_mode("opencode-go", "opencode-go/glm-5") == "chat_completions"
         assert opencode_model_api_mode("opencode-go", "kimi-k2.5") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "kimi-k2.6") == "chat_completions"
         assert opencode_model_api_mode("opencode-go", "opencode-go/kimi-k2.5") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "mimo-v2.5") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "opencode-go/mimo-v2.5") == "chat_completions"
         assert opencode_model_api_mode("opencode-go", "minimax-m2.5") == "anthropic_messages"
         assert opencode_model_api_mode("opencode-go", "opencode-go/minimax-m2.5") == "anthropic_messages"
 

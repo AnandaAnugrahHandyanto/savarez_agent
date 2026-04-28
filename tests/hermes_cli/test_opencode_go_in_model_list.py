@@ -15,6 +15,10 @@ _OPENCODE_GO_REQUIRED = {
     "kimi-k2.5",
     "glm-5.1",
     "glm-5",
+    "deepseek-v4-pro",
+    "deepseek-v4-flash",
+    "mimo-v2.5-pro",
+    "mimo-v2.5",
     "mimo-v2-pro",
     "mimo-v2-omni",
     "minimax-m2.7",
@@ -33,7 +37,7 @@ def test_opencode_go_appears_when_api_key_set():
     assert opencode_go is not None, "opencode-go should appear when OPENCODE_GO_API_KEY is set"
     # Behavior check: the curated floor must be present. The list may also
     # include extra models.dev entries (e.g. mimo-v2.5-pro) when the registry
-    # is reachable — that's the whole point of the models.dev-preferred merge
+    # is reachable - that's the whole point of the models.dev-preferred merge
     # introduced for opencode-go, so don't pin to an exact list here.
     present = set(opencode_go["models"])
     missing = _OPENCODE_GO_REQUIRED - present
@@ -41,6 +45,7 @@ def test_opencode_go_appears_when_api_key_set():
         f"opencode-go picker should include the curated floor; missing: {sorted(missing)}. "
         f"Got: {opencode_go['models']}"
     )
+    assert opencode_go["total_models"] >= 12
     # opencode-go can appear as "built-in" (from PROVIDER_TO_MODELS_DEV when
     # models.dev is reachable) or "hermes" (from HERMES_OVERLAYS fallback when
     # the API is unavailable, e.g. in CI).

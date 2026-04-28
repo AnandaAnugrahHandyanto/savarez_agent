@@ -1179,7 +1179,7 @@ def test_opencode_go_model_derivation_beats_stale_persisted_api_mode(monkeypatch
 
     minimax-m2.5 is an Anthropic-routed model on opencode-go, so even when
     the config claims ``api_mode: chat_completions`` the runtime must pick
-    ``anthropic_messages`` — the model dictates the mode, not the stale
+    ``anthropic_messages`` - the model dictates the mode, not the stale
     persisted setting.
     """
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-go")
@@ -1199,6 +1199,28 @@ def test_opencode_go_model_derivation_beats_stale_persisted_api_mode(monkeypatch
 
     assert resolved["provider"] == "opencode-go"
     assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["base_url"] == "https://opencode.ai/zen/go"
+
+
+def test_opencode_go_ignores_stale_anthropic_api_mode_for_kimi(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-go")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "opencode-go",
+            "default": "kimi-k2.6",
+            "api_mode": "anthropic_messages",
+        },
+    )
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-opencode-go-key")
+    monkeypatch.delenv("OPENCODE_GO_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="opencode-go")
+
+    assert resolved["provider"] == "opencode-go"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://opencode.ai/zen/go/v1"
 
 
 def test_named_custom_provider_anthropic_api_mode(monkeypatch):

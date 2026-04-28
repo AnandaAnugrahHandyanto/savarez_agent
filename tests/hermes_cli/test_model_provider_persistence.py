@@ -19,9 +19,9 @@ def config_home(tmp_path, monkeypatch):
     home.mkdir()
     config_yaml = home / "config.yaml"
     # Start with model as a plain string — the format that triggered the bug
-    config_yaml.write_text("model: some-old-model\n")
+    config_yaml.write_text("model: some-old-model\n", encoding="utf-8")
     env_file = home / ".env"
-    env_file.write_text("")
+    env_file.write_text("", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
     # Clear env vars that could interfere
     monkeypatch.delenv("HERMES_MODEL", raising=False)
@@ -46,7 +46,7 @@ class TestSaveModelChoiceAlwaysDict:
         _save_model_choice("kimi-k2.5")
 
         import yaml
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        config = yaml.safe_load((config_home / "config.yaml").read_text(encoding="utf-8")) or {}
         model = config.get("model")
         assert isinstance(model, dict), (
             f"Expected model to be a dict after save, got {type(model)}: {model}"
@@ -57,13 +57,14 @@ class TestSaveModelChoiceAlwaysDict:
         """When config.model is already a dict, _save_model_choice preserves it."""
         import yaml
         (config_home / "config.yaml").write_text(
-            "model:\n  default: old-model\n  provider: openrouter\n"
+            "model:\n  default: old-model\n  provider: openrouter\n",
+            encoding="utf-8",
         )
         from hermes_cli.auth import _save_model_choice
 
         _save_model_choice("new-model")
 
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        config = yaml.safe_load((config_home / "config.yaml").read_text(encoding="utf-8")) or {}
         model = config.get("model")
         assert isinstance(model, dict)
         assert model["default"] == "new-model"
@@ -94,7 +95,7 @@ class TestProviderPersistsAfterModelSave:
             _model_flow_api_key_provider(load_config(), "kimi-coding", "old-model")
 
         import yaml
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        config = yaml.safe_load((config_home / "config.yaml").read_text(encoding="utf-8")) or {}
         model = config.get("model")
         assert isinstance(model, dict), f"model should be dict, got {type(model)}"
         assert model.get("provider") == "kimi-coding", (
@@ -142,7 +143,7 @@ class TestProviderPersistsAfterModelSave:
 
         import yaml
 
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        config = yaml.safe_load((config_home / "config.yaml").read_text(encoding="utf-8")) or {}
         model = config.get("model")
         assert isinstance(model, dict), f"model should be dict, got {type(model)}"
         assert model.get("provider") == "copilot"
@@ -205,7 +206,7 @@ class TestProviderPersistsAfterModelSave:
 
         import yaml
 
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        config = yaml.safe_load((config_home / "config.yaml").read_text(encoding="utf-8")) or {}
         model = config.get("model")
         assert isinstance(model, dict), f"model should be dict, got {type(model)}"
         assert model.get("provider") == "copilot-acp"
@@ -226,7 +227,7 @@ class TestProviderPersistsAfterModelSave:
             _model_flow_api_key_provider(load_config(), "opencode-go", "opencode-go/kimi-k2.5")
 
         import yaml
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        config = yaml.safe_load((config_home / "config.yaml").read_text(encoding="utf-8")) or {}
         model = config.get("model")
         assert isinstance(model, dict)
         assert model.get("provider") == "opencode-go"
@@ -243,7 +244,8 @@ class TestProviderPersistsAfterModelSave:
             "  default: kimi-k2.5\n"
             "  provider: opencode-go\n"
             "  base_url: https://opencode.ai/zen/go/v1\n"
-            "  api_mode: chat_completions\n"
+            "  api_mode: chat_completions\n",
+            encoding="utf-8",
         )
 
         with patch("hermes_cli.models.fetch_api_models", return_value=["opencode-go/kimi-k2.5", "opencode-go/minimax-m2.5"]), \
@@ -253,7 +255,7 @@ class TestProviderPersistsAfterModelSave:
             _model_flow_api_key_provider(load_config(), "opencode-go", "kimi-k2.5")
 
         import yaml
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        config = yaml.safe_load((config_home / "config.yaml").read_text(encoding="utf-8")) or {}
         model = config.get("model")
         assert isinstance(model, dict)
         assert model.get("provider") == "opencode-go"
@@ -355,7 +357,7 @@ class TestBaseUrlValidation:
 
         import yaml
 
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        config = yaml.safe_load((config_home / "config.yaml").read_text(encoding="utf-8")) or {}
         model = config.get("model")
         assert isinstance(model, dict)
         assert model.get("provider") == "stepfun"

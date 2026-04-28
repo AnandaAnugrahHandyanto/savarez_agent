@@ -272,7 +272,7 @@ def _resolve_runtime_from_pool_entry(
             api_mode = configured_mode
         else:
             # Auto-detect Anthropic-compatible endpoints (/anthropic suffix,
-            # Kimi /coding, api.openai.com → codex_responses, api.x.ai →
+            # Kimi /coding, api.openai.com -> codex_responses, api.x.ai ->
             # codex_responses).
             detected = _detect_api_mode_for_url(base_url)
             if detected:
@@ -280,8 +280,8 @@ def _resolve_runtime_from_pool_entry(
 
     # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
     # Anthropic SDK prepends its own /v1/messages to the base_url.  Strip the
-    # trailing /v1 so the SDK constructs the correct path (e.g.
-    # https://opencode.ai/zen/go/v1/messages instead of .../v1/v1/messages).
+    # trailing /v1 for Anthropic-routed OpenCode models so the SDK constructs
+    # the correct path.
     if api_mode == "anthropic_messages" and provider in ("opencode-zen", "opencode-go"):
         base_url = re.sub(r"/v1/?$", "", base_url)
 
@@ -1279,7 +1279,7 @@ def resolve_runtime_provider(
             else:
                 # Auto-detect Anthropic-compatible endpoints by URL convention
                 # (e.g. https://api.minimax.io/anthropic, https://dashscope.../anthropic)
-                # plus api.openai.com → codex_responses and api.x.ai → codex_responses.
+                # plus api.openai.com -> codex_responses and api.x.ai -> codex_responses.
                 detected = _detect_api_mode_for_url(base_url)
                 if detected:
                     api_mode = detected

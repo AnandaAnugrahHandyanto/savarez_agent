@@ -392,7 +392,7 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
     if provider in _AGGREGATOR_PROVIDERS:
         return _prepend_vendor(name)
 
-    # --- OpenCode Zen: Claude stays hyphenated; other models keep dots ---
+    # --- OpenCode: Claude on Zen stays hyphenated; Go and other Zen models keep dots ---
     if provider == "opencode-zen":
         bare = _strip_matching_provider_prefix(name, provider)
         if "/" in bare:
@@ -400,6 +400,9 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
         if bare.lower().startswith("claude-"):
             return _dots_to_hyphens(bare)
         return bare
+
+    if provider == "opencode-go":
+        return _strip_matching_provider_prefix(name, provider)
 
     # --- Anthropic: strip matching provider prefix, dots -> hyphens ---
     if provider in _DOT_TO_HYPHEN_PROVIDERS:
