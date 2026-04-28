@@ -88,6 +88,16 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
 
 
+def _completed_process_stdout(proc: object) -> str:
+    """Stdout from ``subprocess.run`` or lightweight test stubs (e.g. ``SimpleNamespace``)."""
+    return str(getattr(proc, "stdout", "") or "")
+
+
+def _completed_process_stderr(proc: object) -> str:
+    """Stderr from ``subprocess.run`` or lightweight test stubs."""
+    return str(getattr(proc, "stderr", "") or "")
+
+
 # ---------------------------------------------------------------------------
 # Profile override — MUST happen before any hermes module import.
 #
@@ -6062,7 +6072,7 @@ def _cmd_update_check():
         text=True,
     )
     if fetch_result.returncode != 0:
-        stderr = fetch_result.stderr.strip()
+        stderr = _completed_process_stderr(fetch_result).strip()
         if "Could not resolve host" in stderr or "unable to access" in stderr:
             print("✗ Network error — cannot reach the remote repository.")
         elif "Authentication failed" in stderr or "could not read Username" in stderr:
@@ -6080,7 +6090,7 @@ def _cmd_update_check():
         text=True,
         check=True,
     )
-    behind = int(rev_result.stdout.strip())
+    behind = int(_completed_process_stdout(rev_result).strip() or "0")
 
     if behind == 0:
         print("✓ Already up to date.")
@@ -6371,7 +6381,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             text=True,
         )
         if fetch_result.returncode != 0:
-            stderr = fetch_result.stderr.strip()
+            stderr = _completed_process_stderr(fetch_result).strip()
             if "Could not resolve host" in stderr or "unable to access" in stderr:
                 print("✗ Network error — cannot reach the remote repository.")
                 print(f"  {stderr.splitlines()[0]}" if stderr else "")
@@ -6395,7 +6405,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             text=True,
             check=True,
         )
-        current_branch = result.stdout.strip()
+        current_branch = _completed_process_stdout(result).strip()
 
         # Always update against main
         branch = "main"
@@ -6432,7 +6442,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             text=True,
             check=True,
         )
-        commit_count = int(result.stdout.strip())
+        commit_count = int((_completed_process_stdout(result).strip() or "0"))
 
         if commit_count == 0:
             _invalidate_update_cache()
@@ -6498,8 +6508,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 )
                 if reset_result.returncode != 0:
                     print(f"✗ Failed to reset to origin/{branch}.")
-                    if reset_result.stderr.strip():
-                        print(f"  {reset_result.stderr.strip()}")
+                    rst_err = _completed_process_stderr(reset_result).strip()
+                    if rst_err:
+                        print(f"  {rst_err}")
                     print(
                         "  Try manually: git fetch origin && git reset --hard origin/main"
                     )

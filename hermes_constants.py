@@ -172,6 +172,15 @@ def is_termux() -> bool:
 _wsl_detected: bool | None = None
 
 
+def _linux_proc_version_text() -> str | None:
+    """Read `/proc/version` lowercased, or ``None`` if unavailable."""
+    try:
+        with open("/proc/version", "r", encoding="utf-8", errors="replace") as f:
+            return f.read().lower()
+    except OSError:
+        return None
+
+
 def is_wsl() -> bool:
     """Return True when running inside WSL (Windows Subsystem for Linux).
 
@@ -182,11 +191,8 @@ def is_wsl() -> bool:
     global _wsl_detected
     if _wsl_detected is not None:
         return _wsl_detected
-    try:
-        with open("/proc/version", "r") as f:
-            _wsl_detected = "microsoft" in f.read().lower()
-    except Exception:
-        _wsl_detected = False
+    txt = _linux_proc_version_text()
+    _wsl_detected = bool(txt is not None and "microsoft" in txt)
     return _wsl_detected
 
 
