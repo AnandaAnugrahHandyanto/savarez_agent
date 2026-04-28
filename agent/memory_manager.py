@@ -360,8 +360,15 @@ class MemoryManager:
 
     # -- Tools ---------------------------------------------------------------
 
-    def get_all_tool_schemas(self) -> List[Dict[str, Any]]:
-        """Collect tool schemas from all providers."""
+    def get_all_tool_schemas(self, *, toolsets_enabled: set = None) -> List[Dict[str, Any]]:
+        """Collect tool schemas from all providers.
+
+        If *toolsets_enabled* is provided and does not contain ``'memory'``,
+        skip memory tools entirely (they depend on the memory toolset).
+        """
+        if toolsets_enabled is not None and 'memory' not in toolsets_enabled:
+            return []
+
         schemas = []
         seen = set()
         for provider in self._providers:
