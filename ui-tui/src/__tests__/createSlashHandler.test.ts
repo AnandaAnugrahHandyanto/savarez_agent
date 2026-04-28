@@ -18,6 +18,23 @@ describe('createSlashHandler', () => {
     expect(getOverlayState().picker).toBe(true)
   })
 
+  it('clears the current session immediately without confirmation', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/clear')).toBe(true)
+    expect(getOverlayState().confirm).toBeNull()
+    expect(getUiState().status).toBe('forging session…')
+    expect(ctx.session.newSession).toHaveBeenCalledWith(undefined)
+  })
+
+  it('keeps /new behind the destructive confirmation prompt', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/new')).toBe(true)
+    expect(getOverlayState().confirm?.title).toBe('Start a new session?')
+    expect(ctx.session.newSession).not.toHaveBeenCalled()
+  })
+
   it('treats /provider as a local /model alias', () => {
     const ctx = buildCtx()
 
