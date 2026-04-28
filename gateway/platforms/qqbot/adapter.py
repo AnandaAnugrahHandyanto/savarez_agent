@@ -517,11 +517,20 @@ class QQAdapter(BasePlatformAdapter):
                     self._access_token = None
                     self._token_expires_at = 0.0
 
+                # 4009 = Session timed out → preserve session for resume
+                # Per QQ docs: https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/error-trace/websocket.html
+                # 4009 should use Resume (op 6), not re-identify (op 2)
+                if code == 4009:
+                    logger.info(
+                        "[%s] Session timed out (4009), will resume on reconnect",
+                        self._log_tag,
+                    )
+                    # Keep session_id and last_seq for resume
+
                 # Session invalid → clear session, will re-identify on next Hello
-                if code in (
+                elif code in (
                         4006,
                         4007,
-                        4009,
                         4900,
                         4901,
                         4902,
