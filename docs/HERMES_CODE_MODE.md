@@ -1,94 +1,148 @@
 # Hermes Code Mode
 
-Hermes Code Mode is the base coding-console foundation for Hermes Agent. This
-port keeps the feature aligned with the current `origin/main` architecture and
-intentionally does not include the later P0 Engineering Control Plane or P1
-GitHub integration.
+Hermes Code Mode now includes the base console plus the P0 Engineering Control
+Plane foundation, adapted to the current main-compatible architecture.
 
-## What Is Included
+## Included Capabilities
 
-- CLI status console through `/code`.
-- Code Mode slash commands:
+- CLI Code Mode commands:
   - `/code`
   - `/web`
   - `/workspace`
   - `/session`
   - `/approvals`
   - `/skills-code`
-- Minimal backend API endpoints under `/api/code/*`.
-- SQLite state support for Code Mode workspace, session, and event metadata.
-- Graceful degraded behavior when the backend, state database, or Git metadata
-  is unavailable.
+- Code Mode state and events in `state.db`.
+- P0 services:
+  - `ExecutionPolicyEngine`
+  - `ArtifactLedger`
+  - `AgentOrchestrator`
+  - `WorktreeService` (safe capability/checkpoint foundation)
+  - `SkillDiscoveryService` (`SKILL.md` + `scripts/` + `resources/`)
+  - `RepoKnowledgeService` (`AGENTS.md` + docs guidance detection)
+- Normalized Code Mode event envelope persisted to `code_events`.
 
-## CLI Commands
+## Execution Policy Risk Classes
 
-`/code` shows the active provider, model, profile, workspace path, Git branch,
-backend reachability, dashboard URL, schema version, and Code Mode state counts.
+- `safe_readonly`
+- `safe_local_write`
+- `network`
+- `git_write`
+- `secret_sensitive`
+- `remote_mutating`
+- `destructive`
+- `production_sensitive`
 
-`/web` shows the local dashboard URL and launch command. In this checkout,
-`hermesWeb/` is not present, so richer Code Cockpit UI work is deferred.
+Destructive commands are blocked, higher-risk classes are approval candidates,
+and command text is secret-redacted before reporting.
 
-`/workspace` lists stored Code Mode workspaces from state when available, and
-falls back to the current working directory and Git branch.
+## Artifact Categories
 
-`/session` lists stored Code Mode sessions from state when available.
+- `task_intake`
+- `prd_lite`
+- `acceptance_criteria`
+- `architecture_note`
+- `adr`
+- `implementation_plan`
+- `command_log`
+- `diff_summary`
+- `test_report`
+- `review_report`
+- `deploy_plan`
+- `deploy_report`
+- `memory_update`
 
-`/approvals` reports that approval orchestration is deferred to the P0 port.
+Artifacts can link to workspace/session/orchestrated run/command metadata.
 
-`/skills-code` reports installed slash skill visibility and notes that
-repository `SKILL.md` discovery is deferred to the P0 port.
+## Orchestrator States
 
-## Backend API
+- `intake`
+- `discovery`
+- `product_framing`
+- `architecture`
+- `planning`
+- `approval`
+- `implementation`
+- `validation`
+- `review`
+- `ready_for_pr`
+- `completed`
+- `cancelled`
+- `failed`
 
-The current base port exposes:
+P0 provides state validation and persistence only. No autonomous execution loop
+is enabled in this port.
 
-- `GET /api/code/status`
+## API Endpoints
+
+Existing Code Mode endpoints:
+
+- `GET /api/code/status` (public read-only)
 - `GET /api/code/workspaces`
 - `GET /api/code/sessions`
 - `GET /api/code/events`
 
-`/api/code/status` is public and read-only so the CLI can detect whether the
-dashboard backend is online. Other `/api/code/*` endpoints use the existing
-dashboard session-token middleware.
+P0 endpoints:
 
-## State
+- `GET /api/code/artifacts`
+- `POST /api/code/artifacts`
+- `GET /api/code/sessions/{code_session_id}/artifacts`
+- `GET /api/code/orchestrator/runs`
+- `POST /api/code/orchestrator/runs`
+- `GET /api/code/orchestrator/runs/{run_id}`
+- `POST /api/code/orchestrator/runs/{run_id}/transition`
+- `POST /api/code/policy/assess-command`
+- `GET /api/code/workspaces/{workspace_id}/git/capabilities`
+- `GET /api/code/workspaces/{workspace_id}/git/worktrees`
+- `GET /api/code/skills/discovered`
+- `GET /api/code/workspaces/{workspace_id}/repo-knowledge`
+- `POST /api/code/workspaces/{workspace_id}/repo-knowledge/bootstrap`
 
-Code Mode state lives in `state.db` with schema version `12`.
+## State / Schema
 
-Tables:
+Code Mode state lives in `state.db`, schema version `13`.
+
+Code Mode + P0 tables:
 
 - `code_workspaces`
 - `code_sessions`
 - `code_events`
+- `code_artifacts`
+- `code_orchestrated_runs`
+- `code_run_transitions`
+- `code_checkpoints`
 
-Fresh databases create these tables directly. Existing databases migrate through
-the normal declarative reconciliation path and the v12 migration step.
+No separate SQLite database is used for P0.
+
+## Skill and Repo Guidance Discovery
+
+- `/skills-code` now reports discovered skills and workspace-local `SKILL.md`
+  capability.
+- Repo knowledge supports:
+  - repo-root `AGENTS.md`
+  - docs guidance folders:
+    - `docs/architecture/`
+    - `docs/engineering/`
+    - `docs/operations/`
+
+Bootstrap creates `AGENTS.md` only when missing and never overwrites.
 
 ## Startup
 
-Start the dashboard backend with:
+Start backend:
 
 ```bash
 python -m hermes_cli.main dashboard --port 9119
 ```
 
-Then run `/code` or `/web` in the CLI to see backend reachability and launch
-hints.
+Then use `/code` or `/web` in the CLI.
 
-## Deferred Work
+## Deferred (Not in P0)
 
-This port intentionally does not include:
-
-- P0 ArtifactLedger.
-- P0 AgentOrchestrator.
-- P0 ExecutionPolicyEngine.
-- P0 Worktree/checkpoint service.
-- P0 `SKILL.md` discovery bridge.
-- P0 RepoKnowledgeService.
-- P1 GitHub App integration, webhooks, or ChatOps.
-- SSH/VPS behavior.
+- P1 GitHub integration (GitHub App auth, webhooks, ChatOps, sync).
+- SSH/VPS automation.
 - Desktop app behavior.
-- A large deprecated `web/` migration.
+- `hermesWeb/` UI integration.
 
-`hermesWeb/` is absent in this checkout, so Code Cockpit UI work is deferred to
-a later frontend-specific port.
+`hermesWeb/` is absent in this checkout, and no large frontend work was added
+under deprecated `web/`.

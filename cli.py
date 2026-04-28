@@ -4578,24 +4578,36 @@ class HermesCLI:
             "\n".join([
                 "Code Mode Approvals",
                 "",
-                "Base Code Mode has no approval queue yet.",
-                "Approval-gated execution policy is deferred to the later P0 port.",
+                "P0 execution policy is available.",
+                "Risk classes include safe_readonly, network, git_write, secret_sensitive, destructive.",
+                "Use /code for backend status; policy assessments are exposed via /api/code/policy/assess-command.",
             ]),
             highlight=False,
             markup=False,
         )
 
     def _handle_skills_code_command(self, _cmd: str):
-        self._console_print(
-            "\n".join([
-                "Code Mode Skills",
-                "",
-                f"Installed slash skills visible to this CLI: {len(_skill_commands)}",
-                "SKILL.md repository discovery is deferred to the later P0 port.",
-            ]),
-            highlight=False,
-            markup=False,
-        )
+        discovered = []
+        workspace_skills = 0
+        workspace_path = Path(os.getenv("TERMINAL_CWD", os.getcwd()))
+        try:
+            from hermes_cli.code.skill_discovery import SkillDiscoveryService
+
+            service = SkillDiscoveryService()
+            discovered = service.list_skills(workspace_path=workspace_path)
+            workspace_skills = sum(1 for s in discovered if str(s.get("source", "")).startswith("workspace:"))
+        except Exception:
+            discovered = []
+
+        lines = [
+            "Code Mode Skills",
+            "",
+            f"Installed slash skills visible to this CLI: {len(_skill_commands)}",
+            f"Discovered skills (builtin/global/workspace): {len(discovered)}",
+            f"Workspace-local SKILL.md skills: {workspace_skills}",
+            "Skill folders supported: SKILL.md, scripts/, resources/",
+        ]
+        self._console_print("\n".join(lines), highlight=False, markup=False)
     
     def _fast_command_available(self) -> bool:
         try:

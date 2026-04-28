@@ -22,6 +22,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -436,6 +437,41 @@ class EnvVarReveal(BaseModel):
     key: str
 
 
+class CodeArtifactCreate(BaseModel):
+    artifact_type: str
+    content: str
+    title: str | None = None
+    content_type: str = "markdown"
+    workspace_id: str | None = None
+    code_session_id: str | None = None
+    orchestrated_run_id: str | None = None
+    command_id: str | None = None
+    metadata: dict[str, Any] = {}
+
+
+class OrchestratorRunCreate(BaseModel):
+    title: str | None = None
+    goal: str | None = None
+    workspace_id: str | None = None
+    code_session_id: str | None = None
+    metadata: dict[str, Any] = {}
+    create_intake_artifact: bool = True
+
+
+class OrchestratorTransitionRequest(BaseModel):
+    to_state: str
+    reason: str | None = None
+    metadata: dict[str, Any] = {}
+
+
+class PolicyAssessCommandRequest(BaseModel):
+    command: str
+
+
+class RepoKnowledgeBootstrapRequest(BaseModel):
+    project_summary: str | None = None
+
+
 _GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
 try:
     _GATEWAY_HEALTH_TIMEOUT = float(os.getenv("GATEWAY_HEALTH_TIMEOUT", "3"))
@@ -605,6 +641,62 @@ def _code_offset(value: int) -> int:
     return max(0, value)
 
 
+def _make_code_event(
+    event_type: str,
+    *,
+    payload: dict[str, Any] | None = None,
+    workspace_id: str | None = None,
+    code_session_id: str | None = None,
+) -> dict[str, Any]:
+    event = {
+        "type": event_type,
+        "version": 1,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "payload": payload or {},
+    }
+    if workspace_id:
+        event["workspace_id"] = workspace_id
+    if code_session_id:
+        event["code_session_id"] = code_session_id
+    return event
+
+
+def _record_code_event(
+    event_type: str,
+    *,
+    payload: dict[str, Any] | None = None,
+    workspace_id: str | None = None,
+    code_session_id: str | None = None,
+    level: str = "info",
+    source: str = "control_plane",
+) -> dict[str, Any]:
+    event = _make_code_event(
+        event_type,
+        payload=payload,
+        workspace_id=workspace_id,
+        code_session_id=code_session_id,
+    )
+    try:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            event_id = db.append_code_event(
+                event_type=event_type,
+                payload=event,
+                workspace_id=workspace_id,
+                code_session_id=code_session_id,
+                source=source,
+                level=level,
+            )
+            event["id"] = event_id
+        finally:
+            db.close()
+    except Exception:
+        _log.exception("Failed to persist code event %s", event_type)
+    return event
+
+
 @app.get("/api/code/status")
 async def get_code_status():
     """Read-only Code Mode readiness endpoint.
@@ -705,6 +797,311 @@ async def get_code_events(
     except Exception:
         _log.exception("GET /api/code/events failed")
         raise HTTPException(status_code=500, detail="Code Mode events unavailable")
+
+
+@app.get("/api/code/artifacts")
+async def get_code_artifacts(
+    workspace_id: str | None = None,
+    code_session_id: str | None = None,
+    orchestrated_run_id: str | None = None,
+    artifact_type: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    try:
+        from hermes_cli.code.artifact_ledger import ArtifactLedger
+
+        ledger = ArtifactLedger()
+        artifacts = ledger.list_artifacts(
+            workspace_id=workspace_id,
+            code_session_id=code_session_id,
+            orchestrated_run_id=orchestrated_run_id,
+            artifact_type=artifact_type,
+            limit=_code_limit(limit, default=100, maximum=500),
+            offset=_code_offset(offset),
+        )
+        return {
+            "artifacts": artifacts,
+            "limit": _code_limit(limit, default=100, maximum=500),
+            "offset": _code_offset(offset),
+        }
+    except Exception:
+        _log.exception("GET /api/code/artifacts failed")
+        raise HTTPException(status_code=500, detail="Code artifacts unavailable")
+
+
+@app.post("/api/code/artifacts")
+async def create_code_artifact(payload: CodeArtifactCreate):
+    try:
+        from hermes_cli.code.artifact_ledger import ArtifactLedger
+
+        ledger = ArtifactLedger()
+        artifact = ledger.create_artifact(
+            payload.artifact_type,
+            payload.content,
+            title=payload.title,
+            content_type=payload.content_type,
+            workspace_id=payload.workspace_id,
+            code_session_id=payload.code_session_id,
+            orchestrated_run_id=payload.orchestrated_run_id,
+            command_id=payload.command_id,
+            metadata=payload.metadata or {},
+        )
+        event = _record_code_event(
+            "artifact.created",
+            payload={"artifact_id": artifact["id"], "artifact_type": artifact["artifact_type"]},
+            workspace_id=artifact.get("workspace_id"),
+            code_session_id=artifact.get("code_session_id"),
+        )
+        return {"ok": True, "artifact": artifact, "event": event}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception:
+        _log.exception("POST /api/code/artifacts failed")
+        raise HTTPException(status_code=500, detail="Failed to create artifact")
+
+
+@app.get("/api/code/sessions/{code_session_id}/artifacts")
+async def get_code_session_artifacts(code_session_id: str, limit: int = 100, offset: int = 0):
+    try:
+        from hermes_cli.code.artifact_ledger import ArtifactLedger
+
+        ledger = ArtifactLedger()
+        artifacts = ledger.list_session_artifacts(
+            code_session_id=code_session_id,
+            limit=_code_limit(limit, default=100, maximum=500),
+            offset=_code_offset(offset),
+        )
+        return {
+            "code_session_id": code_session_id,
+            "artifacts": artifacts,
+            "limit": _code_limit(limit, default=100, maximum=500),
+            "offset": _code_offset(offset),
+        }
+    except Exception:
+        _log.exception("GET /api/code/sessions/%s/artifacts failed", code_session_id)
+        raise HTTPException(status_code=500, detail="Code session artifacts unavailable")
+
+
+@app.get("/api/code/orchestrator/runs")
+async def get_orchestrator_runs(
+    workspace_id: str | None = None,
+    code_session_id: str | None = None,
+    state: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    try:
+        from hermes_cli.code.agent_orchestrator import AgentOrchestrator
+
+        orchestrator = AgentOrchestrator()
+        runs = orchestrator.list_runs(
+            workspace_id=workspace_id,
+            code_session_id=code_session_id,
+            state=state,
+            limit=_code_limit(limit),
+            offset=_code_offset(offset),
+        )
+        return {"runs": runs, "limit": _code_limit(limit), "offset": _code_offset(offset)}
+    except Exception:
+        _log.exception("GET /api/code/orchestrator/runs failed")
+        raise HTTPException(status_code=500, detail="Orchestrator runs unavailable")
+
+
+@app.post("/api/code/orchestrator/runs")
+async def create_orchestrator_run(payload: OrchestratorRunCreate):
+    try:
+        from hermes_cli.code.agent_orchestrator import AgentOrchestrator
+
+        orchestrator = AgentOrchestrator()
+        run = orchestrator.create_run(
+            title=payload.title,
+            goal=payload.goal,
+            workspace_id=payload.workspace_id,
+            code_session_id=payload.code_session_id,
+            metadata=payload.metadata or {},
+            create_intake_artifact=payload.create_intake_artifact,
+        )
+        event = _record_code_event(
+            "orchestrator.run.created",
+            payload={"run_id": run["id"], "state": run["state"]},
+            workspace_id=run.get("workspace_id"),
+            code_session_id=run.get("code_session_id"),
+        )
+        return {"ok": True, "run": run, "event": event}
+    except Exception:
+        _log.exception("POST /api/code/orchestrator/runs failed")
+        raise HTTPException(status_code=500, detail="Failed to create orchestrator run")
+
+
+@app.get("/api/code/orchestrator/runs/{run_id}")
+async def get_orchestrator_run(run_id: str):
+    try:
+        from hermes_cli.code.agent_orchestrator import AgentOrchestrator
+
+        orchestrator = AgentOrchestrator()
+        run = orchestrator.get_run(run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail=f"Run not found: {run_id}")
+        transitions = orchestrator.list_transitions(run_id)
+        return {"run": run, "transitions": transitions}
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("GET /api/code/orchestrator/runs/%s failed", run_id)
+        raise HTTPException(status_code=500, detail="Orchestrator run unavailable")
+
+
+@app.post("/api/code/orchestrator/runs/{run_id}/transition")
+async def transition_orchestrator_run(run_id: str, payload: OrchestratorTransitionRequest):
+    try:
+        from hermes_cli.code.agent_orchestrator import AgentOrchestrator
+
+        orchestrator = AgentOrchestrator()
+        run = orchestrator.transition_run(
+            run_id,
+            payload.to_state,
+            reason=payload.reason,
+            metadata=payload.metadata or {},
+        )
+        event = _record_code_event(
+            "orchestrator.run.transitioned",
+            payload={
+                "run_id": run_id,
+                "to_state": payload.to_state,
+                "reason": payload.reason,
+            },
+            workspace_id=run.get("workspace_id"),
+            code_session_id=run.get("code_session_id"),
+        )
+        return {"ok": True, "run": run, "event": event}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception:
+        _log.exception("POST /api/code/orchestrator/runs/%s/transition failed", run_id)
+        raise HTTPException(status_code=500, detail="Failed to transition orchestrator run")
+
+
+@app.post("/api/code/policy/assess-command")
+async def assess_code_command_policy(payload: PolicyAssessCommandRequest):
+    try:
+        from hermes_cli.code.execution_policy import policy_engine
+
+        assessment = policy_engine.assess_command(payload.command)
+        return {"assessment": assessment}
+    except Exception:
+        _log.exception("POST /api/code/policy/assess-command failed")
+        raise HTTPException(status_code=500, detail="Execution policy unavailable")
+
+
+@app.get("/api/code/workspaces/{workspace_id}/git/capabilities")
+async def get_workspace_git_capabilities(workspace_id: str):
+    try:
+        from hermes_cli.code.worktree_service import WorktreeService
+
+        service = WorktreeService()
+        caps = service.detect_capabilities_for_workspace(workspace_id)
+        return {"workspace_id": workspace_id, "capabilities": caps}
+    except Exception:
+        _log.exception("GET /api/code/workspaces/%s/git/capabilities failed", workspace_id)
+        raise HTTPException(status_code=500, detail="Git capability detection unavailable")
+
+
+@app.get("/api/code/workspaces/{workspace_id}/git/worktrees")
+async def get_workspace_git_worktrees(workspace_id: str):
+    try:
+        from hermes_cli.code.worktree_service import WorktreeService
+
+        service = WorktreeService()
+        worktrees = service.list_worktrees_for_workspace(workspace_id)
+        return {"workspace_id": workspace_id, "worktrees": worktrees}
+    except Exception:
+        _log.exception("GET /api/code/workspaces/%s/git/worktrees failed", workspace_id)
+        raise HTTPException(status_code=500, detail="Worktree listing unavailable")
+
+
+@app.get("/api/code/skills/discovered")
+async def get_code_discovered_skills(workspace_id: str | None = None):
+    try:
+        from hermes_cli.code.skill_discovery import SkillDiscoveryService
+        from hermes_state import SessionDB
+
+        workspace_path = None
+        if workspace_id:
+            db = SessionDB()
+            try:
+                workspace = db.get_code_workspace(workspace_id)
+            finally:
+                db.close()
+            if workspace and workspace.get("path"):
+                workspace_path = Path(workspace["path"])
+
+        service = SkillDiscoveryService()
+        skills = service.list_skills(workspace_path=workspace_path)
+        return {"skills": skills, "workspace_id": workspace_id}
+    except Exception:
+        _log.exception("GET /api/code/skills/discovered failed")
+        raise HTTPException(status_code=500, detail="Code skill discovery unavailable")
+
+
+@app.get("/api/code/workspaces/{workspace_id}/repo-knowledge")
+async def get_workspace_repo_knowledge(workspace_id: str):
+    try:
+        from hermes_cli.code.repo_knowledge import RepoKnowledgeService
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            workspace = db.get_code_workspace(workspace_id)
+        finally:
+            db.close()
+        if not workspace or not workspace.get("path"):
+            raise HTTPException(status_code=404, detail=f"Workspace not found: {workspace_id}")
+
+        service = RepoKnowledgeService()
+        root = Path(workspace["path"])
+        manifest = service.detect(root)
+        agents_md = service.read_agents_md(root)
+        return {
+            "workspace_id": workspace_id,
+            "manifest": manifest,
+            "agents_md_excerpt": agents_md,
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("GET /api/code/workspaces/%s/repo-knowledge failed", workspace_id)
+        raise HTTPException(status_code=500, detail="Repo knowledge unavailable")
+
+
+@app.post("/api/code/workspaces/{workspace_id}/repo-knowledge/bootstrap")
+async def bootstrap_workspace_repo_knowledge(workspace_id: str, payload: RepoKnowledgeBootstrapRequest):
+    try:
+        from hermes_cli.code.repo_knowledge import RepoKnowledgeService
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            workspace = db.get_code_workspace(workspace_id)
+        finally:
+            db.close()
+        if not workspace or not workspace.get("path"):
+            raise HTTPException(status_code=404, detail=f"Workspace not found: {workspace_id}")
+
+        service = RepoKnowledgeService()
+        root = Path(workspace["path"])
+        result = service.bootstrap(root, project_summary=payload.project_summary)
+        event = _record_code_event(
+            "repo_knowledge.bootstrap",
+            payload={"workspace_id": workspace_id, "created": bool(result.get("created"))},
+            workspace_id=workspace_id,
+        )
+        return {"ok": True, "result": result, "event": event}
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("POST /api/code/workspaces/%s/repo-knowledge/bootstrap failed", workspace_id)
+        raise HTTPException(status_code=500, detail="Repo knowledge bootstrap unavailable")
 
 
 # ---------------------------------------------------------------------------
