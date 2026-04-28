@@ -52,6 +52,30 @@ def test_opencode_go_picker_includes_dynamic_agentic_models(_mock_dynamic_models
     assert opencode_go["total_models"] >= 8
 
 
+@patch("agent.models_dev.list_agentic_models", return_value=["glm-5", "extra-model", "another-model"])
+@patch.dict(os.environ, {"OPENCODE_GO_API_KEY": "test-key"}, clear=False)
+def test_current_model_is_pinned_first_within_provider(_mock_dynamic_models):
+    """Current model should appear first for its provider in the picker list."""
+    providers = list_authenticated_providers(
+        current_provider="opencode-go",
+        current_model="another-model",
+        max_models=50,
+    )
+
+    opencode_go = next((p for p in providers if p["slug"] == "opencode-go"), None)
+
+    assert opencode_go is not None
+    assert opencode_go["models"][0] == "another-model"
+    assert opencode_go["models"][1:7] == [
+        "glm-5",
+        "kimi-k2.5",
+        "mimo-v2-pro",
+        "mimo-v2-omni",
+        "minimax-m2.7",
+        "minimax-m2.5",
+    ]
+
+
 def test_opencode_go_not_appears_when_no_creds():
     """opencode-go should NOT appear when no credentials are set."""
     # Ensure OPENCODE_GO_API_KEY is not set

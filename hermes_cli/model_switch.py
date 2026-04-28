@@ -765,6 +765,7 @@ def switch_model(
 
 def list_authenticated_providers(
     current_provider: str = "",
+    current_model: str = "",
     user_providers: dict = None,
     custom_providers: list | None = None,
     max_models: int = 8,
@@ -815,8 +816,12 @@ def list_authenticated_providers(
         curated["ollama-cloud"] = fetch_ollama_cloud_models()
 
     def _merged_model_list(provider_slug: str, fallback_slug: str = "") -> list[str]:
-        """Return curated models first, then extra agentic models from models.dev."""
+        """Return current model first, then curated models, then extra agentic models."""
         merged: list[str] = []
+
+        if current_model and provider_slug == current_provider:
+            merged.append(current_model)
+
         for slug in filter(None, [provider_slug, fallback_slug]):
             for model_id in curated.get(slug, []) or []:
                 if model_id and model_id not in merged:

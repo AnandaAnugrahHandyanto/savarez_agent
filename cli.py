@@ -4696,6 +4696,7 @@ class HermesCLI:
             try:
                 providers = list_authenticated_providers(
                     current_provider=self.provider or "",
+                    current_model=self.model or "",
                     user_providers=user_provs,
                     custom_providers=custom_provs,
                     max_models=50,
