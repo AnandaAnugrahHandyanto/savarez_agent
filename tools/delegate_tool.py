@@ -994,6 +994,13 @@ def _build_child_agent(
         else (getattr(parent_agent, "acp_args", []) or [])
     )
 
+    # When delegation.provider is explicitly configured, subagent must use
+    # direct API calls instead of inheriting the parent's ACP transport.
+    # This prevents copilot-acp from overriding the intended provider.
+    if override_provider:
+        effective_acp_command = None
+        effective_acp_args = []
+
     if override_acp_command:
         # If explicitly forcing an ACP transport override, the provider MUST be copilot-acp
         # so run_agent.py initializes the CopilotACPClient.
