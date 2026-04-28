@@ -141,6 +141,7 @@ def _browser_label(current_provider: str) -> str:
         "browserbase": "Browserbase",
         "browser-use": "Browser Use",
         "firecrawl": "Firecrawl",
+        "hyperbrowser": "Hyperbrowser",
         "camofox": "Camofox",
         "local": "Local browser",
     }
@@ -169,6 +170,7 @@ def _resolve_browser_feature_state(
     direct_browserbase: bool,
     direct_browser_use: bool,
     direct_firecrawl: bool,
+    direct_hyperbrowser: bool,
     managed_browser_available: bool,
 ) -> tuple[str, bool, bool, bool]:
     """Resolve browser availability using the same precedence as runtime."""
@@ -196,6 +198,10 @@ def _resolve_browser_feature_state(
             available = bool(browser_local_available and direct_firecrawl)
             active = bool(browser_tool_enabled and available)
             return current_provider, available, active, False
+        if current_provider == "hyperbrowser":
+            available = bool(browser_local_available and direct_hyperbrowser)
+            active = bool(browser_tool_enabled and available)
+            return current_provider, available, active, False
         if current_provider == "camofox":
             return current_provider, False, False, False
 
@@ -219,6 +225,11 @@ def _resolve_browser_feature_state(
         available = bool(browser_local_available)
         active = bool(browser_tool_enabled and available)
         return "browserbase", available, active, False
+
+    if direct_hyperbrowser:
+        available = bool(browser_local_available)
+        active = bool(browser_tool_enabled and available)
+        return "hyperbrowser", available, active, False
 
     available = bool(browser_local_available)
     active = bool(browser_tool_enabled and available)
@@ -286,6 +297,7 @@ def get_nous_subscription_features(
     direct_camofox = bool(get_env_value("CAMOFOX_URL"))
     direct_browserbase = bool(get_env_value("BROWSERBASE_API_KEY") and get_env_value("BROWSERBASE_PROJECT_ID"))
     direct_browser_use = bool(get_env_value("BROWSER_USE_API_KEY"))
+    direct_hyperbrowser = bool(get_env_value("HYPERBROWSER_API_KEY"))
     direct_modal = has_direct_modal_credentials()
 
     # When use_gateway is set, suppress direct credentials for managed detection
@@ -363,6 +375,7 @@ def get_nous_subscription_features(
         direct_browserbase=direct_browserbase,
         direct_browser_use=direct_browser_use,
         direct_firecrawl=direct_firecrawl,
+        direct_hyperbrowser=direct_hyperbrowser,
         managed_browser_available=managed_browser_available,
     )
 
