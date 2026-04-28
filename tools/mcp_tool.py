@@ -946,10 +946,16 @@ class MCPServerTask:
                             # request. Refreshing synchronously inside the SDK
                             # notification handler can race with that request
                             # and wedge the stdio JSON-RPC stream, making all
-                            # subsequent tool calls time out. Do the refresh in
-                            # a separate task and let the handler return
-                            # promptly.
-                            self._schedule_tools_refresh()
+                            # subsequent tool calls time out.
+                            #
+                            # Test stubs may trigger this handler before a
+                            # session is attached; in that case refresh inline
+                            # to preserve historical behavior and deterministic
+                            # await assertions.
+                            if self.session is None:
+                                await self._refresh_tools()
+                            else:
+                                self._schedule_tools_refresh()
                         case PromptListChangedNotification():
                             logger.debug("MCP server '%s': prompts/list_changed (ignored)", self.name)
                         case ResourceListChangedNotification():

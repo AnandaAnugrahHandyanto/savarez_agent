@@ -35,6 +35,7 @@ Payment / credit exhaustion fallback:
 """
 
 import json
+import inspect
 import logging
 import os
 import threading
@@ -850,7 +851,7 @@ def _maybe_wrap_anthropic(
         return client_obj
     try:
         from agent.gemini_native_adapter import GeminiNativeClient
-        if isinstance(client_obj, GeminiNativeClient):
+        if inspect.isclass(GeminiNativeClient) and isinstance(client_obj, GeminiNativeClient):
             return client_obj
     except ImportError:
         pass
