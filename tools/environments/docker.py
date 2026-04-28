@@ -154,6 +154,12 @@ def find_docker() -> Optional[str]:
 #       the drop, so the security posture is preserved.
 # Block privilege escalation and limit PIDs.
 # /tmp is size-limited and nosuid but allows exec (needed by pip/npm builds).
+# tmpfs sizes can be overridden via DockerEnvironment constructor or env vars.
+_DEFAULT_TMPFS_ARGS = {
+    "/tmp":     "rw,nosuid,size=512m",
+    "/var/tmp": "rw,noexec,nosuid,size=256m",
+    "/run":     "rw,noexec,nosuid,size=64m",
+}
 _SECURITY_ARGS = [
     "--cap-drop", "ALL",
     "--cap-add", "DAC_OVERRIDE",
@@ -163,10 +169,40 @@ _SECURITY_ARGS = [
     "--cap-add", "SETGID",
     "--security-opt", "no-new-privileges",
     "--pids-limit", "256",
-    "--tmpfs", "/tmp:rw,nosuid,size=512m",
-    "--tmpfs", "/var/tmp:rw,noexec,nosuid,size=256m",
-    "--tmpfs", "/run:rw,noexec,nosuid,size=64m",
 ]
+
+
+def _tmpfs_args(
+    tmp_tmp_size: str | None = None,
+    var_tmp_tmp_size: str | None = None,
+    run_tmp_size: str | None = None,
+) -> list[str]:
+    """Build --tmpfs flags from defaults + optional overrides.
+
+    Override via constructor kwargs ``tmp_tmp_size``, ``var_tmp_tmp_size``,
+    ``run_tmp_size`` (e.g. ``"1g"``, ``"256m"``), or via environment variables
+    ``HERMES_DOCKER_TMP_TMP_SIZE``, ``HERMES_DOCKER_VAR_TMP_SIZE``,
+    ``HERMES_DOCKER_RUN_SIZE``.
+    """
+    def size_for(mount: str, override: str | None) -> str:
+        if override:
+            return override
+        env_key_map = {
+            "/tmp": "HERMES_DOCKER_TMP_TMP_SIZE",
+            "/var/tmp": "HERMES_DOCKER_VAR_TMP_SIZE",
+            "/run": "HERMES_DOCKER_RUN_SIZE",
+        }
+        return os.environ.get(env_key_map[mount], _DEFAULT_TMPFS_ARGS[mount])
+
+    result = []
+    for mount, default in _DEFAULT_TMPFS_ARGS.items():
+        override = {
+            "/tmp": tmp_tmp_size,
+            "/var/tmp": var_tmp_tmp_size,
+            "/run": run_tmp_size,
+        }[mount]
+        result.append(f"--tmpfs={mount}:{size_for(mount, override)}")
+    return result
 
 
 _storage_opt_ok: Optional[bool] = None  # cached result across instances
@@ -287,6 +323,9 @@ class DockerEnvironment(BaseEnvironment):
         network: bool = True,
         host_cwd: str = None,
         auto_mount_cwd: bool = False,
+        tmp_tmp_size: str | None = None,
+        var_tmp_tmp_size: str | None = None,
+        run_tmp_size: str | None = None,
     ):
         if cwd == "~":
             cwd = "/root"
@@ -296,6 +335,9 @@ class DockerEnvironment(BaseEnvironment):
         self._forward_env = _normalize_forward_env_names(forward_env)
         self._env = _normalize_env_dict(env)
         self._container_id: Optional[str] = None
+        self._tmp_tmp_size = tmp_tmp_size
+        self._var_tmp_tmp_size = var_tmp_tmp_size
+        self._run_tmp_size = run_tmp_size
         logger.info(f"DockerEnvironment volumes: {volumes}")
         # Ensure volumes is a list (config.yaml could be malformed)
         if volumes is not None and not isinstance(volumes, list):
@@ -443,7 +485,16 @@ class DockerEnvironment(BaseEnvironment):
             env_args.extend(["-e", f"{key}={self._env[key]}"])
 
         logger.info(f"Docker volume_args: {volume_args}")
-        all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args + volume_args + env_args
+        all_run_args = (
+            list(_SECURITY_ARGS)
+            + _tmpfs_args(
+                self._tmp_tmp_size, self._var_tmp_tmp_size, self._run_tmp_size
+            )
+            + writable_args
+            + resource_args
+            + volume_args
+            + env_args
+        )
         logger.info(f"Docker run_args: {all_run_args}")
 
         # Resolve the docker executable once so it works even when
