@@ -58,6 +58,7 @@ AUTHOR_MAP = {
     "343873859@qq.com": "DrStrangerUJN",
     "uzmpsk.dilekakbas@gmail.com": "dlkakbs",
     "jefferson@heimdallstrategy.com": "Mind-Dragon",
+    "steve.westerhouse@origami-analytics.com": "westers",
     "130918800+devorun@users.noreply.github.com": "devorun",
     "sonoyuncudmr@gmail.com": "Sonoyunchu",
     "maks.mir@yahoo.com": "say8hi",
