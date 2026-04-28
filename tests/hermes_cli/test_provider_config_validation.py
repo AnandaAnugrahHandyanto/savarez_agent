@@ -180,3 +180,26 @@ class TestNormalizeCustomProviderEntry:
         result = _normalize_custom_provider_entry(entry)
         assert result is not None
         assert "models" not in result
+
+    def test_timeout_keys_not_warned(self, caplog):
+        """request_timeout_seconds and stale_timeout_seconds are valid runtime
+        keys (read by hermes_cli/timeouts.py) and documented in
+        cli-config.yaml.example, so the validator must not flag them as
+        unknown. Regression for #16779."""
+        entry = {
+            "base_url": "https://api.example.com/v1",
+            "api_key": "sk-test-key",
+            "request_timeout_seconds": 600,
+            "stale_timeout_seconds": 900,
+        }
+        with caplog.at_level(logging.WARNING):
+            result = _normalize_custom_provider_entry(entry, provider_key="myhost")
+        assert result is not None
+        unknown_warnings = [
+            r for r in caplog.records
+            if "unknown config keys" in r.message.lower()
+        ]
+        assert unknown_warnings == [], (
+            f"timeout keys should not trigger 'unknown config keys' warning, "
+            f"got: {[r.message for r in unknown_warnings]}"
+        )
