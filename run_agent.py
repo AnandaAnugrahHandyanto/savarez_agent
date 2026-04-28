@@ -13105,11 +13105,15 @@ class AIAgent:
             except Exception as exc:
                 logger.warning("post_llm_call hook failed: %s", exc)
 
-        # Extract reasoning from the last assistant message (if any)
+        # Extract reasoning from the LAST assistant message only.
+        # Do NOT walk backwards through history matching on reasoning truthiness —
+        # when the current turn produced no reasoning (e.g. the API returned
+        # reasoning_content=null), showing a stale reasoning from an older
+        # assistant message is misleading to the user.
         last_reasoning = None
         for msg in reversed(messages):
-            if msg.get("role") == "assistant" and msg.get("reasoning"):
-                last_reasoning = msg["reasoning"]
+            if msg.get("role") == "assistant":
+                last_reasoning = msg.get("reasoning")
                 break
 
         # Build result with interrupt info if applicable
