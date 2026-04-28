@@ -397,7 +397,7 @@ Write the JS bundle (a plain IIFE — no build step needed):
 })();
 ```
 
-Refresh the dashboard — your tab appears in the nav bar, after **Skills**.
+Refresh the dashboard — your tab appears in the left sidebar, after **Skills**.
 
 :::tip Skip React.createElement
 If you prefer JSX, use any bundler (esbuild, Vite, rollup) with React as an external and IIFE output. The only hard requirement is that the final file is a single JS file loadable via `<script>`. React is never bundled; it comes from `SDK.React`.
@@ -432,7 +432,11 @@ None of them are required; include only the layers you need.
   "name": "my-plugin",
   "label": "My Plugin",
   "description": "What this plugin does",
-  "icon": "Sparkles",
+  "icon": {
+    "type": "image",
+    "src": "dist/my-plugin-icon.png",
+    "alt": "My Plugin logo"
+  },
   "version": "1.0.0",
   "tab": {
     "path": "/my-plugin",
@@ -452,7 +456,7 @@ None of them are required; include only the layers you need.
 | `name` | Yes | Unique plugin identifier. Lowercase, hyphens ok. Used in URLs and registration. |
 | `label` | Yes | Display name shown in the nav tab. |
 | `description` | No | Short description (shown in dashboard admin surfaces). |
-| `icon` | No | Lucide icon name. Defaults to `Puzzle`. Unknown names fall back to `Puzzle`. |
+| `icon` | No | Lucide icon name (for example `"Sparkles"`) or an image icon object (`{"type":"image","src":"dist/logo.png","alt":"Logo"}`). Relative image paths resolve from the plugin's `dashboard/` directory via `/dashboard-plugins/<name>/<path>`. Defaults to `Puzzle`; unknown Lucide names fall back to `Puzzle`. |
 | `version` | No | Semver string. Defaults to `0.0.0`. |
 | `tab.path` | Yes | URL path for the tab (e.g. `/my-plugin`). |
 | `tab.position` | No | Where to insert the tab. `"end"` (default), `"after:<path>"`, or `"before:<path>"` — value after the colon is the **path segment** of the target tab (no leading slash). Examples: `"after:skills"`, `"before:config"`. |
@@ -465,7 +469,21 @@ None of them are required; include only the layers you need.
 
 #### Available icons
 
-Plugins use Lucide icon names. The dashboard maps these by name — unknown names silently fall back to `Puzzle`.
+Plugins can use Lucide icon names or image icons. For product marks in the left sidebar, prefer an image icon object in the manifest:
+
+```json
+{
+  "icon": {
+    "type": "image",
+    "src": "dist/product-logo.png",
+    "alt": "Product logo"
+  }
+}
+```
+
+`src` may be an absolute URL, a data URL, a root-relative URL, or a path relative to the plugin's `dashboard/` directory. Relative paths are served from `/dashboard-plugins/<name>/<path>`.
+
+For Lucide icons, the dashboard maps names by string — unknown names silently fall back to `Puzzle`.
 
 Currently mapped: `Activity`, `BarChart3`, `Clock`, `Code`, `Database`, `Eye`, `FileText`, `Globe`, `Heart`, `KeyRound`, `MessageSquare`, `Package`, `Puzzle`, `Settings`, `Shield`, `Sparkles`, `Star`, `Terminal`, `Wrench`, `Zap`.
 

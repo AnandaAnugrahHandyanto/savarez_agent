@@ -160,6 +160,32 @@ function resolveIcon(name: string): ComponentType<{ className?: string }> {
   return ICON_MAP[name] ?? Puzzle;
 }
 
+function isImageIconSpec(
+  icon: PluginManifest["icon"],
+): icon is { type: "image"; src: string; alt?: string } {
+  return (
+    typeof icon === "object" &&
+    icon !== null &&
+    icon.type === "image" &&
+    typeof icon.src === "string" &&
+    icon.src.length > 0
+  );
+}
+
+function resolvePluginImageIcon(
+  manifest: PluginManifest,
+): NavItem["imageIcon"] | undefined {
+  if (!isImageIconSpec(manifest.icon)) return undefined;
+  const src = manifest.icon.src;
+  const isAbsolute = /^(https?:|data:|\/)/.test(src);
+  return {
+    src: isAbsolute
+      ? src
+      : `/dashboard-plugins/${manifest.name}/${src.replace(/^\/+/, "")}`,
+    alt: manifest.icon.alt ?? `${manifest.label} icon`,
+  };
+}
+
 function buildNavItems(builtIn: NavItem[], manifests: PluginManifest[]): NavItem[] {
   const items = [...builtIn];
 
@@ -170,7 +196,10 @@ function buildNavItems(builtIn: NavItem[], manifests: PluginManifest[]): NavItem
     const pluginItem: NavItem = {
       path: manifest.tab.path,
       label: manifest.label,
-      icon: resolveIcon(manifest.icon),
+      icon: resolveIcon(
+        typeof manifest.icon === "string" ? manifest.icon : "Puzzle",
+      ),
+      imageIcon: resolvePluginImageIcon(manifest),
     };
 
     const pos = manifest.tab.position ?? "end";
@@ -459,7 +488,7 @@ export default function App() {
               aria-label={t.app.navigation}
             >
               <ul className="flex flex-col">
-                {navItems.map(({ path, label, labelKey, icon: Icon }) => {
+                {navItems.map(({ path, label, labelKey, icon: Icon, imageIcon }) => {
                   const navLabel = labelKey
                     ? ((t.app.nav as Record<string, string>)[labelKey] ?? label)
                     : label;
@@ -487,7 +516,17 @@ export default function App() {
                       >
                         {({ isActive }) => (
                           <>
-                            <Icon className="h-3.5 w-3.5 shrink-0" />
+                            {imageIcon ? (
+                              <img
+                                src={imageIcon.src}
+                                alt=""
+                                aria-hidden="true"
+                                className="h-4 w-4 shrink-0 object-contain"
+                                title={imageIcon.alt}
+                              />
+                            ) : (
+                              <Icon className="h-3.5 w-3.5 shrink-0" />
+                            )}
                             <span className="truncate">{navLabel}</span>
 
                             <span
@@ -737,6 +776,10 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
 
 interface NavItem {
   icon: ComponentType<{ className?: string }>;
+  imageIcon?: {
+    alt: string;
+    src: string;
+  };
   label: string;
   labelKey?: string;
   path: string;

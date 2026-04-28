@@ -2,11 +2,19 @@
 
 import type { ComponentType } from "react";
 
+export type PluginIcon =
+  | string
+  | {
+      type: "image";
+      src: string;
+      alt?: string;
+    };
+
 export interface PluginManifest {
   name: string;
   label: string;
   description: string;
-  icon: string;
+  icon: PluginIcon;
   version: string;
   tab: {
     path: string;
