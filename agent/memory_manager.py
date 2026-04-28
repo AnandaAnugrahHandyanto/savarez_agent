@@ -257,6 +257,32 @@ class MemoryManager:
                 return p
         return None
 
+    def remove_provider(self, name: str) -> bool:
+        """Deregister a memory provider by name. Returns True if removed."""
+        if name == "builtin":
+            logger.warning("Cannot remove builtin memory provider")
+            return False
+
+        for i, p in enumerate(self._providers):
+            if p.name == name:
+                # Remove tool mappings
+                tools_to_remove = [t for t, prov in self._tool_to_provider.items() if prov is p]
+                for t in tools_to_remove:
+                    del self._tool_to_provider[t]
+
+                # Shutdown the provider
+                try:
+                    p.shutdown()
+                except Exception as exc:
+                    logger.warning("Provider '%s' shutdown failed: %s", name, exc)
+
+                self._providers.pop(i)
+                logger.info("Memory provider '%s' removed (had %d tools)", name, len(tools_to_remove))
+                return True
+
+        logger.warning("Provider '%s' not found for removal", name)
+        return False
+
     # -- System prompt -------------------------------------------------------
 
     def build_system_prompt(self) -> str:
