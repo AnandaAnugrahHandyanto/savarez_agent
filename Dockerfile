@@ -31,6 +31,13 @@ WORKDIR /opt/hermes
 COPY package.json package-lock.json ./
 COPY web/package.json web/package-lock.json web/
 
+###########
+## For China networks
+# RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+ENV UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+RUN npm config set registry https://registry.npmmirror.com
+############
+
 RUN npm install --prefer-offline --no-audit && \
     npx playwright install --with-deps chromium --only-shell && \
     (cd web && npm install --prefer-offline --no-audit) && \
