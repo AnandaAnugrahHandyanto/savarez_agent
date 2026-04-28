@@ -8355,12 +8355,27 @@ class AIAgent:
         ``reasoning_content`` on every assistant tool-call message; omitting
         it causes the next replay to fail with HTTP 400.
         """
-        return (
-            self.provider in {"kimi-coding", "kimi-coding-cn"}
-            or base_url_host_matches(self.base_url, "api.kimi.com")
-            or base_url_host_matches(self.base_url, "moonshot.ai")
-            or base_url_host_matches(self.base_url, "moonshot.cn")
-        )
+        if self.provider in {"kimi-coding", "kimi-coding-cn"}:
+            return True
+        if base_url_host_matches(self.base_url, "api.kimi.com"):
+            return True
+        if base_url_host_matches(self.base_url, "moonshot.ai"):
+            return True
+        if base_url_host_matches(self.base_url, "moonshot.cn"):
+            return True
+        # Custom Kimi-compatible endpoints: when provider=custom with
+        # api_mode=anthropic_messages and the model name contains "kimi" or
+        # "k2", the upstream expects reasoning_content on assistant tool-call
+        # messages just like the official Kimi API.  Detect by model family
+        # rather than hostname so self-hosted proxies are also covered.
+        if (
+            self.provider == "custom"
+            and getattr(self, "api_mode", None) == "anthropic_messages"
+        ):
+            model = (self.model or "").lower()
+            if "kimi" in model or "k2" in model:
+                return True
+        return False
 
     def _needs_deepseek_tool_reasoning(self) -> bool:
         """Return True when the current provider is DeepSeek thinking mode.
