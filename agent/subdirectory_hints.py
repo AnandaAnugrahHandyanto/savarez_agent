@@ -16,6 +16,7 @@ Inspired by Block/goose's SubdirectoryHintTracker.
 import logging
 import os
 import shlex
+import stat
 from pathlib import Path
 from typing import Dict, Any, Optional, Set
 
@@ -41,9 +42,27 @@ _PATH_ARG_KEYS = {"path", "file_path", "workdir"}
 # Tools that take shell commands where we should extract paths
 _COMMAND_TOOLS = {"terminal"}
 
+# Heuristic limits for shell command parsing. Multiline/heredoc/inline-script terminal
+# commands are too ambiguous and have caused false path extraction plus expensive or
+# blocking hint reads in unattended cron runs.
+_MAX_COMMAND_HINT_LENGTH = 1000
+_MULTILINE_COMMAND_MARKERS = ("\n", "<<", "python -c", "python3 -c", "node -e", "ruby -e")
+
 # How many parent directories to walk up when looking for hints.
 # Prevents scanning all the way to / for deeply nested paths.
 _MAX_ANCESTOR_WALK = 5
+
+# Dependency/build trees frequently contain generated or odd filesystem entries
+# (symlink farms, package-manager stores, framework bundles) where hint discovery
+# is both noisy and occasionally unsafe. Skip them entirely.
+_SKIP_DIR_NAMES = {
+    "node_modules",
+    ".pnpm",
+    ".git",
+    ".next",
+    "DerivedData",
+    "xcuserdata",
+}
 
 class SubdirectoryHintTracker:
     """Track which directories the agent visits and load hints on first access.
@@ -100,10 +119,12 @@ class SubdirectoryHintTracker:
             if isinstance(val, str) and val.strip():
                 self._add_path_candidate(val, candidates)
 
-        # Shell commands — extract path-like tokens
+        # Shell commands — extract path-like tokens only for simple single-line
+        # commands. Skip multiline/heredoc/inline-script commands because their
+        # tokens are often not real filesystem paths.
         if tool_name in _COMMAND_TOOLS:
             cmd = args.get("command", "")
-            if isinstance(cmd, str):
+            if isinstance(cmd, str) and self._should_extract_command_paths(cmd):
                 self._extract_paths_from_command(cmd, candidates)
 
         return list(candidates)
@@ -138,6 +159,15 @@ class SubdirectoryHintTracker:
         except (OSError, ValueError):
             pass
 
+    def _should_extract_command_paths(self, cmd: str) -> bool:
+        """Return True only for simple shell commands worth path extraction."""
+        if not cmd or len(cmd) > _MAX_COMMAND_HINT_LENGTH:
+            return False
+        lowered = cmd.lower()
+        if any(marker in lowered for marker in _MULTILINE_COMMAND_MARKERS):
+            return False
+        return True
+
     def _extract_paths_from_command(self, cmd: str, candidates: Set[Path]):
         """Extract path-like tokens from a shell command string."""
         try:
@@ -159,11 +189,57 @@ class SubdirectoryHintTracker:
 
     def _is_valid_subdir(self, path: Path) -> bool:
         """Check if path is a valid directory to scan for hints."""
-        if not path.is_dir():
-            return False
         if path in self._loaded_dirs:
             return False
-        return True
+        if any(part in _SKIP_DIR_NAMES for part in path.parts):
+            return False
+        try:
+            return path.is_dir()
+        except OSError:
+            return False
+
+    def _read_hint_file(self, hint_path: Path) -> Optional[str]:
+        """Read a hint file defensively without following unusual filesystem edges."""
+        try:
+            st = os.lstat(hint_path)
+        except OSError as exc:
+            logger.debug("Could not stat %s: %s", hint_path, exc)
+            return None
+
+        if stat.S_ISLNK(st.st_mode):
+            logger.debug("Skipping symlinked hint file %s", hint_path)
+            return None
+        if not stat.S_ISREG(st.st_mode):
+            logger.debug("Skipping non-regular hint file %s", hint_path)
+            return None
+
+        flags = os.O_RDONLY
+        if hasattr(os, "O_NONBLOCK"):
+            flags |= os.O_NONBLOCK
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+
+        fd = None
+        try:
+            fd = os.open(hint_path, flags)
+            chunks = []
+            remaining = _MAX_HINT_CHARS + 1
+            while remaining > 0:
+                chunk = os.read(fd, min(4096, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            return b"".join(chunks).decode("utf-8", errors="replace").strip()
+        except OSError as exc:
+            logger.debug("Could not read %s safely: %s", hint_path, exc)
+            return None
+        finally:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
 
     def _load_hints_for_directory(self, directory: Path) -> Optional[str]:
         """Load hint files from a directory. Returns formatted text or None."""
@@ -172,34 +248,29 @@ class SubdirectoryHintTracker:
         found_hints = []
         for filename in _HINT_FILENAMES:
             hint_path = directory / filename
-            if not hint_path.is_file():
+            content = self._read_hint_file(hint_path)
+            if not content:
                 continue
+            # Same security scan as startup context loading
+            content = _scan_context_content(content, filename)
+            if len(content) > _MAX_HINT_CHARS:
+                content = (
+                    content[:_MAX_HINT_CHARS]
+                    + f"\n\n[...truncated {filename}: {len(content):,} chars total]"
+                )
+            # Best-effort relative path for display
+            rel_path = str(hint_path)
             try:
-                content = hint_path.read_text(encoding="utf-8").strip()
-                if not content:
-                    continue
-                # Same security scan as startup context loading
-                content = _scan_context_content(content, filename)
-                if len(content) > _MAX_HINT_CHARS:
-                    content = (
-                        content[:_MAX_HINT_CHARS]
-                        + f"\n\n[...truncated {filename}: {len(content):,} chars total]"
-                    )
-                # Best-effort relative path for display
-                rel_path = str(hint_path)
+                rel_path = str(hint_path.relative_to(self.working_dir))
+            except ValueError:
                 try:
-                    rel_path = str(hint_path.relative_to(self.working_dir))
+                    rel_path = str(hint_path.relative_to(Path.home()))
+                    rel_path = "~/" + rel_path
                 except ValueError:
-                    try:
-                        rel_path = str(hint_path.relative_to(Path.home()))
-                        rel_path = "~/" + rel_path
-                    except ValueError:
-                        pass  # keep absolute
-                found_hints.append((rel_path, content))
-                # First match wins per directory (like startup loading)
-                break
-            except Exception as exc:
-                logger.debug("Could not read %s: %s", hint_path, exc)
+                    pass  # keep absolute
+            found_hints.append((rel_path, content))
+            # First match wins per directory (like startup loading)
+            break
 
         if not found_hints:
             return None
