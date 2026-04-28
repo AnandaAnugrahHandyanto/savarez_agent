@@ -104,6 +104,8 @@ lean_ctx:
   include_overview: true
   include_preload: true
   include_graph_status: true
+  expose_to_bridge_workers: true
+  bridge_mcp_server_name: lean-ctx
   max_chars: 12000
   delegation_max_chars: 6000
   max_task_chars: 4000
@@ -113,6 +115,8 @@ lean_ctx:
 Hermes keeps a small process-local savings counter for routed lean-ctx calls and shows it in the CLI status bar when non-zero, for example `lc 12.4k saved · 74%`. Use `/leanctx help` to see the native command surface. The most common diagnostics are `/leanctx savings`, `/leanctx status`, `/leanctx tools`, `/leanctx router`, `/leanctx session status`, `/leanctx memory status`, `/leanctx gain`, `/leanctx cache`, and `/leanctx doctor`. `ctx_dashboard` is a lean-ctx dashboard/server control; Hermes' TUI uses the compact status-bar metric.
 
 `max_chars` and `delegation_max_chars` cap only the lean-ctx context packet appended by Hermes. They do not truncate the user's instruction or the persona/task prompt. `max_task_chars` caps the task text sent to lean-ctx for retrieval so large instructions do not turn into oversized retrieval queries.
+
+With `expose_to_bridge_workers: true`, Hermes also adds lean-ctx to the native bridge worker MCP surface. Claude workers receive it through the generated per-session MCP config plus `bridge_extra_allowed_tools`; Cursor workers receive it through the project Cursor MCP config alongside `worker-bridge`. This is separate from the text context packet, so smoke tests should verify both the parent-routed lean-ctx context and the worker-visible lean-ctx MCP tools.
 
 ## Terminal Backend Configuration
 
@@ -1463,19 +1467,19 @@ delegation:
                                             # delegate_task keeps embedded API behavior unless a
                                             # call explicitly supplies persona_provider/acp_command.
   # persona_workdir: "~/code/project"       # Optional default workdir for persona-backed bridge workers
-  # bridge_extra_mcp_servers:               # Extra MCPs for Claude bridge workers only
-  #   hindsight-prv:
+  # bridge_extra_mcp_servers:               # Extra MCPs for bridge workers
+  #   hindsight-memory:                     # Example: Hindsight or another memory MCP
   #     type: http
-  #     url: "http://localhost:8888/mcp/prv/"
+  #     url: "https://memory.example.com/mcp/"
   # bridge_extra_allowed_tools:
-  #   - "mcp__hindsight-prv__recall"
+  #   - "mcp__hindsight-memory__recall"
 ```
 
 **Transport selection:** `delegation.default_transport: "auto"` prefers `bridge` for bridge-capable Claude/Cursor personas or commands. Use `embedded-api` for native API-key child agents, `simple-pipe` only for legacy one-shot CLI compatibility, and `experimental-oauth` only for explicit local proxy/OAuth experiments.
 
 **Bridge personas:** `persona`, `persona_provider`, `persona_model`, and `persona_workdir` route a delegated child to a named local Claude Code or Cursor Agent persona without changing the parent `SOUL.md` or `/personality`. `persona_provider` uses canonical names only: `claude` or `cursor-agent`. If omitted, Hermes uses `delegation.persona_provider` when configured; if neither is set, plain delegation keeps embedded API behavior. Bridge workers own their local CLI auth; Hermes does not inspect, copy, refresh, migrate, or inject OAuth tokens.
 
-**Worker MCPs:** Claude bridge workers receive a strict generated MCP config. Add shared worker memory MCPs with `bridge_extra_mcp_servers` and expose only the needed tools with `bridge_extra_allowed_tools`. Cursor bridge workers use workspace/global Cursor MCP config plus `--approve-mcps`; they do not use Claude Code's `--mcp-config` flags.
+**Worker MCPs:** Claude bridge workers receive a strict generated MCP config. Add shared worker memory MCPs with `bridge_extra_mcp_servers` and expose only the needed Claude tools with `bridge_extra_allowed_tools`. Cursor bridge workers use project Cursor MCP config plus `--approve-mcps`; Hermes writes `worker-bridge` and merges configured `bridge_extra_mcp_servers` into `.cursor/mcp.json`, but Cursor does not use Claude Code's `--mcp-config` or `--allowedTools` flags.
 
 **Embedded provider:model override:** By default, embedded API subagents inherit the parent agent's provider and model. Set `delegation.provider` and `delegation.model` to route embedded API subagents to a different provider:model pair — e.g., use a cheap/fast model for narrowly-scoped subtasks while your primary agent runs an expensive reasoning model.
 

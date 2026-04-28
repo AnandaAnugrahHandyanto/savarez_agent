@@ -29,6 +29,7 @@ from tools.delegate_tool import (
     delegate_task,
     _infer_delegate_transport,
     _normalize_delegate_transport,
+    _augment_bridge_config_with_lean_ctx,
     _build_child_agent,
     _build_child_progress_callback,
     _build_child_system_prompt,
@@ -174,6 +175,60 @@ class TestBridgeTransportConfig(unittest.TestCase):
             self.assertIn("other", data["mcpServers"])
             self.assertIn("worker-bridge", data["mcpServers"])
 
+    def test_cursor_bridge_config_merges_configured_extra_mcp_servers(self):
+        from tools.delegate_bridge_transport import ensure_cursor_bridge_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp) / "repo"
+            cwd.mkdir()
+            root = Path(tmp) / "cache"
+            bridge_server = Path(tmp) / "bridge-mcp" / "server.js"
+            bridge_server.parent.mkdir()
+            bridge_server.write_text("// test\n")
+            cfg = {
+                "bridge_extra_mcp_servers": {
+                    "shared-memory": {
+                        "type": "http",
+                        "url": "https://memory.example.com/mcp/",
+                    },
+                    "lean-ctx": {
+                        "command": "lean-ctx",
+                    },
+                }
+            }
+
+            ensure_cursor_bridge_config(cwd, root, bridge_server, "hermes-test", cfg)
+
+            servers = json.loads((cwd / ".cursor" / "mcp.json").read_text())["mcpServers"]
+            self.assertIn("worker-bridge", servers)
+            self.assertEqual(servers["shared-memory"]["url"], "https://memory.example.com/mcp/")
+            self.assertEqual(servers["lean-ctx"]["command"], "lean-ctx")
+
+    def test_lean_ctx_augments_bridge_mcp_servers_and_claude_allowed_tools(self):
+        import hermes_cli.config as hermes_config
+        import tools.lean_ctx_client as lean_ctx_client
+
+        with patch.object(
+            hermes_config,
+            "load_config",
+            return_value={"lean_ctx": {"enabled": True, "command": "lean-ctx"}},
+        ), patch.object(lean_ctx_client.shutil, "which", return_value="/usr/local/bin/lean-ctx"):
+            cfg = _augment_bridge_config_with_lean_ctx(
+                {
+                    "bridge_extra_mcp_servers": {
+                        "shared-memory": {"type": "http", "url": "https://memory.example.com/mcp/"}
+                    },
+                    "bridge_extra_allowed_tools": ["mcp__shared-memory__recall"],
+                }
+            )
+
+        servers = cfg["bridge_extra_mcp_servers"]
+        self.assertIn("shared-memory", servers)
+        self.assertEqual(servers["lean-ctx"]["command"], "lean-ctx")
+        self.assertIn("mcp__shared-memory__recall", cfg["bridge_extra_allowed_tools"])
+        self.assertIn("mcp__lean-ctx__ctx_read", cfg["bridge_extra_allowed_tools"])
+        self.assertIn("mcp__lean-ctx__ctx_knowledge", cfg["bridge_extra_allowed_tools"])
+
     def test_cursor_bridge_config_updates_session_id_for_next_spawn(self):
         from tools.delegate_bridge_transport import ensure_cursor_bridge_config
 
@@ -202,9 +257,9 @@ class TestBridgeTransportConfig(unittest.TestCase):
             bridge_server = Path(tmp) / "bridge-mcp" / "server.js"
             cfg = {
                 "bridge_extra_mcp_servers": {
-                    "hindsight-prv": {
+                    "shared-memory": {
                         "type": "http",
-                        "url": "http://localhost:8888/mcp/prv/",
+                        "url": "https://memory.example.com/mcp/",
                     }
                 }
             }
@@ -218,8 +273,8 @@ class TestBridgeTransportConfig(unittest.TestCase):
             )
 
             servers = json.loads(config_path.read_text())["mcpServers"]
-            self.assertEqual(set(servers), {"worker-bridge", "hindsight-prv"})
-            self.assertEqual(servers["hindsight-prv"]["url"], "http://localhost:8888/mcp/prv/")
+            self.assertEqual(set(servers), {"worker-bridge", "shared-memory"})
+            self.assertEqual(servers["shared-memory"]["url"], "https://memory.example.com/mcp/")
 
     def test_claude_bridge_allows_configured_extra_mcp_tools(self):
         from tools.delegate_bridge_transport import _build_worker_command
@@ -229,8 +284,8 @@ class TestBridgeTransportConfig(unittest.TestCase):
             session_dir.mkdir()
             cfg = {
                 "bridge_extra_allowed_tools": [
-                    "mcp__hindsight-prv__recall",
-                    "mcp__hindsight-prv__reflect",
+                    "mcp__shared-memory__recall",
+                    "mcp__shared-memory__reflect",
                 ]
             }
 
@@ -250,8 +305,8 @@ class TestBridgeTransportConfig(unittest.TestCase):
             self.assertEqual(command, "claude")
             allowed = args[args.index("--allowedTools") + 1]
             self.assertIn("mcp__worker-bridge__report_to_orchestrator", allowed)
-            self.assertIn("mcp__hindsight-prv__recall", allowed)
-            self.assertIn("mcp__hindsight-prv__reflect", allowed)
+            self.assertIn("mcp__shared-memory__recall", allowed)
+            self.assertIn("mcp__shared-memory__reflect", allowed)
 
     def test_cursor_bridge_uses_workspace_mcp_config_not_claude_flags(self):
         from tools.delegate_bridge_transport import _build_worker_command
@@ -277,6 +332,15 @@ class TestBridgeTransportConfig(unittest.TestCase):
             self.assertNotIn("--mcp-config", args)
             self.assertNotIn("--strict-mcp-config", args)
             self.assertNotIn("--allowedTools", args)
+
+    def test_bridge_server_default_path_is_packaged(self):
+        from tools.delegate_bridge_transport import _bridge_server_path
+
+        bridge_server = _bridge_server_path({})
+
+        self.assertEqual(bridge_server.name, "bridge_mcp_server.js")
+        self.assertTrue(bridge_server.exists())
+        self.assertEqual(bridge_server.parent.name, "tools")
 
     def test_bridge_status_reports_starting_before_ipc_dir_exists(self):
         from tools.delegate_bridge_transport import bridge_status

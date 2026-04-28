@@ -73,7 +73,7 @@ def _bridge_server_path(cfg: dict[str, Any] | None = None) -> Path:
     )
     if configured:
         return Path(str(configured)).expanduser()
-    return _home() / "git" / "prv" / "orchestrate-cursor-agent-mcp" / "src" / "bridge-mcp" / "server.js"
+    return Path(__file__).with_name("bridge_mcp_server.js")
 
 
 def _allowed_roots(cfg: dict[str, Any] | None = None) -> list[Path]:
@@ -305,6 +305,14 @@ def ensure_cursor_bridge_config(
     }
     if existing != desired:
         servers["worker-bridge"] = desired
+
+    changed = existing != desired
+    for name, server in _bridge_extra_mcp_servers(cfg).items():
+        if servers.get(name) != server:
+            servers[name] = server
+            changed = True
+
+    if changed:
         config_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
     return config_path
