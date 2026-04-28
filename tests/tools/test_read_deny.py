@@ -161,3 +161,39 @@ class TestReadFileToolDenialMessage:
         # deny message.
         deny_msg = "sensitive credential path"
         assert deny_msg not in parsed.get("error", "")
+
+    def test_task_relative_ssh_key_path_does_not_bypass_guard(self, tmp_path, monkeypatch):
+        """Regression for the #16809 follow-up Copilot finding.
+
+        The deny check in ``read_file_tool`` previously called
+        ``is_read_denied(path)`` with the *raw* string, which resolves
+        relative paths against the Python process cwd — NOT the
+        terminal cwd that ``_resolve_path_for_task`` uses.  An agent
+        whose terminal cwd was ``$HOME`` could therefore pass
+        ``".ssh/id_ed25519"`` and slip past the deny list.
+
+        The fix passes the already-resolved path (resolved against the
+        terminal cwd via ``_resolve_path_for_task``) to
+        ``is_read_denied``, closing the bypass.
+        """
+        monkeypatch.setenv("HOME", str(tmp_path))
+        # Force ``_resolve_path_for_task`` to use ``HOME`` as the
+        # terminal cwd via ``TERMINAL_CWD`` (the env-var fallback used
+        # when no live terminal is bound to the task_id).
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+
+        ssh_dir = tmp_path / ".ssh"
+        ssh_dir.mkdir()
+        key_path = ssh_dir / "id_ed25519"
+        secret = "-----BEGIN OPENSSH PRIVATE KEY-----\nSECRETMATERIAL\n"
+        key_path.write_text(secret)
+
+        # Pass a *task-relative* path — this is the bypass shape.  It
+        # must resolve to ``$HOME/.ssh/id_ed25519`` (a deny-list path)
+        # and hit the deny guard, not the file contents.
+        result = read_file_tool(".ssh/id_ed25519", task_id="test_relative_ssh")
+        parsed = json.loads(result)
+
+        assert "error" in parsed
+        assert "sensitive credential path" in parsed["error"]
+        assert "SECRETMATERIAL" not in result

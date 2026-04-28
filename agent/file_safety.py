@@ -93,10 +93,22 @@ def is_write_denied(path: str) -> bool:
 def build_read_denied_paths(home: str) -> set[str]:
     """Return exact sensitive paths that must never be read.
 
-    Mirrors build_write_denied_paths plus shell history files. Pattern-based
-    output redaction (agent/redact.py) is best-effort and was made off by
-    default; this list is the access-control floor for high-value credential
-    files where leakage is unrecoverable (private keys, .env, history).
+    The set is intentionally *not* symmetric with ``build_write_denied_paths``:
+
+    * It adds shell-history paths (``.bash_history``/``.zsh_history``/
+      ``.psql_history``) that the write-deny list omits — leaking past
+      history would expose tokens/passwords pasted on the command line.
+    * It includes additional SSH key types (``id_ecdsa``/``id_dsa``) so
+      the floor covers older key formats still in use.
+    * It deliberately omits ``/etc/*`` paths from the write-deny list:
+      those files are useful to read for debugging, and the truly
+      sensitive ones (e.g. ``/etc/shadow``) are already unreadable to a
+      non-root caller.
+
+    Pattern-based output redaction (``agent/redact.py``) is best-effort
+    and off by default, so this list is the access-control floor for
+    high-value credential files where leakage is unrecoverable (private
+    keys, .env, shell history).
     """
     hermes_home = _hermes_home_path()
     return {
