@@ -21,9 +21,21 @@ def _make_adapter():
     config = PlatformConfig(enabled=True, token="test-token")
     adapter = object.__new__(TelegramAdapter)
     adapter._platform = Platform.TELEGRAM
+    adapter.platform = Platform.TELEGRAM
     adapter.config = config
+    adapter._running = True
+    adapter._fatal_error_code = None
+    adapter._fatal_error_message = None
+    adapter._fatal_error_retryable = True
     adapter._pending_text_batches = {}
     adapter._pending_text_batch_tasks = {}
+    adapter._pending_photo_batches = {}
+    adapter._pending_photo_batch_tasks = {}
+    adapter._media_group_events = {}
+    adapter._media_group_tasks = {}
+    adapter._polling_error_task = None
+    adapter._app = None
+    adapter._bot = None
     adapter._text_batch_delay_seconds = 0.1  # fast for tests
     adapter._active_sessions = {}
     adapter._pending_messages = {}
@@ -119,3 +131,41 @@ class TestTextBatching:
 
         assert len(adapter._pending_text_batches) == 0
         assert len(adapter._pending_text_batch_tasks) == 0
+
+
+    @pytest.mark.asyncio
+    async def test_disconnect_cancels_pending_text_batch_without_dispatch(self):
+        """Disconnect should not let buffered text flush into a stale run."""
+        adapter = _make_adapter()
+
+        adapter._enqueue_text_event(_make_event("stale text"))
+        await adapter.disconnect()
+        await asyncio.sleep(0.2)
+
+        adapter.handle_message.assert_not_called()
+        assert adapter._pending_text_batches == {}
+        assert adapter._pending_text_batch_tasks == {}
+
+    @pytest.mark.asyncio
+    async def test_disconnect_cancels_all_pending_delivery_task_maps(self):
+        """Photo/media/polling delayed tasks are awaited and queues are cleared."""
+        adapter = _make_adapter()
+        tasks = [asyncio.create_task(asyncio.sleep(60)) for _ in range(4)]
+        adapter._pending_text_batches["text"] = _make_event("text")
+        adapter._pending_text_batch_tasks["text"] = tasks[0]
+        adapter._pending_photo_batches["photo"] = _make_event("photo")
+        adapter._pending_photo_batch_tasks["photo"] = tasks[1]
+        adapter._media_group_events["media"] = _make_event("media")
+        adapter._media_group_tasks["media"] = tasks[2]
+        adapter._polling_error_task = tasks[3]
+
+        await adapter.disconnect()
+
+        assert all(task.done() for task in tasks)
+        assert adapter._pending_text_batches == {}
+        assert adapter._pending_text_batch_tasks == {}
+        assert adapter._pending_photo_batches == {}
+        assert adapter._pending_photo_batch_tasks == {}
+        assert adapter._media_group_events == {}
+        assert adapter._media_group_tasks == {}
+        assert adapter._polling_error_task is None

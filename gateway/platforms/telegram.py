@@ -914,15 +914,46 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.error("[%s] Failed to connect to Telegram: %s", self.name, e, exc_info=True)
             return False
     
-    async def disconnect(self) -> None:
-        """Stop polling/webhook, cancel pending album flushes, and disconnect."""
-        pending_media_group_tasks = list(self._media_group_tasks.values())
-        for task in pending_media_group_tasks:
+    async def _cancel_pending_delivery_tasks(self) -> None:
+        """Cancel delayed Telegram delivery tasks before disconnect completes."""
+        current_task = asyncio.current_task()
+        pending_tasks: list[asyncio.Task] = []
+        seen: set[int] = set()
+
+        def collect(task: Optional[asyncio.Task]) -> None:
+            if not task or task.done() or task is current_task:
+                return
+            marker = id(task)
+            if marker in seen:
+                return
+            seen.add(marker)
+            pending_tasks.append(task)
+
+        for task in list(self._media_group_tasks.values()):
+            collect(task)
+        for task in list(self._pending_photo_batch_tasks.values()):
+            collect(task)
+        for task in list(self._pending_text_batch_tasks.values()):
+            collect(task)
+        collect(self._polling_error_task)
+
+        for task in pending_tasks:
             task.cancel()
-        if pending_media_group_tasks:
-            await asyncio.gather(*pending_media_group_tasks, return_exceptions=True)
+        if pending_tasks:
+            await asyncio.gather(*pending_tasks, return_exceptions=True)
+
         self._media_group_tasks.clear()
         self._media_group_events.clear()
+        self._pending_photo_batch_tasks.clear()
+        self._pending_photo_batches.clear()
+        self._pending_text_batch_tasks.clear()
+        self._pending_text_batches.clear()
+        if self._polling_error_task is not current_task:
+            self._polling_error_task = None
+
+    async def disconnect(self) -> None:
+        """Stop polling/webhook, cancel pending delayed deliveries, and disconnect."""
+        await self._cancel_pending_delivery_tasks()
 
         if self._app:
             try:
@@ -935,12 +966,6 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[%s] Error during Telegram disconnect: %s", self.name, e, exc_info=True)
         self._release_platform_lock()
-
-        for task in self._pending_photo_batch_tasks.values():
-            if task and not task.done():
-                task.cancel()
-        self._pending_photo_batch_tasks.clear()
-        self._pending_photo_batches.clear()
 
         self._mark_disconnected()
         self._app = None
