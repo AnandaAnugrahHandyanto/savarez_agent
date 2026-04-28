@@ -155,6 +155,8 @@ class LineAdapter(BasePlatformAdapter):
         if not self.channel_access_token or not self.channel_secret:
             logger.warning("[LINE] LINE_CHANNEL_ACCESS_TOKEN and LINE_CHANNEL_SECRET are required to start the adapter.")
             return False
+        if not self._acquire_platform_lock("line_token", self.channel_access_token, "LINE channel access token"):
+            return False
 
         app = web.Application()
         app.router.add_post(self.webhook_path, self._handle_webhook)
@@ -187,6 +189,7 @@ class LineAdapter(BasePlatformAdapter):
         self._pending_media_batches.clear()
         self._reply_tokens_by_message_id.clear()
         self._seen_event_ids.clear()
+        self._release_platform_lock()
         self._mark_disconnected()
 
     async def _handle_webhook(self, request: web.Request) -> web.Response:
@@ -217,13 +220,28 @@ class LineAdapter(BasePlatformAdapter):
                 continue
             message_type = getattr(event.message, "type", "")
             if isinstance(event.message, TextMessageContent):
-                asyncio.create_task(self._process_text_message(event))
+                self._schedule_webhook_task(self._process_text_message(event))
             elif message_type == "audio":
-                asyncio.create_task(self._process_audio_message(event))
+                self._schedule_webhook_task(self._process_audio_message(event))
             elif message_type == "image":
-                asyncio.create_task(self._process_image_message(event))
+                self._schedule_webhook_task(self._process_image_message(event))
 
         return web.Response(status=200, text="OK")
+
+    def _schedule_webhook_task(self, coro) -> None:
+        """Track webhook event processing so exceptions are logged and shutdown can cancel it."""
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+
+        def _done(done_task: asyncio.Task) -> None:
+            self._background_tasks.discard(done_task)
+            if done_task.cancelled():
+                return
+            exc = done_task.exception()
+            if exc:
+                logger.error("[LINE] Webhook event processing failed: %s", exc, exc_info=exc)
+
+        task.add_done_callback(_done)
 
     async def _serve_media(self, request: web.Request) -> web.StreamResponse:
         """Serve cached outbound LINE audio files over HTTPS."""
@@ -505,6 +523,14 @@ class LineAdapter(BasePlatformAdapter):
             batches.append(batch)
         return batches
 
+    async def _push_message_batches(self, chat_id: str, batches: List[List[Any]]) -> None:
+        for batch in batches:
+            await self._call_sync_api(
+                self._messaging_api.push_message,
+                PushMessageRequest(to=str(chat_id), messages=batch),
+                x_line_retry_key=str(uuid.uuid4()),
+            )
+
     async def send(
         self,
         chat_id: str,
@@ -534,18 +560,16 @@ class LineAdapter(BasePlatformAdapter):
         try:
             if reply_token:
                 first_batch = batches[0]
-                await self._call_sync_api(
-                    self._messaging_api.reply_message,
-                    ReplyMessageRequest(replyToken=reply_token, messages=first_batch),
-                )
-                batches = batches[1:]
+                try:
+                    await self._call_sync_api(
+                        self._messaging_api.reply_message,
+                        ReplyMessageRequest(replyToken=reply_token, messages=first_batch),
+                    )
+                    batches = batches[1:]
+                except Exception as exc:
+                    logger.warning("[LINE] Reply API failed; falling back to push: %s", exc, exc_info=True)
 
-            for batch in batches:
-                await self._call_sync_api(
-                    self._messaging_api.push_message,
-                    PushMessageRequest(to=str(chat_id), messages=batch),
-                    x_line_retry_key=str(uuid.uuid4()),
-                )
+            await self._push_message_batches(chat_id, batches)
 
             self._schedule_quota_snapshot(
                 "after_send",
@@ -591,16 +615,16 @@ class LineAdapter(BasePlatformAdapter):
         )
         try:
             if reply_token:
-                await self._call_sync_api(
-                    self._messaging_api.reply_message,
-                    ReplyMessageRequest(replyToken=reply_token, messages=messages[:MAX_MESSAGES_PER_REQUEST]),
-                )
+                try:
+                    await self._call_sync_api(
+                        self._messaging_api.reply_message,
+                        ReplyMessageRequest(replyToken=reply_token, messages=messages[:MAX_MESSAGES_PER_REQUEST]),
+                    )
+                except Exception as exc:
+                    logger.warning("[LINE] Voice reply API failed; falling back to push: %s", exc, exc_info=True)
+                    await self._push_message_batches(chat_id, [messages[:MAX_MESSAGES_PER_REQUEST]])
             else:
-                await self._call_sync_api(
-                    self._messaging_api.push_message,
-                    PushMessageRequest(to=str(chat_id), messages=messages[:MAX_MESSAGES_PER_REQUEST]),
-                    x_line_retry_key=str(uuid.uuid4()),
-                )
+                await self._push_message_batches(chat_id, [messages[:MAX_MESSAGES_PER_REQUEST]])
             self._schedule_quota_snapshot(
                 "after_send",
                 operation="voice",

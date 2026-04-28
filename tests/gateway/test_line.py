@@ -208,6 +208,37 @@ async def test_send_uses_reply_then_push_batches(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_send_falls_back_to_push_when_reply_token_is_stale(monkeypatch):
+    adapter = LineAdapter(PlatformConfig(enabled=True, token="token", extra={"channel_secret": "secret"}))
+
+    class DummyMessagingApi:
+        def reply_message(self, request, **kwargs):
+            raise RuntimeError("stale reply token")
+
+        def push_message(self, request, **kwargs):
+            return {"request": request, "kwargs": kwargs}
+
+    adapter._messaging_api = DummyMessagingApi()
+    adapter._remember_reply_token("msg-1", "reply-token")
+
+    calls = []
+
+    async def fake_call(func, *args, **kwargs):
+        calls.append((func.__name__, args[0], kwargs))
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(adapter, "_call_sync_api", fake_call)
+    monkeypatch.setattr(adapter, "truncate_message", lambda content, max_length: ["hello"])
+
+    result = await adapter.send(chat_id="U123", content="ignored", reply_to="msg-1")
+
+    assert result.success is True
+    assert [call[0] for call in calls] == ["reply_message", "push_message"]
+    assert calls[1][1].to == "U123"
+    assert calls[1][1].messages[0].text == "hello"
+
+
+@pytest.mark.asyncio
 async def test_send_voice_caches_served_audio_before_building_public_url(monkeypatch, tmp_path):
     adapter = LineAdapter(
         PlatformConfig(
@@ -244,6 +275,48 @@ async def test_send_voice_caches_served_audio_before_building_public_url(monkeyp
     assert [call[0] for call in calls] == ["push_message"]
     req = calls[0][1]
     assert req.messages[0].original_content_url == "https://example.test/media/line/served.m4a"
+
+
+@pytest.mark.asyncio
+async def test_send_voice_falls_back_to_push_when_reply_token_is_stale(monkeypatch, tmp_path):
+    adapter = LineAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="token",
+            extra={"channel_secret": "secret", "public_base_url": "https://example.test"},
+        )
+    )
+
+    class DummyMessagingApi:
+        def reply_message(self, request, **kwargs):
+            raise RuntimeError("stale reply token")
+
+        def push_message(self, request, **kwargs):
+            return {"request": request, "kwargs": kwargs}
+
+    adapter._messaging_api = DummyMessagingApi()
+    adapter._remember_reply_token("msg-1", "reply-token")
+
+    source_audio = tmp_path / "reply.mp3"
+    source_audio.write_bytes(b"ID3" + b"\x00" * 32)
+    served_audio = tmp_path / "served.m4a"
+    served_audio.write_bytes(b"M4A" + b"\x00" * 32)
+    calls = []
+
+    async def fake_call(func, *args, **kwargs):
+        calls.append((func.__name__, args[0], kwargs))
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(adapter, "_call_sync_api", fake_call)
+    monkeypatch.setattr(adapter, "_prepare_outbound_audio", lambda path: (str(source_audio), 1234))
+    monkeypatch.setattr(adapter, "_cache_served_audio", lambda path: str(served_audio))
+
+    result = await adapter.send_voice(chat_id="U123", audio_path=str(source_audio), reply_to="msg-1")
+
+    assert result.success is True
+    assert [call[0] for call in calls] == ["reply_message", "push_message"]
+    assert calls[1][1].to == "U123"
+    assert calls[1][1].messages[0].original_content_url == "https://example.test/media/line/served.m4a"
 
 
 @pytest.mark.asyncio

@@ -52,7 +52,7 @@ def _ensure_discord_mock():
 _ensure_discord_mock()
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent, MessageType, SessionSource
+from gateway.platforms.base import MessageEvent, MessageType, SendResult, SessionSource
 
 
 # ---------------------------------------------------------------------------
@@ -64,10 +64,13 @@ def _make_event(
     message_type=MessageType.TEXT,
     chat_id="123",
     platform=Platform.TELEGRAM,
+    chat_type="dm",
+    user_id="user1",
 ) -> MessageEvent:
     source = SessionSource(
         chat_id=chat_id,
-        user_id="user1",
+        user_id=user_id,
+        chat_type=chat_type,
         platform=platform,
     )
     source.thread_id = None
@@ -413,6 +416,27 @@ class TestAutoVoiceReply:
         event = _make_event(message_type=MessageType.PHOTO, platform=Platform.LINE)
         assert runner._should_send_voice_reply(event, "Hello!", [], already_sent=False) is True
 
+    def test_line_group_image_turn_scopes_last_modality_by_sender(self, runner):
+        runner._line_last_non_image_input_modality["Cgroup:Ualpha"] = "voice"
+        runner._line_last_non_image_input_modality["Cgroup:Ubeta"] = "text"
+        alpha_event = _make_event(
+            message_type=MessageType.PHOTO,
+            platform=Platform.LINE,
+            chat_id="Cgroup",
+            chat_type="group",
+            user_id="Ualpha",
+        )
+        beta_event = _make_event(
+            message_type=MessageType.PHOTO,
+            platform=Platform.LINE,
+            chat_id="Cgroup",
+            chat_type="group",
+            user_id="Ubeta",
+        )
+
+        assert runner._should_send_voice_reply(alpha_event, "Hello!", [], already_sent=False) is True
+        assert runner._should_send_voice_reply(beta_event, "Hello!", [], already_sent=False) is False
+
     def test_line_image_turn_defaults_to_text_without_last_modality(self, runner):
         event = _make_event(message_type=MessageType.PHOTO, platform=Platform.LINE)
         assert runner._should_send_voice_reply(event, "Hello!", [], already_sent=False) is False
@@ -509,6 +533,24 @@ class TestSendVoiceReply:
 
         assert result is False
         mock_adapter.send_voice.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_voice_failure_returns_false(self, runner):
+        event = _make_event()
+        mock_adapter = AsyncMock()
+        mock_adapter.send_voice = AsyncMock(return_value=SendResult(success=False, error="delivery failed"))
+        runner.adapters[event.source.platform] = mock_adapter
+        tts_result = json.dumps({"success": True, "file_path": "/tmp/test.ogg"})
+
+        with patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result), \
+             patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.unlink"), \
+             patch("os.makedirs"):
+            result = await runner._send_voice_reply(event, "Hello")
+
+        assert result is False
+        mock_adapter.send_voice.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_exception_caught(self, runner):

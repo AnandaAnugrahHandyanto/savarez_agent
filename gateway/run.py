@@ -794,7 +794,7 @@ class GatewayRunner:
 
         # Per-chat voice reply mode: "off" | "voice_only" | "all"
         self._voice_mode: Dict[str, str] = self._load_voice_modes()
-        # LINE-specific last non-image inbound modality per chat: "text" | "voice"
+        # LINE-specific last non-image inbound modality per chat/user: "text" | "voice"
         self._line_last_non_image_input_modality: Dict[str, str] = {}
 
         # Track background tasks to prevent garbage collection mid-execution
@@ -6660,9 +6660,16 @@ class GatewayRunner:
         if event.source.platform != Platform.LINE:
             return
         if event.message_type == MessageType.TEXT:
-            self._line_last_non_image_input_modality[event.source.chat_id] = "text"
+            self._line_last_non_image_input_modality[self._line_modality_key(event)] = "text"
         elif event.message_type in (MessageType.VOICE, MessageType.AUDIO):
-            self._line_last_non_image_input_modality[event.source.chat_id] = "voice"
+            self._line_last_non_image_input_modality[self._line_modality_key(event)] = "voice"
+
+    def _line_modality_key(self, event: MessageEvent) -> str:
+        chat_id = str(event.source.chat_id or "")
+        user_id = str(getattr(event.source, "user_id", None) or "")
+        if event.source.chat_type == "group" and user_id:
+            return f"{chat_id}:{user_id}"
+        return chat_id
 
     def _line_desired_reply_modality(self, event: MessageEvent) -> str:
         if event.source.platform != Platform.LINE:
@@ -6672,7 +6679,7 @@ class GatewayRunner:
         if event.message_type in (MessageType.VOICE, MessageType.AUDIO):
             return "voice"
         if event.message_type == MessageType.PHOTO:
-            return self._line_last_non_image_input_modality.get(event.source.chat_id, "text")
+            return self._line_last_non_image_input_modality.get(self._line_modality_key(event), "text")
         return "text"
 
     def _should_send_voice_reply(
@@ -6805,7 +6812,15 @@ class GatewayRunner:
                 }
                 if event.source.thread_id:
                     send_kwargs["metadata"] = {"thread_id": event.source.thread_id}
-                await adapter.send_voice(**send_kwargs)
+                send_result = await adapter.send_voice(**send_kwargs)
+                if not getattr(send_result, "success", False):
+                    logger.warning(
+                        "Auto voice reply delivery failed: %s",
+                        getattr(send_result, "error", "unknown error"),
+                    )
+                    return False
+            else:
+                return False
             return True
         except Exception as e:
             logger.warning("Auto voice reply failed: %s", e, exc_info=True)
