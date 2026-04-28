@@ -5512,6 +5512,8 @@ class HermesCLI:
             self._handle_session_command(cmd_original)
         elif canonical == "approvals":
             self._handle_approvals_command(cmd_original)
+        elif canonical == "github":
+            self._handle_github_command(cmd_original)
         elif canonical in ("skills-code", "skillscode"):
             self._handle_skills_code_command(cmd_original)
         elif canonical == "skin":
@@ -6261,6 +6263,55 @@ class HermesCLI:
                 self.console.print(f"[yellow]Backend returned {r.status_code}[/]")
         except Exception:
             self.console.print(f"[{_d}]Backend unavailable — cannot fetch approvals.[/]")
+        self.console.print()
+
+    def _handle_github_command(self, cmd: str = ""):
+        """Handle /github — inspect or sync GitHub Code Mode metadata."""
+        _c = "#4DD0E1"
+        _d = "#546E7A"
+        _w = "#D29922"
+        parts = cmd.split()
+        subcommand = parts[1].lower() if len(parts) > 1 else "status"
+        self.console.print()
+        self.console.print(f"[bold {_c}]GitHub Integration[/]")
+        try:
+            if subcommand == "status":
+                from hermes_cli.code.github_integration import GitHubIntegrationService
+
+                status = GitHubIntegrationService().status()
+                self.console.print(f"  [{_d}]Mode:[/] {status.get('mode')}")
+                self.console.print(f"  [{_d}]Configured:[/] {bool(status.get('configured'))}")
+                self.console.print(f"  [{_d}]Webhook secret:[/] {bool(status.get('webhook_secret_configured'))}")
+                self.console.print(f"  [{_d}]Installations:[/] {status.get('installations', 0)}")
+                self.console.print(f"  [{_d}]Repositories:[/] {status.get('repositories', 0)}")
+            elif subcommand == "repos":
+                from hermes_cli.code.github_integration import GitHubIntegrationDB
+
+                db = GitHubIntegrationDB()
+                try:
+                    repos = db.list_repositories(limit=20)
+                finally:
+                    db.close()
+                if not repos:
+                    self.console.print(f"  [{_d}]No GitHub repositories synced.[/]")
+                    self.console.print(f"  [{_d}]Run:[/] /github sync")
+                else:
+                    for repo in repos:
+                        visibility = "private" if repo.get("private") else "public"
+                        self.console.print(
+                            f"  [{_c}]{repo.get('full_name')}[/]  [{_d}]{visibility} {repo.get('default_branch') or ''}[/]"
+                        )
+            elif subcommand == "sync":
+                from hermes_cli.code.github_sync import GitHubSyncService
+
+                dry_run = "--dry-run" in parts
+                result = GitHubSyncService().sync_repositories(dry_run=dry_run)
+                label = "Would sync" if dry_run else "Synced"
+                self.console.print(f"  [{_c}]{label} repositories:[/] {len(result.get('repositories', []))}")
+            else:
+                self.console.print(f"  [{_w}]Usage:[/] /github [status|repos|sync] [--dry-run]")
+        except Exception as exc:
+            self.console.print(f"  [{_w}]GitHub integration unavailable:[/] {str(exc)[:160]}")
         self.console.print()
 
     def _handle_skills_code_command(self, cmd: str = ""):

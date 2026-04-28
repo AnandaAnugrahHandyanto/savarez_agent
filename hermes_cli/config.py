@@ -1140,6 +1140,46 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "HERMES_GITHUB_APP_ID": {
+        "description": "GitHub App ID for Hermes Code Mode GitHub integration",
+        "prompt": "GitHub App ID",
+        "url": "https://github.com/settings/apps",
+        "password": False,
+        "category": "tool",
+        "advanced": True,
+    },
+    "HERMES_GITHUB_APP_PRIVATE_KEY_PATH": {
+        "description": "Path to GitHub App private key PEM; contents are never persisted in state",
+        "prompt": "GitHub App private key path",
+        "url": None,
+        "password": False,
+        "category": "tool",
+        "advanced": True,
+    },
+    "HERMES_GITHUB_WEBHOOK_SECRET": {
+        "description": "GitHub webhook secret for validating GitHub deliveries",
+        "prompt": "GitHub webhook secret",
+        "url": None,
+        "password": True,
+        "category": "tool",
+        "advanced": True,
+    },
+    "HERMES_GITHUB_DEV_PAT": {
+        "description": "Local/dev-only GitHub PAT fallback; ignored unless HERMES_GITHUB_ALLOW_DEV_PAT=1",
+        "prompt": "GitHub dev PAT fallback",
+        "url": "https://github.com/settings/tokens",
+        "password": True,
+        "category": "tool",
+        "advanced": True,
+    },
+    "HERMES_GITHUB_ALLOW_DEV_PAT": {
+        "description": "Set to 1 to enable local/dev PAT fallback for GitHub integration",
+        "prompt": "Allow GitHub dev PAT fallback",
+        "url": None,
+        "password": False,
+        "category": "tool",
+        "advanced": True,
+    },
 
     # ── Honcho ──
     "HONCHO_API_KEY": {

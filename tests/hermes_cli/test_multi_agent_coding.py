@@ -762,10 +762,10 @@ class TestFullFlow:
 
 
 class TestSchemaVersion:
-    def test_schema_version_is_18(self):
+    def test_schema_version_is_19(self):
         import hermes_state
 
-        assert hermes_state.SCHEMA_VERSION == 18
+        assert hermes_state.SCHEMA_VERSION == 19
 
     def test_schema_contains_code_agent_flows(self):
         import hermes_state

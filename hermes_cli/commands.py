@@ -149,6 +149,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("workspace", "Show current workspace and git branch", "Code Mode", cli_only=True),
     CommandDef("session", "Show active code sessions", "Code Mode", cli_only=True),
     CommandDef("approvals", "Show pending approvals", "Code Mode", cli_only=True),
+    CommandDef("github", "Show or sync GitHub Code Mode integration", "Code Mode",
+               cli_only=True, args_hint="[status|repos|sync]", subcommands=("status", "repos", "sync")),
     CommandDef("skills-code", "List coding skills (fix_build, review_diff, etc.)", "Code Mode",
                cli_only=True, aliases=("skillscode",)),
 

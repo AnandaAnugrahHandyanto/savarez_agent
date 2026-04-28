@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Any, Callable, Dict, List, Optional, TypeVar
+from hermes_cli.code.github_integration import GITHUB_TABLE_DDL
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,7 @@ def _date_to_timestamp_range(date: str):
     end_ts = start_ts + 86400.0
     return start_ts, end_ts
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -433,7 +434,7 @@ CREATE TABLE IF NOT EXISTS orchestrated_run_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_orch_run_events_run_id ON orchestrated_run_events(run_id);
-"""
+""" + ";\n".join(GITHUB_TABLE_DDL) + ";\n"
 
 FTS_SQL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
@@ -1136,6 +1137,14 @@ class SessionDB:
                     except sqlite3.OperationalError:
                         pass
                 cursor.execute("UPDATE schema_version SET version = 18")
+            if current_version < 19:
+                # v19: P1 GitHub Deep Integration metadata tables.
+                for ddl in GITHUB_TABLE_DDL:
+                    try:
+                        cursor.execute(ddl)
+                    except sqlite3.OperationalError:
+                        pass
+                cursor.execute("UPDATE schema_version SET version = 19")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)

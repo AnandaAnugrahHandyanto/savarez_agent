@@ -115,6 +115,7 @@ _PUBLIC_API_PATHS: frozenset = frozenset(
         "/api/workspaces/current",
         "/api/workspaces/recent",
         "/api/workspaces/validate",
+        "/api/code/github/webhooks",
     }
 )
 
@@ -6631,6 +6632,280 @@ async def get_repo_knowledge(workspace_id: str):
     except Exception as exc:
         _log.error("get_repo_knowledge failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# ---------------------------------------------------------------------------
+# P1: GitHub Deep Integration endpoints
+# ---------------------------------------------------------------------------
+
+class _GitHubSyncBody(BaseModel):
+    installation_id: Optional[int] = None
+    dry_run: bool = False
+    limit: int = 100
+
+
+class _GitHubCommentBody(BaseModel):
+    repo_full_name: str
+    issue_number: Optional[int] = None
+    pr_number: Optional[int] = None
+    body: str
+    approval_id: Optional[str] = None
+    installation_id: Optional[int] = None
+
+
+class _GitHubPreparePullRequestBody(BaseModel):
+    repo_full_name: str
+    title: str
+    head: str
+    base: str = "main"
+    body: str = ""
+
+
+@app.get("/api/code/github/status")
+async def github_status():
+    from hermes_cli.code.github_integration import GitHubIntegrationService
+
+    try:
+        status = GitHubIntegrationService().status()
+        event_type = "github.integration.configured" if status.get("configured") else "github.error"
+        await _broadcast_code_event(event_type, {"status": status})
+        return {"status": status}
+    except Exception as exc:
+        _log.error("github_status failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/code/github/installations")
+async def github_installations():
+    from hermes_cli.code.github_integration import GitHubIntegrationDB
+
+    db = GitHubIntegrationDB()
+    try:
+        installations = db.list_installations()
+        return {"installations": installations, "total": len(installations)}
+    finally:
+        db.close()
+
+
+@app.get("/api/code/github/repositories")
+async def github_repositories(
+    owner: Optional[str] = None,
+    q: Optional[str] = None,
+    installation_id: Optional[int] = None,
+    limit: int = 100,
+):
+    from hermes_cli.code.github_integration import GitHubIntegrationDB
+
+    db = GitHubIntegrationDB()
+    try:
+        repositories = db.list_repositories(
+            owner=owner,
+            q=q,
+            installation_id=installation_id,
+            limit=limit,
+        )
+        return {"repositories": repositories, "total": len(repositories)}
+    finally:
+        db.close()
+
+
+@app.post("/api/code/github/repositories/sync")
+async def github_repositories_sync(body: _GitHubSyncBody):
+    from hermes_cli.code.github_sync import GitHubSyncService
+    from hermes_cli.code.github_integration import GitHubAPIError
+
+    try:
+        result = GitHubSyncService(realtime_hub=_REALTIME_HUB).sync_repositories(
+            installation_id=body.installation_id,
+            dry_run=body.dry_run,
+            limit=body.limit,
+        )
+        await _broadcast_code_event("github.repository.synced", {"result": result})
+        return {"result": result}
+    except GitHubAPIError as exc:
+        await _broadcast_code_event("github.error", {"error": exc.message})
+        raise HTTPException(status_code=400, detail=exc.message)
+    except Exception as exc:
+        _log.error("github_repositories_sync failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/code/github/repositories/{owner}/{repo}")
+async def github_repository(owner: str, repo: str):
+    from hermes_cli.code.github_integration import GitHubIntegrationDB
+
+    db = GitHubIntegrationDB()
+    try:
+        repository = db.get_repository(owner, repo)
+    finally:
+        db.close()
+    if not repository:
+        raise HTTPException(status_code=404, detail="GitHub repository not found")
+    return {"repository": repository}
+
+
+@app.get("/api/code/github/repositories/{owner}/{repo}/issues")
+async def github_repository_issues(owner: str, repo: str, limit: int = 100):
+    from hermes_cli.code.github_integration import GitHubIntegrationDB
+
+    repo_full_name = f"{owner}/{repo}"
+    db = GitHubIntegrationDB()
+    try:
+        issues = db.list_issues(repo_full_name, limit=limit)
+        return {"repo_full_name": repo_full_name, "issues": issues, "total": len(issues)}
+    finally:
+        db.close()
+
+
+@app.get("/api/code/github/repositories/{owner}/{repo}/pulls")
+async def github_repository_pulls(owner: str, repo: str, limit: int = 100):
+    from hermes_cli.code.github_integration import GitHubIntegrationDB
+
+    repo_full_name = f"{owner}/{repo}"
+    db = GitHubIntegrationDB()
+    try:
+        pulls = db.list_pull_requests(repo_full_name, limit=limit)
+        return {"repo_full_name": repo_full_name, "pull_requests": pulls, "total": len(pulls)}
+    finally:
+        db.close()
+
+
+@app.post("/api/code/github/webhooks")
+async def github_webhook(request: Request):
+    from hermes_cli.code.github_webhooks import GitHubWebhookService, WebhookSignatureError
+
+    event = request.headers.get("X-GitHub-Event", "")
+    delivery_id = request.headers.get("X-GitHub-Delivery", "")
+    signature = request.headers.get("X-Hub-Signature-256")
+    if not event or not delivery_id:
+        raise HTTPException(status_code=400, detail="Missing GitHub webhook headers")
+    body = await request.body()
+
+    try:
+        result = GitHubWebhookService(realtime_hub=_REALTIME_HUB).process(
+            delivery_id=delivery_id,
+            event=event,
+            body=body,
+            signature=signature,
+        )
+    except WebhookSignatureError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        safe_error = GitHubWebhookService.safe_error(exc)
+        _log.error("github_webhook failed: %s", safe_error, exc_info=True)
+        await _broadcast_code_event("github.error", {"error": safe_error})
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+    normalized = result.get("normalized") or {}
+    await _broadcast_code_event(
+        "github.webhook.received",
+        {
+            "delivery_id": delivery_id,
+            "event": event,
+            "duplicate": result.get("duplicate", False),
+            "repo_full_name": normalized.get("repo_full_name"),
+        },
+    )
+    await _broadcast_code_event(
+        "github.webhook.processed",
+        {
+            "delivery_id": delivery_id,
+            "event": event,
+            "status": result.get("status"),
+            "chatops_commands": result.get("chatops_commands", []),
+        },
+    )
+    if result.get("chatops_commands"):
+        await _broadcast_code_event(
+            "github.chatops.detected",
+            {"commands": result.get("chatops_commands", [])},
+        )
+    return result
+
+
+@app.post("/api/code/github/chatops/{command_id}/run")
+async def github_chatops_run(command_id: str):
+    from hermes_cli.code.github_chatops import GitHubChatOpsService
+
+    try:
+        result = GitHubChatOpsService(realtime_hub=_REALTIME_HUB).run_command(command_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        _log.error("github_chatops_run failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+    await _broadcast_code_event(
+        "github.chatops.run_created",
+        {"command": result.get("command"), "run": result.get("run")},
+        workspace_id=(result.get("run") or {}).get("workspace_id"),
+        code_session_id=(result.get("run") or {}).get("code_session_id"),
+    )
+    return result
+
+
+@app.post("/api/code/github/comments")
+async def github_comments(body: _GitHubCommentBody):
+    from hermes_cli.code.github_integration import GitHubAPIError, GitHubIntegrationService, redact_github_secrets
+    from hermes_state import ApprovalDB
+
+    target_number = body.issue_number or body.pr_number
+    if not target_number:
+        raise HTTPException(status_code=400, detail="issue_number or pr_number is required")
+    if not body.body.strip():
+        raise HTTPException(status_code=400, detail="comment body must not be empty")
+
+    approval_db = ApprovalDB()
+    try:
+        if body.approval_id:
+            approval = approval_db.get_approval(body.approval_id)
+            if not approval or approval.get("status") != "approved":
+                raise HTTPException(status_code=403, detail="GitHub comment approval is required")
+        else:
+            approval = approval_db.create_approval(
+                approval_id=f"github-comment-{uuid.uuid4().hex}",
+                session_id=None,
+                agent_id=None,
+                title=f"Post GitHub comment to {body.repo_full_name}#{target_number}",
+                command=f"github comment {body.repo_full_name}#{target_number}",
+                created_at=_utc_now_iso(),
+                kind="github_write",
+                details=redact_github_secrets(body.body),
+            )
+            return {"approval_required": True, "approval": approval}
+    finally:
+        approval_db.close()
+
+    try:
+        comment = GitHubIntegrationService().post_issue_comment(
+            repo_full_name=body.repo_full_name,
+            issue_number=int(target_number),
+            body=body.body,
+            installation_id=body.installation_id,
+        )
+    except GitHubAPIError as exc:
+        raise HTTPException(status_code=400, detail=exc.message)
+    await _broadcast_code_event(
+        "github.comment.posted",
+        {"repo_full_name": body.repo_full_name, "issue_number": target_number, "comment": comment},
+    )
+    return {"approval_required": False, "comment": comment}
+
+
+@app.post("/api/code/github/pull-requests/prepare")
+async def github_pull_request_prepare(body: _GitHubPreparePullRequestBody):
+    from hermes_cli.code.artifact_ledger import ArtifactLedger
+    from hermes_cli.code.github_integration import GitHubIntegrationService
+
+    prepared = GitHubIntegrationService().prepare_pull_request(body.model_dump())
+    artifact = ArtifactLedger().create_artifact(
+        category="implementation_plan",
+        title=f"Prepared GitHub PR: {body.title}",
+        content=json.dumps(prepared, indent=2),
+        metadata={"source": "github_pull_request_prepare", "repo_full_name": body.repo_full_name},
+    )
+    return {"prepared": prepared, "artifact": artifact}
 
 
 mount_spa(app)

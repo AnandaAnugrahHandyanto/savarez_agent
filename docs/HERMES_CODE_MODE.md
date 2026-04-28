@@ -1,8 +1,8 @@
 # Hermes Code Mode
 
-**Status:** active on `feature/hermes-code-mode`  
-**Current state schema:** `v17` (`hermes_state.SCHEMA_VERSION = 17`)  
-**Primary UI:** Hermes CLI home screen + HermesWeb Code Cockpit at `http://localhost:3001/code`  
+**Status:** active on Code Mode branches, including `feature/hermes-p1-github-integration`
+**Current state schema:** `v19` (`hermes_state.SCHEMA_VERSION = 19`)
+**Primary UI:** Hermes CLI home screen; P1 GitHub UI awaits future `hermesWeb/` work
 **Backend API:** `http://localhost:9119`
 
 Hermes Code Mode turns Hermes Agent into an AI development console. It keeps the normal conversational agent loop, tools, skills, memory, approvals, and terminal backends, but adds a coding-focused home screen, HermesWeb cockpit links, workspace/session awareness, REST-backed Code Mode services, and quick slash commands for day-to-day development work.
@@ -32,7 +32,7 @@ Code Mode adds four user-visible layers:
 
 4. **Backend Code services**
    - Workspaces, sessions, command execution, Git status/diff, model routing, diagnostics/LSP, multi-agent coding flows, coding skills, approvals, and provider selection.
-   - Persisted in Hermes state storage with schema version `v17`.
+   - Persisted in Hermes state storage with schema version `v19`.
 
 ---
 
@@ -87,7 +87,7 @@ When the terminal is wide enough, the banner shows:
 - Session ID, or `new` if a fresh session.
 - Backend status (`online :9119` or `offline :9119`).
 - Web Cockpit URL.
-- DB schema label (`v17` locally on this branch).
+- DB schema label (`v19` locally on this branch).
 - Context usage when available.
 - Active code session count and pending approval count when non-zero.
 - Quick Actions for Code Mode slash commands.
@@ -159,17 +159,10 @@ Hermes CLI
   ├─ tools / skills / approvals
   └─ optional HermesWeb/backend status polling
 
-HermesWeb (`web/`)
-  └─ Code Cockpit route `/code`
-       ├─ REST API client
-       ├─ workspaces and sessions
-       ├─ command output and artifacts
-       ├─ Git status/diff panels
-       ├─ diagnostics/LSP views
-       ├─ provider/model controls
-       ├─ multi-agent flows
-       ├─ coding skills
-       └─ approvals UI
+HermesWeb
+  └─ Future `hermesWeb/` integration point
+       ├─ legacy `web/` is deprecated for new HermesWeb work
+       └─ P1 GitHub UI is intentionally deferred in this checkout
 
 Backend (`hermes_cli/web_server.py`)
   ├─ `/api/code/*` REST endpoints
@@ -181,7 +174,7 @@ Backend (`hermes_cli/web_server.py`)
 
 ### State and persistence
 
-Code Mode persists data through Hermes state services and SQLite migrations. Current local schema is `v17`. The schema includes Code Mode entities such as workspaces, sessions, commands, Git snapshots, provider routing/cost data, diagnostics, agent flows, and skill runs.
+Code Mode persists data through Hermes state services and SQLite migrations. Current local schema is `v19`. The schema includes Code Mode entities such as workspaces, sessions, commands, Git snapshots, provider routing/cost data, diagnostics, agent flows, skill runs, P0 control-plane tables, and P1 GitHub integration metadata.
 
 ### Approvals
 
@@ -300,6 +293,22 @@ The following endpoints are present in `hermes_cli/web_server.py` on this branch
 | `POST` | `/api/approvals/{approval_id}/reject` |
 | `WS` | `/ws` |
 
+### GitHub integration
+
+| Method | Endpoint |
+|--------|----------|
+| `GET` | `/api/code/github/status` |
+| `GET` | `/api/code/github/installations` |
+| `GET` | `/api/code/github/repositories` |
+| `POST` | `/api/code/github/repositories/sync` |
+| `GET` | `/api/code/github/repositories/{owner}/{repo}` |
+| `GET` | `/api/code/github/repositories/{owner}/{repo}/issues` |
+| `GET` | `/api/code/github/repositories/{owner}/{repo}/pulls` |
+| `POST` | `/api/code/github/webhooks` |
+| `POST` | `/api/code/github/chatops/{command_id}/run` |
+| `POST` | `/api/code/github/comments` |
+| `POST` | `/api/code/github/pull-requests/prepare` |
+
 ---
 
 ## 7. Verification Commands
@@ -375,15 +384,16 @@ Keep the CLI safe under degraded conditions: no backend, no Git repository, miss
 
 ## 10. P0 + P0.1 Engineering Control Plane Foundation
 
-**Schema version:** v18 (bumped from v17 in P0.1)
+**Schema version:** v19 (bumped from v18 in P1)
 
 P0 adds the core infrastructure. P0.1 stabilizes and closes it.
 
 ### P0.1 Changes
 
 - `ledger_artifacts`, `orchestrated_runs`, `orchestrated_run_events` migrated into main `SCHEMA_SQL` and `SessionDB._init_schema()` v18 migration block. Fresh and existing DBs get the tables on startup.
+- GitHub P1 tables are migrated in v19: installations, repositories, branches, issues, pull requests, webhook deliveries, ChatOps commands, and status reports.
 - `ArtifactLedgerDB` and `OrchestratedRunDB` still provide their own `_init_schema()` (safe idempotent no-ops when tables already exist from main schema).
-- All schema version tests updated to expect v18.
+- All schema version tests updated to expect v19.
 - `CodePreview` component now wires `useCodeWebSocket` — session/command/artifact WS events trigger targeted re-fetches; connection status badge shown inline.
 - TypeScript compiles cleanly (0 errors).
 
@@ -496,6 +506,16 @@ Optionally add `scripts/` and `resources/` subdirectories.
 - `bootstrap_agents_md(repo_root, project_summary)` — creates minimal AGENTS.md **only if one does not exist**; never overwrites
 - API endpoint: `GET /api/code/workspaces/{workspace_id}/repo-knowledge`
 - Tests: `tests/hermes_cli/test_repo_knowledge.py`
+
+### H. GitHub Deep Integration
+
+- Services: `hermes_cli/code/github_integration.py`, `hermes_cli/code/github_webhooks.py`, `hermes_cli/code/github_sync.py`, `hermes_cli/code/github_chatops.py`
+- Primary auth model: GitHub App installation tokens.
+- Local/dev fallback: PAT only when `HERMES_GITHUB_DEV_PAT` and `HERMES_GITHUB_ALLOW_DEV_PAT=1` are both set.
+- Webhook endpoint validates `X-Hub-Signature-256` before parsing payloads.
+- ChatOps commands create/link `ArtifactLedger` artifacts and `AgentOrchestrator` runs.
+- GitHub comment writes are approval-gated. PR preparation creates metadata/artifacts only and never pushes, opens, merges, force-pushes, or deletes branches.
+- Details: `docs/HERMES_GITHUB_INTEGRATION.md`
 
 ### P0 Test Commands
 

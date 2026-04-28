@@ -124,6 +124,8 @@ _GIT_WRITE_PATTERNS = [
     r"\bgit\s+stash\s+drop\b",
     r"\bgit\s+worktree\s+add\b",
     r"\bgit\s+worktree\s+remove\b",
+    r"\bgithub\s+(comment|pull-request|pull_request|status|check)\b",
+    r"\bgh\s+(pr|issue|api)\b.*\b(create|comment|edit|merge|close|reopen)\b",
 ]
 
 _SAFE_READONLY_PATTERNS = [

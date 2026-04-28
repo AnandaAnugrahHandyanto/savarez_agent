@@ -254,6 +254,6 @@ class TestArtifactsSchema:
         )
         assert cursor.fetchone() is not None
 
-    def test_schema_version_is_18(self, db):
+    def test_schema_version_is_19(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 18
+        assert cursor.fetchone()[0] == 19

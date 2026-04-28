@@ -1000,7 +1000,20 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 18
+        assert version == 19
+
+    def test_github_tables_exist(self, db):
+        cursor = db._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        )
+        tables = {row[0] for row in cursor.fetchall()}
+        assert "github_app_installations" in tables
+        assert "github_repositories" in tables
+        assert "github_issues" in tables
+        assert "github_pull_requests" in tables
+        assert "github_webhook_deliveries" in tables
+        assert "github_chatops_commands" in tables
+        assert "github_status_reports" in tables
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""

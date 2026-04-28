@@ -413,13 +413,13 @@ class TestCodeSessionSchema:
         finally:
             db.close()
 
-    def test_schema_version_is_18(self, tmp_path):
+    def test_schema_version_is_19(self, tmp_path):
         from hermes_state import SessionDB
 
         db = SessionDB(db_path=tmp_path / "state.db")
         try:
             cursor = db._conn.execute("SELECT version FROM schema_version")
-            assert cursor.fetchone()[0] == 18
+            assert cursor.fetchone()[0] == 19
         finally:
             db.close()
 
