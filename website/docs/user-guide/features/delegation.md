@@ -144,6 +144,8 @@ Claude Code bridge workers run with a strict per-session MCP config. By default 
 
 Cursor Agent bridge workers use the project Cursor MCP configuration (`.cursor/mcp.json`) together with `--approve-mcps`; Hermes writes the worker bridge entry and merges configured `bridge_extra_mcp_servers` into that project config for the session. Cursor Agent does not use Claude Code's `--mcp-config`, `--strict-mcp-config`, or `--allowedTools` flags; absence of those flags in Cursor process arguments is expected, not proof that MCPs are unavailable.
 
+Use `delegate_delegation_info` to inspect the active bridge capabilities, MCP wiring, follow-up tools, and persona defaults without relying on a separate skill document.
+
 ## Child Personas vs Parent Personality
 
 `SOUL.md` and `/personality` define the parent Hermes session. The optional `persona` field on `delegate_task` is different: it is per-child routing and context for a delegated worker. It can select a named reviewer/tester/researcher profile, a local CLI provider (`persona_provider="claude"` or `"cursor-agent"`), and a model/workdir without changing the parent agent's identity.
@@ -234,6 +236,21 @@ delegate_task(
 - `delegation.orchestrator_enabled: false`: global kill switch that forces every child to `leaf` regardless of the `role` parameter.
 
 **Cost warning:** With `max_spawn_depth: 3` and `max_concurrent_children: 3`, the tree can reach 3×3×3 = 27 concurrent leaf agents. Each extra level multiplies spend — raise `max_spawn_depth` intentionally.
+
+## Lifetime and Durability
+
+:::warning delegate_task is synchronous — not durable
+`delegate_task` runs **inside the parent's current turn**. It blocks the parent until every child finishes (or is cancelled). It is **not** a background job queue:
+
+- If the parent is interrupted (user sends a new message, `/stop`, `/new`), all active children are cancelled and return `status="interrupted"`. Their in-progress work is discarded.
+- Children do **not** continue running after the parent turn ends.
+- Cancelled children return a structured result (`status="interrupted"`, `exit_reason="interrupted"`), but because the parent was interrupted too, that result often never makes it into a user-visible reply.
+
+For **durable long-running work** that must survive interrupts or outlive the current turn, use:
+
+- `cronjob` (action=`create`) — schedules a separate agent run; immune to parent-turn interrupts.
+- `terminal(background=True, notify_on_complete=True)` — long-running shell commands that keep running while the agent does other things.
+:::
 
 ## Key Properties
 

@@ -20,6 +20,7 @@ from unittest.mock import MagicMock, patch
 
 from tools.delegate_tool import (
     DELEGATE_BLOCKED_TOOLS,
+    DELEGATE_DELEGATION_INFO_SCHEMA,
     DELEGATE_TASK_SCHEMA,
     DelegateEvent,
     _get_max_concurrent_children,
@@ -84,6 +85,7 @@ class TestDelegateRequirements(unittest.TestCase):
 
         expected = {
             "delegate_list_personas",
+            "delegate_delegation_info",
             "delegate_bridge_check",
             "delegate_bridge_reply",
             "delegate_bridge_result",
@@ -193,6 +195,7 @@ class TestBridgeTransportConfig(unittest.TestCase):
                     },
                     "lean-ctx": {
                         "command": "lean-ctx",
+                        "args": ["mcp"],
                     },
                 }
             }
@@ -332,6 +335,28 @@ class TestBridgeTransportConfig(unittest.TestCase):
             self.assertNotIn("--mcp-config", args)
             self.assertNotIn("--strict-mcp-config", args)
             self.assertNotIn("--allowedTools", args)
+
+    def test_bridge_preamble_includes_runtime_context_without_skill_docs(self):
+        from tools.delegate_bridge_transport import _bridge_preamble
+
+        prompt = _bridge_preamble(
+            "claude",
+            {
+                "parent_runtime": {"source_root": "/tmp/hermes", "branch": "feature"},
+                "bridge": {
+                    "session_id": "hermes-test",
+                    "extra_mcp_server_names": ["shared-memory"],
+                    "extra_allowed_tools": ["mcp__shared-memory__recall"],
+                },
+            },
+        )
+
+        self.assertIn("HERMES_RUNTIME_CONTEXT", prompt)
+        self.assertIn("hermes-test", prompt)
+        self.assertIn("shared-memory", prompt)
+
+    def test_delegation_info_schema_is_native_tool_surface(self):
+        self.assertEqual(DELEGATE_DELEGATION_INFO_SCHEMA["name"], "delegate_delegation_info")
 
     def test_bridge_server_default_path_is_packaged(self):
         from tools.delegate_bridge_transport import _bridge_server_path
@@ -1095,10 +1120,11 @@ class TestBlockedTools(unittest.TestCase):
             _get_max_spawn_depth, _get_orchestrator_enabled,
             _MIN_SPAWN_DEPTH, _MAX_SPAWN_DEPTH_CAP,
         )
-        self.assertEqual(_get_max_concurrent_children(), 3)
-        self.assertEqual(MAX_DEPTH, 1)
-        self.assertEqual(_get_max_spawn_depth(), 1)       # default: flat
-        self.assertTrue(_get_orchestrator_enabled())      # default
+        with patch("tools.delegate_tool._load_config", return_value={}):
+            self.assertEqual(_get_max_concurrent_children(), 3)
+            self.assertEqual(MAX_DEPTH, 1)
+            self.assertEqual(_get_max_spawn_depth(), 1)       # default: flat
+            self.assertTrue(_get_orchestrator_enabled())      # default
         self.assertEqual(_MIN_SPAWN_DEPTH, 1)
         self.assertEqual(_MAX_SPAWN_DEPTH_CAP, 3)
 
