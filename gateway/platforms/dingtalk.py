@@ -27,12 +27,10 @@ Configuration in config.yaml:
 """
 
 import asyncio
-import ipaddress
 import json
 import logging
 import os
 import re
-import socket
 import traceback
 import uuid
 from datetime import datetime, timezone
@@ -113,133 +111,8 @@ DINGTALK_TYPE_MAPPING = {
     "voice": "audio",
 }
 
-_DINGTALK_HTTP_HOSTS = {"api.dingtalk.com", "oapi.dingtalk.com"}
-
-
-class DingTalkFallbackTransport(httpx.AsyncBaseTransport):
-    """Retry DingTalk HTTP API requests via fallback IPv4s preserving TLS/SNI.
-
-    This transport is opt-in. It exists for environments where hostname-based
-    httpx/httpcore connections are flaky but direct IPv4 connections to the same
-    endpoint succeed. Rewriting only the TCP target while preserving Host and
-    SNI keeps the logical request URL unchanged.
-    """
-
-    def __init__(self, fallback_ips: List[str], **transport_kwargs):
-        self._fallback_ips = [
-            ip for ip in dict.fromkeys(_normalize_dingtalk_fallback_ips(fallback_ips))
-        ]
-        self._primary = httpx.AsyncHTTPTransport(**transport_kwargs)
-        self._fallbacks = {
-            ip: httpx.AsyncHTTPTransport(**transport_kwargs) for ip in self._fallback_ips
-        }
-
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        host = request.url.host or ""
-        if host not in _DINGTALK_HTTP_HOSTS or not self._fallback_ips:
-            return await self._primary.handle_async_request(request)
-
-        last_error: Exception | None = None
-        try:
-            return await self._primary.handle_async_request(request)
-        except Exception as exc:
-            last_error = exc
-            if not _is_dingtalk_retryable_connect_error(exc):
-                raise
-            logger.warning(
-                "[Dingtalk] Primary %s connection failed (%r); trying fallback IPv4s %s",
-                host,
-                exc,
-                ", ".join(self._fallback_ips),
-            )
-
-        for ip in self._fallback_ips:
-            try:
-                candidate = _rewrite_request_for_ip(request, ip)
-                return await self._fallbacks[ip].handle_async_request(candidate)
-            except Exception as exc:
-                last_error = exc
-                logger.warning("[Dingtalk] Fallback IP %s failed for %s: %r", ip, host, exc)
-
-        if last_error is None:
-            raise RuntimeError("All DingTalk fallback IPs exhausted but no error was recorded")
-        raise last_error
-
-    async def aclose(self) -> None:
-        await self._primary.aclose()
-        for transport in self._fallbacks.values():
-            await transport.aclose()
-
-
-def _normalize_dingtalk_fallback_ips(values: List[str]) -> List[str]:
-    normalized: List[str] = []
-    for value in values:
-        raw = str(value).strip()
-        if not raw:
-            continue
-        try:
-            addr = ipaddress.ip_address(raw)
-        except ValueError:
-            logger.warning("Ignoring invalid DingTalk fallback IP: %r", raw)
-            continue
-        if addr.version != 4:
-            logger.warning("Ignoring non-IPv4 DingTalk fallback IP: %s", raw)
-            continue
-        if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_unspecified:
-            logger.warning("Ignoring private/internal DingTalk fallback IP: %s", raw)
-            continue
-        normalized.append(str(addr))
-    return normalized
-
-
 def _env_truthy(name: str) -> bool:
     return str(os.getenv(name, "") or "").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _resolve_dingtalk_ipv4_hosts() -> List[str]:
-    configured = os.getenv("DINGTALK_FALLBACK_IPS", "")
-    if configured.strip():
-        return _normalize_dingtalk_fallback_ips(configured.split(","))
-
-    if not _env_truthy("DINGTALK_FORCE_IPV4"):
-        return []
-
-    resolved: List[str] = []
-    for host in _DINGTALK_HTTP_HOSTS:
-        try:
-            for family, _type, _proto, _canonname, sockaddr in socket.getaddrinfo(
-                host, 443, socket.AF_INET, socket.SOCK_STREAM,
-            ):
-                if family != socket.AF_INET:
-                    continue
-                ip = str(sockaddr[0]).strip()
-                if ip:
-                    resolved.append(ip)
-        except Exception as exc:
-            logger.debug("[Dingtalk] IPv4 resolution failed for %s: %s", host, exc)
-    return _normalize_dingtalk_fallback_ips(resolved)
-
-
-def _rewrite_request_for_ip(request: httpx.Request, ip: str) -> httpx.Request:
-    original_host = request.url.host or ""
-    url = request.url.copy_with(host=ip)
-    headers = request.headers.copy()
-    if original_host:
-        headers["host"] = original_host
-    extensions = dict(request.extensions)
-    if original_host:
-        extensions["sni_hostname"] = original_host
-    return httpx.Request(
-        method=request.method,
-        url=url,
-        headers=headers,
-        stream=request.stream,
-        extensions=extensions,
-    )
-
-
-def _is_dingtalk_retryable_connect_error(exc: Exception) -> bool:
-    return isinstance(exc, (httpx.ConnectTimeout, httpx.ConnectError))
 
 
 def check_dingtalk_requirements() -> bool:
@@ -370,15 +243,11 @@ class DingTalkAdapter(BasePlatformAdapter):
             if proxy_url:
                 logger.info("[%s] Proxy detected for DingTalk HTTP client: %s", self.name, proxy_url)
                 client_kwargs["proxy"] = proxy_url
-            else:
-                fallback_ips = _resolve_dingtalk_ipv4_hosts()
-                if fallback_ips:
-                    logger.info(
-                        "[%s] DingTalk fallback IPv4 transport active via env/config: %s",
-                        self.name,
-                        ", ".join(fallback_ips),
-                    )
-                    client_kwargs["transport"] = DingTalkFallbackTransport(fallback_ips)
+            elif _env_truthy("DINGTALK_FORCE_IPV4"):
+                logger.info("[%s] DingTalk HTTP client forcing IPv4 via env/config", self.name)
+                client_kwargs["transport"] = httpx.AsyncHTTPTransport(
+                    local_address="0.0.0.0"
+                )
 
             self._http_client = httpx.AsyncClient(**client_kwargs)
 
