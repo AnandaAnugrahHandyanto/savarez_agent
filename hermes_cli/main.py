@@ -1820,6 +1820,7 @@ def select_provider_and_model(args=None):
         "gmi",
         "nvidia",
         "ollama-cloud",
+        "tencent-tokenhub",
     ):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
@@ -4731,7 +4732,6 @@ def _model_flow_anthropic(config, current_model=""):
             read_claude_code_credentials,
             is_claude_code_token_valid,
             _is_oauth_token,
-            _resolve_claude_code_token_from_credentials,
         )
 
         cc_creds = read_claude_code_credentials()
@@ -7136,7 +7136,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                     print(
                                         f"  ⚠ {svc_name} died after restart, retrying..."
                                     )
-                                    retry = subprocess.run(
+                                    subprocess.run(
                                         scope_cmd + ["restart", svc_name],
                                         capture_output=True,
                                         text=True,
@@ -7903,32 +7903,12 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=[
-            "auto",
-            "openrouter",
-            "nous",
-            "openai-codex",
-            "copilot-acp",
-            "copilot",
-            "anthropic",
-            "gemini",
-            "xai",
-            "ollama-cloud",
-            "huggingface",
-            "zai",
-            "kimi-coding",
-            "kimi-coding-cn",
-            "stepfun",
-            "minimax",
-            "minimax-cn",
-            "kilocode",
-            "xiaomi",
-            "arcee",
-            "gmi",
-            "nvidia",
-        ],
+        # No `choices=` here: user-defined providers from config.yaml `providers:`
+        # are also valid values, and runtime resolution (resolve_runtime_provider)
+        # handles validation/error reporting consistently with the top-level
+        # `--provider` flag.
         default=None,
-        help="Inference provider (default: auto)",
+        help="Inference provider (default: auto). Built-in or a user-defined name from `providers:` in config.yaml.",
     )
     chat_parser.add_argument(
         "-v", "--verbose", action="store_true", help="Verbose output"
@@ -9768,17 +9748,26 @@ Examples:
         "--preset",
         choices=["user-data", "full"],
         default="full",
-        help="Migration preset (default: full). 'user-data' excludes secrets",
+        help="Migration preset (default: full). Neither preset imports secrets — "
+        "pass --migrate-secrets to include API keys.",
     )
     claw_migrate.add_argument(
         "--overwrite",
         action="store_true",
-        help="Overwrite existing files (default: skip conflicts)",
+        help="Overwrite existing files (default: refuse to apply when the plan has conflicts)",
     )
     claw_migrate.add_argument(
         "--migrate-secrets",
         action="store_true",
-        help="Include allowlisted secrets (TELEGRAM_BOT_TOKEN, API keys, etc.)",
+        help="Include allowlisted secrets (TELEGRAM_BOT_TOKEN, API keys, etc.). "
+        "Required even under --preset full.",
+    )
+    claw_migrate.add_argument(
+        "--no-backup",
+        action="store_true",
+        help="Skip the pre-migration zip snapshot of ~/.hermes/ (by default a "
+        "single restore-point archive is written to ~/.hermes/backups/ "
+        "before apply; restorable with 'hermes import').",
     )
     claw_migrate.add_argument(
         "--workspace-target", help="Absolute path to copy workspace instructions into"
@@ -10192,6 +10181,17 @@ Examples:
         except Exception:
             logger.debug(
                 "plugin discovery failed at CLI startup", exc_info=True,
+            )
+        try:
+            # MCP tool discovery — no event loop running in CLI/TUI startup,
+            # so inline is safe.  Moved here from model_tools.py module scope
+            # to avoid freezing the gateway's event loop on its first message
+            # via the same lazy import path (#16856).
+            from tools.mcp_tool import discover_mcp_tools
+            discover_mcp_tools()
+        except Exception:
+            logger.debug(
+                "MCP tool discovery failed at CLI startup", exc_info=True,
             )
         try:
             from hermes_cli.config import load_config
