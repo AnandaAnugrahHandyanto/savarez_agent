@@ -9693,8 +9693,9 @@ Examples:
     claw_migrate.add_argument(
         "--no-backup",
         action="store_true",
-        help="Skip the pre-migration tarball snapshot of ~/.hermes/ (by default "
-        "a single restore-point archive is written before apply).",
+        help="Skip the pre-migration zip snapshot of ~/.hermes/ (by default a "
+        "single restore-point archive is written to ~/.hermes/backups/ "
+        "before apply; restorable with 'hermes import').",
     )
     claw_migrate.add_argument(
         "--workspace-target", help="Absolute path to copy workspace instructions into"

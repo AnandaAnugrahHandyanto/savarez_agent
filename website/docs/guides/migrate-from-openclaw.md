@@ -33,7 +33,7 @@ Reads from `~/.openclaw/` by default. Legacy `~/.clawdbot/` or `~/.moltbot/` dir
 | `--preset <name>` | `full` (all compatible settings) or `user-data` (excludes infrastructure config). Neither preset imports secrets by default — pass `--migrate-secrets` explicitly. |
 | `--overwrite` | Overwrite existing Hermes files on conflicts (default: refuse to apply when the plan has conflicts). |
 | `--migrate-secrets` | Include API keys. Required even under `--preset full` — no preset imports secrets silently. |
-| `--no-backup` | Skip the pre-migration tarball snapshot of `~/.hermes/` (by default a single restore-point archive is written before apply). |
+| `--no-backup` | Skip the pre-migration zip snapshot of `~/.hermes/` (by default a single restore-point archive is written before apply, under `~/.hermes/backups/pre-migration-*.zip`; restorable with `hermes import`). |
 | `--source <path>` | Custom OpenClaw directory. |
 | `--workspace-target <path>` | Where to place `AGENTS.md`. |
 | `--skill-conflict <mode>` | `skip` (default), `overwrite`, or `rename`. |
