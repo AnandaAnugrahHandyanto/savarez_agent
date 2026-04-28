@@ -507,8 +507,13 @@ def _try_resolve_fallback_provider() -> dict | None:
         fb = cfg.get("fallback_providers") or cfg.get("fallback_model")
         if not fb:
             return None
-        # Normalize to list
-        fb_list = fb if isinstance(fb, list) else [fb]
+        # Normalize to list; accepts both dict entries and compact
+        # "provider:model" strings for parity with AIAgent fallback parsing.
+        try:
+            from run_agent import _normalize_fallback_chain_config
+            fb_list = _normalize_fallback_chain_config(fb)
+        except Exception:
+            fb_list = fb if isinstance(fb, list) else [fb]
         for entry in fb_list:
             if not isinstance(entry, dict):
                 continue

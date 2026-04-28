@@ -811,8 +811,45 @@ def _routermint_headers() -> dict:
     }
 
 
+def _normalize_fallback_chain_config(fallback_model: Any) -> List[Dict[str, Any]]:
+    """Normalize fallback_model/fallback_providers config into provider/model dicts.
+
+    Supports the canonical dict form::
+
+        {"provider": "google-gemini-cli", "model": "gemini-3-flash-preview"}
+
+    and the compact CLI/YAML form::
+
+        "google-gemini-cli:gemini-3-flash-preview"
+
+    Invalid entries are ignored so a bad fallback does not break startup.
+    """
+    entries = fallback_model if isinstance(fallback_model, list) else [fallback_model]
+    chain: List[Dict[str, Any]] = []
+    for entry in entries:
+        if isinstance(entry, dict):
+            provider = str(entry.get("provider") or "").strip()
+            model = str(entry.get("model") or "").strip()
+            if provider and model:
+                normalized = dict(entry)
+                normalized["provider"] = provider
+                normalized["model"] = model
+                chain.append(normalized)
+            continue
+        if isinstance(entry, str):
+            raw = entry.strip()
+            if not raw or ":" not in raw:
+                continue
+            provider, model = raw.split(":", 1)
+            provider = provider.strip()
+            model = model.strip()
+            if provider and model:
+                chain.append({"provider": provider, "model": model})
+    return chain
+
+
 def _pool_may_recover_from_rate_limit(pool) -> bool:
-    """Decide whether to wait for credential-pool rotation instead of falling back.
+    """Return True when credential-pool rotation may handle a 429.
 
     The existing pool-rotation path requires the pool to (1) exist and (2) have
     at least one entry not currently in exhaustion cooldown.  But rotation is
@@ -1491,15 +1528,7 @@ class AIAgent:
         # when the primary is exhausted (rate-limit, overload, connection
         # failure).  Supports both legacy single-dict ``fallback_model`` and
         # new list ``fallback_providers`` format.
-        if isinstance(fallback_model, list):
-            self._fallback_chain = [
-                f for f in fallback_model
-                if isinstance(f, dict) and f.get("provider") and f.get("model")
-            ]
-        elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
-            self._fallback_chain = [fallback_model]
-        else:
-            self._fallback_chain = []
+        self._fallback_chain = _normalize_fallback_chain_config(fallback_model)
         self._fallback_index = 0
         self._fallback_activated = False
         # Legacy attribute kept for backward compat (tests, external callers)

@@ -8,20 +8,22 @@ Resolution order for text tasks (auto mode):
   1. OpenRouter  (OPENROUTER_API_KEY)
   2. Nous Portal (~/.hermes/auth.json active provider)
   3. Custom endpoint (config.yaml model.base_url + OPENAI_API_KEY)
-  4. Codex OAuth (Responses API via chatgpt.com with gpt-5.3-codex,
+  4. Codex OAuth (Responses API via chatgpt.com with gpt-5.5,
      wrapped to look like a chat.completions client)
-  5. Native Anthropic
-  6. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN)
-  7. None
+  5. Google Gemini CLI OAuth / Code Assist
+  6. Native Anthropic
+  7. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN)
+  8. None
 
 Resolution order for vision/multimodal tasks (auto mode):
   1. Selected main provider, if it is one of the supported vision backends below
   2. OpenRouter
   3. Nous Portal
-  4. Codex OAuth (gpt-5.3-codex supports vision via Responses API)
-  5. Native Anthropic
-  6. Custom endpoint (for local vision models: Qwen-VL, LLaVA, Pixtral, etc.)
-  7. None
+  4. Codex OAuth (gpt-5.5 supports vision via Responses API)
+  5. Google Gemini CLI OAuth / Code Assist
+  6. Native Anthropic
+  7. Custom endpoint (for local vision models: Qwen-VL, LLaVA, Pixtral, etc.)
+  8. None
 
 Per-task overrides are configured in config.yaml under the ``auxiliary:`` section
 (e.g. ``auxiliary.vision.provider``, ``auxiliary.compression.model``).
@@ -268,6 +270,7 @@ _AUTH_JSON_PATH = get_hermes_home() / "auth.json"
 # vision via Responses.
 _CODEX_AUX_MODEL = "gpt-5.2-codex"
 _CODEX_AUX_BASE_URL = "https://chatgpt.com/backend-api/codex"
+_GEMINI_OAUTH_AUX_MODEL = "gemini-3-flash-preview"
 
 
 def _codex_cloudflare_headers(access_token: str) -> Dict[str, str]:
@@ -663,6 +666,39 @@ class AsyncCodexAuxiliaryClient:
         self.chat = _AsyncCodexChatShim(async_adapter)
         self.api_key = sync_wrapper.api_key
         self.base_url = sync_wrapper.base_url
+
+
+class _AsyncThreadedCompletionsAdapter:
+    """Async facade for sync OpenAI-shaped clients that do their own routing."""
+
+    def __init__(self, sync_completions: Any):
+        self._sync = sync_completions
+
+    async def create(self, **kwargs) -> Any:
+        import asyncio
+        return await asyncio.to_thread(self._sync.create, **kwargs)
+
+
+class _AsyncThreadedChatShim:
+    def __init__(self, adapter: _AsyncThreadedCompletionsAdapter):
+        self.completions = adapter
+
+
+class AsyncThreadedAuxiliaryClient:
+    """Async-compatible wrapper for sync auxiliary clients such as Gemini OAuth."""
+
+    def __init__(self, sync_client: Any):
+        self._sync_client = sync_client
+        self.chat = _AsyncThreadedChatShim(
+            _AsyncThreadedCompletionsAdapter(sync_client.chat.completions)
+        )
+        self.api_key = getattr(sync_client, "api_key", "")
+        self.base_url = getattr(sync_client, "base_url", "")
+
+    def close(self):
+        close_fn = getattr(self._sync_client, "close", None)
+        if callable(close_fn):
+            close_fn()
 
 
 class _AnthropicCompletionsAdapter:
@@ -1419,6 +1455,50 @@ def _try_codex() -> Tuple[Optional[Any], Optional[str]]:
     return CodexAuxiliaryClient(real_client, _CODEX_AUX_MODEL), _CODEX_AUX_MODEL
 
 
+def _try_gemini_oauth() -> Tuple[Optional[Any], Optional[str]]:
+    """Try Google Gemini CLI OAuth / Code Assist for auxiliary fallback."""
+    # Keep the unauthenticated path very cheap: auxiliary auto-detection can run
+    # during agent construction and tests may create many agents concurrently.
+    # Avoid importing the heavy Code Assist adapter unless credentials exist.
+    try:
+        if not (get_hermes_home() / "auth" / "google_oauth.json").exists():
+            return None, None
+    except Exception:
+        return None, None
+
+    try:
+        from agent.google_oauth import GoogleOAuthError, get_valid_access_token
+    except ImportError as exc:
+        logger.debug("Auxiliary client: Gemini OAuth unavailable: %s", exc)
+        return None, None
+
+    try:
+        # Validate that OAuth credentials exist and can refresh before selecting
+        # this backend. GeminiCloudCodeClient refreshes again per call if needed;
+        # this probe keeps auto-detect/fallback from choosing an unauthenticated
+        # provider and only failing later.
+        token = get_valid_access_token()
+    except GoogleOAuthError as exc:
+        logger.debug("Auxiliary client: Gemini OAuth not authenticated: %s", exc)
+        return None, None
+    except Exception as exc:
+        logger.debug("Auxiliary client: Gemini OAuth credential check failed: %s", exc)
+        return None, None
+
+    if not str(token or "").strip():
+        return None, None
+
+    try:
+        from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
+    except ImportError as exc:
+        logger.debug("Auxiliary client: Gemini OAuth adapter unavailable: %s", exc)
+        return None, None
+
+    logger.debug("Auxiliary client: Gemini OAuth / Code Assist (%s)", _GEMINI_OAUTH_AUX_MODEL)
+    return GeminiCloudCodeClient(), _GEMINI_OAUTH_AUX_MODEL
+
+
+
 def _try_anthropic() -> Tuple[Optional[Any], Optional[str]]:
     try:
         from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
@@ -1472,6 +1552,7 @@ _AUTO_PROVIDER_LABELS = {
     "_try_nous": "nous",
     "_try_custom_endpoint": "local/custom",
     "_try_codex": "openai-codex",
+    "_try_gemini_oauth": "google-gemini-cli",
     "_resolve_api_key_provider": "api-key",
 }
 
@@ -1504,6 +1585,7 @@ def _get_provider_chain() -> List[tuple]:
         ("nous", _try_nous),
         ("local/custom", _try_custom_endpoint),
         ("openai-codex", _try_codex),
+        ("google-gemini-cli", _try_gemini_oauth),
         ("api-key", _resolve_api_key_provider),
     ]
 
@@ -1521,11 +1603,50 @@ def _is_payment_error(exc: Exception) -> bool:
     # OpenRouter and other providers include "credits" or "afford" in 402 bodies,
     # but sometimes wrap them in 429 or other codes.
     if status in (402, 429, None):
-        if any(kw in err_lower for kw in ("credits", "insufficient funds",
-                                           "can only afford", "billing",
-                                           "payment required")):
+        if any(kw in err_lower for kw in (
+            "credits",
+            "insufficient funds",
+            "can only afford",
+            "billing",
+            "payment required",
+            # ChatGPT/Codex quota exhaustion is surfaced as HTTP 429 with
+            # a body like {'type': 'usage_limit_reached', 'message': 'The
+            # usage limit has been reached', ...}.  Treat that as an
+            # exhaustible backend, not a transient per-second rate limit.
+            "usage_limit_reached",
+            "usage limit has been reached",
+            "quota exhausted",
+            "quota will reset",
+            "exceeded your current quota",
+        )):
             return True
     return False
+
+
+def _infer_failed_provider_label(client: Any, resolved_provider: Optional[str]) -> str:
+    """Best-effort provider label for fallback skipping/logging.
+
+    ``resolved_provider`` can still be ``auto`` even though auto-detection
+    selected a concrete backend, and vision auto-routing overwrites it with the
+    effective provider.  Infer the concrete backend from the client shape/base
+    URL so fallback does not immediately retry the same exhausted provider.
+    """
+    provider = (resolved_provider or "auto").strip().lower()
+    try:
+        if isinstance(client, (CodexAuxiliaryClient, AsyncCodexAuxiliaryClient)):
+            return "openai-codex"
+    except NameError:
+        pass
+    base_url = str(getattr(client, "base_url", "") or "").lower()
+    if "chatgpt.com/backend-api/codex" in base_url:
+        return "openai-codex"
+    if base_url.startswith("cloudcode-pa://"):
+        return "google-gemini-cli"
+    if "openrouter.ai" in base_url:
+        return "openrouter"
+    if "inference-api.nousresearch.com" in base_url:
+        return "nous"
+    return provider
 
 
 def _is_connection_error(exc: Exception) -> bool:
@@ -1692,6 +1813,7 @@ def _try_payment_fallback(
     # Map common resolved_provider values back to chain labels.
     _alias_to_label = {"openrouter": "openrouter", "nous": "nous",
                        "openai-codex": "openai-codex", "codex": "openai-codex",
+                       "google-gemini-cli": "google-gemini-cli", "gemini-cli": "google-gemini-cli",
                        "custom": "local/custom", "local/custom": "local/custom"}
     skip_chain_labels = {_alias_to_label.get(s, s) for s in skip_labels}
 
@@ -1836,6 +1958,13 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
 
         if isinstance(sync_client, GeminiNativeClient):
             return AsyncGeminiNativeClient(sync_client), model
+    except ImportError:
+        pass
+    try:
+        from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
+
+        if isinstance(sync_client, GeminiCloudCodeClient):
+            return AsyncThreadedAuxiliaryClient(sync_client), model
     except ImportError:
         pass
     try:
@@ -2349,6 +2478,17 @@ def resolve_provider_client(
             return resolve_provider_client("nous", model, async_mode)
         if provider == "openai-codex":
             return resolve_provider_client("openai-codex", model, async_mode)
+        if provider == "google-gemini-cli":
+            client, default = _try_gemini_oauth()
+            if client is None:
+                logger.warning(
+                    "resolve_provider_client: google-gemini-cli requested but "
+                    "Gemini OAuth credentials are unavailable (run: hermes auth add google-gemini-cli)"
+                )
+                return None, None
+            final_model = _normalize_resolved_model(model or default, provider)
+            return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                    else (client, final_model))
         # Other OAuth providers not directly supported
         logger.warning("resolve_provider_client: OAuth provider %s not "
                        "directly supported, try 'auto'", provider)
@@ -2428,6 +2568,8 @@ def _resolve_strict_vision_backend(
         return _try_nous(vision=True)
     if provider == "openai-codex":
         return _try_codex()
+    if provider == "google-gemini-cli":
+        return _try_gemini_oauth()
     if provider == "anthropic":
         return _try_anthropic()
     if provider == "custom":
@@ -3209,6 +3351,7 @@ def call_llm(
     """
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
+    requested_auto = resolved_provider in ("auto", "", None)
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
 
@@ -3427,13 +3570,14 @@ def call_llm(
         # Only try alternative providers when the user didn't explicitly
         # configure this task's provider.  Explicit provider = hard constraint;
         # auto (the default) = best-effort fallback chain.  (#7559)
-        is_auto = resolved_provider in ("auto", "", None)
+        is_auto = requested_auto or resolved_provider in ("auto", "", None)
         if should_fallback and is_auto:
             reason = "payment error" if _is_payment_error(first_err) else "connection error"
+            failed_label = _infer_failed_provider_label(client, resolved_provider)
             logger.info("Auxiliary %s: %s on %s (%s), trying fallback",
-                        task or "call", reason, resolved_provider, first_err)
+                        task or "call", reason, failed_label, first_err)
             fb_client, fb_model, fb_label = _try_payment_fallback(
-                resolved_provider, task, reason=reason)
+                failed_label, task, reason=reason)
             if fb_client is not None:
                 fb_kwargs = _build_call_kwargs(
                     fb_label, fb_model, messages,
@@ -3522,6 +3666,7 @@ async def async_call_llm(
     """
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
+    requested_auto = resolved_provider in ("auto", "", None)
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
 
@@ -3703,13 +3848,14 @@ async def async_call_llm(
 
         # ── Payment / connection fallback (mirrors sync call_llm) ─────
         should_fallback = _is_payment_error(first_err) or _is_connection_error(first_err)
-        is_auto = resolved_provider in ("auto", "", None)
+        is_auto = requested_auto or resolved_provider in ("auto", "", None)
         if should_fallback and is_auto:
             reason = "payment error" if _is_payment_error(first_err) else "connection error"
+            failed_label = _infer_failed_provider_label(client, resolved_provider)
             logger.info("Auxiliary %s (async): %s on %s (%s), trying fallback",
-                        task or "call", reason, resolved_provider, first_err)
+                        task or "call", reason, failed_label, first_err)
             fb_client, fb_model, fb_label = _try_payment_fallback(
-                resolved_provider, task, reason=reason)
+                failed_label, task, reason=reason)
             if fb_client is not None:
                 fb_kwargs = _build_call_kwargs(
                     fb_label, fb_model, messages,

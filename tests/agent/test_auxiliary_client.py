@@ -4,6 +4,7 @@ import json
 import logging
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
@@ -760,6 +761,20 @@ class TestIsPaymentError:
         exc.status_code = 429
         assert _is_payment_error(exc) is True
 
+    def test_codex_usage_limit_reached_is_payment_error(self):
+        exc = Exception(
+            "Error code: 429 - {'error': {'type': 'usage_limit_reached', "
+            "'message': 'The usage limit has been reached', "
+            "'resets_in_seconds': 4220}}"
+        )
+        exc.status_code = 429
+        assert _is_payment_error(exc) is True
+
+    def test_quota_exhausted_is_payment_error(self):
+        exc = Exception("Gemini quota exhausted; quota will reset after 46s")
+        exc.status_code = 429
+        assert _is_payment_error(exc) is True
+
     def test_429_without_credits_message_is_not_payment(self):
         """Normal rate limits should NOT be treated as payment errors."""
         exc = Exception("Rate limit exceeded, try again in 2 seconds")
@@ -783,11 +798,17 @@ class TestIsPaymentError:
 class TestGetProviderChain:
     """_get_provider_chain() resolves functions at call time (testable)."""
 
-    def test_returns_five_entries(self):
+    def test_returns_oauth_gemini_before_api_key_fallback(self):
         chain = _get_provider_chain()
-        assert len(chain) == 5
         labels = [label for label, _ in chain]
-        assert labels == ["openrouter", "nous", "local/custom", "openai-codex", "api-key"]
+        assert labels == [
+            "openrouter",
+            "nous",
+            "local/custom",
+            "openai-codex",
+            "google-gemini-cli",
+            "api-key",
+        ]
 
     def test_picks_up_patched_functions(self):
         """Patches on _try_* functions must be visible in the chain."""
@@ -843,6 +864,39 @@ class TestTryPaymentFallback:
         assert model == "gpt-5.2-codex"
         assert label == "openai-codex"
 
+    def test_falls_back_to_gemini_oauth_before_api_key_provider(self):
+        mock_gemini = MagicMock()
+        with patch("agent.auxiliary_client._try_openrouter", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_nous", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_codex", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_gemini_oauth", return_value=(mock_gemini, "gemini-3-flash-preview")), \
+             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(MagicMock(), "api-key-model")), \
+             patch("agent.auxiliary_client._read_main_provider", return_value="openai-codex"):
+            client, model, label = _try_payment_fallback("openai-codex")
+        assert client is mock_gemini
+        assert model == "gemini-3-flash-preview"
+        assert label == "google-gemini-cli"
+
+    def test_resolve_provider_client_supports_gemini_oauth_directly(self):
+        mock_gemini = MagicMock()
+        with patch("agent.auxiliary_client._try_gemini_oauth",
+                   return_value=(mock_gemini, "gemini-3-flash-preview")):
+            client, model = resolve_provider_client("google-gemini-cli")
+        assert client is mock_gemini
+        assert model == "gemini-3-flash-preview"
+
+    def test_resolve_provider_client_wraps_gemini_oauth_for_async_mode(self):
+        mock_gemini = MagicMock()
+        mock_gemini.api_key = "google-oauth"
+        mock_gemini.base_url = "cloudcode-pa://google"
+        with patch("agent.auxiliary_client._try_gemini_oauth",
+                   return_value=(mock_gemini, "gemini-3-flash-preview")):
+            client, model = resolve_provider_client("google-gemini-cli", async_mode=True)
+        assert model == "gemini-3-flash-preview"
+        assert client.base_url == "cloudcode-pa://google"
+        assert hasattr(client.chat.completions, "create")
+
 
 class TestCallLlmPaymentFallback:
     """call_llm() retries with a different provider on 402 / payment errors."""
@@ -870,6 +924,75 @@ class TestCallLlmPaymentFallback:
                     task="compression",
                     messages=[{"role": "user", "content": "hello"}],
                 )
+
+    def test_auto_vision_falls_back_from_codex_usage_limit_to_api_key_provider(self):
+        """Vision auto-routing may resolve to Codex; quota errors must still fallback."""
+        primary_client = MagicMock()
+        quota_err = Exception(
+            "Error code: 429 - {'error': {'type': 'usage_limit_reached', "
+            "'message': 'The usage limit has been reached'}}"
+        )
+        quota_err.status_code = 429
+        primary_client.chat.completions.create.side_effect = quota_err
+
+        fallback_response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="fallback ok"))]
+        )
+        fallback_client = MagicMock()
+        fallback_client.base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+        fallback_client.chat.completions.create.return_value = fallback_response
+
+        with patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("auto", None, None, None, None)), \
+             patch("agent.auxiliary_client.resolve_vision_provider_client",
+                   return_value=("openai-codex", primary_client, "gpt-5.5")), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                   return_value=(fallback_client, "gemini-3-flash-preview", "api-key")) as mock_fb:
+            result = call_llm(
+                task="vision",
+                messages=[{"role": "user", "content": "describe image"}],
+            )
+
+        assert result is fallback_response
+        mock_fb.assert_called_once()
+        assert mock_fb.call_args.args[0] == "openai-codex"
+        assert fallback_client.chat.completions.create.call_args.kwargs["model"] == "gemini-3-flash-preview"
+
+    @pytest.mark.asyncio
+    async def test_async_auto_vision_falls_back_from_codex_usage_limit(self):
+        primary_client = MagicMock()
+        quota_err = Exception(
+            "Error code: 429 - {'error': {'type': 'usage_limit_reached', "
+            "'message': 'The usage limit has been reached'}}"
+        )
+        quota_err.status_code = 429
+        primary_client.chat.completions.create = AsyncMock(side_effect=quota_err)
+
+        sync_fb = MagicMock()
+        sync_fb.base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+        async_fb = MagicMock()
+        fallback_response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="fallback ok"))]
+        )
+        async_fb.chat.completions.create = AsyncMock(return_value=fallback_response)
+
+        with patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("auto", None, None, None, None)), \
+             patch("agent.auxiliary_client.resolve_vision_provider_client",
+                   return_value=("openai-codex", primary_client, "gpt-5.5")), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                   return_value=(sync_fb, "gemini-3-flash-preview", "api-key")) as mock_fb, \
+             patch("agent.auxiliary_client._to_async_client",
+                   return_value=(async_fb, "gemini-3-flash-preview")):
+            result = await async_call_llm(
+                task="vision",
+                messages=[{"role": "user", "content": "describe image"}],
+            )
+
+        assert result is fallback_response
+        mock_fb.assert_called_once()
+        assert mock_fb.call_args.args[0] == "openai-codex"
+        assert async_fb.chat.completions.create.call_args.kwargs["model"] == "gemini-3-flash-preview"
 
 # ---------------------------------------------------------------------------
 # Gate: _resolve_api_key_provider must skip anthropic when not configured
