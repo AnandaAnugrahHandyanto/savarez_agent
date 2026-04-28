@@ -2158,6 +2158,7 @@ class TestConcurrentToolExecution:
             profile="coder",
             acp_command="hermes",
             acp_args=["--profile", "coder", "acp"],
+            role=None,
             parent_agent=agent,
         )
         assert "ok" in result
@@ -2183,6 +2184,7 @@ class TestConcurrentToolExecution:
             profile="coder",
             acp_command="hermes",
             acp_args=["--profile", "coder", "acp"],
+            role=None,
             parent_agent=agent,
         )
         assert len(messages) == 1
