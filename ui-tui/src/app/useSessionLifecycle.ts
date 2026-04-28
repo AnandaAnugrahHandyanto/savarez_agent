@@ -2,7 +2,7 @@ import { writeFileSync } from 'node:fs'
 
 import type { ScrollBoxHandle } from '@hermes/ink'
 import { evictInkCaches } from '@hermes/ink'
-import { type RefObject, useCallback } from 'react'
+import { type RefObject, useCallback, useRef } from 'react'
 
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
 import { introMsg, toTranscriptMessages } from '../domain/messages.js'
@@ -83,6 +83,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     setVoiceRecording,
     sys
   } = opts
+  const creatingSessionRef = useRef<null | Promise<null | string>>(null)
 
   const closeSession = useCallback(
     (targetSid?: null | string) =>
@@ -129,7 +130,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         panel(SETUP_REQUIRED_TITLE, buildSetupRequiredSections())
         patchUiState({ status: 'setup required' })
 
-        return
+        return null
       }
 
       await closeSession(getUiState().sid)
@@ -137,7 +138,9 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       const r = await rpc<SessionCreateResponse>('session.create', { cols: colsRef.current })
 
       if (!r) {
-        return patchUiState({ status: 'ready' })
+        patchUiState({ status: 'ready' })
+
+        return null
       }
 
       const info = r.info ?? null
@@ -168,9 +171,31 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       if (msg) {
         sys(msg)
       }
+
+      return r.session_id
     },
     [closeSession, colsRef, panel, resetSession, rpc, setHistoryItems, setSessionStartedAt, sys]
   )
+
+  const ensureSession = useCallback(async () => {
+    const sid = getUiState().sid
+
+    if (sid) {
+      return sid
+    }
+
+    if (creatingSessionRef.current) {
+      return creatingSessionRef.current
+    }
+
+    patchUiState({ status: 'forging session…' })
+
+    creatingSessionRef.current = newSession().finally(() => {
+      creatingSessionRef.current = null
+    })
+
+    return creatingSessionRef.current
+  }, [newSession])
 
   const resumeById = useCallback(
     (id: string) => {
@@ -237,6 +262,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
   return {
     closeSession,
+    ensureSession,
     guardBusySessionSwitch,
     newSession,
     resetSession,

@@ -59,6 +59,20 @@ describe('createGatewayEventHandler', () => {
     patchUiState({ showReasoning: true })
   })
 
+  it('does not create a persisted session when the gateway becomes ready without a resume id', async () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: {}, type: 'gateway.ready' } as any)
+
+    await Promise.resolve()
+
+    expect(ctx.session.newSession).not.toHaveBeenCalled()
+    expect(ctx.session.resumeById).not.toHaveBeenCalled()
+    expect(getTurnState().activity).toEqual([])
+  })
+
   it('archives incomplete todos into transcript flow at end of turn so they scroll up', () => {
     const appended: Msg[] = []
 

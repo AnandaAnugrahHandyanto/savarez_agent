@@ -216,7 +216,6 @@ export interface GatewayEventHandlerContext {
   session: {
     STARTUP_RESUME_ID: string
     colsRef: MutableRefObject<number>
-    newSession: (msg?: string) => void
     resetSession: () => void
     resumeById: (id: string) => void
     setCatalog: StateSetter<null | SlashCatalog>

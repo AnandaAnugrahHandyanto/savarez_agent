@@ -48,7 +48,7 @@ const pushTool = pushUnique(8)
 
 export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev: GatewayEvent) => void {
   const { rpc } = ctx.gateway
-  const { STARTUP_RESUME_ID, newSession, resumeById, setCatalog } = ctx.session
+  const { STARTUP_RESUME_ID, resumeById, setCatalog } = ctx.session
   const { bellOnComplete, stdout, sys } = ctx.system
   const { appendMessage, panel, setHistoryItems } = ctx.transcript
   const { setInput } = ctx.composer
@@ -171,15 +171,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       })
       .catch((e: unknown) => turnController.pushActivity(`command catalog unavailable: ${rpcErrorMessage(e)}`, 'info'))
 
-    if (!STARTUP_RESUME_ID) {
-      patchUiState({ status: 'forging session…' })
-      newSession()
+    if (STARTUP_RESUME_ID) {
+      patchUiState({ status: 'resuming…' })
+      resumeById(STARTUP_RESUME_ID)
 
       return
     }
 
-    patchUiState({ status: 'resuming…' })
-    resumeById(STARTUP_RESUME_ID)
+    patchUiState({ status: 'ready' })
   }
 
   return (ev: GatewayEvent) => {

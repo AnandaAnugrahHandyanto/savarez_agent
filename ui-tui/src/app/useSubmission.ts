@@ -39,6 +39,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
     composerActions,
     composerRefs,
     composerState,
+    ensureSession,
     gw,
     maybeGoodVibes,
     setLastUserMsg,
@@ -83,13 +84,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
     (text: string, showUserMessage = true) => {
       const expand = expandSnips(composerState.pasteSnips)
 
-      const startSubmit = (displayText: string, submitText: string, showUserMessage = true) => {
-        const sid = getUiState().sid
-
-        if (!sid) {
-          return sys('session not ready yet')
-        }
-
+      const startSubmit = (sid: string, displayText: string, submitText: string, showUserMessage = true) => {
         turnController.clearStatusTimer()
         maybeGoodVibes(submitText)
         setLastUserMsg(text)
@@ -115,29 +110,34 @@ export function useSubmission(opts: UseSubmissionOptions) {
         })
       }
 
-      const sid = getUiState().sid
-
-      if (!sid) {
-        return sys('session not ready yet')
-      }
-
-      gw.request<InputDetectDropResponse>('input.detect_drop', { session_id: sid, text })
-        .then(r => {
-          if (!r?.matched) {
-            return startSubmit(text, expand(text), showUserMessage)
+      ensureSession()
+        .then(sid => {
+          if (!sid) {
+            return
           }
 
-          if (r.is_image) {
-            turnController.pushActivity(attachedImageNotice(r))
-          } else {
-            turnController.pushActivity(`detected file: ${r.name}`)
-          }
+          gw.request<InputDetectDropResponse>('input.detect_drop', { session_id: sid, text })
+            .then(r => {
+              if (!r?.matched) {
+                return startSubmit(sid, text, expand(text), showUserMessage)
+              }
 
-          startSubmit(r.text || text, expand(r.text || text), showUserMessage)
+              if (r.is_image) {
+                turnController.pushActivity(attachedImageNotice(r))
+              } else {
+                turnController.pushActivity(`detected file: ${r.name}`)
+              }
+
+              startSubmit(sid, r.text || text, expand(r.text || text), showUserMessage)
+            })
+            .catch(() => startSubmit(sid, text, expand(text), showUserMessage))
         })
-        .catch(() => startSubmit(text, expand(text), showUserMessage))
+        .catch((e: Error) => {
+          sys(`error: ${e.message}`)
+          patchUiState({ busy: false, status: 'ready' })
+        })
     },
-    [appendMessage, composerActions, composerState.pasteSnips, gw, maybeGoodVibes, setLastUserMsg, sys]
+    [appendMessage, composerActions, composerState.pasteSnips, ensureSession, gw, maybeGoodVibes, setLastUserMsg, sys]
   )
 
   const shellExec = useCallback(
@@ -339,6 +339,7 @@ export interface UseSubmissionOptions {
   composerActions: ComposerActions
   composerRefs: ComposerRefs
   composerState: ComposerState
+  ensureSession: () => Promise<null | string>
   gw: GatewayClient
   maybeGoodVibes: (text: string) => void
   setLastUserMsg: (value: string) => void

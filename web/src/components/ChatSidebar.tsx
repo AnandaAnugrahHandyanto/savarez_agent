@@ -6,10 +6,9 @@
  *
  *   1. **JSON-RPC sidecar** (`GatewayClient` → /api/ws) — drives the
  *      sidebar's own slot of the dashboard's in-process gateway.  Owns
- *      the model badge / picker / connection state / error banner.
- *      Independent of the PTY pane's session by design — those are the
- *      pieces the sidebar needs to be able to drive directly (model
- *      switch via slash.exec, etc.).
+ *      the model badge / picker / connection state / error banner. It does
+ *      not create a session on mount; it adopts the PTY pane's session once
+ *      the user starts or resumes a conversation.
  *
  *   2. **Event subscriber** (/api/events?channel=…) — passive, receives
  *      every dispatcher emit from the PTY-side `tui_gateway.entry` that
@@ -44,7 +43,7 @@ interface SessionInfo {
 
 interface RpcEnvelope {
   method?: string;
-  params?: { type?: string; payload?: unknown };
+  params?: { type?: string; payload?: unknown; session_id?: string };
 }
 
 const TOOL_LIMIT = 20;
@@ -108,22 +107,7 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
       }
     });
 
-    // Adopt whichever session the gateway hands us. session.create on the
-    // sidecar is independent of the PTY pane's session by design — we
-    // only need a sid to drive the model picker's slash.exec calls.
     gw.connect()
-      .then(() => {
-        if (cancelled) {
-          return;
-        }
-        return gw.request<{ session_id: string }>("session.create", {});
-      })
-      .then((created) => {
-        if (cancelled || !created?.session_id) {
-          return;
-        }
-        setSessionId(created.session_id);
-      })
       .catch((e: Error) => {
         if (!cancelled) {
           setError(e.message);
@@ -192,7 +176,17 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
 
       const { type, payload } = frame.params;
 
-      if (type === "tool.start") {
+      if (type === "session.info") {
+        const p = payload as SessionInfo | undefined;
+
+        if (frame.params.session_id) {
+          setSessionId(frame.params.session_id);
+        }
+
+        if (p) {
+          setInfo((prev) => ({ ...prev, ...p }));
+        }
+      } else if (type === "tool.start") {
         const p = payload as
           | { tool_id?: string; name?: string; context?: string }
           | undefined;
