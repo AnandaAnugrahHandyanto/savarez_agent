@@ -8089,16 +8089,23 @@ class AIAgent:
             "finish_reason": finish_reason,
         }
 
-        if hasattr(assistant_message, "reasoning_content"):
-            raw_reasoning_content = getattr(assistant_message, "reasoning_content", None)
-            if raw_reasoning_content is not None:
-                msg["reasoning_content"] = _sanitize_surrogates(raw_reasoning_content)
-            elif msg.get("tool_calls") and self._needs_deepseek_tool_reasoning():
-                # DeepSeek thinking mode requires reasoning_content on every
-                # assistant tool-call message. Without it, replaying the
-                # persisted message causes HTTP 400. Include empty string
-                # as a defensive compatibility fallback (refs #15250).
-                msg["reasoning_content"] = ""
+        # Always persist `reasoning_content` on assistant turns. Without this
+        # the persisted history is silently incompatible with DeepSeek/Kimi
+        # thinking-mode replay (HTTP 400: "The reasoning_content in the
+        # thinking mode must be passed back to the API.") whenever the user
+        # later switches model. Prefer the SDK-supplied value (may carry
+        # structured data); otherwise fall back to the already-sanitized
+        # `reasoning_text` we accumulated from streaming deltas; finally
+        # default to "" so non-thinking providers ignore it harmlessly while
+        # thinking providers see a valid (empty) field. Refs #16844 (write
+        # side) / #15213, #15250, #15353, #15741, #15748 (read-side patches).
+        sdk_reasoning_content = getattr(assistant_message, "reasoning_content", None)
+        if sdk_reasoning_content is not None:
+            msg["reasoning_content"] = _sanitize_surrogates(sdk_reasoning_content)
+        elif reasoning_text:
+            msg["reasoning_content"] = reasoning_text
+        else:
+            msg["reasoning_content"] = ""
 
         if hasattr(assistant_message, 'reasoning_details') and assistant_message.reasoning_details:
             # Pass reasoning_details back unmodified so providers (OpenRouter,
