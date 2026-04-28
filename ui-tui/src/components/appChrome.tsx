@@ -20,14 +20,6 @@ import type { Msg, Usage } from '../types.js'
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
 
-// Stable verb width keeps cwd / ctx bar / bg counter from shifting on
-// every rotation when the verb changes from `cogitating` (10) to
-// `synthesizing` (12).  Pad to longest-verb + ellipsis + a trailing
-// space so the duration suffix has a stable separator.
-const VERB_PAD_LEN = VERBS.reduce((max, v) => Math.max(max, v.length), 0) + 1
-
-export const padVerb = (verb: string) => `${verb}…`.padEnd(VERB_PAD_LEN + 1, ' ')
-
 // Compact alternates for the `emoji` and `ascii` indicator styles.
 // Each entry is a fixed-width (display-width) glyph.
 const EMOJI_FRAMES = ['⚕ ', '🌀', '🤔', '✨', '🍵', '🔮']
@@ -92,8 +84,7 @@ function FaceTicker({ color, startedAt }: { color: string; startedAt?: null | nu
 
   return (
     <Text color={color}>
-      {frame} {padVerb(verb)}
-      {startedAt ? `· ${fmtDuration(now - startedAt)}` : ''}
+      {frame} {verb}…{startedAt ? ` · ${fmtDuration(now - startedAt)}` : ''}
     </Text>
   )
 }
