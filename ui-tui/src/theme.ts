@@ -242,7 +242,12 @@ function backgroundLuminance(raw: string): null | number {
 //
 // Anything we can't decide stays dark — the default Hermes palette
 // is the dark one.
-export function detectLightMode(env: NodeJS.ProcessEnv = process.env): boolean {
+export function detectLightMode(
+  env: NodeJS.ProcessEnv = process.env,
+  // Injectable so tests can prove the COLORFGBG-over-TERM_PROGRAM
+  // precedence rule even though the production allow-list is empty.
+  lightDefaultTermPrograms: ReadonlySet<string> = LIGHT_DEFAULT_TERM_PROGRAMS,
+): boolean {
   const lightFlag = (env.HERMES_TUI_LIGHT ?? '').trim().toLowerCase()
 
   if (TRUE_RE.test(lightFlag)) {
@@ -288,7 +293,7 @@ export function detectLightMode(env: NodeJS.ProcessEnv = process.env): boolean {
 
   const termProgram = (env.TERM_PROGRAM ?? '').trim()
 
-  return LIGHT_DEFAULT_TERM_PROGRAMS.has(termProgram)
+  return lightDefaultTermPrograms.has(termProgram)
 }
 
 export const DEFAULT_THEME: Theme = detectLightMode() ? LIGHT_THEME : DARK_THEME

@@ -89,9 +89,18 @@ describe('detectLightMode', () => {
     expect(detectLightMode({ HERMES_TUI_BACKGROUND: '#fffffff' })).toBe(false)
   })
 
-  it('treats COLORFGBG as authoritative when present so it dominates fallbacks', () => {
-    // A dark COLORFGBG beats a hypothetical light TERM_PROGRAM allow-list entry.
-    expect(detectLightMode({ COLORFGBG: '15;0', TERM_PROGRAM: 'Apple_Terminal' })).toBe(false)
+  it('treats COLORFGBG as authoritative when present so it dominates the TERM_PROGRAM allow-list', () => {
+    // Inject a light-default allow-list so the precedence test is
+    // meaningful even though the production allow-list is empty.
+    const allowList = new Set(['Apple_Terminal'])
+
+    // Sanity: the allow-list alone WOULD turn this terminal light.
+    expect(detectLightMode({ TERM_PROGRAM: 'Apple_Terminal' }, allowList)).toBe(true)
+
+    // Dark COLORFGBG must beat the allow-list.
+    expect(
+      detectLightMode({ COLORFGBG: '15;0', TERM_PROGRAM: 'Apple_Terminal' }, allowList),
+    ).toBe(false)
   })
 })
 
