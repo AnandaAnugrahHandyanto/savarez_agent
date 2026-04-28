@@ -808,6 +808,21 @@ def run_doctor(args):
             check_fail("daytona SDK not installed", "(pip install daytona)")
             issues.append("Install daytona SDK: pip install daytona")
 
+    # Koyeb (if using koyeb backend)
+    if terminal_env == "koyeb":
+        koyeb_token = os.getenv("KOYEB_API_TOKEN")
+        if koyeb_token:
+            check_ok("Koyeb API token", "(configured)")
+        else:
+            check_fail("KOYEB_API_TOKEN not set", "(required for TERMINAL_ENV=koyeb)")
+            issues.append("Set KOYEB_API_TOKEN environment variable")
+        try:
+            from koyeb import Sandbox  # noqa: F401 — SDK presence check
+            check_ok("koyeb SDK", "(installed)")
+        except ImportError:
+            check_fail("koyeb SDK not installed", "(pip install koyeb-sdk)")
+            issues.append("Install koyeb SDK: pip install koyeb-sdk")
+
     # Node.js + agent-browser (for browser automation tools)
     if shutil.which("node"):
         check_ok("Node.js")

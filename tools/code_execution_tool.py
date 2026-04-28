@@ -475,6 +475,8 @@ def _get_or_create_env(task_id: str):
             image = overrides.get("modal_image") or config["modal_image"]
         elif env_type == "daytona":
             image = overrides.get("daytona_image") or config["daytona_image"]
+        elif env_type == "koyeb":
+            image = overrides.get("koyeb_image") or config["koyeb_image"]
         else:
             image = ""
 

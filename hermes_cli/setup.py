@@ -1189,11 +1189,12 @@ def setup_terminal_backend(config: dict):
         "Modal - serverless cloud sandbox",
         "SSH - run on a remote machine",
         "Daytona - persistent cloud development environment",
+        "Koyeb - cloud sandbox execution",
     ]
-    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona"}
-    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4}
+    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona", 5: "koyeb"}
+    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4, "koyeb": 5}
 
-    next_idx = 5
+    next_idx = 6
     if is_linux:
         terminal_choices.append("Singularity/Apptainer - HPC-friendly container")
         idx_to_backend[next_idx] = "singularity"
@@ -1445,6 +1446,64 @@ def setup_terminal_backend(config: dict):
         image = prompt("  Sandbox image", current_image)
         config["terminal"]["daytona_image"] = image
         save_env_value("TERMINAL_DAYTONA_IMAGE", image)
+
+        _prompt_container_resources(config)
+
+    elif selected_backend == "koyeb":
+        print_success("Terminal backend: Koyeb")
+        print_info("Cloud sandbox execution via Koyeb.")
+        print_info("Sign up at: https://www.koyeb.com")
+
+        # Check if koyeb SDK is installed
+        try:
+            __import__("koyeb")
+        except ImportError:
+            print_info("Installing koyeb SDK...")
+            import subprocess
+
+            uv_bin = shutil.which("uv")
+            if uv_bin:
+                result = subprocess.run(
+                    [uv_bin, "pip", "install", "--python", sys.executable, "koyeb-sdk"],
+                    capture_output=True,
+                    text=True,
+                )
+            else:
+                result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "koyeb-sdk"],
+                    capture_output=True,
+                    text=True,
+                )
+            if result.returncode == 0:
+                print_success("koyeb SDK installed")
+            else:
+                print_warning("Install failed — run manually: pip install koyeb-sdk")
+                if result.stderr:
+                    print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
+
+        # Koyeb API token
+        print()
+        existing_key = get_env_value("KOYEB_API_TOKEN")
+        if existing_key:
+            print_info("  Koyeb API token: already configured")
+            if prompt_yes_no("  Update API token?", False):
+                api_key = prompt("    Koyeb API token", password=True)
+                if api_key:
+                    save_env_value("KOYEB_API_TOKEN", api_key)
+                    print_success("    Updated")
+        else:
+            api_key = prompt("    Koyeb API token", password=True)
+            if api_key:
+                save_env_value("KOYEB_API_TOKEN", api_key)
+                print_success("    Configured")
+
+        # Koyeb image
+        current_image = config.get("terminal", {}).get(
+            "koyeb_image", "koyeb/sandbox:latest"
+        )
+        image = prompt("  Sandbox image", current_image)
+        config["terminal"]["koyeb_image"] = image
+        save_env_value("TERMINAL_KOYEB_IMAGE", image)
 
         _prompt_container_resources(config)
 
