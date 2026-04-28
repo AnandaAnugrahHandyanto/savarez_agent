@@ -147,6 +147,25 @@ class TestTextBatching:
         assert adapter._pending_text_batch_tasks == {}
 
     @pytest.mark.asyncio
+    async def test_cancel_pending_delivery_tasks_skips_current_polling_error_task(self):
+        """The teardown helper must not cancel the coroutine doing cleanup."""
+        adapter = _make_adapter()
+        current_task = asyncio.current_task()
+        stale_task = asyncio.create_task(asyncio.sleep(60))
+        adapter._pending_text_batches["text"] = _make_event("text")
+        adapter._pending_text_batch_tasks["text"] = stale_task
+        adapter._polling_error_task = current_task
+
+        await adapter._cancel_pending_delivery_tasks()
+
+        assert stale_task.done()
+        assert stale_task.cancelled()
+        assert not current_task.cancelled()
+        assert adapter._pending_text_batches == {}
+        assert adapter._pending_text_batch_tasks == {}
+        assert adapter._polling_error_task is current_task
+
+    @pytest.mark.asyncio
     async def test_disconnect_cancels_all_pending_delivery_task_maps(self):
         """Photo/media/polling delayed tasks are awaited and queues are cleared."""
         adapter = _make_adapter()
