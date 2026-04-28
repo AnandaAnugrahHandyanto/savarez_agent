@@ -58,6 +58,19 @@ _EXTRA_ENV_KEYS = frozenset({
     "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_DEVICE_ID", "MATRIX_HOME_ROOM",
     "MATRIX_REQUIRE_MENTION", "MATRIX_FREE_RESPONSE_ROOMS", "MATRIX_AUTO_THREAD", "MATRIX_DM_AUTO_THREAD",
     "MATRIX_RECOVERY_KEY",
+    # Langfuse observability plugin
+    # HERMES_LANGFUSE_ENABLED: kept here for backward compat only.
+    # New installs use config.yaml plugins.langfuse_tracing.enabled instead.
+    "HERMES_LANGFUSE_ENABLED",
+    "HERMES_LANGFUSE_ENV",
+    "HERMES_LANGFUSE_RELEASE",
+    "HERMES_LANGFUSE_SAMPLE_RATE",
+    "HERMES_LANGFUSE_MAX_CHARS",
+    "HERMES_LANGFUSE_DEBUG",
+    # Standard Langfuse SDK env vars (read as fallback by the plugin)
+    "LANGFUSE_PUBLIC_KEY",
+    "LANGFUSE_SECRET_KEY",
+    "LANGFUSE_BASE_URL",
 })
 import yaml
 
@@ -1690,6 +1703,32 @@ OPTIONAL_ENV_VARS = {
         "description": "Base URL for self-hosted Honcho instances (no API key needed)",
         "prompt": "Honcho base URL (e.g. http://localhost:8000)",
         "category": "tool",
+    },
+
+    # ── Langfuse observability ──
+    # Note: enabling/disabling tracing is done via config.yaml
+    # (plugins.langfuse_tracing.enabled), not via .env. Only credentials go here.
+    "HERMES_LANGFUSE_PUBLIC_KEY": {
+        "description": "Langfuse project public key (pk-lf-...)",
+        "prompt": "Langfuse public key",
+        "url": "https://cloud.langfuse.com",
+        "password": False,
+        "category": "tool",
+    },
+    "HERMES_LANGFUSE_SECRET_KEY": {
+        "description": "Langfuse project secret key (sk-lf-...)",
+        "prompt": "Langfuse secret key",
+        "url": "https://cloud.langfuse.com",
+        "password": True,
+        "category": "tool",
+    },
+    "HERMES_LANGFUSE_BASE_URL": {
+        "description": "Langfuse server URL (default: https://cloud.langfuse.com)",
+        "prompt": "Langfuse server URL (leave empty for cloud.langfuse.com)",
+        "url": None,
+        "password": False,
+        "category": "tool",
+        "advanced": True,
     },
 
     # ── Messaging platforms ──
