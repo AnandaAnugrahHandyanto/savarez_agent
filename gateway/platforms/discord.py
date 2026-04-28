@@ -808,8 +808,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 logger.info("[%s] Skipping Discord slash command sync (policy=off)", self.name)
                 return
 
+            timeout = self._get_discord_command_sync_timeout()
+
             if sync_policy == "bulk":
-                synced = await asyncio.wait_for(self._client.tree.sync(), timeout=30)
+                synced = await asyncio.wait_for(self._client.tree.sync(), timeout=timeout)
                 logger.info("[%s] Synced %d slash command(s) via bulk tree sync", self.name, len(synced))
                 return
 
@@ -820,7 +822,7 @@ class DiscordAdapter(BasePlatformAdapter):
             # left slash commands broken for ~60 min until the bucket fully
             # recovered. Use a wide ceiling; the cap still guards against a
             # true hang. (#16713)
-            summary = await asyncio.wait_for(self._safe_sync_slash_commands(), timeout=600)
+            summary = await asyncio.wait_for(self._safe_sync_slash_commands(), timeout=timeout)
             logger.info(
                 "[%s] Safely reconciled %d slash command(s): unchanged=%d updated=%d recreated=%d created=%d deleted=%d",
                 self.name,
@@ -833,9 +835,10 @@ class DiscordAdapter(BasePlatformAdapter):
             )
         except asyncio.TimeoutError:
             logger.warning(
-                "[%s] Slash command sync timed out — Discord rate-limit bucket "
+                "[%s] Slash command sync timed out after %ss; Discord rate-limit bucket "
                 "may be saturated; will retry on next reconnect",
                 self.name,
+                self._get_discord_command_sync_timeout(),
             )
         except asyncio.CancelledError:
             raise
@@ -853,6 +856,26 @@ class DiscordAdapter(BasePlatformAdapter):
                 raw,
             )
         return "safe"
+
+    def _get_discord_command_sync_timeout(self) -> float:
+        raw = str(os.getenv("DISCORD_COMMAND_SYNC_TIMEOUT", "600") or "").strip()
+        try:
+            timeout = float(raw)
+        except ValueError:
+            logger.warning(
+                "[%s] Invalid DISCORD_COMMAND_SYNC_TIMEOUT=%r; falling back to 600s",
+                self.name,
+                raw,
+            )
+            return 600.0
+        if timeout <= 0:
+            logger.warning(
+                "[%s] Invalid DISCORD_COMMAND_SYNC_TIMEOUT=%r; falling back to 600s",
+                self.name,
+                raw,
+            )
+            return 600.0
+        return timeout
 
     def _canonicalize_app_command_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Reduce command payloads to the semantic fields Hermes manages."""
@@ -945,6 +968,22 @@ class DiscordAdapter(BasePlatformAdapter):
             "options": canonical["options"],
         }
 
+    def _normalize_discord_server_defaults(
+        self, current: Dict[str, Any], desired: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Ignore Discord-filled defaults for fields Hermes did not set.
+
+        Discord returns integration_types for existing global commands even
+        when discord.py's desired payload omits integration_types. Hermes does
+        not currently manage that field, so treating it as a mismatch makes
+        every command look changed and triggers a delete+recreate storm on each
+        gateway startup.
+        """
+        normalized = dict(current)
+        if desired.get("integration_types") is None:
+            normalized["integration_types"] = None
+        return normalized
+
     async def _safe_sync_slash_commands(self) -> Dict[str, int]:
         """Diff existing global commands and only mutate the commands that changed."""
         if not self._client:
@@ -993,6 +1032,9 @@ class DiscordAdapter(BasePlatformAdapter):
             current_existing_payload = self._existing_command_to_payload(current)
             current_payload = self._canonicalize_app_command_payload(current_existing_payload)
             desired_payload = self._canonicalize_app_command_payload(desired)
+            current_payload = self._normalize_discord_server_defaults(
+                current_payload, desired_payload
+            )
             if current_payload == desired_payload:
                 unchanged += 1
                 continue
