@@ -437,6 +437,117 @@ describe('createGatewayEventHandler', () => {
     })
   })
 
+  it('on gateway.ready with no STARTUP_RESUME_ID and auto_resume off, forges a new session', async () => {
+    const appended: Msg[] = []
+    const newSession = vi.fn()
+    const resumeById = vi.fn()
+    const ctx = buildCtx(appended)
+
+    ctx.session.newSession = newSession
+    ctx.session.resumeById = resumeById
+    ctx.session.STARTUP_RESUME_ID = ''
+    ctx.gateway.rpc = vi.fn(async (method: string) => {
+      if (method === 'config.get') {
+        return { config: { display: { tui_auto_resume_recent: false } } }
+      }
+
+      return null
+    })
+
+    createGatewayEventHandler(ctx)({ payload: {}, type: 'gateway.ready' } as any)
+
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(newSession).toHaveBeenCalled()
+    expect(resumeById).not.toHaveBeenCalled()
+  })
+
+  it('on gateway.ready with auto_resume on and a recent session, resumes it', async () => {
+    const appended: Msg[] = []
+    const newSession = vi.fn()
+    const resumeById = vi.fn()
+    const ctx = buildCtx(appended)
+
+    ctx.session.newSession = newSession
+    ctx.session.resumeById = resumeById
+    ctx.session.STARTUP_RESUME_ID = ''
+    ctx.gateway.rpc = vi.fn(async (method: string) => {
+      if (method === 'config.get') {
+        return { config: { display: { tui_auto_resume_recent: true } } }
+      }
+
+      if (method === 'session.most_recent') {
+        return { session_id: 'sess-most-recent' }
+      }
+
+      return null
+    })
+
+    createGatewayEventHandler(ctx)({ payload: {}, type: 'gateway.ready' } as any)
+
+    // Drain enough microtasks for two chained `.then` handlers.
+    for (let i = 0; i < 5; i += 1) {
+      await Promise.resolve()
+    }
+
+    expect(resumeById).toHaveBeenCalledWith('sess-most-recent')
+    expect(newSession).not.toHaveBeenCalled()
+  })
+
+  it('on gateway.ready with auto_resume on but no eligible session, falls back to new', async () => {
+    const appended: Msg[] = []
+    const newSession = vi.fn()
+    const resumeById = vi.fn()
+    const ctx = buildCtx(appended)
+
+    ctx.session.newSession = newSession
+    ctx.session.resumeById = resumeById
+    ctx.session.STARTUP_RESUME_ID = ''
+    ctx.gateway.rpc = vi.fn(async (method: string) => {
+      if (method === 'config.get') {
+        return { config: { display: { tui_auto_resume_recent: true } } }
+      }
+
+      if (method === 'session.most_recent') {
+        return { session_id: null }
+      }
+
+      return null
+    })
+
+    createGatewayEventHandler(ctx)({ payload: {}, type: 'gateway.ready' } as any)
+
+    for (let i = 0; i < 5; i += 1) {
+      await Promise.resolve()
+    }
+
+    expect(newSession).toHaveBeenCalled()
+    expect(resumeById).not.toHaveBeenCalled()
+  })
+
+  it('on gateway.ready with STARTUP_RESUME_ID set, the env wins over config auto_resume', async () => {
+    const appended: Msg[] = []
+    const newSession = vi.fn()
+    const resumeById = vi.fn()
+    const ctx = buildCtx(appended)
+
+    ctx.session.newSession = newSession
+    ctx.session.resumeById = resumeById
+    ctx.session.STARTUP_RESUME_ID = 'env-explicit'
+    ctx.gateway.rpc = vi.fn(async () => ({
+      config: { display: { tui_auto_resume_recent: true } }
+    }))
+
+    createGatewayEventHandler(ctx)({ payload: {}, type: 'gateway.ready' } as any)
+
+    await Promise.resolve()
+
+    expect(resumeById).toHaveBeenCalledWith('env-explicit')
+    expect(newSession).not.toHaveBeenCalled()
+  })
+
   it('keeps gateway noise informational and approval out of Activity', async () => {
     const appended: Msg[] = []
     const ctx = buildCtx(appended)

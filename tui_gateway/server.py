@@ -1788,6 +1788,42 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5006, str(e))
 
 
+@method("session.most_recent")
+def _(rid, params: dict) -> dict:
+    """Return the most recent human-facing session id, or ``None``.
+
+    Mirrors ``session.list``'s deny-list behaviour (drops ``tool``
+    sub-agent rows).  Used by TUI auto-resume when
+    ``display.tui_auto_resume_recent`` is on; the field is also handy
+    for any CLI tooling that wants "latest session" without paginating
+    the full list.
+    """
+    db = _get_db()
+    if db is None:
+        return _ok(rid, {"session_id": None})
+    try:
+        deny = frozenset({"tool"})
+        # Over-fetch modestly so per-source filtering doesn't leave us
+        # without a hit; we only need the first non-denied row.
+        rows = db.list_sessions_rich(source=None, limit=20)
+        for row in rows:
+            src = (row.get("source") or "").strip().lower()
+            if src in deny:
+                continue
+            return _ok(
+                rid,
+                {
+                    "session_id": row.get("id"),
+                    "title": row.get("title") or "",
+                    "started_at": row.get("started_at") or 0,
+                    "source": row.get("source") or "",
+                },
+            )
+        return _ok(rid, {"session_id": None})
+    except Exception as e:
+        return _err(rid, 5006, str(e))
+
+
 @method("session.resume")
 def _(rid, params: dict) -> dict:
     target = params.get("session_id", "")
