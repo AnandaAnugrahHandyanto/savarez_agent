@@ -536,9 +536,24 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 pass  # stat failed — fall through to full read
 
         # ── Perform the read ──────────────────────────────────────────
-        file_ops = _get_file_ops(task_id)
-        result = file_ops.read_file(path, offset, limit)
-        result_dict = result.to_dict()
+        result_dict = None
+        try:
+            from tools.lean_ctx_router import route_read_file
+
+            result_dict = route_read_file(
+                path=path,
+                resolved_path=_resolved,
+                offset=offset,
+                limit=limit,
+                cwd=Path(_get_live_tracking_cwd(task_id) or os.getcwd()),
+            )
+        except Exception:
+            logger.debug("lean-ctx read routing failed; falling back to native read", exc_info=True)
+
+        if result_dict is None:
+            file_ops = _get_file_ops(task_id)
+            result = file_ops.read_file(path, offset, limit)
+            result_dict = result.to_dict()
 
         # ── Character-count guard ─────────────────────────────────────
         # We're model-agnostic so we can't count tokens; characters are
@@ -547,7 +562,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # Note: we check the formatted content (with line-number prefixes),
         # not the raw file size, because that's what actually enters context.
         # Check BEFORE redaction to avoid expensive regex on huge content.
-        content_len = len(result.content or "")
+        content_len = len(result_dict.get("content") or "")
         file_size = result_dict.get("file_size", 0)
         max_chars = _get_max_read_chars()
         if content_len > max_chars:
@@ -565,9 +580,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             }, ensure_ascii=False)
 
         # ── Redact secrets (after guard check to skip oversized content) ──
-        if result.content:
-            result.content = redact_sensitive_text(result.content)
-            result_dict["content"] = result.content
+        if result_dict.get("content"):
+            result_dict["content"] = redact_sensitive_text(result_dict["content"])
 
         # Large-file hint: if the file is big and the caller didn't ask
         # for a narrow window, nudge toward targeted reads.
@@ -981,16 +995,37 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 "already_searched": count,
             }, ensure_ascii=False)
 
-        file_ops = _get_file_ops(task_id)
-        result = file_ops.search(
-            pattern=pattern, path=path, target=target, file_glob=file_glob,
-            limit=limit, offset=offset, output_mode=output_mode, context=context
-        )
-        if hasattr(result, 'matches'):
-            for m in result.matches:
-                if hasattr(m, 'content') and m.content:
-                    m.content = redact_sensitive_text(m.content)
-        result_dict = result.to_dict()
+        result_dict = None
+        try:
+            from tools.lean_ctx_router import route_search_files
+
+            result_dict = route_search_files(
+                pattern=pattern,
+                target=target,
+                path=path,
+                file_glob=file_glob,
+                limit=limit,
+                offset=offset,
+                output_mode=output_mode,
+                context=context,
+                cwd=Path(_get_live_tracking_cwd(task_id) or os.getcwd()),
+            )
+        except Exception:
+            logger.debug("lean-ctx search routing failed; falling back to native search", exc_info=True)
+
+        if result_dict is None:
+            file_ops = _get_file_ops(task_id)
+            result = file_ops.search(
+                pattern=pattern, path=path, target=target, file_glob=file_glob,
+                limit=limit, offset=offset, output_mode=output_mode, context=context
+            )
+            if hasattr(result, 'matches'):
+                for m in result.matches:
+                    if hasattr(m, 'content') and m.content:
+                        m.content = redact_sensitive_text(m.content)
+            result_dict = result.to_dict()
+        elif result_dict.get("content"):
+            result_dict["content"] = redact_sensitive_text(result_dict["content"])
 
         if count >= 3:
             result_dict["_warning"] = (

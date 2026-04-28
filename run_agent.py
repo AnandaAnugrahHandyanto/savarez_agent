@@ -1597,6 +1597,16 @@ class AIAgent:
             _agent_cfg = _load_agent_config()
         except Exception:
             _agent_cfg = {}
+        self._context_bootstrap_manager = None
+        try:
+            from agent.context_bootstrap import build_context_bootstrap_manager
+
+            self._context_bootstrap_manager = build_context_bootstrap_manager(
+                _agent_cfg,
+                workspace_root=Path.cwd(),
+            )
+        except Exception as _cb_err:
+            logger.debug("Context bootstrap init failed: %s", _cb_err)
         # Cache only the derived auxiliary compression context override that is
         # needed later by the startup feasibility check.  Avoid exposing a
         # broad pseudo-public config object on the agent instance.
@@ -9892,6 +9902,39 @@ class AIAgent:
         #
         # All injected context is ephemeral (not persisted to session DB).
         _plugin_user_context = ""
+        _is_first_turn = not bool(conversation_history)
+        _ctx_parts: list[str] = []
+        try:
+            _bootstrap_mgr = getattr(self, "_context_bootstrap_manager", None)
+            if _bootstrap_mgr is not None:
+                _workspace_root = Path.cwd()
+                for _candidate in (
+                    os.getenv("TERMINAL_CWD"),
+                    getattr(getattr(self, "_subdirectory_hints", None), "working_dir", None),
+                    getattr(self, "terminal_cwd", None),
+                    getattr(self, "cwd", None),
+                ):
+                    if not _candidate:
+                        continue
+                    try:
+                        _candidate_path = Path(str(_candidate)).expanduser()
+                        if _candidate_path.is_absolute() and _candidate_path.is_dir():
+                            _workspace_root = _candidate_path
+                            break
+                    except Exception:
+                        continue
+                _bootstrap_context = _bootstrap_mgr.context_for_turn(
+                    session_id=self.session_id,
+                    user_message=original_user_message if isinstance(original_user_message, str) else "",
+                    is_first_turn=_is_first_turn,
+                    workspace_root=_workspace_root,
+                    conversation_history=list(messages),
+                )
+                if _bootstrap_context:
+                    _ctx_parts.append(_bootstrap_context)
+        except Exception as exc:
+            logger.warning("context bootstrap failed: %s", exc)
+
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
             _pre_results = _invoke_hook(
@@ -9899,21 +9942,20 @@ class AIAgent:
                 session_id=self.session_id,
                 user_message=original_user_message,
                 conversation_history=list(messages),
-                is_first_turn=(not bool(conversation_history)),
+                is_first_turn=_is_first_turn,
                 model=self.model,
                 platform=getattr(self, "platform", None) or "",
                 sender_id=getattr(self, "_user_id", None) or "",
             )
-            _ctx_parts: list[str] = []
             for r in _pre_results:
                 if isinstance(r, dict) and r.get("context"):
                     _ctx_parts.append(str(r["context"]))
                 elif isinstance(r, str) and r.strip():
                     _ctx_parts.append(r)
-            if _ctx_parts:
-                _plugin_user_context = "\n\n".join(_ctx_parts)
         except Exception as exc:
             logger.warning("pre_llm_call hook failed: %s", exc)
+        if _ctx_parts:
+            _plugin_user_context = "\n\n".join(_ctx_parts)
 
         # Main conversation loop
         api_call_count = 0

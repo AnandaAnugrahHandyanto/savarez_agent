@@ -327,6 +327,34 @@ compression:
   # auxiliary section below (auxiliary.compression.provider / model).
 
 # =============================================================================
+# Context Bootstrap (Ephemeral repo context)
+# =============================================================================
+# lean-ctx bootstrap is config-driven. With `enabled: auto`, Hermes activates
+# this layer when the configured `lean-ctx` command is available on PATH. Hermes
+# asks lean-ctx for first-turn code context using ctx_overview, ctx_preload,
+# ctx_handoff, and symbol/caller probes, then appends the result to the current
+# user message as ephemeral request context. When route_* is enabled, the
+# visible read_file/search_files/terminal tools can route eligible local
+# foreground operations through lean-ctx with native fallback. Routed commands
+# keep Hermes' normal safety checks and expose compact current-session savings
+# in the CLI status bar (`lc 12.4k saved · 74%`) plus `/leanctx` diagnostics.
+# `ctx_dashboard` is a lean-ctx dashboard/server control; Hermes' TUI uses the
+# status-bar metric.
+#
+# lean_ctx:
+#   enabled: auto
+#   command: lean-ctx
+#   timeout_seconds: 30
+#   route_file_tools: true
+#   route_terminal: true
+#   first_turn_only: true
+#   code_task_only: false
+#   max_chars: 12000
+#   delegation_max_chars: 6000
+#   # Optional wall-clock cap for the entire bootstrap packet.
+#   packet_timeout_seconds: 25
+
+# =============================================================================
 # Anthropic prompt caching TTL
 # =============================================================================
 # When prompt caching is active (Claude via OpenRouter or native Anthropic),
