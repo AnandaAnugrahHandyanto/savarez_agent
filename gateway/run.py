@@ -798,6 +798,96 @@ class GatewayRunner:
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
 
+        # Auto-update support: track home channel for update notifications
+        self._home_channel: Optional[Dict[str, str]] = None
+        self._auto_updater: Optional[Any] = None
+        self._load_home_channel()
+
+
+    def _load_home_channel(self) -> None:
+        """Load persisted home channel from file."""
+        try:
+            import json
+            from hermes_constants import get_hermes_home
+            channel_path = get_hermes_home() / ".home_channel.json"
+            if channel_path.exists():
+                self._home_channel = json.loads(channel_path.read_text())
+        except Exception:
+            pass
+
+
+    def _save_home_channel(self, platform: str, chat_id: str) -> None:
+        """Persist home channel for update notifications."""
+        try:
+            import json
+            from hermes_constants import get_hermes_home
+            channel_path = get_hermes_home() / ".home_channel.json"
+            self._home_channel = {"platform": platform, "chat_id": chat_id}
+            channel_path.write_text(json.dumps(self._home_channel))
+        except Exception:
+            pass
+
+
+    def _capture_home_channel(self, platform: Platform, chat_id: str, text: str) -> None:
+        """Capture home channel on first valid user message."""
+        if self._home_channel:
+            return
+        if not text or not text.strip():
+            return
+        self._save_home_channel(platform.value, chat_id)
+
+
+    async def _check_post_update_notification(self) -> bool:
+        """Poll for .update_manifest.json after gateway restarts.
+
+        Returns True if manifest was found and notification sent.
+        """
+        import asyncio
+        import json
+        from hermes_constants import get_hermes_home
+
+        hermes_home = get_hermes_home()
+        manifest_path = hermes_home / ".update_manifest.json"
+        channel = self._home_channel
+
+        if not channel:
+            return False
+
+        for _ in range(10):
+            if manifest_path.exists():
+                break
+            await asyncio.sleep(1)
+        else:
+            return False
+
+        try:
+            manifest = json.loads(manifest_path.read_text())
+        except Exception:
+            return False
+
+        import time as time_module
+        manifest_ts = manifest.get("timestamp", 0)
+        if time_module.time() - manifest_ts > 5 * 60:
+            return False
+
+        try:
+            adapter = self.adapters.get(Platform(channel.get("platform", "")))
+            if adapter:
+                await adapter.send(
+                    channel.get("chat_id", ""),
+                    f"Hermes updated to {manifest.get('version', 'unknown')} and restarted successfully.",
+                )
+        except Exception as e:
+            logger.error(f"Failed to send update notification: {e}")
+            return False
+
+        try:
+            manifest_path.unlink()
+        except Exception:
+            pass
+
+        return True
+
 
     def _warn_if_docker_media_delivery_is_risky(self) -> None:
         """Warn when Docker-backed gateways lack an explicit export mount.
@@ -2415,7 +2505,14 @@ class GatewayRunner:
         await self.hooks.emit("gateway:startup", {
             "platforms": [p.value for p in self.adapters.keys()],
         })
-        
+
+        # Check for post-update notification (non-blocking)
+        if connected_count > 0:
+            try:
+                await self._check_post_update_notification()
+            except Exception:
+                pass
+
         if connected_count > 0:
             logger.info("Gateway running with %s platform(s)", connected_count)
         
@@ -3555,6 +3652,9 @@ class GatewayRunner:
                         e,
                     )
                 _update_prompts.pop(_quick_key, None)
+
+        # Auto-update: capture home channel on first valid user message
+        self._capture_home_channel(source.platform, source.chat_id, event.text or "")
 
         # PRIORITY handling when an agent is already running for this session.
         # Default behavior is to interrupt immediately so user text/stop messages

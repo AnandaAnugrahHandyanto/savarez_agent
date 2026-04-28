@@ -413,7 +413,14 @@ DEFAULT_CONFIG = {
         # only controls how inbound user images are presented.
         "image_input_mode": "auto",
     },
-    
+
+    "auto_update": {
+        "enabled": False,
+        "mode": "notify",
+        "check_interval": "24h",
+        "grace_period_seconds": 300,
+    },
+
     "terminal": {
         "backend": "local",
         "modal_mode": "auto",

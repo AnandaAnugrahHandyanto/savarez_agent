@@ -183,6 +183,46 @@ def check_for_updates() -> Optional[int]:
     return behind
 
 
+def check_for_updates_uncached() -> Optional[int]:
+    """Check how many commits behind origin/main the local repo is.
+
+    Bypasses the cache to force a fresh check. Only use when you need
+    to know the real-time state (e.g., before applying an auto-update).
+    """
+    hermes_home = get_hermes_home()
+    repo_dir = hermes_home / "hermes-agent"
+    cache_file = hermes_home / ".update_check"
+
+    if not (repo_dir / ".git").exists():
+        repo_dir = Path(__file__).parent.parent.resolve()
+    if not (repo_dir / ".git").exists():
+        return None
+
+    try:
+        subprocess.run(
+            ["git", "fetch", "origin", "--quiet"],
+            capture_output=True, timeout=10,
+            cwd=str(repo_dir),
+        )
+    except Exception:
+        pass
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-list", "--count", "HEAD..origin/main"],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(repo_dir),
+        )
+        if result.returncode == 0:
+            behind = int(result.stdout.strip())
+        else:
+            behind = None
+    except Exception:
+        behind = None
+
+    return behind
+
+
 def _resolve_repo_dir() -> Optional[Path]:
     """Return the active Hermes git checkout, or None if this isn't a git install."""
     hermes_home = get_hermes_home()
