@@ -7714,6 +7714,7 @@ class AIAgent:
             "role": "assistant",
             "content": _san_content,
             "reasoning": reasoning_text,
+            "reasoning_content": reasoning_text if reasoning_text is not None else "",
             "finish_reason": finish_reason,
         }
 
