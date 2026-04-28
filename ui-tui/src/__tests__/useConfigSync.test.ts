@@ -1,11 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $uiState, resetUiState } from '../app/uiStore.js'
-<<<<<<< HEAD
-import { applyDisplay, normalizeBusyInputMode, normalizeStatusBar } from '../app/useConfigSync.js'
-=======
-import { applyDisplay, normalizeIndicatorStyle, normalizeStatusBar } from '../app/useConfigSync.js'
->>>>>>> e202ca5db (feat(tui): pluggable busy-indicator styles (kaomoji/emoji/unicode/ascii))
+import {
+  applyDisplay,
+  normalizeBusyInputMode,
+  normalizeIndicatorStyle,
+  normalizeStatusBar
+} from '../app/useConfigSync.js'
 
 describe('applyDisplay', () => {
   beforeEach(() => {
@@ -165,7 +166,6 @@ describe('normalizeStatusBar', () => {
   })
 })
 
-<<<<<<< HEAD
 describe('normalizeBusyInputMode', () => {
   it('passes through the canonical CLI parity values', () => {
     expect(normalizeBusyInputMode('queue')).toBe('queue')
@@ -192,8 +192,6 @@ describe('normalizeBusyInputMode', () => {
   })
 })
 
-describe('applyDisplay → busy_input_mode', () => {
-=======
 describe('normalizeIndicatorStyle', () => {
   it('passes through the canonical enum', () => {
     expect(normalizeIndicatorStyle('kaomoji')).toBe('kaomoji')
@@ -216,13 +214,11 @@ describe('normalizeIndicatorStyle', () => {
   })
 })
 
-describe('applyDisplay → tui_status_indicator', () => {
->>>>>>> e202ca5db (feat(tui): pluggable busy-indicator styles (kaomoji/emoji/unicode/ascii))
+describe('applyDisplay → busy_input_mode', () => {
   beforeEach(() => {
     resetUiState()
   })
 
-<<<<<<< HEAD
   it('threads display.busy_input_mode into $uiState', () => {
     const setBell = vi.fn()
 
@@ -241,7 +237,14 @@ describe('applyDisplay → tui_status_indicator', () => {
 
     applyDisplay({ config: { display: { busy_input_mode: 'drop' } } }, setBell)
     expect($uiState.get().busyInputMode).toBe('queue')
-=======
+  })
+})
+
+describe('applyDisplay → tui_status_indicator', () => {
+  beforeEach(() => {
+    resetUiState()
+  })
+
   it('threads display.tui_status_indicator into $uiState', () => {
     const setBell = vi.fn()
 
@@ -260,6 +263,5 @@ describe('applyDisplay → tui_status_indicator', () => {
 
     applyDisplay({ config: { display: { tui_status_indicator: 'rainbow' } } }, setBell)
     expect($uiState.get().indicatorStyle).toBe('kaomoji')
->>>>>>> e202ca5db (feat(tui): pluggable busy-indicator styles (kaomoji/emoji/unicode/ascii))
   })
 })

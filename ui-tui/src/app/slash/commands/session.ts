@@ -12,7 +12,7 @@ import type {
 } from '../../../gatewayTypes.js'
 import { fmtK } from '../../../lib/text.js'
 import type { PanelSection } from '../../../types.js'
-import { INDICATOR_STYLES, type IndicatorStyle } from '../../interfaces.js'
+import { DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type IndicatorStyle } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
@@ -280,7 +280,9 @@ export const sessionCommands: SlashCommand[] = [
         return ctx.gateway
           .rpc<ConfigGetValueResponse>('config.get', { key: 'indicator' })
           .then(
-            ctx.guarded<ConfigGetValueResponse>(r => ctx.transcript.sys(`indicator: ${r.value || 'kaomoji'}`))
+            ctx.guarded<ConfigGetValueResponse>(r =>
+              ctx.transcript.sys(`indicator: ${r.value || DEFAULT_INDICATOR_STYLE}`)
+            )
           )
       }
 

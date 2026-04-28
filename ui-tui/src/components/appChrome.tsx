@@ -77,23 +77,30 @@ function FaceTicker({ color, startedAt }: { color: string; startedAt?: null | nu
   const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * VERBS.length))
   const [now, setNow] = useState(() => Date.now())
 
-  // Pre-compute the cadence for the active style so an `/indicator` switch
-  // re-arms the interval without leaving the previous timer dangling.
-  const intervalMs = renderIndicator(style, 0).intervalMs
+  // Pre-compute cadence + verb-visibility for the active style so an
+  // `/indicator` switch re-arms the interval (and skips the verb timer
+  // for verb-less styles like `unicode`) without leaving the previous
+  // timer dangling.
+  const { intervalMs, showVerb } = renderIndicator(style, 0)
 
   useEffect(() => {
     const glyph = setInterval(() => setTick(n => n + 1), intervalMs)
-    const verb = setInterval(() => setVerbTick(n => n + 1), FACE_TICK_MS)
     const clock = setInterval(() => setNow(Date.now()), 1000)
+    // Verb timer is gated on `showVerb` — `unicode` style hides the verb
+    // entirely, so cycling `verbTick` would be an avoidable re-render.
+    const verb = showVerb ? setInterval(() => setVerbTick(n => n + 1), FACE_TICK_MS) : null
 
     return () => {
       clearInterval(glyph)
-      clearInterval(verb)
       clearInterval(clock)
-    }
-  }, [intervalMs])
 
-  const { frame, showVerb } = renderIndicator(style, tick)
+      if (verb !== null) {
+        clearInterval(verb)
+      }
+    }
+  }, [intervalMs, showVerb])
+
+  const { frame } = renderIndicator(style, tick)
   const verb = VERBS[verbTick % VERBS.length] ?? ''
   const verbSegment = showVerb ? ` ${verb}…` : ''
   const durationSegment = startedAt ? ` · ${fmtDuration(now - startedAt)}` : ''

@@ -64,7 +64,12 @@ export interface ConfigDisplayConfig {
   tui_auto_resume_recent?: boolean
   tui_compact?: boolean
   tui_mouse?: boolean
-  tui_status_indicator?: 'ascii' | 'emoji' | 'kaomoji' | 'unicode' | string
+  // Forward-compat: backend may send styles this client doesn't know yet —
+  // `normalizeIndicatorStyle` falls back to 'kaomoji' for those — but the
+  // wire type is documented as `string` so consumers don't get a false
+  // narrowing-and-autocomplete contract on a value that requires runtime
+  // validation anyway.
+  tui_status_indicator?: string
   tui_statusbar?: 'bottom' | 'off' | 'on' | 'top' | boolean
 }
 

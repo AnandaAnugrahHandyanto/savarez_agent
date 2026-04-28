@@ -10,7 +10,13 @@ import type {
 } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
 
-import { INDICATOR_STYLES, type BusyInputMode, type IndicatorStyle, type StatusBarMode } from './interfaces.js'
+import {
+  DEFAULT_INDICATOR_STYLE,
+  INDICATOR_STYLES,
+  type BusyInputMode,
+  type IndicatorStyle,
+  type StatusBarMode,
+} from './interfaces.js'
 import { turnController } from './turnController.js'
 import { patchUiState } from './uiStore.js'
 
@@ -49,12 +55,12 @@ const INDICATOR_STYLE_SET: ReadonlySet<IndicatorStyle> = new Set(INDICATOR_STYLE
 
 export const normalizeIndicatorStyle = (raw: unknown): IndicatorStyle => {
   if (typeof raw !== 'string') {
-    return 'kaomoji'
+    return DEFAULT_INDICATOR_STYLE
   }
 
   const v = raw.trim().toLowerCase() as IndicatorStyle
 
-  return INDICATOR_STYLE_SET.has(v) ? v : 'kaomoji'
+  return INDICATOR_STYLE_SET.has(v) ? v : DEFAULT_INDICATOR_STYLE
 }
 
 const MTIME_POLL_MS = 5000
