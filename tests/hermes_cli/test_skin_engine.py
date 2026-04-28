@@ -341,6 +341,7 @@ class TestCliBrandingHelpers:
         skin = get_active_skin()
         overrides = get_prompt_toolkit_style_overrides()
         assert overrides["prompt"] == skin.get_color("prompt")
+        assert overrides["input-area"] == skin.get_color("prompt")
         assert overrides["input-rule"] == skin.get_color("input_rule")
         assert overrides["status-bar"] == (
             f"bg:{skin.get_color('status_bar_bg')} {skin.get_color('status_bar_text')}"
@@ -360,3 +361,11 @@ class TestCliBrandingHelpers:
         overrides = get_prompt_toolkit_style_overrides()
         assert overrides["status-bar"] == f"bg:{skin.get_color('status_bar_bg')} {skin.get_color('banner_text')}"
         assert overrides["voice-status"] == f"bg:{skin.get_color('voice_status_bg')} {skin.get_color('ui_label')}"
+
+        set_active_skin("slate")
+        skin = get_active_skin()
+        overrides = get_prompt_toolkit_style_overrides()
+        assert overrides["input-area"] == (
+            f"bg:{skin.get_color('input_area_bg')} {skin.get_color('input_area_text')}"
+        )
+        assert overrides["prompt"] == f"bg:{skin.get_color('input_area_bg')} {skin.get_color('prompt')}"

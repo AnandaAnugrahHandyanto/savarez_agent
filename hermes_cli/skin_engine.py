@@ -28,6 +28,8 @@ All fields are optional. Missing values inherit from the ``default`` skin.
       ui_error: "#ef5350"                # Error indicators
       ui_warn: "#ffa726"                 # Warning indicators
       prompt: "#FFF8DC"                  # Prompt text color
+      input_area_bg: "#111827"           # Optional TUI input area background
+      input_area_text: "#E5E7EB"         # Optional TUI input area text color
       input_rule: "#CD7F32"              # Input area horizontal rule
       response_border: "#FFD700"         # Response box border (ANSI)
       status_bar_bg: "#1a1a2e"           # Status bar background
@@ -341,6 +343,8 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "ui_error": "#F7A072",
             "ui_warn": "#e6a855",
             "prompt": "#c9d1d9",
+            "input_area_bg": "#111827",
+            "input_area_text": "#E5E7EB",
             "input_rule": "#4169e1",
             "response_border": "#7eb8f6",
             "status_bar_bg": "#151C2F",
@@ -849,6 +853,8 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
         return {}
 
     prompt = skin.get_color("prompt", "#FFF8DC")
+    input_area_bg = skin.get_color("input_area_bg", "")
+    input_area_text = skin.get_color("input_area_text", prompt)
     input_rule = skin.get_color("input_rule", "#CD7F32")
     title = skin.get_color("banner_title", "#FFD700")
     text = skin.get_color("banner_text", prompt)
@@ -870,11 +876,15 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
     menu_meta_bg = skin.get_color("completion_menu_meta_bg", menu_bg)
     menu_meta_current_bg = skin.get_color("completion_menu_meta_current_bg", menu_current_bg)
 
+    input_area_style = f"bg:{input_area_bg} {input_area_text}" if input_area_bg else input_area_text
+    prompt_style = f"bg:{input_area_bg} {prompt}" if input_area_bg else prompt
+    prompt_working_style = f"bg:{input_area_bg} {dim} italic" if input_area_bg else f"{dim} italic"
+
     return {
-        "input-area": prompt,
+        "input-area": input_area_style,
         "placeholder": f"{dim} italic",
-        "prompt": prompt,
-        "prompt-working": f"{dim} italic",
+        "prompt": prompt_style,
+        "prompt-working": prompt_working_style,
         "hint": f"{dim} italic",
         "status-bar": f"bg:{status_bg} {status_text}",
         "status-bar-strong": f"bg:{status_bg} {status_strong} bold",

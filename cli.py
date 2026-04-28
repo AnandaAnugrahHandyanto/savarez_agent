@@ -10436,6 +10436,9 @@ class HermesCLI:
                 completer=_completer,
             ),
         )
+        # TextArea.style colors the text control; the window style fills the
+        # full editable row so skins can render a subtle input background.
+        input_area.window.style = 'class:input-area'
         # Keep prompt_toolkit on its simple tempfile path. Setting
         # buffer.tempfile = "prompt.md" triggers its complex-tempfile branch,
         # which tries to mkdir() the mkdtemp() directory again and raises
