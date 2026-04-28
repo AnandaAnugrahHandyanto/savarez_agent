@@ -93,6 +93,9 @@ from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE,
+    RELATIONSHIP_CONTINUITY_GUIDANCE,
+    RELATIONSHIP_CONTINUITY_LITE_GUIDANCE,
+    FINAL_RESPONSE_SUMMARY_GUIDANCE,
     build_nous_subscription_prompt,
 )
 from agent.model_metadata import (
@@ -124,6 +127,7 @@ from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
 )
+from agent.routing import build_routing_metadata
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_var_enabled, normalize_proxy_url
 
 
@@ -880,6 +884,7 @@ class AIAgent:
         reasoning_config: Dict[str, Any] = None,
         service_tier: str = None,
         request_overrides: Dict[str, Any] = None,
+        routing_config: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,
         platform: str = None,
         user_id: str = None,
@@ -1139,6 +1144,16 @@ class AIAgent:
         self.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
         self.service_tier = service_tier
         self.request_overrides = dict(request_overrides or {})
+        if routing_config is not None:
+            self.routing_config = dict(routing_config or {})
+        else:
+            try:
+                from hermes_cli.config import load_config as _load_config_for_routing
+
+                self.routing_config = dict((_load_config_for_routing().get("routing") or {}))
+            except Exception as exc:
+                logger.warning("failed to load advisory routing config: %s: %s", type(exc).__name__, exc)
+                self.routing_config = {"enabled": False}
         self.prefill_messages = prefill_messages or []  # Prefilled conversation turns
         self._force_ascii_payload = False
         
@@ -1726,6 +1741,7 @@ class AIAgent:
         if not isinstance(_agent_section, dict):
             _agent_section = {}
         self._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
+        self._relationship_continuity = _agent_section.get("relationship_continuity", "auto")
 
         # App-level API retry count (wraps each model API call).  Default 3,
         # overridable via agent.api_max_retries in config.yaml.  See #11616.
@@ -4685,6 +4701,21 @@ class AIAgent:
         if self.provider:
             timestamp_line += f"\nProvider: {self.provider}"
         prompt_parts.append(timestamp_line)
+
+        _relationship_value = self._relationship_continuity
+        _relationship_mode = "auto" if _relationship_value is None else str(_relationship_value).lower().strip()
+        if _relationship_mode in ("always", "full", "true", "yes", "on", "1"):
+            prompt_parts.append(RELATIONSHIP_CONTINUITY_GUIDANCE)
+        elif _relationship_mode in ("off", "false", "never", "no", "0"):
+            pass
+        else:
+            # Default to a compact governor. It preserves the behavioural intent
+            # without paying the full relationship-continuity prompt cost on every
+            # trivial turn. Set agent.relationship_continuity: always for the full
+            # layer, or off to omit it entirely.
+            prompt_parts.append(RELATIONSHIP_CONTINUITY_LITE_GUIDANCE)
+
+        prompt_parts.append(FINAL_RESPONSE_SUMMARY_GUIDANCE)
 
         # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
         # of the requested model. Inject explicit model identity into the system prompt
@@ -9737,6 +9768,21 @@ class AIAgent:
         # Preserve the original user message (no nudge injection).
         original_user_message = persist_user_message if persist_user_message is not None else user_message
 
+        # Advisory routing metadata is dry-run only here: it records how the
+        # prompt would be classified without mutating provider/model/reasoning.
+        turn_routing_metadata = None
+        try:
+            turn_routing_metadata = build_routing_metadata(
+                original_user_message,
+                source_platform=self.platform or "cli",
+                routing_config=getattr(self, "routing_config", None),
+                model=self.model,
+                provider=self.provider,
+                reasoning_config=self.reasoning_config,
+            )
+        except Exception as exc:
+            logger.warning("advisory routing metadata failed: %s: %s", type(exc).__name__, exc)
+
         # Track memory nudge trigger (turn-based, checked here).
         # Skill trigger is checked AFTER the agent loop completes, based on
         # how many tool iterations THIS turn used.
@@ -12965,6 +13011,8 @@ class AIAgent:
             "cost_status": self.session_cost_status,
             "cost_source": self.session_cost_source,
         }
+        if turn_routing_metadata:
+            result["routing"] = turn_routing_metadata
         # If a /steer landed after the final assistant turn (no more tool
         # batches to drain into), hand it back to the caller so it can be
         # delivered as the next user turn instead of being silently lost.

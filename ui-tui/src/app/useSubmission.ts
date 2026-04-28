@@ -33,6 +33,29 @@ const expandSnips = (snips: PasteSnippet[]) => {
 const spliceMatches = (text: string, matches: RegExpMatchArray[], results: string[]) =>
   matches.reduceRight((acc, m, i) => acc.slice(0, m.index!) + results[i] + acc.slice(m.index! + m[0].length), text)
 
+export function completionReplacementOnSubmit(value: string, rowText: string | undefined, compReplace: number): string | null {
+  if (!rowText) {
+    return null
+  }
+
+  const text = value.startsWith('/') && rowText.startsWith('/') ? rowText.slice(1) : rowText
+  const next = value.slice(0, compReplace) + text
+
+  if (next === value) {
+    return null
+  }
+
+  // Slash command completions from prompt_toolkit are command fragments suffixed
+  // with a space (e.g. "clear "). If the typed command is already exact, Enter
+  // must submit the command rather than accept the completion and require a
+  // second press. Arguments still opt in to normal completion handling.
+  if (value.startsWith('/') && !value.includes(' ') && text.trimEnd() === value.slice(1) && text.endsWith(' ')) {
+    return null
+  }
+
+  return next
+}
+
 export function useSubmission(opts: UseSubmissionOptions) {
   const {
     appendMessage,
@@ -281,14 +304,10 @@ export function useSubmission(opts: UseSubmissionOptions) {
     (value: string) => {
       if (composerState.completions.length) {
         const row = composerState.completions[composerState.compIdx]
+        const next = completionReplacementOnSubmit(value, row?.text, composerState.compReplace)
 
-        if (row?.text) {
-          const text = value.startsWith('/') && row.text.startsWith('/') ? row.text.slice(1) : row.text
-          const next = value.slice(0, composerState.compReplace) + text
-
-          if (next !== value) {
-            return composerActions.setInput(next)
-          }
+        if (next !== null) {
+          return composerActions.setInput(next)
         }
       }
 

@@ -13,7 +13,7 @@ import uuid
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from agent.codex_responses_adapter import _chat_messages_to_responses_input, _normalize_codex_response, _preflight_codex_input_items
@@ -21,7 +21,12 @@ from agent.codex_responses_adapter import _chat_messages_to_responses_input, _no
 import run_agent
 from run_agent import AIAgent
 from agent.error_classifier import FailoverReason
-from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+from agent.prompt_builder import (
+    DEFAULT_AGENT_IDENTITY,
+    FINAL_RESPONSE_SUMMARY_GUIDANCE,
+    RELATIONSHIP_CONTINUITY_GUIDANCE,
+    RELATIONSHIP_CONTINUITY_LITE_GUIDANCE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -882,6 +887,67 @@ class TestBuildSystemPrompt:
         prompt = agent._build_system_prompt()
         # Should contain current date info like "Conversation started:"
         assert "Conversation started:" in prompt
+
+    def test_includes_final_response_bottom_line_guidance(self, agent):
+        prompt = agent._build_system_prompt()
+        assert FINAL_RESPONSE_SUMMARY_GUIDANCE in prompt
+        assert prompt.index(FINAL_RESPONSE_SUMMARY_GUIDANCE) > prompt.index(RELATIONSHIP_CONTINUITY_LITE_GUIDANCE)
+        assert "## Bottom Line" in prompt
+        assert "**Summary:**" in prompt
+        assert "**Next step:**" in prompt
+        assert "**Need from you:**" in prompt
+        assert "**Suggested output:**" in prompt
+        assert "replying with `1`, `2`, `3`, or `4`" in prompt
+
+    def _make_relationship_agent(self, relationship_continuity="auto"):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("memory", "session_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": {"relationship_continuity": relationship_continuity}},
+            ),
+        ):
+            test_api_key = "test-" + "key-" + "1234567890"
+            agent = AIAgent(
+                api_key=test_api_key,
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            agent.client = MagicMock()
+            return agent
+
+    @pytest.mark.parametrize("mode", ["auto", None])
+    def test_relationship_continuity_auto_uses_lite_guidance_only(self, mode):
+        agent = self._make_relationship_agent(mode)
+
+        prompt = agent._build_system_prompt()
+
+        assert RELATIONSHIP_CONTINUITY_LITE_GUIDANCE in prompt
+        assert RELATIONSHIP_CONTINUITY_GUIDANCE not in prompt
+        assert prompt.count(RELATIONSHIP_CONTINUITY_LITE_GUIDANCE) == 1
+
+    @pytest.mark.parametrize("mode", ["always", "full", "true", "yes", "on", "1", True, 1])
+    def test_relationship_continuity_always_uses_full_guidance_once(self, mode):
+        agent = self._make_relationship_agent(mode)
+
+        prompt = agent._build_system_prompt()
+
+        assert RELATIONSHIP_CONTINUITY_GUIDANCE in prompt
+        assert RELATIONSHIP_CONTINUITY_LITE_GUIDANCE not in prompt
+        assert prompt.count(RELATIONSHIP_CONTINUITY_GUIDANCE) == 1
+
+    @pytest.mark.parametrize("mode", ["off", "false", "never", "no", "0", False, 0])
+    def test_relationship_continuity_off_skips_guidance(self, mode):
+        agent = self._make_relationship_agent(mode)
+
+        prompt = agent._build_system_prompt()
+
+        assert RELATIONSHIP_CONTINUITY_GUIDANCE not in prompt
+        assert RELATIONSHIP_CONTINUITY_LITE_GUIDANCE not in prompt
 
     def test_includes_nous_subscription_prompt(self, agent, monkeypatch):
         monkeypatch.setattr(run_agent, "build_nous_subscription_prompt", lambda tool_names: "NOUS SUBSCRIPTION BLOCK")
@@ -2133,6 +2199,90 @@ class TestRunConversation:
             result = agent.run_conversation("hello")
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
+
+    def test_routing_dry_run_metadata_is_returned_without_changing_runtime(self, agent):
+        self._setup_agent(agent)
+        agent.routing_config = {
+            "enabled": True,
+            "mode": "dry_run",
+            "tiers": {
+                "deep": {
+                    "provider": "openrouter",
+                    "model": "anthropic/claude-opus-4.6",
+                    "reasoning_effort": "xhigh",
+                }
+            },
+        }
+        agent.model = "current-model"
+        agent.provider = "current-provider"
+        agent.reasoning_config = {"enabled": True, "effort": "medium"}
+        resp = _mock_response(content="Final answer", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = resp
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("/deep Design the migration framework")
+
+        assert result["final_response"] == "Final answer"
+        assert result["routing"]["mode"] == "dry_run"
+        assert result["routing"]["recommendation"]["model_tier"] == "deep"
+        assert result["routing"]["resolved_binding"] == {
+            "model_tier": "deep",
+            "provider": "openrouter",
+            "model": "anthropic/claude-opus-4.6",
+            "reasoning_effort": "xhigh",
+        }
+        assert result["routing"]["outcome"] == {
+            "applied": False,
+            "reason": "dry_run_metadata_only",
+            "model": "current-model",
+            "provider": "current-provider",
+            "reasoning_config": {"enabled": True, "effort": "medium"},
+        }
+        assert agent.model == "current-model"
+        assert agent.provider == "current-provider"
+        assert agent.reasoning_config == {"enabled": True, "effort": "medium"}
+
+    def test_routing_uses_raw_prompt_not_log_summary(self, agent):
+        self._setup_agent(agent)
+        agent.routing_config = {"enabled": True, "mode": "dry_run"}
+        long_message = "send customer email " + ("x" * 700)
+        resp = _mock_response(content="Final answer", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = resp
+        metadata = {"mode": "dry_run", "recommendation": {}, "outcome": {"applied": False}}
+
+        with (
+            patch.object(run_agent, "build_routing_metadata", return_value=metadata) as build_metadata,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation(long_message)
+
+        assert result["routing"] is metadata
+        assert build_metadata.call_args.args[0] == long_message
+
+    def test_routing_metadata_failure_logs_warning_and_turn_continues(self, agent):
+        self._setup_agent(agent)
+        agent.routing_config = {"enabled": True, "mode": "dry_run"}
+        resp = _mock_response(content="Final answer", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = resp
+
+        with (
+            patch.object(run_agent, "build_routing_metadata", side_effect=RuntimeError("boom")),
+            patch.object(run_agent.logger, "warning") as warning,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("/deep Design the migration framework")
+
+        assert result["final_response"] == "Final answer"
+        assert "routing" not in result
+        warning.assert_any_call("advisory routing metadata failed: %s: %s", "RuntimeError", ANY)
 
     def test_tool_calls_then_stop(self, agent):
         self._setup_agent(agent)

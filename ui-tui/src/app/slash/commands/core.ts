@@ -123,7 +123,7 @@ export const coreCommands: SlashCommand[] = [
         ctx.session.newSession(isNew ? 'new session started' : undefined)
       }
 
-      if (NO_CONFIRM_DESTRUCTIVE) {
+      if (!isNew || NO_CONFIRM_DESTRUCTIVE) {
         return commit()
       }
 
