@@ -365,6 +365,13 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         shutil.rmtree(skill_dir, ignore_errors=True)
         return {"success": False, "error": scan_error}
 
+    # Pin content hash after successful scan
+    try:
+        from tools.skill_hash_pin import pin_skill
+        pin_skill(name, skill_dir)
+    except Exception:
+        pass
+
     result = {
         "success": True,
         "message": f"Skill '{name}' created.",
@@ -408,6 +415,13 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
         if original_content is not None:
             _atomic_write_text(skill_md, original_content)
         return {"success": False, "error": scan_error}
+
+    # Re-pin after successful scan
+    try:
+        from tools.skill_hash_pin import pin_skill
+        pin_skill(name, existing["path"])
+    except Exception:
+        pass
 
     return {
         "success": True,
@@ -524,6 +538,13 @@ def _delete_skill(name: str) -> Dict[str, Any]:
 
     skill_dir = existing["path"]
     shutil.rmtree(skill_dir)
+
+    # Remove hash pin
+    try:
+        from tools.skill_hash_pin import unpin_skill
+        unpin_skill(name)
+    except Exception:
+        pass
 
     # Clean up empty category directories (don't remove SKILLS_DIR itself)
     parent = skill_dir.parent

@@ -739,6 +739,15 @@ def build_skills_system_prompt(
             skill_name = entry["skill_name"]
             if entry["frontmatter_name"] in disabled or skill_name in disabled:
                 continue
+            # Verify content integrity against pinned hash
+            try:
+                from tools.skill_hash_pin import verify_skill
+                skill_dir = skill_file.parent
+                if not verify_skill(skill_name, skill_dir):
+                    logger.warning("Skill %s failed integrity check — excluded from prompt", skill_name)
+                    continue
+            except Exception:
+                pass  # Pin system unavailable — allow (graceful degradation)
             if not _skill_should_show(
                 extract_skill_conditions(frontmatter),
                 available_tools,
