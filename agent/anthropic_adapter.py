@@ -423,11 +423,13 @@ def build_anthropic_client(api_key: str, base_url: str = None, timeout: float = 
 
     if _is_kimi_coding_endpoint(base_url):
         # Kimi's /coding endpoint requires User-Agent: claude-code/0.1.0
-        # to be recognized as a valid Coding Agent. Without it, returns 403.
+        # and X-Client-Name: kimi-cli to be recognized as a valid Coding Agent.
+        # Without these headers, returns 403 / access_terminated_error.
         # Check this BEFORE _requires_bearer_auth since both match api.kimi.com/coding.
         kwargs["api_key"] = api_key
         kwargs["default_headers"] = {
             "User-Agent": "claude-code/0.1.0",
+            "X-Client-Name": "kimi-cli",
             **( {"anthropic-beta": ",".join(common_betas)} if common_betas else {} )
         }
     elif _requires_bearer_auth(normalized_base_url):
