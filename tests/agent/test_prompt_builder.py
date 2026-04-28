@@ -1103,8 +1103,12 @@ class TestFindHermesMdPermissionError:
         )
         assert _find_hermes_md(tmp_path) is None
 
-    def test_skips_unreadable_candidate(self, tmp_path, monkeypatch):
-        (tmp_path / ".hermes.md").write_text("rules")
+    def test_skips_unreadable_candidate_and_finds_next(self, tmp_path, monkeypatch):
+        """First candidate (.hermes.md) raises PermissionError on is_file,
+        second candidate (HERMES.md) succeeds — function must skip the bad
+        one and return the good one."""
+        (tmp_path / ".hermes.md").write_text("lower")
+        (tmp_path / "HERMES.md").write_text("upper")
         real_is_file = type(tmp_path / ".hermes.md").is_file
         call_count = {"n": 0}
 
@@ -1116,7 +1120,8 @@ class TestFindHermesMdPermissionError:
 
         monkeypatch.setattr("agent.prompt_builder.Path.is_file", flaky_is_file)
         result = _find_hermes_md(tmp_path)
-        assert result is None or result.name in (".hermes.md", "HERMES.md")
+        assert result is not None
+        assert result.name == "HERMES.md"
 
 
 class TestBuildContextFilesPromptPermissionError:

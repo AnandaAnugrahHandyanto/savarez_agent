@@ -102,11 +102,15 @@ def _find_hermes_md(cwd: Path) -> Optional[Path]:
     user cannot read — see #6214.
     """
     try:
-        stop_at = _find_git_root(cwd)
         current = cwd.resolve()
     except OSError as e:
         logger.debug("Could not resolve cwd %s for .hermes.md search: %s", cwd, e)
         return None
+
+    try:
+        stop_at = _find_git_root(cwd)
+    except OSError:
+        stop_at = None
 
     for directory in [current, *current.parents]:
         for name in _HERMES_MD_NAMES:
