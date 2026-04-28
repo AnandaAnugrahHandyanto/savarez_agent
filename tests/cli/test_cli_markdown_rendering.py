@@ -267,9 +267,32 @@ def test_slate_renders_markdown_tables_with_visible_columns():
     )
 
     assert "|Left" in output
-    assert "| Center |" in output
+    assert "Center" in output
     assert "|one" in output
-    assert "three|" in output
+    assert "three" in output
+
+
+def test_slate_renders_inline_markdown_inside_table_cells():
+    from hermes_cli.skin_engine import set_active_skin
+
+    set_active_skin("slate")
+    output = _render_to_text(
+        _render_final_assistant_content(
+            "| Kind | Example | Link |\n"
+            "|:---|:---|---:|\n"
+            "| strong | **bold** and *italic* | [Docs](https://example.com) |\n"
+            "| code | `ctx_read` keeps `a | b` together | escaped \\| pipe |"
+        )
+    )
+
+    assert "|Kind" in output
+    assert "bold and italic" in output
+    assert "**bold**" not in output
+    assert "*italic*" not in output
+    assert "ctx_read keeps a | b" in output
+    assert "together" in output
+    assert "Docs" in output
+    assert "escaped | pipe" in output
 
 
 def test_stream_render_mode_buffers_until_flush(monkeypatch):

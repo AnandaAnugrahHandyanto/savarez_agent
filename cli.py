@@ -1380,9 +1380,29 @@ def _split_markdown_table_row(line: str) -> list[str]:
     stripped = line.strip()
     if stripped.startswith("|"):
         stripped = stripped[1:]
-    if stripped.endswith("|"):
+    if stripped.endswith("|") and (len(stripped) == 1 or stripped[-2] != "\\"):
         stripped = stripped[:-1]
-    return [cell.strip() for cell in stripped.split("|")]
+    cells: list[str] = []
+    current: list[str] = []
+    escaped = False
+    in_code = False
+    for char in stripped:
+        if char == "\\" and not escaped:
+            current.append(char)
+            escaped = True
+            continue
+        if char == "`" and not escaped:
+            in_code = not in_code
+            current.append(char)
+            continue
+        if char == "|" and not escaped and not in_code:
+            cells.append("".join(current).strip())
+            current = []
+            continue
+        current.append(char)
+        escaped = False
+    cells.append("".join(current).strip())
+    return cells
 
 
 def _is_markdown_table_separator(line: str) -> bool:
@@ -1401,6 +1421,7 @@ def _is_markdown_table_start(lines: list[str], index: int) -> bool:
 
 
 def _markdown_table_renderable(table_lines: list[str]):
+    from rich.markdown import Markdown
     from rich.table import Table
 
     headers = _split_markdown_table_row(table_lines[0])
@@ -1425,7 +1446,12 @@ def _markdown_table_renderable(table_lines: list[str]):
             table.columns[idx].justify = "left"
     for row in rows:
         padded = row + [""] * (len(headers) - len(row))
-        table.add_row(*padded[: len(headers)])
+        table.add_row(
+            *[
+                Markdown(cell, code_theme="default", inline_code_theme="default")
+                for cell in padded[: len(headers)]
+            ]
+        )
     return table
 
 
