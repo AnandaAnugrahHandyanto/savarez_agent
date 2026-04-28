@@ -259,6 +259,8 @@ class TestBackendSelection:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "TAVILY_API_KEY",
+        "KIMI_API_KEY",
+        "KIMI_CN_API_KEY",
     )
 
     def setup_method(self):
@@ -353,6 +355,20 @@ class TestBackendSelection:
         with patch("tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}):
             assert _get_backend() == "tavily"
+
+    def test_fallback_kimi_global_only_key(self):
+        """Only KIMI_API_KEY set → 'kimi'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"KIMI_API_KEY": "kimi-global"}):
+            assert _get_backend() == "kimi"
+
+    def test_fallback_kimi_cn_only_key(self):
+        """Only KIMI_CN_API_KEY set → 'kimi'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"KIMI_CN_API_KEY": "kimi-cn"}):
+            assert _get_backend() == "kimi"
 
     def test_fallback_tavily_with_firecrawl_prefers_firecrawl(self):
         """Tavily + Firecrawl keys, no config → 'firecrawl' (backward compat)."""
@@ -489,6 +505,8 @@ class TestCheckWebApiKey:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "TAVILY_API_KEY",
+        "KIMI_API_KEY",
+        "KIMI_CN_API_KEY",
     )
 
     def setup_method(self):
@@ -529,6 +547,16 @@ class TestCheckWebApiKey:
 
     def test_tavily_key_only(self):
         with patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
+
+    def test_kimi_global_key_only(self):
+        with patch.dict(os.environ, {"KIMI_API_KEY": "kimi-global"}):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
+
+    def test_kimi_cn_key_only(self):
+        with patch.dict(os.environ, {"KIMI_CN_API_KEY": "kimi-cn"}):
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
 
@@ -577,3 +605,60 @@ def test_web_requires_env_includes_exa_key():
     from tools.web_tools import _web_requires_env
 
     assert "EXA_API_KEY" in _web_requires_env()
+    assert "KIMI_CN_API_KEY" in _web_requires_env()
+
+
+class TestKimiCredentialResolution:
+    _ENV_KEYS = ("KIMI_API_KEY", "KIMI_CN_API_KEY", "KIMI_BASE_URL")
+
+    def setup_method(self):
+        for key in self._ENV_KEYS:
+            os.environ.pop(key, None)
+
+    def teardown_method(self):
+        for key in self._ENV_KEYS:
+            os.environ.pop(key, None)
+
+    def test_cn_key_defaults_to_cn_base(self):
+        from tools.web_tools import _resolve_kimi_api_credentials
+
+        with patch.dict(os.environ, {"KIMI_CN_API_KEY": "cn-key"}):
+            key, base_url = _resolve_kimi_api_credentials()
+            assert key == "cn-key"
+            assert base_url == "https://api.moonshot.cn/v1"
+
+    def test_both_keys_prefer_global_key(self):
+        from tools.web_tools import _resolve_kimi_api_credentials
+
+        with patch.dict(
+            os.environ,
+            {
+                "KIMI_API_KEY": "global-key",
+                "KIMI_CN_API_KEY": "cn-key",
+            },
+        ):
+            key, base_url = _resolve_kimi_api_credentials()
+            assert key == "global-key"
+            assert base_url == "https://api.moonshot.ai/v1"
+
+    def test_sk_kimi_global_key_uses_kimi_code_base(self):
+        from tools.web_tools import _resolve_kimi_api_credentials
+
+        with patch.dict(os.environ, {"KIMI_API_KEY": "sk-kimi-test"}):
+            key, base_url = _resolve_kimi_api_credentials()
+            assert key == "sk-kimi-test"
+            assert base_url == "https://api.kimi.com/coding/v1"
+
+    def test_ignores_kimi_base_url_env_override(self):
+        from tools.web_tools import _resolve_kimi_api_credentials
+
+        with patch.dict(
+            os.environ,
+            {
+                "KIMI_CN_API_KEY": "cn-key",
+                "KIMI_BASE_URL": "https://api.moonshot.ai/v1",
+            },
+        ):
+            key, base_url = _resolve_kimi_api_credentials()
+            assert key == "cn-key"
+            assert base_url == "https://api.moonshot.cn/v1"

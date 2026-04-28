@@ -45,8 +45,10 @@ import logging
 import os
 import re
 import asyncio
+from pathlib import Path
 from typing import List, Dict, Any, Optional
 import httpx
+from openai import OpenAI
 from firecrawl import Firecrawl
 from agent.auxiliary_client import (
     async_call_llm,
@@ -68,9 +70,22 @@ logger = logging.getLogger(__name__)
 
 # ─── Backend Selection ────────────────────────────────────────────────────────
 
+def tool_error(message: str, success: Optional[bool] = None) -> str:
+    """Build a standard JSON error payload for web tools."""
+    payload: Dict[str, Any] = {"error": message}
+    if success is not None:
+        payload["success"] = success
+    return json.dumps(payload, ensure_ascii=False)
+
 def _has_env(name: str) -> bool:
     val = os.getenv(name)
     return bool(val and val.strip())
+
+
+def _has_kimi_api_key() -> bool:
+    """Return True when either Kimi key variant is configured."""
+    return _has_env("KIMI_API_KEY") or _has_env("KIMI_CN_API_KEY")
+
 
 def _load_web_config() -> dict:
     """Load the ``web:`` section from ~/.hermes/config.yaml."""
@@ -88,7 +103,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa"):
+    if configured in ("parallel", "firecrawl", "tavily", "exa", "kimi"):
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -98,6 +113,7 @@ def _get_backend() -> str:
         ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL") or _is_tool_gateway_ready()),
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("tavily", _has_env("TAVILY_API_KEY")),
+        ("kimi", _has_kimi_api_key()),
         ("exa", _has_env("EXA_API_KEY")),
     )
     for backend, available in backend_candidates:
@@ -117,6 +133,8 @@ def _is_backend_available(backend: str) -> bool:
         return check_firecrawl_api_key()
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
+    if backend == "kimi":
+        return _has_kimi_api_key()
     return False
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
@@ -187,6 +205,9 @@ def _web_requires_env() -> list[str]:
         "EXA_API_KEY",
         "PARALLEL_API_KEY",
         "TAVILY_API_KEY",
+        "KIMI_API_KEY",
+        "KIMI_CN_API_KEY",
+        "KIMI_SEARCH_MODEL",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
     ]
@@ -283,6 +304,9 @@ def _get_async_parallel_client():
 # ─── Tavily Client ───────────────────────────────────────────────────────────
 
 _TAVILY_BASE_URL = os.getenv("TAVILY_BASE_URL", "https://api.tavily.com")
+_KIMI_DEFAULT_BASE_URL = "https://api.moonshot.ai/v1"
+_KIMI_CN_BASE_URL = "https://api.moonshot.cn/v1"
+_KIMI_CODE_BASE_URL = "https://api.kimi.com/coding/v1"
 
 
 def _tavily_request(endpoint: str, payload: dict) -> dict:
@@ -303,6 +327,187 @@ def _tavily_request(endpoint: str, payload: dict) -> dict:
     response = httpx.post(url, json=payload, timeout=60)
     response.raise_for_status()
     return response.json()
+
+
+def _resolve_kimi_api_credentials() -> tuple[str, str]:
+    """Resolve Kimi key + base URL from key type, preferring global key."""
+    global_key = os.getenv("KIMI_API_KEY", "").strip()
+    cn_key = os.getenv("KIMI_CN_API_KEY", "").strip()
+
+    if global_key:
+        if global_key.startswith("sk-kimi-"):
+            return global_key, _KIMI_CODE_BASE_URL
+        return global_key, _KIMI_DEFAULT_BASE_URL
+
+    if cn_key:
+        return cn_key, _KIMI_CN_BASE_URL
+
+    return "", _KIMI_DEFAULT_BASE_URL
+
+
+def _kimi_chat_completion(messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Call Kimi chat completions API via OpenAI SDK (same path as run_agent)."""
+    api_key, base_url = _resolve_kimi_api_credentials()
+    if not api_key:
+        raise ValueError(
+            "KIMI_API_KEY or KIMI_CN_API_KEY environment variable not set. "
+            "Get your API key at https://platform.kimi.ai or https://platform.moonshot.cn"
+        )
+
+    model = os.getenv("KIMI_SEARCH_MODEL", "kimi-k2.5").strip() or "kimi-k2.5"
+    extra: Dict[str, Any] = {}
+    if "api.kimi.com" in base_url.lower():
+        extra["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
+
+    client = OpenAI(api_key=api_key, base_url=base_url, **extra)
+    completion = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        tools=tools,
+        extra_body={"thinking": {"type": "disabled"}},
+    )
+    if hasattr(completion, "model_dump"):
+        return completion.model_dump()
+    # Defensive fallback for older SDK payload objects.
+    return json.loads(completion.model_dump_json())
+    try:
+        return json.loads(completion.model_dump_json(warnings=False))
+    except TypeError:
+        return json.loads(completion.model_dump_json())
+
+
+def _normalize_kimi_candidate_results(items: Any, limit: int) -> List[Dict[str, Any]]:
+    """Normalize any list-like Kimi tool payload into web result entries."""
+    if not isinstance(items, list):
+        return []
+
+    web_results: List[Dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        url = item.get("url") or item.get("link") or ""
+        title = item.get("title") or item.get("name") or ""
+        description = item.get("description") or item.get("snippet") or item.get("content") or ""
+        if not (url or title or description):
+            continue
+        web_results.append(
+            {
+                "url": url,
+                "title": title,
+                "description": description,
+                "position": len(web_results) + 1,
+            }
+        )
+        if len(web_results) >= limit:
+            break
+    return web_results
+
+
+def _extract_kimi_results_from_tool_args(arguments: Dict[str, Any], limit: int) -> List[Dict[str, Any]]:
+    """Best-effort extraction of structured web results from Kimi tool arguments."""
+    if not isinstance(arguments, dict):
+        return []
+
+    candidates: List[Any] = []
+    for key in ("results", "web", "items", "documents"):
+        value = arguments.get(key)
+        if isinstance(value, list):
+            candidates.append(value)
+
+    data = arguments.get("data")
+    if isinstance(data, dict):
+        for key in ("results", "web", "items", "documents"):
+            value = data.get(key)
+            if isinstance(value, list):
+                candidates.append(value)
+
+    for candidate in candidates:
+        normalized = _normalize_kimi_candidate_results(candidate, limit)
+        if normalized:
+            return normalized
+
+    return []
+
+
+def _kimi_search(query: str, limit: int = 5) -> dict:
+    """Search using Kimi builtin `$web_search` function."""
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return {"error": "Interrupted", "success": False}
+
+    logger.info("Kimi search: '%s' (limit=%d)", query, limit)
+    tools = [{"type": "builtin_function", "function": {"name": "$web_search"}}]
+    messages: List[Dict[str, Any]] = [{"role": "user", "content": query}]
+    structured_results: List[Dict[str, Any]] = []
+
+    first = _kimi_chat_completion(messages, tools)
+    choice = ((first.get("choices") or [{}])[0]) if isinstance(first, dict) else {}
+    finish_reason = choice.get("finish_reason")
+    message = choice.get("message") or {}
+
+    if finish_reason == "tool_calls":
+        messages.append(
+            {
+                "role": "assistant",
+                "content": message.get("content"),
+                "tool_calls": message.get("tool_calls", []),
+            }
+        )
+        for tool_call in message.get("tool_calls", []):
+            function_payload = tool_call.get("function", {})
+            raw_arguments = function_payload.get("arguments", "{}")
+            try:
+                parsed_arguments = json.loads(raw_arguments) if isinstance(raw_arguments, str) else (raw_arguments or {})
+            except Exception:
+                parsed_arguments = {}
+
+            if function_payload.get("name") == "$web_search":
+                extracted = _extract_kimi_results_from_tool_args(parsed_arguments, limit)
+                if extracted:
+                    structured_results.extend(extracted)
+                tool_result = parsed_arguments
+            else:
+                tool_result = {"error": f"Unknown tool call: {function_payload.get('name', '')}"}
+
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call.get("id"),
+                    "name": function_payload.get("name", ""),
+                    "content": json.dumps(tool_result, ensure_ascii=False),
+                }
+            )
+
+        second = _kimi_chat_completion(messages, tools)
+        second_choice = ((second.get("choices") or [{}])[0]) if isinstance(second, dict) else {}
+        final_content = (second_choice.get("message") or {}).get("content", "") or ""
+    else:
+        final_content = message.get("content", "") or ""
+
+    if not structured_results:
+        # Keep compatibility with existing schema when Kimi returns only textual answer.
+        urls = list(dict.fromkeys(re.findall(r"https?://[^\s\]\)>'\"]+", final_content)))
+        if urls:
+            structured_results = [
+                {
+                    "url": url,
+                    "title": f"Kimi Search Reference {idx + 1}",
+                    "description": final_content if idx == 0 else "",
+                    "position": idx + 1,
+                }
+                for idx, url in enumerate(urls[: max(1, limit)])
+            ]
+        elif final_content:
+            structured_results = [
+                {
+                    "url": "",
+                    "title": "Kimi Search Summary",
+                    "description": final_content,
+                    "position": 1,
+                }
+            ]
+
+    return {"success": True, "data": {"web": structured_results[: max(1, limit)]}}
 
 
 def _normalize_tavily_search_results(response: dict) -> dict:
@@ -1118,6 +1323,15 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             _debug.save()
             return result_json
 
+        if backend == "kimi":
+            response_data = _kimi_search(query, limit)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
         logger.info("Searching the web for: '%s' (limit: %d)", query, limit)
 
         response = _get_firecrawl_client().search(
@@ -1153,7 +1367,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         
     except Exception as e:
         error_msg = f"Error searching web: {str(e)}"
-        logger.debug("%s", error_msg)
+        logger.exception("%s", error_msg)
 
         debug_call_data["error"] = error_msg
         _debug.log_call("web_search_tool", debug_call_data)
@@ -1252,6 +1466,11 @@ async def web_extract_tool(
                     "include_images": False,
                 })
                 results = _normalize_tavily_documents(raw, fallback_url=safe_urls[0] if safe_urls else "")
+            elif backend == "kimi":
+                return tool_error(
+                    "Kimi backend currently supports web_search only. "
+                    "Please switch to firecrawl/tavily/exa/parallel for web_extract."
+                )
             else:
                 # ── Firecrawl extraction ──
                 # Determine requested formats for Firecrawl v2
@@ -1635,6 +1854,12 @@ async def web_crawl_tool(
                 "success": False,
             }, ensure_ascii=False)
 
+        if backend == "kimi":
+            return tool_error(
+                "Kimi backend currently supports web_search only. "
+                "Please switch to firecrawl/tavily for web_crawl."
+            )
+
         # Ensure URL has protocol
         if not url.startswith(('http://', 'https://')):
             url = f'https://{url}'
@@ -1922,9 +2147,9 @@ def check_firecrawl_api_key() -> bool:
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in ("exa", "parallel", "firecrawl", "tavily"):
+    if configured in ("exa", "parallel", "firecrawl", "tavily", "kimi"):
         return _is_backend_available(configured)
-    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily"))
+    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily", "kimi"))
 
 
 def check_auxiliary_model() -> bool:
@@ -1935,109 +2160,82 @@ def check_auxiliary_model() -> bool:
 
 
 
-if __name__ == "__main__":
-    """
-    Simple test/demo when run directly
-    """
+def main() -> int:
+    """Simple local test entrypoint for web tools."""
+    import argparse
+
+    # Align standalone testing with run_agent: load ~/.hermes/.env before checks.
+    try:
+        from hermes_constants import get_hermes_home
+        from hermes_cli.env_loader import load_hermes_dotenv
+
+        load_hermes_dotenv(
+            hermes_home=get_hermes_home(),
+            project_env=Path(__file__).resolve().parents[1] / ".env",
+        )
+    except Exception:
+        pass
+
+    parser = argparse.ArgumentParser(description="Standalone web tools tester")
+    parser.add_argument("--query", type=str, default="", help="Run web_search_tool with this query")
+    parser.add_argument("--limit", type=int, default=5, help="Maximum number of search results")
+    parser.add_argument("--show-env", action="store_true", help="Print backend/env readiness only")
+    args = parser.parse_args()
+
     print("🌐 Standalone Web Tools Module")
     print("=" * 40)
-    
-    # Check if API keys are available
+
     web_available = check_web_api_key()
+    backend = _get_backend()
     tool_gateway_available = _is_tool_gateway_ready()
     firecrawl_key_available = bool(os.getenv("FIRECRAWL_API_KEY", "").strip())
     firecrawl_url_available = bool(os.getenv("FIRECRAWL_API_URL", "").strip())
-    nous_available = check_auxiliary_model()
-    default_summarizer_model = _get_default_summarizer_model()
+    kimi_key_available = bool(os.getenv("KIMI_API_KEY", "").strip())
+    kimi_cn_key_available = bool(os.getenv("KIMI_CN_API_KEY", "").strip())
+    resolved_kimi_key, resolved_kimi_base_url = _resolve_kimi_api_credentials()
 
-    if web_available:
-        backend = _get_backend()
-        print(f"✅ Web backend: {backend}")
-        if backend == "exa":
-            print("   Using Exa API (https://exa.ai)")
-        elif backend == "parallel":
-            print("   Using Parallel API (https://parallel.ai)")
-        elif backend == "tavily":
-            print("   Using Tavily API (https://tavily.com)")
+    print(f"Backend selected: {backend}")
+    if backend == "firecrawl":
+        if firecrawl_url_available:
+            print(f"Firecrawl mode: self-hosted ({os.getenv('FIRECRAWL_API_URL').strip().rstrip('/')})")
+        elif firecrawl_key_available:
+            print("Firecrawl mode: direct cloud API")
+        elif tool_gateway_available:
+            print(f"Firecrawl mode: managed gateway ({_get_firecrawl_gateway_url()})")
         else:
-            if firecrawl_url_available:
-                print(f"   Using self-hosted Firecrawl: {os.getenv('FIRECRAWL_API_URL').strip().rstrip('/')}")
-            elif firecrawl_key_available:
-                print("   Using direct Firecrawl cloud API")
-            elif tool_gateway_available:
-                print(f"   Using Firecrawl tool-gateway: {_get_firecrawl_gateway_url()}")
-            else:
-                print("   Firecrawl backend selected but not configured")
-    else:
-        print("❌ No web search backend configured")
-        print(
-            "Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
-            f"{_firecrawl_backend_help_suffix()}"
-        )
-
-    if not nous_available:
-        print("❌ No auxiliary model available for LLM content processing")
-        print("Set OPENROUTER_API_KEY, configure Nous Portal, or set OPENAI_BASE_URL + OPENAI_API_KEY")
-        print("⚠️  Without an auxiliary model, LLM content processing will be disabled")
-    else:
-        print(f"✅ Auxiliary model available: {default_summarizer_model}")
+            print("Firecrawl mode: not configured")
+    elif backend == "kimi":
+        print(f"Kimi key configured: {bool(resolved_kimi_key)}")
+        print(f"Kimi global key configured: {kimi_key_available}")
+        print(f"Kimi China key configured: {kimi_cn_key_available}")
+        print(f"Kimi base URL: {resolved_kimi_base_url}")
+        print(f"Kimi model: {os.getenv('KIMI_SEARCH_MODEL', 'kimi-k2.5')}")
 
     if not web_available:
-        exit(1)
+        print("❌ No web backend configured")
+        print(
+            "Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, KIMI_API_KEY, KIMI_CN_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
+            f"{_firecrawl_backend_help_suffix()}"
+        )
+        return 1
 
-    print("🛠️  Web tools ready for use!")
-    
-    if nous_available:
-        print(f"🧠 LLM content processing available with {default_summarizer_model}")
-        print(f"   Default min length for processing: {DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION} chars")
-    
-    # Show debug mode status
-    if _debug.active:
-        print(f"🐛 Debug mode ENABLED - Session ID: {_debug.session_id}")
-        print(f"   Debug logs will be saved to: {_debug.log_dir}/web_tools_debug_{_debug.session_id}.json")
-    else:
-        print("🐛 Debug mode disabled (set WEB_TOOLS_DEBUG=true to enable)")
-    
-    print("\nBasic usage:")
-    print("  from web_tools import web_search_tool, web_extract_tool, web_crawl_tool")
-    print("  import asyncio")
-    print("")
-    print("  # Search (synchronous)")
-    print("  results = web_search_tool('Python tutorials')")
-    print("")
-    print("  # Extract and crawl (asynchronous)")
-    print("  async def main():")
-    print("      content = await web_extract_tool(['https://example.com'])")
-    print("      crawl_data = await web_crawl_tool('example.com', 'Find docs')")
-    print("  asyncio.run(main())")
-    
-    if nous_available:
-        print("\nLLM-enhanced usage:")
-        print("  # Content automatically processed for pages >5000 chars (default)")
-        print("  content = await web_extract_tool(['https://python.org/about/'])")
-        print("")
-        print("  # Customize processing parameters")
-        print("  crawl_data = await web_crawl_tool(")
-        print("      'docs.python.org',")
-        print("      'Find key concepts',")
-        print("      model='google/gemini-3-flash-preview',")
-        print("      min_length=3000")
-        print("  )")
-        print("")
-        print("  # Disable LLM processing")
-        print("  raw_content = await web_extract_tool(['https://example.com'], use_llm_processing=False)")
-    
-    print("\nDebug mode:")
-    print("  # Enable debug logging")
-    print("  export WEB_TOOLS_DEBUG=true")
-    print("  # Debug logs capture:")
-    print("  # - All tool calls with parameters")
-    print("  # - Original API responses")
-    print("  # - LLM compression metrics")
-    print("  # - Final processed results")
-    print("  # Logs saved to: ./logs/web_tools_debug_UUID.json")
-    
-    print("\n📝 Run 'python test_web_tools_llm.py' to test LLM processing capabilities")
+    if args.show_env:
+        return 0
+
+    if args.query:
+        print("\n🔍 Running web_search_tool...")
+        result = web_search_tool(args.query, limit=max(1, min(args.limit, 20)))
+        print(result)
+        return 0
+
+    print("\nUsage examples:")
+    print("  python tools/web_tools.py --show-env")
+    print("  python tools/web_tools.py --query \"Kimi Search API usage\" --limit 3")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
 
 
 # ---------------------------------------------------------------------------
