@@ -9,7 +9,7 @@ description: "Set up Hermes Agent as a LINE Messaging API bot"
 Hermes connects to LINE through the official **LINE Messaging API**. Users message your LINE Official Account, LINE sends HTTPS webhooks to your Hermes gateway, and Hermes replies through the Messaging API. The adapter supports text, images, voice messages, group chats, loading indicators, and native LINE audio replies.
 
 :::info Official Account usage tiers
-LINE Official Account plans vary by country or region. In Japan, the common public tiers are Free, Light, and Standard. As an example, LINE's public pricing docs list these monthly included-message counts for Japan:
+LINE Official Account plans vary by country or region. In Japan, the common public tiers are Free, Light, and Standard. As an example, LINE's [Messaging API pricing](https://developers.line.biz/en/docs/messaging-api/pricing/) docs list these monthly included-message counts for Japan:
 
 | Tier | Included messages per month |
 |------|-----------------------------|
@@ -29,7 +29,7 @@ LINE webhooks require a public HTTPS URL. For local testing, use a tunnel such a
 ## Prerequisites
 
 - A LINE Developers account
-- A LINE Official Account with a Messaging API channel
+- A LINE Official Account connected to a Messaging API channel
 - A public HTTPS URL that forwards to the Hermes gateway
 - Hermes installed with the messaging extra:
 
@@ -39,18 +39,47 @@ pip install hermes-agent[messaging]
 
 The messaging extra installs `line-bot-sdk` and `aiohttp`, which the LINE adapter needs at runtime.
 
-## Step 1: Create a Messaging API Channel
+## Step 1: Create or Prepare a LINE Official Account
 
-1. Open the [LINE Developers Console](https://developers.line.biz/console/)
-2. Create or select a provider
-3. Create a **Messaging API** channel
-4. Open the channel's **Messaging API** tab
-5. Copy the **Channel access token**
-6. Open the **Basic settings** tab and copy the **Channel secret**
+A LINE Messaging API channel is tied to a LINE Official Account. If you already have the Official Account you want Hermes to use, you can reuse it. Otherwise:
+
+1. Open [LINE Official Account Manager](https://manager.line.biz/)
+2. Create a LINE Official Account
+3. Fill in the account name, category, and required profile details
+4. Save the account
+
+This is the account users will add as a friend and message. Use a dedicated Official Account for Hermes if you want to isolate bot traffic from a business or personal account.
+
+## Step 2: Enable the Messaging API Channel
+
+You can enable the Messaging API from either LINE Official Account Manager or the LINE Developers Console. The usual path is:
+
+1. Open [LINE Official Account Manager](https://manager.line.biz/)
+2. Select your Official Account
+3. Open **Settings**
+4. Open **Messaging API**
+5. Click **Enable Messaging API**
+6. Link or create a LINE Developers provider when prompted
+7. Confirm the provider and channel details
+
+After the Messaging API is enabled, open the linked channel in the [LINE Developers Console](https://developers.line.biz/console/).
+
+## Step 3: Copy the Channel Credentials
+
+In the LINE Developers Console:
+
+1. Select the provider connected to your Official Account
+2. Open the **Messaging API** channel
+3. Open the **Basic settings** tab
+4. Copy the **Channel secret**
+5. Open the **Messaging API** tab
+6. Under **Channel access token**, issue or copy a channel access token
+
+Hermes uses `LINE_CHANNEL_SECRET` to validate webhook signatures and `LINE_CHANNEL_ACCESS_TOKEN` to send replies, fetch user-sent media, and query quota information. The Messaging API reference documents both [webhook signature validation](https://developers.line.biz/en/docs/messaging-api/receiving-messages/#verify-signature) and [channel access tokens](https://developers.line.biz/en/reference/messaging-api/#channel-access-token).
 
 Keep both values secret. The access token can send messages as your Official Account, and the channel secret validates webhook signatures.
 
-## Step 2: Configure the Webhook URL
+## Step 4: Configure the Webhook URL
 
 Hermes listens on `/webhooks/line` by default. If your public URL is `https://bot.example.com`, set the LINE webhook URL to:
 
@@ -62,9 +91,12 @@ In the LINE Developers Console:
 
 1. Open your Messaging API channel
 2. Go to **Messaging API**
-3. Enable **Use webhook**
-4. Set the **Webhook URL**
-5. Use **Verify** to test reachability after the gateway is running
+3. Set the **Webhook URL**
+4. Enable **Use webhook**
+5. Optionally enable **Webhook redelivery**
+6. Use **Verify** to test reachability after the gateway is running
+
+The Verify button only succeeds when Hermes is running and your public HTTPS URL forwards to the local LINE webhook listener. LINE's [webhook docs](https://developers.line.biz/en/docs/messaging-api/receiving-messages/) also recommend asynchronous processing and signature validation; Hermes does both.
 
 If you are running locally through a tunnel, forward the tunnel to the LINE webhook port. The default local listener is:
 
@@ -72,7 +104,22 @@ If you are running locally through a tunnel, forward the tunnel to the LINE webh
 http://127.0.0.1:8645/webhooks/line
 ```
 
-## Step 3: Configure Hermes
+## Step 5: Review Official Account Response Settings
+
+New Messaging API channels can have LINE Official Account Manager automations enabled, especially greeting messages and auto-reply messages. LINE's own [bot-building guide](https://developers.line.biz/en/docs/messaging-api/building-bot/) notes that these automatic responses are enabled by default for new channels and recommends disabling them for first-time bot setups when the Messaging API handles replies.
+
+In LINE Developers Console, the **Messaging API** tab has **Greeting messages** and **Auto-reply messages** edit links that open LINE Official Account Manager. In Official Account Manager, review:
+
+| Setting | Recommended for Hermes |
+|---------|------------------------|
+| Webhooks | Enabled |
+| Auto-reply messages / Auto-response | Disabled, unless you intentionally want LINE's built-in replies in addition to Hermes |
+| Greeting message | Optional; disable it if you want Hermes to own all first-contact messaging |
+| Chat / manual response mode | Off or bot-focused, so manual chat handling does not interfere with webhook-driven replies |
+
+You can still use greeting messages intentionally, but for debugging it is much easier when every bot reply comes from Hermes.
+
+## Step 6: Configure Hermes
 
 Add the required credentials to `~/.hermes/.env`:
 
@@ -114,6 +161,24 @@ hermes gateway              # Foreground
 hermes gateway install      # Install as a user service
 sudo hermes gateway install --system   # Linux only: boot-time system service
 ```
+
+## Step 7: Add the Bot as a Friend and Test
+
+Users must add your LINE Official Account as a friend before normal one-to-one usage. In LINE Official Account Manager, use the account's friend-add QR code or share link. In LINE Developers Console, the Messaging API channel also exposes bot identifiers such as the Bot basic ID and Bot user ID.
+
+Recommended first test:
+
+1. Start `hermes gateway` in a terminal
+2. In LINE Developers Console, use **Verify** on the webhook URL
+3. Add the Official Account as a friend from your LINE app
+4. Send a short text message
+5. Watch `~/.hermes/logs/gateway.log` or run:
+
+```bash
+hermes logs --follow --level debug
+```
+
+If the webhook reaches Hermes but the bot does not answer, check access control first. Unknown LINE users are denied unless they are allowlisted or paired.
 
 ## Access Control
 
