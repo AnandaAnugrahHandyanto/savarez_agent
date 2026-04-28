@@ -8958,12 +8958,16 @@ class AIAgent:
                 store=self._memory_store,
             )
             # Bridge: notify external memory provider of built-in memory writes
-            if self._memory_manager and function_args.get("action") in ("add", "replace"):
+            if self._memory_manager and function_args.get("action") in ("add", "replace", "remove"):
                 try:
+                    bridge_content = function_args.get("content", "")
+                    # For remove, the actual removed content comes in result
+                    if function_args.get("action") == "remove" and isinstance(result, dict):
+                        bridge_content = result.get("deleted_content", bridge_content)
                     self._memory_manager.on_memory_write(
                         function_args.get("action", ""),
                         target,
-                        function_args.get("content", ""),
+                        bridge_content,
                         metadata=self._build_memory_write_metadata(
                             task_id=effective_task_id,
                             tool_call_id=tool_call_id,
@@ -9500,12 +9504,16 @@ class AIAgent:
                     store=self._memory_store,
                 )
                 # Bridge: notify external memory provider of built-in memory writes
-                if self._memory_manager and function_args.get("action") in ("add", "replace"):
+                if self._memory_manager and function_args.get("action") in ("add", "replace", "remove"):
                     try:
+                        bridge_content = function_args.get("content", "")
+                        # For remove, the actual removed content comes in result
+                        if function_args.get("action") == "remove" and isinstance(function_result, dict):
+                            bridge_content = function_result.get("deleted_content", bridge_content)
                         self._memory_manager.on_memory_write(
                             function_args.get("action", ""),
                             target,
-                            function_args.get("content", ""),
+                            bridge_content,
                             metadata=self._build_memory_write_metadata(
                                 task_id=effective_task_id,
                                 tool_call_id=getattr(tool_call, "id", None),
