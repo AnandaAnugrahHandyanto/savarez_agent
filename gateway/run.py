@@ -15,6 +15,7 @@ Usage:
 
 import asyncio
 import dataclasses
+import inspect
 import json
 import logging
 import os
@@ -744,6 +745,23 @@ def _parse_session_key(session_key: str) -> "dict | None":
             result["thread_id"] = parts[5]
         return result
     return None
+
+
+def _build_stream_reply_routing(
+    source: SessionSource,
+    event_message_id: Optional[str] = None,
+) -> "tuple[Optional[Dict[str, Any]], Optional[str]]":
+    """Build thread metadata + reply target for mid-turn gateway sends.
+
+    Slack DMs need the originating message id as a thread fallback. Other
+    platforms should only use explicit source.thread_id metadata.
+    """
+    if source.platform == Platform.SLACK:
+        thread_id = source.thread_id or event_message_id
+    else:
+        thread_id = source.thread_id
+    metadata = {"thread_id": thread_id} if thread_id else None
+    return metadata, event_message_id
 
 
 def _format_gateway_process_notification(evt: dict) -> "str | None":
@@ -6534,6 +6552,8 @@ class GatewayRunner:
             message_type=MessageType.TEXT,
             source=source,
             raw_message=event.raw_message,
+            message_id=event.message_id,
+            platform_update_id=event.platform_update_id,
             channel_prompt=event.channel_prompt,
         )
         
@@ -9760,10 +9780,10 @@ class GatewayRunner:
             else bool(_plat_streaming)
         )
 
-        if source.thread_id:
-            _thread_metadata: Optional[Dict[str, Any]] = {"thread_id": source.thread_id}
-        else:
-            _thread_metadata = None
+        _thread_metadata, _stream_reply_to = _build_stream_reply_routing(
+            source,
+            event_message_id,
+        )
 
         if _streaming_enabled:
             try:
@@ -9797,6 +9817,7 @@ class GatewayRunner:
                         chat_id=source.chat_id,
                         config=_consumer_cfg,
                         metadata=_thread_metadata,
+                        reply_to=_stream_reply_to,
                     )
             except Exception as _sc_err:
                 logger.debug("Proxy: could not set up stream consumer: %s", _sc_err)
@@ -10010,13 +10031,31 @@ class GatewayRunner:
         except Exception:
             pass
 
-        # Tool progress mode — resolved per-platform with env var fallback
-        _resolved_tp = resolve_display_setting(user_config, platform_key, "tool_progress")
-        progress_mode = (
-            _resolved_tp
-            or os.getenv("HERMES_TOOL_PROGRESS_MODE")
-            or "all"
+        # Tool progress mode — explicit config wins, then env override, then
+        # built-in per-platform defaults.
+        _platform_display = display_config.get("platforms") or {}
+        _platform_progress_cfg = None
+        if isinstance(_platform_display, dict):
+            _platform_cfg = _platform_display.get(platform_key)
+            if isinstance(_platform_cfg, dict):
+                _platform_progress_cfg = _platform_cfg.get("tool_progress")
+        _legacy_progress_cfg = None
+        _legacy_progress = display_config.get("tool_progress_overrides")
+        if isinstance(_legacy_progress, dict):
+            _legacy_progress_cfg = _legacy_progress.get(platform_key)
+        _global_progress_cfg = display_config.get("tool_progress")
+        _has_explicit_progress_cfg = any(
+            value is not None
+            for value in (_platform_progress_cfg, _legacy_progress_cfg, _global_progress_cfg)
         )
+        if _has_explicit_progress_cfg:
+            progress_mode = resolve_display_setting(user_config, platform_key, "tool_progress")
+        else:
+            progress_mode = (
+                os.getenv("HERMES_TOOL_PROGRESS_MODE")
+                or resolve_display_setting(user_config, platform_key, "tool_progress")
+                or "all"
+            )
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform
@@ -10151,16 +10190,10 @@ class GatewayRunner:
         # Background task to send progress messages
         # Accumulates tool lines into a single message that gets edited.
         #
-        # Threading metadata is platform-specific:
-        # - Slack DM threading needs event_message_id fallback (reply thread)
-        # - Telegram uses message_thread_id only for forum topics; passing a
-        #   normal DM/group message id as thread_id causes send failures
-        # - Other platforms should use explicit source.thread_id only
-        if source.platform == Platform.SLACK:
-            _progress_thread_id = source.thread_id or event_message_id
-        else:
-            _progress_thread_id = source.thread_id
-        _progress_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+        _progress_metadata, _progress_reply_to = _build_stream_reply_routing(
+            source,
+            event_message_id,
+        )
 
         async def send_progress_messages():
             if not progress_queue:
@@ -10260,15 +10293,30 @@ class GatewayRunner:
                                     adapter.name,
                                 )
                             can_edit = False
-                            await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
+                            await adapter.send(
+                                chat_id=source.chat_id,
+                                content=msg,
+                                reply_to=_progress_reply_to,
+                                metadata=_progress_metadata,
+                            )
                     else:
                         if can_edit:
                             # First tool: send all accumulated text as new message
                             full_text = "\n".join(progress_lines)
-                            result = await adapter.send(chat_id=source.chat_id, content=full_text, metadata=_progress_metadata)
+                            result = await adapter.send(
+                                chat_id=source.chat_id,
+                                content=full_text,
+                                reply_to=_progress_reply_to,
+                                metadata=_progress_metadata,
+                            )
                         else:
                             # Editing unsupported: send just this line
-                            result = await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
+                            result = await adapter.send(
+                                chat_id=source.chat_id,
+                                content=msg,
+                                reply_to=_progress_reply_to,
+                                metadata=_progress_metadata,
+                            )
                         if result.success and result.message_id:
                             progress_msg_id = result.message_id
 
@@ -10350,7 +10398,8 @@ class GatewayRunner:
         # Bridge sync status_callback → async adapter.send for context pressure
         _status_adapter = self.adapters.get(source.platform)
         _status_chat_id = source.chat_id
-        _status_thread_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+        _status_thread_metadata = _progress_metadata
+        _status_reply_to = _progress_reply_to
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
@@ -10360,6 +10409,7 @@ class GatewayRunner:
                     _status_adapter.send(
                         _status_chat_id,
                         message,
+                        reply_to=_status_reply_to,
                         metadata=_status_thread_metadata,
                     ),
                     _loop_for_step,
@@ -10494,7 +10544,8 @@ class GatewayRunner:
                             adapter=_adapter,
                             chat_id=source.chat_id,
                             config=_consumer_cfg,
-                            metadata={"thread_id": _progress_thread_id} if _progress_thread_id else None,
+                            metadata=_progress_metadata,
+                            reply_to=_progress_reply_to,
                         )
                         if _want_stream_deltas:
                             def _stream_delta_cb(text: str) -> None:
@@ -10520,6 +10571,7 @@ class GatewayRunner:
                         _status_adapter.send(
                             _status_chat_id,
                             text,
+                            reply_to=_status_reply_to,
                             metadata=_status_thread_metadata,
                         ),
                         _loop_for_step,
@@ -10618,6 +10670,7 @@ class GatewayRunner:
                         _status_adapter.send(
                             _status_chat_id,
                             message,
+                            reply_to=_status_reply_to,
                             metadata=_status_thread_metadata,
                         ),
                         _loop_for_step,
@@ -10766,14 +10819,22 @@ class GatewayRunner:
                 # false positives from MagicMock auto-attribute creation in tests.
                 if getattr(type(_status_adapter), "send_exec_approval", None) is not None:
                     try:
+                        _approval_kwargs = {
+                            "chat_id": _status_chat_id,
+                            "command": cmd,
+                            "session_key": _approval_session_key,
+                            "description": desc,
+                            "metadata": _status_thread_metadata,
+                        }
+                        try:
+                            if "reply_to" in inspect.signature(
+                                _status_adapter.send_exec_approval
+                            ).parameters:
+                                _approval_kwargs["reply_to"] = _status_reply_to
+                        except Exception:
+                            pass
                         _approval_result = asyncio.run_coroutine_threadsafe(
-                            _status_adapter.send_exec_approval(
-                                chat_id=_status_chat_id,
-                                command=cmd,
-                                session_key=_approval_session_key,
-                                description=desc,
-                                metadata=_status_thread_metadata,
-                            ),
+                            _status_adapter.send_exec_approval(**_approval_kwargs),
                             _loop_for_step,
                         ).result(timeout=15)
                         if _approval_result.success:
@@ -10801,6 +10862,7 @@ class GatewayRunner:
                         _status_adapter.send(
                             _status_chat_id,
                             msg,
+                            reply_to=_status_reply_to,
                             metadata=_status_thread_metadata,
                         ),
                         _loop_for_step,
@@ -11202,6 +11264,7 @@ class GatewayRunner:
                     await _notify_adapter.send(
                         source.chat_id,
                         f"⏳ Still working... ({_elapsed_mins} min elapsed{_status_detail})",
+                        reply_to=_status_reply_to,
                         metadata=_status_thread_metadata,
                     )
                 except Exception as _ne:
@@ -11296,6 +11359,7 @@ class GatewayRunner:
                                     f"If the agent does not respond soon, it will "
                                     f"be timed out in {_remaining_mins} min. "
                                     f"You can continue waiting or use /reset.",
+                                    reply_to=_status_reply_to,
                                     metadata=_status_thread_metadata,
                                 )
                             except Exception as _warn_err:
@@ -11530,6 +11594,7 @@ class GatewayRunner:
                             await adapter.send(
                                 source.chat_id,
                                 first_response,
+                                reply_to=_status_reply_to,
                                 metadata=_status_thread_metadata,
                             )
                         except Exception as e:
